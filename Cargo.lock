@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "bw24-engine"
+version = "0.0.0"
+dependencies = [
+ "bw24-gguf",
+ "bw24-runtime",
+ "cudarc",
+]
+
+[[package]]
 name = "bw24-gguf"
 version = "0.0.0"
 dependencies = [
