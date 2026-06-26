@@ -28,6 +28,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              if am_p == am_d { "MATCH" } else { "MISMATCH" });
     assert_eq!(am_p, am_d, "decode-step diverges from prefill — cache threading bug");
 
+    // --- time PREFILL tok/s (batched forward over the whole prompt) for the pp comparison vs
+    //     llama-bench pp512. 1 warmup discarded, then time one forward of the full prompt. ---
+    if prompt.len() >= 8 {
+        let _ = model.forward_last(&e, &prompt)?;   // warmup
+        e.stream().synchronize()?;
+        let tp = std::time::Instant::now();
+        let _ = model.forward_last(&e, &prompt)?;
+        e.stream().synchronize()?;
+        let dtp = tp.elapsed().as_secs_f64();
+        println!("prefill {} tok in {:.4}s = {:.1} tok/s (pp{})", prompt.len(), dtp, prompt.len() as f64 / dtp, prompt.len());
+    }
+
     // --- generate + time decode tok/s (honest Stage-A baseline) ---
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
     let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
