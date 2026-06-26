@@ -5,7 +5,6 @@
 use cudarc::driver::CudaSlice;
 use crate::Engine;
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
-use crate::{QT_Q6_K, QT_Q8_0};
 
 impl HybridModel {
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
@@ -286,13 +285,14 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 // stage gate/up/down for expert `ex` (async H2D, ordered before the qmatvec below)
+                // use the expert tensor's ACTUAL qtype (IQ3_S/IQ4_XS/Q6_K/... per file), not a hardcode.
                 e.stage_expert(m.gate_exps.expert_bytes(ex), &mut scratch_g, 0)?;
                 let gate = e.qmatvec_view(&scratch_g, 0..g_len, &zt, 1,
-                    m.gate_exps.in_f, m.gate_exps.out_f, QT_Q6_K, m.gate_exps.row_bytes)?;
+                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
 
                 e.stage_expert(m.up_exps.expert_bytes(ex), &mut scratch_u, 0)?;
                 let up = e.qmatvec_view(&scratch_u, 0..u_len, &zt, 1,
-                    m.up_exps.in_f, m.up_exps.out_f, QT_Q6_K, m.up_exps.row_bytes)?;
+                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
 
                 // act = silu(gate) * up   (length n_ff_exp = 512)
                 let mut act = e.zeros(n_ff_exp)?;
@@ -302,7 +302,7 @@ impl HybridModel {
                 e.stage_expert(m.down_exps.expert_bytes(ex), &mut scratch_d, 0)?;
                 let actv = act.slice(0..n_ff_exp);
                 let y = e.qmatvec_view(&scratch_d, 0..d_len, &actv, 1,
-                    m.down_exps.in_f, m.down_exps.out_f, QT_Q8_0, m.down_exps.row_bytes)?;
+                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
 
                 // moe_out[tok] += w[j] * y  (BUG-9: slice_mut -> CudaViewMut)
                 let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
