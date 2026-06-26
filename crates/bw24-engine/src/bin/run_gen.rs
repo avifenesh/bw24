@@ -98,29 +98,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         seed: std::env::var("BW24_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0),
     };
     let mut sampler = bw24_engine::sampler::Sampler::new(scfg);
-    for &t in &prompt { sampler.accept(t); }   // seed penalty history with the prompt
-    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
-    let mut ll = Vec::new();
-    for &t in &prompt { ll = model.decode_step(&e, t, &mut cache)?; }
+    // Stop conditions: EOS (text path) + optional stop-strings (BW24_STOP="a,b").
+    let eos_ids: Vec<u32> = eos.into_iter().collect();
+    let stop_strs: Vec<String> = std::env::var("BW24_STOP").ok()
+        .map(|s| s.split(',').map(|x| x.to_string()).filter(|x| !x.is_empty()).collect())
+        .unwrap_or_default();
+    let params = bw24_engine::decode::GenParams {
+        max_new: n_new, max_ctx: Some(prompt.len() + n_new + 8), eos: eos_ids,
+    };
+    // The reusable serving API (BASE-3). Stop-string match runs on the detokenized tail in the
+    // per-token callback. Streaming hook: callback returns false to halt.
+    let mut emitted_ids: Vec<u32> = Vec::new();
+    let tok_ref = tokenizer.as_ref();
     e.stream().synchronize()?;
     let t0 = std::time::Instant::now();
-    let mut out = Vec::with_capacity(n_new);
-    let mut emitted = 0usize;
-    for _ in 0..n_new {
-        let next = sampler.sample(&ll);
-        sampler.accept(next);
-        out.push(next);
-        emitted += 1;
-        // EOS stop (only when we know the eos id, i.e. the text path).
-        if Some(next) == eos {
-            break;
+    let gen_out = model.generate_with(&e, &prompt, &params, &mut sampler, |id| {
+        emitted_ids.push(id);
+        // stop-string check on the detokenized tail (text path only).
+        if let (Some(tok), false) = (tok_ref, stop_strs.is_empty()) {
+            let tail = tok.decode(&emitted_ids);
+            if stop_strs.iter().any(|s| tail.contains(s.as_str())) { return false; }
         }
-        ll = model.decode_step(&e, next, &mut cache)?;
-    }
+        true
+    })?;
     e.stream().synchronize()?;
     let dt = t0.elapsed().as_secs_f64();
+    let out = gen_out.tokens;
+    let emitted = out.len();
     let path = if std::env::var("BW24_FAST").is_ok() { "Stage-B int8 dp4a" } else { "Stage-A f32-dequant" };
-    println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode)", emitted, dt, emitted as f64 / dt);
+    println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode) [stop: {:?}]",
+             emitted, dt, emitted as f64 / dt, gen_out.stop_reason);
     println!("tokens: {out:?}");
 
     // --- detokenize the output ids back to TEXT (text path only) ---

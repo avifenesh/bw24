@@ -7,6 +7,27 @@ use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer};
 use crate::cache::Cache;
 use crate::forward::argmax;
 
+/// Generation parameters for the reusable serving API (`generate_with`).
+#[derive(Clone, Debug)]
+pub struct GenParams {
+    pub max_new: usize,            // hard cap on generated tokens
+    pub max_ctx: Option<usize>,    // context-length guard; None => prompt+max_new+8
+    pub eos: Vec<u32>,             // stop on any of these token ids (eos/eog + specials)
+}
+impl Default for GenParams {
+    fn default() -> Self { GenParams { max_new: 128, max_ctx: None, eos: Vec::new() } }
+}
+
+/// Why generation stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason { Eos, MaxNew, ContextFull, Callback }
+
+/// Result of `generate_with`: the generated token ids + why it stopped.
+pub struct GenOutput {
+    pub tokens: Vec<u32>,
+    pub stop_reason: StopReason,
+}
+
 impl HybridModel {
     /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
     pub fn decode_step(&self, e: &Engine, token: u32, cache: &mut Cache) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -73,7 +94,8 @@ impl HybridModel {
     }
 
     /// Greedy generation: prime with prompt tokens (decode them in sequence to build state),
-    /// then generate `max_new` tokens. Returns the generated token ids.
+    /// then generate `max_new` tokens. Returns the generated token ids. (Back-compat: greedy,
+    /// no EOS/stop — used by the decode==prefill validation gate. New code uses `generate_with`.)
     pub fn generate(&self, e: &Engine, prompt: &[u32], max_new: usize)
                     -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         let max_ctx = prompt.len() + max_new + 8;
@@ -90,6 +112,43 @@ impl HybridModel {
             last_logits = self.decode_step(e, next, &mut cache)?;
         }
         Ok(out)
+    }
+
+    /// The reusable serving generation API (BASE-3). Primes the prompt, then samples up to
+    /// `params.max_new` tokens, stopping on EOS, any stop-token, or the context-length guard.
+    /// Calls `on_token(id)` after each emitted token (for streaming; return `false` to stop early).
+    /// Returns `GenOutput { tokens, stop_reason }`. Does NOT detokenize — the caller (which owns
+    /// the tokenizer) handles text + stop-STRING matching on the detokenized tail.
+    pub fn generate_with<F: FnMut(u32) -> bool>(
+        &self, e: &Engine, prompt: &[u32], params: &GenParams,
+        sampler: &mut crate::sampler::Sampler, mut on_token: F,
+    ) -> Result<GenOutput, Box<dyn std::error::Error>> {
+        // Context guard: prompt + generated must fit max_ctx (caller-supplied or model default).
+        let ctx_cap = params.max_ctx.unwrap_or(prompt.len() + params.max_new + 8);
+        if prompt.len() >= ctx_cap {
+            return Ok(GenOutput { tokens: Vec::new(), stop_reason: StopReason::ContextFull });
+        }
+        let room = ctx_cap - prompt.len();
+        let budget = params.max_new.min(room);
+
+        let mut cache = Cache::new(e, &self.cfg, ctx_cap)?;
+        let mut last_logits = Vec::new();
+        for &tok in prompt {
+            last_logits = self.decode_step(e, tok, &mut cache)?;
+            sampler.accept(tok);
+        }
+        let mut out = Vec::with_capacity(budget);
+        let mut reason = StopReason::MaxNew;
+        for _ in 0..budget {
+            let next = sampler.sample(&last_logits);
+            sampler.accept(next);
+            out.push(next);
+            if params.eos.contains(&next) { reason = StopReason::Eos; break; }
+            if !on_token(next) { reason = StopReason::Callback; break; }
+            if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+            last_logits = self.decode_step(e, next, &mut cache)?;
+        }
+        Ok(GenOutput { tokens: out, stop_reason: reason })
     }
 
     /// Full-attention decode: project q/gate/k/v for the new token, QK-norm, RoPE at pos,
