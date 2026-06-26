@@ -13,3 +13,5 @@ probe/tc_peak
 probe/lowbit_peak
 probe/*.o
 tools/llama_logits
+tools/ggml_dequant_ref
+tools/ggml_list_tensors
