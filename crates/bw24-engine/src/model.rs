@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K};
+use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -29,6 +29,11 @@ impl GpuTensor {
             GgmlType::Q8_0 => Some(QT_Q8_0),
             GgmlType::Q4_K => Some(QT_Q4_K),
             GgmlType::Q6_K => Some(QT_Q6_K),
+            GgmlType::Q5_K => Some(QT_Q5_K),
+            GgmlType::Q3_K => Some(QT_Q3_K),
+            GgmlType::IQ4_XS => Some(QT_IQ4_XS),
+            GgmlType::IQ3_S => Some(QT_IQ3_S),
+            GgmlType::NVFP4 => Some(QT_NVFP4),
             _ => None,
         };
         match qtype {
@@ -143,3 +148,56 @@ impl Model {
 }
 
 pub type TensorMap = HashMap<String, GpuTensor>;
+
+/// One layer's stacked 256-expert tensor, raw GGUF quant bytes held HOST-RESIDENT.
+///
+/// EDGE-1: these bytes are NEVER uploaded at load (uploading 29.75GB would OOM a 24GB GPU —
+/// this is BUG-4). Per token, only the 8 routed experts are staged H2D into a small GPU scratch.
+///
+/// ne = [in_f, out_f, n_expert]; the expert axis (ne[2]) is the slowest/highest-stride axis, so
+/// expert `e` occupies the CONTIGUOUS byte block `bytes[e*expert_stride .. (e+1)*expert_stride]`.
+///
+/// THE 3D FIX: GpuTensor::load computes `row_bytes = raw.len()/ne[1]`, which for a stacked 3D
+/// tensor ignores the 256-expert axis and is 256x too large (gate_exps -> 430080 instead of 1680).
+/// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
+pub struct HostExps {
+    pub bytes: Vec<u8>,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
+    pub qtype: i32,            // QT_Q6_K (gate/up) | QT_Q8_0 (down)
+    pub in_f: usize,           // ne[0]   (gate/up = 2048, down = 512)
+    pub out_f: usize,          // ne[1]   (gate/up = 512,  down = 2048)
+    pub n_expert: usize,       // ne[2] = 256
+    pub row_bytes: usize,      // raw.len()/(out_f*n_expert)  -> 1680 (gate/up) / 544 (down)
+    pub expert_stride: usize,  // raw.len()/n_expert          -> 860160 (gate/up) / 1114112 (down)
+}
+
+impl HostExps {
+    /// Load a stacked 3D expert tensor, keeping its quant bytes on the HOST.
+    pub fn load(g: &GgufFile, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let t = g.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
+        assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
+        let raw = g.tensor_data(t);
+        let qtype = match t.ggml_type {
+            GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q8_0 => QT_Q8_0,
+            other => panic!("exps {name} unsupported quant {other:?} (use the Q6_K_XL file)"),
+        };
+        let in_f = t.ne[0] as usize;
+        let out_f = t.ne[1] as usize;
+        let n_expert = t.ne[2] as usize;
+        // VERIFIED: gate/up Q6_K total/256 = 860160; row = total/(512*256) = 1680.
+        //           down  Q8_0 total/256 = 1114112; row = total/(2048*256) = 544.
+        let expert_stride = raw.len() / n_expert;
+        let row_bytes = raw.len() / (out_f * n_expert);
+        // sanity: expert_stride must equal out_f * row_bytes exactly (catches a dim mixup)
+        assert_eq!(expert_stride, out_f * row_bytes,
+            "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
+        Ok(HostExps { bytes: raw.to_vec(), qtype, in_f, out_f, n_expert, row_bytes, expert_stride })
+    }
+
+    /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.
+    #[inline]
+    pub fn expert_bytes(&self, e: usize) -> &[u8] {
+        debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
+        &self.bytes[e * self.expert_stride..(e + 1) * self.expert_stride]
+    }
+}

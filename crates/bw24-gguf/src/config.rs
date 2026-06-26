@@ -55,6 +55,7 @@ pub struct MoeConfig {
     pub expert_count: u32,
     pub expert_used_count: u32,
     pub expert_ff_length: u32,
+    pub expert_shared_ff_length: u32,   // NEW: qwen35moe.expert_shared_feed_forward_length = 512
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,8 @@ impl ModelConfig {
                 expert_count: u("expert_count").unwrap_or(0),
                 expert_used_count: u("expert_used_count").unwrap_or(0),
                 expert_ff_length: u("expert_feed_forward_length").unwrap_or(0),
+                // meta_arch tries "qwen35moe.expert_shared_feed_forward_length" first, then bare key
+                expert_shared_ff_length: u("expert_shared_feed_forward_length").unwrap_or(0),
             })
         } else { None };
 

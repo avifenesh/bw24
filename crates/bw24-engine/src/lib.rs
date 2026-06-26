@@ -23,6 +23,11 @@ const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
 pub const QT_Q8_0: i32 = 0;
 pub const QT_Q4_K: i32 = 1;
 pub const QT_Q6_K: i32 = 2;
+pub const QT_Q5_K: i32 = 3;
+pub const QT_Q3_K: i32 = 4;
+pub const QT_IQ4_XS: i32 = 5;
+pub const QT_IQ3_S: i32 = 6;
+pub const QT_NVFP4: i32 = 7;
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
@@ -83,6 +88,68 @@ impl Engine {
         Ok(y)
     }
 
+    /// Allocate a reusable u8 GPU scratch buffer (for staged expert weights).
+    pub fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.alloc_zeros::<u8>(n)?)
+    }
+
+    /// EDGE-1 staging: copy `host_bytes` (a sub-slice of a HostExps buffer) into `scratch`
+    /// at byte offset `off` (async H2D on the default stream). Length is host_bytes.len().
+    /// The qmatvec_view that reads `scratch[off..]` is enqueued on the SAME stream after this,
+    /// so ordering is guaranteed without an explicit sync (Stage-1; Stage-2 prefetch on a 2nd
+    /// stream would require an event).
+    pub fn stage_expert(&self, host_bytes: &[u8], scratch: &mut CudaSlice<u8>, off: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let mut dst = scratch.slice_mut(off..off + host_bytes.len());  // CudaViewMut<u8>
+        self.gpu.stream.memcpy_htod(host_bytes, &mut dst)?;            // accepts &[u8] HostSlice src
+        Ok(())
+    }
+
+    /// qmatvec over a byte sub-range of a (resident/scratch) CudaSlice<u8> holding ONE expert
+    /// matrix. x is a CudaView<f32> (a sliced row of z, or a sliced activation). Reuses the
+    /// validated qmatvec_f32 dequant path (NOT a fast path — the correctness gate). The
+    /// CudaView base+offset pointer is honored by the launch arg.
+    pub fn qmatvec_view(&self, w: &CudaSlice<u8>, range: std::ops::Range<usize>,
+                        x: &cudarc::driver::CudaView<f32>, m: usize, in_f: usize, out_f: usize,
+                        qtype: i32, row_bytes: usize)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("qmatvec_f32");
+        let wv = w.slice(range);  // CudaView<u8>, offset honored
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&wv).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// dst[i] += alpha * src[i], i in 0..n. dst is a CudaViewMut (a row of moe_out).
+    pub fn axpy_into(&self, src: &CudaSlice<f32>, alpha: f32,
+                     dst: &mut cudarc::driver::CudaViewMut<f32>, n: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("axpy_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let (a, ni) = (alpha, n as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst).arg(&a).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// dst[r*ncols + c] += src[r*ncols + c] * scale[r]. Per-row scalar accumulate (shared expert).
+    pub fn add_scaled_rows(&self, src: &CudaSlice<f32>, scale: &CudaSlice<f32>,
+                           dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_scaled_rows_f32");
+        let cfg = LaunchConfig::for_num_elems((ncols * nrows) as u32);
+        let (nc, nr) = (ncols as i32, nrows as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(scale).arg(dst).arg(&nc).arg(&nr);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Stage-B: quantize activation [m,in] f32 -> q8_1 (int8 qs + per-block f32 scale).
     fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
                      -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
@@ -131,6 +198,45 @@ impl Engine {
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q6_K_dp4a");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Stage-B: Q5_K weight x q8_1 activation int8 dp4a (decode). Min-offset via q8_1 sum term.
+    pub fn qmatvec_q5_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                             out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_dp4a_named("qmatvec_q5_K_dp4a", w, x, m, in_f, out_f, row_bytes)
+    }
+    /// Stage-B: Q3_K weight x q8_1 activation int8 dp4a (decode, symmetric).
+    pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                             out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_dp4a_named("qmatvec_q3_K_dp4a", w, x, m, in_f, out_f, row_bytes)
+    }
+    /// Stage-B: NVFP4 weight x q8_1 activation int8 dp4a (decode, symmetric, codebook lookup).
+    pub fn qmatvec_nvfp4_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // B1: the NVFP4 dp4a kernel maps two 32-elem q8_1 blocks onto one 64-elem block_nvfp4
+        // (sblk = g >> 1). in_f must be a multiple of 64 or the last block reads a partial superblock.
+        assert!(in_f % 64 == 0, "NVFP4 dp4a requires in_f % 64 == 0, got {in_f}");
+        self.qmatvec_dp4a_named("qmatvec_nvfp4_dp4a", w, x, m, in_f, out_f, row_bytes)
+    }
+    /// Stage-B (optional perf): IQ4_XS codebook int8 dp4a.
+    pub fn qmatvec_iq4_XS_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                               out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_dp4a_named("qmatvec_iq4_XS_dp4a", w, x, m, in_f, out_f, row_bytes)
+    }
+
+    /// Shared dp4a launcher: quantize_q8_1 then call the named kernel (grid (out,m), block 64).
+    fn qmatvec_dp4a_named(&self, name: &str, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                          in_f: usize, out_f: usize, row_bytes: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let f = self.func(name);
         let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
@@ -244,6 +350,20 @@ impl Engine {
                 self.qmatvec_q4_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q6_K =>
                 self.qmatvec_q6_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q5_K =>
+                self.qmatvec_q5_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q3_K =>
+                self.qmatvec_q3_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_NVFP4 =>
+                self.qmatvec_nvfp4_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            // IQ4_XS optional fast path (gate behind a second env var; Stage-A is the default).
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. }
+                if fast && *qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok() =>
+                self.qmatvec_iq4_XS_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            // B3: IQ3_S and (default) IQ4_XS use the Stage-A f32 dequant-in-kernel path. There is
+            // NO qmatvec_iq3_s_dp4a / (default) iq4_XS fast kernel — do NOT add a `*qtype == QT_IQ3_S`
+            // (or unconditional QT_IQ4_XS) fast guard here without first writing the matching kernel,
+            // or func() will panic "kernel ... not in any fatbin".
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
                 self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes),
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f),

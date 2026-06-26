@@ -13,6 +13,75 @@ __device__ __forceinline__ float half_to_float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));
 }
 
+// IQ3_S grid: 512 u32 entries, each packs 4 unsigned bytes. Verbatim from ggml-common.h:1042.
+__device__ __constant__ unsigned int iq3s_grid_const[512] = {
+    0x01010101, 0x01010103, 0x01010105, 0x0101010b, 0x0101010f, 0x01010301, 0x01010303, 0x01010305,
+    0x01010309, 0x0101030d, 0x01010501, 0x01010503, 0x0101050b, 0x01010707, 0x01010901, 0x01010905,
+    0x0101090b, 0x0101090f, 0x01010b03, 0x01010b07, 0x01010d01, 0x01010d05, 0x01010f03, 0x01010f09,
+    0x01010f0f, 0x01030101, 0x01030103, 0x01030105, 0x01030109, 0x01030301, 0x01030303, 0x0103030b,
+    0x01030501, 0x01030507, 0x0103050f, 0x01030703, 0x0103070b, 0x01030909, 0x01030d03, 0x01030d0b,
+    0x01030f05, 0x01050101, 0x01050103, 0x0105010b, 0x0105010f, 0x01050301, 0x01050307, 0x0105030d,
+    0x01050503, 0x0105050b, 0x01050701, 0x01050709, 0x01050905, 0x0105090b, 0x0105090f, 0x01050b03,
+    0x01050b07, 0x01050f01, 0x01050f07, 0x01070107, 0x01070303, 0x0107030b, 0x01070501, 0x01070505,
+    0x01070703, 0x01070707, 0x0107070d, 0x01070909, 0x01070b01, 0x01070b05, 0x01070d0f, 0x01070f03,
+    0x01070f0b, 0x01090101, 0x01090307, 0x0109030f, 0x01090503, 0x01090509, 0x01090705, 0x01090901,
+    0x01090907, 0x01090b03, 0x01090f01, 0x010b0105, 0x010b0109, 0x010b0501, 0x010b0505, 0x010b050d,
+    0x010b0707, 0x010b0903, 0x010b090b, 0x010b090f, 0x010b0d0d, 0x010b0f07, 0x010d010d, 0x010d0303,
+    0x010d0307, 0x010d0703, 0x010d0b05, 0x010d0f03, 0x010f0101, 0x010f0105, 0x010f0109, 0x010f0501,
+    0x010f0505, 0x010f050d, 0x010f0707, 0x010f0b01, 0x010f0b09, 0x03010101, 0x03010103, 0x03010105,
+    0x03010109, 0x03010301, 0x03010303, 0x03010307, 0x0301030b, 0x0301030f, 0x03010501, 0x03010505,
+    0x03010703, 0x03010709, 0x0301070d, 0x03010b09, 0x03010b0d, 0x03010d03, 0x03010f05, 0x03030101,
+    0x03030103, 0x03030107, 0x0303010d, 0x03030301, 0x03030309, 0x03030503, 0x03030701, 0x03030707,
+    0x03030903, 0x03030b01, 0x03030b05, 0x03030f01, 0x03030f0d, 0x03050101, 0x03050305, 0x0305030b,
+    0x0305030f, 0x03050501, 0x03050509, 0x03050705, 0x03050901, 0x03050907, 0x03050b0b, 0x03050d01,
+    0x03050f05, 0x03070103, 0x03070109, 0x0307010f, 0x03070301, 0x03070307, 0x03070503, 0x0307050f,
+    0x03070701, 0x03070709, 0x03070903, 0x03070d05, 0x03070f01, 0x03090107, 0x0309010b, 0x03090305,
+    0x03090309, 0x03090703, 0x03090707, 0x03090905, 0x0309090d, 0x03090b01, 0x03090b09, 0x030b0103,
+    0x030b0301, 0x030b0307, 0x030b0503, 0x030b0701, 0x030b0705, 0x030b0b03, 0x030d0501, 0x030d0509,
+    0x030d050f, 0x030d0909, 0x030d090d, 0x030f0103, 0x030f0107, 0x030f0301, 0x030f0305, 0x030f0503,
+    0x030f070b, 0x030f0903, 0x030f0d05, 0x030f0f01, 0x05010101, 0x05010103, 0x05010107, 0x0501010b,
+    0x0501010f, 0x05010301, 0x05010305, 0x05010309, 0x0501030d, 0x05010503, 0x05010507, 0x0501050f,
+    0x05010701, 0x05010705, 0x05010903, 0x05010907, 0x0501090b, 0x05010b01, 0x05010b05, 0x05010d0f,
+    0x05010f01, 0x05010f07, 0x05010f0b, 0x05030101, 0x05030105, 0x05030301, 0x05030307, 0x0503030f,
+    0x05030505, 0x0503050b, 0x05030703, 0x05030709, 0x05030905, 0x05030b03, 0x05050103, 0x05050109,
+    0x0505010f, 0x05050503, 0x05050507, 0x05050701, 0x0505070f, 0x05050903, 0x05050b07, 0x05050b0f,
+    0x05050f03, 0x05050f09, 0x05070101, 0x05070105, 0x0507010b, 0x05070303, 0x05070505, 0x05070509,
+    0x05070703, 0x05070707, 0x05070905, 0x05070b01, 0x05070d0d, 0x05090103, 0x0509010f, 0x05090501,
+    0x05090507, 0x05090705, 0x0509070b, 0x05090903, 0x05090f05, 0x05090f0b, 0x050b0109, 0x050b0303,
+    0x050b0505, 0x050b070f, 0x050b0901, 0x050b0b07, 0x050b0f01, 0x050d0101, 0x050d0105, 0x050d010f,
+    0x050d0503, 0x050d0b0b, 0x050d0d03, 0x050f010b, 0x050f0303, 0x050f050d, 0x050f0701, 0x050f0907,
+    0x050f0b01, 0x07010105, 0x07010303, 0x07010307, 0x0701030b, 0x0701030f, 0x07010505, 0x07010703,
+    0x07010707, 0x0701070b, 0x07010905, 0x07010909, 0x0701090f, 0x07010b03, 0x07010d07, 0x07010f03,
+    0x07030103, 0x07030107, 0x0703010b, 0x07030309, 0x07030503, 0x07030507, 0x07030901, 0x07030d01,
+    0x07030f05, 0x07030f0d, 0x07050101, 0x07050305, 0x07050501, 0x07050705, 0x07050709, 0x07050b01,
+    0x07070103, 0x07070301, 0x07070309, 0x07070503, 0x07070507, 0x0707050f, 0x07070701, 0x07070903,
+    0x07070907, 0x0707090f, 0x07070b0b, 0x07070f07, 0x07090107, 0x07090303, 0x0709030d, 0x07090505,
+    0x07090703, 0x07090b05, 0x07090d01, 0x07090d09, 0x070b0103, 0x070b0301, 0x070b0305, 0x070b050b,
+    0x070b0705, 0x070b0909, 0x070b0b0d, 0x070b0f07, 0x070d030d, 0x070d0903, 0x070f0103, 0x070f0107,
+    0x070f0501, 0x070f0505, 0x070f070b, 0x09010101, 0x09010109, 0x09010305, 0x09010501, 0x09010509,
+    0x0901050f, 0x09010705, 0x09010903, 0x09010b01, 0x09010f01, 0x09030105, 0x0903010f, 0x09030303,
+    0x09030307, 0x09030505, 0x09030701, 0x0903070b, 0x09030907, 0x09030b03, 0x09030b0b, 0x09050103,
+    0x09050107, 0x09050301, 0x0905030b, 0x09050503, 0x09050707, 0x09050901, 0x09050b0f, 0x09050d05,
+    0x09050f01, 0x09070109, 0x09070303, 0x09070307, 0x09070501, 0x09070505, 0x09070703, 0x0907070b,
+    0x09090101, 0x09090105, 0x09090509, 0x0909070f, 0x09090901, 0x09090f03, 0x090b010b, 0x090b010f,
+    0x090b0503, 0x090b0d05, 0x090d0307, 0x090d0709, 0x090d0d01, 0x090f0301, 0x090f030b, 0x090f0701,
+    0x090f0907, 0x090f0b03, 0x0b010105, 0x0b010301, 0x0b010309, 0x0b010505, 0x0b010901, 0x0b010909,
+    0x0b01090f, 0x0b010b05, 0x0b010d0d, 0x0b010f09, 0x0b030103, 0x0b030107, 0x0b03010b, 0x0b030305,
+    0x0b030503, 0x0b030705, 0x0b030f05, 0x0b050101, 0x0b050303, 0x0b050507, 0x0b050701, 0x0b05070d,
+    0x0b050b07, 0x0b070105, 0x0b07010f, 0x0b070301, 0x0b07050f, 0x0b070909, 0x0b070b03, 0x0b070d0b,
+    0x0b070f07, 0x0b090103, 0x0b090109, 0x0b090501, 0x0b090705, 0x0b09090d, 0x0b0b0305, 0x0b0b050d,
+    0x0b0b0b03, 0x0b0b0b07, 0x0b0d0905, 0x0b0f0105, 0x0b0f0109, 0x0b0f0505, 0x0d010303, 0x0d010307,
+    0x0d01030b, 0x0d010703, 0x0d010707, 0x0d010d01, 0x0d030101, 0x0d030501, 0x0d03050f, 0x0d030d09,
+    0x0d050305, 0x0d050709, 0x0d050905, 0x0d050b0b, 0x0d050d05, 0x0d050f01, 0x0d070101, 0x0d070309,
+    0x0d070503, 0x0d070901, 0x0d09050b, 0x0d090907, 0x0d090d05, 0x0d0b0101, 0x0d0b0107, 0x0d0b0709,
+    0x0d0b0d01, 0x0d0d010b, 0x0d0d0901, 0x0d0f0303, 0x0d0f0307, 0x0f010101, 0x0f010109, 0x0f01010f,
+    0x0f010501, 0x0f010505, 0x0f01070d, 0x0f010901, 0x0f010b09, 0x0f010d05, 0x0f030105, 0x0f030303,
+    0x0f030509, 0x0f030907, 0x0f03090b, 0x0f050103, 0x0f050109, 0x0f050301, 0x0f05030d, 0x0f050503,
+    0x0f050701, 0x0f050b03, 0x0f070105, 0x0f070705, 0x0f07070b, 0x0f070b07, 0x0f090103, 0x0f09010b,
+    0x0f090307, 0x0f090501, 0x0f090b01, 0x0f0b0505, 0x0f0b0905, 0x0f0d0105, 0x0f0d0703, 0x0f0f0101,
+};
+__device__ __forceinline__ unsigned int iq3s_grid_d(int idx) { return iq3s_grid_const[idx]; }
+
 // ---- per-dtype: dequantize element j of weight-row `wrow` (raw bytes) and return its f32 value ----
 // Q8_0: block=32, bytes=34 (fp16 d + int8[32]).
 __device__ __forceinline__ float deq_q8_0(const uint8_t* row, int j) {
@@ -75,13 +144,159 @@ __device__ __forceinline__ float deq_q6_k(const uint8_t* row, int j) {
     return d * (float)scales[is] * (float)q;
 }
 
-enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2 };
+// device codebook tables
+__device__ __constant__ signed char kvalues_iq4nl_d[16] =
+    {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+__device__ __constant__ signed char kvalues_mxfp4_d[16] =
+    {0,1,2,3,4,6,8,12,0,-1,-2,-3,-4,-6,-8,-12};
+
+// UE4M3 -> f32, software fallback (ggml_cuda_ue4m3_to_fp32 common.cuh:843-854). NaN 0/0x7F -> 0.
+__device__ __forceinline__ float ue4m3_to_f32_d(unsigned char x) {
+    if (x == 0 || x == 0x7F) return 0.0f;
+    int   exp = (x >> 3) & 0xF;
+    float man = (float)(x & 0x7);
+    float raw = (exp == 0) ? ldexpf(man, -9) : ldexpf(1.0f + man / 8.0f, exp - 7);
+    return raw * 0.5f;
+}
+
+// ---- Q5_K f32 deq (oracle for the dp4a kernel) ----
+__device__ __forceinline__ float deq_q5_k(const uint8_t* row, int j) {
+    int blk = j >> 8, jj = j & 255;
+    const uint8_t* b = row + blk * 176;
+    float d    = half_to_float(*(const uint16_t*)b);
+    float dmin = half_to_float(*(const uint16_t*)(b + 2));
+    const uint8_t* scales = b + 4;
+    const uint8_t* qh = b + 16;
+    const uint8_t* ql = b + 48;
+    int group = jj >> 5;          // 0..7
+    int l = jj & 31;
+    int chunk = group >> 1;       // shares 32 qs bytes
+    const uint8_t* q = ql + chunk * 32;
+    uint8_t sc, mn;
+    q4k_scale_min(scales, group, &sc, &mn);       // identical 6-bit unpack to Q4_K
+    int g64 = group >> 1;
+    int half = group & 1;
+    int hbit = 2 * g64 + half;
+    int nib = (half == 0) ? (q[l] & 0xF) : (q[l] >> 4);
+    int h = (qh[l] >> hbit) & 1;
+    int w = nib | (h << 4);                        // unsigned 0..31
+    return d * (float)sc * (float)w - dmin * (float)mn;
+}
+
+// ---- Q3_K f32 deq ----
+__device__ __forceinline__ float deq_q3_k(const uint8_t* row, int j) {
+    int blk = j >> 8, jj = j & 255;
+    const uint8_t* b = row + blk * 110;
+    const uint8_t* hmask  = b;
+    const uint8_t* qs     = b + 32;
+    const uint8_t* scbyte = b + 96;
+    float d = half_to_float(*(const uint16_t*)(b + 108));
+    // unpack 16 6-bit signed scales (aux dance)
+    unsigned int aux0 = (scbyte[0]) | (scbyte[1]<<8) | (scbyte[2]<<16) | (scbyte[3]<<24);
+    unsigned int aux1 = (scbyte[4]) | (scbyte[5]<<8) | (scbyte[6]<<16) | (scbyte[7]<<24);
+    unsigned int aux2 = (scbyte[8]) | (scbyte[9]<<8) | (scbyte[10]<<16) | (scbyte[11]<<24);
+    const unsigned int km1 = 0x03030303u, km2 = 0x0f0f0f0fu, tmp = aux2;
+    unsigned int n0 = (aux0 & km2) | (((tmp>>0)&km1)<<4);
+    unsigned int n1 = (aux1 & km2) | (((tmp>>2)&km1)<<4);
+    unsigned int n2 = ((aux0>>4)&km2) | (((tmp>>4)&km1)<<4);
+    unsigned int n3 = ((aux1>>4)&km2) | (((tmp>>6)&km1)<<4);
+    signed char sc[16];
+    { unsigned int w[4] = {n0,n1,n2,n3};
+      for (int k=0;k<4;k++){ sc[k*4+0]=(signed char)(w[k]); sc[k*4+1]=(signed char)(w[k]>>8);
+                             sc[k*4+2]=(signed char)(w[k]>>16); sc[k*4+3]=(signed char)(w[k]>>24);} }
+    // map jj (0..255) back to (half, j-iter, l, shift, m_bit, scale index)
+    int half = jj >> 7;             // 0/1 (which 128)
+    int rem  = jj & 127;            // 0..127
+    int jiter = rem >> 5;           // 0..3 (which of the 4 j-iterations within the half)
+    int within = rem & 31;          // 0..31 within the 32-wide j-iteration
+    int sublo = within >> 4;        // 0 -> low 16 (sc index is_base), 1 -> high 16 (is_base+1)
+    int l = within & 15;
+    int shift = 2 * jiter;
+    int m_bit_idx = half * 4 + jiter;          // running bit position (0..7)
+    int is = (half * 8) + jiter * 2 + sublo;   // scale index 0..15
+    const uint8_t* q = qs + half * 32;
+    int qidx = sublo * 16 + l;                 // q[l] or q[l+16]
+    int hidx = sublo * 16 + l;                 // hmask[l] or hmask[l+16]
+    int q2 = (q[qidx] >> shift) & 3;
+    int hb = (hmask[hidx] & (1 << m_bit_idx)) ? 0 : 4;
+    int w = q2 - hb;
+    return d * (float)((int)sc[is] - 32) * (float)w;
+}
+
+// ---- IQ4_XS f32 deq ----
+__device__ __forceinline__ float deq_iq4_xs(const uint8_t* row, int j) {
+    int blk = j >> 8, jj = j & 255;
+    const uint8_t* b = row + blk * 136;
+    float d = half_to_float(*(const uint16_t*)b);
+    unsigned short sh = *(const uint16_t*)(b + 2);
+    const uint8_t* sl = b + 4;
+    const uint8_t* qs = b + 8;
+    int ib = jj >> 5;               // 0..7
+    int within = jj & 31;           // 0..31
+    int ls = ((sl[ib >> 1] >> (4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
+    float dl = d * (float)(ls - 32);
+    const uint8_t* q = qs + ib * 16;
+    int code = (within < 16) ? (q[within] & 0xf) : (q[within - 16] >> 4);
+    return dl * (float)kvalues_iq4nl_d[code];
+}
+
+// ---- IQ3_S f32 deq ----
+__device__ __forceinline__ float deq_iq3_s(const uint8_t* row, int j) {
+    int blk = j >> 8, jj = j & 255;
+    const uint8_t* b = row + blk * 110;
+    float d = half_to_float(*(const uint16_t*)b);
+    const uint8_t* qs    = b + 2;     // [64]
+    const uint8_t* qh    = b + 66;    // [8]
+    const uint8_t* signs = b + 74;    // [32]
+    const uint8_t* scales= b + 106;   // [4]
+    // Each ib32 group (32 elems) = qh[ib32], 4 sign bytes, 8 qs bytes. 8 elems per l (grid1/grid2).
+    int ib32   = jj >> 5;             // 0..7
+    int within = jj & 31;             // 0..31
+    int l      = within >> 3;         // 0..3  (which qs pair)
+    int e      = within & 7;          // 0..7  (grid byte slot)
+    // ggml: db for even ib32 uses &0xf, odd uses >>4 of scales[ib32/2]
+    int sc_nib = (ib32 & 1) ? (scales[ib32 / 2] >> 4) : (scales[ib32 / 2] & 0xf);
+    float db = d * (1.0f + 2.0f * (float)sc_nib);
+    const uint8_t* qsb = qs + ib32 * 8;       // 8 qs bytes per ib32
+    unsigned char qhb = qh[ib32];
+    const uint8_t* sgn = signs + ib32 * 4;
+    int qpair = (e < 4) ? (2 * l + 0) : (2 * l + 1);
+    int shamt = (e < 4) ? (8 - 2 * l) : (7 - 2 * l);
+    int gidx = qsb[qpair] | (((int)qhb << shamt) & 256);
+    int jb = e & 3;                            // grid byte 0..3
+    unsigned int gw = iq3s_grid_d(gidx);
+    int gval = (gw >> (8 * jb)) & 0xff;
+    int sbit = (e < 4) ? jb : (jb + 4);
+    float sign = (sgn[l] & (1 << sbit)) ? -1.0f : 1.0f;
+    return db * (float)gval * sign;
+}
+
+// ---- NVFP4 f32 deq ----
+__device__ __forceinline__ float deq_nvfp4(const uint8_t* row, int j) {
+    int blk = j / 64, jj = j & 63;
+    const uint8_t* b = row + blk * 36;
+    const uint8_t* d_bytes = b;
+    const uint8_t* qs = b + 4;
+    int s = jj >> 4;            // sub-block 0..3
+    int within = jj & 15;
+    int byte = qs[s * 8 + (within & 7)];
+    int code = (within < 8) ? (byte & 0xF) : (byte >> 4);
+    return (float)kvalues_mxfp4_d[code] * ue4m3_to_f32_d(d_bytes[s]);
+}
+
+enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
+             QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7 };
 
 __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     switch (qtype) {
-        case QT_Q8_0: return deq_q8_0(row, j);
-        case QT_Q4_K: return deq_q4_k(row, j);
-        case QT_Q6_K: return deq_q6_k(row, j);
+        case QT_Q8_0:   return deq_q8_0(row, j);
+        case QT_Q4_K:   return deq_q4_k(row, j);
+        case QT_Q6_K:   return deq_q6_k(row, j);
+        case QT_Q5_K:   return deq_q5_k(row, j);
+        case QT_Q3_K:   return deq_q3_k(row, j);
+        case QT_IQ4_XS: return deq_iq4_xs(row, j);
+        case QT_IQ3_S:  return deq_iq3_s(row, j);
+        case QT_NVFP4:  return deq_nvfp4(row, j);
     }
     return 0.0f;
 }
@@ -278,6 +493,249 @@ extern "C" __global__ void qmatvec_q6_K_dp4a(
         }
         float d8 = adrow[g];
         acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
+// ===== Q5_K decode MMVQ (int8 dp4a). Unsigned 5-bit weight + min-offset via q8_1 sum. =====
+extern "C" __global__ void qmatvec_q5_K_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 3, grp = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 176;
+        float d_sb    = half_to_float(*(const unsigned short*)b);
+        float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+        const unsigned char* scales = b + 4;
+        const unsigned char* qh = b + 16;
+        const unsigned char* qs = b + 48;
+        unsigned char sc, mn;
+        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+        int g64 = grp >> 1; bool hi = (grp & 1); int hbit = 2 * g64 + (hi ? 1 : 0);
+        const unsigned char* q = qs + g64 * 32;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        int sumi_d = 0, sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int wpack = 0;
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int idx = k * 4 + e;
+                int lowbits = hi ? (q[idx] >> 4) : (q[idx] & 0x0F);
+                int h = (qh[idx] >> hbit) & 1;
+                int w = lowbits | (h << 4);          // 0..31
+                wpack |= (w & 0xff) << (e * 8);
+            }
+            int a = aq4[k];
+            sumi_d   = dp4a(wpack, a, sumi_d);
+            sumi_sum = dp4a(0x01010101, a, sumi_sum);
+        }
+        float d8 = adrow[g];
+        acc += d_sb   * (float)((int)sc * sumi_d)   * d8
+             - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
+// ===== Q3_K decode MMVQ (symmetric, signed 3-bit weight, NO min term). =====
+// 32-chunk grp covers TWO 16-elem sub-blocks => two scale indices (lo/hi 16).
+extern "C" __global__ void qmatvec_q3_K_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 3, grp = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 110;
+        const unsigned char* hmask  = b;
+        const unsigned char* qs     = b + 32;
+        const unsigned char* scbyte = b + 96;
+        float d = half_to_float(*(const unsigned short*)(b + 108));
+        // unpack 16 6-bit signed scales
+        unsigned int aux0 = scbyte[0]|(scbyte[1]<<8)|(scbyte[2]<<16)|(scbyte[3]<<24);
+        unsigned int aux1 = scbyte[4]|(scbyte[5]<<8)|(scbyte[6]<<16)|(scbyte[7]<<24);
+        unsigned int aux2 = scbyte[8]|(scbyte[9]<<8)|(scbyte[10]<<16)|(scbyte[11]<<24);
+        const unsigned int km1=0x03030303u, km2=0x0f0f0f0fu, tmp=aux2;
+        unsigned int nA[4]={ (aux0&km2)|(((tmp>>0)&km1)<<4), (aux1&km2)|(((tmp>>2)&km1)<<4),
+                             ((aux0>>4)&km2)|(((tmp>>4)&km1)<<4), ((aux1>>4)&km2)|(((tmp>>6)&km1)<<4) };
+        signed char sc[16];
+        for(int kk=0;kk<4;kk++){ sc[kk*4+0]=(signed char)nA[kk]; sc[kk*4+1]=(signed char)(nA[kk]>>8);
+                                 sc[kk*4+2]=(signed char)(nA[kk]>>16); sc[kk*4+3]=(signed char)(nA[kk]>>24); }
+        // grp -> half/jiter/shift/m_bit/scale-base. half=grp>>2, jiter=grp&3.
+        int half = grp >> 2, jiter = grp & 3;
+        int shift = 2 * jiter;
+        int m_bit_idx = half * 4 + jiter;
+        const unsigned char* q  = qs    + half * 32;   // 32-byte qs run for this half
+        const unsigned char* hm = hmask;               // hmask not chunked: index by element directly
+        int is_lo = half * 8 + jiter * 2 + 0;          // scale for lo 16 elems
+        int is_hi = half * 8 + jiter * 2 + 1;          // scale for hi 16 elems
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        int sumlo = 0, sumhi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int wpack = 0; bool hiHalf = (k >= 4);     // k0..3 -> lo16, k4..7 -> hi16
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int idx = k * 4 + e;                   // 0..31 within chunk
+                int l = idx & 15;
+                int sub = idx >> 4;                    // 0 -> q[l], 1 -> q[l+16]
+                int q2 = (q[sub * 16 + l] >> shift) & 3;
+                int hb = (hm[sub * 16 + l] & (1 << m_bit_idx)) ? 0 : 4;
+                int w = q2 - hb;                       // signed -4..3
+                wpack |= (w & 0xff) << (e * 8);
+            }
+            int a = aq4[k];
+            if (!hiHalf) sumlo = dp4a(wpack, a, sumlo);
+            else         sumhi = dp4a(wpack, a, sumhi);
+        }
+        float d8 = adrow[g];
+        acc += d * d8 * ( (float)sumlo * (float)((int)sc[is_lo] - 32)
+                        + (float)sumhi * (float)((int)sc[is_hi] - 32) );
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
+// ===== NVFP4 decode MMVQ (codebook->int8 dp4a, symmetric, no min). =====
+// 32-elem activation block g covers TWO 16-elem NVFP4 sub-blocks (own UE4M3 scale each).
+extern "C" __global__ void qmatvec_nvfp4_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 1;          // which 64-elem block_nvfp4 (36 bytes)
+        int whichHalf = g & 1;      // 0 -> sub 0,1 ; 1 -> sub 2,3
+        const unsigned char* b = wrow + (long)sblk * 36;
+        const unsigned char* d_bytes = b;
+        const unsigned char* qs = b + 4;
+        int s0 = whichHalf * 2, s1 = s0 + 1;
+        (void)s1;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        // sub-block s_local=0 -> activation ints aq4[0..3], s_local=1 -> aq4[4..7]
+        float partial = 0.0f;
+        #pragma unroll
+        for (int sl = 0; sl < 2; sl++) {
+            int s = s0 + sl;
+            const unsigned char* qss = qs + s * 8;       // 8 qs bytes for this sub-block
+            // elems 0..7 = low nibbles of qss[0..7]; elems 8..15 = high nibbles of qss[0..7]
+            int wlo0 = (kvalues_mxfp4_d[qss[0]&0xf]&0xff) | ((kvalues_mxfp4_d[qss[1]&0xf]&0xff)<<8)
+                     | ((kvalues_mxfp4_d[qss[2]&0xf]&0xff)<<16) | ((kvalues_mxfp4_d[qss[3]&0xf]&0xff)<<24);
+            int wlo1 = (kvalues_mxfp4_d[qss[4]&0xf]&0xff) | ((kvalues_mxfp4_d[qss[5]&0xf]&0xff)<<8)
+                     | ((kvalues_mxfp4_d[qss[6]&0xf]&0xff)<<16) | ((kvalues_mxfp4_d[qss[7]&0xf]&0xff)<<24);
+            int whi0 = (kvalues_mxfp4_d[qss[0]>>4]&0xff) | ((kvalues_mxfp4_d[qss[1]>>4]&0xff)<<8)
+                     | ((kvalues_mxfp4_d[qss[2]>>4]&0xff)<<16) | ((kvalues_mxfp4_d[qss[3]>>4]&0xff)<<24);
+            int whi1 = (kvalues_mxfp4_d[qss[4]>>4]&0xff) | ((kvalues_mxfp4_d[qss[5]>>4]&0xff)<<8)
+                     | ((kvalues_mxfp4_d[qss[6]>>4]&0xff)<<16) | ((kvalues_mxfp4_d[qss[7]>>4]&0xff)<<24);
+            int base = sl * 4;
+            int sumi = 0;
+            sumi = dp4a(wlo0, aq4[base + 0], sumi);   // elems 0..3
+            sumi = dp4a(wlo1, aq4[base + 1], sumi);   // elems 4..7
+            sumi = dp4a(whi0, aq4[base + 2], sumi);   // elems 8..11
+            sumi = dp4a(whi1, aq4[base + 3], sumi);   // elems 12..15
+            partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
+        }
+        acc += adrow[g] * partial;
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
+// ===== IQ4_XS decode MMVQ (OPTIONAL perf path; codebook->int8 dp4a, symmetric, no min). =====
+// nibble->position split: low nibbles qs[0..15] -> elems 0..15, high -> elems 16..31.
+extern "C" __global__ void qmatvec_iq4_XS_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 3, ib = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 136;
+        float d_sb = half_to_float(*(const unsigned short*)b);
+        unsigned short sh = *(const unsigned short*)(b + 2);
+        const unsigned char* sl = b + 4;
+        const unsigned char* qs = b + 8 + ib * 16;
+        int ls = ((sl[ib >> 1] >> (4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
+        int scale = ls - 32;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aLo = (const int*)(aqb);        // elems 0..15
+        const int* aHi = (const int*)(aqb + 16);   // elems 16..31
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            int wlo = (kvalues_iq4nl_d[qs[k*4+0]&0xf]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]&0xf]&0xff)<<8)
+                    | ((kvalues_iq4nl_d[qs[k*4+2]&0xf]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]&0xf]&0xff)<<24);
+            int whi = (kvalues_iq4nl_d[qs[k*4+0]>>4]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]>>4]&0xff)<<8)
+                    | ((kvalues_iq4nl_d[qs[k*4+2]>>4]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]>>4]&0xff)<<24);
+            sumi = dp4a(wlo, aLo[k], sumi);
+            sumi = dp4a(whi, aHi[k], sumi);
+        }
+        acc += d_sb * (float)(scale * sumi) * adrow[g];
     }
     __shared__ float s[32];
     for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);

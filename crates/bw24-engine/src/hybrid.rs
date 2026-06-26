@@ -6,7 +6,7 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::GgufFile;
 use bw24_gguf::config::{ModelConfig, LayerKind};
 use crate::Engine;
-use crate::model::{GpuTensor, EmbedHost};
+use crate::model::{GpuTensor, EmbedHost, HostExps};
 
 fn load_t(e: &Engine, g: &GgufFile, name: &str) -> Result<GpuTensor, Box<dyn std::error::Error>> {
     GpuTensor::load(e, g, name)
@@ -34,11 +34,30 @@ pub struct LinearAttnLayer {
 
 pub enum Mixer { Full(FullAttnLayer), Linear(LinearAttnLayer) }
 
+/// MoE weights for one layer. Router + shared expert stay GPU-RESIDENT (tiny); the 256 routed
+/// experts stay HOST-RESIDENT (HostExps) and are staged per-token (EDGE-1).
+pub struct MoeWeights {
+    pub gate_inp: GpuTensor,        // F32 [2048,256] router          (GPU resident, Float)
+    pub gate_inp_shexp: GpuTensor,  // F32 [2048] 1-D shared gate dot (GPU resident, Float, out_f=1)
+    pub gate_exps: HostExps,        // Q6_K [2048,512,256]            (HOST)
+    pub up_exps: HostExps,          // Q6_K [2048,512,256]            (HOST)
+    pub down_exps: HostExps,        // Q8_0 [512,2048,256] TRANSPOSED (HOST; in=512,out=2048)
+    pub gate_shexp: GpuTensor,      // Q8_0 [2048,512]                (GPU resident)
+    pub up_shexp: GpuTensor,        // Q8_0 [2048,512]                (GPU resident)
+    pub down_shexp: GpuTensor,      // Q8_0 [512,2048]                (GPU resident)
+}
+
+/// Per-layer FFN: dense SwiGLU (qwen35) or 256-expert MoE (qwen35moe).
+pub enum Ffn {
+    Dense { ffn_gate: GpuTensor, ffn_up: GpuTensor, ffn_down: GpuTensor },
+    Moe(MoeWeights),
+}
+
 pub struct HybridLayer {
     pub attn_norm: GpuTensor,
     pub post_attn_norm: GpuTensor,  // "post_attention_norm" = PRE-FFN norm
     pub mixer: Mixer,
-    pub ffn_gate: GpuTensor, pub ffn_up: GpuTensor, pub ffn_down: GpuTensor,
+    pub ffn: Ffn,
 }
 
 pub struct HybridModel {
@@ -53,14 +72,17 @@ impl HybridModel {
     pub fn load(e: &Engine, g: &GgufFile) -> Result<Self, Box<dyn std::error::Error>> {
         let cfg = ModelConfig::from_gguf(g);
         assert!(cfg.arch.is_hybrid(), "not a hybrid arch");
-        assert!(cfg.moe.is_none(), "MoE hybrid not yet wired (dense FFN only)");
 
         let embd = EmbedHost::from_gguf(g, "token_embd.weight");
         let output_norm = load_t(e, g, "output_norm.weight")?;
         let output = match g.find("output.weight") { Some(_) => load_t(e, g, "output.weight")?, None => load_t(e, g, "token_embd.weight")? };
 
-        let mut layers = Vec::with_capacity(cfg.n_layer as usize);
-        for il in 0..cfg.n_layer {
+        // B0 FIX: cfg.n_layer == block_count INCLUDES the MTP/NextN block(s) (41 for the 35B-MoE).
+        // Running the MTP block as a trunk layer is wrong; iterate only the trunk layers.
+        // 9B (nextn=0): n_trunk = 32 (unchanged). 35B-MoE (nextn=1): n_trunk = 40 (drops MTP block).
+        let n_trunk = (cfg.n_layer - cfg.nextn_predict_layers) as usize;
+        let mut layers = Vec::with_capacity(n_trunk);
+        for il in 0..n_trunk as u32 {
             let p = |s: &str| format!("blk.{il}.{s}");
             let mixer = match cfg.layer_kind(il) {
                 LayerKind::FullAttention => Mixer::Full(FullAttnLayer {
@@ -83,6 +105,24 @@ impl HybridModel {
                     ssm_out: load_t(e, g, &p("ssm_out.weight"))?,
                 }),
             };
+            let ffn = if cfg.moe.is_some() {
+                Ffn::Moe(MoeWeights {
+                    gate_inp:       load_t(e, g, &p("ffn_gate_inp.weight"))?,        // F32 -> Float
+                    gate_inp_shexp: load_t(e, g, &p("ffn_gate_inp_shexp.weight"))?,  // F32 1-D
+                    gate_exps: HostExps::load(g, &p("ffn_gate_exps.weight"))?,       // HOST Q6_K
+                    up_exps:   HostExps::load(g, &p("ffn_up_exps.weight"))?,         // HOST Q6_K
+                    down_exps: HostExps::load(g, &p("ffn_down_exps.weight"))?,       // HOST Q8_0
+                    gate_shexp: load_t(e, g, &p("ffn_gate_shexp.weight"))?,
+                    up_shexp:   load_t(e, g, &p("ffn_up_shexp.weight"))?,
+                    down_shexp: load_t(e, g, &p("ffn_down_shexp.weight"))?,
+                })
+            } else {
+                Ffn::Dense {
+                    ffn_gate: load_t(e, g, &p("ffn_gate.weight"))?,
+                    ffn_up:   load_t(e, g, &p("ffn_up.weight"))?,
+                    ffn_down: load_t(e, g, &p("ffn_down.weight"))?,
+                }
+            };
             // attn_norm always; post_attention_norm is the pre-FFN norm in qwen35
             layers.push(HybridLayer {
                 attn_norm: load_t(e, g, &p("attn_norm.weight"))?,
@@ -90,9 +130,7 @@ impl HybridModel {
                     .or(load_opt(e, g, &p("ffn_norm.weight"))?)
                     .expect("need post_attention_norm or ffn_norm"),
                 mixer,
-                ffn_gate: load_t(e, g, &p("ffn_gate.weight"))?,
-                ffn_up: load_t(e, g, &p("ffn_up.weight"))?,
-                ffn_down: load_t(e, g, &p("ffn_down.weight"))?,
+                ffn,
             });
         }
         Ok(HybridModel { cfg, embd, output_norm, output, layers })

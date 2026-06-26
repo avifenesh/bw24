@@ -25,8 +25,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logits = model.forward_last(&e, &toks)?;
     let am = argmax(&logits);
     let mut idx: Vec<usize> = (0..logits.len()).collect();
-    idx.sort_unstable_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
-    println!("argmax token = {am}  logit = {:.4}", logits[am]);
+    idx.sort_unstable_by(|&a, &b| logits[b].total_cmp(&logits[a]));
+    let nan = logits.iter().filter(|v| !v.is_finite()).count();
+    println!("argmax token = {am}  logit = {:.4}  non-finite={nan}/{}", logits[am], logits.len());
     println!("top-5: {:?}", idx[..5].iter().map(|&i| (i, logits[i])).collect::<Vec<_>>());
     let bad = logits.iter().filter(|v| !v.is_finite()).count();
     println!("non-finite: {bad}");

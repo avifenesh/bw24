@@ -181,3 +181,20 @@ extern "C" __global__ void repeat_heads_f32(const float* __restrict__ in, float*
     int ih = oh / rep;
     out[idx] = in[((long)t * n_in_heads + ih) * head_dim + d];
 }
+
+// dst[i] += alpha * src[i]
+extern "C" __global__ void axpy_f32(const float* src, float* dst, float alpha, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] += alpha * src[i];
+}
+
+// dst[r*ncols + c] += src[r*ncols + c] * scale[r]   (r = i / ncols)
+extern "C" __global__ void add_scaled_rows_f32(const float* src, const float* scale,
+                                               float* dst, int ncols, int nrows) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = ncols * nrows;
+    if (i < total) {
+        int r = i / ncols;
+        dst[i] += src[i] * scale[r];
+    }
+}

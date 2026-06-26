@@ -4,7 +4,8 @@
 
 use cudarc::driver::CudaSlice;
 use crate::Engine;
-use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer};
+use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
+use crate::{QT_Q6_K, QT_Q8_0};
 
 impl HybridModel {
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
@@ -32,17 +33,22 @@ impl HybridModel {
             let mut x1 = e.zeros(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
 
-            // pre-FFN norm (post_attention_norm), SwiGLU, residual 2
+            // pre-FFN norm (post_attention_norm), FFN (Dense or MoE), residual 2
             let mut z = e.zeros(t * n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
-            let n_ff = layer.ffn_gate.out_features();
-            let gate = e.matmul(&layer.ffn_gate, &z, t)?;
-            let up = e.matmul(&layer.ffn_up, &z, t)?;
-            let mut act = e.zeros(t * n_ff)?;
-            e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-            let down = e.matmul(&layer.ffn_down, &act, t)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let gate = e.matmul(ffn_gate, &z, t)?;
+                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut act = e.zeros(t * n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, t)?,
+            };
             let mut x2 = e.zeros(t * n_embd)?;
-            e.add(&x1, &down, &mut x2, t * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
 
@@ -216,5 +222,111 @@ impl HybridModel {
         // token-major [T, value_dim]. linear wants [T, in=value_dim]. Good.
         let out = e.matmul(&la.ssm_out, &gn, t)?;
         Ok(out)
+    }
+}
+
+impl HybridModel {
+    /// MoE FFN (EDGE-1 Stage-1, host-resident experts, per-token H2D of ONLY the routed 8).
+    /// z: [T, n_embd] (already post-attention-normed). Returns moe_out [T, n_embd].
+    /// Node-for-node vs llama.cpp build_moe_ffn + qwen35moe::build_layer_ffn.
+    pub(crate) fn moe_ffn(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize)
+               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;          // 2048 (gate/up in_f, down out_f)
+        let n_expert = moe.expert_count as usize;  // 256
+        let n_used = moe.expert_used_count as usize; // 8
+        let n_ff_exp = moe.expert_ff_length as usize; // 512 (gate/up out_f, down in_f)
+
+        // verify the HostExps dims match cfg (catches a wrong-file / transpose mixup)
+        debug_assert_eq!(m.gate_exps.in_f, n_embd);
+        debug_assert_eq!(m.gate_exps.out_f, n_ff_exp);
+        debug_assert_eq!(m.down_exps.in_f, n_ff_exp);  // down is TRANSPOSED: in=512
+        debug_assert_eq!(m.down_exps.out_f, n_embd);   //                     out=2048
+        debug_assert_eq!(m.gate_exps.n_expert, n_expert);
+
+        // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> e.linear.
+        let logits = e.matmul(&m.gate_inp, z, t)?;
+        let lg = e.dtoh(&logits)?;   // [T*256] host
+
+        let mut moe_out = e.zeros(t * n_embd)?;
+
+        // GPU scratch: one slot per proj, big enough for ONE expert (Stage-1, no cache).
+        let g_len = m.gate_exps.expert_stride;  // 860160
+        let u_len = m.up_exps.expert_stride;    // 860160
+        let d_len = m.down_exps.expert_stride;  // 1114112
+        let mut scratch_g = e.alloc_u8(g_len)?;
+        let mut scratch_u = e.alloc_u8(u_len)?;
+        let mut scratch_d = e.alloc_u8(d_len)?;
+
+        // 2. PER TOKEN: softmax-over-256, stable top-8, renorm, routed-expert loop.
+        for tok in 0..t {
+            let row = &lg[tok * n_expert..(tok + 1) * n_expert];
+
+            // softmax over ALL 256 (stable: subtract max)
+            let maxl = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut probs = vec![0f32; n_expert];
+            let mut den = 0f32;
+            for i in 0..n_expert { let x = (row[i] - maxl).exp(); probs[i] = x; den += x; }
+            for p in probs.iter_mut() { *p /= den; }
+
+            // BUG-1 FIX: stable DESC sort matching CUDA cub radix (argsort DESC, stable on ties).
+            // total_cmp is NaN-safe; .then(a.cmp(&b)) gives ascending-index tiebreak.
+            let mut idx: Vec<usize> = (0..n_expert).collect();
+            idx.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
+            let sel = &idx[..n_used];
+
+            // gather UNBIASED probs as weights, then renorm: sum -> clamp -> divide. NO w_scale.
+            let mut w: Vec<f32> = sel.iter().map(|&i| probs[i]).collect();
+            let mut ws: f32 = w.iter().sum();
+            ws = ws.max(6.103515625e-5_f32);  // F16 smallest normal, clamp BEFORE divide
+            for x in w.iter_mut() { *x /= ws; }
+
+            let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);  // CudaView<f32>
+
+            for (j, &ex) in sel.iter().enumerate() {
+                // stage gate/up/down for expert `ex` (async H2D, ordered before the qmatvec below)
+                e.stage_expert(m.gate_exps.expert_bytes(ex), &mut scratch_g, 0)?;
+                let gate = e.qmatvec_view(&scratch_g, 0..g_len, &zt, 1,
+                    m.gate_exps.in_f, m.gate_exps.out_f, QT_Q6_K, m.gate_exps.row_bytes)?;
+
+                e.stage_expert(m.up_exps.expert_bytes(ex), &mut scratch_u, 0)?;
+                let up = e.qmatvec_view(&scratch_u, 0..u_len, &zt, 1,
+                    m.up_exps.in_f, m.up_exps.out_f, QT_Q6_K, m.up_exps.row_bytes)?;
+
+                // act = silu(gate) * up   (length n_ff_exp = 512)
+                let mut act = e.zeros(n_ff_exp)?;
+                e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
+
+                // down: TRANSPOSED, in=512 out=2048. x arg must be a CudaView (BUG-8).
+                e.stage_expert(m.down_exps.expert_bytes(ex), &mut scratch_d, 0)?;
+                let actv = act.slice(0..n_ff_exp);
+                let y = e.qmatvec_view(&scratch_d, 0..d_len, &actv, 1,
+                    m.down_exps.in_f, m.down_exps.out_f, QT_Q8_0, m.down_exps.row_bytes)?;
+
+                // moe_out[tok] += w[j] * y  (BUG-9: slice_mut -> CudaViewMut)
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+            }
+        }
+
+        // 3. SHARED EXPERT (ALWAYS-ON, no routing) on the SAME z.
+        let n_ff_sh = m.gate_shexp.out_features();  // 512
+        let sg_gate = e.matmul(&m.gate_shexp, z, t)?;  // [T, 512]
+        let sg_up = e.matmul(&m.up_shexp, z, t)?;      // [T, 512]
+        let mut sa = e.zeros(t * n_ff_sh)?;
+        e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+        let sh = e.matmul(&m.down_shexp, &sa, t)?;     // [T, n_embd]
+
+        // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
+        // NOT matmul/out_features (which would index ne[1] out of bounds).
+        let gs = e.linear(z, m.gate_inp_shexp.float_data(), t, n_embd, 1)?;  // [T, 1]
+        let mut g = e.zeros(t)?;
+        e.sigmoid(&gs, &mut g, t)?;
+
+        // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate)
+        e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+
+        Ok(moe_out)
     }
 }

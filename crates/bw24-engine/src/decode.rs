@@ -33,14 +33,19 @@ impl HybridModel {
 
             let mut z = e.zeros(n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
-            let n_ff = layer.ffn_gate.out_features();
-            let gate = e.matmul(&layer.ffn_gate, &z, 1)?;
-            let up = e.matmul(&layer.ffn_up, &z, 1)?;
-            let mut act = e.zeros(n_ff)?;
-            e.silu_mul(&gate, &up, &mut act, n_ff)?;
-            let down = e.matmul(&layer.ffn_down, &act, 1)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let gate = e.matmul(ffn_gate, &z, 1)?;
+                    let up = e.matmul(ffn_up, &z, 1)?;
+                    let mut act = e.zeros(n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    e.matmul(ffn_down, &act, 1)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, 1)?,
+            };
             let mut x2 = e.zeros(n_embd)?;
-            e.add(&x1, &down, &mut x2, n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             x = x2;
         }
 
