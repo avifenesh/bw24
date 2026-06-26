@@ -66,8 +66,9 @@ impl GgmlType {
             Q8_K => (256, 292),
             IQ4_NL => (32, 18),
             IQ4_XS => (256, 136),
-            MXFP4 => (32, 17),  // E8M0 (1) + 16
-            // less-common / not-needed-yet: approximate or panic-on-use
+            MXFP4 => (32, 17),  // 1 (E8M0 scale) + 16 (32×4bit e2m1)
+            NVFP4 => (64, 36),  // 4 (UE4M3 sub-scales, 1 per 16 elems) + 32 (64×4bit e2m1)
+            // less-common / not-needed-yet: panic-on-use
             other => panic!("block_and_type_size not implemented for {other:?}"),
         }
     }

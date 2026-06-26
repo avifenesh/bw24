@@ -15,8 +15,8 @@ The engine is a **model-agnostic multi-arch runtime** with a pluggable ARCH REGI
 - **plain dense transformers** (qwen3, llama, gemma, … — vanilla softmax attention),
 - **MoE** (qwen3moe, gpt-oss, mixtral, gemma-MoE),
 - **hybrid linear-attn** (qwen35/qwen3-next: gated-deltanet + periodic full-attn).
-Plus **speculative decoding as a first-class cross-cutting feature: MTP (built-in NextN) AND EAGLE/EAGLE3**
-(local EAGLE3 drafts exist for qwen35/36). No single arch is "the spine" — the spine is GGUF-load +
+Plus **speculative decoding as a first-class cross-cutting feature: MTP (built-in NextN) AND EAGLE
+(target EAGLE 3.1 — the current version, per user 2026-06-26; local EAGLE3 drafts exist for qwen35/36).** No single arch is "the spine" — the spine is GGUF-load +
 arch-dispatch + KV/state cache + scheduler + sampler; arch-specific forward graphs plug in.
 
 The qwen35 HYBRID path is the FIRST hard arch to implement because the daily-driver 27B + 9B use it,
