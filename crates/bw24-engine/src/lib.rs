@@ -13,6 +13,7 @@ pub mod hybrid;
 pub mod hybrid_forward;
 pub mod cache;
 pub mod decode;
+pub mod spec;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
@@ -73,6 +74,25 @@ impl Engine {
     /// View a sub-range of a device buffer (for attending over [0..len) of a KV cache).
     pub fn view<'a>(&self, b: &'a CudaSlice<f32>, len: usize) -> cudarc::driver::CudaView<'a, f32> {
         b.slice(0..len)
+    }
+
+    /// Device-to-device copy of a CudaView `src` into `dst[off..off+len]` (f32). Like `copy_into`
+    /// but the source is a sub-view (e.g. one column of a token-major activation buffer).
+    pub fn copy_view_into(&self, dst: &mut CudaSlice<f32>, off: usize,
+                          src: &cudarc::driver::CudaView<f32>, len: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(off..off + len);
+        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        Ok(())
+    }
+
+    /// Real device-to-device COPY of `src` into a freshly allocated buffer (NOT an Arc clone).
+    /// Used for cache snapshots (MTP-PLAN §D.4): `CudaSlice::clone()` only bumps a refcount and
+    /// would alias the live buffer; this allocs new device memory and memcpy_dtod's the contents.
+    pub fn clone_dtod(&self, src: &CudaSlice<f32>) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut dst = self.gpu.stream.alloc_zeros::<f32>(src.len())?;
+        self.gpu.stream.memcpy_dtod(src, &mut dst)?;
+        Ok(dst)
     }
 
     /// Resident-quantized linear (Stage-A: f32 dequant-in-kernel). y[m,out]=x[m,in]@W[out,in]^T.
@@ -497,6 +517,31 @@ impl Engine {
         const M_ROWS: usize = 16; const BK: usize = 64;
         let f = self.func("fa_prefill_f32");
         // smem: bf16*(M*hd + 2*BK*hd + M*BK) + f32*(M*hd + M*BK + 2*M)
+        let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
+                   + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32 + 15) / 16, n_head as u32, 1),
+            block_dim: (32, 1, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// FA prefill where K/V are CudaViews into a resident KV cache (the T=K verify path, MTP-PLAN
+    /// §D.3). Identical kernel to `fa_prefill`; the view's base+offset pointer is honored and the
+    /// kernel only reads [0..t_kv*kv_dim). Q is the T fresh query rows; t = T, t_kv = cache len.
+    pub fn fa_prefill_view(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<f32>,
+                           v: &cudarc::driver::CudaView<f32>, o: &mut CudaSlice<f32>,
+                           head_dim: usize, n_head: usize, n_head_kv: usize,
+                           t: usize, t_kv: usize, scale: f32, causal: bool)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        const M_ROWS: usize = 16; const BK: usize = 64;
+        let f = self.func("fa_prefill_f32");
         let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
                    + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;

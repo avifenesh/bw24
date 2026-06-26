@@ -31,6 +31,19 @@ pub struct Cache {
     pub max_ctx: usize,
 }
 
+/// Snapshot of the dual cache taken BEFORE a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+/// - Full-attn KV: only the per-layer `len` is recorded; rollback truncates (append-only,
+///   position-addressed — no copy). C.1.
+/// - Linear-attn conv/ssm: real device-to-device COPIES of the recurrent state, because those
+///   buffers are mutated IN PLACE by the verify pass and have no position index to truncate. C.2.
+///   (CudaSlice::clone is an Arc refcount, NOT a buffer copy — so we alloc fresh + memcpy_dtod.)
+pub struct CacheSnapshot {
+    pub kv_len: Vec<Option<usize>>,            // per layer (Some for full-attn layers)
+    pub conv: Vec<Option<CudaSlice<f32>>>,     // per layer (Some for linear-attn layers, D2D copy)
+    pub ssm: Vec<Option<CudaSlice<f32>>>,
+    pub pos: usize,
+}
+
 impl Cache {
     /// Allocate GPU-resident caches sized by arch + max context.
     pub fn new(e: &Engine, cfg: &ModelConfig, max_ctx: usize) -> Result<Self, Box<dyn std::error::Error>> {
@@ -64,5 +77,51 @@ impl Cache {
             }
         }
         Ok(Cache { kv, recur, pos: 0, max_ctx })
+    }
+
+    /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+    /// Records each full-attn `len` (cheap) and makes a REAL device copy of each linear-attn
+    /// conv_state/ssm_state (a fresh alloc + memcpy_dtod — NOT an Arc clone).
+    pub fn snapshot(&self, e: &Engine) -> Result<CacheSnapshot, Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        let mut kv_len = Vec::with_capacity(n);
+        let mut conv = Vec::with_capacity(n);
+        let mut ssm = Vec::with_capacity(n);
+        for il in 0..n {
+            match &self.kv[il] {
+                Some(kvl) => kv_len.push(Some(kvl.len)),
+                None => kv_len.push(None),
+            }
+            match &self.recur[il] {
+                Some(rl) => {
+                    conv.push(Some(e.clone_dtod(&rl.conv_state)?));
+                    ssm.push(Some(e.clone_dtod(&rl.ssm_state)?));
+                }
+                None => { conv.push(None); ssm.push(None); }
+            }
+        }
+        Ok(CacheSnapshot { kv_len, conv, ssm, pos: self.pos })
+    }
+
+    /// Roll the cache back to exactly `snap.pos + accept_len` committed tokens (MTP-PLAN §C).
+    /// - Full-attn KV (C.1): set len = snapshot_len + accept_len (truncate, no copy).
+    /// - Linear-attn (C.2): RESTORE the snapshot conv/ssm (real D2D copy back into the resident
+    ///   buffers). The caller must then REPLAY the `accept_len` committed tokens through the full
+    ///   T=1 decode path to rebuild the recurrent state for those positions. We restore (not
+    ///   replay here) because replay needs the model; this only resets state to the pre-round value.
+    /// `cache.pos` is set to `snap.pos` so the caller's replay advances it back to the commit point.
+    pub fn rollback(&mut self, e: &Engine, snap: &CacheSnapshot, accept_len: usize)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        for il in 0..self.kv.len() {
+            if let (Some(kvl), Some(saved)) = (self.kv[il].as_mut(), snap.kv_len[il]) {
+                kvl.len = saved + accept_len;
+            }
+            if let Some(rl) = self.recur[il].as_mut() {
+                if let Some(c) = &snap.conv[il] { e.copy_into(&mut rl.conv_state, 0, c, c.len())?; }
+                if let Some(s) = &snap.ssm[il]  { e.copy_into(&mut rl.ssm_state,  0, s, s.len())?; }
+            }
+        }
+        self.pos = snap.pos;
+        Ok(())
     }
 }

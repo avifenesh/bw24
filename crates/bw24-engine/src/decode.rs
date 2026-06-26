@@ -10,6 +10,13 @@ use crate::forward::argmax;
 impl HybridModel {
     /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
     pub fn decode_step(&self, e: &Engine, token: u32, cache: &mut Cache) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        Ok(self.decode_step_h(e, token, cache)?.0)
+    }
+
+    /// Like `decode_step`, but ALSO returns the trunk's hidden state `x` taken BEFORE the final
+    /// `output_norm` (MTP-PLAN §A: this is `h_seed` for the NextN head). Device buffer [n_embd].
+    pub fn decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
+                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -55,12 +62,14 @@ impl HybridModel {
             x = x2;
         }
 
+        // h_seed = trunk hidden BEFORE output_norm (the NextN head's `h` input, §A).
+        let h_seed = e.clone_dtod(&x)?;
         let mut hn = e.zeros(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
         cache.pos += 1;
-        Ok(host)
+        Ok((host, h_seed))
     }
 
     /// Greedy generation: prime with prompt tokens (decode them in sequence to build state),
@@ -85,7 +94,7 @@ impl HybridModel {
 
     /// Full-attention decode: project q/gate/k/v for the new token, QK-norm, RoPE at pos,
     /// append k,v to the layer KV cache, attend over the full [0..=pos] context.
-    fn full_attn_decode(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+    pub(crate) fn full_attn_decode(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                         pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -147,7 +156,7 @@ impl HybridModel {
     }
 
     /// Linear-attention decode: conv with ring-buffer state, GDN scan carrying SSM state.
-    fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+    pub(crate) fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
                           cache: &mut Cache, il: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
