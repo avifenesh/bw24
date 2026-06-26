@@ -12,6 +12,16 @@ algorithmic improvements adapted to sm_120 (FA3/FA4 binaries don't run here: no 
 - Resident-quant GEMM (no OOM); KV-cache decode + generation (decode==prefill exact)
 - Stage-B int8 dp4a Q8_0 + resident GPU state: **decode 56 tok/s** (llama.cpp 81.8; gap 1.45x)
 
+## UPDATE 2 (post-MoE)
+- HYBRID FA shipped (FA-2 + FA-3/FA-4 improvements scoped to sm_120, validated 11/11 vs oracle, argmax 268).
+- **MoE + EDGE-1 VALIDATED**: 35B-A3B argmax=1178 == llama.cpp; bw24 fits 24GB (~4GB peak) where
+  llama.cpp full-offload OOMs (30.5GB). Selective per-token expert staging proven.
+- Q4_K/Q6_K fast int8 dp4a landed. ALL daily targets run correct: 9B/27B hybrid + 35B MoE.
+- **DISCIPLINE DEBT (must fix): new dtypes Q5_K/Q3_K/IQ4_XS/IQ3_S/NVFP4 added to dequant.rs+qmatvec.cu
+  WITHOUT a CPU-oracle validation gate.** Daily NVFP4 (9B 3.45GB + 27B) + IQ4_XS/IQ3_S (35B 14.5GB)
+  models DEPEND on these being correct. Validate each vs an independent reference (llama.cpp dequant
+  or hand-derived) before trusting those daily models. THIS IS THE NEXT WORKFLOW.
+
 ## REMAINING SCOPE (full, no shortcuts)
 
 ### Kernels (isolated .cu files — parallelizable across agents)
