@@ -7,3 +7,8 @@ build/
 __pycache__/
 .venv/
 research/raw/
+probe/arch_probe
+probe/bw_bench
+probe/tc_peak
+probe/lowbit_peak
+probe/*.o

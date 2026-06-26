@@ -1,0 +1,7 @@
+[package]
+name = "bw24-probe"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+cudarc = { version = "0.19", default-features = false, features = ["cuda-13010", "dynamic-loading", "driver", "cublaslt", "nvrtc"] }

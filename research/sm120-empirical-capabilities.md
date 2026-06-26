@@ -27,7 +27,23 @@ All measured on-device 2026-06-26 (CUDA 13.1 nvcc, driver 595) by compiling/runn
 | maxThreads/SM | 1536 | fixed |
 | copy engines | 2 (compute/copy overlap, bidir) | fixed |
 | clusterLaunch | supported | fixed |
-| Power cap | ~150 W typical, **up to 175 W peak** | thermal/laptop hard limit |
+| max SM clock | 3090 MHz | fixed |
+| thermal target | 87 °C (asus nv_temp_target max) | the REAL sustained limit |
+
+### Power: NOT a hard constraint (settings bug, patch pending)
+
+The "150 W cap" is a **firmware-settings bug**, not silicon. `asus-armoury/attributes/nv_tgp.max_value`
+is wrongly clamped to 150; spec is TGP 150 + dynamic_boost 25 = **175 W** (nvidia-smi `power.max_limit`).
+User has sent a patch to the asus-linux maintainer raising the `nv_tgp` ceiling; tracking it.
+**Therefore do NOT design around 150 W (or even 175 W) as a hard power-bound.** The real sustained
+limit is THERMAL (87 °C target) + whatever the patch unlocks. Benchmark at full power:
+`gpu-full-power on` (sets nv_tgp=150, boost=25, profile=performance) — without it the box sits at
+`balanced`/boost=5 and measurements are throttled.
+
+Microbench note: issue-rate peaks below barely move between balanced and full-power (short bursts
+don't sustain to the power wall: 829→847 GB/s, FP8 219→233, FP4 762→761 TFLOP/s) so the ROOFLINE
+NUMBERS ARE VALID regardless. Power/thermal only bites SUSTAINED real decode/prefill — measure those
+at full power, and re-measure after the TGP patch lands.
 
 ### Tensor-core / ISA — what the silicon can execute
 
