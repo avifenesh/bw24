@@ -150,6 +150,25 @@ __device__ __constant__ signed char kvalues_iq4nl_d[16] =
 __device__ __constant__ signed char kvalues_mxfp4_d[16] =
     {0,1,2,3,4,6,8,12,0,-1,-2,-3,-4,-6,-8,-12};
 
+// Fast 4-bit codebook lookup (llama.cpp vecdotq.cuh get_int_from_table_16). Takes 4 packed
+// bytes (8 nibbles) in q4; returns int2 where .x = the 4 codebook int8s of the LOW nibbles
+// (one per byte, packed) and .y = the 4 codebook int8s of the HIGH nibbles. ~5 __byte_perm
+// vs 8 scalar table[] loads — the NVFP4/MXFP4/IQ4 decode hot loop is ALU-bound otherwise.
+// CUDA __byte_perm selects bytes by 3-bit indices; the 4th index bit is handled by a 2nd perm.
+__device__ __forceinline__ int2 get_int_from_table_16_d(int q4, const signed char* table) {
+    const uint32_t* table32 = (const uint32_t*)table;
+    uint32_t tmp[2];
+    const uint32_t low_high_selection_indices = (0x32103210u | ((q4 & 0x88888888u) >> 1));
+    #pragma unroll
+    for (uint32_t i = 0; i < 2; ++i) {
+        const uint32_t shift = 16u * i;
+        const uint32_t low  = __byte_perm(table32[0], table32[1], (uint32_t)q4 >> shift);
+        const uint32_t high = __byte_perm(table32[2], table32[3], (uint32_t)q4 >> shift);
+        tmp[i] = __byte_perm(low, high, low_high_selection_indices >> shift);
+    }
+    return make_int2(__byte_perm(tmp[0], tmp[1], 0x6420), __byte_perm(tmp[0], tmp[1], 0x7531));
+}
+
 // UE4M3 -> f32, software fallback (ggml_cuda_ue4m3_to_fp32 common.cuh:843-854). NaN 0/0x7F -> 0.
 __device__ __forceinline__ float ue4m3_to_f32_d(unsigned char x) {
     if (x == 0 || x == 0x7F) return 0.0f;
@@ -668,21 +687,20 @@ extern "C" __global__ void qmatvec_nvfp4_dp4a(
         for (int sl = 0; sl < 2; sl++) {
             int s = s0 + sl;
             const unsigned char* qss = qs + s * 8;       // 8 qs bytes for this sub-block
-            // elems 0..7 = low nibbles of qss[0..7]; elems 8..15 = high nibbles of qss[0..7]
-            int wlo0 = (kvalues_mxfp4_d[qss[0]&0xf]&0xff) | ((kvalues_mxfp4_d[qss[1]&0xf]&0xff)<<8)
-                     | ((kvalues_mxfp4_d[qss[2]&0xf]&0xff)<<16) | ((kvalues_mxfp4_d[qss[3]&0xf]&0xff)<<24);
-            int wlo1 = (kvalues_mxfp4_d[qss[4]&0xf]&0xff) | ((kvalues_mxfp4_d[qss[5]&0xf]&0xff)<<8)
-                     | ((kvalues_mxfp4_d[qss[6]&0xf]&0xff)<<16) | ((kvalues_mxfp4_d[qss[7]&0xf]&0xff)<<24);
-            int whi0 = (kvalues_mxfp4_d[qss[0]>>4]&0xff) | ((kvalues_mxfp4_d[qss[1]>>4]&0xff)<<8)
-                     | ((kvalues_mxfp4_d[qss[2]>>4]&0xff)<<16) | ((kvalues_mxfp4_d[qss[3]>>4]&0xff)<<24);
-            int whi1 = (kvalues_mxfp4_d[qss[4]>>4]&0xff) | ((kvalues_mxfp4_d[qss[5]>>4]&0xff)<<8)
-                     | ((kvalues_mxfp4_d[qss[6]>>4]&0xff)<<16) | ((kvalues_mxfp4_d[qss[7]>>4]&0xff)<<24);
+            // Codebook the 16 packed 4-bit weights via __byte_perm (get_int_from_table_16_d) instead
+            // of 16 scalar kvalues_mxfp4_d[] loads — this loop was ALU-bound (19% of BW ceiling).
+            // For 4 packed bytes, .x = low-nibble codes (4 int8s packed) = old wlo*, .y = high-nibble
+            // codes = old whi*. Assemble the input int from bytes (36-byte blocks => no 4-align guarantee).
+            int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
+            int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+            int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);  // .x=wlo0 (elems0..3) .y=whi0 (elems8..11)
+            int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);  // .x=wlo1 (elems4..7) .y=whi1 (elems12..15)
             int base = sl * 4;
             int sumi = 0;
-            sumi = dp4a(wlo0, aq4[base + 0], sumi);   // elems 0..3
-            sumi = dp4a(wlo1, aq4[base + 1], sumi);   // elems 4..7
-            sumi = dp4a(whi0, aq4[base + 2], sumi);   // elems 8..11
-            sumi = dp4a(whi1, aq4[base + 3], sumi);   // elems 12..15
+            sumi = dp4a(va.x, aq4[base + 0], sumi);   // elems 0..3
+            sumi = dp4a(vb.x, aq4[base + 1], sumi);   // elems 4..7
+            sumi = dp4a(va.y, aq4[base + 2], sumi);   // elems 8..11
+            sumi = dp4a(vb.y, aq4[base + 3], sumi);   // elems 12..15
             partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
         }
         acc += adrow[g] * partial;
