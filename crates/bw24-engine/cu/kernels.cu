@@ -87,6 +87,11 @@ extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __r
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = a[i] + b[i];
 }
+extern "C" __global__ void mul_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                   float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = a[i] * b[i];
+}
 
 // ---- naive SDPA for one token-batch, GQA, causal. Correctness oracle (no flash). ----
 // Q: [head_dim, n_head, T], K/V: [head_dim, n_head_kv, T_kv]. out: [head_dim, n_head, T].

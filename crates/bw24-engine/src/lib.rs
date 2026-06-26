@@ -9,6 +9,8 @@ pub use bw24_runtime;
 
 pub mod model;
 pub mod forward;
+pub mod hybrid;
+pub mod hybrid_forward;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
@@ -112,6 +114,17 @@ impl Engine {
         Ok(())
     }
 
+    pub fn mul(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
+               -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("mul_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut bld = self.gpu.stream.launch_builder(&f);
+        bld.arg(a).arg(b_in).arg(dst).arg(&ni);
+        unsafe { bld.launch(cfg)?; }
+        Ok(())
+    }
+
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).
     /// cuBLASLt col-major mapping (see bw24_runtime::Gpu::linear_f32 for the derivation).
     pub fn linear(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize, in_f: usize, out_f: usize)
@@ -204,5 +217,53 @@ impl Engine {
         b.arg(x).arg(y).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
+    }
+
+    /// gated RMSNorm: dst = RMSNorm(o, w[ncols]) * silu(z), per row of ncols. nrows blocks.
+    pub fn gated_rmsnorm(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
+                         dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gated_rmsnorm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// transpose [rows,cols] row-major -> [cols,rows] row-major.
+    pub fn transpose(&self, inp: &CudaSlice<f32>, rows: usize, cols: usize)
+                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("transpose_f32");
+        let mut out = self.zeros(rows * cols)?;
+        let cfg = LaunchConfig::for_num_elems((rows * cols) as u32);
+        let (r, c) = (rows as i32, cols as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(inp).arg(&mut out).arg(&r).arg(&c);
+        unsafe { b.launch(cfg)?; }
+        Ok(out)
+    }
+
+    /// repeat-interleave heads: in[head_dim,n_in,T] -> out[head_dim,n_out,T].
+    pub fn repeat_heads(&self, inp: &CudaSlice<f32>, out: &mut CudaSlice<f32>,
+                        head_dim: usize, n_in: usize, n_out: usize, t: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("repeat_heads_f32");
+        let cfg = LaunchConfig::for_num_elems((head_dim * n_out * t) as u32);
+        let (hd, ni, no, ti) = (head_dim as i32, n_in as i32, n_out as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(inp).arg(out).arg(&hd).arg(&ni).arg(&no).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Copy a contiguous range [start, start+len) out of src into a fresh slice (device→device via host).
+    /// Used for qkv split views. Small/rare; not perf-critical in Stage 1.
+    pub fn slice_range(&self, src: &CudaSlice<f32>, start: usize, len: usize)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let host = self.gpu.stream.clone_dtoh(src)?;
+        self.gpu.stream.synchronize()?;
+        Ok(self.htod(&host[start..start + len])?)
     }
 }

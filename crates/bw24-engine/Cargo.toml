@@ -15,3 +15,7 @@ path = "src/bin/kernel_check.rs"
 [[bin]]
 name = "run-dense"
 path = "src/bin/run_dense.rs"
+
+[[bin]]
+name = "run-hybrid"
+path = "src/bin/run_hybrid.rs"

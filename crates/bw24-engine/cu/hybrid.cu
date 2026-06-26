@@ -117,6 +117,7 @@ extern "C" __global__ void sigmoid_f32(const float* x, float* y, int n) {
     if (i < n) y[i] = 1.0f / (1.0f + expf(-x[i]));
 }
 // softplus(x + bias_broadcast) then * a_broadcast -> g_log. x:[H,T], bias/a:[H]. out:[H,T].
+// alpha layout [H,T] (alpha[t*H+h]); dt_bias/a [H].
 extern "C" __global__ void gdn_glog_f32(const float* alpha, const float* dt_bias, const float* a,
                                         float* g_log, int H, int T) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -125,4 +126,58 @@ extern "C" __global__ void gdn_glog_f32(const float* alpha, const float* dt_bias
     float x = alpha[idx] + dt_bias[h];
     float sp = (x > 20.0f) ? x : log1pf(expf(x));   // softplus, numerically safe
     g_log[idx] = a[h] * sp;                          // a holds -exp(A_log) (pre-negated)
+}
+
+// transpose [rows, cols] row-major -> [cols, rows] row-major. (token-major <-> channel-major)
+extern "C" __global__ void transpose_f32(const float* __restrict__ in, float* __restrict__ out,
+                                         int rows, int cols) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long)rows * cols) return;
+    int r = idx / cols;   // in row
+    int c = idx % cols;   // in col
+    out[(long)c * rows + r] = in[idx];
+}
+
+// gated RMSNorm output: dst = RMSNorm(o, w) * silu(z), per head_dim row.
+// o,z,dst: [head_dim, n_rows] row-major; w: [head_dim]. one block per row.
+extern "C" __global__ void gated_rmsnorm_f32(const float* __restrict__ o, const float* __restrict__ w,
+                                             const float* __restrict__ z, float* __restrict__ dst,
+                                             int ncols, float eps) {
+    int row = blockIdx.x; int tid = threadIdx.x;
+    const float* orow = o + (size_t)row * ncols;
+    const float* zrow = z + (size_t)row * ncols;
+    float* drow = dst + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = orow[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o2);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o2 = 16; o2 > 0; o2 >>= 1) v += __shfl_down_sync(0xffffffff, v, o2);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float zz = zrow[i];
+        drow[i] = (orow[i] * scale * w[i]) * (zz / (1.0f + expf(-zz)));
+    }
+}
+
+// Repeat-interleave heads: in [head_dim, n_in_heads, T] -> out [head_dim, n_out_heads, T],
+// each in-head replicated rep = n_out_heads/n_in_heads times (contiguous in head axis).
+// matches ggml_repeat_4d on the head axis. idx over out elements.
+extern "C" __global__ void repeat_heads_f32(const float* __restrict__ in, float* __restrict__ out,
+                                            int head_dim, int n_in_heads, int n_out_heads, int T) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)head_dim * n_out_heads * T;
+    if (idx >= total) return;
+    int d = idx % head_dim;
+    int oh = (idx / head_dim) % n_out_heads;
+    int t = idx / ((long)head_dim * n_out_heads);
+    int rep = n_out_heads / n_in_heads;
+    int ih = oh / rep;
+    out[idx] = in[((long)t * n_in_heads + ih) * head_dim + d];
 }
