@@ -6,7 +6,8 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let nvcc = std::env::var("BW24_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
 
-    for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN")] {
+    for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
+                       ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN")] {
         println!("cargo:rerun-if-changed={src}");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));

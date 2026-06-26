@@ -14,12 +14,19 @@ pub mod hybrid_forward;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
+const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
+
+/// Quant type codes matching qmatvec.cu QType enum.
+pub const QT_Q8_0: i32 = 0;
+pub const QT_Q4_K: i32 = 1;
+pub const QT_Q6_K: i32 = 2;
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
     pub gpu: bw24_runtime::Gpu,
     module: Arc<CudaModule>,
     hybrid: Arc<CudaModule>,
+    qmatvec: Arc<CudaModule>,
 }
 
 impl Engine {
@@ -27,7 +34,8 @@ impl Engine {
         let gpu = bw24_runtime::Gpu::new(ordinal)?;
         let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
-        Ok(Self { gpu, module, hybrid })
+        let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
+        Ok(Self { gpu, module, hybrid, qmatvec })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
@@ -35,7 +43,26 @@ impl Engine {
     fn func(&self, name: &str) -> CudaFunction {
         self.module.load_function(name)
             .or_else(|_| self.hybrid.load_function(name))
+            .or_else(|_| self.qmatvec.load_function(name))
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
+    }
+
+    pub fn htod_bytes(&self, v: &[u8]) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.clone_htod(v)?)
+    }
+
+    /// Resident-quantized linear: y[m,out] = x[m,in] @ W[out,in]^T, W in GGUF block bytes.
+    /// Weights stay packed in VRAM; dequant happens in-register inside the kernel.
+    pub fn qmatvec(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
+                   qtype: i32, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("qmatvec_f32");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
     }
 
     pub fn htod(&self, v: &[f32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {

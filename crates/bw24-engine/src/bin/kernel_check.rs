@@ -203,6 +203,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("gdn_scan     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
-    if fails == 0 { println!("\nM1-M3 GREEN: all kernels match CPU reference."); Ok(()) }
+    // --- qmatvec (resident-quant GEMM) vs cpu_linear(dequant(W)) on real GGUF weights ---
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType, dequant};
+        use bw24_runtime::cpu_linear;
+        let g = GgufFile::open(&path)?;
+        let cases = [
+            ("blk.0.ffn_gate.weight", bw24_engine::QT_Q8_0),   // exists in every layer
+            ("blk.0.attn_qkv.weight", bw24_engine::QT_Q8_0),   // linear-attn layer
+            ("blk.3.attn_q.weight", bw24_engine::QT_Q8_0),     // full-attn layer (il=3)
+            ("blk.0.attn_v.weight", bw24_engine::QT_Q6_K),     // Q6_K in 1.7B
+            ("output.weight", bw24_engine::QT_Q6_K),           // Q6_K lm_head in 1.7B
+            ("token_embd.weight", bw24_engine::QT_Q8_0),
+        ];
+        for (tname, _) in cases {
+            if let Some(t) = g.find(tname) {
+                let qt = match t.ggml_type {
+                    GgmlType::Q8_0 => bw24_engine::QT_Q8_0,
+                    GgmlType::Q4_K => bw24_engine::QT_Q4_K,
+                    GgmlType::Q6_K => bw24_engine::QT_Q6_K,
+                    other => { println!("qmatvec skip {tname}: {other:?} not in stage-A"); continue; }
+                };
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t);
+                let row_bytes = raw.len() / out_f;
+                let w_f32 = dequant::dequantize(t.ggml_type, raw, in_f * out_f);
+                let m = 2usize;
+                let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 31) * 0.1).collect();
+                let cpu = cpu_linear(&x, &w_f32, m, in_f, out_f);
+                let wd = e.htod_bytes(raw)?; let xd = e.htod(&x)?;
+                let yd = e.qmatvec(&wd, &xd, m, in_f, out_f, qt, row_bytes)?;
+                let gpu = e.dtoh(&yd)?;
+                let d = maxdiff(&cpu, &gpu);
+                let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1.0);
+                let rel = d / scale;
+                println!("qmatvec {tname} [{:?}] rel={rel:.2e} {}", t.ggml_type,
+                         if rel < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    } else {
+        println!("(pass a GGUF path to also validate qmatvec vs CPU oracle)");
+    }
+
+    if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }
