@@ -1,0 +1,9 @@
+target/
+build/
+*.o
+*.so
+*.gguf
+*.safetensors
+__pycache__/
+.venv/
+research/raw/
