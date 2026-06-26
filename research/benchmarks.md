@@ -47,3 +47,14 @@ overhead + the hybrid-arch KV advantage (only 8/32 layers grow KV). Must measure
 - KNOWN GAP: NVFP4 dequant not implemented (dequant.rs) -> 27B-NVFP4 file panics; needs NVFP4 CPU
   dequant + decode dot (fast-GEMM workflow deferred it, spec-only). Blocks NVFP4 daily models.
 - Remaining decode levers: extend MMVQ occupancy, CUDA graph (320 launches/token), hand-FA (in v2 fix).
+
+## NVFP4 global-scale gap (found 2026-06-26, blocks daily 9B/27B-NVFP4)
+9B-NVFP4 forward = argmax 1543, llama.cpp = 268 (WRONG). Root cause: NVFP4 weights carry EXTRA
+per-tensor F32 globals `<w>.scale` (e.g. ffn_gate.scale=1.01e-4) + `<w>.input_scale` (=0.143) that
+multiply the block-scaled (ue4m3 per-16) dequant. bw24 ignores them -> every NVFP4 matmul off by a
+global factor. NOT a dequant bug (block dequant matches ggml; ggml's to_float ALSO ignores globals —
+this is vLLM-style compressed-tensors NVFP4 where scale applies in scaled-mm). FIX: load <w>.scale +
+<w>.input_scale, apply y = (nvfp4_blockdequant(W) @ x) * w_scale  (input_scale for the W4A4 act path).
+The isolated dequant validation had the SAME blind spot as ggml -> gate passed but forward wrong.
+Q8_0/Q4_K/Q6_K/Q5_K/IQ models have NO global scale -> unaffected (9B-Q8_0 argmax 268 correct, 35B-MoE
+1178 correct). Only NVFP4 tensors need the global-scale fix.
