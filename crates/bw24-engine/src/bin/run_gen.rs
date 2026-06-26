@@ -28,8 +28,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              if am_p == am_d { "MATCH" } else { "MISMATCH" });
     assert_eq!(am_p, am_d, "decode-step diverges from prefill — cache threading bug");
 
-    // --- generate ---
-    let out = model.generate(&e, &prompt, 16)?;
-    println!("generated: {out:?}");
+    // --- generate + time decode tok/s (honest Stage-A baseline) ---
+    let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
+    let mut cache = bw24_engine::cache::Cache::new(&model.cfg);
+    let mut ll = Vec::new();
+    for &t in &prompt { ll = model.decode_step(&e, t, &mut cache)?; }
+    e.stream().synchronize()?;
+    let t0 = std::time::Instant::now();
+    let mut out = Vec::with_capacity(n_new);
+    for _ in 0..n_new {
+        let next = argmax(&ll) as u32;
+        out.push(next);
+        ll = model.decode_step(&e, next, &mut cache)?;
+    }
+    e.stream().synchronize()?;
+    let dt = t0.elapsed().as_secs_f64();
+    println!("generated {} tokens in {:.3}s = {:.2} tok/s (Stage-A f32-dequant decode)", n_new, dt, n_new as f64 / dt);
+    println!("tokens: {out:?}");
     Ok(())
 }
