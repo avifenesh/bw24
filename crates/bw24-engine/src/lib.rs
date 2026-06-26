@@ -717,15 +717,46 @@ impl Engine {
                      head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
                      k_tok_bytes: usize, v_tok_bytes: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
-        let n_splits = ((t_kv + 255) / 256).max(1);
+        // PERF-4: BW24_FA_VEC swaps the scalar element-per-thread fa_decode_f32 for the
+        // warp-per-token fa_decode_vec_q (grid=(n_head_kv,n_splits), block=(32,gqa_ratio)).
+        // The block dequants each KV tile ONCE into smem (bf16) and broadcasts to all gqa Q-head
+        // warps -> each KV byte leaves HBM/L2 ~1x/group (vs 4x). ARGS identical; func/grid/block/
+        // smem/n_splits differ. fa_decode_f32 stays the bit-reference fallback. Combine is shared.
+        //
+        // SPLIT-K: the scalar path has grid.x=n_head (32) blocks; the vec path only has
+        // grid.x=n_head_kv (8). To avoid starving the GPU at mid ctx, the vec path splits MORE
+        // aggressively (64 keys/split vs 256) so grid.y rises and 8*n_splits fills the SMs.
+        // At VERY short ctx (t_kv<96) even 1 split can't fill the GPU from 8 KV heads, so the
+        // broadcast can't beat the scalar path's 4x-more-blocks latency hiding — fall back to
+        // scalar there (measured crossover: vec 0.68x at t_kv=64, 1.23x at t_kv=96, 2.2x at 256).
+        const FA_VEC_MIN_TKV: usize = 96;
+        let fa_vec = std::env::var("BW24_FA_VEC").is_ok() && t_kv >= FA_VEC_MIN_TKV;
+        let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
         let mut part_l = self.zeros(n_head * n_splits)?;
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let f = self.func("fa_decode_f32");
-        let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 };
+        // The vec kernel holds head_dim/32 register accumulators (FA_DEC_MAX_DPL=8 -> head_dim<=256).
+        // All shipped models use head_dim=256; fall back to scalar for anything wider rather than
+        // silently truncating the accumulator.
+        let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
+        let (f, cfg) = if fa_vec {
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            // sK + sV bf16 tiles: 2 * FA_DEC_TILE(32) * head_dim * 2 B (32 KB at head_dim=256).
+            // Under the 48 KB default so no opt-in strictly needed, but set it for headroom.
+            let smem = (2 * 32 * head_dim * 2) as u32;
+            let fv = self.func("fa_decode_vec_q");
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem as i32)?;
+            (fv,
+             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: smem })
+        } else {
+            (self.func("fa_decode_f32"),
+             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+        };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);

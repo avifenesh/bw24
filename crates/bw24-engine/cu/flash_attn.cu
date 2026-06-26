@@ -171,6 +171,12 @@ static __device__ __forceinline__ float warp_max(float v) {
     for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
     return v;
 }
+// full-warp sum (butterfly): every lane ends with the 32-lane sum (used by fa_decode_vec_q QK dot).
+static __device__ __forceinline__ float warp_reduce_sum(float v) {
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    return v;
+}
 
 // Append-quantize one token's K (q8_0) and V (q5_1) into the resident cache.
 //   grid  = (max(kv_dim_k, kv_dim_v)/32, 1, 1)  -- one CTA per 32-elem block
@@ -660,6 +666,128 @@ extern "C" __global__ void fa_decode_f32(
     // write this split's partial (UNNORMALIZED o, plus m_i and l_i for the combine)
     if (tid < head_dim) partO[((size_t)head * n_splits + split) * head_dim + tid] = acc;
     if (tid == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
+}
+
+// ===================================================================== //
+//  KERNEL 2b : fa_decode_vec_q  (warp-per-token decode + GQA broadcast)  //
+//  Replaces the element-per-thread fa_decode_f32 on the hot decode path  //
+//  (T=1, split-K). BANDWIDTH lever (XQA/fattn-vec): each block owns ONE  //
+//  KV head and dequants its KV tile ONCE into smem, broadcasting it to    //
+//  all GQA_RATIO Q-head warps -> each KV byte leaves HBM/L2 ~1x/group     //
+//  instead of GQA_RATIO x (was: grid.x=n_head, each Q-head re-dequants).  //
+//                                                                         //
+//  grid  = (n_head_kv, n_splits, 1)                                       //
+//  block = (32, GQA_RATIO, 1)   warp y serves Q head kv_head*GQA + y      //
+//                                                                         //
+//  Per-warp register state (head_dim=256): each lane owns DPL=head_dim/32 //
+//  = 8 Q elements (pre-scaled) and 8 output accumulators acc[8]. Online   //
+//  softmax recurrence is BYTE-IDENTICAL to the validated prefill/decode   //
+//  (exp2f + LOG2E, C6: no 2.079 bias). Writes the SAME [head][split][d]   //
+//  partials -> fa_decode_combine_f32 merges (UNCHANGED).                  //
+//                                                                         //
+//  smem: sK[TILE][head_dim] + sV[TILE][head_dim] (f32), dequanted once    //
+//  per block (all 32*GQA threads cooperate). TILE keys per FA step.       //
+// ===================================================================== //
+#define FA_DEC_TILE 32          // KV keys dequanted per step (one q8_0/q5_1 block row)
+#define FA_DEC_MAX_DPL 8        // head_dim/32 ceiling (head_dim<=256). acc lives in regs.
+extern "C" __global__ void fa_decode_vec_q(
+        const float* __restrict__ Q,    // [head_dim, n_head, 1]
+        const uint8_t* __restrict__ K,  // q8_0 cache [token, kv_dim_k bytes]
+        const uint8_t* __restrict__ V,  // q5_1 cache [token, kv_dim_v bytes]
+        float* __restrict__ partO,      // [n_head, n_splits, head_dim]
+        float* __restrict__ partM,      // [n_head, n_splits]
+        float* __restrict__ partL,      // [n_head, n_splits]
+        int head_dim, int n_head, int n_head_kv, int T_kv,
+        float scale, int n_splits,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int kv_head = blockIdx.x;              // ONE KV head per block (was per Q head)
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;      // GQA_RATIO (4 for qwen35)
+    const int wy      = threadIdx.y;             // 0..gqa-1: which Q head in the group
+    const int lane    = threadIdx.x;             // 0..31
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;      // this warp's Q head
+    const int dpl     = head_dim >> 5;           // dims-per-lane = head_dim/32 (==8 for 256)
+
+    // this split owns keys [t_lo, t_hi)
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    // ---- shared KV tile, dequanted ONCE per block and broadcast to all gqa warps ----
+    // bf16 tiles (NOT f32): 2*32*256*2 = 32 KB, vs 64 KB f32 — doubles achievable occupancy.
+    extern __shared__ __nv_bfloat16 ssh_vec[];   // sK[FA_DEC_TILE*head_dim] then sV[...]
+    __nv_bfloat16* sK = ssh_vec;                 // [FA_DEC_TILE][head_dim]
+    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim; // [FA_DEC_TILE][head_dim]
+
+    // stage this warp's Q row (one Q head, head_dim) into registers, PRE-SCALED by `scale`.
+    // lane owns dims { lane, lane+32, ..., lane+32*(dpl-1) }.
+    float q_reg[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)0 * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    // per-warp online-softmax state + register accumulator (acc[i] is dim lane+32*i).
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    // cooperative dequant uses ALL block threads (32*gqa). Flat thread id over the block.
+    const int bt   = wy * WARP_SZ + lane;        // 0 .. 32*gqa-1
+    const int bsz  = WARP_SZ * gqa;
+
+    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+        const int nt = min(FA_DEC_TILE, t_hi - t0);    // valid keys this tile
+
+        // ---- dequant K & V tile ONCE into smem (the GQA broadcast). All block threads
+        //      stride over the nt*head_dim elements; eidx = kv_head*head_dim + d. ----
+        for (int idx = bt; idx < nt * head_dim; idx += bsz) {
+            int j = idx / head_dim;              // key within tile
+            int d = idx - j * head_dim;          // head_dim element
+            int eidx = kv_head * head_dim + d;
+            sK[idx] = __float2bfloat16(dq_q8_0_elem(K, (long)(t0 + j), k_tok_bytes, eidx));
+            sV[idx] = __float2bfloat16(dq_q5_1_elem(V, (long)(t0 + j), v_tok_bytes, eidx));
+        }
+        __syncthreads();
+
+        // ---- per-warp: for each key in the tile, dot(q, K_j) -> online softmax -> acc += p*V_j ----
+        for (int j = 0; j < nt; ++j) {
+            const __nv_bfloat16* kj = sK + (size_t)j * head_dim;
+            float part = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                if (i < dpl) part += q_reg[i] * __bfloat162float(kj[lane + (i << 5)]);
+            float score = warp_reduce_sum(part);     // every lane gets the full QK score (already *scale)
+
+            float m_new = fmaxf(m_i, score);
+            float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            float p     = exp2f((score - m_new) * LOG2E);
+            const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                if (i < dpl) acc[i] = acc[i] * alpha + p * __bfloat162float(vj[lane + (i << 5)]);
+            l_i = l_i * alpha + p;
+            m_i = m_new;
+        }
+        __syncthreads();   // tile fully consumed before the next dequant overwrites sK/sV
+    }
+
+    // write this Q head's split partial (UNNORMALIZED acc, + m_i/l_i for the combine).
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
 }
 
 // Combine flash-decoding splits with the log-sum-exp rule -> final O[head_dim, n_head, 1].

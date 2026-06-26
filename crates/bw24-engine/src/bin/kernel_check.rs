@@ -506,17 +506,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
                                            kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
             }
-            let mut od=e.zeros(hd*nh)?;
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3);
+            // --- scalar fa_decode_f32 (the bit-reference) ---
+            unsafe { std::env::remove_var("BW24_FA_VEC"); }
+            let mut od=e.zeros(hd*nh)?;
             e.fa_decode(&qd,&kview,&vview,&mut od,hd,nh,nhkv,tkv,scale,k_tok_bytes,v_tok_bytes)?;
-            let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
-            let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+            let rel = maxdiff(&cpu,&e.dtoh(&od)?)/sc;
+            // --- PERF-4 warp-per-token fa_decode_vec_q (GQA broadcast) on the SAME cache ---
+            unsafe { std::env::set_var("BW24_FA_VEC", "1"); }
+            let mut od_v=e.zeros(hd*nh)?;
+            e.fa_decode(&qd,&kview,&vview,&mut od_v,hd,nh,nhkv,tkv,scale,k_tok_bytes,v_tok_bytes)?;
+            unsafe { std::env::remove_var("BW24_FA_VEC"); }
+            let rel_v = maxdiff(&cpu,&e.dtoh(&od_v)?)/sc;
             // Quantized KV (q8_0 K, q5_1 V) -> looser than f32 fa_decode (5e-3). These synthetic
             // inputs are UNIFORM-random in [-0.2,0.2] (worse than real KV: V's q5_1 affine 5-bit
             // noise ~1.35e-2/elem, amplified through the softmax-weighted average when |O| is small).
             // The block round-trip + 5th-bit gates below isolate packing CORRECTNESS; the AUTHORITATIVE
             // end-to-end gate is argmax stability on real models. Gate here: rel < 6e-2 (noise floor).
             println!("fa_decode(KVQ) Tkv={tkv}: rel={rel:.2e} {}", if rel<6e-2 {"OK"} else {fails+=1;"FAIL"});
+            // PERF-4 gate: vec kernel rel < 6e-2 AND no worse than scalar within slack. The vec
+            // kernel stores the dequanted KV tile in bf16 smem (8-bit mantissa) for occupancy
+            // (-> the 2.2x mid-ctx decode win); the scalar path keeps f32. That adds ~1-1.5e-3
+            // of bounded bf16-rounding noise vs scalar — far under the 6e-2 q5_1 noise floor, and
+            // the AUTHORITATIVE end-to-end argmax gate (268/271/1178) is unaffected. Slack 2.5e-3.
+            let regress = rel_v > rel + 2.5e-3;
+            println!("fa_decode_vec_q(KVQ) Tkv={tkv}: rel={rel_v:.2e} (scalar {rel:.2e}) {}",
+                     if rel_v<6e-2 && !regress {"OK"} else {fails+=1;"FAIL"});
         }
     }
 
