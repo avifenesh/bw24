@@ -176,6 +176,15 @@ impl HybridModel {
     /// Advances `cache.pos` by T.
     pub fn decode_step_t(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
                          -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        Ok(self.decode_step_t_h(e, tokens, pos0, cache)?.0)
+    }
+
+    /// Like `decode_step_t` but ALSO returns the LAST column's pre-output_norm hidden (h_seed for
+    /// the next draft round). This lets partial-accept replay run as ONE batched T=(n_acc+1) forward
+    /// (single weight read) instead of n_acc+1 separate T=1 decode_steps (n_acc+1 weight reads).
+    /// At batch=1 decode is bandwidth-bound, so batching the replay is THE MTP profitability lever.
+    pub fn decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
+                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -233,12 +242,19 @@ impl HybridModel {
             x = x2;
         }
 
+        // h_seed for the next round = LAST column's pre-output_norm hidden ([n_embd]).
+        let h_seed = {
+            let mut hs = e.zeros(n_embd)?;
+            let src = x.slice((t - 1) * n_embd..t * n_embd);
+            e.copy_view_into(&mut hs, 0, &src, n_embd)?;
+            hs
+        };
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         cache.pos += t;
-        Ok(host)
+        Ok((host, h_seed))
     }
 
     /// Full-attention mixer over T query tokens with a GROWING resident KV (verify path, §D.3).
@@ -398,19 +414,19 @@ impl HybridModel {
             } else {
                 // PARTIAL ACCEPT: verify appended k draft columns but only n_acc are committed.
                 // Restore EVERYTHING to the pre-round snapshot (KV truncate to pos + recur restore),
-                // then replay the committed prefix draft[0..n_acc] ++ [bonus] through the full T=1
-                // decode path — bit-identical to non-spec greedy (§C.2 correct version; the
-                // linear-attn-only replay optimization is a TODO). This rebuilds both KV and recur.
+                // then replay the committed prefix draft[0..n_acc] ++ [bonus] as ONE batched
+                // T=(n_acc+1) forward — single weight read, bit-identical to greedy (the verify-all-
+                // columns path is the same math). This is the MTP profitability lever: replaying
+                // n_acc+1 tokens in one decode_step_t_h reads every weight ONCE vs n_acc+1 times in
+                // the old per-token loop (decode is bandwidth-bound at batch=1). KV+recur rebuilt.
+                let _ = n_embd;
                 cache.rollback(e, &snap, 0)?;   // accept_len=0: KV len = pos, recur = snapshot
                 let mut replay: Vec<u32> = draft[0..n_acc].to_vec();
                 replay.push(bonus);
-                let mut l_last = Vec::new();
-                let mut h_last = e.zeros(n_embd)?;
-                for &tok in &replay {
-                    let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
-                    l_last = l; h_last = h;
-                }
-                last_logits = l_last; h_seed = h_last;
+                let (rl, rh) = self.decode_step_t_h(e, &replay, pos, &mut cache)?;
+                // last_logits = last column's logits (predicts the token after `bonus`).
+                last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
+                h_seed = rh;
             }
         }
 
