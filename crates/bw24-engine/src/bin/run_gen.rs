@@ -82,6 +82,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- generate + time decode tok/s (honest Stage-A baseline) ---
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
     let eos = tokenizer.as_ref().map(|t| t.eos_id());
+    // Sampler config from env (defaults = greedy, the bit-exact reference). BW24_TEMP>0 enables
+    // the full chain: BW24_TOP_K / BW24_TOP_P / BW24_MIN_P / BW24_PENALTY_REPEAT / BW24_SEED.
+    let env_f = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let env_u = |k: &str, d: usize| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let scfg = bw24_engine::sampler::SamplerConfig {
+        temperature: env_f("BW24_TEMP", 0.0),
+        top_k: env_u("BW24_TOP_K", 0),
+        top_p: env_f("BW24_TOP_P", 1.0),
+        min_p: env_f("BW24_MIN_P", 0.0),
+        penalty_last_n: env_u("BW24_PENALTY_LAST_N", 0),
+        penalty_repeat: env_f("BW24_PENALTY_REPEAT", 1.0),
+        penalty_freq: env_f("BW24_PENALTY_FREQ", 0.0),
+        penalty_present: env_f("BW24_PENALTY_PRESENT", 0.0),
+        seed: std::env::var("BW24_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0),
+    };
+    let mut sampler = bw24_engine::sampler::Sampler::new(scfg);
+    for &t in &prompt { sampler.accept(t); }   // seed penalty history with the prompt
     let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
     let mut ll = Vec::new();
     for &t in &prompt { ll = model.decode_step(&e, t, &mut cache)?; }
@@ -90,7 +107,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = Vec::with_capacity(n_new);
     let mut emitted = 0usize;
     for _ in 0..n_new {
-        let next = argmax(&ll) as u32;
+        let next = sampler.sample(&ll);
+        sampler.accept(next);
         out.push(next);
         emitted += 1;
         // EOS stop (only when we know the eos id, i.e. the text path).
