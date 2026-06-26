@@ -3,19 +3,16 @@
 //! conv1d + gdn_scan kernels (M2/M3) and the dense full-attn path (M0).
 
 use cudarc::driver::CudaSlice;
-use bw24_gguf::{GgufFile, dequant};
+use bw24_gguf::GgufFile;
 use bw24_gguf::config::{ModelConfig, LayerKind};
 use crate::Engine;
-use crate::model::GpuTensor;
+use crate::model::{GpuTensor, EmbedHost};
 
 fn load_t(e: &Engine, g: &GgufFile, name: &str) -> Result<GpuTensor, Box<dyn std::error::Error>> {
-    let t = g.find(name).unwrap_or_else(|| panic!("missing tensor {name}"));
-    let n = t.n_elements() as usize;
-    let f32v = dequant::dequantize(t.ggml_type, g.tensor_data(t), n);
-    Ok(GpuTensor { data: e.htod(&f32v)?, ne: t.ne.clone() })
+    GpuTensor::load(e, g, name)
 }
 fn load_opt(e: &Engine, g: &GgufFile, name: &str) -> Result<Option<GpuTensor>, Box<dyn std::error::Error>> {
-    match g.find(name) { Some(_) => Ok(Some(load_t(e, g, name)?)), None => Ok(None) }
+    GpuTensor::load_opt(e, g, name)
 }
 
 pub struct FullAttnLayer {
@@ -46,7 +43,7 @@ pub struct HybridLayer {
 
 pub struct HybridModel {
     pub cfg: ModelConfig,
-    pub tok_embd: GpuTensor,
+    pub embd: EmbedHost,
     pub output_norm: GpuTensor,
     pub output: GpuTensor,
     pub layers: Vec<HybridLayer>,
@@ -58,7 +55,7 @@ impl HybridModel {
         assert!(cfg.arch.is_hybrid(), "not a hybrid arch");
         assert!(cfg.moe.is_none(), "MoE hybrid not yet wired (dense FFN only)");
 
-        let tok_embd = load_t(e, g, "token_embd.weight")?;
+        let embd = EmbedHost::from_gguf(g, "token_embd.weight");
         let output_norm = load_t(e, g, "output_norm.weight")?;
         let output = match g.find("output.weight") { Some(_) => load_t(e, g, "output.weight")?, None => load_t(e, g, "token_embd.weight")? };
 
@@ -98,17 +95,12 @@ impl HybridModel {
                 ffn_down: load_t(e, g, &p("ffn_down.weight"))?,
             });
         }
-        Ok(HybridModel { cfg, tok_embd, output_norm, output, layers })
+        Ok(HybridModel { cfg, embd, output_norm, output, layers })
     }
 
     pub fn embed(&self, e: &Engine, tokens: &[u32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
-        let embd = e.dtoh(&self.tok_embd.data)?;
-        let mut x = vec![0f32; tokens.len() * n_embd];
-        for (ti, &tok) in tokens.iter().enumerate() {
-            let s = tok as usize * n_embd;
-            x[ti * n_embd..ti * n_embd + n_embd].copy_from_slice(&embd[s..s + n_embd]);
-        }
+        let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
     }
 }

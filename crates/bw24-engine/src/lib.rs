@@ -152,6 +152,20 @@ impl Engine {
         Ok(())
     }
 
+    /// Unified weight-tensor matmul: dispatches quant tensors to qmatvec (weights packed) and
+    /// float tensors to cuBLASLt. y[m,out] = x[m,in] @ W[out,in]^T.
+    pub fn matmul(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
+                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
+                self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes),
+            GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f),
+        }
+    }
+
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).
     /// cuBLASLt col-major mapping (see bw24_runtime::Gpu::linear_f32 for the derivation).
     pub fn linear(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize, in_f: usize, out_f: usize)

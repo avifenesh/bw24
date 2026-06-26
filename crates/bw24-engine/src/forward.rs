@@ -30,15 +30,15 @@ impl Model {
         for layer in &self.layers {
             // --- attention block ---
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm(&x, &layer.attn_norm.data, &mut h, n_embd, t, eps)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             // QKV projections: q[T, n_head*head_dim], k/v[T, n_head_kv*head_dim]
             let q_out = layer.wq.out_features();   // n_head*head_dim
             let k_out = layer.wk.out_features();
             let v_out = layer.wv.out_features();
-            let mut q = e.linear(&h, &layer.wq.data, t, n_embd, q_out)?;
-            let mut k = e.linear(&h, &layer.wk.data, t, n_embd, k_out)?;
-            let v = e.linear(&h, &layer.wv.data, t, n_embd, v_out)?;
+            let mut q = e.matmul(&layer.wq, &h, t)?;
+            let mut k = e.matmul(&layer.wk, &h, t)?;
+            let v = e.matmul(&layer.wv, &h, t)?;
 
             // QK-norm: RMSNorm over head_dim, per (token, head). Layout [head_dim, n_head, T]
             // == row-major rows of length head_dim. q currently [T, n_head*head_dim] which is
@@ -49,12 +49,12 @@ impl Model {
             // exactly per-head QK-norm. Rows of head_dim are contiguous in the token-major buffer.
             if let Some(qn) = &layer.q_norm {
                 let mut qn_out = e.zeros(t * q_out)?;
-                e.rms_norm(&q, &qn.data, &mut qn_out, head_dim, n_head * t, eps)?;
+                e.rms_norm(&q, qn.float_data(), &mut qn_out, head_dim, n_head * t, eps)?;
                 q = qn_out;
             }
             if let Some(kn) = &layer.k_norm {
                 let mut kn_out = e.zeros(t * k_out)?;
-                e.rms_norm(&k, &kn.data, &mut kn_out, head_dim, n_head_kv * t, eps)?;
+                e.rms_norm(&k, kn.float_data(), &mut kn_out, head_dim, n_head_kv * t, eps)?;
                 k = kn_out;
             }
 
@@ -75,7 +75,7 @@ impl Model {
             e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
 
             // O projection: attn[T, n_head*head_dim] @ wo[n_embd, n_head*head_dim]^T
-            let o = e.linear(&attn, &layer.wo.data, t, q_out, n_embd)?;
+            let o = e.matmul(&layer.wo, &attn, t)?;
 
             // residual 1
             let mut x1 = e.zeros(t * n_embd)?;
@@ -83,13 +83,13 @@ impl Model {
 
             // --- ffn block ---
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm(&x1, &layer.ffn_norm.data, &mut z, n_embd, t, eps)?;
+            e.rms_norm(&x1, layer.ffn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let n_ff = layer.ffn_gate.out_features();
-            let gate = e.linear(&z, &layer.ffn_gate.data, t, n_embd, n_ff)?;
-            let up = e.linear(&z, &layer.ffn_up.data, t, n_embd, n_ff)?;
+            let gate = e.matmul(&layer.ffn_gate, &z, t)?;
+            let up = e.matmul(&layer.ffn_up, &z, t)?;
             let mut act = e.zeros(t * n_ff)?;
             e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-            let down = e.linear(&act, &layer.ffn_down.data, t, n_ff, n_embd)?;
+            let down = e.matmul(&layer.ffn_down, &act, t)?;
 
             // residual 2
             let mut x2 = e.zeros(t * n_embd)?;
@@ -99,9 +99,9 @@ impl Model {
 
         // final norm + lm_head
         let mut hn = e.zeros(t * n_embd)?;
-        e.rms_norm(&x, &self.output_norm.data, &mut hn, n_embd, t, eps)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let n_vocab = self.output.out_features();
-        let logits = e.linear(&hn, &self.output.data, t, n_embd, n_vocab)?;
+        let logits = e.matmul(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         Ok(host)
     }

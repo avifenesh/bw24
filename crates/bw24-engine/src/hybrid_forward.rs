@@ -21,7 +21,7 @@ impl HybridModel {
         for layer in &self.layers {
             // attn_norm
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm(&x, &layer.attn_norm.data, &mut h, n_embd, t, eps)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
@@ -34,22 +34,21 @@ impl HybridModel {
 
             // pre-FFN norm (post_attention_norm), SwiGLU, residual 2
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm(&x1, &layer.post_attn_norm.data, &mut z, n_embd, t, eps)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let n_ff = layer.ffn_gate.out_features();
-            let gate = e.linear(&z, &layer.ffn_gate.data, t, n_embd, n_ff)?;
-            let up = e.linear(&z, &layer.ffn_up.data, t, n_embd, n_ff)?;
+            let gate = e.matmul(&layer.ffn_gate, &z, t)?;
+            let up = e.matmul(&layer.ffn_up, &z, t)?;
             let mut act = e.zeros(t * n_ff)?;
             e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-            let down = e.linear(&act, &layer.ffn_down.data, t, n_ff, n_embd)?;
+            let down = e.matmul(&layer.ffn_down, &act, t)?;
             let mut x2 = e.zeros(t * n_embd)?;
             e.add(&x1, &down, &mut x2, t * n_embd)?;
             x = x2;
         }
 
         let mut hn = e.zeros(t * n_embd)?;
-        e.rms_norm(&x, &self.output_norm.data, &mut hn, n_embd, t, eps)?;
-        let n_vocab = self.output.out_features();
-        let logits = e.linear(&hn, &self.output.data, t, n_embd, n_vocab)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = e.matmul(&self.output, &hn, t)?;
         Ok(e.dtoh(&logits)?)
     }
 
@@ -72,8 +71,7 @@ impl HybridModel {
         let scale = 1.0 / (head_dim as f32).sqrt();
 
         // wq output = head_dim*2*n_head (fused [q|gate] per head, stride 2*head_dim).
-        let q_full_out = fa.wq.out_features();   // = 2*head_dim*n_head
-        let qf = e.linear(h, &fa.wq.data, t, n_embd, q_full_out)?;
+        let qf = e.matmul(&fa.wq, h, t)?;
         // split per head: q = [head_dim] at offset 0 within each 2*head_dim block; gate at offset head_dim.
         // Build q [head_dim, n_head, T] and gate [head_dim, n_head, T] by host repack (Stage 1).
         let qf_host = e.dtoh(&qf)?;
@@ -90,17 +88,15 @@ impl HybridModel {
         }
         let mut q = e.htod(&q_host)?;
         let gate = e.htod(&gate_host)?;
-        let k_out = fa.wk.out_features();
-        let v_out = fa.wv.out_features();
-        let mut k = e.linear(h, &fa.wk.data, t, n_embd, k_out)?;
-        let v = e.linear(h, &fa.wv.data, t, n_embd, v_out)?;
+        let mut k = e.matmul(&fa.wk, h, t)?;
+        let v = e.matmul(&fa.wv, h, t)?;
 
         // QK-norm (per head_dim row), then partial RoPE.
         let mut qn = e.zeros(t * n_head * head_dim)?;
-        e.rms_norm(&q, &fa.q_norm.data, &mut qn, head_dim, n_head * t, eps)?;
+        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
         q = qn;
         let mut kn = e.zeros(t * n_head_kv * head_dim)?;
-        e.rms_norm(&k, &fa.k_norm.data, &mut kn, head_dim, n_head_kv * t, eps)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
         e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
@@ -118,7 +114,7 @@ impl HybridModel {
         e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
 
         // o projection
-        let o = e.linear(&attn_g, &fa.wo.data, t, n_head * head_dim, n_embd)?;
+        let o = e.matmul(&fa.wo, &attn_g, t)?;
         Ok(o)
     }
 
@@ -140,10 +136,10 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
 
         // projections
-        let qkv_mixed = e.linear(h, &la.wqkv.data, t, n_embd, conv_dim)?;  // [T, conv_dim] token-major
-        let z = e.linear(h, &la.wqkv_gate.data, t, n_embd, value_dim)?;    // [T, value_dim]
-        let beta_raw = e.linear(h, &la.ssm_beta.data, t, n_embd, num_v)?;  // [T, num_v]
-        let alpha = e.linear(h, &la.ssm_alpha.data, t, n_embd, num_v)?;    // [T, num_v]
+        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;       // [T, conv_dim] token-major
+        let z = e.matmul(&la.wqkv_gate, h, t)?;          // [T, value_dim]
+        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
+        let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
 
         // conv: need channel-major [conv_dim, T+pad]. transpose qkv_mixed -> [conv_dim, T],
         // then prepend (d_conv-1) zero cols of state (prefill from zero state).
@@ -158,7 +154,7 @@ impl HybridModel {
         }
         let conv_in_d = e.htod(&conv_in)?;
         let mut conv_out = e.zeros(conv_dim * t)?;  // [conv_dim, T] channel-major, SiLU applied
-        e.ssm_conv1d(&conv_in_d, &la.ssm_conv1d.data, &mut conv_out, conv_dim, t, d_conv, true)?;
+        e.ssm_conv1d(&conv_in_d, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv, true)?;
 
         // split conv_out channels into q/k/v and repack to GDN [d_state, num_v, T].
         // conv_out channel c, time tt at c*t + tt. q channels [0,key_dim), k [key_dim,2key_dim), v [2key_dim,conv_dim).
@@ -196,7 +192,7 @@ impl HybridModel {
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
         // gdn_glog expects alpha [H,T] with alpha[t*H+h] and dt_bias/a [H] — matches token-major [T,num_v].
         let mut g_log = e.zeros(t * num_v)?;
-        e.gdn_glog(&alpha, &la.ssm_dt.data, &la.ssm_a.data, &mut g_log, num_v, t)?;
+        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
 
         // GDN scan
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
@@ -209,12 +205,12 @@ impl HybridModel {
         // = [T, num_v*head_v]; per (t, vh) the head_v slice is contiguous -> rows align as (t*num_v+vh).
         // o rows are (t*num_v+vh) too. Good.
         let mut gn = e.zeros(d_state * num_v * t)?;
-        e.gated_rmsnorm(&o, &la.ssm_norm.data, &z, &mut gn, d_state, num_v * t, eps)?;
+        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
 
         // ssm_out projection: gn is [d_state, num_v, T] = [value_dim, T] viewed token-major as [T, value_dim]?
         // gn layout: (t*num_v+vh)*d_state + i  == token t, then (vh,i) = channel vh*d_state+i. That's
         // token-major [T, value_dim]. linear wants [T, in=value_dim]. Good.
-        let out = e.linear(&gn, &la.ssm_out.data, t, value_dim, n_embd)?;
+        let out = e.matmul(&la.ssm_out, &gn, t)?;
         Ok(out)
     }
 }
