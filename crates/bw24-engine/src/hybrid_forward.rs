@@ -104,7 +104,12 @@ impl HybridModel {
 
         // SDPA
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        // hand-written FlashAttention prefill (head_dim 256). BW24_NOFA falls back to naive sdpa.
+        if std::env::var("BW24_NOFA").is_ok() {
+            e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        } else {
+            e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        }
 
         // output gate: attn * sigmoid(gate)
         let mut gsig = e.zeros(t * n_head * head_dim)?;

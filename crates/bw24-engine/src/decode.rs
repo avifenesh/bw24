@@ -124,7 +124,11 @@ impl HybridModel {
         let k_view = e.view(&kvl.k, t_kv * kvl.kv_dim);
         let v_view = e.view(&kvl.v, t_kv * kvl.kv_dim);
         let mut attn = e.zeros(n_head * head_dim)?;
-        e.sdpa_naive_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, 1, t_kv, scale, true)?;
+        if std::env::var("BW24_NOFA").is_ok() {
+            e.sdpa_naive_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, 1, t_kv, scale, true)?;
+        } else {
+            e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale)?;
+        }
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj
