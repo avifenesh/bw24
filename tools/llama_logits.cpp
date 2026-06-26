@@ -18,7 +18,10 @@ int main(int argc, char** argv) {
 
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 999; // full offload to match our GPU path
+    // n_gpu_layers from env LLG_NGL (default 999). For models too big for 24GB (e.g. 35B MoE),
+    // set LLG_NGL=0 to run on CPU and get ground-truth argmax for comparison.
+    const char* ngl_env = getenv("LLG_NGL");
+    mp.n_gpu_layers = ngl_env ? atoi(ngl_env) : 999;
     llama_model* model = llama_model_load_from_file(model_path, mp);
     if (!model) { fprintf(stderr, "load failed\n"); return 1; }
     const llama_vocab* vocab = llama_model_get_vocab(model);
