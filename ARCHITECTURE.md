@@ -120,7 +120,7 @@ Three-tier dispatcher keyed on dtype × regime (M). **(A) BF16/FP16 dense:** def
 
 ## 4. HOW WE BEAT vLLM / SGLang / llama.cpp
 
-Optimized metric (in priority order): **single-stream decode tok/s @ low context → tok/s-per-watt → MoE-with-offload tok/s**. We explicitly **do not** chase high-concurrency batched throughput (the Python engines' mature turf, irrelevant to a single-user laptop).
+Optimized metric (in priority order): **single-stream decode tok/s @ low context → prefill TTFT → MoE-with-offload tok/s**, all at full power. We explicitly **do not** chase high-concurrency batched throughput (the Python engines' mature turf, irrelevant to a single-user laptop), and we de-prioritize tok/s-per-watt (the cap is a patched settings bug, not a silicon envelope — but it stays a secondary reported number since the laptop still cares about heat/battery).
 
 **Edge 1 — Remove the runtime tax (strongest, best-supported).**
 - vs vLLM/SGLang: no Python per-step dispatch, no GC jitter, no mandatory-graph warmup (they suffer 8× without graphs on sm_120), zero per-token FFI crossings. Cold-start latency win is immediate.
@@ -165,7 +165,7 @@ SLRU GPU expert-slot cache + pinned host RAM tier + `io_uring`/mmap NVMe tier + 
 
 ### Phase 5 — FP4/FP8 upside + KV quant + spec decode
 Opt-in NVFP4 dense prefill (vLLM non-TMA kernel) gated behind correctness + microbench; FP8/q8q4 KV quant with per-model numeric gate; ngram/suffix spec decode; structured output (llguidance). Tune tiles/launch params and spill thresholds to this exact part.
-- Gate: best **tok/s-per-watt** of the four engines (Edge 2); prefill TTFT win measured.
+- Gate: prefill TTFT win measured (Edge 2) with block-scaled FP4; tok/s-per-watt reported as secondary.
 
 ### Phase 6 — Hardening + "beats competitors" sign-off
 On-device MoE routing for graphable MoE (the open task); XQA decode upgrade; EAGLE3 spec (if sm_120 kernels verify); full N=5 benchmark suite vs all three engines on the target models. Server polish (OpenAI-compatible, streaming).
