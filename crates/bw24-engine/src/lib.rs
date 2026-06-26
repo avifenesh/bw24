@@ -151,7 +151,11 @@ impl Engine {
     }
 
     /// Stage-B: quantize activation [m,in] f32 -> q8_1 (int8 qs + per-block f32 scale).
-    fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
+    /// Quantize an activation [m, in_f] to q8_1 (int8 qs + per-32 f32 scale). Public so the
+    /// forward can quantize a SHARED activation ONCE and feed it to several matmuls (gate+up
+    /// share `z`; q/k/v and wqkv/gate/beta/alpha share `h`) — quantize_q8_1 was 13.5% of decode
+    /// GPU time, ~half of it redundant re-quantization of the same row.
+    pub fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
                      -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let f = self.func("quantize_q8_1");
         let nblk = in_f / 32;
@@ -171,7 +175,7 @@ impl Engine {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q8_0_dp4a");
         let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
-        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
@@ -185,7 +189,7 @@ impl Engine {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q4_K_dp4a");
         let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
-        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
@@ -199,7 +203,7 @@ impl Engine {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q6_K_dp4a");
         let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
-        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
@@ -238,7 +242,7 @@ impl Engine {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func(name);
         let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
-        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
@@ -372,6 +376,52 @@ impl Engine {
         if let GpuTensor::Quant { scale, .. } = w {
             if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
         }
+        Ok(y)
+    }
+
+    /// True if `w` would take the int8-dp4a fast path under BW24_FAST (so its activation can be
+    /// pre-quantized once and shared across sibling matmuls via `matmul_pre`).
+    pub fn uses_q8_1_fast(&self, w: &crate::model::GpuTensor) -> bool {
+        use crate::model::GpuTensor;
+        if std::env::var("BW24_FAST").is_err() { return false; }
+        match w {
+            GpuTensor::Quant { qtype, .. } => matches!(*qtype,
+                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4)
+                || (*qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok()),
+            GpuTensor::Float { .. } => false,
+        }
+    }
+
+    /// matmul with a PRE-QUANTIZED q8_1 activation (aq,ad from `quantize_q8_1`). Skips the
+    /// per-matmul re-quantize so sibling matmuls that share an input (gate+up share `z`;
+    /// q/k/v + wqkv/gate/beta/alpha share `h`) quantize ONCE. Caller MUST have checked
+    /// `uses_q8_1_fast(w)`; falls back to plain `matmul` otherwise (Stage-A / Float / non-fast).
+    pub fn matmul_pre(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                      x_fallback: &CudaSlice<f32>, m: usize)
+                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if !self.uses_q8_1_fast(w) { return self.matmul(w, x_fallback, m); }
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        let (bytes, qtype, row_bytes, scale) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => unreachable!("uses_q8_1_fast guaranteed Quant"),
+        };
+        let name = match qtype {
+            QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
+            QT_Q6_K => "qmatvec_q6_K_dp4a", QT_Q5_K => "qmatvec_q5_K_dp4a",
+            QT_Q3_K => "qmatvec_q3_K_dp4a", QT_NVFP4 => "qmatvec_nvfp4_dp4a",
+            QT_IQ4_XS => "qmatvec_iq4_XS_dp4a",
+            _ => unreachable!(),
+        };
+        let f = self.func(name);
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
         Ok(y)
     }
 

@@ -36,8 +36,14 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let gate = e.matmul(ffn_gate, &z, 1)?;
-                    let up = e.matmul(ffn_up, &z, 1)?;
+                    // gate and up share input `z` (in_f = n_embd) — quantize q8_1 ONCE, feed both,
+                    // instead of re-quantizing the identical row twice (quantize_q8_1 was 13.5% of decode).
+                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
+                    } else {
+                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
+                    };
                     let mut act = e.zeros(n_ff)?;
                     e.silu_mul(&gate, &up, &mut act, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
@@ -89,13 +95,18 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
+        // wq|wk|wv all take the same input `h` (in_f = n_embd) — quantize q8_1 ONCE, feed all three.
+        let n_embd = cfg.n_embd as usize;
+        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
+        } else {
+            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
+        };
         // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
-        let qf = e.matmul(&fa.wq, h, 1)?;
         let mut q = e.zeros(n_head * head_dim)?;
         let mut gate = e.zeros(n_head * head_dim)?;
         e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
-        let mut k = e.matmul(&fa.wk, h, 1)?;
-        let v = e.matmul(&fa.wv, h, 1)?;
 
         // QK-norm + RoPE at position `pos`
         let mut qn = e.zeros(n_head * head_dim)?;
@@ -153,11 +164,18 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
         let pad = d_conv - 1;
 
-        // projections (T=1)
-        let qkv_mixed = e.matmul(&la.wqkv, h, 1)?;     // [conv_dim] (token-major, single token)
-        let z = e.matmul(&la.wqkv_gate, h, 1)?;        // [value_dim]
-        let beta_raw = e.matmul(&la.ssm_beta, h, 1)?;  // [num_v]
-        let alpha = e.matmul(&la.ssm_alpha, h, 1)?;    // [num_v]
+        // projections (T=1): wqkv, wqkv_gate, ssm_beta, ssm_alpha ALL take input `h` (in_f = n_embd)
+        // -> quantize q8_1 ONCE, feed all four (was 4x redundant quantize_q8_1 of the same row).
+        let n_embd = cfg.n_embd as usize;
+        let (qkv_mixed, z, beta_raw, alpha) = if e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
+            && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha) {
+            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+            (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?,
+             e.matmul_pre(&la.ssm_beta, &hq, &hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, &hq, &hd, h, 1)?)
+        } else {
+            (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?,
+             e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
+        };
 
         // conv input = [conv_state (pad cols) | new col]  channel-major [conv_dim, pad+1].
         // Assemble + roll the ring ON-DEVICE from the resident conv_state (no dtoh/host-loop/htod).
