@@ -526,4 +526,31 @@ mod tests {
     fn dequant_q5_k_vec(r: &[u8], n: usize) -> Vec<f32> { let mut o = vec![0f32; n]; super::dequant_q5_k(r, n, &mut o); o }
     fn dequant_q3_k_vec(r: &[u8], n: usize) -> Vec<f32> { let mut o = vec![0f32; n]; super::dequant_q3_k(r, n, &mut o); o }
     fn dequant_nvfp4_vec(r: &[u8], n: usize) -> Vec<f32> { let mut o = vec![0f32; n]; super::dequant_nvfp4(r, n, &mut o); o }
+
+    /// Oracle test: diff bw24 IQ3_S CPU dequant against ggml dequantize_row_iq3_s output
+    /// on a REAL tensor (blk.0.ffn_gate_exps.weight from the 35B-MoE IQ4_XS gguf).
+    /// The C++ harness (/tmp/iq3s_oracle) dumped /tmp/iq3s_raw.bin + /tmp/iq3s_ggml.bin.
+    #[test]
+    fn iq3s_vs_ggml_oracle() {
+        let raw = match std::fs::read("/tmp/iq3s_raw.bin") {
+            Ok(r) => r,
+            Err(_) => { eprintln!("SKIP: /tmp/iq3s_raw.bin missing"); return; }
+        };
+        let oracle_bytes = std::fs::read("/tmp/iq3s_ggml.bin").expect("ggml oracle");
+        let n = oracle_bytes.len() / 4;
+        let oracle: Vec<f32> = oracle_bytes.chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        assert_eq!(raw.len(), (n / 256) * 110, "raw byte count");
+        let got = dequantize(GgmlType::IQ3_S, &raw, n);
+        let mut max_abs = 0f32;
+        let mut nmis = 0usize;
+        for i in 0..n {
+            let d = (got[i] - oracle[i]).abs();
+            if d > max_abs { max_abs = d; }
+            if d > 1e-4 { nmis += 1; if nmis <= 5 { eprintln!("mismatch i={i} got={} oracle={}", got[i], oracle[i]); } }
+        }
+        eprintln!("IQ3_S oracle: n={n} max_abs_diff={max_abs} mismatches={nmis}");
+        assert_eq!(nmis, 0, "IQ3_S CPU dequant diverges from ggml");
+        assert!(max_abs < 1e-4, "max abs diff {max_abs} exceeds 1e-4");
+    }
 }

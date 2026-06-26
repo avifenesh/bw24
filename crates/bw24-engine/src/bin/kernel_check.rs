@@ -287,6 +287,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- 5 new dtypes: GPU qmatvec vs bw24 CPU-dequant oracle on REAL daily-GGUF tensors. ---
+    // Oracle = cpu_linear(bw24_dequant(W), x); bw24's CPU dequant is byte-for-byte == ggml
+    // dequantize_row_<type> (proven in bw24-gguf example dequant_oracle_diff), so this gates
+    // the GPU paths against ggml ground truth transitively. Mirrors the Q4_K/Q6_K block above:
+    //   Stage-A (dequant-in-kernel) rel < 1e-4 ; Stage-B (int8 dp4a) rel < 3e-2.
+    // IQ3_S has NO dp4a fast path (intentional, see lib.rs) -> Stage-A only.
+    // Skips silently if a daily GGUF is absent so the core gate still runs in CI without models.
+    {
+        use bw24_gguf::{GgufFile, GgmlType, dequant};
+        use bw24_runtime::cpu_linear;
+        const GGUF_9B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
+        const GGUF_35B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
+        // (gguf, tensor, expected type, QT code, fast-path selector or "" for Stage-A only)
+        let cases: [(&str, &str, GgmlType, i32, &str); 5] = [
+            (GGUF_9B,  "blk.0.ffn_gate.weight",      GgmlType::NVFP4,  bw24_engine::QT_NVFP4,  "nvfp4"),
+            (GGUF_9B,  "blk.0.attn_gate.weight",     GgmlType::Q5_K,   bw24_engine::QT_Q5_K,   "q5k"),
+            (GGUF_35B, "blk.0.ffn_gate_exps.weight", GgmlType::IQ3_S,  bw24_engine::QT_IQ3_S,  ""),
+            (GGUF_35B, "blk.0.ffn_down_exps.weight", GgmlType::IQ4_XS, bw24_engine::QT_IQ4_XS, "iq4xs"),
+            (GGUF_35B, "blk.40.ffn_gate_exps.weight",GgmlType::Q3_K,   bw24_engine::QT_Q3_K,   "q3k"),
+        ];
+        for (path, tname, gty, qt, sel) in cases {
+            if !std::path::Path::new(path).exists() {
+                println!("dtype5 {gty:?} {tname}: GGUF absent ({path}) — SKIP");
+                continue;
+            }
+            let g = GgufFile::open(path)?;
+            let t = match g.find(tname) {
+                Some(t) if t.ggml_type == gty => t,
+                Some(t) => { println!("dtype5 {tname}: type {:?} != {gty:?}", t.ggml_type); fails += 1; continue; }
+                None => { println!("dtype5 {tname}: NOT FOUND in {path}"); fails += 1; continue; }
+            };
+            // in_f = ne[0] (K dim); out_f = ne[1] (rows). For 3D MoE tensors validate expert 0.
+            let in_f = t.ne[0] as usize;
+            let out_f = t.ne[1] as usize;
+            let raw_all = g.tensor_data(t);
+            let n_experts = if t.ne.len() >= 3 { t.ne[2] as usize } else { 1 };
+            let total_rows = out_f * n_experts;
+            let row_bytes = raw_all.len() / total_rows;
+            let raw = &raw_all[..out_f * row_bytes]; // expert 0 slice
+            let w_f32 = dequant::dequantize(gty, raw, in_f * out_f);
+            let m = 2usize;
+            let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 61) * 0.1).collect();
+            let cpu = cpu_linear(&x, &w_f32, m, in_f, out_f);
+            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1.0);
+            let wd = e.htod_bytes(raw)?; let xd = e.htod(&x)?;
+            // Stage-A: dequant-in-kernel qmatvec (float-noise exact).
+            let ya = e.dtoh(&e.qmatvec(&wd, &xd, m, in_f, out_f, qt, row_bytes)?)?;
+            let rela = maxdiff(&cpu, &ya) / scale;
+            println!("dtype5 [{gty:?}] {tname} (in={in_f} out={out_f}) Stage-A: rel={rela:.2e} {}",
+                     if rela < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+            // Stage-B: int8 dp4a fast path (int8-activation tolerance), where one exists.
+            if sel.is_empty() {
+                println!("dtype5 [{gty:?}] {tname} Stage-B dp4a: (no fast path — Stage-A only)");
+            } else {
+                let yb = match sel {
+                    "nvfp4" => e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)?,
+                    "q5k"   => e.dtoh(&e.qmatvec_q5_K_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)?,
+                    "iq4xs" => e.dtoh(&e.qmatvec_iq4_XS_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)?,
+                    "q3k"   => e.dtoh(&e.qmatvec_q3_K_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)?,
+                    _ => unreachable!(),
+                };
+                let relb = maxdiff(&cpu, &yb) / scale;
+                println!("dtype5 [{gty:?}] {tname} Stage-B dp4a: rel={relb:.2e} {}",
+                         if relb < 3e-2 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+
     // --- FlashAttention prefill + decode vs CPU SDPA oracle (head_dim 256, GQA 16/4, causal) ---
     {
         let (hd, nh, nhkv) = (256usize, 16usize, 4usize);
