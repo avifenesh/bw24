@@ -287,6 +287,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- FlashAttention prefill + decode vs CPU SDPA oracle (head_dim 256, GQA 16/4, causal) ---
+    {
+        let (hd, nh, nhkv) = (256usize, 16usize, 4usize);
+        let scale = 1.0 / (hd as f32).sqrt();
+        // CPU SDPA reference (same convention as sdpa_naive: q_pos=(T_kv-T)+qt).
+        let cpu_sdpa = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+            let mut o = vec![0f32; hd * nh * t];
+            for head in 0..nh {
+                let kvh = head / (nh / nhkv);
+                for qt in 0..t {
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nh + head) * hd..][..hd];
+                    let mut sc = vec![0f32; tkv];
+                    for tk in 0..tkv {
+                        let kv = &k[(tk * nhkv + kvh) * hd..][..hd];
+                        let mut a = 0.0; for d in 0..hd { a += qv[d] * kv[d]; }
+                        a *= scale; if tk > q_pos { a = -1e30; } sc[tk] = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nh + head) * hd..][..hd];
+                    for d in 0..hd { let mut a = 0.0; for tk in 0..tkv { a += sc[tk] * v[(tk*nhkv+kvh)*hd+d]; } ov[d] = a; }
+                }
+            }
+            o
+        };
+        // prefill cases
+        for (t, tkv) in [(16usize, 16usize), (64, 64), (100, 100), (256, 256)] {
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let cpu = cpu_sdpa(&q,&k,&v,t,tkv);
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?; let mut od=e.zeros(hd*nh*t)?;
+            e.fa_prefill(&qd,&kd,&vd,&mut od,hd,nh,nhkv,t,tkv,scale,true)?;
+            let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
+            let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+            println!("fa_prefill T={t} Tkv={tkv}: rel={rel:.2e} {}", if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+        }
+        // decode cases (T=1)
+        for tkv in [64usize, 128, 257] {
+            let q: Vec<f32> = (0..hd*nh).map(|i| pr(i+1)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let cpu = cpu_sdpa(&q,&k,&v,1,tkv);
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?; let mut od=e.zeros(hd*nh)?;
+            let kview=e.view(&kd, hd*nhkv*tkv); let vview=e.view(&vd, hd*nhkv*tkv);
+            e.fa_decode(&qd,&kview,&vview,&mut od,hd,nh,nhkv,tkv,scale)?;
+            let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
+            let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+            println!("fa_decode  Tkv={tkv}: rel={rel:.2e} {}", if rel<5e-3 {"OK"} else {fails+=1;"FAIL"});
+        }
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

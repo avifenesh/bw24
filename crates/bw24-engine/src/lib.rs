@@ -17,6 +17,7 @@ pub mod decode;
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
 const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
+const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
 
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
@@ -29,6 +30,7 @@ pub struct Engine {
     module: Arc<CudaModule>,
     hybrid: Arc<CudaModule>,
     qmatvec: Arc<CudaModule>,
+    flash: Arc<CudaModule>,
 }
 
 impl Engine {
@@ -37,7 +39,8 @@ impl Engine {
         let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
-        Ok(Self { gpu, module, hybrid, qmatvec })
+        let flash = gpu.ctx.load_module(Ptx::from_file(FLASH_FATBIN_PATH))?;
+        Ok(Self { gpu, module, hybrid, qmatvec, flash })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
@@ -46,6 +49,7 @@ impl Engine {
         self.module.load_function(name)
             .or_else(|_| self.hybrid.load_function(name))
             .or_else(|_| self.qmatvec.load_function(name))
+            .or_else(|_| self.flash.load_function(name))
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
     }
 
@@ -294,6 +298,55 @@ impl Engine {
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Hand-written FlashAttention prefill (sm_120, FA-2 online softmax on validated mma.sync,
+    /// head_dim 256, GQA, causal). Replaces sdpa_naive for T>1. Q/K/V/O [head_dim, n_head(_kv), T].
+    pub fn fa_prefill(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                      o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
+                      t: usize, t_kv: usize, scale: f32, causal: bool)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        const M_ROWS: usize = 16; const BK: usize = 64;
+        let f = self.func("fa_prefill_f32");
+        // smem: bf16*(M*hd + 2*BK*hd + M*BK) + f32*(M*hd + M*BK + 2*M)
+        let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
+                   + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32 + 15) / 16, n_head as u32, 1),
+            block_dim: (32, 1, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// FA decode (T=1 split-K) over resident KV CudaViews. Replaces sdpa_naive_view for decode.
+    pub fn fa_decode(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<f32>,
+                     v: &cudarc::driver::CudaView<f32>, o: &mut CudaSlice<f32>,
+                     head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let n_splits = ((t_kv + 255) / 256).max(1);
+        let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
+        let mut part_m = self.zeros(n_head * n_splits)?;
+        let mut part_l = self.zeros(n_head * n_splits)?;
+        let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
+        let f = self.func("fa_decode_f32");
+        let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp);
+        unsafe { b.launch(cfg)?; }
+        let fc = self.func("fa_decode_combine_f32");
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
 
