@@ -34,25 +34,35 @@ All measured on-device 2026-06-26 (CUDA 13.1 nvcc, driver 595) by compiling/runn
 These are HARD: wgmma/tcgen05 are absent because those tensor-core *generations don't exist on
 sm_120 silicon*. No ptxas/CUDA version can add them. The dtype MMAs that pass are the real ISA.
 
+All re-tested with the CORRECT `-gencode arch=compute_120a,code=sm_120a` flag (the bare
+`-arch=sm_120a` shortcut produced false-negatives on block-scale — see gotcha below).
+
 | Feature | sm_120 silicon | Evidence |
 |---|---|---|
 | FP16/BF16 `mma.sync.m16n8k16` | ✅ executes | ran on GPU |
-| FP8 `mma.sync.m16n8k32` e4m3 + e5m2 | ✅ executes | ran on GPU |
-| FP4 e2m1 block-scale `mma.sync.m16n8k64.kind::mxf4.block_scale.scale_vec::2X...ue8m0` | ✅ executes | assembled to cubin |
-| `wgmma` (Hopper warpgroup MMA) | ❌ **absent** | ptxas: "not supported" — silicon lacks it |
-| `tcgen05.mma` (datacenter 5th-gen TC + tmem) | ❌ **absent** | sm_100-only silicon feature |
+| FP8 `mma.sync.m16n8k32` e4m3 + e5m2 (plain) | ✅ executes | ran on GPU |
+| **FP4 e2m1 block-scale** `mma.sync.m16n8k64.kind::mxf4.block_scale.scale_vec::2X..ue8m0` | ✅ **executes** | ran on GPU (correct flag) |
+| **FP8/6/4 block-scale** `mma.sync.m16n8k32.kind::mxf8f6f4.block_scale..ue8m0` | ✅ **executes** | ran on GPU |
+| NVFP4 unified `kind::mxf4nvf4.scale_vec::4X..e4m3` | ⚠️ my PTX form rejected ("incorrect instruction type") — syntax/operand layout, not silicon; CUTLASS SM120 NVFP4 kernels exist (vLLM uses them). Re-derive operand form. |
+| `wgmma` (Hopper warpgroup MMA) | ❌ **absent** | ptxas rejects even w/ correct flag — silicon lacks it |
+| `tcgen05.mma` (datacenter 5th-gen TC + tmem) | ❌ **absent** | ptxas rejects even w/ correct flag — sm_100-only silicon |
 | TMA `cp.async.bulk` | ✅ present | instruction accepted |
 
 ### Measured compute peaks (tensor core, this GPU)
 
-| dtype | measured peak | ratio | crossover AI (vs 829 GB/s) |
+| dtype (FP32 accumulate) | measured peak | ratio vs FP16 | crossover AI (vs 829 GB/s) |
 |---|---|---|---|
 | FP16/BF16 mma | **117 TFLOP/s** | 1.0x | ~141 FLOP/byte |
-| FP8 e4m3 mma | **219 TFLOP/s** | 1.88x | ~264 FLOP/byte |
-| FP4 e2m1 (block-scale) | ~**440 TFLOP/s** (est, ≈2x FP8; bench pending) | ~3.8x | ~530 FLOP/byte |
+| FP8 e4m3 **plain** mma | **219 TFLOP/s** | 1.88x | ~264 FLOP/byte |
+| FP8 **block-scale** (mxf8f6f4) | **381 TFLOP/s** | 3.26x | ~460 FLOP/byte |
+| FP4 e2m1 **block-scale** (mxf4) | **762 TFLOP/s** | 6.52x | ~920 FLOP/byte |
 
-(Microbench = tight independent-mma loop, 2 accumulators, 82×4 blocks. Real GEMM hits ~70-85% of
-this with good tiling. Sparsity 2:4 could ~2x again — to verify.)
+(Microbench = tight independent-mma issue loop, 2 accumulators, 82×4 blocks — upper bound on
+issue rate. Real GEMM hits ~70-85% with good tiling. Internally consistent: plain vs block FP8
+have identical FLOP/instr yet block runs 1.74x faster → block-scale lifts the FP32-accumulate
+throttle. KEY FINDING: the **block-scaled** path (mxf8f6f4/mxf4) IS a genuine compute win, NOT
+just a bytes-saver. This refutes the "FP8≈FP16, FP4 no compute win" claim — that holds only for
+the *plain* (non-block-scale) mma path. Sparsity 2:4 may ~2x again — to verify.)
 
 ### THE architecture-defining conclusions (from hard facts)
 
@@ -60,12 +70,14 @@ this with good tiling. Sparsity 2:4 could ~2x again — to verify.)
    NOT the Hopper/datacenter (wgmma/tcgen05/tmem) model.**
    - ❌ CUTLASS **sm_100** kernels and **FlashAttention-3** (both wgmma/tcgen05) WILL NOT RUN.
      → use CUTLASS **SM120 collectives** (warp-MMA + block-scale FP4) and FA-2-style `mma.sync` attention.
-   - ✅ FP4 (nvfp4/mxfp4) hardware block-scale MMA present → headline weapon: ~3.8x FP16 compute AND 4x
-     smaller weights → fits big models in 24GB AND moves 4x fewer bytes.
+   - ✅ FP4 (mxfp4) hardware block-scale MMA present → headline weapon: **6.5x FP16 compute** (762 TFLOP/s)
+     AND 4x smaller weights → fits big models in 24GB AND moves 4x fewer bytes. Block-scaled FP8 = 381 (3.26x).
 
-2. **Everything in decode is bandwidth-bound.** Decode arithmetic intensity ≈ 1-2 FLOP/byte; crossover
-   to compute-bound is 141 (FP16) / 264 (FP8) / 530 (FP4) FLOP/byte. So single-stream decode speed is
-   set ENTIRELY by bytes-moved-per-token, i.e. weight + KV quant. Low-bit wins by shrinking bytes, not FLOPs.
+2. **Everything in DECODE is bandwidth-bound.** Decode arithmetic intensity ≈ 1-2 FLOP/byte; crossover
+   to compute-bound is 141 (FP16) / 460 (block-FP8) / 920 (block-FP4) FLOP/byte. So single-stream decode
+   speed is set ENTIRELY by bytes-moved-per-token (weight + KV quant). Low-bit wins decode by shrinking
+   bytes, not FLOPs. BUT **PREFILL / large-batch is compute-bound** → there block-scaled FP4/FP8 is a real
+   6.5x/3.3x compute lever (TTFT, batched throughput, and block-scaled attention QK/PV mainloops).
    - Beat-target anchor: 7B Q4 (~3.8 GB) → **~218 tok/s** single-stream ceiling (829/3.8).
    - Only large-batch prefill / many concurrent requests push into compute-bound, where FP4 TFLOPs matter.
 
