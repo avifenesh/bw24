@@ -43,7 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     e.stream().synchronize()?;
     let dt = t0.elapsed().as_secs_f64();
-    println!("generated {} tokens in {:.3}s = {:.2} tok/s (Stage-A f32-dequant decode)", n_new, dt, n_new as f64 / dt);
+    let path = if std::env::var("BW24_FAST").is_ok() { "Stage-B int8 dp4a" } else { "Stage-A f32-dequant" };
+    println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode)", n_new, dt, n_new as f64 / dt);
     println!("tokens: {out:?}");
     Ok(())
 }

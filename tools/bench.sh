@@ -99,11 +99,13 @@ run_bw24() {  # $1=label  $2=model
       | grep -oE "[0-9.]+ tok/s" | grep -oE "[0-9.]+" | head -1
   done | median | awk '{print "  bw24 decode median: " $1 " tok/s (no-spec, native KV)"}'
 }
-# 9B Q8_0 is the validated daily path today (NVFP4 dtype gate is ROADMAP debt).
-run_bw24 "9B Q8_0" "$M9_Q8"
-# Uncomment once the NVFP4 dequant validation gate passes (ROADMAP next workflow):
-# run_bw24 "9B NVFP4"  "$M9_NVFP4"
-# run_bw24 "27B NVFP4" "$M27_NVFP4"
+# bw24 runs the fast int8-dp4a path under BW24_FAST (Stage-B). Q6_K dp4a fixed (commit 11bcc84)
+# so 9B-NVFP4 (Q6_K lm_head) now argmax=268 == llama.cpp. NVFP4 decode is currently ALU-bound
+# (~19% of 164 tok/s ceiling) — codebook-lookup kernel is the open perf debt, not correctness.
+export BW24_FAST=1
+run_bw24 "9B Q8_0"  "$M9_Q8"
+run_bw24 "9B NVFP4" "$M9_NVFP4"
+run_bw24 "27B NVFP4" "$M27_NVFP4"
 
 # ------------------------------------------------------------------ #
 # 4. vLLM + 5. SGLang — RUN SERIALLY (printed; not auto-run: init race)#
