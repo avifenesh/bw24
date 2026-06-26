@@ -15,6 +15,9 @@ use memmap2::Mmap;
 
 pub mod dequant;
 pub mod config;
+pub mod safetensors;
+pub mod hf_mapping;
+pub mod source;
 
 pub const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
 pub const GGUF_DEFAULT_ALIGNMENT: u64 = 32;

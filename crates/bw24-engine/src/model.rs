@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
+use bw24_gguf::source::{TensorSource, GgufSource};
 use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
@@ -21,11 +22,17 @@ impl GpuTensor {
     pub fn in_features(&self) -> usize { self.ne()[0] as usize }
     pub fn out_features(&self) -> usize { self.ne()[1] as usize }
 
-    /// Load a tensor, keeping quant types packed and float types as f32.
+    /// Load a tensor, keeping quant types packed and float types as f32. (GGUF entry point —
+    /// thin wrapper over the source-agnostic `load_from_source`; behavior is unchanged.)
     pub fn load(e: &Engine, g: &GgufFile, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let t = g.find(name).unwrap_or_else(|| panic!("missing tensor {name}"));
-        let raw = g.tensor_data(t);
-        let qtype = match t.ggml_type {
+        Self::load_from_source(e, &GgufSource(g), name)
+    }
+
+    /// Source-agnostic load: works from any `TensorSource` (GGUF or safetensors). The engine's
+    /// forward graph only ever asks for ggml-style names; the source maps them to its own layout.
+    pub fn load_from_source(e: &Engine, src: &dyn TensorSource, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let v = src.find(name).unwrap_or_else(|| panic!("missing tensor {name}"));
+        let qtype = match v.ggml_type {
             GgmlType::Q8_0 => Some(QT_Q8_0),
             GgmlType::Q4_K => Some(QT_Q4_K),
             GgmlType::Q6_K => Some(QT_Q6_K),
@@ -34,36 +41,41 @@ impl GpuTensor {
             GgmlType::IQ4_XS => Some(QT_IQ4_XS),
             GgmlType::IQ3_S => Some(QT_IQ3_S),
             GgmlType::NVFP4 => Some(QT_NVFP4),
+            // F32/F16/BF16 (the dtypes safetensors carries) -> Float path below.
             _ => None,
         };
         match qtype {
             Some(qt) => {
-                let out_f = t.ne[1] as usize;
-                let row_bytes = raw.len() / out_f;
+                let out_f = v.ne[1] as usize;
+                let row_bytes = v.bytes.len() / out_f;
                 // NVFP4 two-level scale: per-16 ue4m3 micro-scale is in the dequant; the per-tensor
                 // F32 macro-scale lives in a sibling "<stem>.scale" tensor, applied POST-matmul
                 // (llama build_lora_mm: ggml_mul(res, w_s)). ".input_scale" is the W4A4 activation
                 // scale — UNUSED on our W4A16/f32 path. Only NVFP4 carries it; others -> 1.0 (no-op).
                 let scale = if qt == QT_NVFP4 {
                     let stem = name.strip_suffix(".weight").unwrap_or(name);
-                    match g.find(&format!("{stem}.scale")) {
-                        Some(st) => f32::from_le_bytes(g.tensor_data(st)[..4].try_into().unwrap()),
+                    match src.find(&format!("{stem}.scale")) {
+                        Some(sv) => f32::from_le_bytes(sv.bytes[..4].try_into().unwrap()),
                         None => 1.0,
                     }
                 } else { 1.0 };
-                Ok(GpuTensor::Quant { bytes: e.htod_bytes(raw)?, qtype: qt, row_bytes, ne: t.ne.clone(), scale })
+                Ok(GpuTensor::Quant { bytes: e.htod_bytes(v.bytes)?, qtype: qt, row_bytes, ne: v.ne.clone(), scale })
             }
             None => {
                 // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.
-                let n = t.n_elements() as usize;
-                let f32v = dequant::dequantize(t.ggml_type, raw, n);
-                Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: t.ne.clone() })
+                let n: u64 = v.ne.iter().product();
+                let f32v = dequant::dequantize(v.ggml_type, v.bytes, n as usize);
+                Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: v.ne.clone() })
             }
         }
     }
 
     pub fn load_opt(e: &Engine, g: &GgufFile, name: &str) -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        match g.find(name) { Some(_) => Ok(Some(Self::load(e, g, name)?)), None => Ok(None) }
+        Self::load_opt_from_source(e, &GgufSource(g), name)
+    }
+
+    pub fn load_opt_from_source(e: &Engine, src: &dyn TensorSource, name: &str) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        if src.has(name) { Ok(Some(Self::load_from_source(e, src, name)?)) } else { Ok(None) }
     }
 
     /// Accessor for tensors that MUST be f32 (norm weights). Panics if quantized.
@@ -88,8 +100,11 @@ pub struct EmbedHost {
 }
 impl EmbedHost {
     pub fn from_gguf(g: &GgufFile, name: &str) -> Self {
-        let t = g.find(name).unwrap_or_else(|| panic!("missing embed {name}"));
-        EmbedHost { raw: g.tensor_data(t).to_vec(), ggml_type: t.ggml_type, n_embd: t.ne[0] as usize }
+        Self::from_source(&GgufSource(g), name)
+    }
+    pub fn from_source(src: &dyn TensorSource, name: &str) -> Self {
+        let v = src.find(name).unwrap_or_else(|| panic!("missing embed {name}"));
+        EmbedHost { raw: v.bytes.to_vec(), ggml_type: v.ggml_type, n_embd: v.ne[0] as usize }
     }
     /// Gather rows for tokens -> [T, n_embd] f32. Dequant per-row from raw bytes.
     pub fn gather(&self, n_embd: usize, tokens: &[u32]) -> Vec<f32> {
@@ -114,36 +129,43 @@ pub struct Model {
 }
 
 impl Model {
-    /// Load a dense (vanilla-transformer) model. Panics if the arch has SSM/MoE layers
-    /// (those need the hybrid/MoE path, not yet wired).
+    /// Load a dense (vanilla-transformer) model from GGUF. Thin wrapper over
+    /// `load_dense_from_source`. Panics if the arch has SSM/MoE layers.
     pub fn load_dense(e: &Engine, g: &GgufFile) -> Result<Self, Box<dyn std::error::Error>> {
-        let cfg = ModelConfig::from_gguf(g);
+        Self::load_dense_from_source(e, &GgufSource(g))
+    }
+
+    /// Load a dense model from any `TensorSource` — GGUF or a safetensors HF checkpoint.
+    /// The whole loop speaks ggml names; the source maps them. Panics on SSM/MoE arches.
+    pub fn load_dense_from_source(e: &Engine, src: &dyn TensorSource) -> Result<Self, Box<dyn std::error::Error>> {
+        let cfg = src.config();
         assert!(cfg.full_attention_interval == 0, "model has linear-attn layers; use hybrid path");
         assert!(cfg.moe.is_none(), "model is MoE; use MoE path");
 
-        let embd = EmbedHost::from_gguf(g, "token_embd.weight");
-        let output_norm = GpuTensor::load(e, g, "output_norm.weight")?;
+        let embd = EmbedHost::from_source(src, "token_embd.weight");
+        let output_norm = GpuTensor::load_from_source(e, src, "output_norm.weight")?;
         // tied embeddings: fall back to tok_embd if output.weight absent
-        let output = match g.find("output.weight") {
-            Some(_) => GpuTensor::load(e, g, "output.weight")?,
-            None => GpuTensor::load(e, g, "token_embd.weight")?,
+        let output = if src.has("output.weight") {
+            GpuTensor::load_from_source(e, src, "output.weight")?
+        } else {
+            GpuTensor::load_from_source(e, src, "token_embd.weight")?
         };
 
         let mut layers = Vec::with_capacity(cfg.n_layer as usize);
         for il in 0..cfg.n_layer {
             let p = |s: &str| format!("blk.{il}.{s}");
             layers.push(Layer {
-                attn_norm: GpuTensor::load(e, g, &p("attn_norm.weight"))?,
-                wq: GpuTensor::load(e, g, &p("attn_q.weight"))?,
-                wk: GpuTensor::load(e, g, &p("attn_k.weight"))?,
-                wv: GpuTensor::load(e, g, &p("attn_v.weight"))?,
-                wo: GpuTensor::load(e, g, &p("attn_output.weight"))?,
-                q_norm: GpuTensor::load_opt(e, g, &p("attn_q_norm.weight"))?,
-                k_norm: GpuTensor::load_opt(e, g, &p("attn_k_norm.weight"))?,
-                ffn_norm: GpuTensor::load(e, g, &p("ffn_norm.weight"))?,
-                ffn_gate: GpuTensor::load(e, g, &p("ffn_gate.weight"))?,
-                ffn_up: GpuTensor::load(e, g, &p("ffn_up.weight"))?,
-                ffn_down: GpuTensor::load(e, g, &p("ffn_down.weight"))?,
+                attn_norm: GpuTensor::load_from_source(e, src, &p("attn_norm.weight"))?,
+                wq: GpuTensor::load_from_source(e, src, &p("attn_q.weight"))?,
+                wk: GpuTensor::load_from_source(e, src, &p("attn_k.weight"))?,
+                wv: GpuTensor::load_from_source(e, src, &p("attn_v.weight"))?,
+                wo: GpuTensor::load_from_source(e, src, &p("attn_output.weight"))?,
+                q_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_q_norm.weight"))?,
+                k_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_k_norm.weight"))?,
+                ffn_norm: GpuTensor::load_from_source(e, src, &p("ffn_norm.weight"))?,
+                ffn_gate: GpuTensor::load_from_source(e, src, &p("ffn_gate.weight"))?,
+                ffn_up: GpuTensor::load_from_source(e, src, &p("ffn_up.weight"))?,
+                ffn_down: GpuTensor::load_from_source(e, src, &p("ffn_down.weight"))?,
             });
         }
         Ok(Model { cfg, embd, output_norm, output, layers })
