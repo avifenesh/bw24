@@ -264,6 +264,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("qmatvec_q8_0_fast vs Stage-A: rel={rel:.2e} {}", if rel < 3e-2 { "OK" } else { fails += 1; "FAIL" });
             println!("  (ya[0..3]={:?} yb[0..3]={:?})", &ya[..3], &yb[..3]);
         }
+        // Q4_K + Q6_K fast paths vs Stage-A oracle (int8-act tolerance).
+        for (tname, qt) in [("blk.0.attn_q.weight", bw24_engine::QT_Q4_K),
+                            ("blk.0.attn_v.weight", bw24_engine::QT_Q6_K),
+                            ("output.weight", bw24_engine::QT_Q6_K)] {
+            if let Some(t) = g.find(tname) {
+                let gt = match t.ggml_type { GgmlType::Q4_K => bw24_engine::QT_Q4_K, GgmlType::Q6_K => bw24_engine::QT_Q6_K, _ => continue };
+                if gt != qt { continue; }
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let m = 2usize;
+                let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 51) * 0.1).collect();
+                let wd = e.htod_bytes(raw)?; let xd = e.htod(&x)?;
+                let ya = e.dtoh(&e.qmatvec(&wd, &xd, m, in_f, out_f, gt, row_bytes)?)?;
+                let yb = if gt == bw24_engine::QT_Q4_K { e.dtoh(&e.qmatvec_q4_K_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)? }
+                         else { e.dtoh(&e.qmatvec_q6_K_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)? };
+                let d = maxdiff(&ya, &yb);
+                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = d / scale;
+                println!("{tname} [{:?}] fast vs Stage-A: rel={rel:.2e} {}", t.ggml_type, if rel < 3e-2 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
     }
 
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }

@@ -165,6 +165,131 @@ extern "C" __global__ void qmatvec_q8_0_dp4a(
     }
 }
 
+// Q4_K decode MMVQ (int8 dp4a). Min-offset via the q8_1 activation-sum term.
+// y = sum_subblock [ d*sc*d8*dp4a(nibble,a) - dmin*m*d8*sum(a) ]. d/dmin folded PER sub-block
+// (a thread's stripe crosses superblocks). Nibble scheme matches deq_q4_k oracle.
+extern "C" __global__ void qmatvec_q4_K_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;                 // total 32-blocks per row
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 144;
+        float d_sb    = half_to_float(*(const unsigned short*)b);
+        float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+        const unsigned char* scales = b + 4;
+        const unsigned char* qs     = b + 16;
+        unsigned char sc, mn;
+        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+        int chunk = grp >> 1;
+        const unsigned char* q = qs + chunk * 32;
+        bool hi = (grp & 1);
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        int sumi_d = 0, sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int wpack;
+            if (!hi) wpack = (q[k*4] & 0x0F) | ((q[k*4+1] & 0x0F) << 8)
+                           | ((q[k*4+2] & 0x0F) << 16) | ((q[k*4+3] & 0x0F) << 24);
+            else     wpack = (q[k*4] >> 4)   | ((q[k*4+1] >> 4)   << 8)
+                           | ((q[k*4+2] >> 4)   << 16) | ((q[k*4+3] >> 4)   << 24);
+            int a = aq4[k];
+            sumi_d   = dp4a(wpack, a, sumi_d);
+            sumi_sum = dp4a(0x01010101, a, sumi_sum);
+        }
+        float d8 = adrow[g];
+        acc += d_sb   * (float)((int)sc * sumi_d) * d8
+             - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
+// Q6_K decode MMVQ (symmetric, no min). w=(ql|qh<<4)-32 signed; per-16 signed scales; fp16 d.
+// Matches deq_q6_k oracle: n=grp>>2 half, run=grp&3, is=run*2+(il>>4).
+extern "C" __global__ void qmatvec_q6_K_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 210;
+        const unsigned char* ql = b;
+        const unsigned char* qh = b + 128;
+        const signed char*   scales = (const signed char*)(b + 192);
+        float d = half_to_float(*(const unsigned short*)(b + 208));
+        int n   = grp >> 2;
+        int run = grp & 3;
+        const unsigned char* qlh = ql + n * 64;
+        const unsigned char* qhh = qh + n * 32;
+        const signed char*   scn = scales + n * 8;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        int is0 = run * 2 + 0;
+        int is1 = run * 2 + 1;
+        int sumi0 = 0, sumi1 = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int wpack = 0;
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int il = k * 4 + e;
+                int ql_bits, qh_bits;
+                switch (run) {
+                    case 0: ql_bits = qlh[il]      & 0xF; qh_bits = (qhh[il] >> 0) & 3; break;
+                    case 1: ql_bits = qlh[il + 32] & 0xF; qh_bits = (qhh[il] >> 2) & 3; break;
+                    case 2: ql_bits = qlh[il]      >> 4;  qh_bits = (qhh[il] >> 4) & 3; break;
+                    default:ql_bits = qlh[il + 32] >> 4;  qh_bits = (qhh[il] >> 6) & 3; break;
+                }
+                int w = (ql_bits | (qh_bits << 4)) - 32;
+                wpack |= (w & 0xff) << (e * 8);
+            }
+            int a = aq4[k];
+            if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
+            else       sumi1 = dp4a(wpack, a, sumi1);
+        }
+        float d8 = adrow[g];
+        acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
 // y[m,out] = x[m,in] @ W[out,in]^T. W quantized rows of `row_bytes` each.
 // grid: (out, m); block: 256 threads reduce over `in`.
 extern "C" __global__ void qmatvec_f32(

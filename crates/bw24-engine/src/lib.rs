@@ -108,6 +108,34 @@ impl Engine {
         Ok(y)
     }
 
+    /// Stage-B: Q4_K weight x q8_1 activation int8 dp4a (decode). Min-offset via q8_1 sum term.
+    pub fn qmatvec_q4_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                             out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let f = self.func("qmatvec_q4_K_dp4a");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Stage-B: Q6_K weight x q8_1 activation int8 dp4a (decode, symmetric).
+    pub fn qmatvec_q6_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                             out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let f = self.func("qmatvec_q6_K_dp4a");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
     pub fn htod(&self, v: &[f32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
@@ -208,6 +236,10 @@ impl Engine {
         match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
                 self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q4_K =>
+                self.qmatvec_q4_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q6_K =>
+                self.qmatvec_q6_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
                 self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes),
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f),
