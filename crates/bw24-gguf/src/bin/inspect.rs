@@ -5,8 +5,32 @@ use bw24_gguf::{GgufFile, MetaValue};
 use std::collections::BTreeMap;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: gguf-inspect <model.gguf>");
+    let path = std::env::args().nth(1).expect("usage: gguf-inspect <model.gguf> [--all|--block N]");
+    let mode = std::env::args().nth(2).unwrap_or_default();
     let g = GgufFile::open(&path).expect("open gguf");
+
+    if mode == "--all" {
+        println!("== ALL metadata ({}) ==", g.metadata.len());
+        for (k, v) in &g.metadata { println!("  {k} = {}", fmt_short(v)); }
+        // distinct tensor name patterns (strip blk.N. -> blk.*.)
+        let mut pats: BTreeMap<String, (u64, String)> = BTreeMap::new();
+        for t in &g.tensors {
+            let pat = regex_blk(&t.name);
+            pats.entry(pat).or_insert((0, format!("{:?} ne={:?}", t.ggml_type, t.ne))).0 += 1;
+        }
+        println!("\n== distinct tensor patterns ({}) ==", pats.len());
+        for (p, (c, ex)) in &pats { println!("  {p:40} x{c:<4} e.g. {ex}"); }
+        return;
+    }
+    if let Some(n) = mode.strip_prefix("--block").map(|_| std::env::args().nth(3)) {
+        let n: usize = n.unwrap_or_default().parse().unwrap_or(0);
+        let pre = format!("blk.{n}.");
+        println!("== block {n} tensors ==");
+        for t in g.tensors.iter().filter(|t| t.name.starts_with(&pre)) {
+            println!("  {:40} {:?} ne={:?}", t.name, t.ggml_type, t.ne);
+        }
+        return;
+    }
 
     println!("== {path} ==");
     println!("version={} alignment={} data_start={}", g.version, g.alignment, g.data_start);
@@ -71,6 +95,22 @@ fn main() {
         let end = g.data_start + last.offset + last.n_bytes;
         println!("\nlast tensor data ends at byte {end}");
     }
+}
+
+/// Replace blk.<N>. with blk.*. to collapse per-layer tensors into one pattern.
+fn regex_blk(name: &str) -> String {
+    let mut out = String::new();
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        if name[..].starts_with("blk.") && out == "blk." {
+            // consume digits
+            while chars.peek().map_or(false, |d| d.is_ascii_digit()) { chars.next(); }
+            out.push('*');
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn fmt_short(v: &MetaValue) -> String {
