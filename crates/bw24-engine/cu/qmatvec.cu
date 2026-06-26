@@ -337,9 +337,33 @@ extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed cha
     out_d[(size_t)t * nblk_row + b] = d;
 }
 
+// Block reduce shared by the dp4a MMVQ kernels: full-warp shfl, then warp0 sums the per-warp
+// partials. Correct for any blockDim.x that is a multiple of 32 (used with 128 = 4 warps).
+__device__ __forceinline__ void mmvq_block_reduce_write(float acc, float* __restrict__ y,
+                                                        size_t out_idx, int tid) {
+    __shared__ float s[32];
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[out_idx] = v;
+    }
+}
+
+// Vectorized weight-int load: 4 int8 starting at `p` (only 2-byte aligned in Q8_0 -> uint16x2).
+// Mirrors llama.cpp get_int_b2 (vecdotq.cuh:18-25). Safe for any 2-byte-aligned source.
+__device__ __forceinline__ int get_int_b2(const void* p) {
+    const unsigned short* u = (const unsigned short*)p;
+    return (int)u[0] | ((int)u[1] << 16);
+}
+
 // Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).
 // W: block_q8_0 rows (34 bytes/block). aq: int8 [m,in]; ad: f32 [m, in/32].
-// grid (out, m); block 64 threads, each handles a stripe of the in/32 blocks.
+// grid (out, m); block 128 threads (4 warps), each warp strides the in/32 blocks.
 extern "C" __global__ void qmatvec_q8_0_dp4a(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -355,29 +379,15 @@ extern "C" __global__ void qmatvec_q8_0_dp4a(
     for (int blk = tid; blk < nblk; blk += blockDim.x) {
         const unsigned char* wb = wrow + blk * 34;
         float dw = half_to_float(*(const unsigned short*)wb);   // weight block scale (2-byte aligned OK)
-        const signed char* wq = (const signed char*)(wb + 2);   // NOT 4-byte aligned -> no int* cast
-        const signed char* aqb = arow + blk * 32;               // activation: 32-aligned, int* OK
-        const int* aq4 = (const int*)aqb;
+        const unsigned char* wq = wb + 2;                       // qs: 2-byte aligned -> get_int_b2
+        const int* aq4 = (const int*)(arow + blk * 32);         // activation: 32-aligned, int* OK
         int sumi = 0;
         #pragma unroll
-        for (int k = 0; k < 8; k++) {
-            // assemble 4 weight int8 into one int (byte-wise, alignment-safe)
-            int wpack = (wq[k*4] & 0xff) | ((wq[k*4+1] & 0xff) << 8)
-                      | ((wq[k*4+2] & 0xff) << 16) | ((wq[k*4+3] & 0xff) << 24);
-            sumi = dp4a(wpack, aq4[k], sumi);
-        }
+        for (int k = 0; k < 8; k++)
+            sumi = dp4a(get_int_b2(wq + k * 4), aq4[k], sumi);
         acc += dw * adrow[blk] * (float)sumi;
     }
-    // block reduce
-    __shared__ float s[32];
-    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
-    if ((tid & 31) == 0) s[tid >> 5] = acc;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
-        if (tid == 0) y[(size_t)t * out_f + o] = v;
-    }
+    mmvq_block_reduce_write(acc, y, (size_t)t * out_f + o, tid);
 }
 
 // Q4_K decode MMVQ (int8 dp4a). Min-offset via the q8_1 activation-sum term.
@@ -408,18 +418,17 @@ extern "C" __global__ void qmatvec_q4_K_dp4a(
         else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
                mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
         int chunk = grp >> 1;
-        const unsigned char* q = qs + chunk * 32;
+        // qs at byte off 16 in a 144B superblock -> 4-byte aligned; chunk*32 keeps it 4-byte aligned.
+        const int* q4 = (const int*)(qs + chunk * 32);
         bool hi = (grp & 1);
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int* aq4 = (const int*)(arow + (size_t)g * 32);
         int sumi_d = 0, sumi_sum = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int wpack;
-            if (!hi) wpack = (q[k*4] & 0x0F) | ((q[k*4+1] & 0x0F) << 8)
-                           | ((q[k*4+2] & 0x0F) << 16) | ((q[k*4+3] & 0x0F) << 24);
-            else     wpack = (q[k*4] >> 4)   | ((q[k*4+1] >> 4)   << 8)
-                           | ((q[k*4+2] >> 4)   << 16) | ((q[k*4+3] >> 4)   << 24);
+            // nibble-by-shift over 4 packed weights (llama.cpp vmmq style, vecdotq.cuh:514-515):
+            // low nibbles for even groups, high nibbles for odd. 0x0F0F0F0F masks all 4 lanes.
+            int raw = q4[k];
+            int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
             int a = aq4[k];
             sumi_d   = dp4a(wpack, a, sumi_d);
             sumi_sum = dp4a(0x01010101, a, sumi_sum);
@@ -428,15 +437,7 @@ extern "C" __global__ void qmatvec_q4_K_dp4a(
         acc += d_sb   * (float)((int)sc * sumi_d) * d8
              - dmin_sb * (float)((int)mn * sumi_sum) * d8;
     }
-    __shared__ float s[32];
-    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
-    if ((tid & 31) == 0) s[tid >> 5] = acc;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
-        if (tid == 0) y[(size_t)t * out_f + o] = v;
-    }
+    mmvq_block_reduce_write(acc, y, (size_t)t * out_f + o, tid);
 }
 
 // Q6_K decode MMVQ (symmetric, no min). w=(ql|qh<<4)-32 signed; per-16 signed scales; fp16 d.
@@ -471,22 +472,28 @@ extern "C" __global__ void qmatvec_q6_K_dp4a(
         int is0 = run * 2 + 0;
         int is1 = run * 2 + 1;
         int sumi0 = 0, sumi1 = 0;
+        // ql offset for low/high nibble (run 0/1 use bytes [il], run 2/3 use [il+32]);
+        // Stage-A deq_q6_k: run0 qlh[il]&0xF, run1 qlh[il+32]&0xF, run2 qlh[il]>>4, run3 qlh[il+32]>>4.
+        // => byte offset +32 on ODD runs (1,3); high nibble on runs >=2 (2,3). The offset is (run&1),
+        //    NOT (run>=2) — the old (run>=2) swapped run-1<->run-2 ql bytes (rel 0.34 on Q6_K lm_head).
+        int ql_off = (run & 1) ? 32 : 0;
+        int ql_hi  = (run >= 2);          // true -> high nibble of ql byte
+        int qh_sh  = run * 2;             // 0,2,4,6
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int wpack = 0;
+            // Build the 4 unsigned 6-bit weights (0..63) packed one per byte, then __vsubss4 the
+            // -32 across all 4 lanes in one SIMD op (llama.cpp vecdotq.cuh:638). Saturating sub is
+            // exact here: vals are 0..63 so result is -32..31, well within int8.
+            unsigned int vpack = 0;
             #pragma unroll
             for (int e = 0; e < 4; e++) {
                 int il = k * 4 + e;
-                int ql_bits, qh_bits;
-                switch (run) {
-                    case 0: ql_bits = qlh[il]      & 0xF; qh_bits = (qhh[il] >> 0) & 3; break;
-                    case 1: ql_bits = qlh[il + 32] & 0xF; qh_bits = (qhh[il] >> 2) & 3; break;
-                    case 2: ql_bits = qlh[il]      >> 4;  qh_bits = (qhh[il] >> 4) & 3; break;
-                    default:ql_bits = qlh[il + 32] >> 4;  qh_bits = (qhh[il] >> 6) & 3; break;
-                }
-                int w = (ql_bits | (qh_bits << 4)) - 32;
-                wpack |= (w & 0xff) << (e * 8);
+                int ql_bits = ql_hi ? (qlh[il + ql_off] >> 4) : (qlh[il + ql_off] & 0xF);
+                int qh_bits = (qhh[il] >> qh_sh) & 3;
+                unsigned int w = (unsigned int)(ql_bits | (qh_bits << 4));   // 0..63
+                vpack |= (w & 0xff) << (e * 8);
             }
+            int wpack = __vsubss4((int)vpack, 0x20202020);   // subtract 32 per byte (signed sat)
             int a = aq4[k];
             if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
             else       sumi1 = dp4a(wpack, a, sumi1);
@@ -494,15 +501,7 @@ extern "C" __global__ void qmatvec_q6_K_dp4a(
         float d8 = adrow[g];
         acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
     }
-    __shared__ float s[32];
-    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
-    if ((tid & 31) == 0) s[tid >> 5] = acc;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
-        if (tid == 0) y[(size_t)t * out_f + o] = v;
-    }
+    mmvq_block_reduce_write(acc, y, (size_t)t * out_f + o, tid);
 }
 
 // ===== Q5_K decode MMVQ (int8 dp4a). Unsigned 5-bit weight + min-offset via q8_1 sum. =====
