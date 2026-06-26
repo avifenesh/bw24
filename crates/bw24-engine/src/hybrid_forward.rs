@@ -18,7 +18,7 @@ impl HybridModel {
 
         let mut x = self.embed(e, tokens)?;   // [T, n_embd]
 
-        for layer in &self.layers {
+        for layer in self.layers.iter() {
             // attn_norm
             let mut h = e.zeros(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
@@ -63,7 +63,7 @@ impl HybridModel {
     fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_embd = cfg.n_embd as usize;
+        let _n_embd = cfg.n_embd as usize;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
         let head_dim = cfg.head_dim_k as usize;
@@ -122,7 +122,7 @@ impl HybridModel {
     fn linear_attn(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize)
                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_embd = cfg.n_embd as usize;
+        let _n_embd = cfg.n_embd as usize;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
         let num_k = ssm.group_count as usize;        // 16
@@ -163,10 +163,9 @@ impl HybridModel {
         let mut q_g = vec![0f32; d_state * num_v * t];
         let mut k_g = vec![0f32; d_state * num_v * t];
         let mut v_g = vec![0f32; d_state * num_v * t];
-        let rep = num_v / num_k;  // 2
         for tt in 0..t {
             for vh in 0..num_v {
-                let kh = vh / rep;  // which k-head this v-head maps to (repeat-interleave)
+                let kh = vh % num_k;  // ggml_repeat_4d head mapping is MODULO (vh % num_k), not block
                 for i in 0..d_state {
                     // q channel = kh*head_k + i ; time tt
                     let qc = kh * head_k + i;
