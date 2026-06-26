@@ -15,9 +15,20 @@ algorithmic improvements adapted to sm_120 (FA3/FA4 binaries don't run here: no 
 ## REMAINING SCOPE (full, no shortcuts)
 
 ### Kernels (isolated .cu files — parallelizable across agents)
-1. **Fast GEMM all dtypes**: MMVQ decode + MMQ prefill (int8 dp4a/mma) for Q4_K, Q6_K, NVFP4.
-   Currently only Q8_0 is fast; everything else is Stage-A f32 (3.6x slow). Validate vs CPU oracle.
-2. **NVFP4 native block-scale GEMM** (the 762-TFLOP path) — for the NVFP4 GGUFs (both daily models have them).
+1. **Fast GEMM ALL dtypes** — every quant the daily models actually use, no gaps:
+   DONE: Q8_0, Q4_K, Q6_K. MISSING (verified in daily GGUFs): **Q5_K** (9B-NVFP4 44 tensors),
+   **NVFP4** (9B 3.4GB + 27B 9.6GB — BIGGEST share, currently PANICS no dequant at all),
+   **IQ3_S** (35B-MoE 9GB — biggest), **IQ4_XS** (35B 5.6GB), **Q3_K**. Also add CPU dequant-oracle
+   for each (dequant.rs) so the validation gate works. Without NVFP4+IQ, the 27B-NVFP4 and 35B-MoE
+   daily models cannot run at all. MMVQ decode + MMQ prefill for each.
+2. **NVFP4 native block-scale GEMM** (762-TFLOP path) — biggest tensor share of both daily models.
+
+### DECODE host-round-trip removal (HIGH PRIORITY — GPU is free, CPU work is stage-debt not by design)
+0b. decode.rs linear_attn_decode/full_attn_decode still do per-step dtoh→host-scalar-loop→htod for:
+    conv-ring assembly, q/k/v GDN repack (4096-wide per-element host loop!), q|gate split. These are
+    pure overhead (GPU idle during host scatter). Move ALL to GPU kernels: a conv-state-assemble
+    kernel, a qkv→GDN-layout repack kernel, a q|gate split kernel. Only ssm_state was made resident;
+    finish the rest. This is likely the dominant decode cost now, bigger than the GEMM gap.
 3. **Hand-written FlashAttention** for sm_120:
    - FA-2 base: mma.sync m16n8k16, online softmax, KV tiling (replace naive sdpa).
    - FA-3 improvements BY HAND: warp-specialization (producer/consumer), async cp.async pipeline,
