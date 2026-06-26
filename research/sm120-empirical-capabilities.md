@@ -19,11 +19,16 @@ These are facts from this machine, not web claims.
 | asyncEngines (copy) | 2 |
 | clusterLaunch | supported (1) |
 | cooperativeLaunch | supported (1) |
-| Power cap (observed) | ~150 W |
+| Power cap | ~150 W observed idle-load, **up to 175 W peak** |
 
-**Decode is memory-bound.** Single-stream ceiling ≈ 896e9 / bytes_per_token.
-- 7B Q4 (~3.8 GB resident) → ~235 tok/s theoretical max.
-- This is the headline number to beat-target against (vs llama.cpp/vLLM on same chip).
+**Decode is memory-bound.** Single-stream ceiling ≈ achieved_BW / bytes_per_token.
+- **Achieved read BW measured: 829 GB/s = 92.5% of 896 peak** (4.3GB streaming read, sm_120a -O3).
+- 7B Q4 (~3.8 GB resident) → ~218 tok/s realistic ceiling (829/3.8), ~235 theoretical.
+- This is the headline beat-target anchor (vs llama.cpp/vLLM on same chip).
+
+**Host RAM is ELASTIC, not fixed.** ~12-16GB free is *current* (other LLM servers running);
+sometimes more is free. Spilling design must query free RAM at runtime and size the host-RAM
+tier dynamically — never hardcode a tier budget — falling back to mmap'd disk when tight.
 
 ## Tensor-core / ISA capability (compiled + assembled)
 
