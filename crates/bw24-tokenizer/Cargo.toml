@@ -1,0 +1,11 @@
+[package]
+name = "bw24-tokenizer"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+bw24-gguf = { path = "../bw24-gguf" }
+
+[[bin]]
+name = "tok-check"
+path = "src/bin/tok_check.rs"

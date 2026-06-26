@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bw24-gguf = { path = "../bw24-gguf" }
 bw24-runtime = { path = "../bw24-runtime" }
+bw24-tokenizer = { path = "../bw24-tokenizer" }
 cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
 
 [[bin]]

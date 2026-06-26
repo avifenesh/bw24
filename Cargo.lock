@@ -8,6 +8,7 @@ version = "0.0.0"
 dependencies = [
  "bw24-gguf",
  "bw24-runtime",
+ "bw24-tokenizer",
  "cudarc",
 ]
 
@@ -31,6 +32,13 @@ version = "0.0.0"
 dependencies = [
  "bw24-gguf",
  "cudarc",
+]
+
+[[package]]
+name = "bw24-tokenizer"
+version = "0.0.0"
+dependencies = [
+ "bw24-gguf",
 ]
 
 [[package]]
