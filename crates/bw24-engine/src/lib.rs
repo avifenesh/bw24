@@ -20,6 +20,7 @@ const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
 const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
 const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
+const GEMM_FATBIN_PATH: &str = env!("BW24_GEMM_FATBIN");
 
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
@@ -38,6 +39,7 @@ pub struct Engine {
     hybrid: Arc<CudaModule>,
     qmatvec: Arc<CudaModule>,
     flash: Arc<CudaModule>,
+    gemm: Arc<CudaModule>,
 }
 
 impl Engine {
@@ -47,7 +49,8 @@ impl Engine {
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
         let flash = gpu.ctx.load_module(Ptx::from_file(FLASH_FATBIN_PATH))?;
-        Ok(Self { gpu, module, hybrid, qmatvec, flash })
+        let gemm = gpu.ctx.load_module(Ptx::from_file(GEMM_FATBIN_PATH))?;
+        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
@@ -57,6 +60,7 @@ impl Engine {
             .or_else(|_| self.hybrid.load_function(name))
             .or_else(|_| self.qmatvec.load_function(name))
             .or_else(|_| self.flash.load_function(name))
+            .or_else(|_| self.gemm.load_function(name))
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
     }
 
@@ -414,6 +418,15 @@ impl Engine {
         use crate::model::GpuTensor;
         let in_f = w.in_features();
         let out_f = w.out_features();
+        // PREFILL (T>1) ROOT FIX: batched tensor-core int8 GEMM. Decodes each weight tile to int8
+        // in smem ONCE and reuses across all tokens via mma — vs the dp4a matvec's per-token weight
+        // re-read. Gated behind BW24_GEMM; only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's
+        // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
+        const GEMM_M_THRESHOLD: usize = 16;
+        if m >= GEMM_M_THRESHOLD && self.gemm_supports(w) {
+            let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+            return self.qmatvec_gemm(w, &aq, &ad, m);
+        }
         // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
         // behind BW24_FAST until it passes the isolation gate vs Stage-A.
         let fast = std::env::var("BW24_FAST").is_ok();
@@ -470,6 +483,11 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // Prefill GEMM root fix: if T>1 and the dtype has a GEMM kernel, batch via tensor cores
+        // (reuses the already-quantized aq/ad — no extra quantize). m=1 falls through to dp4a.
+        if m >= 16 && self.gemm_supports(w) {
+            return self.qmatvec_gemm(w, aq, ad, m);
+        }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x_fallback, m); }
         let in_f = w.in_features();
         let out_f = w.out_features();
@@ -492,6 +510,86 @@ impl Engine {
         b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        Ok(y)
+    }
+
+    /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
+    /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. Gated behind BW24_GEMM env var.
+    /// NVFP4 needs in_f % 64 == 0 (two 16-sub-blocks per 32-block; same constraint as the dp4a path).
+    pub fn gemm_supports(&self, w: &crate::model::GpuTensor) -> bool {
+        use crate::model::GpuTensor;
+        if std::env::var("BW24_GEMM").is_err() { return false; }
+        match w {
+            GpuTensor::Quant { qtype, .. } =>
+                matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K)
+                || (*qtype == QT_NVFP4 && w.in_features() % 64 == 0),
+            GpuTensor::Float { .. } => false,
+        }
+    }
+
+    /// Batched tensor-core int8 GEMM with a PRE-QUANTIZED q8_1 activation (aq,ad). The prefill
+    /// (T>1) root fix: decode each weight 32-block to int8 in shared memory ONCE per (row-tile,
+    /// K-step) and reuse it across all BN tokens via mma.sync.m16n8k32.s8 — amortizing the weight
+    /// read/decode N-fold (vs the dp4a matvec's per-token re-read). s32 accumulate is exact vs
+    /// dp4a; only the final f32 block-scale rounding differs. Caller MUST have checked
+    /// `gemm_supports(w)`. y[m,out] token-major. NVFP4 per-tensor macro-scale applied post.
+    pub fn qmatvec_gemm(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                        m: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        let (bytes, qtype, row_bytes, scale) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => unreachable!("gemm_supports guaranteed Quant"),
+        };
+        let name = match qtype {
+            QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
+            QT_Q5_K => "qmatvec_gemm_q5_K",
+            QT_Q6_K => "qmatvec_gemm_q6_K", QT_NVFP4 => "qmatvec_gemm_nvfp4",
+            _ => unreachable!(),
+        };
+        let f = self.func(name);
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        // CTA tile: BM=64 out-rows x BN=64 tokens x BK=32. block (32, 4, 1) = 128 thr (4 warps).
+        const BM: u32 = 64; const BN: u32 = 128;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
+            block_dim: (32, 4, 1),
+            shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        Ok(y)
+    }
+
+    /// Test entry: run the GEMM directly from raw weight bytes + qtype (no GpuTensor). Quantizes
+    /// the f32 activation `x` to q8_1 internally then launches the tensor-core GEMM. NVFP4 per-tensor
+    /// macro-scale is NOT applied here (caller passes it separately, like the dp4a path). Used by
+    /// kernel_check for the bit-equivalence gate vs qmatvec_*_dp4a.
+    pub fn qmatvec_gemm_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                            out_f: usize, qtype: i32, row_bytes: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let name = match qtype {
+            QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
+            QT_Q5_K => "qmatvec_gemm_q5_K",
+            QT_Q6_K => "qmatvec_gemm_q6_K", QT_NVFP4 => "qmatvec_gemm_nvfp4",
+            _ => panic!("qmatvec_gemm_raw: qtype {qtype} has no GEMM kernel"),
+        };
+        let f = self.func(name);
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        const BM: u32 = 64; const BN: u32 = 128;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
         Ok(y)
     }
 

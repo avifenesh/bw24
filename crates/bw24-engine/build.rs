@@ -7,7 +7,8 @@ fn main() {
     let nvcc = std::env::var("BW24_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
-                       ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN")] {
+                       ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN"),
+                       ("cu/qmatvec_gemm.cu", "BW24_GEMM_FATBIN")] {
         println!("cargo:rerun-if-changed={src}");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));

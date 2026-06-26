@@ -357,6 +357,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- GEMM (tensor-core int8) vs dp4a matvec: BIT-EQUIVALENCE gate (the prefill root fix). ---
+    // s32 accumulate is exact vs dp4a; only the final f32 block-scale rounding differs -> rel<1e-3.
+    // Runs T in {16,64,128,512} per dtype on REAL GGUF tensors. Needs a model path arg.
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        // (tensor, GEMM qt, dp4a-fast selector). Each is validated if present with the right type.
+        let gemm_cases: [(&str, i32, &str); 5] = [
+            ("blk.0.ffn_gate.weight",  bw24_engine::QT_Q8_0,  "q8_0"),  // 35B token_embd-style Q8_0
+            ("blk.0.attn_qkv.weight",  bw24_engine::QT_Q8_0,  "q8_0"),
+            ("blk.3.attn_q.weight",    bw24_engine::QT_Q4_K,  "q4_K"),  // 9B/27B attn Q4_K
+            ("blk.0.attn_v.weight",    bw24_engine::QT_Q6_K,  "q6_K"),
+            ("output.weight",          bw24_engine::QT_Q6_K,  "q6_K"),  // Q6_K lm_head
+        ];
+        for (tname, want_qt, sel) in gemm_cases {
+            let t = match g.find(tname) { Some(t) => t, None => continue };
+            let gt = match t.ggml_type {
+                GgmlType::Q8_0 => bw24_engine::QT_Q8_0, GgmlType::Q4_K => bw24_engine::QT_Q4_K,
+                GgmlType::Q6_K => bw24_engine::QT_Q6_K, GgmlType::NVFP4 => bw24_engine::QT_NVFP4,
+                _ => continue,
+            };
+            if gt != want_qt { continue; }
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            if t.ne.len() > 2 { continue; } // skip 3D MoE expert tensors here
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            for tt in [16usize, 64, 128, 512] {
+                let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let ydp = match sel {
+                    "q8_0" => e.qmatvec_q8_0_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
+                    "q4_K" => e.qmatvec_q4_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
+                    "q6_K" => e.qmatvec_q6_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?,
+                    _ => unreachable!(),
+                };
+                let ya = e.dtoh(&ydp)?;
+                let yb = e.dtoh(&e.qmatvec_gemm_raw(&wd, &xd, tt, in_f, out_f, gt, row_bytes)?)?;
+                let d = maxdiff(&ya, &yb);
+                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = d / scale;
+                println!("GEMM {tname} [{:?}] T={tt}: rel={rel:.2e} {}", t.ggml_type,
+                         if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // NVFP4 GEMM vs dp4a on the 9B model (separate path: per-tensor macro-scale + in_f%64).
+    {
+        use bw24_gguf::{GgufFile, GgmlType};
+        const GGUF_9B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
+        if std::path::Path::new(GGUF_9B).exists() {
+            let g = GgufFile::open(GGUF_9B)?;
+            // Q5_K GEMM vs dp4a (attn_gate is Q5_K in 9B).
+            if let Some(t) = g.find("blk.0.attn_gate.weight").filter(|t| t.ggml_type == GgmlType::Q5_K) {
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 91) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let ya = e.dtoh(&e.qmatvec_q5_K_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                    let yb = e.dtoh(&e.qmatvec_gemm_raw(&wd, &xd, tt, in_f, out_f, bw24_engine::QT_Q5_K, row_bytes)?)?;
+                    let d = maxdiff(&ya, &yb);
+                    let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("GEMM blk.0.attn_gate.weight [Q5_K] T={tt}: rel={rel:.2e} {}",
+                             if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 81) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    // dp4a (no macro-scale applied here; GEMM raw also skips it -> compare bare).
+                    let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                    let yb = e.dtoh(&e.qmatvec_gemm_raw(&wd, &xd, tt, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let d = maxdiff(&ya, &yb);
+                    let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} {}",
+                             if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+
     // --- FlashAttention prefill + decode vs CPU SDPA oracle (head_dim 256, GQA 16/4, causal) ---
     {
         let (hd, nh, nhkv) = (256usize, 16usize, 4usize);
