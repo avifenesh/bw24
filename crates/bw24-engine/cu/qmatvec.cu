@@ -86,6 +86,85 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     return 0.0f;
 }
 
+// ================= Stage-B: int8 dp4a MMVQ (decode hot path) =================
+// Quantize activation row to q8_1 blocks (32 vals -> int8 + fp16 scale d), then weight-int8 dot.
+// Activation buffer layout per block i: [32 int8 qs][1 float d]. We pack as: int8 qs in a byte array
+// + a parallel float array of per-block d. Done in a tiny kernel below.
+
+// dp4a: 4x int8 dot accumulate (sm_61+). Available on sm_120.
+__device__ __forceinline__ int dp4a(int a, int b, int c) {
+#if __CUDA_ARCH__ >= 610
+    return __dp4a(a, b, c);
+#else
+    int r = c;
+    for (int i = 0; i < 4; i++) { int8_t x = (a >> (i*8)) & 0xff, y = (b >> (i*8)) & 0xff; r += x*y; }
+    return r;
+#endif
+}
+
+// Quantize an [m, in] f32 activation matrix to q8_1: out_q (int8 [m, in]) + out_d (f32 [m, in/32]).
+// One block per (token, block-of-32). amax over 32, d=amax/127, qs=round(x/d).
+extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed char* __restrict__ out_q,
+                                         float* __restrict__ out_d, int in_f, int m) {
+    int blk = blockIdx.x * blockDim.x + threadIdx.x;   // global block-of-32 index
+    int nblk_row = in_f / 32;
+    if (blk >= m * nblk_row) return;
+    int t = blk / nblk_row;
+    int b = blk % nblk_row;
+    if (t >= m) return;
+    const float* xr = x + (size_t)t * in_f + b * 32;
+    float amax = 0.0f;
+    for (int j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(xr[j]));
+    float d = amax / 127.0f;
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    signed char* oq = out_q + (size_t)t * in_f + b * 32;
+    for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(xr[j] * id);
+    out_d[(size_t)t * nblk_row + b] = d;
+}
+
+// Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).
+// W: block_q8_0 rows (34 bytes/block). aq: int8 [m,in]; ad: f32 [m, in/32].
+// grid (out, m); block 64 threads, each handles a stripe of the in/32 blocks.
+extern "C" __global__ void qmatvec_q8_0_dp4a(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nblk;
+    float acc = 0.0f;
+    for (int blk = tid; blk < nblk; blk += blockDim.x) {
+        const unsigned char* wb = wrow + blk * 34;
+        float dw = half_to_float(*(const unsigned short*)wb);   // weight block scale (2-byte aligned OK)
+        const signed char* wq = (const signed char*)(wb + 2);   // NOT 4-byte aligned -> no int* cast
+        const signed char* aqb = arow + blk * 32;               // activation: 32-aligned, int* OK
+        const int* aq4 = (const int*)aqb;
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            // assemble 4 weight int8 into one int (byte-wise, alignment-safe)
+            int wpack = (wq[k*4] & 0xff) | ((wq[k*4+1] & 0xff) << 8)
+                      | ((wq[k*4+2] & 0xff) << 16) | ((wq[k*4+3] & 0xff) << 24);
+            sumi = dp4a(wpack, aq4[k], sumi);
+        }
+        acc += dw * adrow[blk] * (float)sumi;
+    }
+    // block reduce
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
 // y[m,out] = x[m,in] @ W[out,in]^T. W quantized rows of `row_bytes` each.
 // grid: (out, m); block: 256 threads reduce over `in`.
 extern "C" __global__ void qmatvec_f32(

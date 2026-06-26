@@ -53,8 +53,7 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
 
-    /// Resident-quantized linear: y[m,out] = x[m,in] @ W[out,in]^T, W in GGUF block bytes.
-    /// Weights stay packed in VRAM; dequant happens in-register inside the kernel.
+    /// Resident-quantized linear (Stage-A: f32 dequant-in-kernel). y[m,out]=x[m,in]@W[out,in]^T.
     pub fn qmatvec(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
                    qtype: i32, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("qmatvec_f32");
@@ -63,6 +62,35 @@ impl Engine {
         let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(w).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Stage-B: quantize activation [m,in] f32 -> q8_1 (int8 qs + per-block f32 scale).
+    fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
+                     -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("quantize_q8_1");
+        let nblk = in_f / 32;
+        let mut q = self.gpu.stream.alloc_zeros::<i8>(m * in_f)?;
+        let mut d = self.gpu.stream.alloc_zeros::<f32>(m * nblk)?;
+        let cfg = LaunchConfig::for_num_elems((m * nblk) as u32);
+        let (inf, mi) = (in_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
+        unsafe { b.launch(cfg)?; }
+        Ok((q, d))
+    }
+
+    /// Stage-B: Q8_0 weight x q8_1 activation int8 dp4a matmul. y[m,out]=x@W^T.
+    pub fn qmatvec_q8_0_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                             out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let f = self.func("qmatvec_q8_0_dp4a");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
     }
@@ -161,7 +189,12 @@ impl Engine {
         use crate::model::GpuTensor;
         let in_f = w.in_features();
         let out_f = w.out_features();
+        // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
+        // behind BW24_FAST until it passes the isolation gate vs Stage-A.
+        let fast = std::env::var("BW24_FAST").is_ok();
         match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
+                self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes),
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
                 self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes),
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f),

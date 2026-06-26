@@ -245,6 +245,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("(pass a GGUF path to also validate qmatvec vs CPU oracle)");
     }
 
+    // --- Stage-B fast Q8_0 dp4a vs Stage-A f32 qmatvec (int8-activation quant => looser tol) ---
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::Q8_0) {
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let m = 2usize;
+            let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 41) * 0.1).collect();
+            let wd = e.htod_bytes(raw)?; let xd = e.htod(&x)?;
+            let ya = e.dtoh(&e.qmatvec(&wd, &xd, m, in_f, out_f, bw24_engine::QT_Q8_0, row_bytes)?)?;
+            let yb = e.dtoh(&e.qmatvec_q8_0_fast(&wd, &xd, m, in_f, out_f, row_bytes)?)?;
+            let d = maxdiff(&ya, &yb);
+            let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+            let rel = d / scale;
+            // int8 activation quant => expect ~1% rel error, not 1e-7. Gate: rel < 3e-2.
+            println!("qmatvec_q8_0_fast vs Stage-A: rel={rel:.2e} {}", if rel < 3e-2 { "OK" } else { fails += 1; "FAIL" });
+            println!("  (ya[0..3]={:?} yb[0..3]={:?})", &ya[..3], &yb[..3]);
+        }
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

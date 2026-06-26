@@ -32,6 +32,17 @@ then hybrid, then MoE.
 | bring-up only | Qwen3-1.7B / 0.6B | HF | qwen3 vanilla dense | trivial |
 | spec-decode | EAGLE3-qwen35/36 + built-in MTP | present | — | — |
 
+### Format support: NOT only GGUF
+> User (2026-06-26): "obviously it should support not only gguf"
+
+The engine must also load **safetensors** (HF-native, bf16/fp16). On disk: qwen35-9b-hf (4 shards),
+qwen35-4b-hf, EAGLE3-qwen35-9b draft (safetensors), gemma-4, HF Qwen/OLMoE. Safetensors unlocks the
+HF ecosystem + EAGLE drafts (which ship as safetensors, needed for spec-decode). Design work: parse
+the safetensors header (8-byte little-endian JSON length + JSON {tensor: {dtype, shape, offsets}} +
+raw blob), map HF tensor NAMES (model.layers.N.self_attn.q_proj.weight) → engine's internal names,
+handle HF layout (row/col, possible transpose vs ggml), and bf16/fp16 dtypes (engine already has
+bf16/f16 dequant). Researched separately → SAFETENSORS-DECISION; tracked as task.
+
 NVFP4 GGUFs ALREADY EXIST for BOTH daily targets → direct fuel for the FP4 weapon. Both fit 24GB
 resident at NVFP4, so the daily path is **fully-resident single-stream decode of a hybrid model** —
 that is THE thing to make fastest. MoE/spilling is the secondary capability, not the headline.
