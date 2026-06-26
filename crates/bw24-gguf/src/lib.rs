@@ -14,6 +14,7 @@ use std::path::Path;
 use memmap2::Mmap;
 
 pub mod dequant;
+pub mod config;
 
 pub const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
 pub const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
@@ -68,9 +69,17 @@ impl GgmlType {
             Q8_K => (256, 292),
             IQ4_NL => (32, 18),
             IQ4_XS => (256, 136),
+            // i-quants (all QK_K=256 super-blocks) — sizes from ggml-common.h static_asserts
+            IQ2_XXS => (256, 66),
+            IQ2_XS => (256, 74),
+            IQ2_S => (256, 82),
+            IQ3_XXS => (256, 98),
+            IQ3_S => (256, 110),
+            IQ1_S => (256, 50),
+            IQ1_M => (256, 56),
             MXFP4 => (32, 17),  // 1 (E8M0 scale) + 16 (32×4bit e2m1)
             NVFP4 => (64, 36),  // 4 (UE4M3 sub-scales, 1 per 16 elems) + 32 (64×4bit e2m1)
-            // less-common / not-needed-yet: panic-on-use
+            // remaining (Q2_K..Q5_K covered above; k-quant variants): panic-on-use
             other => panic!("block_and_type_size not implemented for {other:?}"),
         }
     }

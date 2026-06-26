@@ -22,6 +22,18 @@ fn main() {
         for (p, (c, ex)) in &pats { println!("  {p:40} x{c:<4} e.g. {ex}"); }
         return;
     }
+    if mode == "--config" {
+        let c = bw24_gguf::config::ModelConfig::from_gguf(&g);
+        println!("{c:#?}");
+        // layer classification summary
+        let full = c.n_full_attn_layers();
+        println!("\nlayers: {} total ({} full-attn, {} linear-attn), +{} MTP",
+            c.n_layer, full, c.n_layer - full, c.nextn_predict_layers);
+        let kinds: Vec<_> = (0..c.n_layer.min(12))
+            .map(|il| format!("{}:{:?}", il, c.layer_kind(il))).collect();
+        println!("first 12: {}", kinds.join(" "));
+        return;
+    }
     if mode == "--dequant" {
         let tname = std::env::args().nth(3).expect("usage: --dequant <tensor_name>");
         let t = g.find(&tname).unwrap_or_else(|| panic!("tensor {tname} not found"));
