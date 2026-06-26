@@ -1,0 +1,12 @@
+[package]
+name = "bw24-runtime"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+bw24-gguf = { path = "../bw24-gguf" }
+cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
+
+[[bin]]
+name = "gemm-check"
+path = "src/bin/gemm_check.rs"

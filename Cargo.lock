@@ -17,6 +17,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bw24-runtime"
+version = "0.0.0"
+dependencies = [
+ "bw24-gguf",
+ "cudarc",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

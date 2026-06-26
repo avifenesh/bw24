@@ -1,0 +1,67 @@
+//! gemm-check: validate the GPU cuBLASLt linear against the CPU reference,
+//! on both random data AND a real dequantized GGUF weight tensor.
+
+use bw24_runtime::{cpu_linear, Gpu};
+use bw24_gguf::{GgufFile, dequant};
+
+fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+}
+
+// Deterministic pseudo-random in [-1,1] from an index (no rng dep).
+fn pr(i: usize) -> f32 {
+    let x = (i.wrapping_mul(2654435761) ^ 0x9E3779B9) as u32;
+    ((x >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let gpu = Gpu::new(0)?;
+    println!("GPU: {}", gpu.ctx.name()?);
+
+    // --- Test 1: synthetic GEMM, GPU vs CPU ---
+    let (m, in_f, out_f) = (3usize, 128usize, 64usize);
+    let x: Vec<f32> = (0..m * in_f).map(pr).collect();
+    let w: Vec<f32> = (0..out_f * in_f).map(|i| pr(i + 777)).collect();
+    let y_cpu = cpu_linear(&x, &w, m, in_f, out_f);
+    let xd = gpu.stream.clone_htod(&x)?;
+    let wd = gpu.stream.clone_htod(&w)?;
+    let y_gpu = gpu.linear_f32(&xd, &wd, m, in_f, out_f)?;
+    let d1 = max_abs_diff(&y_cpu, &y_gpu);
+    // cuBLASLt on Blackwell uses TF32 (19-bit mantissa) for f32 compute by default →
+    // ~1e-3 relative error is EXPECTED and correct, not a layout bug (which would be O(1)).
+    let scale1 = y_cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1.0);
+    let rel1 = d1 / scale1;
+    println!("synthetic [{m}x{in_f}]@[{out_f}x{in_f}]^T  max_abs_diff={d1:.2e} rel={rel1:.2e}  {}",
+             if rel1 < 5e-3 { "OK (TF32)" } else { "FAIL" });
+    assert!(rel1 < 5e-3, "synthetic GEMM mismatch (layout bug if rel is O(1))");
+
+    // --- Test 2: real GGUF weight (dequant Q8_0) @ random activations ---
+    if let Some(path) = std::env::args().nth(1) {
+        let g = GgufFile::open(&path)?;
+        // Use blk.0.ffn_down (in=n_ff, out=n_embd) or any 2D weight.
+        let tname = std::env::args().nth(2).unwrap_or_else(|| "blk.0.ffn_gate.weight".into());
+        let t = g.find(&tname).expect("tensor not found");
+        assert_eq!(t.ne.len(), 2, "need a 2D weight");
+        let in_f = t.ne[0] as usize;   // ne[0] = in (fastest)
+        let out_f = t.ne[1] as usize;  // ne[1] = out
+        let w = dequant::dequantize(t.ggml_type, g.tensor_data(t), (in_f * out_f) as usize);
+        let m = 2usize;
+        let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 4242) * 0.1).collect();
+
+        let y_cpu = cpu_linear(&x, &w, m, in_f, out_f);
+        let xd = gpu.stream.clone_htod(&x)?;
+        let wd = gpu.stream.clone_htod(&w)?;
+        let y_gpu = gpu.linear_f32(&xd, &wd, m, in_f, out_f)?;
+        let d2 = max_abs_diff(&y_cpu, &y_gpu);
+        // tolerance scaled by magnitude (large reductions accumulate f32 error)
+        let scale = y_cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1.0);
+        let rel = d2 / scale;
+        println!("real {tname} [{m}x{in_f}]@[{out_f}x{in_f}]^T ({:?})", t.ggml_type);
+        println!("  max_abs_diff={d2:.3e}  scale={scale:.3e}  rel={rel:.2e}  {}",
+                 if rel < 5e-3 { "OK (TF32)" } else { "FAIL" });
+        assert!(rel < 5e-3, "real-weight GEMM mismatch (layout bug if rel is O(1))");
+    }
+
+    println!("\ngemm-check GREEN: cuBLASLt f32 linear matches CPU reference.");
+    Ok(())
+}
