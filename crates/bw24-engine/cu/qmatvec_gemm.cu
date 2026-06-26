@@ -16,10 +16,12 @@
 // scaled by exactly one (dw, da) pair and summed in f32 — bit-equivalent to the dp4a path's
 // `acc += dw*ad*(float)sumi` (qmatvec.cu:407).
 //
-// FRAGMENT LOADING: we do NOT use ldmatrix. Instead each lane reads its required int8 operands
-// straight from the smem tile per the canonical PTX m16n8k32.s8 fragment layout. This avoids the
-// fragile int8 ldmatrix addressing entirely; the int8 mma is the throughput engine and ldmatrix
-// is only a load optimization. Correctness is gated bit-exactly vs dp4a in kernel_check.
+// FRAGMENT LOADING: ldmatrix.sync (x4.b16 for A weights, x2.b16 for B activations) reinterpreted
+// for s8 — loads the EXACT bytes the old scalar byte-assembly produced (bit-identical mma input,
+// gated vs dp4a in kernel_check). PIPELINE: NSTAGE=3 cp.async ring buffer overlaps the next K-step's
+// activation global->smem copy behind the current mma; weight decode stays ALU-synchronous into the
+// staged smem. Single __syncthreads/K-step (the top barrier guards both cur's visibility and the
+// WAR for the post-barrier prefetch). __launch_bounds__(128,4) caps regs so 4 CTAs/SM co-reside.
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -40,6 +42,13 @@
 #define BK 32      // contraction per K-step (== quant 32-block)
 #define NWARP 4
 #define WARP_M 16  // each warp's M rows (one m16 frag)
+// cp.async ring buffer depth (overlap next K-step's global->smem behind current mma).
+#define NSTAGE 3
+// NOTE on smem K-stride: BK=32 is kept (16B-aligned, so ldmatrix.x4.b16 + cp.async.cg-16 are legal).
+// A 16B-aligned pad to 48 reduces ldmatrix bank conflicts (33M->~10M) but the extra 8KB/CTA smem
+// drops kernel2 occupancy 4->3 blocks, exactly cancelling the gain (pp512 flat). At this BN=128 /
+// 64-reg-accumulator tile the kernel is occupancy-bound, not conflict-bound, so the pad is a no-op
+// here; revisit (XOR-swizzle at stride 32) only after the accumulator/tile redesign frees occupancy.
 
 __device__ __forceinline__ float ghalf2float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));
@@ -55,6 +64,32 @@ __device__ __forceinline__ void mma_s8_m16n8k32(int (&d)[4], const int (&a)[4], 
         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
         : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+// ---- async-copy + ldmatrix helpers (sm_120a: cp.async.cg + ldmatrix.sync are native) ----
+// 16-byte async global->smem copy (bypasses the register file). `smem` must be 16B-aligned in
+// shared space; `g` is a generic global pointer. Caller commits + waits the group.
+__device__ __forceinline__ void cp_async16(void* smem, const void* g) {
+    uint32_t s = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s), "l"(g));
+}
+// ldmatrix x4.b16: per-lane addr = (lane%16)*stride_b16 + (lane/16)*4 (in .b16 units), built as a
+// 32-bit .shared address (proven in flash_attn.cu ld_A / mma_validate.cu). Loads 4x .b32 = 16
+// int8 A-operands in the exact m16n8k32.s8 A-fragment layout the scalar byte-assembly produced.
+__device__ __forceinline__ void ld_A_s8(int (&t)[4], const int8_t* base, int stride_bytes) {
+    const uint32_t* xs = (const uint32_t*)base + (threadIdx.x % 16) * (stride_bytes / 4) + (threadIdx.x / 16) * 4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];"
+        : "=r"(t[0]), "=r"(t[1]), "=r"(t[2]), "=r"(t[3]) : "r"(addr));
+}
+// ldmatrix x2.b16 for the m16n8k32.s8 B operand (.col): 8 tokens x 32 k, source sA[token][k]
+// row-major (k contiguous, stride_bytes row pitch). NON-trans: reg0=k0..15, reg1=k16..31, no swap.
+// Per-lane row base = (lane%8) rows of matrix (lane/8 %2). All offsets multiple of 16 -> aligned.
+__device__ __forceinline__ void ld_B_s8(int (&t)[2], const int8_t* base, int stride_bytes) {
+    const uint32_t* xs = (const uint32_t*)base + (threadIdx.x % 8) * (stride_bytes / 4) + ((threadIdx.x / 8) % 2) * 4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0,%1},[%2];"
+        : "=r"(t[0]), "=r"(t[1]) : "r"(addr));
 }
 
 // ===================================================================== //
@@ -171,12 +206,15 @@ __device__ void qmatvec_gemm_kernel(
     const int tid  = warp * WARP_SZ + lane;  // 0..127
     const int nblk = in_f / 32;
 
-    __shared__ int8_t sW[BM][BK];
-    __shared__ int8_t sA[BN][BK];
-    __shared__ float  sWd[BM];
-    __shared__ float  sWb[BM];
-    __shared__ float  sAd[BN];
-    __shared__ float  sAsum[BN];
+    // NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
+    // tile, and per-tile scales for one K-step. Weights need ALU decode (sync into smem); the
+    // already-int8 activations are cp.async'd straight from global, overlapping DRAM with the mma.
+    __shared__ int8_t sW[NSTAGE][BM][BK];   // BK=32 (16-aligned) -> ldmatrix.x4.b16 addr legal
+    __shared__ int8_t sA[NSTAGE][BN][BK];   // BK (16-aligned) so cp.async.cg 16B copies are legal
+    __shared__ float  sWd[NSTAGE][BM];
+    __shared__ float  sWb[NSTAGE][BM];
+    __shared__ float  sAd[NSTAGE][BN];
+    __shared__ float  sAsum[NSTAGE][BN];
 
     // each warp accumulates its 16 rows x BN(=64) tokens = 16x8 frags over the 8 n-tiles.
     // acc[ntile][4] s32. We apply scales per K-step into f32 (because dw/da vary per 32-block).
@@ -186,69 +224,82 @@ __device__ void qmatvec_gemm_kernel(
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
-    // ===== K loop over 32-blocks =====
-    for (int g = 0; g < nblk; g++) {
-        // ---- decode weight tile: BM rows x 32, ONE 32-block per row. cooperative over 128 thr. ----
-        // each thread decodes a subset of the BM=64 rows fully (row r owns 32 int8).
+    // ---- issue one stage's loads: decode weights (sync) + cp.async activations into stage `s`. ----
+    auto issue_load_stage = [&](int s, int g) {
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
             int o = rowtile + r;
             float bias = 0.0f, dw;
             if (o < out_f) {
                 const unsigned char* wrow = W + (long)o * row_bytes;
-                dw = decode_block<QT>(wrow, g, &sW[r][0], &bias);
+                dw = decode_block<QT>(wrow, g, &sW[s][r][0], &bias);
             } else {
                 dw = 0.0f;
                 #pragma unroll
-                for (int k = 0; k < 32; k++) sW[r][k] = 0;
+                for (int k = 0; k < 32; k++) sW[s][r][k] = 0;
             }
-            sWd[r] = dw; sWb[r] = bias;
+            sWd[s][r] = dw; sWb[s][r] = bias;
         }
-        // ---- load activation tile: BN tokens x 32 (already int8). + block scale + block sum. ----
         for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
             int t = toktile + n;
-            float as = 0.0f; int ssum = 0;
             if (t < T) {
                 const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
+                // 32 contiguous int8 (in_f%32==0) -> two 16B async copies into the BK-wide row.
+                cp_async16(&sA[s][n][0],  arow);
+                cp_async16(&sA[s][n][16], arow + 16);
+                sAd[s][n] = ad[(size_t)t * nblk + g];
+                // block-sum for the (min-quant) bias term: read straight from global (L2-resident,
+                // off the cp.async critical path). Vectorized 8x int32 + __dp4a(.,1,1) sign-extends
+                // and sums 4 int8 per word -> 8 instrs, not 32 byte loads.
+                const int* aw = (const int*)arow;   // arow is 16B-aligned (in_f%16==0, g*32)
+                int ssum = 0;
                 #pragma unroll
-                for (int k = 0; k < 32; k++) { int8_t v = arow[k]; sA[n][k] = v; ssum += v; }
-                as = ad[(size_t)t * nblk + g];
+                for (int w = 0; w < 8; w++) ssum = __dp4a(aw[w], 0x01010101, ssum);
+                sAsum[s][n] = (float)ssum;
             } else {
                 #pragma unroll
-                for (int k = 0; k < 32; k++) sA[n][k] = 0;
+                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
+                sAd[s][n] = 0.0f; sAsum[s][n] = 0.0f;
             }
-            sAd[n] = as; sAsum[n] = (float)ssum;
         }
-        __syncthreads();
+    };
 
-        // ---- build A fragment for this warp's 16 rows (rows rowtile+warp*16 .. +16) ----
-        // A is 16x32 s8: lane holds 4 .b32. Per the m16n8k32 layout:
-        //   reg ai (0..3): for byte bj (0..3): row = lane/4 + (ai&1)*8; col = (lane%4)*4 + (ai>>1)*16 + bj
-        int afrag[4];
-        {
-            const int8_t (*Wsub)[BK] = (const int8_t(*)[BK]) &sW[warp * WARP_M][0];
-            #pragma unroll
-            for (int ai = 0; ai < 4; ai++) {
-                int row = lane / 4 + (ai & 1) * 8;
-                int col0 = (lane % 4) * 4 + (ai >> 1) * 16;
-                const int8_t* p = &Wsub[row][col0];
-                afrag[ai] = (int)(uint8_t)p[0] | ((int)(uint8_t)p[1] << 8)
-                          | ((int)(uint8_t)p[2] << 16) | ((int)(uint8_t)p[3] << 24);
-            }
+    // ===== PROLOGUE: async-fill stages 0..NSTAGE-2 =====
+    #pragma unroll
+    for (int s = 0; s < NSTAGE - 1; s++) {
+        if (s < nblk) issue_load_stage(s, s);
+        asm volatile("cp.async.commit_group;");
+    }
+
+    // ===== K loop over 32-blocks (SINGLE barrier/step: top __syncthreads guards both cur's
+    //       visibility AND the WAR for the prefetch that follows it). =====
+    for (int g = 0; g < nblk; g++) {
+        int cur = g % NSTAGE;
+        int nxt = (g + NSTAGE - 1) % NSTAGE;
+
+        // wait until only NSTAGE-2 newest groups remain pending -> the group for stage `cur`
+        // (committed NSTAGE-1 iters ago) has landed. (prologue committed NSTAGE-1 groups; each
+        // loop iter below commits exactly one, so this fixed bound is correct for every g.)
+        asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
+        __syncthreads();   // cur visible; also: all warps past prev iter's reads -> WAR-safe prefetch
+
+        // (A) prefetch g+NSTAGE-1 AFTER the barrier (its stage was last read NSTAGE-1 iters ago,
+        //     i.e. behind this barrier) -> overlaps its DRAM/decode behind this iter's mma chain.
+        if (g + NSTAGE - 1 < nblk) {
+            issue_load_stage(nxt, g + NSTAGE - 1);
         }
+        asm volatile("cp.async.commit_group;");
+
+        // ---- build A fragment for this warp's 16 rows via ldmatrix.x4.b16 ----
+        // The 16-row x 32-int8 weight subtile == 16x16 b16; ldmatrix loads the 4 .b32 A-operands
+        // in the exact m16n8k32.s8 layout the scalar byte-assembly produced (bit-equivalent).
+        int afrag[4];
+        ld_A_s8(afrag, &sW[cur][warp * WARP_M][0], BK);
         // ---- per 8-token n-tile: build B fragment + mma, then scale s32 -> f32 ----
         #pragma unroll
         for (int nt = 0; nt < BN / 8; nt++) {
+            // B is 8x32 s8, col-major (.col): ldmatrix.x2.b16 from the 8-token n-tile.
             int bfrag[2];
-            // B is 8x32 s8, col-major (.col): lane holds 2 .b32.
-            //   reg bi (0..1): for byte bj (0..3): k = (lane%4)*4 + bi*16 + bj; n = lane/4
-            #pragma unroll
-            for (int bi = 0; bi < 2; bi++) {
-                int ncol = nt * 8 + lane / 4;
-                int k0 = (lane % 4) * 4 + bi * 16;
-                const int8_t* p = &sA[ncol][k0];
-                bfrag[bi] = (int)(uint8_t)p[0] | ((int)(uint8_t)p[1] << 8)
-                          | ((int)(uint8_t)p[2] << 16) | ((int)(uint8_t)p[3] << 24);
-            }
+            ld_B_s8(bfrag, &sA[cur][nt * 8][0], BK);
             int dacc[4] = {0, 0, 0, 0};
             mma_s8_m16n8k32(dacc, afrag, bfrag);
             // s32 partials -> f32 with this 32-block's (dw, da) scales (+ bias for min-quants).
@@ -258,11 +309,10 @@ __device__ void qmatvec_gemm_kernel(
             for (int ci = 0; ci < 4; ci++) {
                 int rr = warp * WARP_M + lane / 4 + (ci >> 1) * 8;  // 0..BM-1 GLOBAL tile row
                 int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);  // 0..63 token within tile
-                float da = sAd[nn];
-                facc[nt][ci] += sWd[rr] * da * (float)dacc[ci] + sWb[rr] * da * sAsum[nn];
+                float da = sAd[cur][nn];
+                facc[nt][ci] += sWd[cur][rr] * da * (float)dacc[ci] + sWb[cur][rr] * da * sAsum[cur][nn];
             }
         }
-        __syncthreads();
     }
 
     // ===== write out: y[t*out_f + o] (token-major). =====
@@ -279,19 +329,19 @@ __device__ void qmatvec_gemm_kernel(
     }
 }
 
-extern "C" __global__ void qmatvec_gemm_q8_0(
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q8_0(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q8_0>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void qmatvec_gemm_q4_K(
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q4_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q4_K>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void qmatvec_gemm_q5_K(
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q5_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
@@ -416,12 +466,14 @@ __device__ void qmatvec_gemm_kernel2(
     const int tid  = warp * WARP_SZ + lane;
     const int nblk = in_f / 32;
 
-    __shared__ int8_t sWlo[BM][BK];   // lower-16 weights (upper zeroed)
-    __shared__ int8_t sWhi[BM][BK];   // upper-16 weights (lower zeroed)
-    __shared__ int8_t sA[BN][BK];
-    __shared__ float  sS0[BM];        // lower-half scale factor (d*scn or su0)
-    __shared__ float  sS1[BM];        // upper-half scale factor
-    __shared__ float  sAd[BN];
+    // NSTAGE ring buffer. ONE full 32-wide weight tile (no separate lo/hi smem): the two-sub-scale
+    // split is done at fragment level by zeroing the off-half A-registers (afrag[0,1]=k0..15 lo,
+    // afrag[2,3]=k16..31 hi) — bit-identical to the old sWlo/sWhi zero-padding, half the weight smem.
+    __shared__ int8_t sW[NSTAGE][BM][BK];
+    __shared__ int8_t sA[NSTAGE][BN][BK];
+    __shared__ float  sS0[NSTAGE][BM];        // lower-half scale factor (d*scn or su0)
+    __shared__ float  sS1[NSTAGE][BM];        // upper-half scale factor
+    __shared__ float  sAd[NSTAGE][BN];
 
     float facc[BN / 8][4];
     #pragma unroll
@@ -429,7 +481,7 @@ __device__ void qmatvec_gemm_kernel2(
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
-    for (int g = 0; g < nblk; g++) {
+    auto issue_load_stage = [&](int s, int g) {
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
             int o = rowtile + r;
             int8_t wq[32];
@@ -448,55 +500,53 @@ __device__ void qmatvec_gemm_kernel2(
                 for (int k = 0; k < 32; k++) wq[k] = 0;
             }
             #pragma unroll
-            for (int k = 0; k < 16; k++) { sWlo[r][k] = wq[k]; sWlo[r][16 + k] = 0; }
-            #pragma unroll
-            for (int k = 0; k < 16; k++) { sWhi[r][k] = 0; sWhi[r][16 + k] = wq[16 + k]; }
-            sS0[r] = s0; sS1[r] = s1;
+            for (int k = 0; k < 32; k++) sW[s][r][k] = wq[k];
+            sS0[s][r] = s0; sS1[s][r] = s1;
         }
         for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
             int t = toktile + n;
-            float as = 0.0f;
             if (t < T) {
                 const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
-                #pragma unroll
-                for (int k = 0; k < 32; k++) sA[n][k] = arow[k];
-                as = ad[(size_t)t * nblk + g];
+                cp_async16(&sA[s][n][0],  arow);
+                cp_async16(&sA[s][n][16], arow + 16);
+                sAd[s][n] = ad[(size_t)t * nblk + g];
             } else {
                 #pragma unroll
-                for (int k = 0; k < 32; k++) sA[n][k] = 0;
+                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
+                sAd[s][n] = 0.0f;
             }
-            sAd[n] = as;
         }
-        __syncthreads();
+    };
 
-        // build two A fragments (lo / hi) for this warp's 16 rows
-        int aflo[4], afhi[4];
-        {
-            const int8_t (*Wlo)[BK] = (const int8_t(*)[BK]) &sWlo[warp * WARP_M][0];
-            const int8_t (*Whi)[BK] = (const int8_t(*)[BK]) &sWhi[warp * WARP_M][0];
-            #pragma unroll
-            for (int ai = 0; ai < 4; ai++) {
-                int row = lane / 4 + (ai & 1) * 8;
-                int col0 = (lane % 4) * 4 + (ai >> 1) * 16;
-                const int8_t* pl = &Wlo[row][col0];
-                const int8_t* ph = &Whi[row][col0];
-                aflo[ai] = (int)(uint8_t)pl[0] | ((int)(uint8_t)pl[1] << 8)
-                         | ((int)(uint8_t)pl[2] << 16) | ((int)(uint8_t)pl[3] << 24);
-                afhi[ai] = (int)(uint8_t)ph[0] | ((int)(uint8_t)ph[1] << 8)
-                         | ((int)(uint8_t)ph[2] << 16) | ((int)(uint8_t)ph[3] << 24);
-            }
+    // ===== PROLOGUE: async-fill stages 0..NSTAGE-2 =====
+    #pragma unroll
+    for (int s = 0; s < NSTAGE - 1; s++) {
+        if (s < nblk) issue_load_stage(s, s);
+        asm volatile("cp.async.commit_group;");
+    }
+
+    for (int g = 0; g < nblk; g++) {
+        int cur = g % NSTAGE;
+        int nxt = (g + NSTAGE - 1) % NSTAGE;
+
+        asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
+        __syncthreads();   // cur visible + WAR-safe prefetch (see kernel1 for the argument)
+
+        if (g + NSTAGE - 1 < nblk) {
+            issue_load_stage(nxt, g + NSTAGE - 1);
         }
+        asm volatile("cp.async.commit_group;");
+
+        // ONE ldmatrix loads all 32 k; split into lo (k0..15 = af[0,1]) / hi (k16..31 = af[2,3])
+        // by zeroing the off-half registers. The mma sums over 32 k; zeroed regs contribute 0.
+        int af[4];
+        ld_A_s8(af, &sW[cur][warp * WARP_M][0], BK);
+        int aflo[4] = { af[0], af[1], 0, 0 };
+        int afhi[4] = { 0, 0, af[2], af[3] };
         #pragma unroll
         for (int nt = 0; nt < BN / 8; nt++) {
             int bfrag[2];
-            #pragma unroll
-            for (int bi = 0; bi < 2; bi++) {
-                int ncol = nt * 8 + lane / 4;
-                int k0 = (lane % 4) * 4 + bi * 16;
-                const int8_t* p = &sA[ncol][k0];
-                bfrag[bi] = (int)(uint8_t)p[0] | ((int)(uint8_t)p[1] << 8)
-                          | ((int)(uint8_t)p[2] << 16) | ((int)(uint8_t)p[3] << 24);
-            }
+            ld_B_s8(bfrag, &sA[cur][nt * 8][0], BK);
             int dlo[4] = {0,0,0,0}, dhi[4] = {0,0,0,0};
             mma_s8_m16n8k32(dlo, aflo, bfrag);
             mma_s8_m16n8k32(dhi, afhi, bfrag);
@@ -504,11 +554,10 @@ __device__ void qmatvec_gemm_kernel2(
             for (int ci = 0; ci < 4; ci++) {
                 int rr = warp * WARP_M + lane / 4 + (ci >> 1) * 8;  // GLOBAL tile row
                 int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);
-                float da = sAd[nn];
-                facc[nt][ci] += (sS0[rr] * (float)dlo[ci] + sS1[rr] * (float)dhi[ci]) * da;
+                float da = sAd[cur][nn];
+                facc[nt][ci] += (sS0[cur][rr] * (float)dlo[ci] + sS1[cur][rr] * (float)dhi[ci]) * da;
             }
         }
-        __syncthreads();
     }
 
     #pragma unroll
@@ -524,13 +573,13 @@ __device__ void qmatvec_gemm_kernel2(
     }
 }
 
-extern "C" __global__ void qmatvec_gemm_q6_K(
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q6_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel2<GQT_Q6_K>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void qmatvec_gemm_nvfp4(
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
