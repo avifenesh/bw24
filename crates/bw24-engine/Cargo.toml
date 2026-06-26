@@ -19,3 +19,7 @@ path = "src/bin/run_dense.rs"
 [[bin]]
 name = "run-hybrid"
 path = "src/bin/run_hybrid.rs"
+
+[[bin]]
+name = "run-gen"
+path = "src/bin/run_gen.rs"
