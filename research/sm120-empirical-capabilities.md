@@ -107,6 +107,11 @@ the *plain* (non-block-scale) mma path. Sparsity 2:4 may ~2x again — to verify
 - **Toolchain:** nvcc 13.1 (also 12.8), driver 595 (CUDA 13.2 runtime), cuBLAS/cuBLASLt 13.2, CUB/CCCL,
   cuda_fp4/fp6/fp8 headers, cmake/ninja/gcc/rustc. **We can install newer CUDA (13.2/13.3+), CUTLASS,
   any Rust/C++ deps as research dictates.** CUTLASS not yet fetched.
+- **MMQ dual-toolkit build (verified on-device):** system gcc is 15 (too new for CUDA 12.8 nvcc;
+  gcc-15 headers break 12.8's compiler — `-allow-unsupported-compiler` passes the gate but still
+  errors on `<type_traits>`). FIX: **CUDA 12.8 nvcc + `-ccbin /usr/bin/gcc-14`** produces valid
+  sm_120 AND sm_120a cubins (gcc-14 is installed, within 12.8's supported range). So the dual-toolkit
+  plan works: 13.1 nvcc for FP4/cuBLASLt TUs, 12.8+gcc-14 for MMQ TUs (which segfault under 13.1's -O3).
 - **No torch; Python 3.14.** Can install whatever runtime we choose — not a constraint on stack choice.
 - **Free host RAM ~12-16 GB right now** (other LLM servers running) — TEMPORARY. Could be more/less.
   → spilling must query free RAM at runtime and size the host tier dynamically; never hardcode it;
