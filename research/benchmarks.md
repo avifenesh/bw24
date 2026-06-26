@@ -40,3 +40,10 @@ overhead + the hybrid-arch KV advantage (only 8/32 layers grow KV). Must measure
 - [ ] prefill: bw24 > 2849 tok/s — needs Stage-B MMQ prefill (int8 tiles) + batched
 - [ ] overall throughput: continuous batching
 - [ ] all of the above vs vLLM + SGLang too
+
+## Update — fast GEMM all-dtypes + resident state (post-restart)
+- 9B Q8_0 decode FAST (Q8_0 int8 dp4a + resident SSM state) = **52.9 tok/s** (decode==prefill exact).
+- Q4_K + Q6_K int8 dp4a MMVQ landed + validated (rel 3e-3 vs oracle) -> 27B-Q4_K_M now fast too.
+- KNOWN GAP: NVFP4 dequant not implemented (dequant.rs) -> 27B-NVFP4 file panics; needs NVFP4 CPU
+  dequant + decode dot (fast-GEMM workflow deferred it, spec-only). Blocks NVFP4 daily models.
+- Remaining decode levers: extend MMVQ occupancy, CUDA graph (320 launches/token), hand-FA (in v2 fix).
