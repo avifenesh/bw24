@@ -1,0 +1,11 @@
+[package]
+name = "bw24-gguf"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+memmap2 = "0.9"
+
+[[bin]]
+name = "gguf-inspect"
+path = "src/bin/inspect.rs"
