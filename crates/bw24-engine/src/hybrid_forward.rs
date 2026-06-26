@@ -57,11 +57,55 @@ impl HybridModel {
         Ok(e.dtoh(&logits)?)
     }
 
+    /// Prefill that returns ONLY the last token's logits — the common case (greedy/sample needs
+    /// just the final position to start decode). Runs the trunk over all T, then the lm_head
+    /// (output.weight, the largest matrix — 248320 rows) on the LAST hidden row ONLY, not all T.
+    /// On a 512-token prompt this turns a [512,248320] GEMM into [1,248320] — the dominant prefill
+    /// cost (nsys: ~99ms when done for all T). Bit-identical last-row logits to forward()[last].
     pub fn forward_last(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        let all = self.forward(e, tokens)?;
-        let n_vocab = self.output.out_features();
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
         let t = tokens.len();
-        Ok(all[(t - 1) * n_vocab..t * n_vocab].to_vec())
+        let eps = cfg.rms_eps;
+        let pos: Vec<i32> = (0..t as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+
+        let mut x = self.embed(e, tokens)?;   // [T, n_embd]
+        for layer in self.layers.iter() {
+            let mut h = e.zeros(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let mixed = match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
+                Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
+            };
+            let mut x1 = e.zeros(t * n_embd)?;
+            e.add(&x, &mixed, &mut x1, t * n_embd)?;
+            let mut z = e.zeros(t * n_embd)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let gate = e.matmul(ffn_gate, &z, t)?;
+                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut act = e.zeros(t * n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, t)?,
+            };
+            let mut x2 = e.zeros(t * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            x = x2;
+        }
+        // norm over all T, then slice the LAST row and run lm_head on that single row.
+        let mut hn = e.zeros(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let last = e.view(&hn, t * n_embd);            // [T, n_embd]
+        let last_row = last.slice((t - 1) * n_embd..t * n_embd);  // [1, n_embd]
+        let mut hlast = e.zeros(n_embd)?;
+        e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
+        let logits = e.matmul(&self.output, &hlast, 1)?;   // [1, n_vocab] — lm_head on ONE row
+        Ok(e.dtoh(&logits)?)
     }
 
     /// Full-attention mixer with QK-norm, partial RoPE, sigmoid output gate (qwen35 :257-336).
