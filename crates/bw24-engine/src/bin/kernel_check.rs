@@ -137,6 +137,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("sdpa_naive   maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
-    if fails == 0 { println!("\nM1 GREEN: all Stage-1 kernels match CPU reference."); Ok(()) }
+    // --- ssm_conv1d + SiLU (M2) ---
+    {
+        let (conv_dim, t, d_conv) = (8usize, 5usize, 4usize);
+        let tp = t + d_conv - 1;
+        let x: Vec<f32> = (0..conv_dim * tp).map(|i| pr(i + 13)).collect();
+        let w: Vec<f32> = (0..d_conv * conv_dim).map(|i| pr(i + 21) * 0.3).collect();
+        // cpu ref: y[c,t] = silu( sum_j x[c, t+j]*w[c,j] )
+        let mut cpu = vec![0f32; conv_dim * t];
+        for c in 0..conv_dim {
+            for tt in 0..t {
+                let mut acc = 0.0;
+                for j in 0..d_conv { acc += x[c * tp + tt + j] * w[c * d_conv + j]; }
+                cpu[c * t + tt] = acc / (1.0 + (-acc).exp());
+            }
+        }
+        let xd = e.htod(&x)?; let wd = e.htod(&w)?; let mut yd = e.zeros(conv_dim * t)?;
+        e.ssm_conv1d(&xd, &wd, &mut yd, conv_dim, t, d_conv, true)?;
+        let gpu = e.dtoh(&yd)?;
+        let d = maxdiff(&cpu, &gpu);
+        println!("ssm_conv1d   maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- gdn_scan (M3): one head, S_v=128, T=3. CPU ref of the exact recurrence. ---
+    {
+        let s_v = 128usize; let h = 1usize; let t = 3usize;
+        let scale = 1.0 / (s_v as f32).sqrt();
+        let q: Vec<f32> = (0..s_v * h * t).map(|i| pr(i) * 0.1).collect();
+        let k: Vec<f32> = (0..s_v * h * t).map(|i| pr(i + 5) * 0.1).collect();
+        let v: Vec<f32> = (0..s_v * h * t).map(|i| pr(i + 9) * 0.1).collect();
+        let g: Vec<f32> = (0..h * t).map(|i| -0.05 - pr(i).abs() * 0.1).collect(); // g_log < 0 => g in (0,1)
+        let beta: Vec<f32> = (0..h * t).map(|i| 0.5 + pr(i + 3) * 0.2).collect();
+        let st0 = vec![0f32; s_v * s_v * h];
+        // cpu ref: state S[i][col] (we store transposed M[col][i] = S[i][col]); start 0
+        let mut s = vec![0f32; s_v * s_v]; // s[col*s_v + i] = S[i][col] (transposed, matches kernel)
+        let mut cpu_o = vec![0f32; s_v * h * t];
+        for tt in 0..t {
+            let qt = &q[(tt * h) * s_v..][..s_v];
+            let kt = &k[(tt * h) * s_v..][..s_v];
+            let vt = &v[(tt * h) * s_v..][..s_v];
+            let gv = (g[tt]).exp();
+            let bv = beta[tt];
+            // compute per col
+            let mut new_s = s.clone();
+            for col in 0..s_v {
+                let mut kv = 0.0f32;
+                for i in 0..s_v { kv += s[col * s_v + i] * kt[i]; }
+                let delta = (vt[col] - gv * kv) * bv;
+                let mut attn = 0.0f32;
+                for i in 0..s_v {
+                    let ns = gv * s[col * s_v + i] + kt[i] * delta;
+                    new_s[col * s_v + i] = ns;
+                    attn += ns * qt[i];
+                }
+                cpu_o[(tt * h) * s_v + col] = attn * scale;
+            }
+            s = new_s;
+        }
+        let qd = e.htod(&q)?; let kd = e.htod(&k)?; let vd = e.htod(&v)?;
+        let gd = e.htod(&g)?; let bd = e.htod(&beta)?; let sid = e.htod(&st0)?;
+        let mut sod = e.zeros(s_v * s_v * h)?; let mut od = e.zeros(s_v * h * t)?;
+        e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale)?;
+        let gpu_o = e.dtoh(&od)?;
+        let d = maxdiff(&cpu_o, &gpu_o);
+        println!("gdn_scan     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    if fails == 0 { println!("\nM1-M3 GREEN: all kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

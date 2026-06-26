@@ -11,24 +11,29 @@ pub mod model;
 pub mod forward;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
+const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
 
-/// Engine device context: CUDA context, stream, loaded kernel module, cuBLASLt (via runtime::Gpu).
+/// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
     pub gpu: bw24_runtime::Gpu,
     module: Arc<CudaModule>,
+    hybrid: Arc<CudaModule>,
 }
 
 impl Engine {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let gpu = bw24_runtime::Gpu::new(ordinal)?;
         let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
-        Ok(Self { gpu, module })
+        let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
+        Ok(Self { gpu, module, hybrid })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
     pub fn stream(&self) -> &Arc<CudaStream> { &self.gpu.stream }
     fn func(&self, name: &str) -> CudaFunction {
-        self.module.load_function(name).unwrap_or_else(|_| panic!("kernel {name} not in fatbin"))
+        self.module.load_function(name)
+            .or_else(|_| self.hybrid.load_function(name))
+            .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
     }
 
     pub fn htod(&self, v: &[f32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -137,6 +142,66 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Depthwise causal conv1d + optional SiLU.
+    /// x:[conv_dim, T+d_conv-1] channel-major (first d_conv-1 cols = carried state),
+    /// w:[d_conv, conv_dim] kernel-major, y:[conv_dim, T] channel-major.
+    pub fn ssm_conv1d(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                      conv_dim: usize, t: usize, d_conv: usize, silu: bool)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_silu_f32");
+        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Gated DeltaNet scan, S_v=128. q,k,v:[128,H,T]; g,beta:[H,T]; state:[128,128,H] transposed;
+    /// o:[128,H,T]. Single sequence.
+    pub fn gdn_scan_s128(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                         g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                         state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                         n_head: usize, t: usize, scale: f32)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_scan_s128");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, 1, S_V / COLS_PER_BLOCK),
+            block_dim: (WARP, COLS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (h, ti) = (n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o).arg(&h).arg(&ti).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// softplus-based g_log: g_log[h,t] = a[h] * softplus(alpha[h,t] + dt_bias[h]). a pre-negated.
+    pub fn gdn_glog(&self, alpha: &CudaSlice<f32>, dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+                    g_log: &mut CudaSlice<f32>, n_head: usize, t: usize)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_glog_f32");
+        let cfg = LaunchConfig::for_num_elems((n_head * t) as u32);
+        let (h, ti) = (n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(alpha).arg(dt_bias).arg(a).arg(g_log).arg(&h).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    pub fn sigmoid(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize)
+                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sigmoid_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(y).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
