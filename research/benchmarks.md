@@ -59,13 +59,13 @@ The isolated dequant validation had the SAME blind spot as ggml -> gate passed b
 Q8_0/Q4_K/Q6_K/Q5_K/IQ models have NO global scale -> unaffected (9B-Q8_0 argmax 268 correct, 35B-MoE
 1178 correct). Only NVFP4 tensors need the global-scale fix.
 
-## Competitor arch-support reality (2026-06-26)
+## Competitor arch-support reality (2026-06-26, VALIDATED by reading installed code)
 - vLLM + SGLang INSTALLED (py3.12 venvs, /data/projects/bench-engines), torch 2.11+cu130 sees sm_120 (cap 12,0).
-- BUT qwen35 daily models = arch `Qwen3_5ForConditionalGeneration` (hybrid gated-deltanet) — NOT yet
-  supported by vLLM/SGLang. So for the DAILY models, the only cross-engine competitor is llama.cpp.
-- vLLM/SGLang comparison is valid on DENSE/MoE arches they support (qwen2/qwen3/llama) — measures the
-  python per-token-overhead story (our native-Rust edge). Running 0.5B baseline.
-- Bottom line: beat-target on daily qwen35 = beat llama.cpp (81.8 tg / 2849 pp). bw24 now 59.6 tg.
+- BOTH SUPPORT qwen35 hybrid (corrected — I had wrongly guessed "not supported" from the arch name):
+  * vLLM 0.23.0 registry.py:569 -> Qwen3_5ForConditionalGeneration + Qwen3_5MoeForConditionalGeneration (qwen3_5.py, shares Qwen3Next gated-deltanet).
+  * SGLang 0.5.9 -> srt/models/qwen3_5.py + qwen3_5_mtp.py, Qwen3_5Config/Qwen3_5MoeConfig (extends Qwen3NextConfig + mamba2 utils).
+- So the FULL 3-engine beat-target IS live on the DAILY models (9B/27B hybrid + 35B MoE). Must bench all 3.
+- LESSON: validate by reading the actual registry, not by inferring from the config arch string.
 
 ## bw24 decode progression (9B Q8_0, gpu-full-power)
 - Stage-A f32 dequant: 26 tok/s
