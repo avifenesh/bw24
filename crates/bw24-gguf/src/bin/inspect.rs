@@ -22,6 +22,24 @@ fn main() {
         for (p, (c, ex)) in &pats { println!("  {p:40} x{c:<4} e.g. {ex}"); }
         return;
     }
+    if mode == "--dequant" {
+        let tname = std::env::args().nth(3).expect("usage: --dequant <tensor_name>");
+        let t = g.find(&tname).unwrap_or_else(|| panic!("tensor {tname} not found"));
+        let n = t.n_elements() as usize;
+        let raw = g.tensor_data(t);
+        let v = bw24_gguf::dequant::dequantize(t.ggml_type, raw, n);
+        let (mut mn, mut mx, mut sum, mut sumsq, mut nan) = (f32::INFINITY, f32::NEG_INFINITY, 0f64, 0f64, 0usize);
+        for &x in &v {
+            if x.is_nan() || x.is_infinite() { nan += 1; continue; }
+            mn = mn.min(x); mx = mx.max(x); sum += x as f64; sumsq += (x as f64) * (x as f64);
+        }
+        let mean = sum / n as f64;
+        let std = (sumsq / n as f64 - mean * mean).max(0.0).sqrt();
+        println!("dequant {tname} [{:?}] ne={:?} n={n}", t.ggml_type, t.ne);
+        println!("  min={mn:.5} max={mx:.5} mean={mean:.5} std={std:.5} nan/inf={nan}");
+        println!("  first 8: {:?}", &v[..8.min(n)]);
+        return;
+    }
     if let Some(n) = mode.strip_prefix("--block").map(|_| std::env::args().nth(3)) {
         let n: usize = n.unwrap_or_default().parse().unwrap_or(0);
         let pre = format!("blk.{n}.");

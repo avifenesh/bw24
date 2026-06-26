@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use memmap2::Mmap;
 
+pub mod dequant;
+
 pub const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
 pub const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
 
