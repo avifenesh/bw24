@@ -176,10 +176,17 @@ impl HostExps {
         let t = g.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
         assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
         let raw = g.tensor_data(t);
+        // All quant types the staged-expert qmatvec can decode (dp4a-fast or Stage-A f32).
         let qtype = match t.ggml_type {
-            GgmlType::Q6_K => QT_Q6_K,
             GgmlType::Q8_0 => QT_Q8_0,
-            other => panic!("exps {name} unsupported quant {other:?} (use the Q6_K_XL file)"),
+            GgmlType::Q4_K => QT_Q4_K,
+            GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q5_K => QT_Q5_K,
+            GgmlType::Q3_K => QT_Q3_K,
+            GgmlType::IQ4_XS => QT_IQ4_XS,
+            GgmlType::IQ3_S => QT_IQ3_S,
+            GgmlType::NVFP4 => QT_NVFP4,
+            other => panic!("exps {name} unsupported quant {other:?}"),
         };
         let in_f = t.ne[0] as usize;
         let out_f = t.ne[1] as usize;
