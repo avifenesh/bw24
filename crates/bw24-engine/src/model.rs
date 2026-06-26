@@ -12,7 +12,7 @@ use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_I
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
 /// This keeps VRAM ~= on-disk quant size (fixes the f32-on-load OOM).
 pub enum GpuTensor {
-    Quant { bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64> },
+    Quant { bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64>, scale: f32 },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
 }
 
@@ -40,7 +40,18 @@ impl GpuTensor {
             Some(qt) => {
                 let out_f = t.ne[1] as usize;
                 let row_bytes = raw.len() / out_f;
-                Ok(GpuTensor::Quant { bytes: e.htod_bytes(raw)?, qtype: qt, row_bytes, ne: t.ne.clone() })
+                // NVFP4 two-level scale: per-16 ue4m3 micro-scale is in the dequant; the per-tensor
+                // F32 macro-scale lives in a sibling "<stem>.scale" tensor, applied POST-matmul
+                // (llama build_lora_mm: ggml_mul(res, w_s)). ".input_scale" is the W4A4 activation
+                // scale — UNUSED on our W4A16/f32 path. Only NVFP4 carries it; others -> 1.0 (no-op).
+                let scale = if qt == QT_NVFP4 {
+                    let stem = name.strip_suffix(".weight").unwrap_or(name);
+                    match g.find(&format!("{stem}.scale")) {
+                        Some(st) => f32::from_le_bytes(g.tensor_data(st)[..4].try_into().unwrap()),
+                        None => 1.0,
+                    }
+                } else { 1.0 };
+                Ok(GpuTensor::Quant { bytes: e.htod_bytes(raw)?, qtype: qt, row_bytes, ne: t.ne.clone(), scale })
             }
             None => {
                 // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.

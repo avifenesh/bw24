@@ -198,3 +198,100 @@ extern "C" __global__ void add_scaled_rows_f32(const float* src, const float* sc
         dst[i] += src[i] * scale[r];
     }
 }
+
+// =====================================================================================
+// On-device repack kernels: eliminate the per-token decode dtoh->host-scatter->htod.
+// These move the layout shuffles from full_attn/linear_attn onto the GPU. The index math
+// MATCHES the host loops in decode.rs / hybrid_forward.rs EXACTLY (this is a layout move,
+// not a math change). Constants for the validated 9B/35B: head_dim=256, n_head=16,
+// conv_dim=8192, d_state=128, num_v=32, num_k=16, key_dim=2048.
+// =====================================================================================
+
+// ---- 1. q|gate split. ----
+// qf: [T, n_head*2*head_dim] token-major, head hh's fused block at offset hh*stride, stride=2*head_dim.
+//     q = first head_dim of the block, gate = next head_dim.
+// q_out, gate_out: [head_dim, n_head, T] i.e. dst row (tok*n_head+hh) of head_dim, contiguous.
+// One thread per output element of q (and the matching gate element). idx over [T*n_head*head_dim).
+// Matches hybrid_forward.rs:86-92 (prefill) and decode.rs:98-103 (T=1).
+extern "C" __global__ void q_gate_split_f32(
+        const float* __restrict__ qf, float* __restrict__ q_out, float* __restrict__ gate_out,
+        int head_dim, int n_head, int T) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)T * n_head * head_dim;
+    if (idx >= total) return;
+    int d  = idx % head_dim;
+    int hh = (idx / head_dim) % n_head;
+    int tok = idx / ((long)head_dim * n_head);
+    int stride = 2 * head_dim;
+    long src = (long)tok * (n_head * stride) + (long)hh * stride;   // head block base
+    q_out[idx]    = qf[src + d];
+    gate_out[idx] = qf[src + head_dim + d];
+}
+
+// ---- 2. qkv -> GDN repack (q/k head-repeat via MODULO kh = vh % num_k). ----
+// conv_out: channel-major [conv_dim, T] (channel c, time tt at c*T + tt). For decode T=1 -> index c.
+//   q channels [0,key_dim), k [key_dim,2*key_dim), v [2*key_dim,conv_dim). head_k = d_state.
+// q_g/k_g/v_g: [d_state, num_v, T], dst (tt*num_v+vh)*d_state + i.
+//   kh = vh % num_k ; qc = kh*head_k + i ; kc = key_dim + kh*head_k + i ; vc = 2*key_dim + vh*d_state + i.
+// One thread per output element. idx over [T*num_v*d_state). head_k == d_state.
+// Matches decode.rs:195-206 (T=1) and hybrid_forward.rs:176-190 (general T).
+extern "C" __global__ void qkv_to_gdn_repack_f32(
+        const float* __restrict__ conv_out,
+        float* __restrict__ q_g, float* __restrict__ k_g, float* __restrict__ v_g,
+        int d_state, int num_v, int num_k, int key_dim, int T) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)T * num_v * d_state;
+    if (idx >= total) return;
+    int i  = idx % d_state;
+    int vh = (idx / d_state) % num_v;
+    int tt = idx / ((long)d_state * num_v);
+    int head_k = d_state;
+    int kh = vh % num_k;                                   // MODULO head-repeat (validated mapping)
+    long qc = (long)kh * head_k + i;                       // q channel
+    long kc = (long)key_dim + (long)kh * head_k + i;       // k channel
+    long vc = (long)2 * key_dim + (long)vh * d_state + i;  // v channel
+    q_g[idx] = conv_out[qc * T + tt];
+    k_g[idx] = conv_out[kc * T + tt];
+    v_g[idx] = conv_out[vc * T + tt];
+}
+
+// ---- 2b. conv left zero-pad (prefill from zero state). ----
+// src: [conv_dim, T] channel-major (channel c, time tt at c*T + tt).
+// dst: [conv_dim, T+pad] channel-major, cols 0..pad-1 = 0, cols pad..pad+T-1 = src.
+// dst MUST be pre-zeroed (e.zeros) so we only write the data cols. One thread per src element.
+// Matches hybrid_forward.rs conv_in build (conv_in[c*tp + pad + tt] = qkv_cm[c*t + tt]).
+extern "C" __global__ void conv_left_pad_f32(
+        const float* __restrict__ src, float* __restrict__ dst, int conv_dim, int T, int pad) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)conv_dim * T;
+    if (idx >= total) return;
+    int tt = idx % T;
+    int c  = idx / T;
+    int tp = T + pad;
+    dst[(long)c * tp + pad + tt] = src[idx];
+}
+
+// ---- 3. conv-state assemble + ring roll (decode T=1). ----
+// conv_state: resident [conv_dim, pad] (channel c, tap j at c*pad + j). pad = d_conv-1.
+// qkv_col:    [conv_dim] new token (channel c at index c) -- the matmul output, token-major T=1.
+// conv_in:    [conv_dim, pad+1] (channel c, time j at c*(pad+1)+j). cols 0..pad-1 = state, col pad = new.
+// AND roll the ring: conv_state[c*pad + j] = conv_in[c*(pad+1) + 1 + j]  (keep last pad cols).
+// We assemble into conv_in first (read state), then roll state in the SAME thread using the
+// just-built conv_in (which still holds the OLD state in cols 0..pad-1 + the new col). The roll
+// reads conv_in (not conv_state) so there is no read-after-write hazard across threads.
+// One thread per channel c. Matches decode.rs:175-185 EXACTLY.
+extern "C" __global__ void conv_assemble_and_roll_f32(
+        const float* __restrict__ qkv_col, float* __restrict__ conv_state,
+        float* __restrict__ conv_in, int conv_dim, int pad) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= conv_dim) return;
+    int tp = pad + 1;
+    const float* st = conv_state + (size_t)c * pad;
+    float* ci = conv_in + (size_t)c * tp;
+    // assemble: [state cols | new col]
+    for (int j = 0; j < pad; j++) ci[j] = st[j];
+    ci[pad] = qkv_col[c];
+    // roll: keep last `pad` cols of conv_in (cols 1..=pad) -> conv_state
+    float* so = conv_state + (size_t)c * pad;
+    for (int j = 0; j < pad; j++) so[j] = ci[1 + j];
+}

@@ -17,10 +17,10 @@ pub struct KvLayer {
 }
 
 /// Per-linear-attn-layer fixed recurrent state.
-/// conv_state is small (~0.1MB) → kept on host (negligible transfer). ssm_state is large
-/// (~2.1MB) → kept RESIDENT on GPU (was the dominant per-step round-trip, ~100MB/token).
+/// conv_state and ssm_state are BOTH kept RESIDENT on GPU — the conv ring assemble + roll runs
+/// on-device (conv_assemble_and_roll), so there is no per-step dtoh/htod for either.
 pub struct RecurLayer {
-    pub conv_state: Vec<f32>,        // host [conv_dim, d_conv-1]
+    pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
     pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
 }
 
@@ -57,7 +57,7 @@ impl Cache {
                 LayerKind::LinearAttention => {
                     kv.push(None);
                     recur.push(Some(RecurLayer {
-                        conv_state: vec![0.0; conv_dim * (d_conv - 1)],
+                        conv_state: e.zeros(conv_dim * (d_conv - 1))?,
                         ssm_state: e.zeros(d_state * d_state * num_v)?,
                     }));
                 }

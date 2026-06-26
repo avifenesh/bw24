@@ -87,6 +87,11 @@ extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __r
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = a[i] + b[i];
 }
+// y[i] *= s. NVFP4 per-tensor macro-scale broadcast over the whole matmul output.
+extern "C" __global__ void scale_f32(float* __restrict__ y, float s, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] *= s;
+}
 extern "C" __global__ void mul_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;

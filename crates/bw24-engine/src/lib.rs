@@ -343,31 +343,48 @@ impl Engine {
         // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
         // behind BW24_FAST until it passes the isolation gate vs Stage-A.
         let fast = std::env::var("BW24_FAST").is_ok();
-        match w {
+        let mut y = match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
-                self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q4_K =>
-                self.qmatvec_q4_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_q4_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q6_K =>
-                self.qmatvec_q6_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_q6_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q5_K =>
-                self.qmatvec_q5_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_q5_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q3_K =>
-                self.qmatvec_q3_K_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_q3_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_NVFP4 =>
-                self.qmatvec_nvfp4_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_nvfp4_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             // IQ4_XS optional fast path (gate behind a second env var; Stage-A is the default).
             GpuTensor::Quant { bytes, qtype, row_bytes, .. }
                 if fast && *qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok() =>
-                self.qmatvec_iq4_XS_fast(bytes, x, m, in_f, out_f, *row_bytes),
+                self.qmatvec_iq4_XS_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             // B3: IQ3_S and (default) IQ4_XS use the Stage-A f32 dequant-in-kernel path. There is
             // NO qmatvec_iq3_s_dp4a / (default) iq4_XS fast kernel — do NOT add a `*qtype == QT_IQ3_S`
             // (or unconditional QT_IQ4_XS) fast guard here without first writing the matching kernel,
             // or func() will panic "kernel ... not in any fatbin".
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
-                self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes),
-            GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f),
+                self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes)?,
+            GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f)?,
+        };
+        // NVFP4 per-tensor macro-scale (post-matmul). scale==1.0 for all other quants/float -> no-op.
+        if let GpuTensor::Quant { scale, .. } = w {
+            if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
         }
+        Ok(y)
+    }
+
+    /// y[i] *= s. NVFP4 per-tensor macro-scale broadcast over the whole output.
+    pub fn scale_inplace(&self, y: &mut CudaSlice<f32>, s: f32, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("scale_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let (sf, ni) = (s, n as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(y).arg(&sf).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).
@@ -595,6 +612,65 @@ impl Engine {
         let (hd, ni, no, ti) = (head_dim as i32, n_in as i32, n_out as i32, t as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(inp).arg(out).arg(&hd).arg(&ni).arg(&no).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// q|gate split (on-device). qf:[T, n_head*2*head_dim] -> q_out,gate_out:[head_dim,n_head,T].
+    /// Replaces the dtoh->host-double-loop->htod in full_attn / full_attn_decode.
+    pub fn q_gate_split(&self, qf: &CudaSlice<f32>, q_out: &mut CudaSlice<f32>,
+                        gate_out: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, t: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("q_gate_split_f32");
+        let cfg = LaunchConfig::for_num_elems((head_dim * n_head * t) as u32);
+        let (hd, nh, ti) = (head_dim as i32, n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qf).arg(q_out).arg(gate_out).arg(&hd).arg(&nh).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// qkv->GDN repack (on-device). conv_out:[conv_dim,T] channel-major ->
+    /// q_g/k_g/v_g:[d_state,num_v,T] with q/k head-repeat kh = vh % num_k (validated modulo mapping).
+    /// Replaces the dtoh->host-q/k/v-repack->3x-htod in linear_attn / linear_attn_decode.
+    pub fn qkv_to_gdn_repack(&self, conv_out: &CudaSlice<f32>, q_g: &mut CudaSlice<f32>,
+                             k_g: &mut CudaSlice<f32>, v_g: &mut CudaSlice<f32>,
+                             d_state: usize, num_v: usize, num_k: usize, key_dim: usize, t: usize)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("qkv_to_gdn_repack_f32");
+        let cfg = LaunchConfig::for_num_elems((d_state * num_v * t) as u32);
+        let (ds, nv, nk, kd, ti) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(conv_out).arg(q_g).arg(k_g).arg(v_g).arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// conv left zero-pad (prefill from zero state). src:[conv_dim,T] -> dst:[conv_dim,T+pad],
+    /// cols 0..pad = 0, cols pad..pad+T = src. `dst` MUST be pre-zeroed. No dtoh/host-loop/htod.
+    pub fn conv_left_pad(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                         conv_dim: usize, t: usize, pad: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("conv_left_pad_f32");
+        let cfg = LaunchConfig::for_num_elems((conv_dim * t) as u32);
+        let (cd, ti, p) = (conv_dim as i32, t as i32, pad as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst).arg(&cd).arg(&ti).arg(&p);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// conv-state assemble + ring roll (decode T=1). conv_state:[conv_dim,pad] (resident),
+    /// qkv_col:[conv_dim] -> conv_in:[conv_dim,pad+1]; AND rolls conv_state (keep last pad cols).
+    /// Replaces the dtoh->host-conv-ring-assemble->ring-update->htod in linear_attn_decode.
+    pub fn conv_assemble_and_roll(&self, qkv_col: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
+                                  conv_in: &mut CudaSlice<f32>, conv_dim: usize, pad: usize)
+                                  -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("conv_assemble_and_roll_f32");
+        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        let (cd, p) = (conv_dim as i32, pad as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_col).arg(conv_state).arg(conv_in).arg(&cd).arg(&p);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

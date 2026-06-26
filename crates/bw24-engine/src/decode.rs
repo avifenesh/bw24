@@ -89,20 +89,11 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        // q|gate fused: [2*head_dim per head]
+        // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
         let qf = e.matmul(&fa.wq, h, 1)?;
-        let qf_host = e.dtoh(&qf)?;
-        let mut q_host = vec![0f32; n_head * head_dim];
-        let mut gate_host = vec![0f32; n_head * head_dim];
-        let stride = 2 * head_dim;
-        for hh in 0..n_head {
-            let src = hh * stride;
-            let dst = hh * head_dim;
-            q_host[dst..dst + head_dim].copy_from_slice(&qf_host[src..src + head_dim]);
-            gate_host[dst..dst + head_dim].copy_from_slice(&qf_host[src + head_dim..src + 2 * head_dim]);
-        }
-        let mut q = e.htod(&q_host)?;
-        let gate = e.htod(&gate_host)?;
+        let mut q = e.zeros(n_head * head_dim)?;
+        let mut gate = e.zeros(n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
         let mut k = e.matmul(&fa.wk, h, 1)?;
         let v = e.matmul(&fa.wv, h, 1)?;
 
@@ -168,47 +159,27 @@ impl HybridModel {
         let beta_raw = e.matmul(&la.ssm_beta, h, 1)?;  // [num_v]
         let alpha = e.matmul(&la.ssm_alpha, h, 1)?;    // [num_v]
 
-        // conv input = [conv_state (pad cols) | new col]  channel-major [conv_dim, pad+1]
-        let qkv_host = e.dtoh(&qkv_mixed)?;            // [conv_dim] (channel = index, single token)
+        // conv input = [conv_state (pad cols) | new col]  channel-major [conv_dim, pad+1].
+        // Assemble + roll the ring ON-DEVICE from the resident conv_state (no dtoh/host-loop/htod).
         let rl = cache.recur[il].as_mut().unwrap();
         let tp = pad + 1;
-        let mut conv_in = vec![0f32; conv_dim * tp];
-        for c in 0..conv_dim {
-            // prior state cols
-            for j in 0..pad { conv_in[c * tp + j] = rl.conv_state[c * pad + j]; }
-            // new input col
-            conv_in[c * tp + pad] = qkv_host[c];
-        }
-        // update conv_state ring: keep last `pad` columns of conv_in (cols 1..=pad)
-        for c in 0..conv_dim {
-            for j in 0..pad { rl.conv_state[c * pad + j] = conv_in[c * tp + 1 + j]; }
-        }
-        let conv_in_d = e.htod(&conv_in)?;
+        let mut conv_in = e.zeros(conv_dim * tp)?;
+        e.conv_assemble_and_roll(&qkv_mixed, &mut rl.conv_state, &mut conv_in, conv_dim, pad)?;
         let mut conv_out = e.zeros(conv_dim)?;  // [conv_dim, 1] channel-major, SiLU
-        e.ssm_conv1d(&conv_in_d, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, 1, d_conv, true)?;
-        let conv_host = e.dtoh(&conv_out)?;
+        e.ssm_conv1d(&conv_in, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, 1, d_conv, true)?;
 
-        // split + repack to GDN [d_state, num_v, 1]; q/k repeat 16->32 via modulo (ggml_repeat_4d)
-        let mut q_g = vec![0f32; d_state * num_v];
-        let mut k_g = vec![0f32; d_state * num_v];
-        let mut v_g = vec![0f32; d_state * num_v];
-        for vh in 0..num_v {
-            let kh = vh % num_k;
-            for i in 0..d_state {
-                let qc = kh * head_k + i;
-                let kc = key_dim + kh * head_k + i;
-                let vc = 2 * key_dim + vh * d_state + i;
-                let dst = vh * d_state + i;
-                q_g[dst] = conv_host[qc];
-                k_g[dst] = conv_host[kc];
-                v_g[dst] = conv_host[vc];
-            }
-        }
-        let q_gd = e.htod(&q_g)?; let mut q_l2 = e.zeros(d_state * num_v)?;
-        e.l2_norm(&q_gd, &mut q_l2, d_state, num_v, eps)?;
-        let k_gd = e.htod(&k_g)?; let mut k_l2 = e.zeros(d_state * num_v)?;
-        e.l2_norm(&k_gd, &mut k_l2, d_state, num_v, eps)?;
-        let v_gd = e.htod(&v_g)?;
+        // split + repack to GDN [d_state, num_v, 1] ON-DEVICE; q/k repeat 16->32 via modulo
+        // (ggml_repeat_4d, kh = vh % num_k). No dtoh/host-loop/3x-htod.
+        let _ = head_k;  // head_k == d_state; the kernel uses head_k = d_state internally.
+        let mut q_g = e.zeros(d_state * num_v)?;
+        let mut k_g = e.zeros(d_state * num_v)?;
+        let mut v_g = e.zeros(d_state * num_v)?;
+        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, 1)?;
+        let mut q_l2 = e.zeros(d_state * num_v)?;
+        e.l2_norm(&q_g, &mut q_l2, d_state, num_v, eps)?;
+        let mut k_l2 = e.zeros(d_state * num_v)?;
+        e.l2_norm(&k_g, &mut k_l2, d_state, num_v, eps)?;
+        let v_gd = v_g;
 
         let mut beta = e.zeros(num_v)?;
         e.sigmoid(&beta_raw, &mut beta, num_v)?;

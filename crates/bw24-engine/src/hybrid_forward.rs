@@ -77,22 +77,11 @@ impl HybridModel {
 
         // wq output = head_dim*2*n_head (fused [q|gate] per head, stride 2*head_dim).
         let qf = e.matmul(&fa.wq, h, t)?;
-        // split per head: q = [head_dim] at offset 0 within each 2*head_dim block; gate at offset head_dim.
-        // Build q [head_dim, n_head, T] and gate [head_dim, n_head, T] by host repack (Stage 1).
-        let qf_host = e.dtoh(&qf)?;
-        let mut q_host = vec![0f32; t * n_head * head_dim];
-        let mut gate_host = vec![0f32; t * n_head * head_dim];
-        let stride = 2 * head_dim;
-        for tok in 0..t {
-            for hh in 0..n_head {
-                let src = tok * (n_head * stride) + hh * stride;
-                let dst = (tok * n_head + hh) * head_dim;
-                q_host[dst..dst + head_dim].copy_from_slice(&qf_host[src..src + head_dim]);
-                gate_host[dst..dst + head_dim].copy_from_slice(&qf_host[src + head_dim..src + 2 * head_dim]);
-            }
-        }
-        let mut q = e.htod(&q_host)?;
-        let gate = e.htod(&gate_host)?;
+        // split per head ON-DEVICE: q = [head_dim] at offset 0 within each 2*head_dim block; gate at
+        // offset head_dim. -> q,gate [head_dim, n_head, T]. No dtoh/host-loop/htod.
+        let mut q = e.zeros(t * n_head * head_dim)?;
+        let mut gate = e.zeros(t * n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
         let mut k = e.matmul(&fa.wk, h, t)?;
         let v = e.matmul(&fa.wv, h, t)?;
 
@@ -156,44 +145,27 @@ impl HybridModel {
         let qkv_cm = e.transpose(&qkv_mixed, t, conv_dim)?;   // [conv_dim, T]
         let pad = d_conv - 1;
         let tp = t + pad;
-        // build padded channel-major buffer on host (Stage 1)
-        let qkv_cm_host = e.dtoh(&qkv_cm)?;
-        let mut conv_in = vec![0f32; conv_dim * tp];
-        for c in 0..conv_dim {
-            for tt in 0..t { conv_in[c * tp + pad + tt] = qkv_cm_host[c * t + tt]; }
-        }
-        let conv_in_d = e.htod(&conv_in)?;
+        // build padded channel-major buffer ON-DEVICE (zero state prepended). No dtoh/host-loop/htod.
+        let mut conv_in = e.zeros(conv_dim * tp)?;
+        e.conv_left_pad(&qkv_cm, &mut conv_in, conv_dim, t, pad)?;
         let mut conv_out = e.zeros(conv_dim * t)?;  // [conv_dim, T] channel-major, SiLU applied
-        e.ssm_conv1d(&conv_in_d, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv, true)?;
+        e.ssm_conv1d(&conv_in, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv, true)?;
 
-        // split conv_out channels into q/k/v and repack to GDN [d_state, num_v, T].
-        // conv_out channel c, time tt at c*t + tt. q channels [0,key_dim), k [key_dim,2key_dim), v [2key_dim,conv_dim).
-        let conv_host = e.dtoh(&conv_out)?;
-        // q,k: [head_k, num_k, T]; v: [head_v, num_v, T]. GDN wants [d_state, num_v, T] for all.
-        let mut q_g = vec![0f32; d_state * num_v * t];
-        let mut k_g = vec![0f32; d_state * num_v * t];
-        let mut v_g = vec![0f32; d_state * num_v * t];
-        for tt in 0..t {
-            for vh in 0..num_v {
-                let kh = vh % num_k;  // ggml_repeat_4d head mapping is MODULO (vh % num_k), not block
-                for i in 0..d_state {
-                    // q channel = kh*head_k + i ; time tt
-                    let qc = kh * head_k + i;
-                    let kc = key_dim + kh * head_k + i;
-                    let vc = 2 * key_dim + vh * head_v + i;
-                    let dst = (tt * num_v + vh) * d_state + i;
-                    q_g[dst] = conv_host[qc * t + tt];
-                    k_g[dst] = conv_host[kc * t + tt];
-                    v_g[dst] = conv_host[vc * t + tt];
-                }
-            }
-        }
+        // split conv_out channels into q/k/v and repack to GDN [d_state, num_v, T] ON-DEVICE.
+        // conv_out channel c, time tt at c*t + tt. q channels [0,key_dim), k [key_dim,2key_dim),
+        // v [2key_dim,conv_dim). q/k head-repeat kh = vh % num_k (ggml_repeat_4d MODULO mapping).
+        // head_v == head_k == d_state. No dtoh/host-loop/3x-htod.
+        let _ = (head_k, head_v);
+        let mut q_g = e.zeros(d_state * num_v * t)?;
+        let mut k_g = e.zeros(d_state * num_v * t)?;
+        let mut v_g = e.zeros(d_state * num_v * t)?;
+        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         // L2-norm q,k per (head_dim) row — rows are contiguous d_state in q_g.
-        let q_gd = e.htod(&q_g)?; let mut q_l2 = e.zeros(d_state * num_v * t)?;
-        e.l2_norm(&q_gd, &mut q_l2, d_state, num_v * t, eps)?;
-        let k_gd = e.htod(&k_g)?; let mut k_l2 = e.zeros(d_state * num_v * t)?;
-        e.l2_norm(&k_gd, &mut k_l2, d_state, num_v * t, eps)?;
-        let v_gd = e.htod(&v_g)?;
+        let mut q_l2 = e.zeros(d_state * num_v * t)?;
+        e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        let mut k_l2 = e.zeros(d_state * num_v * t)?;
+        e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        let v_gd = v_g;
 
         // beta = sigmoid(beta_raw) ; g_log = a * softplus(alpha + dt). Both need [num_v, T] layout
         // (g[t*num_v + h]). beta_raw/alpha are [T, num_v] token-major == that layout already.
