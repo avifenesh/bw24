@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- correctness gate: decode-step prefix logits MUST match the prefill forward ---
     let prefill = model.forward_last(&e, &prompt)?;
     // decode the prompt step by step, capture last logits
-    let mut cache = bw24_engine::cache::Cache::new(&model.cfg);
+    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
     let mut dec_logits = Vec::new();
     for &t in &prompt { dec_logits = model.decode_step(&e, t, &mut cache)?; }
     let am_p = argmax(&prefill); let am_d = argmax(&dec_logits);
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- generate + time decode tok/s (honest Stage-A baseline) ---
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
-    let mut cache = bw24_engine::cache::Cache::new(&model.cfg);
+    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
     let mut ll = Vec::new();
     for &t in &prompt { ll = model.decode_step(&e, t, &mut cache)?; }
     e.stream().synchronize()?;

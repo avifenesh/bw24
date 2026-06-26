@@ -53,6 +53,19 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
 
+    /// Device-to-device copy of `src` into `dst[off..off+len]` (f32). For in-place KV append.
+    pub fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(off..off + len);
+        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        Ok(())
+    }
+
+    /// View a sub-range of a device buffer (for attending over [0..len) of a KV cache).
+    pub fn view<'a>(&self, b: &'a CudaSlice<f32>, len: usize) -> cudarc::driver::CudaView<'a, f32> {
+        b.slice(0..len)
+    }
+
     /// Resident-quantized linear (Stage-A: f32 dequant-in-kernel). y[m,out]=x[m,in]@W[out,in]^T.
     pub fn qmatvec(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
                    qtype: i32, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -231,6 +244,53 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// SDPA where K/V are CudaViews into a resident KV cache (decode hot path, no host round-trip).
+    pub fn sdpa_naive_view(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<f32>,
+                           v: &cudarc::driver::CudaView<f32>, o: &mut CudaSlice<f32>,
+                           head_dim: usize, n_head: usize, n_head_kv: usize, t: usize, t_kv: usize,
+                           scale: f32, causal: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sdpa_naive_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, t as u32, 1), block_dim: (128, 1, 1),
+            shared_mem_bytes: (t_kv * 4) as u32,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// gdn_scan variant where state_in/out are CudaViews (resident SSM state, in-place per step).
+    pub fn gdn_scan_s128_view(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                              g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
+                              state_in: &cudarc::driver::CudaView<f32>,
+                              state_out: &mut cudarc::driver::CudaViewMut<f32>,
+                              o: &mut CudaSlice<f32>, n_head: usize, t: usize, scale: f32)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_scan_s128");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS: u32 = 4;
+        let cfg = LaunchConfig { grid_dim: (n_head as u32, 1, S_V / COLS), block_dim: (WARP, COLS, 1), shared_mem_bytes: 0 };
+        let (h, ti) = (n_head as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o).arg(&h).arg(&ti).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// conv1d where the input is a CudaView (resident conv state assembled in place).
+    pub fn ssm_conv1d_view(&self, x: &cudarc::driver::CudaView<f32>, w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                           conv_dim: usize, t: usize, d_conv: usize, silu: bool)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_silu_f32");
+        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

@@ -56,7 +56,8 @@ impl HybridModel {
     /// then generate `max_new` tokens. Returns the generated token ids.
     pub fn generate(&self, e: &Engine, prompt: &[u32], max_new: usize)
                     -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-        let mut cache = Cache::new(&self.cfg);
+        let max_ctx = prompt.len() + max_new + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
         let mut last_logits = Vec::new();
         // prime: feed each prompt token (decode_step builds KV + state incrementally)
         for &tok in prompt {
@@ -111,20 +112,19 @@ impl HybridModel {
         e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
         e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
 
-        // append k,v to cache
+        // append k,v into the RESIDENT GPU KV cache at the current position (no host round-trip)
         let kvl = cache.kv[il].as_mut().unwrap();
-        let k_host = e.dtoh(&k)?;
-        let v_host = e.dtoh(&v)?;
-        kvl.k.extend_from_slice(&k_host);
-        kvl.v.extend_from_slice(&v_host);
+        let off = kvl.len * kvl.kv_dim;
+        e.copy_into(&mut kvl.k, off, &k, kvl.kv_dim)?;
+        e.copy_into(&mut kvl.v, off, &v, kvl.kv_dim)?;
         kvl.len += 1;
         let t_kv = kvl.len;
 
-        // attend: q[hd,nh,1] over K/V[hd,nhkv,t_kv]
-        let k_all = e.htod(&kvl.k)?;
-        let v_all = e.htod(&kvl.v)?;
+        // attend: q[hd,nh,1] over the resident K/V[hd,nhkv,t_kv] (view first t_kv*kv_dim elems)
+        let k_view = e.view(&kvl.k, t_kv * kvl.kv_dim);
+        let v_view = e.view(&kvl.v, t_kv * kvl.kv_dim);
         let mut attn = e.zeros(n_head * head_dim)?;
-        e.sdpa_naive(&q, &k_all, &v_all, &mut attn, head_dim, n_head, n_head_kv, 1, t_kv, scale, true)?;
+        e.sdpa_naive_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, 1, t_kv, scale, true)?;
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj
@@ -206,13 +206,12 @@ impl HybridModel {
         let mut g_log = e.zeros(num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, 1)?;
 
-        // GDN scan: carry SSM state from cache
-        let state_in = e.htod(&rl.ssm_state)?;
-        let mut state_out = e.zeros(d_state * d_state * num_v)?;
+        // GDN scan: SSM state stays RESIDENT on GPU. Read from cache buffer, write to a scratch,
+        // then swap scratch into the cache slot (gdn needs distinct in/out buffers).
         let mut o = e.zeros(d_state * num_v)?;
-        e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, &state_in, &mut state_out, &mut o, num_v, 1, scale)?;
-        // write SSM state back
-        rl.ssm_state = e.dtoh(&state_out)?;
+        let mut state_scratch = e.zeros(d_state * d_state * num_v)?;
+        e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, &rl.ssm_state, &mut state_scratch, &mut o, num_v, 1, scale)?;
+        rl.ssm_state = state_scratch;   // resident swap, no host round-trip
 
         // gated RMSNorm + ssm_out
         let mut gn = e.zeros(d_state * num_v)?;
