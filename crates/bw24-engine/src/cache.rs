@@ -7,12 +7,17 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::config::{ModelConfig, LayerKind};
 use crate::Engine;
 
-/// Per-full-attn-layer growing KV cache, resident on GPU (f32 Stage-2.0; fp16 later).
-/// Stored as a flat device buffer with capacity; k/v interleaved per layer as [token, kv_dim].
+/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
+/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
+/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
+/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
 pub struct KvLayer {
-    pub k: CudaSlice<f32>,   // capacity max_ctx*kv_dim
-    pub v: CudaSlice<f32>,
-    pub kv_dim: usize,
+    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
     pub len: usize,
 }
 
@@ -50,7 +55,15 @@ impl Cache {
         let n = cfg.n_layer as usize;
         let mut kv = Vec::with_capacity(n);
         let mut recur = Vec::with_capacity(n);
-        let kv_dim = cfg.head_dim_k as usize * cfg.n_head_kv as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim_k = cfg.head_dim_k as usize;
+        let head_dim_v = cfg.head_dim_v as usize;
+        assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
+                "KVQUANT requires head_dim_k%32==0 && head_dim_v%32==0 (got k={head_dim_k} v={head_dim_v})");
+        let kv_dim_k = head_dim_k * n_head_kv;
+        let kv_dim_v = head_dim_v * n_head_kv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;   // q8_0
+        let v_tok_bytes = (kv_dim_v / 32) * 24;   // q5_1
         let (conv_dim, d_state, num_v, d_conv) = if let Some(s) = &cfg.ssm {
             let num_k = s.group_count as usize;
             let num_v = s.time_step_rank as usize;
@@ -61,9 +74,9 @@ impl Cache {
             match cfg.layer_kind(il) {
                 LayerKind::FullAttention => {
                     kv.push(Some(KvLayer {
-                        k: e.zeros(max_ctx * kv_dim)?,
-                        v: e.zeros(max_ctx * kv_dim)?,
-                        kv_dim, len: 0,
+                        k: e.alloc_u8(max_ctx * k_tok_bytes)?,
+                        v: e.alloc_u8(max_ctx * v_tok_bytes)?,
+                        kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
                     }));
                     recur.push(None);
                 }

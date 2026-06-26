@@ -76,6 +76,49 @@ impl Engine {
         b.slice(0..len)
     }
 
+    /// View the first `len` BYTES of a u8 device buffer (quantized KV cache: [0..t_kv*tok_bytes)).
+    pub fn view_u8<'a>(&self, b: &'a CudaSlice<u8>, len: usize) -> cudarc::driver::CudaView<'a, u8> {
+        b.slice(0..len)
+    }
+
+    /// Append-quantize ONE token's post-RoPE K (q8_0) and V (q5_1) into the resident byte caches at
+    /// token index `t` (KVQUANT-PLAN §C). One CTA (one warp) per 32-element block; the kernel writes
+    /// the f16 scale(s) + packed quants for K and V. k_row/v_row are f32 [kv_dim_k]/[kv_dim_v].
+    pub fn append_kv_quantized(&self, k_row: &CudaSlice<f32>, v_row: &CudaSlice<f32>,
+                               kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t: usize,
+                               kv_dim_k: usize, kv_dim_v: usize,
+                               k_tok_bytes: usize, v_tok_bytes: usize)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("append_quantize_kv_q8_0_q5_1");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(&ti).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Like `append_kv_quantized` but k_row/v_row are CudaViews (one token's row sliced out of a
+    /// token-major [T, kv_dim] activation buffer — the MTP verify path appends T tokens).
+    pub fn append_kv_quantized_view(&self, k_row: &cudarc::driver::CudaView<f32>,
+                                    v_row: &cudarc::driver::CudaView<f32>,
+                                    kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t: usize,
+                                    kv_dim_k: usize, kv_dim_v: usize,
+                                    k_tok_bytes: usize, v_tok_bytes: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("append_quantize_kv_q8_0_q5_1");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(&ti).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Device-to-device copy of a CudaView `src` into `dst[off..off+len]` (f32). Like `copy_into`
     /// but the source is a sub-view (e.g. one column of a token-major activation buffer).
     pub fn copy_view_into(&self, dst: &mut CudaSlice<f32>, off: usize,
@@ -277,6 +320,12 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v)
+    }
+    /// Device-to-host copy of a u8 buffer (used to read back the quantized KV cache for validation).
+    pub fn dtoh_u8(&self, d: &CudaSlice<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
         self.gpu.stream.synchronize()?;
         Ok(v)
@@ -532,16 +581,18 @@ impl Engine {
         Ok(())
     }
 
-    /// FA prefill where K/V are CudaViews into a resident KV cache (the T=K verify path, MTP-PLAN
-    /// §D.3). Identical kernel to `fa_prefill`; the view's base+offset pointer is honored and the
-    /// kernel only reads [0..t_kv*kv_dim). Q is the T fresh query rows; t = T, t_kv = cache len.
-    pub fn fa_prefill_view(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<f32>,
-                           v: &cudarc::driver::CudaView<f32>, o: &mut CudaSlice<f32>,
+    /// FA prefill where K/V are QUANTIZED CudaViews into the resident byte KV cache (the T=K verify
+    /// path, MTP-PLAN §D.3). Uses `fa_prefill_q` (inline-dequant during stage-to-smem). The view's
+    /// base+offset pointer is honored; the kernel reads [0..t_kv*tok_bytes). Q is the T fresh query
+    /// rows; t = T, t_kv = cache len. k_tok_bytes/v_tok_bytes are the per-token byte strides.
+    pub fn fa_prefill_view(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                           v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                            head_dim: usize, n_head: usize, n_head_kv: usize,
-                           t: usize, t_kv: usize, scale: f32, causal: bool)
+                           t: usize, t_kv: usize, scale: f32, causal: bool,
+                           k_tok_bytes: usize, v_tok_bytes: usize)
                            -> Result<(), Box<dyn std::error::Error>> {
         const M_ROWS: usize = 16; const BK: usize = 64;
-        let f = self.func("fa_prefill_f32");
+        let f = self.func("fa_prefill_q");
         let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
                    + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -551,28 +602,34 @@ impl Engine {
             block_dim: (32, 1, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
+         .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
 
-    /// FA decode (T=1 split-K) over resident KV CudaViews. Replaces sdpa_naive_view for decode.
-    pub fn fa_decode(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<f32>,
-                     v: &cudarc::driver::CudaView<f32>, o: &mut CudaSlice<f32>,
-                     head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32)
+    /// FA decode (T=1 split-K) over the resident QUANTIZED KV cache (q8_0 K / q5_1 V) as u8 views.
+    /// Replaces sdpa_naive_view for decode; inline-dequants per element. k_tok_bytes/v_tok_bytes are
+    /// the per-token byte strides (differ: q8_0=34*nblk, q5_1=24*nblk per token).
+    pub fn fa_decode(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                     v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                     head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
+                     k_tok_bytes: usize, v_tok_bytes: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
         let n_splits = ((t_kv + 255) / 256).max(1);
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
         let mut part_l = self.zeros(n_head * n_splits)?;
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let f = self.func("fa_decode_f32");
         let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
-         .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp);
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         let fc = self.func("fa_decode_combine_f32");
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };

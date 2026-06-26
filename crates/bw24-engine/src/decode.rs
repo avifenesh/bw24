@@ -128,23 +128,24 @@ impl HybridModel {
         e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
         e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
 
-        // append k,v into the RESIDENT GPU KV cache at the current position (no host round-trip)
+        // append k,v into the RESIDENT GPU QUANTIZED KV cache at the current position (q8_0 K /
+        // q5_1 V, on-device append-quantize kernel; no host round-trip). KVQUANT-PLAN §C/E2.
         let kvl = cache.kv[il].as_mut().unwrap();
-        let off = kvl.len * kvl.kv_dim;
-        e.copy_into(&mut kvl.k, off, &k, kvl.kv_dim)?;
-        e.copy_into(&mut kvl.v, off, &v, kvl.kv_dim)?;
+        e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         kvl.len += 1;
         let t_kv = kvl.len;
 
-        // attend: q[hd,nh,1] over the resident K/V[hd,nhkv,t_kv] (view first t_kv*kv_dim elems)
-        let k_view = e.view(&kvl.k, t_kv * kvl.kv_dim);
-        let v_view = e.view(&kvl.v, t_kv * kvl.kv_dim);
+        // attend: q[hd,nh,1] over the resident byte K/V (view first t_kv*tok_bytes BYTES).
+        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+        let (ktb, vtb) = (kvl.k_tok_bytes, kvl.v_tok_bytes);
         let mut attn = e.zeros(n_head * head_dim)?;
         if std::env::var("BW24_NOFA").is_ok() {
-            e.sdpa_naive_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, 1, t_kv, scale, true)?;
-        } else {
-            e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale)?;
+            return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
+                        unset BW24_NOFA to use fa_decode".into());
         }
+        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj

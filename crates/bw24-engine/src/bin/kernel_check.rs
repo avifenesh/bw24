@@ -396,19 +396,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
             println!("fa_prefill T={t} Tkv={tkv}: rel={rel:.2e} {}", if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
         }
-        // decode cases (T=1)
+        // decode cases (T=1) — K/V come from the QUANTIZED resident cache (q8_0 K / q5_1 V).
+        // Quantize the f32 K/V token-by-token via the append kernel, then fa_decode dequants
+        // inline. Tolerance loosened vs the f32 path: q5_1 V (5-bit affine) is the looser link.
+        let kv_dim_k = hd * nhkv;   // head_dim_k * n_head_kv (head_dim_v == head_dim_k here)
+        let kv_dim_v = hd * nhkv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;
+        let v_tok_bytes = (kv_dim_v / 32) * 24;
         for tkv in [64usize, 128, 257] {
             let q: Vec<f32> = (0..hd*nh).map(|i| pr(i+1)*0.2).collect();
             let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
             let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
             let cpu = cpu_sdpa(&q,&k,&v,1,tkv);
-            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?; let mut od=e.zeros(hd*nh)?;
-            let kview=e.view(&kd, hd*nhkv*tkv); let vview=e.view(&vd, hd*nhkv*tkv);
-            e.fa_decode(&qd,&kview,&vview,&mut od,hd,nh,nhkv,tkv,scale)?;
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+            for tok in 0..tkv {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+            }
+            let mut od=e.zeros(hd*nh)?;
+            let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            e.fa_decode(&qd,&kview,&vview,&mut od,hd,nh,nhkv,tkv,scale,k_tok_bytes,v_tok_bytes)?;
             let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
-            println!("fa_decode  Tkv={tkv}: rel={rel:.2e} {}", if rel<5e-3 {"OK"} else {fails+=1;"FAIL"});
+            // Quantized KV (q8_0 K, q5_1 V) -> looser than f32 fa_decode (5e-3). These synthetic
+            // inputs are UNIFORM-random in [-0.2,0.2] (worse than real KV: V's q5_1 affine 5-bit
+            // noise ~1.35e-2/elem, amplified through the softmax-weighted average when |O| is small).
+            // The block round-trip + 5th-bit gates below isolate packing CORRECTNESS; the AUTHORITATIVE
+            // end-to-end gate is argmax stability on real models. Gate here: rel < 6e-2 (noise floor).
+            println!("fa_decode(KVQ) Tkv={tkv}: rel={rel:.2e} {}", if rel<6e-2 {"OK"} else {fails+=1;"FAIL"});
         }
+    }
+
+    // --- KV-cache quantization round-trip: append-quantize then dequant (matches §A formulas) ---
+    // Quantize a known f32 K/V row with the append kernel, read the bytes back, dequant on the CPU
+    // via the exact ggml q8_0/q5_1 formulas, compare to the f32 input. Isolates layout/packing bugs
+    // (esp. the q5_1 qh ballot) from attention. Includes a 5th-bit-boundary block (15<->16, 31).
+    {
+        use bw24_gguf::dequant::fp16_to_f32;
+        let nblk = 4usize;                 // 4 blocks -> 128 elements
+        let kv_dim_k = nblk * 32;
+        let kv_dim_v = nblk * 32;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;
+        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        // K input: signed random; V input: includes a block crafted to span the 5th-bit boundary.
+        let kin: Vec<f32> = (0..kv_dim_k).map(|i| pr(i + 71) * 1.3).collect();
+        let mut vin: Vec<f32> = (0..kv_dim_v).map(|i| pr(i + 91) * 0.7 + 0.1).collect();
+        // craft block 1 of V so quantized q5 values hit 0..31 spanning bit-4 (15<->16, 31). With
+        // mn=0, mx=31*d, q5(j)=round((v-mn)/d) -> set v[j]=j*step so q5 sweeps 0..31 across the warp.
+        let step = 0.05f32;
+        for j in 0..32 { vin[32 + j] = j as f32 * step; }
+        let kd = e.htod(&kin)?; let vd = e.htod(&vin)?;
+        let mut kc = e.alloc_u8(k_tok_bytes)?; let mut vc = e.alloc_u8(v_tok_bytes)?;
+        e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+        let kbytes = e.dtoh_u8(&kc)?; let vbytes = e.dtoh_u8(&vc)?;
+        // CPU dequant of q8_0 (K)
+        let f16_to_f32 = |b: &[u8]| -> f32 { fp16_to_f32(u16::from_le_bytes([b[0], b[1]])) };
+        let mut k_deq = vec![0f32; kv_dim_k];
+        for blk in 0..nblk {
+            let base = blk * 34;
+            let d = f16_to_f32(&kbytes[base..base + 2]);
+            for j in 0..32 {
+                let q = kbytes[base + 2 + j] as i8;
+                k_deq[blk * 32 + j] = d * q as f32;
+            }
+        }
+        let kerr = maxdiff(&kin, &k_deq);
+        // per-block d for K rel tol: q8_0 max abs err <= d/2; report relative to amax.
+        let kamax = kin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
+        let krel = kerr / kamax;
+        println!("kvq q8_0 K round-trip: rel={krel:.2e} {}", if krel < 5e-3 { "OK" } else { fails += 1; "FAIL" });
+        // CPU dequant of q5_1 (V)
+        let mut v_deq = vec![0f32; kv_dim_v];
+        for blk in 0..nblk {
+            let base = blk * 24;
+            let d = f16_to_f32(&vbytes[base..base + 2]);
+            let m = f16_to_f32(&vbytes[base + 2..base + 4]);
+            let qh = u32::from_le_bytes([vbytes[base + 4], vbytes[base + 5], vbytes[base + 6], vbytes[base + 7]]);
+            let qs = &vbytes[base + 8..base + 24];
+            for j in 0..32 {
+                let lo = if j < 16 { (qs[j] & 0x0F) as i32 } else { (qs[j - 16] >> 4) as i32 };
+                let hi = (((qh >> j) & 1) << 4) as i32;
+                let q5 = lo | hi;
+                v_deq[blk * 32 + j] = d * q5 as f32 + m;
+            }
+        }
+        let verr = maxdiff(&vin, &v_deq);
+        let vamax = vin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
+        let vrel = verr / vamax;
+        println!("kvq q5_1 V round-trip: rel={vrel:.2e} {}", if vrel < 3e-2 { "OK" } else { fails += 1; "FAIL" });
+        // explicit 5th-bit-boundary check on V block 1 (q5 sweeps 0..31).
+        let bnd_err = (0..32).map(|j| (vin[32 + j] - v_deq[32 + j]).abs()).fold(0.0, f32::max);
+        let bnd_d = step;  // block1 d ~= (31*step - 0)/31 = step
+        println!("kvq q5_1 5th-bit boundary: maxerr={bnd_err:.2e} (d~{bnd_d:.2e}) {}",
+                 if bnd_err < bnd_d { "OK" } else { fails += 1; "FAIL" });
     }
 
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }

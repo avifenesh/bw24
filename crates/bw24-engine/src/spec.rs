@@ -20,8 +20,19 @@ struct MtpScratch {
 impl MtpScratch {
     fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize)
            -> Result<Self, Box<dyn std::error::Error>> {
-        let kv_dim = cfg.head_dim_k as usize * cfg.n_head_kv as usize;
-        Ok(MtpScratch { kv: KvLayer { k: e.zeros(cap * kv_dim)?, v: e.zeros(cap * kv_dim)?, kv_dim, len: 0 } })
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim_k = cfg.head_dim_k as usize;
+        let head_dim_v = cfg.head_dim_v as usize;
+        assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
+                "KVQUANT requires head_dim%32==0 (MTP scratch)");
+        let kv_dim_k = head_dim_k * n_head_kv;
+        let kv_dim_v = head_dim_v * n_head_kv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;
+        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        Ok(MtpScratch { kv: KvLayer {
+            k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
+            kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+        } })
     }
     fn reset(&mut self) { self.kv.len = 0; }
 }
@@ -142,15 +153,15 @@ impl HybridModel {
         e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
 
         let kv = &mut scratch.kv;
-        let off = kv.len * kv.kv_dim;
-        e.copy_into(&mut kv.k, off, &k, kv.kv_dim)?;
-        e.copy_into(&mut kv.v, off, &v, kv.kv_dim)?;
+        e.append_kv_quantized(&k, &v, &mut kv.k, &mut kv.v, kv.len,
+                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
         kv.len += 1;
         let t_kv = kv.len;
-        let k_view = e.view(&kv.k, t_kv * kv.kv_dim);
-        let v_view = e.view(&kv.v, t_kv * kv.kv_dim);
+        let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
+        let k_view = e.view_u8(&kv.k, t_kv * kv.k_tok_bytes);
+        let v_view = e.view_u8(&kv.v, t_kv * kv.v_tok_bytes);
         let mut attn = e.zeros(n_head * head_dim)?;
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale)?;
+        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
 
         let mut gsig = e.zeros(n_head * head_dim)?;
         e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
@@ -264,23 +275,27 @@ impl HybridModel {
         e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
         e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
 
-        // append T new K/V columns to the resident cache. k/v are token-major [T, kv_dim] which is
-        // exactly the cache row layout [token, kv_dim] -> single contiguous copy of T*kv_dim elems.
+        // append T new K/V columns to the resident QUANTIZED cache. k/v are token-major [T, kv_dim]
+        // f32; append-quantize each of the T token rows into the byte cache (q8_0 K / q5_1 V).
         let kvl = cache.kv[il].as_mut().unwrap();
-        let off = kvl.len * kvl.kv_dim;
-        e.copy_into(&mut kvl.k, off, &k, t * kvl.kv_dim)?;
-        e.copy_into(&mut kvl.v, off, &v, t * kvl.kv_dim)?;
+        let (kv_dim_k, kv_dim_v, ktb, vtb) = (kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes);
+        for i in 0..t {
+            let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
+            let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
+            e.append_kv_quantized_view(&k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len + i,
+                                       kv_dim_k, kv_dim_v, ktb, vtb)?;
+        }
         kvl.len += t;
         let t_kv = kvl.len;
 
-        // causal attention of the T query rows over [0..t_kv) resident K/V. fa_prefill is causal:
+        // causal attention of the T query rows over [0..t_kv) resident byte K/V. fa_prefill is causal:
         // query row r (absolute pos pos0+r) sees keys [0 .. (t_kv - t) + r]. With pos0 == t_kv - t
         // (the verify tokens are appended at the tail), the causal mask aligns: q row r attends
         // up to absolute key (t_kv - t) + r == pos0 + r. Correct.
-        let k_view = e.view(&kvl.k, t_kv * kvl.kv_dim);
-        let v_view = e.view(&kvl.v, t_kv * kvl.kv_dim);
+        let k_view = e.view_u8(&kvl.k, t_kv * ktb);
+        let v_view = e.view_u8(&kvl.v, t_kv * vtb);
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t, t_kv, scale, true)?;
+        e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t, t_kv, scale, true, ktb, vtb)?;
 
         let mut gsig = e.zeros(t * n_head * head_dim)?;
         e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;

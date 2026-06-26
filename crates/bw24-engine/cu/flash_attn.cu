@@ -115,6 +115,123 @@ static __device__ __forceinline__ void mma_bf16(CTile& D, const ATile& A, const 
 #define LOG2E 1.4426950408889634f
 
 // ===================================================================== //
+//  KV-CACHE QUANTIZATION  (q8_0 for K, q5_1 for V)                      //
+//  Block layouts (ggml-common.h, verified byte-for-byte):              //
+//    q8_0 : 34 B/32elem  = f16 d (2B) + int8 qs[32] (32B)              //
+//           x[j] = f16_to_f32(d) * (float)qs[j]                         //
+//    q5_1 : 24 B/32elem  = f16 d (2B) + f16 m (2B) + u32 qh (4B)        //
+//                          + u8 qs[16] (16B)                            //
+//           lo = (j<16)? (qs[j]&0xF) : (qs[j-16]>>4)                    //
+//           hi = ((qh>>j)&1)<<4 ; q5 = lo|hi ; x[j] = d*q5 + m          //
+//  Cache element-within-token index = kv_head*head_dim + d. block =     //
+//  idx/32, lane = idx%32. head_dim%32==0 so a 32-block never straddles  //
+//  heads. K/V token strides differ (k_tok_bytes vs v_tok_bytes).        //
+// ===================================================================== //
+
+// q8_0 dequant of one element. `K` is the cache base, `t` the token,
+// `kv_dim` element-within-token index `eidx = kv_head*head_dim + d`.
+static __device__ __forceinline__ float dq_q8_0_elem(
+        const uint8_t* __restrict__ K, long t, long k_tok_bytes, int eidx)
+{
+    const uint8_t* blk = K + (size_t)t * k_tok_bytes + (size_t)(eidx >> 5) * 34;
+    const half d = *(const half*)blk;
+    const int8_t q = ((const int8_t*)(blk + 2))[eidx & 31];
+    return __half2float(d) * (float)q;
+}
+
+// q5_1 dequant of one element (affine).
+static __device__ __forceinline__ float dq_q5_1_elem(
+        const uint8_t* __restrict__ V, long t, long v_tok_bytes, int eidx)
+{
+    const uint8_t* blk = V + (size_t)t * v_tok_bytes + (size_t)(eidx >> 5) * 24;
+    const half d = *(const half*)blk;            // dm.x
+    const half m = *(const half*)(blk + 2);      // dm.y
+    const uint32_t qh = *(const uint32_t*)(blk + 4);
+    const uint8_t* qs = blk + 8;
+    const int j = eidx & 31;
+    const int lo = (j < 16) ? (qs[j] & 0x0F) : (qs[j - 16] >> 4);
+    const int q5 = lo | (int)(((qh >> j) & 1u) << 4);
+    return __half2float(d) * (float)q5 + __half2float(m);
+}
+
+// ---- warp reductions over a 32-lane block (one warp per 32-elem block) ----
+static __device__ __forceinline__ float warp_amax(float v) {
+    v = fabsf(v);
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    return v;
+}
+static __device__ __forceinline__ float warp_min(float v) {
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v = fminf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    return v;
+}
+static __device__ __forceinline__ float warp_max(float v) {
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    return v;
+}
+
+// Append-quantize one token's K (q8_0) and V (q5_1) into the resident cache.
+//   grid  = (max(kv_dim_k, kv_dim_v)/32, 1, 1)  -- one CTA per 32-elem block
+//   block = (32,1,1)                            -- one thread per element (one warp)
+// Thread `lane` owns element `b*32+lane`. k_row/v_row are the post-RoPE f32
+// K/V rows for the single new token (element order kv_head*head_dim + d).
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1(
+        const float* __restrict__ k_row,   // [kv_dim_k]
+        const float* __restrict__ v_row,   // [kv_dim_v]
+        uint8_t* __restrict__ K,           // cache base (q8_0)
+        uint8_t* __restrict__ V,           // cache base (q5_1)
+        int t, int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int b    = blockIdx.x;           // 32-elem block index within the token
+    const int lane = threadIdx.x;          // 0..31
+    const int eidx = b * 32 + lane;        // element index within token
+
+    // ---- K block b -> q8_0 (symmetric) ----
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? k_row[eidx] : 0.0f;
+        float amax = warp_amax(x);
+        float d = amax / 127.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q = (int)lrintf(x * id);
+        q = max(-127, min(127, q));
+        uint8_t* blk = K + (size_t)t * k_tok_bytes + (size_t)b * 34;
+        if (lane == 0) *(half*)blk = __float2half(d);
+        ((int8_t*)(blk + 2))[lane] = (int8_t)q;
+    }
+
+    // ---- V block b -> q5_1 (affine) ----
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? v_row[eidx] : 0.0f;
+        float mn = warp_min(x);
+        float mx = warp_max(x);
+        float d = (mx - mn) / 31.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q5 = (int)lrintf((x - mn) * id);
+        q5 = max(0, min(31, q5));
+        // qh bit j set iff element j has its 5th bit (bit 4) set. __ballot_sync
+        // over all 32 lanes yields EXACTLY the little-endian qh u32 (bit j = lane j).
+        uint32_t qh = __ballot_sync(0xffffffffu, (q5 >> 4) & 1);
+        uint8_t* blk = V + (size_t)t * v_tok_bytes + (size_t)b * 24;
+        if (lane == 0) {
+            *(half*)blk        = __float2half(d);          // dm.x
+            *(half*)(blk + 2)  = __float2half(mn);         // dm.y (min)
+            *(uint32_t*)(blk + 4) = qh;                    // 5th bits
+        }
+        // qs nibble packing: lanes 0..15 own the LOW nibble of byte (lane),
+        // lanes 16..31 own the HIGH nibble of byte (lane-16). Exchange the low
+        // nibble of the partner lane (lane+16) via shuffle so each of bytes
+        // 0..15 is written exactly once by lane in [0,16).
+        uint8_t* qs = blk + 8;
+        int nib = q5 & 0x0F;
+        int partner_nib = __shfl_sync(0xffffffffu, nib, lane + 16) & 0x0F;  // lane+16's low nibble
+        if (lane < 16) qs[lane] = (uint8_t)(nib | (partner_nib << 4));
+    }
+}
+
+// ===================================================================== //
 //  KERNEL 1 : fa_prefill_f32                                            //
 //  One WARP per (head, q-tile of 16 rows). FA-2 online softmax.         //
 //  grid = (ceil(T/16), n_head, 1) ; block = (32,1,1).                   //
@@ -300,6 +417,154 @@ extern "C" __global__ void fa_prefill_f32(
 }
 
 // ===================================================================== //
+//  KERNEL 1b : fa_prefill_q  (quantized-cache prefill: q8_0 K / q5_1 V) //
+//  Identical to fa_prefill_f32 EXCEPT the stage-to-smem copy dequants    //
+//  the resident quantized KV cache. MMA / softmax / PV are byte-identical //
+//  to the f32 kernel. Used by the MTP verify path (fa_prefill_view).     //
+//  K/V token strides differ (k_tok_bytes vs v_tok_bytes).                //
+// ===================================================================== //
+extern "C" __global__ void fa_prefill_q(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, long k_tok_bytes, long v_tok_bytes)
+{
+    const int q_tile = blockIdx.x;
+    const int head   = blockIdx.y;
+    const int lane   = threadIdx.x;
+    const int q_base = q_tile * M_ROWS;
+    if (head >= n_head || q_base >= T) return;
+    const int kv_head = head / (n_head / n_head_kv);
+    const int nq = min(M_ROWS, T - q_base);
+
+    extern __shared__ char smem_raw[];
+    __nv_bfloat16* sQ = (__nv_bfloat16*)smem_raw;
+    __nv_bfloat16* sK = sQ + M_ROWS*HEAD_DIM;
+    __nv_bfloat16* sV = sK + BK*HEAD_DIM;
+    __nv_bfloat16* sP = sV + BK*HEAD_DIM;
+    float* sO = (float*)(sP + M_ROWS*BK);
+    float* sS = sO + M_ROWS*HEAD_DIM;
+    float* sM = sS + M_ROWS*BK;
+    float* sL = sM + M_ROWS;
+
+    for (int i = lane; i < M_ROWS*HEAD_DIM; i += WARP_SZ) {
+        int r = i / HEAD_DIM, d = i % HEAD_DIM;
+        float qv = (r < nq) ? Q[((size_t)(q_base + r) * n_head + head) * head_dim + d] : 0.0f;
+        sQ[i] = __float2bfloat16(qv);
+    }
+    for (int i = lane; i < M_ROWS*HEAD_DIM; i += WARP_SZ) sO[i] = 0.0f;
+    for (int i = lane; i < M_ROWS; i += WARP_SZ) { sM[i] = NEG_INF; sL[i] = 0.0f; }
+    __syncwarp();
+
+    const int q_pos0 = (T_kv - T) + q_base;
+
+    for (int k0 = 0; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        if (causal && k0 > (q_pos0 + nq - 1)) break;
+
+        // ---- stage K,V tiles to smem with INLINE DEQUANT (pad invalid keys with 0) ----
+        for (int i = lane; i < BK*HEAD_DIM; i += WARP_SZ) {
+            int kk = i / HEAD_DIM, d = i % HEAD_DIM;
+            int eidx = kv_head * head_dim + d;       // element-within-token index
+            float kv = (kk < nk) ? dq_q8_0_elem(K, (long)(k0 + kk), k_tok_bytes, eidx) : 0.0f;
+            float vv = (kk < nk) ? dq_q5_1_elem(V, (long)(k0 + kk), v_tok_bytes, eidx) : 0.0f;
+            sK[i] = __float2bfloat16(kv);
+            sV[i] = __float2bfloat16(vv);
+        }
+        __syncwarp();
+
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C0, C1;
+            C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+            C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < HEAD_DIM; kk += K_STEP) {
+                ATile A, Kt;
+                ld_A(A,  sQ + kk,                  HEAD_DIM/2);
+                ld_A(Kt, sK + kg*HEAD_DIM + kk,    HEAD_DIM/2);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, A, Blo);
+                mma_bf16(C1, A, Bhi);
+            }
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int m = CTile::get_i(l), c8 = CTile::get_j(l);
+                sS[m*BK + kg + 0      + c8] = C0.x[l];
+                sS[m*BK + kg + N_KEYS + c8] = C1.x[l];
+            }
+        }
+        __syncwarp();
+
+        if (lane < M_ROWS) {
+            int r = lane;
+            float* srow = sS + r*BK;
+            int q_pos = q_pos0 + r;
+            float m_tile = NEG_INF;
+            for (int j = 0; j < nk; ++j) {
+                float s = srow[j] * scale;
+                if (causal && (k0 + j) > q_pos) s = NEG_INF;
+                srow[j] = s;
+                m_tile = fmaxf(m_tile, s);
+            }
+            float m_prev = sM[r];
+            float m_new  = fmaxf(m_prev, m_tile);
+            float alpha = (m_prev == NEG_INF) ? 0.0f : exp2f((m_prev - m_new) * LOG2E);
+            float l_tile = 0.0f;
+            for (int j = 0; j < nk; ++j) {
+                float p = (srow[j] == NEG_INF) ? 0.0f : exp2f((srow[j] - m_new) * LOG2E);
+                sP[r*BK + j] = __float2bfloat16(p);
+                l_tile += p;
+            }
+            for (int j = nk; j < BK; ++j) sP[r*BK + j] = __float2bfloat16(0.0f);
+            sL[r] = sL[r] * alpha + l_tile;
+            sM[r] = m_new;
+            sS[r*BK + 0] = alpha;
+        }
+        __syncwarp();
+
+        for (int i = lane; i < M_ROWS*HEAD_DIM; i += WARP_SZ) {
+            int r = i / HEAD_DIM;
+            if (r < nq) sO[i] *= sS[r*BK + 0];
+        }
+        __syncwarp();
+
+        for (int d0 = 0; d0 < HEAD_DIM; d0 += 2*N_KEYS) {
+            CTile Clo, Chi;
+            Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
+            Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < BK; kk += K_STEP) {
+                ATile A; ATile Bt;
+                ld_A(A, sP + kk, BK/2);
+                ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                mma_bf16(Clo, A, Blo);
+                mma_bf16(Chi, A, Bhi);
+            }
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int m   = CTile::get_i(l);
+                int nlo = d0 +          CTile::get_j(l);
+                int nhi = d0 + N_KEYS + CTile::get_j(l);
+                sO[m*HEAD_DIM + nlo] += Clo.x[l];
+                sO[m*HEAD_DIM + nhi] += Chi.x[l];
+            }
+        }
+        __syncwarp();
+    }
+
+    for (int i = lane; i < M_ROWS*HEAD_DIM; i += WARP_SZ) {
+        int r = i / HEAD_DIM, d = i % HEAD_DIM;
+        if (r < nq) {
+            float linv = (sL[r] > 0.0f) ? (1.0f / sL[r]) : 0.0f;
+            O[((size_t)(q_base + r) * n_head + head) * head_dim + d] = sO[i] * linv;
+        }
+    }
+}
+
+// ===================================================================== //
 //  KERNEL 2 : fa_decode_f32                                             //
 //  T == 1 vector decode with flash-decoding split-K over the KV axis.   //
 //  grid = (n_head, n_splits, 1) ; block = (HEAD_DIM/?, 1, 1) -> use 256  //
@@ -323,14 +588,15 @@ extern "C" __global__ void fa_prefill_f32(
 
 // Partials buffers are laid out [head][split][...]; caller sizes them n_head*n_splits.
 extern "C" __global__ void fa_decode_f32(
-        const float* __restrict__ Q,  // [head_dim, n_head, 1]
-        const float* __restrict__ K,  // [head_dim, n_head_kv, T_kv]
-        const float* __restrict__ V,  // [head_dim, n_head_kv, T_kv]
+        const float* __restrict__ Q,    // [head_dim, n_head, 1]
+        const uint8_t* __restrict__ K,  // q8_0 cache [token, kv_dim_k bytes]
+        const uint8_t* __restrict__ V,  // q5_1 cache [token, kv_dim_v bytes]
         float* __restrict__ partO,    // [n_head, n_splits, head_dim]
         float* __restrict__ partM,    // [n_head, n_splits]
         float* __restrict__ partL,    // [n_head, n_splits]
         int head_dim, int n_head, int n_head_kv, int T_kv,
-        float scale, int n_splits)
+        float scale, int n_splits,
+        long k_tok_bytes, long v_tok_bytes)
 {
     const int head  = blockIdx.x;
     const int split = blockIdx.y;
@@ -359,15 +625,11 @@ extern "C" __global__ void fa_decode_f32(
 
     for (int t = t_lo; t < t_hi; ++t) {
         // score_t = scale * dot(q, K[:,kv_head,t])
-        // ---- q8_0-K / q5_1-V HOOK -------------------------------------------------
-        // For quantized KV: replace the f32 load below with a per-thread dequant of
-        // K[t] block (q8_0: int8*scale; q5_1: 5-bit+min/scale) before the dot. The
-        // dot reduction (warp+block) and the online-softmax math are UNCHANGED. The
-        // V gather (acc += p * V[t][tid]) likewise dequants q5_1 per element. Keep
-        // m_i/l_i in f32 regardless of KV dtype.
-        // ---------------------------------------------------------------------------
-        const float* kt = K + ((size_t)t * n_head_kv + kv_head) * head_dim;
-        float prod = (tid < head_dim) ? sq[tid] * kt[tid] : 0.0f;
+        // ---- q8_0-K dequant: thread tid owns element kv_head*head_dim + tid ----
+        // The dot reduction (warp+block) and online-softmax math are UNCHANGED.
+        const int kidx = kv_head * head_dim + tid;       // element-within-token index
+        float ktv = (tid < head_dim) ? dq_q8_0_elem(K, t, k_tok_bytes, kidx) : 0.0f;
+        float prod = (tid < head_dim) ? sq[tid] * ktv : 0.0f;
         // block reduce prod -> score (warp shuffle + smem across warps)
         for (int o = 16; o > 0; o >>= 1) prod += __shfl_down_sync(0xffffffff, prod, o);
         if ((tid & 31) == 0) red[tid >> 5] = prod;
@@ -387,8 +649,10 @@ extern "C" __global__ void fa_decode_f32(
         float m_new = fmaxf(m_i, score);
         float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
         float p     = exp2f((score - m_new) * LOG2E);
-        const float* vt = V + ((size_t)t * n_head_kv + kv_head) * head_dim;
-        if (tid < head_dim) acc = acc * alpha + p * vt[tid];
+        // ---- q5_1-V dequant: thread tid owns element kv_head*head_dim + tid ----
+        const int vidx = kv_head * head_dim + tid;
+        float vtv = (tid < head_dim) ? dq_q5_1_elem(V, t, v_tok_bytes, vidx) : 0.0f;
+        if (tid < head_dim) acc = acc * alpha + p * vtv;
         l_i = l_i * alpha + p;
         m_i = m_new;
     }
