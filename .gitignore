@@ -12,3 +12,4 @@ probe/bw_bench
 probe/tc_peak
 probe/lowbit_peak
 probe/*.o
+tools/llama_logits

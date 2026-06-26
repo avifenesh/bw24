@@ -7,6 +7,9 @@ use cudarc::nvrtc::Ptx;
 pub use bw24_gguf;
 pub use bw24_runtime;
 
+pub mod model;
+pub mod forward;
+
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 
 /// Engine device context: CUDA context, stream, loaded kernel module, cuBLASLt (via runtime::Gpu).
@@ -102,6 +105,22 @@ impl Engine {
         bld.arg(a).arg(b_in).arg(dst).arg(&ni);
         unsafe { bld.launch(cfg)?; }
         Ok(())
+    }
+
+    /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).
+    /// cuBLASLt col-major mapping (see bw24_runtime::Gpu::linear_f32 for the derivation).
+    pub fn linear(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize, in_f: usize, out_f: usize)
+                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use cudarc::cublaslt::{Matmul, MatmulConfig};
+        let mut c = self.gpu.stream.alloc_zeros::<f32>(m_tokens * out_f)?;
+        let cfg = MatmulConfig {
+            transa: true, transb: false, transc: false,
+            m: out_f as u64, n: m_tokens as u64, k: in_f as u64,
+            alpha: 1.0, lda: in_f as i64, ldb: in_f as i64, beta: 0.0, ldc: out_f as i64,
+            stride_a: None, stride_b: None, stride_c: None, stride_bias: None, batch_size: None,
+        };
+        unsafe { self.gpu.blas.matmul(cfg, w, x, &mut c, None, None)?; }
+        Ok(c)
     }
 
     /// Naive SDPA. Q:[head_dim,n_head,T], K/V:[head_dim,n_head_kv,T_kv] -> O:[head_dim,n_head,T].
