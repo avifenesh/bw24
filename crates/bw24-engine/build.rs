@@ -24,4 +24,63 @@ fn main() {
         assert!(status.success(), "nvcc fatbin build failed for {src}");
         println!("cargo:rustc-env={env}={}", fatbin.display());
     }
+
+    // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----
+    // CUTLASS needs its host-side GemmUniversalAdapter::run() (host C++), so it cannot go through the
+    // fatbin/load_module path above. It is compiled to an object, archived, and whole-archived at link.
+    // Additive: the 6-fatbin loop above is byte-for-byte unchanged (the parallel flash_attn.cu FA build
+    // is untouched). Guarded by BW24_CUTLASS so the default build is unaffected until Phase 0 lands.
+    if std::env::var("BW24_CUTLASS").is_ok() {
+        let cutlass_src = "cu/cutlass_fp4_sm120.cu";
+        println!("cargo:rerun-if-changed={cutlass_src}");
+        println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
+        // CUTLASS 4.x header tree (on-box, probe-verified). TODO Phase 1: vendor a pinned tree into the
+        // repo for reproducibility rather than pointing at the venv install.
+        let cutlass_root = std::env::var("BW24_CUTLASS_ROOT").unwrap_or_else(|_|
+            "/home/avifenesh/.venvs/torch/lib/python3.12/site-packages/flashinfer/data/cutlass".into());
+        let cutlass_inc = format!("{cutlass_root}/include");
+        let cutlass_util = format!("{cutlass_root}/tools/util/include");
+        let obj = out.join("cutlass_fp4_sm120.o");
+        let lib = out.join("libbw24_cutlass.a");
+        let status = Command::new(&nvcc)
+            .args([
+                "-gencode", "arch=compute_120a,code=sm_120a",
+                "-O3", "-std=c++17", "--expt-relaxed-constexpr",
+                "-DENABLE_BF16", "-DENABLE_FP4", "-DCUTLASS_ENABLE_GDC_FOR_SM100=1",
+                "-I", &cutlass_inc, "-I", &cutlass_util,
+                "-c", cutlass_src, "-o", obj.to_str().unwrap(),
+            ])
+            .status()
+            .expect("spawn nvcc (cutlass)");
+        assert!(status.success(), "nvcc static-lib build failed for {cutlass_src}");
+        let _ = std::fs::remove_file(&lib);
+        let status = Command::new("ar")
+            .args(["crus", lib.to_str().unwrap(), obj.to_str().unwrap()])
+            .status()
+            .expect("spawn ar");
+        assert!(status.success(), "ar failed for {}", lib.display());
+        // --whole-archive is MANDATORY: a plain static link drops the CUDART fatbin-registration global
+        // ctor (_ZL24__sti____cudaRegisterAllv in .init_array) -> the device kernel silently never
+        // registers -> no-kernel launch failure. Verified on-box (plan §2.2).
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg={}", lib.display());
+        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+        // libstdc++ AFTER the archive (link-arg, not link-lib) so the function-local-static guard
+        // symbols (__cxa_guard_acquire/release, from CUTLASS's tile_atom_to_shape statics) resolve.
+        // A plain `link-lib=stdc++` can be ordered before the archive under -nodefaultlibs/lld and
+        // leave them undefined for bins other than cutlass-smoke (whole-archive applies to ALL bins).
+        // cudart (CUTLASS host adapter uses the runtime API) and stdc++ BOTH as trailing link-args so
+        // they sit AFTER the whole-archive; the cudart fatbin-registration ctors + the C++ static
+        // guards in cutlass_fp4_sm120.o resolve against them. The CUDA lib dir is needed for -lcudart.
+        let cuda_lib = std::path::Path::new(&nvcc).parent().and_then(|p| p.parent())
+            .map(|p| p.join("lib64")).unwrap_or_else(|| std::path::PathBuf::from("/usr/local/cuda-13.1/lib64"));
+        println!("cargo:rustc-link-search=native={}", cuda_lib.display());
+        println!("cargo:rustc-link-arg=-Wl,--push-state,--as-needed");
+        println!("cargo:rustc-link-arg=-lcudart");
+        println!("cargo:rustc-link-arg=-lstdc++");
+        println!("cargo:rustc-link-arg=-Wl,--pop-state");
+        // Let the smoke-test bin gate compile out cleanly when CUTLASS is not built.
+        println!("cargo:rustc-cfg=bw24_cutlass");
+    }
 }

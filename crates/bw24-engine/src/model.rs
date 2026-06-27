@@ -13,8 +13,25 @@ use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_I
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
 /// This keeps VRAM ~= on-disk quant size (fixes the f32-on-load OOM).
 pub enum GpuTensor {
-    Quant { bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64>, scale: f32 },
+    Quant {
+        bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64>, scale: f32,
+        /// CUTLASS NVFP4 prefill operand (repacked B + swizzled SFB), built ALONGSIDE `bytes` at load
+        /// when BW24_FP4_CUTLASS is set. `bytes` stays raw GGUF so decode (MMVQ/dp4a) is untouched;
+        /// prefill (m>=128) reads this. Only ever Some for NVFP4 weights under cfg(bw24_cutlass).
+        #[cfg(bw24_cutlass)]
+        cutlass: Option<CutlassWeight>,
+    },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
+}
+
+/// CUTLASS-layout NVFP4 weight (B operand) for the prefill FP4 GEMM. Built once at load from the raw
+/// GGUF bytes (de-interleave + SFB swizzle). Coexists with the raw `bytes` (decode reads bytes).
+#[cfg(bw24_cutlass)]
+pub struct CutlassWeight {
+    /// Plain K-contiguous packed e2m1, [out_f, in_f/2] bytes.
+    pub b_packed: CudaSlice<u8>,
+    /// Swizzled SFB (CUTLASS SfAtom layout), sized via cutlass_sfb_size(out_f, in_f).
+    pub sfb_swizzled: CudaSlice<u8>,
 }
 
 impl GpuTensor {
@@ -59,7 +76,29 @@ impl GpuTensor {
                         None => 1.0,
                     }
                 } else { 1.0 };
-                Ok(GpuTensor::Quant { bytes: e.htod_bytes(&v.bytes)?, qtype: qt, row_bytes, ne: v.ne.clone(), scale })
+                let bytes = e.htod_bytes(&v.bytes)?;
+                // CUTLASS NVFP4 prefill operand, built ALONGSIDE the raw bytes (decode still reads
+                // bytes). Gated: only NVFP4 weights, only when BW24_FP4_CUTLASS is set, only under
+                // cfg(bw24_cutlass). in_f%64==0 is the NVFP4 K-block constraint (same as the dispatch).
+                #[cfg(bw24_cutlass)]
+                let cutlass = {
+                    let in_f = v.ne[0] as usize;
+                    // Skip the resident repack when OTF is requested (per-call repack instead) — the
+                    // resident path ~doubles NVFP4 weight VRAM and OOMs larger models (e.g. 27B/24GB).
+                    if qt == QT_NVFP4 && in_f % 64 == 0 && v.ne.len() == 2
+                        && std::env::var("BW24_FP4_CUTLASS").is_ok()
+                        && std::env::var("BW24_FP4_CUTLASS_OTF").is_err()
+                    {
+                        let (b_packed, sfb_swizzled) =
+                            e.build_cutlass_weight(&bytes, out_f, in_f, row_bytes)?;
+                        Some(CutlassWeight { b_packed, sfb_swizzled })
+                    } else { None }
+                };
+                Ok(GpuTensor::Quant {
+                    bytes, qtype: qt, row_bytes, ne: v.ne.clone(), scale,
+                    #[cfg(bw24_cutlass)]
+                    cutlass,
+                })
             }
             None => {
                 // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.

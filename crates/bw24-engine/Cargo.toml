@@ -62,3 +62,7 @@ path = "src/bin/decode_dc_gate.rs"
 [[bin]]
 name = "graph-decode-gate"
 path = "src/bin/graph_decode_gate.rs"
+
+[[bin]]
+name = "cutlass-smoke"
+path = "src/bin/cutlass_smoke.rs"

@@ -18,6 +18,8 @@ pub mod eagle;
 pub mod sampler;
 pub mod moe_cache;
 pub mod spill;
+#[cfg(bw24_cutlass)]
+pub mod cutlass_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
@@ -884,6 +886,35 @@ impl Engine {
                     -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         if std::env::var("BW24_FP4").is_err() { return Ok(None); }
+        // CUTLASS prefill branch (m>=128 + BW24_FP4_CUTLASS + a repacked CutlassWeight present): route
+        // to the CUTLASS sm120 NVFP4 GEMM, folding the per-tensor macro-scale into the epilogue alpha
+        // (1/scale) — no post-matmul scale_inplace. Decode (m<128) and the m∈[16,128) middle band keep
+        // the hand-roll below: CUTLASS's 128-row M-tile wastes work under 128.
+        // The hand-roll applies the per-tensor macro-scale as a POST-matmul MULTIPLY (scale_inplace(y,
+        // scale)); CUTLASS's epilogue does D = alpha * (A@B^T), so alpha == scale reproduces it exactly
+        // (NOT 1/scale — the plan sketch had this inverted; the kernel_check arm gates it). scale==1.0
+        // for the common no-macro-scale case.
+        #[cfg(bw24_cutlass)]
+        if m >= 128 && std::env::var("BW24_FP4_CUTLASS").is_ok() {
+            if let GpuTensor::Quant { bytes, qtype, scale, row_bytes, cutlass, .. } = w {
+                if *qtype == QT_NVFP4 && in_f % 64 == 0 {
+                    if let Some(cw) = cutlass {
+                        // Resident fast path: load-time-repacked B + swizzled SFB (no per-call repack).
+                        let y = self.cutlass_fp4_gemm(&cw.b_packed, &cw.sfb_swizzled, x, *scale,
+                                                      m, out_f, in_f)?;
+                        return Ok(Some(y));
+                    } else if std::env::var("BW24_FP4_CUTLASS_OTF").is_ok() {
+                        // On-the-fly repack (BW24_FP4_CUTLASS_OTF): de-interleave + swizzle the B operand
+                        // from raw bytes per prefill call. No resident doubling of the NVFP4 weight VRAM
+                        // (the load-time repack ~doubles it) — needed for models that don't fit the
+                        // resident path (e.g. the 27B on 24GB). Slower (per-call repack) but argmax-exact.
+                        let (b_packed, sfb_sw) = self.build_cutlass_weight(bytes, out_f, in_f, *row_bytes)?;
+                        let y = self.cutlass_fp4_gemm(&b_packed, &sfb_sw, x, *scale, m, out_f, in_f)?;
+                        return Ok(Some(y));
+                    }
+                }
+            }
+        }
         if let GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } = w {
             if *qtype == QT_NVFP4 && in_f % 64 == 0 {
                 let y = self.qmatvec_gemm_nvfp4_fp4(bytes, x, m, in_f, out_f, *row_bytes, *scale)?;

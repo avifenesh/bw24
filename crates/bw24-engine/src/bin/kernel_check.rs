@@ -469,6 +469,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
                 }
             }
+            // --- Phase-1 CUTLASS FP4 GEMM: REPACK CORRECTNESS gate. ---
+            // The de-interleave (GGUF -> plain packed e2m1) + SFB swizzle is the ONLY place a silent
+            // wrong-answer hides. TWO checks isolate it:
+            //  (A) WEIGHT ROUND-TRIP (activation-independent, the dispositive repack test): dequantize
+            //      the CUTLASS-repacked B operand (plain packed e2m1 + LINEAR SFB) via the CUTLASS
+            //      dequant oracle and compare to the GGUF f32 dequant of the SAME weight. The 2x e2m1 /
+            //      0.5x ue4m3 GGUF<->standard cancellation means the real values must match to ~1e-6.
+            //      A wrong nibble de-interleave or wrong scale byte breaks THIS with no activation noise.
+            //  (B) GEMM-vs-f32-oracle band: CUTLASS-FP4 and hand-roll-FP4 are both LOSSY NVFP4 approxes
+            //      of the same f32 matmul but use DIFFERENT activation quantizers, so they are NOT
+            //      rel-1e-2 comparable to each other (~0.11 apart = activation-quant diff, NOT a bug).
+            //      Correct repack => CUTLASS's rel-vs-oracle is in the SAME band as the hand-roll's.
+            #[cfg(bw24_cutlass)]
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                use bw24_gguf::dequant;
+                use bw24_runtime::cpu_linear;
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let w_f32 = dequant::dequantize(GgmlType::NVFP4, raw, in_f * out_f);
+                let wd = e.htod_bytes(raw)?;
+                // (A) weight round-trip. build_cutlass_weight gives swizzled SFB; for the oracle we need
+                // the LINEAR SFB the dequant oracle reads, so de-interleave directly here.
+                let mut b_packed = e.alloc_u8(out_f * in_f / 2)?;
+                let mut sfb_lin = e.alloc_u8(out_f * (in_f / 16))?;
+                e.cutlass_gguf_nvfp4_deinterleave(&wd, row_bytes, &mut b_packed, &mut sfb_lin, out_f, in_f)?;
+                let mut w_rt_d = e.htod(&vec![0f32; out_f * in_f])?;
+                e.cutlass_nvfp4_dequant_ref(&b_packed, &sfb_lin, &mut w_rt_d, out_f, in_f)?;
+                let w_rt = e.dtoh(&w_rt_d)?;
+                let wmax = w_f32.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
+                let wrel = maxdiff(&w_f32, &w_rt) / wmax;
+                println!("CUTLASS-FP4 weight round-trip blk.0.ffn_gate.weight [NVFP4]: rel={wrel:.2e} {}",
+                         if wrel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                // (B) GEMM band. Reuse the swizzled-SFB path the real dispatch uses.
+                let (b_packed_sw, sfb_sw) = e.build_cutlass_weight(&wd, out_f, in_f, row_bytes)?;
+                for tt in [128usize, 512] {  // CUTLASS m>=128 regime
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 87) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let yhr = e.dtoh(&e.qmatvec_gemm_nvfp4_fp4_raw(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                    let ycl = e.dtoh(&e.cutlass_fp4_gemm(&b_packed_sw, &sfb_sw, &xd, 1.0, tt, out_f, in_f)?)?;
+                    let rel_hr = maxdiff(&cpu, &yhr) / scale;
+                    let rel_cl = maxdiff(&cpu, &ycl) / scale;
+                    let ok = (rel_cl - rel_hr).abs() < 5e-2 && rel_cl < 2e-1;
+                    println!("CUTLASS-FP4 GEMM-band blk.0.ffn_gate.weight [NVFP4] T={tt}: rel_cutlass={rel_cl:.2e} \
+                              rel_handroll={rel_hr:.2e} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
         }
     }
 
