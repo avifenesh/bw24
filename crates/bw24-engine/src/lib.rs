@@ -16,6 +16,7 @@ pub mod decode;
 pub mod spec;
 pub mod sampler;
 pub mod moe_cache;
+pub mod spill;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");

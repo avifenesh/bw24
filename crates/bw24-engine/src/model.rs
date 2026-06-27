@@ -205,10 +205,17 @@ pub enum HostBuf {
     /// Pinned host memory. We keep the `PinnedHostSlice` alive (it owns the allocation; Drop frees it)
     /// AND cache its raw base pointer + len so the hot-path `as_bytes()` needs no per-call event sync.
     Pinned { slice: cudarc::driver::PinnedHostSlice<u8>, base: *const u8, len: usize },
+    /// SPILLING-PLAN §1, Tier 2 (disk): the bytes live in an mmap'd region of the GGUF file, NOT in
+    /// RAM. `map` is `MAP_SHARED`, no `MAP_POPULATE` — zero upfront copy. The first `memcpy_htod` of
+    /// this slice page-faults → NVMe read → DMA (the demand-fault disk path). `off`/`len` select this
+    /// expert's contiguous block within the shared file mmap. Bit-identical to `Paged`/`Pinned` —
+    /// those copied FROM exactly these on-disk bytes, so the GEMM result is unchanged.
+    Mmap { map: std::sync::Arc<memmap2::Mmap>, off: usize, len: usize },
 }
 // SAFETY: `base` is a stable pinned-host pointer owned by `slice`; the buffer is written once at load
 // then only READ for H2D. HostExps is shared `&` across the (single per-Engine) forward, so Send/Sync
-// mirror the underlying PinnedHostSlice (which is already Send+Sync).
+// mirror the underlying PinnedHostSlice (which is already Send+Sync). The `Mmap` arm holds an
+// `Arc<Mmap>` (Mmap is Send+Sync) plus plain usize fields, so it does not weaken these bounds.
 unsafe impl Send for HostBuf {}
 unsafe impl Sync for HostBuf {}
 impl HostBuf {
@@ -220,11 +227,17 @@ impl HostBuf {
             // read-only. We avoid `as_slice()` here because it would synchronize the buffer's event
             // on every hot-path call.
             HostBuf::Pinned { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
+            // Slicing the mmap is the same `&[u8]` the kernel DMAs; the read page-faults the NVMe.
+            HostBuf::Mmap { map, off, len } => &map[*off..*off + *len],
         }
     }
     #[inline]
     pub fn len(&self) -> usize {
-        match self { HostBuf::Paged(v) => v.len(), HostBuf::Pinned { len, .. } => *len }
+        match self {
+            HostBuf::Paged(v) => v.len(),
+            HostBuf::Pinned { len, .. } => *len,
+            HostBuf::Mmap { len, .. } => *len,
+        }
     }
 }
 
@@ -241,6 +254,11 @@ impl HostBuf {
 /// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
 pub struct HostExps {
     pub bytes: HostBuf,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
+    /// SPILLING-PLAN §1.1: per-expert backing tier. `None` => the layer fits in one `bytes` store and
+    /// every expert slices it (the unchanged in-RAM path). `Some` => per-expert split: the hottest
+    /// experts are `Pinned` (Tier 1, fast async DMA), the rest `Mmap` into the GGUF (Tier 2, disk
+    /// demand-fault). `expert_bytes(e)` resolves `tiers[e]` if present, else slices `bytes`.
+    pub tiers: Option<Vec<HostBuf>>,
     pub qtype: i32,            // QT_Q6_K (gate/up) | QT_Q8_0 (down)
     pub in_f: usize,           // ne[0]   (gate/up = 2048, down = 512)
     pub out_f: usize,          // ne[1]   (gate/up = 512,  down = 2048)
@@ -291,13 +309,69 @@ impl HostExps {
         } else {
             HostBuf::Paged(raw.to_vec())
         };
-        Ok(HostExps { bytes, qtype, in_f, out_f, n_expert, row_bytes, expert_stride })
+        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride })
+    }
+
+    /// SPILLING-PLAN §1.1, §2 step 4: load a stacked 3D expert tensor with a PER-EXPERT tier split.
+    /// Under `BW24_SPILL_DISK`, the hottest experts (greedy in expert order, until the shared pinned
+    /// budget in `ctx` is exhausted) get `HostBuf::Pinned` (Tier 1, fast async DMA); every remaining
+    /// expert is `HostBuf::Mmap` into the GGUF (Tier 2, demand-faulted from disk on first H2D). The
+    /// resulting bytes are bit-identical to the in-RAM path either way — `qmatvec_view` is untouched.
+    ///
+    /// `ctx.file_map` is ONE shared `MAP_SHARED` mmap of the whole GGUF (`Arc`-cloned per spilled
+    /// expert), so the 120 expert tensors of a 40-layer MoE never open the file more than once.
+    pub fn load_tiered(e: &Engine, g: &GgufFile, name: &str, ctx: &mut crate::spill::SpillCtx)
+                       -> Result<Self, Box<dyn std::error::Error>> {
+        let t = g.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
+        assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
+        let raw = g.tensor_data(t);
+        let qtype = match t.ggml_type {
+            GgmlType::Q8_0 => QT_Q8_0,
+            GgmlType::Q4_K => QT_Q4_K,
+            GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q5_K => QT_Q5_K,
+            GgmlType::Q3_K => QT_Q3_K,
+            GgmlType::IQ4_XS => QT_IQ4_XS,
+            GgmlType::IQ3_S => QT_IQ3_S,
+            GgmlType::NVFP4 => QT_NVFP4,
+            other => panic!("exps {name} unsupported quant {other:?}"),
+        };
+        let in_f = t.ne[0] as usize;
+        let out_f = t.ne[1] as usize;
+        let n_expert = t.ne[2] as usize;
+        let expert_stride = raw.len() / n_expert;
+        let row_bytes = raw.len() / (out_f * n_expert);
+        assert_eq!(expert_stride, out_f * row_bytes,
+            "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
+
+        // Absolute file offset of this tensor's data (start of expert 0); each expert is the next
+        // `expert_stride` bytes. The `Mmap` arm slices `ctx.file_map` at these offsets.
+        let (file_start, _file_end) = g.tensor_file_range(t);
+
+        // Per-expert tier decision under the shared running budget. `bytes` keeps a 0-byte sentinel
+        // (`Paged(empty)`) since every read now goes through `tiers`.
+        let mut tiers = Vec::with_capacity(n_expert);
+        for ex in 0..n_expert {
+            let blk = &raw[ex * expert_stride..(ex + 1) * expert_stride];
+            let file_off = file_start + ex * expert_stride;
+            tiers.push(crate::spill::place_expert(ctx, e, blk, file_off)?);
+        }
+        Ok(HostExps {
+            bytes: HostBuf::Paged(Vec::new()),  // unused when `tiers` is Some
+            tiers: Some(tiers),
+            qtype, in_f, out_f, n_expert, row_bytes, expert_stride,
+        })
     }
 
     /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.
+    /// Resolves the per-expert tier when spilling is active (`tiers` Some), else slices the single
+    /// backing store (unchanged in-RAM path). Each `tiers[e]` is exactly one expert's stride.
     #[inline]
     pub fn expert_bytes(&self, e: usize) -> &[u8] {
         debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
-        &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride]
+        match &self.tiers {
+            Some(tiers) => tiers[e].as_bytes(),
+            None => &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride],
+        }
     }
 }

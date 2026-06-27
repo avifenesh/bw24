@@ -45,16 +45,34 @@ fn load_mixer_kind(e: &Engine, g: &GgufFile, il: u32, kind: LayerKind)
 }
 
 /// Load the FFN (dense SwiGLU or 256-expert MoE) for block `il`. Shared by trunk loop and MTP head.
-fn load_ffn(e: &Engine, g: &GgufFile, cfg: &ModelConfig, il: u32)
+/// When `spill` is `Some` (BW24_SPILL_DISK on), each MoE expert tensor is loaded through the
+/// per-expert tier split (`HostExps::load_tiered`): hottest experts pinned, the rest mmap'd from the
+/// GGUF on disk. When `None` (default), experts take the unchanged all-host path (`HostExps::load`).
+fn load_ffn(e: &Engine, g: &GgufFile, cfg: &ModelConfig, il: u32,
+            spill: Option<&mut crate::spill::SpillCtx>)
             -> Result<Ffn, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     Ok(if cfg.moe.is_some() {
+        // Load the three stacked-expert tensors via either the tiered (disk) loader or the plain
+        // host loader, sharing the single `&mut SpillCtx` across all three.
+        let (gate_exps, up_exps, down_exps) = match spill {
+            Some(ctx) => (
+                HostExps::load_tiered(e, g, &p("ffn_gate_exps.weight"), ctx)?,
+                HostExps::load_tiered(e, g, &p("ffn_up_exps.weight"), ctx)?,
+                HostExps::load_tiered(e, g, &p("ffn_down_exps.weight"), ctx)?,
+            ),
+            None => (
+                HostExps::load(e, g, &p("ffn_gate_exps.weight"))?,
+                HostExps::load(e, g, &p("ffn_up_exps.weight"))?,
+                HostExps::load(e, g, &p("ffn_down_exps.weight"))?,
+            ),
+        };
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, g, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_t(e, g, &p("ffn_gate_inp_shexp.weight"))?,
-            gate_exps: HostExps::load(e, g, &p("ffn_gate_exps.weight"))?,
-            up_exps:   HostExps::load(e, g, &p("ffn_up_exps.weight"))?,
-            down_exps: HostExps::load(e, g, &p("ffn_down_exps.weight"))?,
+            gate_exps,
+            up_exps,
+            down_exps,
             gate_shexp: load_t(e, g, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_t(e, g, &p("ffn_up_shexp.weight"))?,
             down_shexp: load_t(e, g, &p("ffn_down_shexp.weight"))?,
@@ -147,6 +165,19 @@ impl HybridModel {
         let output_norm = load_t(e, g, "output_norm.weight")?;
         let output = match g.find("output.weight") { Some(_) => load_t(e, g, "output.weight")?, None => load_t(e, g, "token_embd.weight")? };
 
+        // SPILLING-PLAN §2: build the tiered-spill context ONCE, before loading any experts, but
+        // only for a MoE model with the disk tier forced on (`BW24_SPILL_DISK`). It probes free VRAM
+        // + host RAM at runtime (never hardcoded) and opens one shared GGUF mmap; all expert tensors
+        // draw down its single pinned-RAM budget (hottest pinned, the rest mmap'd from disk). When
+        // unset/dense this stays `None` and the load takes the byte-identical all-host path.
+        let mut spill: Option<crate::spill::SpillCtx> = if cfg.moe.is_some() && crate::spill::disk_tier_enabled() {
+            let budget = crate::spill::MemBudget::probe(e)?;
+            let ctx = crate::spill::SpillCtx::open(g.path(), &budget)?;
+            eprintln!("[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
+                      budget.free_vram >> 20, budget.free_pinnable_ram >> 20);
+            Some(ctx)
+        } else { None };
+
         // B0 FIX: cfg.n_layer == block_count INCLUDES the MTP/NextN block(s) (41 for the 35B-MoE).
         // Running the MTP block as a trunk layer is wrong; iterate only the trunk layers.
         // 9B (nextn=0): n_trunk = 32 (unchanged). 35B-MoE (nextn=1): n_trunk = 40 (drops MTP block).
@@ -161,7 +192,7 @@ impl HybridModel {
                     .or(load_opt(e, g, &p("ffn_norm.weight"))?)
                     .expect("need post_attention_norm or ffn_norm"),
                 mixer: load_mixer_kind(e, g, il, cfg.layer_kind(il))?,
-                ffn: load_ffn(e, g, &cfg, il)?,
+                ffn: load_ffn(e, g, &cfg, il, spill.as_mut())?,
             });
         }
 
@@ -181,13 +212,18 @@ impl HybridModel {
                         .or(load_opt(e, g, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
                     mixer: load_mixer_kind(e, g, n, LayerKind::FullAttention)?,
-                    ffn: load_ffn(e, g, &cfg, n)?,
+                    ffn: load_ffn(e, g, &cfg, n, spill.as_mut())?,
                     shared_head_norm: load_opt(e, g, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, g, &p("nextn.shared_head.weight"))?,
                 }),
                 None => None,  // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }
         } else { None };
+
+        if let Some(ctx) = spill.as_ref() {
+            eprintln!("[spill] experts placed: {} pinned (Tier 1), {} mmap'd from disk (Tier 2, {} MiB)",
+                      ctx.n_pinned, ctx.n_mmap, ctx.mmap_bytes >> 20);
+        }
 
         Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp })
     }

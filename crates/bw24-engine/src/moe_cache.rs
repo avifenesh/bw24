@@ -60,6 +60,11 @@ pub struct MoeSlotCache {
     protected_cap: usize,
     max_block_bytes: usize,
 
+    /// SPILLING-PLAN §4: true when async (copy-stream) prefetch can write into cache slots. While
+    /// false (today's default), the store-before-evict barrier in `admit` is skipped (no copy-stream
+    /// H2D is in flight, so reusing a slot cannot race one). The disk-tier prefetch sets this on.
+    prefetch_active: bool,
+
     // --- §D.4 instrumentation ---
     pub hits: u64,
     pub misses: u64,
@@ -102,9 +107,15 @@ impl MoeSlotCache {
             probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
             ghost: HashSet::new(), staging, staging_next: 0,
             n, protected_cap, max_block_bytes,
+            prefetch_active: false,
             hits: 0, misses: 0, staged_bytes: 0,
         })
     }
+
+    /// SPILLING-PLAN §4: enable the store-before-evict barrier (arm it once disk-tier prefetch is
+    /// turned on so a copy-stream H2D into a slot can never race the slot's reuse on eviction).
+    #[inline]
+    pub fn set_prefetch_active(&mut self, on: bool) { self.prefetch_active = on; }
 
     #[inline]
     pub fn n_slots(&self) -> usize { self.n }
@@ -168,7 +179,18 @@ impl MoeSlotCache {
     /// probation (new admissions enter probation — they earn promotion on a later hit).
     fn admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
              -> Result<usize, Box<dyn std::error::Error>> {
+        let reused = self.free.is_empty();   // no free slot => we are about to evict + reuse one
         let slot = if let Some(s) = self.free.pop() { s } else { self.evict_one() };
+        // SPILLING-PLAN §4 — STORE-BEFORE-EVICT BARRIER. Before staging into a REUSED (just-evicted)
+        // slot, drain the copy stream so an in-flight async H2D into that slot (issued by disk-tier
+        // prefetch on the copy stream) cannot race the new occupant -> use-after-free -> silent wrong
+        // tokens (would break the argmax GATE). This is a NO-OP today: the stage below runs on the
+        // DEFAULT compute stream (`stage_expert`), and no prefetch issues copy-stream H2D into cache
+        // slots yet. It is wired now (gated on `prefetch_active`) so the disk-tier prefetch is correct
+        // from the moment it is turned on. The vLLM/LMCache eviction-barrier pattern.
+        if reused && self.prefetch_active {
+            e.copy_stream.synchronize()?;
+        }
         e.stage_expert(host_bytes, &mut self.slots[slot], 0)?;
         self.staged_bytes += host_bytes.len() as u64;
         self.occupant[slot] = Some(id);

@@ -10,7 +10,7 @@
 //! gguf_string = len: u64 | bytes[len]  (no NUL terminator)
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use memmap2::Mmap;
 
 pub mod dequant;
@@ -137,6 +137,8 @@ impl TensorInfo {
 
 pub struct GgufFile {
     mmap: Mmap,
+    /// On-disk path of the file (for the disk-tier loader, which mmaps the file itself; SPILLING-PLAN §1).
+    path: PathBuf,
     pub version: u32,
     pub metadata: BTreeMap<String, MetaValue>,
     pub tensors: Vec<TensorInfo>,
@@ -190,7 +192,8 @@ impl<'a> Cursor<'a> {
 
 impl GgufFile {
     pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
+        let path = path.as_ref().to_path_buf();
+        let file = std::fs::File::open(&path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         let mut c = Cursor::new(&mmap);
 
@@ -235,13 +238,23 @@ impl GgufFile {
         let header_end = c.pos as u64;
         let data_start = header_end.div_ceil(alignment) * alignment;
 
-        Ok(Self { mmap, version, metadata, tensors, data_start, alignment })
+        Ok(Self { mmap, path, version, metadata, tensors, data_start, alignment })
     }
 
     /// Raw bytes for a tensor (mmap'd, zero-copy slice).
     pub fn tensor_data(&self, t: &TensorInfo) -> &[u8] {
         let start = (self.data_start + t.offset) as usize;
         &self.mmap[start..start + t.n_bytes as usize]
+    }
+
+    /// On-disk path of this GGUF file (the disk-tier loader mmaps it itself; SPILLING-PLAN §1).
+    pub fn path(&self) -> &Path { &self.path }
+
+    /// Absolute byte range `[start, end)` of a tensor's data WITHIN the GGUF file on disk.
+    /// `start = data_start + t.offset`; the disk-tier `HostBuf::Mmap` slices its own file mmap here.
+    pub fn tensor_file_range(&self, t: &TensorInfo) -> (usize, usize) {
+        let start = (self.data_start + t.offset) as usize;
+        (start, start + t.n_bytes as usize)
     }
 
     pub fn find(&self, name: &str) -> Option<&TensorInfo> {
