@@ -194,7 +194,7 @@ impl Engine {
     pub fn qmatvec(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize,
                    qtype: i32, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("qmatvec_f32");
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -265,7 +265,7 @@ impl Engine {
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("qmatvec_f32");
         let wv = w.slice(range);  // CudaView<u8>, offset honored
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, qt, rb) = (in_f as i32, out_f as i32, m as i32, qtype, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -309,8 +309,8 @@ impl Engine {
                      -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let f = self.func("quantize_q8_1");
         let nblk = in_f / 32;
-        let mut q = self.gpu.stream.alloc_zeros::<i8>(m * in_f)?;
-        let mut d = self.gpu.stream.alloc_zeros::<f32>(m * nblk)?;
+        let mut q = self.alloc_uninit::<i8>(m * in_f)?;  // full-overwrite output: skip memset
+        let mut d = self.alloc_uninit::<f32>(m * nblk)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig::for_num_elems((m * nblk) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -326,8 +326,8 @@ impl Engine {
                      -> Result<(CudaSlice<u32>, CudaSlice<u8>), Box<dyn std::error::Error>> {
         let f = self.func("quantize_fp4_act");
         let nb16 = in_f / 16;
-        let mut aq4 = self.gpu.stream.alloc_zeros::<u32>(m * (in_f / 8))?;
-        let mut ad4 = self.gpu.stream.alloc_zeros::<u8>(m * nb16)?;
+        let mut aq4 = self.alloc_uninit::<u32>(m * (in_f / 8))?;  // full-overwrite output: skip memset
+        let mut ad4 = self.alloc_uninit::<u8>(m * nb16)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig::for_num_elems((m * nb16) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -356,7 +356,7 @@ impl Engine {
                        m: usize, in_f: usize, out_f: usize, row_bytes: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("qmatvec_gemm_nvfp4_fp4");
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         const BM: u32 = 64; const BN: u32 = 128;
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
@@ -383,7 +383,7 @@ impl Engine {
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q8_0_dp4a");
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -397,7 +397,7 @@ impl Engine {
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q4_K_dp4a");
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -411,7 +411,7 @@ impl Engine {
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func("qmatvec_q6_K_dp4a");
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -450,7 +450,7 @@ impl Engine {
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let f = self.func(name);
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -484,6 +484,23 @@ impl Engine {
     }
     pub fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         Ok(self.gpu.stream.alloc_zeros::<f32>(n)?)
+    }
+
+    /// Uninitialized device buffer — SKIPS the memset that `alloc_zeros` always issues. Decode
+    /// profile (nsys): ~1050 memsets/token = 6.5% of decode GPU time + ~half the launch count, the
+    /// dominant contributor to the 19% inter-kernel idle gap and a blocker for clean CUDA-graph
+    /// capture. Use ONLY for buffers a kernel FULLY overwrites (every element written, no `+=`).
+    /// SAFETY: caller guarantees the producing kernel writes every element before any read.
+    #[inline]
+    fn alloc_uninit<T: cudarc::driver::DeviceRepr>(&self, n: usize)
+            -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
+        Ok(unsafe { self.gpu.stream.alloc::<T>(n)? })
+    }
+
+    /// Public f32 uninitialized scratch (see `alloc_uninit`). For decode/forward scratch a kernel
+    /// fully overwrites. SAFETY: producing kernel must write every element before any read.
+    pub fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.alloc_uninit::<f32>(n)
     }
 
     /// RMSNorm: x[ncols,nrows] row-major, weight[ncols] -> dst. One block/row, 256 threads.
@@ -684,7 +701,7 @@ impl Engine {
             _ => unreachable!(),
         };
         let f = self.func(name);
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -715,7 +732,7 @@ impl Engine {
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK, m as u32, 1),
             block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row
@@ -792,7 +809,7 @@ impl Engine {
             _ => unreachable!(),
         };
         let f = self.func(name);
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         // CTA tile: BM=64 out-rows x BN=64 tokens x BK=32. block (32, 4, 1) = 128 thr (4 warps).
         const BM: u32 = 64; const BN: u32 = 128;
         let cfg = LaunchConfig {
@@ -823,7 +840,7 @@ impl Engine {
             _ => panic!("qmatvec_gemm_raw: qtype {qtype} has no GEMM kernel"),
         };
         let f = self.func(name);
-        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         const BM: u32 = 64; const BN: u32 = 128;
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
@@ -853,7 +870,7 @@ impl Engine {
     pub fn linear(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize, in_f: usize, out_f: usize)
                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use cudarc::cublaslt::{Matmul, MatmulConfig};
-        let mut c = self.gpu.stream.alloc_zeros::<f32>(m_tokens * out_f)?;
+        let mut c = self.alloc_uninit::<f32>(m_tokens * out_f)?;  // cuBLASLt beta=0: C fully written
         let cfg = MatmulConfig {
             transa: true, transb: false, transc: false,
             m: out_f as u64, n: m_tokens as u64, k: in_f as u64,

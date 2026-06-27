@@ -52,15 +52,15 @@ impl HybridModel {
         let mut aux: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.zeros(n_embd)?;
+            let mut h = e.uninit(n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
-            let mut x1 = e.zeros(n_embd)?;
+            let mut x1 = e.uninit(n_embd)?;
             e.add(&x, &mixed, &mut x1, n_embd)?;
-            let mut z = e.zeros(n_embd)?;
+            let mut z = e.uninit(n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
@@ -71,13 +71,13 @@ impl HybridModel {
                     } else {
                         (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                     };
-                    let mut act = e.zeros(n_ff)?;
+                    let mut act = e.uninit(n_ff)?;
                     e.silu_mul(&gate, &up, &mut act, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
             };
-            let mut x2 = e.zeros(n_embd)?;
+            let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             // EAGLE3 N1: capture this block's residual output if it is an aux layer.
             if aux_layers.contains(&il) { aux.push(e.clone_dtod(&x2)?); }
@@ -85,7 +85,7 @@ impl HybridModel {
         }
         // re-order aux to match aux_layers order (contains() pushes in il order; aux_layers is the
         // canonical order the encoder concats in — they coincide since aux_layers is ascending).
-        let mut hn = e.zeros(n_embd)?;
+        let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
@@ -107,7 +107,7 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.zeros(n_embd)?;
+            let mut h = e.uninit(n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
 
             let mixed = match &layer.mixer {
@@ -115,10 +115,10 @@ impl HybridModel {
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
 
-            let mut x1 = e.zeros(n_embd)?;
+            let mut x1 = e.uninit(n_embd)?;
             e.add(&x, &mixed, &mut x1, n_embd)?;
 
-            let mut z = e.zeros(n_embd)?;
+            let mut z = e.uninit(n_embd)?;
             e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
@@ -131,20 +131,20 @@ impl HybridModel {
                     } else {
                         (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                     };
-                    let mut act = e.zeros(n_ff)?;
+                    let mut act = e.uninit(n_ff)?;
                     e.silu_mul(&gate, &up, &mut act, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
             };
-            let mut x2 = e.zeros(n_embd)?;
+            let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             x = x2;
         }
 
         // h_seed = trunk hidden BEFORE output_norm (the NextN head's `h` input, §A).
         let h_seed = e.clone_dtod(&x)?;
-        let mut hn = e.zeros(n_embd)?;
+        let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
@@ -231,15 +231,15 @@ impl HybridModel {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
         // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
-        let mut q = e.zeros(n_head * head_dim)?;
-        let mut gate = e.zeros(n_head * head_dim)?;
+        let mut q = e.uninit(n_head * head_dim)?;
+        let mut gate = e.uninit(n_head * head_dim)?;
         e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
 
         // QK-norm + RoPE at position `pos`
-        let mut qn = e.zeros(n_head * head_dim)?;
+        let mut qn = e.uninit(n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
         q = qn;
-        let mut kn = e.zeros(n_head_kv * head_dim)?;
+        let mut kn = e.uninit(n_head_kv * head_dim)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
@@ -258,7 +258,7 @@ impl HybridModel {
         let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
         let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
         let (ktb, vtb) = (kvl.k_tok_bytes, kvl.v_tok_bytes);
-        let mut attn = e.zeros(n_head * head_dim)?;
+        let mut attn = e.uninit(n_head * head_dim)?;
         if std::env::var("BW24_NOFA").is_ok() {
             return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
                         unset BW24_NOFA to use fa_decode".into());
@@ -267,9 +267,9 @@ impl HybridModel {
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj
-        let mut gsig = e.zeros(n_head * head_dim)?;
+        let mut gsig = e.uninit(n_head * head_dim)?;
         e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
-        let mut attn_g = e.zeros(n_head * head_dim)?;
+        let mut attn_g = e.uninit(n_head * head_dim)?;
         e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
     }
@@ -309,38 +309,38 @@ impl HybridModel {
         // Assemble + roll the ring ON-DEVICE from the resident conv_state (no dtoh/host-loop/htod).
         let rl = cache.recur[il].as_mut().unwrap();
         let tp = pad + 1;
-        let mut conv_in = e.zeros(conv_dim * tp)?;
+        let mut conv_in = e.uninit(conv_dim * tp)?;
         e.conv_assemble_and_roll(&qkv_mixed, &mut rl.conv_state, &mut conv_in, conv_dim, pad)?;
-        let mut conv_out = e.zeros(conv_dim)?;  // [conv_dim, 1] channel-major, SiLU
+        let mut conv_out = e.uninit(conv_dim)?;  // [conv_dim, 1] channel-major, SiLU
         e.ssm_conv1d(&conv_in, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, 1, d_conv, true)?;
 
         // split + repack to GDN [d_state, num_v, 1] ON-DEVICE; q/k repeat 16->32 via modulo
         // (ggml_repeat_4d, kh = vh % num_k). No dtoh/host-loop/3x-htod.
         let _ = head_k;  // head_k == d_state; the kernel uses head_k = d_state internally.
-        let mut q_g = e.zeros(d_state * num_v)?;
-        let mut k_g = e.zeros(d_state * num_v)?;
-        let mut v_g = e.zeros(d_state * num_v)?;
+        let mut q_g = e.uninit(d_state * num_v)?;
+        let mut k_g = e.uninit(d_state * num_v)?;
+        let mut v_g = e.uninit(d_state * num_v)?;
         e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, 1)?;
-        let mut q_l2 = e.zeros(d_state * num_v)?;
+        let mut q_l2 = e.uninit(d_state * num_v)?;
         e.l2_norm(&q_g, &mut q_l2, d_state, num_v, eps)?;
-        let mut k_l2 = e.zeros(d_state * num_v)?;
+        let mut k_l2 = e.uninit(d_state * num_v)?;
         e.l2_norm(&k_g, &mut k_l2, d_state, num_v, eps)?;
         let v_gd = v_g;
 
-        let mut beta = e.zeros(num_v)?;
+        let mut beta = e.uninit(num_v)?;
         e.sigmoid(&beta_raw, &mut beta, num_v)?;
-        let mut g_log = e.zeros(num_v)?;
+        let mut g_log = e.uninit(num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, 1)?;
 
         // GDN scan: SSM state stays RESIDENT on GPU. Read from cache buffer, write to a scratch,
         // then swap scratch into the cache slot (gdn needs distinct in/out buffers).
-        let mut o = e.zeros(d_state * num_v)?;
-        let mut state_scratch = e.zeros(d_state * d_state * num_v)?;
+        let mut o = e.uninit(d_state * num_v)?;
+        let mut state_scratch = e.uninit(d_state * d_state * num_v)?;
         e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, &rl.ssm_state, &mut state_scratch, &mut o, num_v, 1, scale)?;
         rl.ssm_state = state_scratch;   // resident swap, no host round-trip
 
         // gated RMSNorm + ssm_out
-        let mut gn = e.zeros(d_state * num_v)?;
+        let mut gn = e.uninit(d_state * num_v)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v, eps)?;
         Ok(e.matmul(&la.ssm_out, &gn, 1)?)
     }
