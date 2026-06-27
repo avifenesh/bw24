@@ -19,6 +19,10 @@ pub struct KvLayer {
     pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
     pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
     pub len: usize,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
+    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_d: CudaSlice<i32>,
 }
 
 /// Per-linear-attn-layer fixed recurrent state.
@@ -27,6 +31,16 @@ pub struct KvLayer {
 pub struct RecurLayer {
     pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
     pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
+    /// PERSISTENT second SSM-state buffer for the gdn-scan double buffer (DECODE DETERMINISM FIX).
+    /// gdn_scan needs DISTINCT in/out state buffers. The old eager path allocated a fresh
+    /// `state_scratch` via `e.uninit` every step and swapped its pointer into `ssm_state`; that
+    /// per-step alloc/free churned the stream-ordered async pool, and the freed prior `ssm_state`
+    /// block was recycled by the next step's scratch while a kernel referencing the swapped-in state
+    /// was still in flight — a use-after-reuse that produced RUN-TO-RUN nondeterministic decode
+    /// (two identical prompt primes diverged). We instead PING-PONG between two STABLE resident
+    /// buffers (no per-step alloc/free, no pool churn): step writes into the spare, then swaps the
+    /// two owned buffers in place. Stable pointers, identical math. Sized like `ssm_state`.
+    pub ssm_state_alt: CudaSlice<f32>,
 }
 
 pub struct Cache {
@@ -77,6 +91,7 @@ impl Cache {
                         k: e.alloc_u8(max_ctx * k_tok_bytes)?,
                         v: e.alloc_u8(max_ctx * v_tok_bytes)?,
                         kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+                        len_d: e.htod_i32(&[0])?,
                     }));
                     recur.push(None);
                 }
@@ -85,6 +100,7 @@ impl Cache {
                     recur.push(Some(RecurLayer {
                         conv_state: e.zeros(conv_dim * (d_conv - 1))?,
                         ssm_state: e.zeros(d_state * d_state * num_v)?,
+                        ssm_state_alt: e.zeros(d_state * d_state * num_v)?,
                     }));
                 }
             }
@@ -128,6 +144,11 @@ impl Cache {
         for il in 0..self.kv.len() {
             if let (Some(kvl), Some(saved)) = (self.kv[il].as_mut(), snap.kv_len[il]) {
                 kvl.len = saved + accept_len;
+                // keep the device mirror in lock-step (CUDA-GRAPH-PLAN Phase 2). Set IN PLACE
+                // (stable pointer): a fresh htod_i32 would reallocate len_d, but its old pointer is
+                // baked into the captured decode graph's append/inc/fa_decode kernels — replacing it
+                // strands the graph on a freed buffer (stale-pointer hazard). memcpy_htod in place.
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             if let Some(rl) = self.recur[il].as_mut() {
                 if let Some(c) = &snap.conv[il] { e.copy_into(&mut rl.conv_state, 0, c, c.len())?; }

@@ -237,6 +237,60 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1(
     }
 }
 
+// ----- DEVICE-COUNTER variant (CUDA-GRAPH-PLAN Phase 2): identical math to
+// append_quantize_kv_q8_0_q5_1, but the per-step WRITE OFFSET `t` is read from a
+// device int[1] counter (t_dev[0]) instead of a host int arg. This is the only
+// per-step varying scalar in KV-append; reading it from device makes the kernel's
+// args FIXED across decode steps (the prerequisite for graph capture). The original
+// (host-int) kernel stays for the non-graph eager path.
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1_dc(
+        const float* __restrict__ k_row,   // [kv_dim_k]
+        const float* __restrict__ v_row,   // [kv_dim_v]
+        uint8_t* __restrict__ K,           // cache base (q8_0)
+        uint8_t* __restrict__ V,           // cache base (q5_1)
+        const int* __restrict__ t_dev,     // write slot (device counter, t_dev[0])
+        int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int t    = t_dev[0];             // <-- the ONLY change vs the host-int kernel
+    const int b    = blockIdx.x;
+    const int lane = threadIdx.x;
+    const int eidx = b * 32 + lane;
+
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? k_row[eidx] : 0.0f;
+        float amax = warp_amax(x);
+        float d = amax / 127.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q = (int)lrintf(x * id);
+        q = max(-127, min(127, q));
+        uint8_t* blk = K + (size_t)t * k_tok_bytes + (size_t)b * 34;
+        if (lane == 0) *(half*)blk = __float2half(d);
+        ((int8_t*)(blk + 2))[lane] = (int8_t)q;
+    }
+
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? v_row[eidx] : 0.0f;
+        float mn = warp_min(x);
+        float mx = warp_max(x);
+        float d = (mx - mn) / 31.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q5 = (int)lrintf((x - mn) * id);
+        q5 = max(0, min(31, q5));
+        uint32_t qh = __ballot_sync(0xffffffffu, (q5 >> 4) & 1);
+        uint8_t* blk = V + (size_t)t * v_tok_bytes + (size_t)b * 24;
+        if (lane == 0) {
+            *(half*)blk        = __float2half(d);
+            *(half*)(blk + 2)  = __float2half(mn);
+            *(uint32_t*)(blk + 4) = qh;
+        }
+        uint8_t* qs = blk + 8;
+        int nib = q5 & 0x0F;
+        int partner_nib = __shfl_sync(0xffffffffu, nib, lane + 16) & 0x0F;
+        if (lane < 16) qs[lane] = (uint8_t)(nib | (partner_nib << 4));
+    }
+}
+
 // ===================================================================== //
 //  KERNEL 1 : fa_prefill_f32                                            //
 //  One WARP per (head, q-tile of 16 rows). FA-2 online softmax.         //
@@ -815,4 +869,172 @@ extern "C" __global__ void fa_decode_combine_f32(
     }
     float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
     O[((size_t)0 * n_head + head) * head_dim + tid] = o * linv;
+}
+
+// ===================================================================== //
+//  DEVICE-COUNTER decode variants (CUDA-GRAPH-PLAN Phase 2)             //
+//  Identical math to fa_decode_f32 / fa_decode_vec_q, but the sequence  //
+//  length T_kv is read from a device int[1] counter (t_kv_dev[0]) for   //
+//  the attention loop bound + per-split key range, NOT a host int arg.  //
+//  The GRID is sized for a BUCKET-MAX n_splits at launch (baked at      //
+//  capture). Splits whose key range [t_lo,t_hi) is EMPTY (t_lo>=T_kv,   //
+//  so t_lo>=t_hi after per=ceil(T_kv/n_splits)) run the loop 0 times    //
+//  and write the EMPTY partial (m_i=NEG_INF,l_i=0,acc=0) -> the combine //
+//  skips them (ms==NEG_INF). So a graph captured for bucket-max T_kv    //
+//  stays bit-correct for ANY actual T_kv <= bucket_max. The combine is  //
+//  the SAME fa_decode_combine_f32 (it already skips NEG_INF splits).    //
+// ===================================================================== //
+extern "C" __global__ void fa_decode_f32_dc(
+        const float* __restrict__ Q,
+        const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V,
+        float* __restrict__ partO,
+        float* __restrict__ partM,
+        float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
+        float scale, int n_splits,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int T_kv  = t_kv_dev[0];               // <-- device-resident sequence length
+    const int head  = blockIdx.x;
+    const int split = blockIdx.y;
+    if (head >= n_head || split >= n_splits) return;
+    const int kv_head = head / (n_head / n_head_kv);
+    const int tid = threadIdx.x;
+
+    const int per = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    extern __shared__ float ssh[];
+    float* sq = ssh;
+    float* red = sq + head_dim;
+
+    if (tid < head_dim) sq[tid] = Q[((size_t)0 * n_head + head) * head_dim + tid];
+    __syncthreads();
+
+    float m_i = NEG_INF;
+    float l_i = 0.0f;
+    float acc = 0.0f;
+
+    for (int t = t_lo; t < t_hi; ++t) {
+        const int kidx = kv_head * head_dim + tid;
+        float ktv = (tid < head_dim) ? dq_q8_0_elem(K, t, k_tok_bytes, kidx) : 0.0f;
+        float prod = (tid < head_dim) ? sq[tid] * ktv : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) prod += __shfl_down_sync(0xffffffff, prod, o);
+        if ((tid & 31) == 0) red[tid >> 5] = prod;
+        __syncthreads();
+        float score = 0.0f;
+        if (tid == 0) {
+            float s = 0.0f;
+            int nwarp = (blockDim.x + 31) / 32;
+            for (int w = 0; w < nwarp; ++w) s += red[w];
+            red[0] = s * scale;
+        }
+        __syncthreads();
+        score = red[0];
+        __syncthreads();
+
+        float m_new = fmaxf(m_i, score);
+        float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        float p     = exp2f((score - m_new) * LOG2E);
+        const int vidx = kv_head * head_dim + tid;
+        float vtv = (tid < head_dim) ? dq_q5_1_elem(V, t, v_tok_bytes, vidx) : 0.0f;
+        if (tid < head_dim) acc = acc * alpha + p * vtv;
+        l_i = l_i * alpha + p;
+        m_i = m_new;
+    }
+
+    if (tid < head_dim) partO[((size_t)head * n_splits + split) * head_dim + tid] = acc;
+    if (tid == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
+}
+
+extern "C" __global__ void fa_decode_vec_q_dc(
+        const float* __restrict__ Q,
+        const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V,
+        float* __restrict__ partO,
+        float* __restrict__ partM,
+        float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
+        float scale, int n_splits,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    extern __shared__ __nv_bfloat16 ssh_vec[];
+    __nv_bfloat16* sK = ssh_vec;
+    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim;
+
+    float q_reg[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)0 * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    const int bt   = wy * WARP_SZ + lane;
+    const int bsz  = WARP_SZ * gqa;
+
+    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+        const int nt = min(FA_DEC_TILE, t_hi - t0);
+
+        for (int idx = bt; idx < nt * head_dim; idx += bsz) {
+            int j = idx / head_dim;
+            int d = idx - j * head_dim;
+            int eidx = kv_head * head_dim + d;
+            sK[idx] = __float2bfloat16(dq_q8_0_elem(K, (long)(t0 + j), k_tok_bytes, eidx));
+            sV[idx] = __float2bfloat16(dq_q5_1_elem(V, (long)(t0 + j), v_tok_bytes, eidx));
+        }
+        __syncthreads();
+
+        for (int j = 0; j < nt; ++j) {
+            const __nv_bfloat16* kj = sK + (size_t)j * head_dim;
+            float part = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                if (i < dpl) part += q_reg[i] * __bfloat162float(kj[lane + (i << 5)]);
+            float score = warp_reduce_sum(part);
+
+            float m_new = fmaxf(m_i, score);
+            float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            float p     = exp2f((score - m_new) * LOG2E);
+            const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                if (i < dpl) acc[i] = acc[i] * alpha + p * __bfloat162float(vj[lane + (i << 5)]);
+            l_i = l_i * alpha + p;
+            m_i = m_new;
+        }
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
 }

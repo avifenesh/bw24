@@ -250,6 +250,7 @@ impl Eagle3Scratch {
         Ok(Eagle3Scratch { kv: KvLayer {
             k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
             kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+            len_d: e.htod_i32(&[0])?,
         } })
     }
     pub fn reset(&mut self) { self.kv.len = 0; }

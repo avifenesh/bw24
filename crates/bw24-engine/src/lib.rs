@@ -152,6 +152,37 @@ impl Engine {
         Ok(())
     }
 
+    /// Device-counter variant of `append_kv_quantized` (CUDA-GRAPH-PLAN Phase 2): the write slot
+    /// `t` is read from `t_dev[0]` (a resident device i32[1]) instead of a host int arg, so the
+    /// launch args are FIXED across decode steps (graph-capturable). Identical quant math.
+    pub fn append_kv_quantized_dc(&self, k_row: &CudaSlice<f32>, v_row: &CudaSlice<f32>,
+                                  kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t_dev: &CudaSlice<i32>,
+                                  kv_dim_k: usize, kv_dim_v: usize,
+                                  k_tok_bytes: usize, v_tok_bytes: usize)
+                                  -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("append_quantize_kv_q8_0_q5_1_dc");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(t_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Increment a device i32[1] counter in place (p[0] += 1) via the resident `inc_i32` kernel.
+    /// Used to advance the device-resident seqlen/pos counters inside the decode-dc path (and,
+    /// later, inside a captured graph) without a host round-trip.
+    pub fn inc_seqlen(&self, p: &mut CudaSlice<i32>) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("inc_i32");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(p);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Like `append_kv_quantized` but k_row/v_row are CudaViews (one token's row sliced out of a
     /// token-major [T, kv_dim] activation buffer — the MTP verify path appends T tokens).
     pub fn append_kv_quantized_view(&self, k_row: &cudarc::driver::CudaView<f32>,
@@ -500,6 +531,53 @@ impl Engine {
         b.arg(logits).arg(&mut tok).arg(&nv);
         unsafe { b.launch(cfg)?; }
         Ok(tok)
+    }
+    /// Like `argmax_token_device` but writes into a PERSISTENT `tok` buffer (stable pointer) instead
+    /// of allocating a fresh one. Required for CUDA-graph capture: the captured argmax must write the
+    /// next token into the SAME device buffer the next replay's embed_gather reads, so the buffer
+    /// pointer is baked once and the token id never round-trips to host inside steady state.
+    pub fn argmax_token_device_into(&self, logits: &CudaSlice<f32>, tok: &mut CudaSlice<u32>,
+                                    n_vocab: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("argmax_logits_f32_to_u32");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(tok).arg(&nv);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    /// embed_gather into a PERSISTENT `x_out` buffer (stable pointer) for CUDA-graph capture (the
+    /// embed output starts the per-step kernel chain and must be at a fixed address across replays).
+    pub fn embed_gather_device_into(&self, embd: &CudaSlice<u8>, token_d: &CudaSlice<u32>,
+                                    x_out: &mut CudaSlice<f32>, n_embd: usize, qtype: i32,
+                                    row_bytes: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("embed_gather_u32");
+        let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ne, qt, rb) = (n_embd as i32, qtype, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(embd).arg(token_d).arg(x_out).arg(&ne).arg(&qt).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    /// Read a [1] i32 device counter (pos / seqlen) back to host. Tiny D2H + sync.
+    pub fn dtoh_i32_one(&self, d: &CudaSlice<i32>) -> Result<i32, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v[0])
+    }
+    /// Set a [1] i32 device counter IN PLACE (keeps the buffer pointer stable — required for the
+    /// graph-resident pos/seqlen counters whose addresses are baked into captured graphs). Restores
+    /// the counter value after the throwaway capture warmups corrupt it.
+    pub fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_htod(&[v], d)?;
+        Ok(())
+    }
+    /// Set a [1] u32 device buffer IN PLACE (stable pointer) — for the resident `token_d` counter
+    /// during priming / capture-state restore.
+    pub fn set_u32_one(&self, d: &mut CudaSlice<u32>, v: u32) -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_htod(&[v], d)?;
+        Ok(())
     }
     /// Read back a [1] u32 device buffer (the argmax token). One tiny D2H + sync.
     pub fn dtoh_u32_one(&self, d: &CudaSlice<u32>) -> Result<u32, Box<dyn std::error::Error>> {
@@ -1069,6 +1147,122 @@ impl Engine {
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
+    }
+
+    /// Device-counter variant of `fa_decode` (CUDA-GRAPH-PLAN Phase 2). The sequence length is read
+    /// from `t_kv_dev[0]` (resident device i32[1]) for the attention loop bound + per-split key range;
+    /// the GRID `n_splits` is sized for `bucket_max` (the bucket's max t_kv — baked at capture time).
+    /// Empty splits (key range beyond the actual t_kv) write an empty partial (m=NEG_INF) so the
+    /// shared combine skips them -> bit-correct for ANY actual t_kv <= bucket_max.
+    ///
+    /// BIT-IDENTITY (the gate): pass `bucket_max == actual_t_kv` and this reproduces `fa_decode`
+    /// EXACTLY (same n_splits, same per, same split boundaries, same combine) while reading t_kv from
+    /// device. Bucketing (bucket_max > t_kv) is for the future captured path and changes split
+    /// grouping (different but mathematically-equal log-sum-exp merge).
+    pub fn fa_decode_dc(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                        v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                        head_dim: usize, n_head: usize, n_head_kv: usize,
+                        t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
+                        k_tok_bytes: usize, v_tok_bytes: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        const FA_VEC_MIN_TKV: usize = 96;
+        // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
+        // reads the ACTUAL t_kv from t_kv_dev for the per-split bound.
+        let fa_vec = std::env::var("BW24_FA_VEC").is_ok() && bucket_max >= FA_VEC_MIN_TKV;
+        let n_splits = if fa_vec { ((bucket_max + 63) / 64).max(1) } else { ((bucket_max + 255) / 256).max(1) };
+        let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
+        let mut part_m = self.zeros(n_head * n_splits)?;
+        let mut part_l = self.zeros(n_head * n_splits)?;
+        let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
+        let (f, cfg) = if fa_vec {
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let smem = (2 * 32 * head_dim * 2) as u32;
+            let fv = self.func("fa_decode_vec_q_dc");
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem as i32)?;
+            (fv,
+             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: smem })
+        } else {
+            (self.func("fa_decode_f32_dc"),
+             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+        };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        let fc = self.func("fa_decode_combine_f32");
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
+    /// EAGER fa_decode geometry for a given actual `t_kv` (CUDA-GRAPH-PLAN §3.3 bucketing). Returns
+    /// `(fa_vec, n_splits)` EXACTLY as `fa_decode` computes them so the graph-capture path can key its
+    /// bucket on the same `(kernel, n_splits)` pair and pass a `bucket_max` that reproduces eager's
+    /// n_splits bit-for-bit. (Per = ceil(t_kv/n_splits) is then recomputed from the DEVICE t_kv inside
+    /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
+    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize) -> (bool, usize) {
+        const FA_VEC_MIN_TKV: usize = 96;
+        let mut fa_vec = std::env::var("BW24_FA_VEC").is_ok() && t_kv >= FA_VEC_MIN_TKV;
+        fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
+        let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
+        (fa_vec, n_splits)
+    }
+
+    /// `bucket_max` (host t_kv to feed `fa_decode_dc` / `full_attn_decode_dc`) that makes the _dc
+    /// kernel pick the SAME (fa_vec, n_splits) as eager would for actual `t_kv`. Because the dc
+    /// launcher derives both from `bucket_max` via the same formulas, we just hand it `t_kv` itself:
+    /// the n_splits is then identical, and the per-split boundaries (computed from the DEVICE t_kv in
+    /// the kernel) match eager exactly. The bucket KEY (for the graph HashMap) is `(fa_vec, n_splits)`.
+    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize) -> (bool, usize) {
+        self.fa_geom_eager(t_kv, head_dim)
+    }
+
+    /// CUDA-graph capture wrapper (CUDA-GRAPH-PLAN §3.2, llama.cpp warmup pattern). Runs `step`
+    /// inline TWICE (warmup — lets the caching allocator settle to stable pointers and any one-time
+    /// kernel attribute/JIT happen outside capture), then captures a THIRD invocation on the Engine's
+    /// decode stream (RELAXED mode) and instantiates it into a replayable `CudaGraph`. The closure
+    /// must enqueue ONLY device work on `e.stream()` (no dtoh / no synchronize / no host branch on
+    /// device data) — every per-step varying scalar must come from a device counter. Returns the
+    /// instantiated graph; `CudaGraph::launch()` replays the whole step in one dispatch.
+    pub fn capture_graph<F>(&self, mut step: F) -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>>
+        where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
+    {
+        use cudarc::driver::sys::{CUstreamCaptureMode, CUgraphInstantiate_flags};
+        // EVENT TRACKING OFF for capture. The Engine creates a 2nd stream (copy_stream) so cudarc is in
+        // multi-stream mode and, by default, records a CudaEvent per CudaSlice alloc/use to serialize
+        // cross-stream access. Those per-buffer event waits issue stream ops that are NOT permitted
+        // inside a capture region (CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). The captured decode step is
+        // strictly SINGLE-STREAM (every kernel on gpu.stream), so this synchronization is unnecessary
+        // here — disable it for the whole warmup+capture, re-enable after. SAFETY: the decode-dc path
+        // touches only gpu.stream; no buffer crosses to copy_stream during capture.
+        let was_tracking = self.gpu.ctx.is_event_tracking();
+        if was_tracking { unsafe { self.gpu.ctx.disable_event_tracking(); } }
+        let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
+            // warmup: two inline runs (no capture) so allocator pointers + kernel attrs are stable.
+            step(self)?;
+            step(self)?;
+            self.gpu.stream.synchronize()?;
+            // capture the third run.
+            self.gpu.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+            // If the body errors mid-capture, end the capture before propagating so the stream isn't
+            // left in a capturing state.
+            let r = step(self);
+            let g = self.gpu.stream.end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+            r?;
+            let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
+            graph.upload()?;
+            Ok(graph)
+        };
+        let result = run();
+        if was_tracking { unsafe { self.gpu.ctx.enable_event_tracking(); } }
+        result
     }
 
     /// gdn_scan variant where state_in/out are CudaViews (resident SSM state, in-place per step).

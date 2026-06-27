@@ -40,7 +40,53 @@ pub struct Gpu {
 impl Gpu {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let ctx = CudaContext::new(ordinal)?;
-        let stream = ctx.default_stream();
+        // A NON-BLOCKING created stream (NOT the legacy NULL/default stream): the NULL stream cannot be
+        // CUDA-graph captured (cuStreamBeginCapture -> CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). All
+        // engine kernels launch on this stream, so making it capturable enables the decode CUDA-graph
+        // capture/replay path (CUDA-GRAPH-PLAN Phase 3). Behaviorally identical for the existing single-
+        // stream paths (just a real stream id instead of NULL).
+        let stream = ctx.new_stream()?;
+        // DETERMINISM FIX (decode bit-stability): the default stream-ordered async memory pool
+        // (cuMemAllocAsync/cuMemFreeAsync, used by cudarc's `alloc`/`alloc_zeros`) reuses freed
+        // blocks OPPORTUNISTICALLY — it hands a freed block to the next alloc as soon as the HOST
+        // observes the GPU has passed the free, WITHOUT inserting a stream dependency. Whether that
+        // reuse happens is a function of how far the async GPU has progressed at host-alloc time, so
+        // it is timing-dependent. Our decode path launches kernels through the raw launch builder
+        // (no cudarc read/write event tracking on the args), so the per-step scratch buffers are
+        // freed-and-reused inside the async window: under opportunistic reuse a buffer can be
+        // recycled and overwritten by a later kernel while an earlier kernel that still references
+        // the same physical block is in flight — a WAR/RAW hazard that produces RUN-TO-RUN
+        // nondeterministic results (two identical prompt primes diverge; per-step sync hides it).
+        // Disable opportunistic reuse and require the pool to insert INTERNAL stream dependencies
+        // before reusing a freed block. This makes every reuse stream-ordered and deterministic with
+        // negligible cost (one-time pool config; the dependency is the same ordering the single
+        // stream already implies, just made explicit). The release threshold is set to MAX so freed
+        // blocks stay in the pool (no give-back to the OS between steps -> stable reuse, no per-step
+        // cuMemMap churn).
+        // (A/B-verified perf-neutral: decode ~80 tok/s with this on, off, or absent — full-power noise
+        // band. The real determinism fix is the SSM ping-pong in decode.rs; this is cheap belt-and-
+        // suspenders against any other per-step async-pool reuse hazard.)
+        unsafe {
+            use cudarc::driver::sys;
+            let dev = ctx.cu_device();
+            let mut pool: sys::CUmemoryPool = std::ptr::null_mut();
+            if sys::cuDeviceGetDefaultMemPool(&mut pool, dev) == sys::CUresult::CUDA_SUCCESS
+                && !pool.is_null()
+            {
+                let off: std::os::raw::c_int = 0;
+                let _ = sys::cuMemPoolSetAttribute(
+                    pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_REUSE_ALLOW_OPPORTUNISTIC,
+                    &off as *const _ as *mut std::os::raw::c_void);
+                let on: std::os::raw::c_int = 1;
+                let _ = sys::cuMemPoolSetAttribute(
+                    pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_REUSE_ALLOW_INTERNAL_DEPENDENCIES,
+                    &on as *const _ as *mut std::os::raw::c_void);
+                let thresh: u64 = u64::MAX;
+                let _ = sys::cuMemPoolSetAttribute(
+                    pool, sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                    &thresh as *const _ as *mut std::os::raw::c_void);
+            }
+        }
         let blas = CudaBlasLT::new(stream.clone())?;
         Ok(Self { ctx, stream, blas })
     }
