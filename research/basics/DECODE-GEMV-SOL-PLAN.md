@@ -1,3 +1,10 @@
+> **2026-06-27 ncu UPDATE — this doc's bandwidth premise is WRONG at the kernel level. Read this first.**
+> ncu now runs (sudo -n works; `RmProfilingAdminOnly=1` but sudo lifts it). Profiled `qmatvec_nvfp4_mmvq` directly:
+> - `dram__throughput.avg.pct_of_peak` = **37%** (NOT 52%, NOT bandwidth-bound — the 52% was a whole-decode tok/s-implied average, an upper bound on a kernel that ISN'T the DRAM wall).
+> - binding stall = `long_scoreboard` **9.46** + `lg_throttle` 3.82; `issue_active` 44%; `inst_issued` 0.44/cyc; `warps_active` 88%.
+> - L2 sector hit-rate 4.6% (weights stream once — expected).
+> **Verdict: LATENCY-bound (low memory-level parallelism), not bandwidth/occupancy.** 48 resident warps can't hide the ~470cy weight-load latency because each warp's inner block-loop is a tight load→table→dp4a dependent chain. **P1 (aligned load) SHIPPED: 80.6→82.9 (+2.3), as predicted.** P2 (cooperative layout) **DISPROVEN by A/B**: bw24 already has BOTH layouts (dp4a=4-warp-coop, mmvq=warp-per-row); both land 83.1±0.1 — decomposition is NOT the lever. **Real lever = MLP: unroll block-loop + hoist weight loads (multiple LDG in flight/warp). No 1.58x cap — that was a bandwidth-wall artifact.** Levers below are superseded by this.
+
 # DECODE-GEMV SOL PLAN — closing the NVFP4 decode bandwidth gap
 
 **Author:** lead CUDA architect (synthesis of 4 adversarially-verified levers)

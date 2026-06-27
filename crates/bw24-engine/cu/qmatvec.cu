@@ -649,8 +649,12 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq(
         const unsigned char* d_bytes = b;
         const unsigned char* qs = b + 4;
         int s0 = whichHalf * 2;
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        // activation 32 int8 = 8 ints: load as 2x int4 (16B) -> cuts 8 LDG.E.32 to 2 LDG.E.128,
+        // attacking lg_throttle (3.82, LSU queue full). aqb = arow + g*32 is 32-aligned -> int4 safe.
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0];   // aq4[0..3]
+        int4 a23 = aq16[1];   // aq4[4..7]
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         float partial = 0.0f;
         #pragma unroll
         for (int sl = 0; sl < 2; sl++) {
