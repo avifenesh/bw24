@@ -46,3 +46,7 @@ path = "src/bin/run_eagle.rs"
 [[bin]]
 name = "decode-bench"
 path = "src/bin/decode_bench.rs"
+
+[[bin]]
+name = "argmax-gate"
+path = "src/bin/argmax_gate.rs"

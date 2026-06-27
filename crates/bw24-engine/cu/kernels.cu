@@ -1,6 +1,48 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
 #include <cuda_runtime.h>
+#include <cstdint>
+
+// ---- GPU-resident greedy argmax over logits[n_vocab] -> token_out[0] (u32). ----
+// CUDA-GRAPH-PLAN Phase 1: removes the per-step dtoh(logits)+synchronize host barrier (the hard
+// graph-capture blocker). Single CTA, 256 threads. Tie-break = SMALLEST index wins, bit-identical
+// to the host argmax (forward.rs `if v > bv` strictly-greater keeps the first max). Each thread
+// scans a strided slice keeping (best_val,best_id); reduce keeps the lower id on equal value.
+extern "C" __global__ void argmax_logits_f32_to_u32(
+        const float* __restrict__ logits, uint32_t* __restrict__ token_out, int n_vocab) {
+    int tid = threadIdx.x;
+    float best_v = -3.402823466e38f;   // -FLT_MAX (matches f32::NEG_INFINITY seed)
+    int   best_i = 0x7fffffff;
+    for (int i = tid; i < n_vocab; i += blockDim.x) {
+        float v = logits[i];
+        // strictly-greater takes the new value; on a tie keep the smaller index.
+        if (v > best_v || (v == best_v && i < best_i)) { best_v = v; best_i = i; }
+    }
+    // warp butterfly reduce: max value, smallest index on tie.
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+        int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+        if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+    }
+    __shared__ float sv[32];
+    __shared__ int   si[32];
+    int warp = tid >> 5, lane = tid & 31;
+    if (lane == 0) { sv[warp] = best_v; si[warp] = best_i; }
+    __syncthreads();
+    if (warp == 0) {
+        int nwarps = (blockDim.x + 31) >> 5;
+        best_v = (lane < nwarps) ? sv[lane] : -3.402823466e38f;
+        best_i = (lane < nwarps) ? si[lane] : 0x7fffffff;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+            int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+            if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+        }
+        if (lane == 0) token_out[0] = (uint32_t)best_i;
+    }
+}
 
 // ---- RMSNorm: one block per row. y = x / sqrt(mean(x^2) + eps) * weight ----
 // x: [ncols, nrows] row-major (row stride = ncols). weight: [ncols]. dst same shape as x.

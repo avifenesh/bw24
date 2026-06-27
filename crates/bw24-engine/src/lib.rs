@@ -486,6 +486,28 @@ impl Engine {
         Ok(self.gpu.stream.alloc_zeros::<f32>(n)?)
     }
 
+    /// GPU-resident greedy argmax (CUDA-GRAPH-PLAN Phase 1): logits[n_vocab] -> token id in a
+    /// resident device u32 [1]. Single CTA, 256 threads. Bit-identical to host `argmax` (smallest
+    /// index on tie). The whole point is NOT to dtoh logits — only a [1] u32 is read back (or kept
+    /// resident for graph replay). Returns the device token buffer.
+    pub fn argmax_token_device(&self, logits: &CudaSlice<f32>, n_vocab: usize)
+                               -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let f = self.func("argmax_logits_f32_to_u32");
+        let mut tok = unsafe { self.gpu.stream.alloc::<u32>(1)? };
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(&mut tok).arg(&nv);
+        unsafe { b.launch(cfg)?; }
+        Ok(tok)
+    }
+    /// Read back a [1] u32 device buffer (the argmax token). One tiny D2H + sync.
+    pub fn dtoh_u32_one(&self, d: &CudaSlice<u32>) -> Result<u32, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v[0])
+    }
+
     /// Uninitialized device buffer — SKIPS the memset that `alloc_zeros` always issues. Decode
     /// profile (nsys): ~1050 memsets/token = 6.5% of decode GPU time + ~half the launch count, the
     /// dominant contributor to the 19% inter-kernel idle gap and a blocker for clean CUDA-graph
