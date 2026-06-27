@@ -41,3 +41,8 @@ path = "src/bin/run_spec.rs"
 [[bin]]
 name = "run-eagle"
 path = "src/bin/run_eagle.rs"
+
+
+[[bin]]
+name = "decode-bench"
+path = "src/bin/decode_bench.rs"
