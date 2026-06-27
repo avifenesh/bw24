@@ -970,6 +970,17 @@ __device__ __forceinline__ void cp_async4(void* smem, const void* g) {
 // FP4_NS-1 iters earlier (so it is landed under wait_group(FP4_NS-2)); the loop therefore fetches the
 // raw block 2*(FP4_NS-1) iters ahead of consumption, keeping that many distinct blocks alive at once.
 #define FP4_NS_RAW (2 * (FP4_NS - 1))
+// sWraw row stride (bytes). The repack reads the resident raw block per-BYTE (LDS.U8 of qs[]/scale[]),
+// 64+ scalar shared loads per K-step — these (NOT the ldmatrix operand loads, which the SWZ_CHUNK/x4.b16
+// path already drives conflict-free) are the dominant shared-load population (ncu SASS: 72 LDS.U8 +
+// 32 LDS vs only 17 LDSM). At the natural 64B row stride, row r maps to bank (r*16)%32, so all 32 rows
+// of a warp alias just 2 bank groups -> 16-WAY conflict (ncu: 53.2M conflicts / 6.6-way avg, the whole
+// FP4 GEMM conflict). Padding the stride to 80B (the %16-aligned analog of llama's %8==4 tile pad —
+// 16B-aligned so cp.async.cg-16 stays legal) makes the per-row bank step (80/4)%32=20, scattering the
+// 32 rows over 8 distinct bank groups -> 4-WAY (4x fewer conflicts). Bit-exact: storage stride only;
+// the phase math (off&15) and nibble/scale decode are unchanged. +2KB/CTA smem (21.5->23.5KB), still
+// below the FP4_NS occupancy threshold (the kernel is smem-bound only past ~36KB).
+#define FP4_RAW_STRIDE 80
 __device__ void qmatvec_gemm_mxf4_kernel(
         const unsigned char* __restrict__ W, const unsigned* __restrict__ aq4,
         const unsigned char* __restrict__ ad4, float* __restrict__ y,
@@ -998,7 +1009,7 @@ __device__ void qmatvec_gemm_mxf4_kernel(
                                                     // for the SFB scale -> 1/4 the smem transactions of a
                                                     // per-byte read; LE u32 == the old s[0]|s[1]<<8|...).
     // raw weight ring: 36B block at a 16B-floored phase (max phase 15 + 36B = 51 -> round up to 64).
-    __shared__ __align__(16) unsigned char sWraw[FP4_NS_RAW][BM][64];
+    __shared__ __align__(16) unsigned char sWraw[FP4_NS_RAW][BM][FP4_RAW_STRIDE];
 
     float facc[BN / 8][4];
     #pragma unroll
