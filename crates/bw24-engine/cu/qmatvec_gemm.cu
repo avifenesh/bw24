@@ -19,9 +19,18 @@
 // FRAGMENT LOADING: ldmatrix.sync (x4.b16 for A weights, x2.b16 for B activations) reinterpreted
 // for s8 — loads the EXACT bytes the old scalar byte-assembly produced (bit-identical mma input,
 // gated vs dp4a in kernel_check). PIPELINE: NSTAGE=3 cp.async ring buffer overlaps the next K-step's
-// activation global->smem copy behind the current mma; weight decode stays ALU-synchronous into the
-// staged smem. Single __syncthreads/K-step (the top barrier guards both cur's visibility and the
-// WAR for the post-barrier prefetch). __launch_bounds__(128,4) caps regs so 4 CTAs/SM co-reside.
+// activation global->smem copy behind the current mma. Single __syncthreads/K-step (the top barrier
+// guards both cur's visibility and the WAR for the post-barrier prefetch). __launch_bounds__(128,4)
+// caps regs so 4 CTAs/SM co-reside.
+//
+// FIX A (pre-decode, PERF-1d): for Q4_K/Q5_K the RAW quant superblock is cp.async'd into a smem ring
+// (sWraw) one superblock ahead, then ALU-decoded from RESIDENT smem during prefetch — so the long-
+// scoreboard global weight read leaves the mma chain (ncu: Q4_K 2.61->1.88) and weight DRAM traffic
+// drops 8-fold. See StageMeta below: PREDEC is set PER-DTYPE by measured pp512 (Q4_K/Q5_K win; NVFP4/
+// Q6_K/Q8_0 KEEP the inline-global decode — pre-decode's extra smem dropped their occupancy and
+// REGRESSED them, same occupancy-bound tradeoff as the reverted swizzle-pad/tile-redesign). FIX B
+// (barrier batching via deeper NSTAGE) was tested and REJECTED: NSTAGE=4 regressed pp512 1287->1220
+// (more smem -> fewer CTAs/SM); this tile is occupancy-bound, not barrier-frequency-bound at depth.
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -72,6 +81,18 @@ __device__ __forceinline__ void mma_s8_m16n8k32(int (&d)[4], const int (&a)[4], 
 __device__ __forceinline__ void cp_async16(void* smem, const void* g) {
     uint32_t s = (uint32_t)__cvta_generic_to_shared(smem);
     asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s), "l"(g));
+}
+// FIX A (pre-decode): cp.async a RAW weight-superblock window of N 16B chunks. Source `g16` MUST be
+// 16B-aligned (we pass the 16B-FLOOR of the superblock byte offset); dst `smem` 16B-aligned. The
+// decode later reads at the recorded phase = (off & 15) inside the staged window -> bit-identical
+// bytes to a direct global read (the gate proves this). One lane copies the whole window (per-row);
+// the windows are tiny (<=15 chunks) and amortized 1/superblock, so single-lane is fine.
+__device__ __forceinline__ void cp_async_window(void* smem, const void* g16, int nchunk) {
+    uint32_t s = (uint32_t)__cvta_generic_to_shared(smem);
+    const char* src = (const char*)g16;
+    #pragma unroll 1
+    for (int c = 0; c < nchunk; c++)
+        asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s + (uint32_t)(c * 16)), "l"(src + c * 16));
 }
 // ldmatrix x4.b16: per-lane addr = (lane%16)*stride_b16 + (lane/16)*4 (in .b16 units), built as a
 // 32-bit .shared address (proven in flash_attn.cu ld_A / mma_validate.cu). Loads 4x .b32 = 16
@@ -159,6 +180,94 @@ __device__ __forceinline__ float decode_q5_k(const unsigned char* wrow, int g, i
     return d_sb * (float)sc;
 }
 
+// ===================================================================== //
+//  FIX A — PRE-DECODE staging metadata + smem-source decodes.                                    //
+//  Per dtype: SB_BYTES = bytes of the superblock that holds GPSB consecutive 32-blocks; GPSB =   //
+//  32-blocks (K-steps) sharing one superblock. The pre-decode pipeline cp.async's the superblock //
+//  (a 16B-floored window of SB_BYTES) into smem ONCE per GPSB K-steps, then ALU-decodes group     //
+//  g&(GPSB-1) from the resident superblock each K-step -> the global read leaves the mma chain    //
+//  AND superblock traffic drops GPSB-fold. The smem decodes below are byte-identical to the       //
+//  global decodes above: same intra-superblock indexing, just a different (smem) base. The bit-   //
+//  equivalence gate (kernel_check, rel<1e-3) proves identity.                                     //
+//  RAW_W (per-row staged-window bytes) = roundup(15 + SB_BYTES, 16): max phase 15 + the block.    //
+// ===================================================================== //
+// FIX A (pre-decode): PREDEC=1 cp.async's the RAW quant superblock into smem one superblock ahead and
+// ALU-decodes from RESIDENT smem -> the long-scoreboard global weight read leaves the mma chain (ncu:
+// Q4_K long-scoreboard 2.61->1.88, NVFP4 2.61->0.47) AND weight DRAM traffic drops GPSB-fold. BUT the
+// raw ring costs smem and drops CTAs/SM. PREDEC is set PER-DTYPE by MEASURED net pp512 (A/B on 9B):
+//   Q4_K/Q5_K (PREDEC=1): +6% — the long-scoreboard win beats the occupancy loss (43.5/47.6KB -> 2 CTAs).
+//   NVFP4    (PREDEC=0): pre-decode REGRESSED pp512 (~-3%, 1287->1240 alone) — its inline decode is
+//                        light-ALU/L2-resident, so the +8KB raw ring (4->3 CTAs) costs more than it saves.
+//   Q8_0     (PREDEC=0): GPSB=1, no superblock sharing; decode is a trivial int8 memcpy (mild stall).
+//   Q6_K     (PREDEC=0): 210B 2-aligned window busts the 48KB static-smem cap at NSTAGE_RAW=2.
+// GPSB = 32-blocks per superblock; SB_BYTES = superblock bytes; RAW_W = roundup(15 + SB_BYTES, 16).
+template<int QT> struct StageMeta;
+template<> struct StageMeta<GQT_Q8_0>{ enum{ SB_BYTES=34,  GPSB=1, RAW_W=48,  PREDEC=0 }; };
+template<> struct StageMeta<GQT_Q4_K>{ enum{ SB_BYTES=144, GPSB=8, RAW_W=160, PREDEC=1 }; };
+template<> struct StageMeta<GQT_Q5_K>{ enum{ SB_BYTES=176, GPSB=8, RAW_W=192, PREDEC=1 }; };
+template<> struct StageMeta<GQT_Q6_K>{ enum{ SB_BYTES=210, GPSB=8, RAW_W=240, PREDEC=0 }; };
+template<> struct StageMeta<GQT_NVFP4>{ enum{ SB_BYTES=36,  GPSB=2, RAW_W=64,  PREDEC=0 }; };  // 64-elem block
+// superblock byte offset within a weight row for K-block g (== the `b - wrow` of the global decode)
+template<int QT> __device__ __forceinline__ long sb_byte_off(int g);
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q8_0>(int g){ return (long)g * 34; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q4_K>(int g){ return (long)(g>>3) * 144; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q5_K>(int g){ return (long)(g>>3) * 176; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q6_K>(int g){ return (long)(g>>3) * 210; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_NVFP4>(int g){ return (long)(g>>1) * 36; }
+
+// --- smem-source decodes (kernel1 single-scale dtypes): `b` = staged superblock base in smem
+//     (== sWraw_row + phase), `grp` = g & (GPSB-1). Bodies copied verbatim from the global decodes
+//     (sblk already absorbed into `b`). ---
+__device__ __forceinline__ float decode_q8_0_s(const unsigned char* b, int /*grp*/, int8_t* out, float* bias) {
+    *bias = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 32; j++) out[j] = (int8_t)b[2 + j];
+    return ghalf2float(*(const unsigned short*)b);
+}
+__device__ __forceinline__ float decode_q4_k_s(const unsigned char* b, int grp, int8_t* out, float* bias) {
+    float d_sb    = ghalf2float(*(const unsigned short*)b);
+    float dmin_sb = ghalf2float(*(const unsigned short*)(b + 2));
+    const unsigned char* scales = b + 4;
+    const unsigned char* qs     = b + 16;
+    unsigned char sc, mn;
+    if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+    else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+           mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+    int chunk = grp >> 1;
+    const unsigned char* q = qs + chunk * 32;
+    bool hi = (grp & 1);
+    #pragma unroll
+    for (int j = 0; j < 32; j++) out[j] = (int8_t)(hi ? (q[j] >> 4) : (q[j] & 0xF));
+    *bias = -dmin_sb * (float)mn;
+    return d_sb * (float)sc;
+}
+__device__ __forceinline__ float decode_q5_k_s(const unsigned char* b, int grp, int8_t* out, float* bias) {
+    float d_sb    = ghalf2float(*(const unsigned short*)b);
+    float dmin_sb = ghalf2float(*(const unsigned short*)(b + 2));
+    const unsigned char* scales = b + 4;
+    const unsigned char* qh = b + 16;
+    const unsigned char* qs = b + 48;
+    unsigned char sc, mn;
+    if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+    else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+           mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+    int g64 = grp >> 1; bool hi = (grp & 1); int hbit = 2 * g64 + (hi ? 1 : 0);
+    const unsigned char* q = qs + g64 * 32;
+    #pragma unroll
+    for (int j = 0; j < 32; j++) {
+        int lowbits = hi ? (q[j] >> 4) : (q[j] & 0x0F);
+        int h = (qh[j] >> hbit) & 1;
+        out[j] = (int8_t)(lowbits | (h << 4));
+    }
+    *bias = -dmin_sb * (float)mn;
+    return d_sb * (float)sc;
+}
+template<int QT>
+__device__ __forceinline__ float decode_block_s(const unsigned char* b, int grp, int8_t* out, float* bias);
+template<> __device__ __forceinline__ float decode_block_s<GQT_Q8_0>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q8_0_s(b,grp,o,bs); }
+template<> __device__ __forceinline__ float decode_block_s<GQT_Q4_K>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q4_k_s(b,grp,o,bs); }
+template<> __device__ __forceinline__ float decode_block_s<GQT_Q5_K>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q5_k_s(b,grp,o,bs); }
+
 // Q6_K: superblock 256 / 210 B. symmetric, no min. int weight = (ql|qh<<4)-32 in [-32,31].
 // Per-32 block g&7 spans TWO 16-elem scale groups (is0/is1). We can't fold two scales into one
 // f32-per-block, so we PRE-MULTIPLY the int weight by its 16-group scale ratio... no — instead we
@@ -207,14 +316,26 @@ __device__ void qmatvec_gemm_kernel(
     const int nblk = in_f / 32;
 
     // NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
-    // tile, and per-tile scales for one K-step. Weights need ALU decode (sync into smem); the
-    // already-int8 activations are cp.async'd straight from global, overlapping DRAM with the mma.
+    // tile, and per-tile scales for one K-step. The already-int8 activations are cp.async'd straight
+    // from global. FIX A: the RAW quant superblock is cp.async'd into sWraw (a separate NSTAGE_RAW
+    // ring keyed by SUPERBLOCK) one superblock ahead; the ALU decode reads that RESIDENT smem (not
+    // global) during prefetch -> the long-scoreboard global weight read leaves the mma chain, and
+    // superblock DRAM traffic drops GPSB-fold (8x for Q4_K/Q5_K).
     __shared__ int8_t sW[NSTAGE][BM][BK];   // BK=32 (16-aligned) -> ldmatrix.x4.b16 addr legal
     __shared__ int8_t sA[NSTAGE][BN][BK];   // BK (16-aligned) so cp.async.cg 16B copies are legal
     __shared__ float  sWd[NSTAGE][BM];
     __shared__ float  sWb[NSTAGE][BM];
     __shared__ float  sAd[NSTAGE][BN];
     __shared__ float  sAsum[NSTAGE][BN];
+    // raw superblock ring (FIX A). FIX A applies to GPSB>=2 dtypes (Q4_K/Q5_K, GPSB=8): a 16B-floored
+    // superblock window cp.async'd ONE superblock ahead (lead = GPSB K-steps >= NSTAGE, so always landed
+    // at the per-iter wait_group), decoded from RESIDENT smem -> global read off the mma chain + GPSB-fold
+    // less weight DRAM. Keyed by superblock; depth NSTAGE_RAW=2 (decoding-sb + 1 prefetched). Q8_0 (GPSB=1)
+    // has no superblock sharing AND a 1-step lead can't beat the wait_group, so it KEEPS the inline-global
+    // decode (USE_PREDECODE=false): the dead raw ring compiles to nothing (NSTAGE_RAW*BM*1).
+    enum { GPSB = StageMeta<QT>::GPSB, USE_PREDECODE = StageMeta<QT>::PREDEC,
+           RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
+    __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
     // each warp accumulates its 16 rows x BN(=64) tokens = 16x8 frags over the 8 n-tiles.
     // acc[ntile][4] s32. We apply scales per K-step into f32 (because dw/da vary per 32-block).
@@ -224,8 +345,69 @@ __device__ void qmatvec_gemm_kernel(
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
-    // ---- issue one stage's loads: decode weights (sync) + cp.async activations into stage `s`. ----
-    auto issue_load_stage = [&](int s, int g) {
+    // ---- FETCH: cp.async the RAW superblock `sb` (== g/GPSB) into the raw ring (one row per out-row),
+    //      from the 16B-FLOOR of its byte offset; record nothing (phase recomputed at decode). Issued
+    //      only at superblock boundaries (caller gates on g%GPSB==0). ----
+    auto fetch_superblock = [&](int sb) {
+        int rs = sb % NSTAGE_RAW;
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            if (o < out_f) {
+                long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
+                long aoff = off & ~(long)15;          // 16B floor of the superblock
+                int  phase = (int)(off - aoff);       // 0..15
+                int  nchunk = (phase + (int)StageMeta<QT>::SB_BYTES + 15) >> 4;
+                cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+            }
+        }
+    };
+    // ---- cp.async the activation tile for K-block g into stage `s` (unchanged from the inline path). ----
+    auto fetch_activation = [&](int s, int g) {
+        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+            int t = toktile + n;
+            if (t < T) {
+                const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
+                cp_async16(&sA[s][n][0],  arow);
+                cp_async16(&sA[s][n][16], arow + 16);
+                sAd[s][n] = ad[(size_t)t * nblk + g];
+                const int* aw = (const int*)arow;     // 16B-aligned (in_f%16==0, g*32)
+                int ssum = 0;
+                #pragma unroll
+                for (int w = 0; w < 8; w++) ssum = __dp4a(aw[w], 0x01010101, ssum);
+                sAsum[s][n] = (float)ssum;
+            } else {
+                #pragma unroll
+                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
+                sAd[s][n] = 0.0f; sAsum[s][n] = 0.0f;
+            }
+        }
+    };
+    // ---- DECODE group g (off the mma chain): ALU-unpack the RESIDENT raw superblock smem -> sW[s].
+    //      Reads sWraw[(g/GPSB)%NSTAGE_RAW] at phase = (rowbyteoff & 15); bit-identical to the global
+    //      decode (same intra-superblock math, smem base). Result visible at the next barrier. ----
+    auto decode_stage = [&](int s, int g) {
+        int rs  = (g / GPSB) % NSTAGE_RAW;
+        int grp = g & (GPSB - 1);
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            float bias = 0.0f, dw;
+            if (o < out_f) {
+                long off = (long)o * row_bytes + (long)(g / GPSB) * (long)StageMeta<QT>::SB_BYTES;
+                int  phase = (int)(off & 15);
+                const unsigned char* b = &sWraw[rs][r][phase];
+                dw = decode_block_s<QT>(b, grp, &sW[s][r][0], &bias);
+            } else {
+                dw = 0.0f;
+                #pragma unroll
+                for (int k = 0; k < 32; k++) sW[s][r][k] = 0;
+            }
+            sWd[s][r] = dw; sWb[s][r] = bias;
+        }
+    };
+    // ---- INLINE decode (Q8_0 fallback): read global weight + decode straight into sW[s] (the original
+    //      path). Used only when !USE_PREDECODE; the global read is on the chain but Q8_0's decode is a
+    //      trivial memcpy of already-int8 weights, so the long-scoreboard is mild for it. ----
+    auto decode_stage_inline = [&](int s, int g) {
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
             int o = rowtile + r;
             float bias = 0.0f, dw;
@@ -239,35 +421,33 @@ __device__ void qmatvec_gemm_kernel(
             }
             sWd[s][r] = dw; sWb[s][r] = bias;
         }
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
-            int t = toktile + n;
-            if (t < T) {
-                const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
-                // 32 contiguous int8 (in_f%32==0) -> two 16B async copies into the BK-wide row.
-                cp_async16(&sA[s][n][0],  arow);
-                cp_async16(&sA[s][n][16], arow + 16);
-                sAd[s][n] = ad[(size_t)t * nblk + g];
-                // block-sum for the (min-quant) bias term: read straight from global (L2-resident,
-                // off the cp.async critical path). Vectorized 8x int32 + __dp4a(.,1,1) sign-extends
-                // and sums 4 int8 per word -> 8 instrs, not 32 byte loads.
-                const int* aw = (const int*)arow;   // arow is 16B-aligned (in_f%16==0, g*32)
-                int ssum = 0;
-                #pragma unroll
-                for (int w = 0; w < 8; w++) ssum = __dp4a(aw[w], 0x01010101, ssum);
-                sAsum[s][n] = (float)ssum;
-            } else {
-                #pragma unroll
-                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
-                sAd[s][n] = 0.0f; sAsum[s][n] = 0.0f;
-            }
-        }
     };
 
-    // ===== PROLOGUE: async-fill stages 0..NSTAGE-2 =====
-    #pragma unroll
-    for (int s = 0; s < NSTAGE - 1; s++) {
-        if (s < nblk) issue_load_stage(s, s);
+    const int nsb = (nblk + GPSB - 1) / GPSB;            // total superblocks along K
+    if (USE_PREDECODE) {
+        // ===== PROLOGUE (pre-decode): seed raw superblocks 0..1 (read by prologue stages + loop's
+        //       first decode) + prologue activations; drain; decode prologue stages from resident smem.
+        //       seed count (2) == NSTAGE_RAW so seeds land in distinct slots. =====
+        #pragma unroll
+        for (int sb = 0; sb < NSTAGE_RAW; sb++)
+            if (sb < nsb) fetch_superblock(sb);
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++)
+            if (s < nblk) fetch_activation(s, s);
         asm volatile("cp.async.commit_group;");
+        asm volatile("cp.async.wait_group 0;");          // drain: raw superblocks + activations resident
+        __syncthreads();
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++)
+            if (s < nblk) decode_stage(s, s);            // decode prologue stages from resident raw smem
+        asm volatile("cp.async.commit_group;");          // keep per-iter commit cadence (empty group ok)
+    } else {
+        // ===== PROLOGUE (inline): original path — fetch activation + inline-global decode per stage. ==
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++) {
+            if (s < nblk) { decode_stage_inline(s, s); fetch_activation(s, s); }
+            asm volatile("cp.async.commit_group;");
+        }
     }
 
     // ===== K loop over 32-blocks (SINGLE barrier/step: top __syncthreads guards both cur's
@@ -275,17 +455,24 @@ __device__ void qmatvec_gemm_kernel(
     for (int g = 0; g < nblk; g++) {
         int cur = g % NSTAGE;
         int nxt = (g + NSTAGE - 1) % NSTAGE;
+        int gp  = g + NSTAGE - 1;             // the K-block prefetched/decoded this iter
 
-        // wait until only NSTAGE-2 newest groups remain pending -> the group for stage `cur`
-        // (committed NSTAGE-1 iters ago) has landed. (prologue committed NSTAGE-1 groups; each
-        // loop iter below commits exactly one, so this fixed bound is correct for every g.)
+        // wait until only NSTAGE-2 newest groups remain pending -> stage `cur`'s activation (committed
+        // NSTAGE-1 iters ago) has landed; raw superblocks (fetched >=1 superblock ago) are long landed.
         asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
-        __syncthreads();   // cur visible; also: all warps past prev iter's reads -> WAR-safe prefetch
+        __syncthreads();   // cur visible (sA landed + sW decoded last iter); WAR-safe prefetch
 
-        // (A) prefetch g+NSTAGE-1 AFTER the barrier (its stage was last read NSTAGE-1 iters ago,
-        //     i.e. behind this barrier) -> overlaps its DRAM/decode behind this iter's mma chain.
-        if (g + NSTAGE - 1 < nblk) {
-            issue_load_stage(nxt, g + NSTAGE - 1);
+        // (A) prefetch gp's activation; (pre-decode path) fetch superblock gp/GPSB+1 when gp enters a new
+        //     superblock (keeps raw ring 1 superblock ahead) then DECODE gp from RESIDENT smem (no global
+        //     read on chain). (inline path) inline-global decode gp straight into sW (original behavior).
+        if (gp < nblk) {
+            fetch_activation(nxt, gp);
+            if (USE_PREDECODE) {
+                if (gp % GPSB == 0) { int sbf = gp / GPSB + 1; if (sbf < nsb) fetch_superblock(sbf); }
+                decode_stage(nxt, gp);        // reads raw smem (resident); NO global read on chain
+            } else {
+                decode_stage_inline(nxt, gp); // Q8_0: original inline-global decode
+            }
         }
         asm volatile("cp.async.commit_group;");
 
@@ -446,6 +633,27 @@ __device__ __forceinline__ void decode_nvfp4_2(const unsigned char* wrow, int g,
     *su0 = gue4m3_to_f32(d_bytes[s0]);
     *su1 = gue4m3_to_f32(d_bytes[s1]);
 }
+// FIX A smem-source NVFP4 decode: `b` = the resident 36B nvfp4 block base in smem (== sWraw_row+phase),
+// `whichHalf` = g&1. Body copied verbatim from decode_nvfp4_2 with sblk already absorbed into `b`.
+__device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whichHalf, int8_t* out,
+                                                 float* su0, float* su1) {
+    const unsigned char* d_bytes = b;
+    const unsigned char* qs = b + 4;
+    int s0 = whichHalf * 2, s1 = s0 + 1;
+    int* o32 = (int*)out;
+    #pragma unroll
+    for (int sl = 0; sl < 2; sl++) {
+        const unsigned char* qss = qs + (s0 + sl) * 8;
+        int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
+        int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+        int2 va = gtable16(q4a, gkvalues_mxfp4);
+        int2 vb = gtable16(q4b, gkvalues_mxfp4);
+        int base = sl * 4;
+        o32[base + 0] = va.x; o32[base + 1] = vb.x; o32[base + 2] = va.y; o32[base + 3] = vb.y;
+    }
+    *su0 = gue4m3_to_f32(d_bytes[s0]);
+    *su1 = gue4m3_to_f32(d_bytes[s1]);
+}
 
 // Two-sub-scale GEMM (Q6_K, NVFP4). Splits each 32-block into two 16-halves with distinct scales.
 // We run the mma TWICE per 32-block: once with the upper-16 weights zeroed (gives the lower-16
@@ -474,6 +682,11 @@ __device__ void qmatvec_gemm_kernel2(
     __shared__ float  sS0[NSTAGE][BM];        // lower-half scale factor (d*scn or su0)
     __shared__ float  sS1[NSTAGE][BM];        // upper-half scale factor
     __shared__ float  sAd[NSTAGE][BN];
+    // raw superblock ring (FIX A). NVFP4 (PREDEC=1, GPSB=2) pre-decodes from a resident 36B-block window;
+    // Q6_K (PREDEC=0) keeps the inline-global decode (210B 2-aligned window busts the 48KB smem cap).
+    enum { GPSB = StageMeta<QT>::GPSB, USE_PREDECODE = StageMeta<QT>::PREDEC,
+           RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
+    __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
     float facc[BN / 8][4];
     #pragma unroll
@@ -481,7 +694,61 @@ __device__ void qmatvec_gemm_kernel2(
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
-    auto issue_load_stage = [&](int s, int g) {
+    // ---- FETCH raw superblock sb (16B-floored window) into the raw ring (FIX A; NVFP4 only). ----
+    auto fetch_superblock = [&](int sb) {
+        int rs = sb % NSTAGE_RAW;
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            if (o < out_f) {
+                long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
+                long aoff = off & ~(long)15;
+                int  phase = (int)(off - aoff);
+                int  nchunk = (phase + (int)StageMeta<QT>::SB_BYTES + 15) >> 4;
+                cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+            }
+        }
+    };
+    // ---- cp.async the activation tile for K-block g into stage s (unchanged). ----
+    auto fetch_activation = [&](int s, int g) {
+        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+            int t = toktile + n;
+            if (t < T) {
+                const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
+                cp_async16(&sA[s][n][0],  arow);
+                cp_async16(&sA[s][n][16], arow + 16);
+                sAd[s][n] = ad[(size_t)t * nblk + g];
+            } else {
+                #pragma unroll
+                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
+                sAd[s][n] = 0.0f;
+            }
+        }
+    };
+    // ---- DECODE group g off the mma chain: ALU-unpack the RESIDENT raw block smem -> sW[s] + scales. --
+    auto decode_stage = [&](int s, int g) {
+        int rs = (g / GPSB) % NSTAGE_RAW;
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            int8_t wq[32];
+            float s0 = 0.0f, s1 = 0.0f;
+            if (o < out_f) {
+                long off = (long)o * row_bytes + (long)(g / GPSB) * (long)StageMeta<QT>::SB_BYTES;
+                int  phase = (int)(off & 15);
+                const unsigned char* b = &sWraw[rs][r][phase];
+                // PREDEC=1 in kernel2 is NVFP4 only (Q6_K is inline); decode the resident 36B block.
+                float su0, su1; decode_nvfp4_2_s(b, g & 1, wq, &su0, &su1);
+                s0 = su0; s1 = su1;
+            } else {
+                #pragma unroll
+                for (int k = 0; k < 32; k++) wq[k] = 0;
+            }
+            #pragma unroll
+            for (int k = 0; k < 32; k++) sW[s][r][k] = wq[k];
+            sS0[s][r] = s0; sS1[s][r] = s1;
+        }
+    };
+    // ---- INLINE-global decode (Q6_K, and NVFP4 fallback): the original path. ----
+    auto decode_stage_inline = [&](int s, int g) {
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
             int o = rowtile + r;
             int8_t wq[32];
@@ -503,37 +770,50 @@ __device__ void qmatvec_gemm_kernel2(
             for (int k = 0; k < 32; k++) sW[s][r][k] = wq[k];
             sS0[s][r] = s0; sS1[s][r] = s1;
         }
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
-            int t = toktile + n;
-            if (t < T) {
-                const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
-                cp_async16(&sA[s][n][0],  arow);
-                cp_async16(&sA[s][n][16], arow + 16);
-                sAd[s][n] = ad[(size_t)t * nblk + g];
-            } else {
-                #pragma unroll
-                for (int k = 0; k < 32; k++) sA[s][n][k] = 0;
-                sAd[s][n] = 0.0f;
-            }
-        }
     };
 
-    // ===== PROLOGUE: async-fill stages 0..NSTAGE-2 =====
-    #pragma unroll
-    for (int s = 0; s < NSTAGE - 1; s++) {
-        if (s < nblk) issue_load_stage(s, s);
+    const int nsb = (nblk + GPSB - 1) / GPSB;
+    if (USE_PREDECODE) {
+        // ===== PROLOGUE (pre-decode): seed raw superblocks 0..NSTAGE_RAW-1 + prologue activations;
+        //       drain; decode prologue stages from resident raw smem. =====
+        #pragma unroll
+        for (int sb = 0; sb < NSTAGE_RAW; sb++)
+            if (sb < nsb) fetch_superblock(sb);
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++)
+            if (s < nblk) fetch_activation(s, s);
         asm volatile("cp.async.commit_group;");
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++)
+            if (s < nblk) decode_stage(s, s);
+        asm volatile("cp.async.commit_group;");
+    } else {
+        // ===== PROLOGUE (inline, Q6_K): original — inline-global decode + activation per stage. ==
+        #pragma unroll
+        for (int s = 0; s < NSTAGE - 1; s++) {
+            if (s < nblk) { decode_stage_inline(s, s); fetch_activation(s, s); }
+            asm volatile("cp.async.commit_group;");
+        }
     }
 
     for (int g = 0; g < nblk; g++) {
         int cur = g % NSTAGE;
         int nxt = (g + NSTAGE - 1) % NSTAGE;
+        int gp  = g + NSTAGE - 1;
 
         asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
         __syncthreads();   // cur visible + WAR-safe prefetch (see kernel1 for the argument)
 
-        if (g + NSTAGE - 1 < nblk) {
-            issue_load_stage(nxt, g + NSTAGE - 1);
+        if (gp < nblk) {
+            fetch_activation(nxt, gp);
+            if (USE_PREDECODE) {
+                if (gp % GPSB == 0) { int sbf = gp / GPSB + 1; if (sbf < nsb) fetch_superblock(sbf); }
+                decode_stage(nxt, gp);        // resident raw smem; NO global read on chain
+            } else {
+                decode_stage_inline(nxt, gp); // Q6_K: original inline-global decode
+            }
         }
         asm volatile("cp.async.commit_group;");
 
