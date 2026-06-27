@@ -29,3 +29,7 @@ path = "src/bin/run_gen.rs"
 [[bin]]
 name = "run-spec"
 path = "src/bin/run_spec.rs"
+
+[[bin]]
+name = "run-eagle"
+path = "src/bin/run_eagle.rs"

@@ -259,6 +259,84 @@ impl HybridModel {
         Ok((host, h_seed))
     }
 
+    /// EAGLE3 aux-capturing verify forward over `tokens` (T) — mirrors `decode_step_t_h` exactly
+    /// (same KV append, same causal verify, same recur advance) but ALSO clones the aux residual-
+    /// stream hiddens (blocks in `aux_layers`) for TWO columns: the LAST column (always) and the
+    /// optional `pred_col` (the EAGLE seed = bonus's predecessor). Returns
+    /// (all_T_logits host, last_col_aux, pred_col_aux?). Used by the EAGLE3 orchestrator's commit.
+    pub fn decode_step_t_aux2(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                              aux_layers: &[usize], pred_col: Option<usize>)
+        -> Result<(Vec<f32>, Vec<CudaSlice<f32>>, Option<Vec<CudaSlice<f32>>>), Box<dyn std::error::Error>>
+    {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let t = tokens.len();
+        let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+        let pos_d = e.htod_i32(&pos_vec)?;
+        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        let mut aux_last: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
+        let mut aux_pred: Vec<CudaSlice<f32>> = Vec::new();
+        let want_pred = pred_col.is_some();
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.zeros(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let mixed = match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
+                Mixer::Linear(la) => {
+                    let mut out = e.zeros(t * n_embd)?;
+                    for col in 0..t {
+                        let mut h_col = e.zeros(n_embd)?;
+                        let src = h.slice(col * n_embd..(col + 1) * n_embd);
+                        e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
+                        let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
+                        e.copy_into(&mut out, col * n_embd, &m_col, n_embd)?;
+                    }
+                    out
+                }
+            };
+            let mut x1 = e.zeros(t * n_embd)?;
+            e.add(&x, &mixed, &mut x1, t * n_embd)?;
+            let mut z = e.zeros(t * n_embd)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+                        let (zq, zd) = e.quantize_q8_1(&z, t, n_embd)?;
+                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, t)?, e.matmul_pre(ffn_up, &zq, &zd, &z, t)?)
+                    } else {
+                        (e.matmul(ffn_gate, &z, t)?, e.matmul(ffn_up, &z, t)?)
+                    };
+                    let mut act = e.zeros(t * n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+            };
+            let mut x2 = e.zeros(t * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            if aux_layers.contains(&il) {
+                let mut a = e.zeros(n_embd)?;
+                e.copy_view_into(&mut a, 0, &x2.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+                aux_last.push(a);
+                if let Some(pc) = pred_col {
+                    let mut ap = e.zeros(n_embd)?;
+                    e.copy_view_into(&mut ap, 0, &x2.slice(pc * n_embd..(pc + 1) * n_embd), n_embd)?;
+                    aux_pred.push(ap);
+                }
+            }
+            x = x2;
+        }
+        let mut hn = e.zeros(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = e.matmul(&self.output, &hn, t)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += t;
+        Ok((host, aux_last, if want_pred { Some(aux_pred) } else { None }))
+    }
+
     /// Full-attention mixer over T query tokens with a GROWING resident KV (verify path, §D.3).
     /// Appends the T new K/V columns to cache.kv[il] then attends causally over [0..len) via
     /// fa_prefill. Token-major [T, kv_dim] projection layout == cache row layout (single copy).

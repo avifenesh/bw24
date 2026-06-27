@@ -14,6 +14,7 @@ pub mod hybrid_forward;
 pub mod cache;
 pub mod decode;
 pub mod spec;
+pub mod eagle;
 pub mod sampler;
 pub mod moe_cache;
 pub mod spill;

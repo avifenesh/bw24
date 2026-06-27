@@ -34,6 +34,65 @@ impl HybridModel {
         Ok(self.decode_step_h(e, token, cache)?.0)
     }
 
+    /// EAGLE3 aux-hidden capture (EAGLE-PLAN N1): one decode step that ALSO returns the trunk
+    /// residual-stream `x` taken AFTER each of the blocks in `aux_layers` (the EAGLE3 encoder feeds
+    /// these 3 layer hiddens through `fc`). Returns (logits[n_vocab] host, aux: Vec<[n_embd] dev>),
+    /// one device buffer per requested aux layer, in `aux_layers` order. The captured tensor is the
+    /// residual `x` produced by that block (`x2` at the loop tail), cloned before the next block
+    /// overwrites it — cheap (one clone_dtod of [n_embd] per aux layer). T=1 decode regime.
+    pub fn decode_step_aux(&self, e: &Engine, token: u32, cache: &mut Cache, aux_layers: &[usize])
+                           -> Result<(Vec<f32>, Vec<CudaSlice<f32>>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+
+        let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        let mut aux: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.zeros(n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
+            let mixed = match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
+                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
+            };
+            let mut x1 = e.zeros(n_embd)?;
+            e.add(&x, &mixed, &mut x1, n_embd)?;
+            let mut z = e.zeros(n_embd)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
+                    } else {
+                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
+                    };
+                    let mut act = e.zeros(n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    e.matmul(ffn_down, &act, 1)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
+            };
+            let mut x2 = e.zeros(n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            // EAGLE3 N1: capture this block's residual output if it is an aux layer.
+            if aux_layers.contains(&il) { aux.push(e.clone_dtod(&x2)?); }
+            x = x2;
+        }
+        // re-order aux to match aux_layers order (contains() pushes in il order; aux_layers is the
+        // canonical order the encoder concats in — they coincide since aux_layers is ascending).
+        let mut hn = e.zeros(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += 1;
+        Ok((host, aux))
+    }
+
     /// Like `decode_step`, but ALSO returns the trunk's hidden state `x` taken BEFORE the final
     /// `output_norm` (MTP-PLAN §A: this is `h_seed` for the NextN head). Device buffer [n_embd].
     pub fn decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
