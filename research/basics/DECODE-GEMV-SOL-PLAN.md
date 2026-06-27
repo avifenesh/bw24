@@ -5,6 +5,16 @@
 > - L2 sector hit-rate 4.6% (weights stream once — expected).
 > **Verdict: LATENCY-bound (low memory-level parallelism), not bandwidth/occupancy.** 48 resident warps can't hide the ~470cy weight-load latency because each warp's inner block-loop is a tight load→table→dp4a dependent chain. **P1 (aligned load) SHIPPED: 80.6→82.9 (+2.3), as predicted.** P2 (cooperative layout) **DISPROVEN by A/B**: bw24 already has BOTH layouts (dp4a=4-warp-coop, mmvq=warp-per-row); both land 83.1±0.1 — decomposition is NOT the lever. **Real lever = MLP: unroll block-loop + hoist weight loads (multiple LDG in flight/warp). No 1.58x cap — that was a bandwidth-wall artifact.** Levers below are superseded by this.
 
+> **GRIND LOG (2026-06-27, ncu-driven, connected-pieces view). Decode 9B-NVFP4 best config = BW24_FAST+MMVQ+FA_VEC.**
+> 69.7 (start) -> 80.6 (memset-kill, prior) -> **82.9 (P1 aligned-load) -> 86.4 (int4 activation, ALL 10 matvec kernels).** All argmax-bit-stable (142/40492), kernel_check rel unchanged.
+> **The bound MOVES as you hit it (this is the connected-pieces dynamic — a rising stall after a win is the NEXT step, not a failure):**
+> - start: long_scoreboard 9.46 + lg_throttle 3.82 (LSU queue full from 8 scalar int activation loads/block).
+> - after int4 activation (2x int4=128-bit load): lg_throttle 3.82->**0.28** (queue freed), long_scoreboard 9.46->**15.2** (now the SOLE bound = pure weight-load latency), issue_active 44->50%, DRAM 37->43%. tok/s 82.9->86.
+> **TRIED & DISPROVEN (don't repeat — measured):**
+> - 4-way batched g-block unroll (load 4 blocks up front, then compute): REGRESSED 82.9->78.0. Batching loads while lg_throttle still 3.82 made long_scoreboard WORSE (20.9) — one long serial wait at batch edge.
+> - 1-ahead software pipeline (issue next-block loads, compute current): cut long_scoreboard 15.2->8.78, issue_active 50->55% (mechanism WORKED) but full Blk struct pushed regs 40->43, crossing the 42-reg cap -> occ 88->75%, NET -1% (85.0). Reg-trimmed (pipeline only qs words): regs back to 40, occ 89%, long_scoreboard 12.68, but still 84.9 < 86.4 — compiler already schedules the simple unrolled loop's loads well; manual pipeline only adds overhead. **Lesson: the simple int4 loop is at the compiler's scheduling optimum for THIS reg budget.**
+> **NEXT (connected, not yet tried): long_scoreboard 12-15 = weight-load latency that 48 warps can't fully hide because every token re-reads ALL weights from HBM. The structural lever is cutting per-token weight TRAFFIC (the thing latency is proportional to), which connects prefill+decode: e.g. the q6_K lm_head (1.4ms, ~53% SOL, worst single kernel) + low-bit weight residency. Also CUDA-graph (different bound: ~18.7% launch gap, stacks multiplicatively). MTP/spec changes the regime entirely (amortizes weight reads across accepted tokens) — the path PAST raw-kernel SOL.**
+
 # DECODE-GEMV SOL PLAN — closing the NVFP4 decode bandwidth gap
 
 **Author:** lead CUDA architect (synthesis of 4 adversarially-verified levers)
