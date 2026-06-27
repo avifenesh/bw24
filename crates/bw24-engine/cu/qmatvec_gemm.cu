@@ -216,13 +216,42 @@ template<> __device__ __forceinline__ long sb_byte_off<GQT_Q6_K>(int g){ return 
 template<> __device__ __forceinline__ long sb_byte_off<GQT_NVFP4>(int g){ return (long)(g>>1) * 36; }
 
 // --- smem-source decodes (kernel1 single-scale dtypes): `b` = staged superblock base in smem
-//     (== sWraw_row + phase), `grp` = g & (GPSB-1). Bodies copied verbatim from the global decodes
-//     (sblk already absorbed into `b`). ---
+//     (== sWraw_row + phase), `grp` = g & (GPSB-1). Bodies VECTORIZED (4-byte int LDS + SIMD nibble/
+//     bit unpack + packed int store) to kill the per-byte LDS bank conflicts (the smem-pipe bound;
+//     ncu: q5_K 72M->24M conflicts, q4_K 43M->20M, short_scoreboard q5_K 4.02->2.66, l1tex no longer
+//     saturated). Math byte-identical to the scalar global decodes (kernel_check rel BIT-IDENTICAL).
+//   ALIGNMENT FINDING (the int-LDS gotcha): the int reads (q4[]/qh4[]/scales-int) require `b` 4B-aligned.
+//     `b = &sWraw[rs][r][phase]` with phase = (o*row_bytes + sb*SB_BYTES) & 15. For the PREDEC dtypes
+//     Q4_K (SB_BYTES=144=16*9) and Q5_K (SB_BYTES=176=16*11), AND row_bytes = (in_f/256)*SB_BYTES is a
+//     multiple of 16, so the byte offset is ALWAYS a multiple of 16 -> phase==0 -> b == sWraw row base.
+//     sWraw is __align__(16) and RAW_W (160/192) is a multiple of 16, so the row base is 16B-aligned.
+//     Therefore b, b+4 (scales), b+16 (qs/qh), b+48 (q5 qs) are all >=4B-aligned and the int LDS are
+//     legal. (Q6_K SB_BYTES=210 is NOT 16-mult -> phase varies; but Q6_K is PREDEC=0/global LDG, not
+//     a smem-conflict source and not 4B-aligned, so it KEEPS the scalar byte decode — left untouched.) ---
 __device__ __forceinline__ float decode_q8_0_s(const unsigned char* b, int /*grp*/, int8_t* out, float* bias) {
     *bias = 0.0f;
     #pragma unroll
     for (int j = 0; j < 32; j++) out[j] = (int8_t)b[2 + j];
     return ghalf2float(*(const unsigned short*)b);
+}
+// VECTORIZED smem-source scale unpack (Q4_K/Q5_K identical 6-bit scale/min layout). `scales` =
+// b+4 (12 bytes, 4B-aligned since b is 16B-aligned -> phase==0 for these dtypes). Replaces the
+// per-byte scales[] LDS.U8 reads with THREE 4-byte int LDS (scales[0..3], [4..7], [8..11]) + the
+// SAME shift/mask math. Math BYTE-IDENTICAL to the scalar form: each `scales[i]` below is the i-th
+// byte extracted from the int words via (>> (8*phase)) & 0xFF, so the produced (sc, mn) are bit-exact.
+__device__ __forceinline__ void unpack_scales_q45_K_s(const unsigned char* scales, int grp,
+                                                      unsigned char* sc, unsigned char* mn) {
+    const int* si = (const int*)scales;                   // 4B-aligned: si[0]=B0..3, si[1]=B4..7, si[2]=B8..11
+    int lo = si[0], md = si[1], hi32 = si[2];
+    // byte extractor: word for byte i, shifted/masked to that byte's value
+    auto byte = [&](int i) -> unsigned {
+        int w = (i < 4) ? lo : ((i < 8) ? md : hi32);
+        int p = i & 3;
+        return ((unsigned)w >> (8 * p)) & 0xFFu;
+    };
+    if (grp < 4) { *sc = byte(grp) & 63; *mn = byte(grp + 4) & 63; }
+    else { *sc = (byte(grp + 4) & 0xF) | ((byte(grp - 4) >> 6) << 4);
+           *mn = (byte(grp + 4) >> 4) | ((byte(grp) >> 6) << 4); }
 }
 __device__ __forceinline__ float decode_q4_k_s(const unsigned char* b, int grp, int8_t* out, float* bias) {
     float d_sb    = ghalf2float(*(const unsigned short*)b);
@@ -230,14 +259,20 @@ __device__ __forceinline__ float decode_q4_k_s(const unsigned char* b, int grp, 
     const unsigned char* scales = b + 4;
     const unsigned char* qs     = b + 16;
     unsigned char sc, mn;
-    if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
-    else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
-           mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+    unpack_scales_q45_K_s(scales, grp, &sc, &mn);
     int chunk = grp >> 1;
-    const unsigned char* q = qs + chunk * 32;
+    const unsigned char* q = qs + chunk * 32;             // chunk*32 keeps 16B alignment (qs is 16B-aligned)
     bool hi = (grp & 1);
+    // VECTORIZED: 8 int LDS (q4[0..7]) instead of 32 byte LDS; SIMD nibble unpack 4-at-a-time; packed
+    // int store. (qw & 0x0F0F0F0F) = low nibbles, ((qw>>4)&0x0F0F0F0F) = high nibbles of 4 bytes ->
+    // the 4 int8 outputs (0..15) for those 4 positions, byte-identical to the scalar (q[j]&0xF)/(q[j]>>4).
+    const int* q4 = (const int*)q;                        // 16B-aligned
+    int* o32 = (int*)out;                                 // out (sW row) is 16B-aligned
     #pragma unroll
-    for (int j = 0; j < 32; j++) out[j] = (int8_t)(hi ? (q[j] >> 4) : (q[j] & 0xF));
+    for (int w = 0; w < 8; w++) {
+        int qw = q4[w];
+        o32[w] = hi ? ((qw >> 4) & 0x0F0F0F0F) : (qw & 0x0F0F0F0F);
+    }
     *bias = -dmin_sb * (float)mn;
     return d_sb * (float)sc;
 }
@@ -248,16 +283,23 @@ __device__ __forceinline__ float decode_q5_k_s(const unsigned char* b, int grp, 
     const unsigned char* qh = b + 16;
     const unsigned char* qs = b + 48;
     unsigned char sc, mn;
-    if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
-    else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
-           mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+    unpack_scales_q45_K_s(scales, grp, &sc, &mn);
     int g64 = grp >> 1; bool hi = (grp & 1); int hbit = 2 * g64 + (hi ? 1 : 0);
-    const unsigned char* q = qs + g64 * 32;
+    const unsigned char* q = qs + g64 * 32;               // g64*32 keeps 16B alignment (qs is 16B-aligned)
+    // VECTORIZED: 8 int LDS for q (low/high nibble) + 8 int LDS for qh (the 5th bit) instead of 32+32
+    // byte LDS (this is the WORST conflict source, 72M). SIMD: low nibble = (qw & 0x0F0F0F0F) or
+    // ((qw>>4)&...); 5th bit per byte = ((qhw >> hbit) & 0x01010101) << 4. out byte = lowbits | (h<<4),
+    // byte-identical to the scalar (q[j]&0xF | ((qh[j]>>hbit)&1)<<4). qh is 16B-aligned (b+16).
+    const int* q4  = (const int*)q;                       // 16B-aligned
+    const int* qh4 = (const int*)qh;                      // 16B-aligned (b+16)
+    int* o32 = (int*)out;
     #pragma unroll
-    for (int j = 0; j < 32; j++) {
-        int lowbits = hi ? (q[j] >> 4) : (q[j] & 0x0F);
-        int h = (qh[j] >> hbit) & 1;
-        out[j] = (int8_t)(lowbits | (h << 4));
+    for (int w = 0; w < 8; w++) {
+        int qw  = q4[w];
+        int qhw = qh4[w];
+        int low = hi ? ((qw >> 4) & 0x0F0F0F0F) : (qw & 0x0F0F0F0F);
+        int h   = ((qhw >> hbit) & 0x01010101) << 4;      // 5th bit of each of the 4 bytes, placed in bit4
+        o32[w] = low | h;                                 // 0..31 per byte
     }
     *bias = -dmin_sb * (float)mn;
     return d_sb * (float)sc;
