@@ -897,6 +897,46 @@ __device__ __forceinline__ void mma_mxf4_m16n8k64(
       : "r"(a[0]),"r"(a[1]),"r"(a[2]),"r"(a[3]),"r"(b[0]),"r"(b[1]),"r"(sa),"r"(sb));
 }
 
+// PASS 3 swizzle: each smem row is 8 u32 = two 16B (4-u32) chunks. ldmatrix reads one 4-u32 chunk
+// per lane at chunk index `c`; 8 rows of one 8x8 sub-tile sit at byte base row*32 + c*16 -> banks
+// (row*8 + c*4)%32, so rows differing by 4 collide 2-way (ncu: 60M/74M ld wavefronts are conflict
+// replays). XOR the chunk index by bit2 of the (within-tile) row -> c_phys = c ^ ((row>>2)&1) makes
+// all 8 rows of every sub-tile land in distinct bank groups (conflict-free), at the SAME 32B stride
+// (no pad, no occupancy loss). MUST be applied identically at the repack/activation STORE and the
+// ldmatrix LOAD address or the operands corrupt (caught by kernel_check rel + argmax).
+#define SWZ_CHUNK(row) (((row) >> 2) & 1)
+
+// PASS 1: ldmatrix.x4.b16 for the mxf4 A-operand (weight nibbles). Replaces the 4 scalar afrag
+// smem loads/lane/K-step with ONE warp-cooperative matrix load. `sWq_row0` = &sWq[cur][warp*WARP_M][0]:
+// 16 rows x 8 u32 (=16 b16 units) contiguous, 16B-aligned. Per-lane addr mirrors `ld_A_s8` (the
+// device-proven int8 m16n8k32 A-load), widened to the FP4 A-tile (8 u32/row): in u32 units
+// xs = base + (lane%16)*8 + (chunk^swz)*4 where chunk = lane/16, row = lane%16 (PASS 3 swizzle).
+// ld_A_s8 (same addr form) feeds the int8 mma with NO remap; its raw output order
+// (row,klo),(row+8,klo),(row,khi),(row+8,khi) == the FP4 scalar afrag order -> identity remap.
+__device__ __forceinline__ void ld_A_mxf4(unsigned (&a)[4], const unsigned* sWq_row0) {
+    unsigned row = threadIdx.x % 16, chunk = threadIdx.x / 16;
+    const unsigned* xs = sWq_row0 + row * 8 + (chunk ^ SWZ_CHUNK(row)) * 4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    unsigned t[4];
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];"
+        : "=r"(t[0]),"=r"(t[1]),"=r"(t[2]),"=r"(t[3]) : "r"(addr));
+    a[0] = t[0]; a[1] = t[1]; a[2] = t[2]; a[3] = t[3];
+}
+
+// PASS 2: ldmatrix.x2.b16 for the mxf4 B-operand (activation nibbles). Replaces the 2 scalar bfrag
+// smem loads/n-tile/lane (x BN/8 n-tiles = the dominant 32 scalar loads/lane/K-step) with ONE
+// ldmatrix per n-tile. `sAq_ntile0` = &sAq[cur][nt*8][0]: 8 tokens x 8 u32 (=16 b16 units) contiguous,
+// 16B-aligned. Per-lane addr mirrors `ld_B_s8` (device-proven int8 m16n8k32 B-load): in u32 units
+// xs = base + (lane%8)*8 + ((lane/8 %2)^swz)*4 where tok-in-tile = lane%8 (PASS 3 swizzle). ld_B_s8
+// feeds the int8 mma with NO remap; raw output == FP4 scalar bfrag (tok,klo),(tok,khi) -> identity.
+__device__ __forceinline__ void ld_B_mxf4(unsigned (&b)[2], const unsigned* sAq_ntile0) {
+    unsigned row = threadIdx.x % 8, chunk = (threadIdx.x / 8) % 2;
+    const unsigned* xs = sAq_ntile0 + row * 8 + (chunk ^ SWZ_CHUNK(row)) * 4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0,%1},[%2];"
+        : "=r"(b[0]),"=r"(b[1]) : "r"(addr));
+}
+
 // The GGUF NVFP4 36-byte block (4 ue4m3 scale bytes + 32 qs e2m1 bytes) is repacked into the
 // A-fragment-friendly smem form INLINE in the kernel's `fetch` (from a register copy, not per-byte
 // global loads). Layout: word gi (0..7) holds 8 e2m1 nibbles for K-group gi<4? gi*8 : (gi-4)*8+32
@@ -989,8 +1029,11 @@ __device__ void qmatvec_gemm_mxf4_kernel(
             if (t < T) {
                 const unsigned* aw = aq4 + (size_t)t * aw_per_tok + (size_t)g * 8;   // 32B, 16B-aligned
                 const unsigned char* asc = ad4 + (size_t)t * as_per_tok + (size_t)g * 4;  // 4B
-                cp_async16(&sAq[s][n][0], aw);
-                cp_async16(&sAq[s][n][4], aw + 4);
+                // PASS 3: place the two 16B chunks at swizzled offsets (^SWZ_CHUNK on tok-in-tile n%8 ==
+                // n's bit2) -> conflict-free ldmatrix.x2 read (ld_B_mxf4 applies the identical XOR).
+                int sw = SWZ_CHUNK(n);
+                cp_async16(&sAq[s][n][(0 ^ sw) * 4], aw);
+                cp_async16(&sAq[s][n][(1 ^ sw) * 4], aw + 4);
                 cp_async4(&sAsc[s][n], asc);
             } else {
                 #pragma unroll
@@ -1002,6 +1045,11 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     // ---- REPACK (off the mma chain): ALU-gather the e2m1 nibbles of K-block g from the RESIDENT raw
     //      smem block into the A-fragment-ready sWq/sWsc. Reads sWraw[g%FP4_NS_RAW] at phase=(off&15);
     //      byte-identical to the old register-source repack (same nibble math, smem base). ----
+    // PASS 4 NOTE: a (row, group-half) split across all 128 threads (vs 64 active) was tried to cut the
+    //   barrier stall, but it DOUBLED the sWraw smem-read traffic (each half re-reads the row's phase
+    //   base + qs) and spiked mio_throttle 9.2->17.1, regressing T=512 1.15->1.67ms. Reverted: the
+    //   repack is off the mma chain (hidden under wait_group) so its barrier cost does not pay for the
+    //   extra MIO pressure on this smem-throughput-bound tile. Kept the P3 single-thread-per-row form.
     auto repack = [&](int s, int g) {
         int rs = g % FP4_NS_RAW;
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
@@ -1019,15 +1067,25 @@ __device__ void qmatvec_gemm_mxf4_kernel(
                     int base = (gi < 4) ? (gi * 8) : ((gi - 4) * 8 + 32);
                     int sb = base >> 4, hinib = (base & 8) ? 4 : 0;
                     const unsigned char* q = qs + sb * 8;
-                    unsigned w = 0;
-                    #pragma unroll
-                    for (int n = 0; n < 8; n++) w |= ((unsigned)((q[n] >> hinib) & 0xF)) << (4 * n);
-                    wq[gi] = w;
+                    // PASS 4b: gather 8 same-position nibbles (one per byte) into a u32 WITHOUT the
+                    // 8-deep dependent shift/OR chain. Read the 8 bytes as 2 u32 (qs is 16B-aligned
+                    // within the staged block at phase&15; use byte loads + assemble to stay phase-safe),
+                    // mask the wanted nibble of each byte, then compact 4 nibbles-per-u32 in a 2-step
+                    // parallel tree (>>4 &00FF00FF; >>8 &0000FFFF). Bit-identical to the scalar gather.
+                    unsigned lo = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16) | ((unsigned)q[3] << 24);
+                    unsigned hi = (unsigned)q[4] | ((unsigned)q[5] << 8) | ((unsigned)q[6] << 16) | ((unsigned)q[7] << 24);
+                    lo = (lo >> hinib) & 0x0F0F0F0Fu;  hi = (hi >> hinib) & 0x0F0F0F0Fu;
+                    lo = (lo | (lo >> 4)) & 0x00FF00FFu; lo = (lo | (lo >> 8)) & 0x0000FFFFu;  // 4 nibbles -> low16
+                    hi = (hi | (hi >> 4)) & 0x00FF00FFu; hi = (hi | (hi >> 8)) & 0x0000FFFFu;
+                    wq[gi] = lo | (hi << 16);
                 }
                 // 2x 128-bit smem stores (vs 8 narrow u32) -> 1/4 the store transactions (ncu: "fewer
                 // wider"). sWq rows are 32B (8 u32) contiguous & 16B-aligned -> int4 store legal.
-                reinterpret_cast<int4*>(&sWq[s][r][0])[0] = *reinterpret_cast<const int4*>(&wq[0]);
-                reinterpret_cast<int4*>(&sWq[s][r][0])[1] = *reinterpret_cast<const int4*>(&wq[4]);
+                // PASS 3: store each 16B chunk at swizzled chunk index (^SWZ_CHUNK(r)) -> conflict-free
+                // ldmatrix read (which applies the identical XOR on the load address).
+                int sw = SWZ_CHUNK(r);
+                reinterpret_cast<int4*>(&sWq[s][r][0])[0 ^ sw] = *reinterpret_cast<const int4*>(&wq[0]);
+                reinterpret_cast<int4*>(&sWq[s][r][0])[1 ^ sw] = *reinterpret_cast<const int4*>(&wq[4]);
             } else {
                 int4 z = make_int4(0, 0, 0, 0);
                 reinterpret_cast<int4*>(&sWq[s][r][0])[0] = z;
@@ -1084,20 +1142,17 @@ __device__ void qmatvec_gemm_mxf4_kernel(
         }
         asm volatile("cp.async.commit_group;");
 
-        // A fragment: direct u32 loads from the repacked smem tile (no per-lane gather).
+        // A fragment: ONE ldmatrix.x4.b16 (PASS 1) replaces the 4 scalar afrag smem loads.
         unsigned afrag[4];
-        afrag[0] = sWq[cur][warp * WARP_M + r0    ][kg];
-        afrag[1] = sWq[cur][warp * WARP_M + r0 + 8][kg];
-        afrag[2] = sWq[cur][warp * WARP_M + r0    ][kg + 4];
-        afrag[3] = sWq[cur][warp * WARP_M + r0 + 8][kg + 4];
+        ld_A_mxf4(afrag, &sWq[cur][warp * WARP_M][0]);
         unsigned sa = (srow >= 0) ? sWsc[cur][warp * WARP_M + srow] : 0u;
 
         #pragma unroll
         for (int nt = 0; nt < BN / 8; nt++) {
             int tok = nt * 8 + (lane / 4);
+            // B fragment: ONE ldmatrix.x2.b16 (PASS 2) replaces the 2 scalar bfrag smem loads.
             unsigned bfrag[2];
-            bfrag[0] = sAq[cur][tok][kg];
-            bfrag[1] = sAq[cur][tok][kg + 4];
+            ld_B_mxf4(bfrag, &sAq[cur][nt * 8][0]);
             unsigned sb = (q == 1) ? sAsc[cur][tok] : 0u;   // single wide u32 load (LE == old byte gather)
             mma_mxf4_m16n8k64(facc[nt], afrag, bfrag, sa, sb);
         }
