@@ -1034,7 +1034,9 @@ impl Engine {
                            conv_dim: usize, t: usize, d_conv: usize, silu: bool)
                            -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("ssm_conv1d_silu_f32");
-        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        // grid.x = channel, grid.y = T-tiles (block 256 strides over T) — parallel over both axes.
+        let cfg = LaunchConfig { grid_dim: (conv_dim as u32, ((t as u32 + 255) / 256).max(1), 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);
@@ -1049,7 +1051,8 @@ impl Engine {
                       conv_dim: usize, t: usize, d_conv: usize, silu: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("ssm_conv1d_silu_f32");
-        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        let cfg = LaunchConfig { grid_dim: (conv_dim as u32, ((t as u32 + 255) / 256).max(1), 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
         let (cd, ti, dc, s) = (conv_dim as i32, t as i32, d_conv as i32, silu as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc).arg(&s);

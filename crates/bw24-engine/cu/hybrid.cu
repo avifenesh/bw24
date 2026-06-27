@@ -21,21 +21,26 @@ __device__ __forceinline__ float warp_reduce_sum(float v) {
 //   w:    [d_conv, conv_dim] kernel-major (channel c tap j at c*d_conv + j).
 //   y:    [conv_dim, T] (channel c, time t at c*T + t).
 // One thread per channel; loops over T. d_conv small (4).
+// Depthwise causal conv1d + optional SiLU. Parallel over BOTH (channel, time): grid.x=channel,
+// grid.y * blockDim.x covers T. Was 1 thread/channel SERIAL over all T (512 serial iters/thread
+// at T=512 -> 1.14ms, 11% of prefill). Math identical -> bit-stable argmax. d_conv (<=8) taps
+// cached in registers. Launch: grid=(conv_dim, ceil(T/256)), block=256 (decode T=1 -> grid.y=1).
 extern "C" __global__ void ssm_conv1d_silu_f32(
         const float* __restrict__ x, const float* __restrict__ w,
         float* __restrict__ y, int conv_dim, int T, int d_conv, int apply_silu) {
-    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int c = blockIdx.x;
     if (c >= conv_dim) return;
     int Tp = T + d_conv - 1;
     const float* xc = x + (size_t)c * Tp;
     const float* wc = w + (size_t)c * d_conv;
     float* yc = y + (size_t)c * T;
-    for (int t = 0; t < T; t++) {
+    float wreg[8];
+    #pragma unroll
+    for (int j = 0; j < 8; j++) wreg[j] = (j < d_conv) ? wc[j] : 0.0f;
+    for (int t = blockIdx.y * blockDim.x + threadIdx.x; t < T; t += gridDim.y * blockDim.x) {
         float acc = 0.0f;
         #pragma unroll
-        for (int j = 0; j < 8; j++) {        // unroll cap; d_conv<=8
-            if (j < d_conv) acc += xc[t + j] * wc[j];
-        }
+        for (int j = 0; j < 8; j++) acc += xc[t + j] * wreg[j];
         yc[t] = apply_silu ? silu(acc) : acc;
     }
 }
