@@ -905,13 +905,31 @@ __device__ __forceinline__ void mma_mxf4_m16n8k64(
 // qs[s*8+(within&7)], low nibble if within<8 else high; a K-group g (g%8==0) is all-low (g%16==0) or
 // all-high (g%16==8) of qs[s*8..s*8+7]. (Layout verified on-device by probe/fp4_4x_final.cu.)
 
+// 4-byte async global->smem copy (for the 4 ue4m3 activation scale bytes / token). `smem` 4B-aligned.
+__device__ __forceinline__ void cp_async4(void* smem, const void* g) {
+    uint32_t s = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.ca.shared.global [%0],[%1],4;" :: "r"(s), "l"(g));
+}
+
 // y[T, out_f] = aq4[T, in_f](e2m1) . W[out_f, in_f](NVFP4 e2m1)^T, per-16 UE4M3 block scales applied
-// inside the MMA. Token-major output. BK=64 (one NVFP4 block / K-step). NSTAGE=2 cp.async ring: the
-// next K-block's RAW 36-byte weight rows + the activation words/scales are async-copied to smem one
-// step ahead, then the A-fragment repack (nvfp4_repack_block) runs from RESIDENT smem — off the
-// global-read critical path (same discipline as the int8 GEMM's FIX-A pre-decode). The weight repack
-// (e2m1 nibble gather) is amortized 1/(BN tokens) since the staged tile feeds all 128 tokens' mma.
+// inside the MMA. Token-major output. BK=64 (one NVFP4 block / K-step). FP4_NS-deep cp.async ring:
+// the RAW 36-byte weight block + the activation words/scales are cp.async'd into the smem ring ONE
+// block ahead (instead of synchronous u32 global loads on the mma chain), and the A-fragment e2m1
+// nibble REPACK then runs from RESIDENT smem one block later — so the long-scoreboard global weight
+// read leaves the mma critical path (same discipline as the int8 GEMM's FIX-A pre-decode). The repack
+// is amortized 1/(BN tokens) since the staged tile feeds all 128 tokens' mma. SINGLE __syncthreads/
+// K-step: the top barrier guards both `cur`'s visibility (raw landed, repacked last iter) AND the WAR
+// for the post-barrier prefetch (cp.async wait_group + barrier, like the int8 kernel).
+// FP4_NS=2 chosen by measured pp512: deepening to 3 dropped CTAs/SM 4->2 (smem-bound: 36KB/CTA, ncu
+// Block Limit Shared Mem=2) and REGRESSED pp512 (~1871->1846) — this kernel is MIO/smem-throughput-
+// bound (ncu: Mem 77% / Compute 44%, top stall = MIO queue), NOT cp.async-latency-bound, so the extra
+// overlap from a deeper ring does not pay for the lost occupancy (same occupancy tradeoff that reverted
+// the int8 NSTAGE=4 and tile-redesign experiments).
 #define FP4_NS 2
+// Raw-block ring depth. The repack of K-block `gp` reads a raw block that must have been cp.async'd
+// FP4_NS-1 iters earlier (so it is landed under wait_group(FP4_NS-2)); the loop therefore fetches the
+// raw block 2*(FP4_NS-1) iters ahead of consumption, keeping that many distinct blocks alive at once.
+#define FP4_NS_RAW (2 * (FP4_NS - 1))
 __device__ void qmatvec_gemm_mxf4_kernel(
         const unsigned char* __restrict__ W, const unsigned* __restrict__ aq4,
         const unsigned char* __restrict__ ad4, float* __restrict__ y,
@@ -926,14 +944,21 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     const int aw_per_tok = in_f / 8;              // u32 words per token in aq4
     const int as_per_tok = in_f / 16;             // ue4m3 scale bytes per token in ad4
 
-    // Repacked staged tiles (cp.async-free ring): A-fragment-ready weight nibbles (8 u32 groups/row)
-    // + 1 u32 of 4 packed ue4m3 scales/row; activation 8 u32 groups + 4 scale bytes/token. The weight
-    // REPACK (e2m1 nibble gather) is done ONCE per row at stage time (not per lane in the mma loop),
-    // amortized across all BN tokens — the heavy ALU leaves the mma critical path.
-    __shared__ unsigned      sWq[FP4_NS][BM][8];    // 8 u32 groups / row (A-fragment-ready)
+    // Repacked staged tiles: A-fragment-ready weight nibbles (8 u32 groups/row) + 1 u32 of 4 packed
+    // ue4m3 scales/row; activation 8 u32 groups + 4 scale bytes/token. The weight REPACK (e2m1 nibble
+    // gather) is done ONCE per row at stage time (not per lane in the mma loop), amortized across all
+    // BN tokens — the heavy ALU leaves the mma critical path. Activations land in their final mma form
+    // (no repack), so they're cp.async'd straight into sAq/sAsc. The RAW 36B weight block is cp.async'd
+    // into sWraw (a separate ring keyed by K-block, fetched 1 block ahead) and repacked from resident
+    // smem -> the long-scoreboard global weight read leaves the mma chain.
+    __shared__ __align__(16) unsigned sWq[FP4_NS][BM][8];   // 8 u32/row (A-frag-ready); 16B-aligned for int4
     __shared__ unsigned      sWsc[FP4_NS][BM];      // 4 ue4m3 packed into 1 u32 / row
-    __shared__ unsigned      sAq[FP4_NS][BN][8];    // 8 u32 groups / token
-    __shared__ unsigned char sAsc[FP4_NS][BN][4];   // 4 ue4m3 / token
+    __shared__ __align__(16) unsigned sAq[FP4_NS][BN][8];   // 8 u32/token; 16B-aligned for cp.async.16
+    __shared__ unsigned      sAsc[FP4_NS][BN];      // 4 ue4m3 packed into 1 u32 / token (single wide load
+                                                    // for the SFB scale -> 1/4 the smem transactions of a
+                                                    // per-byte read; LE u32 == the old s[0]|s[1]<<8|...).
+    // raw weight ring: 36B block at a 16B-floored phase (max phase 15 + 36B = 51 -> round up to 64).
+    __shared__ __align__(16) unsigned char sWraw[FP4_NS_RAW][BM][64];
 
     float facc[BN / 8][4];
     #pragma unroll
@@ -941,18 +966,54 @@ __device__ void qmatvec_gemm_mxf4_kernel(
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
-    // stage + repack K-block g into ring slot s. Weight: coalesced u32 reads of the 36B block into
-    // registers (9 u32/row), then repack the e2m1 nibbles from REGISTERS (no per-byte global loads).
-    auto fetch = [&](int s, int g) {
+    // ---- FETCH_RAW (cp.async): raw 36B weight block for K-block g into the raw ring (16B-floored
+    //      window). Async; nothing on the mma critical path. Kept >=1 block ahead of its repack. ----
+    auto fetch_raw = [&](int g) {
+        int rs = g % FP4_NS_RAW;
         for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
             int o = rowtile + r;
             if (o < out_f) {
-                const unsigned* bw = (const unsigned*)(W + (long)o * row_bytes + (long)g * 36);
-                unsigned blk[9];
+                long off  = (long)o * row_bytes + (long)g * 36;
+                long aoff = off & ~(long)15;                 // 16B floor of the 36B block
+                int  phase = (int)(off - aoff);              // 0..15
+                int  nchunk = (phase + 36 + 15) >> 4;         // 16B chunks covering [phase, phase+36)
+                cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+            }
+        }
+    };
+    // ---- FETCH_ACT (cp.async): the activation u32 groups + scale bytes for K-block g straight into
+    //      sAq/sAsc (already the final mma form -> no repack needed). Async, off the mma chain. ----
+    auto fetch_act = [&](int s, int g) {
+        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+            int t = toktile + n;
+            if (t < T) {
+                const unsigned* aw = aq4 + (size_t)t * aw_per_tok + (size_t)g * 8;   // 32B, 16B-aligned
+                const unsigned char* asc = ad4 + (size_t)t * as_per_tok + (size_t)g * 4;  // 4B
+                cp_async16(&sAq[s][n][0], aw);
+                cp_async16(&sAq[s][n][4], aw + 4);
+                cp_async4(&sAsc[s][n], asc);
+            } else {
                 #pragma unroll
-                for (int u = 0; u < 9; u++) blk[u] = bw[u];      // coalesced-ish 36B load
-                sWsc[s][r] = blk[0];                              // 4 ue4m3 scale bytes (K16 0..3)
-                const unsigned char* qs = (const unsigned char*)&blk[1];   // 32 qs bytes
+                for (int gi = 0; gi < 8; gi++) sAq[s][n][gi] = 0;
+                sAsc[s][n] = 0;
+            }
+        }
+    };
+    // ---- REPACK (off the mma chain): ALU-gather the e2m1 nibbles of K-block g from the RESIDENT raw
+    //      smem block into the A-fragment-ready sWq/sWsc. Reads sWraw[g%FP4_NS_RAW] at phase=(off&15);
+    //      byte-identical to the old register-source repack (same nibble math, smem base). ----
+    auto repack = [&](int s, int g) {
+        int rs = g % FP4_NS_RAW;
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            if (o < out_f) {
+                long off = (long)o * row_bytes + (long)g * 36;
+                int  phase = (int)(off & 15);
+                const unsigned char* b = &sWraw[rs][r][phase];
+                sWsc[s][r] = (unsigned)b[0] | ((unsigned)b[1] << 8)
+                           | ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);  // 4 ue4m3 scale bytes
+                const unsigned char* qs = b + 4;                               // 32 qs bytes
+                unsigned wq[8];
                 #pragma unroll
                 for (int gi = 0; gi < 8; gi++) {
                     int base = (gi < 4) ? (gi * 8) : ((gi - 4) * 8 + 32);
@@ -961,34 +1022,39 @@ __device__ void qmatvec_gemm_mxf4_kernel(
                     unsigned w = 0;
                     #pragma unroll
                     for (int n = 0; n < 8; n++) w |= ((unsigned)((q[n] >> hinib) & 0xF)) << (4 * n);
-                    sWq[s][r][gi] = w;
+                    wq[gi] = w;
                 }
+                // 2x 128-bit smem stores (vs 8 narrow u32) -> 1/4 the store transactions (ncu: "fewer
+                // wider"). sWq rows are 32B (8 u32) contiguous & 16B-aligned -> int4 store legal.
+                reinterpret_cast<int4*>(&sWq[s][r][0])[0] = *reinterpret_cast<const int4*>(&wq[0]);
+                reinterpret_cast<int4*>(&sWq[s][r][0])[1] = *reinterpret_cast<const int4*>(&wq[4]);
             } else {
-                #pragma unroll
-                for (int gi = 0; gi < 8; gi++) sWq[s][r][gi] = 0;
+                int4 z = make_int4(0, 0, 0, 0);
+                reinterpret_cast<int4*>(&sWq[s][r][0])[0] = z;
+                reinterpret_cast<int4*>(&sWq[s][r][0])[1] = z;
                 sWsc[s][r] = 0;
-            }
-        }
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
-            int t = toktile + n;
-            if (t < T) {
-                const unsigned* aw = aq4 + (size_t)t * aw_per_tok + (size_t)g * 8;
-                const unsigned char* asc = ad4 + (size_t)t * as_per_tok + (size_t)g * 4;
-                #pragma unroll
-                for (int gi = 0; gi < 8; gi++) sAq[s][n][gi] = aw[gi];
-                #pragma unroll
-                for (int k = 0; k < 4; k++) sAsc[s][n][k] = asc[k];
-            } else {
-                #pragma unroll
-                for (int gi = 0; gi < 8; gi++) sAq[s][n][gi] = 0;
-                #pragma unroll
-                for (int k = 0; k < 4; k++) sAsc[s][n][k] = 0;
             }
         }
     };
 
-    if (nblk64 > 0) fetch(0, 0);
+    // ===== PROLOGUE: seed the raw ring with blocks 0..FP4_NS_RAW-1 (blocks 0..FP4_NS-2 read by the
+    //       prologue-stage repacks; the rest are the FP4_NS-1-ahead lead for the loop's first repacks)
+    //       + the FP4_NS-1 prologue activation stages; drain; repack the prologue stages from resident
+    //       raw smem. The loop then fetches raw block gp+(FP4_NS-1) each iter; the FP4_NS_RAW =
+    //       2*(FP4_NS-1) consecutive in-flight blocks map to distinct slots mod FP4_NS_RAW. =====
+    #pragma unroll
+    for (int sb = 0; sb < FP4_NS_RAW; sb++)
+        if (sb < nblk64) fetch_raw(sb);
+    #pragma unroll
+    for (int s = 0; s < FP4_NS - 1; s++)
+        if (s < nblk64) fetch_act(s, s);               // FP4_NS-1 prologue activation stages
+    asm volatile("cp.async.commit_group;");
+    asm volatile("cp.async.wait_group 0;");           // drain: raw blocks + prologue activations
     __syncthreads();
+    #pragma unroll
+    for (int s = 0; s < FP4_NS - 1; s++)
+        if (s < nblk64) repack(s, s);                  // repack prologue stages from resident raw smem
+    asm volatile("cp.async.commit_group;");            // keep per-iter commit cadence (empty group ok)
 
     int r0 = lane / 4;          // 0..15 within the warp's 16-row tile
     int kg = lane % 4;          // K-group selector
@@ -997,7 +1063,26 @@ __device__ void qmatvec_gemm_mxf4_kernel(
 
     for (int g = 0; g < nblk64; g++) {
         int cur = g % FP4_NS;
-        if (g + 1 < nblk64) fetch((g + 1) % FP4_NS, g + 1);   // prefetch+repack next, overlap mma
+        int nxt = (g + FP4_NS - 1) % FP4_NS;
+        int gp  = g + FP4_NS - 1;                  // the K-block prefetched(activation)/repacked this iter
+        // Raw weight lead = FP4_NS-1 iters: a cp.async committed j iters ago is landed under
+        // wait_group(FP4_NS-2) iff j >= FP4_NS-1. repack reads raw block `gp`; to guarantee it is
+        // resident now, it must have been fetched FP4_NS-1 iters ago -> this iter fetches block
+        // gp + (FP4_NS-1) = g + 2*(FP4_NS-1). The raw ring holds FP4_NS_RAW(=FP4_NS) consecutive
+        // blocks [gp .. gp+FP4_NS-1] -> distinct slots mod FP4_NS_RAW.
+        int gr  = gp + (FP4_NS - 1);               // raw block fetched this iter (FP4_NS-1 ahead of repack)
+
+        // wait until only FP4_NS-2 newest groups remain pending -> stage `cur`'s activation (committed
+        // FP4_NS-1 iters ago) has landed AND the raw block for `gp` (fetched FP4_NS-1 iters ago) is resident.
+        asm volatile("cp.async.wait_group %0;" :: "n"(FP4_NS - 2));
+        __syncthreads();   // cur visible (sA landed + sW repacked last iter); WAR-safe prefetch
+
+        if (gp < nblk64) {
+            fetch_act(nxt, gp);                    // cp.async stage `nxt`'s activations (FP4_NS-1 ahead)
+            if (gr < nblk64) fetch_raw(gr);        // cp.async the raw weight FP4_NS-1 blocks ahead of repack
+            repack(nxt, gp);                       // repack gp from RESIDENT raw smem (no global on chain)
+        }
+        asm volatile("cp.async.commit_group;");
 
         // A fragment: direct u32 loads from the repacked smem tile (no per-lane gather).
         unsigned afrag[4];
@@ -1013,14 +1098,9 @@ __device__ void qmatvec_gemm_mxf4_kernel(
             unsigned bfrag[2];
             bfrag[0] = sAq[cur][tok][kg];
             bfrag[1] = sAq[cur][tok][kg + 4];
-            unsigned sb = 0;
-            if (q == 1) {
-                const unsigned char* s = &sAsc[cur][tok][0];
-                sb = (unsigned)s[0] | ((unsigned)s[1] << 8) | ((unsigned)s[2] << 16) | ((unsigned)s[3] << 24);
-            }
+            unsigned sb = (q == 1) ? sAsc[cur][tok] : 0u;   // single wide u32 load (LE == old byte gather)
             mma_mxf4_m16n8k64(facc[nt], afrag, bfrag, sa, sb);
         }
-        __syncthreads();
     }
 
     // write out: y[t*out_f + o]. D layout: reg ci -> row = lane/4 + (ci>>1)*8, col = (lane%4)*2 + (ci&1).
