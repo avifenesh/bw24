@@ -15,6 +15,10 @@ name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 
 [[bin]]
+name = "fa-sanitize"
+path = "src/bin/fa_sanitize.rs"
+
+[[bin]]
 name = "run-dense"
 path = "src/bin/run_dense.rs"
 

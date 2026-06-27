@@ -1042,16 +1042,24 @@ impl Engine {
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
-        const M_ROWS: usize = 16; const BK: usize = 64;
-        let f = self.func("fa_prefill_f32");
-        // smem: bf16*(M*hd + 2*BK*hd + M*BK) + f32*(M*hd + M*BK + 2*M)
-        let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
-                   + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
+        // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
+        // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).
+        // Edge 5a (DEFAULT): fa_prefill_f32_pp — register-resident softmax (no sSw smem
+        // round-trip), the FA3 softmax-GEMM overlap variant. ncu (pp512): short_scoreboard
+        // 4.32->3.47, wait 1.99->1.45, per-call ~577us->~440us (1.31x) at flat 12.1% warps /
+        // 255 regs / 2 CTAs (occupancy preserved). Bit-safe: 9B+27B argmax MATCH, rel 2.55e-3
+        // vs floor 3.03e-3. BW24_FA_FLOOR reverts to the serialized-softmax floor kernel.
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        let f = self.func(if std::env::var("BW24_FA_FLOOR").is_ok() { "fa_prefill_f32" } else { "fa_prefill_f32_pp" });
+        // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
+        //   = bf16*(2*BK*hd + BLOCK_Q*BK) + f32*(BLOCK_Q*BK + 2*BLOCK_Q)
+        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32 + 15) / 16, n_head as u32, 1),
-            block_dim: (32, 1, 1), shared_mem_bytes: shmem,
+            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -1070,15 +1078,15 @@ impl Engine {
                            t: usize, t_kv: usize, scale: f32, causal: bool,
                            k_tok_bytes: usize, v_tok_bytes: usize)
                            -> Result<(), Box<dyn std::error::Error>> {
-        const M_ROWS: usize = 16; const BK: usize = 64;
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
         let f = self.func("fa_prefill_q");
-        let shmem = (2 * (M_ROWS * head_dim + 2 * BK * head_dim + M_ROWS * BK)
-                   + 4 * (M_ROWS * head_dim + M_ROWS * BK + 2 * M_ROWS)) as u32;
+        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32 + 15) / 16, n_head as u32, 1),
-            block_dim: (32, 1, 1), shared_mem_bytes: shmem,
+            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
