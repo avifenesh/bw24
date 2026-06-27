@@ -193,8 +193,54 @@ pub type TensorMap = HashMap<String, GpuTensor>;
 /// THE 3D FIX: GpuTensor::load computes `row_bytes = raw.len()/ne[1]`, which for a stacked 3D
 /// tensor ignores the 256-expert axis and is 256x too large (gate_exps -> 430080 instead of 1680).
 /// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
+/// Host byte storage for the expert blocks. Default = a pageable `Vec<u8>` (current behavior). Under
+/// BW24_MOE_PINNED (auto-on when BW24_MOE_CACHE is set), the bytes live in CUDA pinned host memory so
+/// the miss-path `memcpy_htod` is a true DMA, not a pageable bounce copy (MOE-SLRU-PLAN §C.1).
+///
+/// CAVEAT (§C.1): `alloc_pinned` uses CU_MEMHOSTALLOC_WRITECOMBINED — great for H2D-only (the expert
+/// bytes are never read by the CPU on the hot path), but write-combined memory is SLOW for CPU reads.
+/// A future CPU-VNNI cold-expert fallback must NOT read from this buffer.
+pub enum HostBuf {
+    Paged(Vec<u8>),
+    /// Pinned host memory. We keep the `PinnedHostSlice` alive (it owns the allocation; Drop frees it)
+    /// AND cache its raw base pointer + len so the hot-path `as_bytes()` needs no per-call event sync.
+    Pinned { slice: cudarc::driver::PinnedHostSlice<u8>, base: *const u8, len: usize },
+}
+// SAFETY: `base` is a stable pinned-host pointer owned by `slice`; the buffer is written once at load
+// then only READ for H2D. HostExps is shared `&` across the (single per-Engine) forward, so Send/Sync
+// mirror the underlying PinnedHostSlice (which is already Send+Sync).
+unsafe impl Send for HostBuf {}
+unsafe impl Sync for HostBuf {}
+impl HostBuf {
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            HostBuf::Paged(v) => v.as_slice(),
+            // SAFETY: base+len are the pinned allocation's stable extent; written once at load, then
+            // read-only. We avoid `as_slice()` here because it would synchronize the buffer's event
+            // on every hot-path call.
+            HostBuf::Pinned { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
+        }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self { HostBuf::Paged(v) => v.len(), HostBuf::Pinned { len, .. } => *len }
+    }
+}
+
+/// One layer's stacked 256-expert tensor, raw GGUF quant bytes held HOST-RESIDENT.
+///
+/// EDGE-1: these bytes are NEVER uploaded at load (uploading 29.75GB would OOM a 24GB GPU —
+/// this is BUG-4). Per token, only the 8 routed experts are staged H2D into a small GPU scratch.
+///
+/// ne = [in_f, out_f, n_expert]; the expert axis (ne[2]) is the slowest/highest-stride axis, so
+/// expert `e` occupies the CONTIGUOUS byte block `bytes[e*expert_stride .. (e+1)*expert_stride]`.
+///
+/// THE 3D FIX: GpuTensor::load computes `row_bytes = raw.len()/ne[1]`, which for a stacked 3D
+/// tensor ignores the 256-expert axis and is 256x too large (gate_exps -> 430080 instead of 1680).
+/// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
 pub struct HostExps {
-    pub bytes: Vec<u8>,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
+    pub bytes: HostBuf,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
     pub qtype: i32,            // QT_Q6_K (gate/up) | QT_Q8_0 (down)
     pub in_f: usize,           // ne[0]   (gate/up = 2048, down = 512)
     pub out_f: usize,          // ne[1]   (gate/up = 512,  down = 2048)
@@ -204,8 +250,10 @@ pub struct HostExps {
 }
 
 impl HostExps {
-    /// Load a stacked 3D expert tensor, keeping its quant bytes on the HOST.
-    pub fn load(g: &GgufFile, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    /// Load a stacked 3D expert tensor, keeping its quant bytes on the HOST. `e` supplies the CUDA
+    /// context for the optional pinned allocation (§C.1). Default storage is pageable `Vec<u8>`
+    /// (identical to the prior behavior); pinned is chosen when BW24_MOE_PINNED or BW24_MOE_CACHE is set.
+    pub fn load(e: &Engine, g: &GgufFile, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let t = g.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
         assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
         let raw = g.tensor_data(t);
@@ -231,13 +279,25 @@ impl HostExps {
         // sanity: expert_stride must equal out_f * row_bytes exactly (catches a dim mixup)
         assert_eq!(expert_stride, out_f * row_bytes,
             "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
-        Ok(HostExps { bytes: raw.to_vec(), qtype, in_f, out_f, n_expert, row_bytes, expert_stride })
+
+        let pinned = std::env::var("BW24_MOE_PINNED").is_ok() || std::env::var("BW24_MOE_CACHE").is_ok();
+        let bytes = if pinned {
+            // alloc pinned host memory, copy the GGUF block bytes in once, cache the base pointer.
+            let mut p = unsafe { e.ctx().alloc_pinned::<u8>(raw.len())? };
+            { let dst = p.as_mut_slice()?; dst.copy_from_slice(raw); }
+            let base = p.as_ptr()? as *const u8;   // syncs once here at load; stable afterward
+            let len = raw.len();
+            HostBuf::Pinned { slice: p, base, len }
+        } else {
+            HostBuf::Paged(raw.to_vec())
+        };
+        Ok(HostExps { bytes, qtype, in_f, out_f, n_expert, row_bytes, expert_stride })
     }
 
     /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.
     #[inline]
     pub fn expert_bytes(&self, e: usize) -> &[u8] {
         debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
-        &self.bytes[e * self.expert_stride..(e + 1) * self.expert_stride]
+        &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride]
     }
 }

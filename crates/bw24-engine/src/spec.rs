@@ -100,7 +100,9 @@ impl HybridModel {
                 e.silu_mul(&gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
-            crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, 1)?,
+            // MTP head is a distinct block — key its experts under a separate layer index (u16::MAX)
+            // so they never alias trunk layer 0's cache keys.
+            crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, u16::MAX)?,
         };
 
         // op 10: h_nextn = x1 + ffn_out
@@ -235,7 +237,7 @@ impl HybridModel {
                     e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, t)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
             let mut x2 = e.zeros(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;

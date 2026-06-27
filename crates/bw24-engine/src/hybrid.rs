@@ -52,9 +52,9 @@ fn load_ffn(e: &Engine, g: &GgufFile, cfg: &ModelConfig, il: u32)
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, g, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_t(e, g, &p("ffn_gate_inp_shexp.weight"))?,
-            gate_exps: HostExps::load(g, &p("ffn_gate_exps.weight"))?,
-            up_exps:   HostExps::load(g, &p("ffn_up_exps.weight"))?,
-            down_exps: HostExps::load(g, &p("ffn_down_exps.weight"))?,
+            gate_exps: HostExps::load(e, g, &p("ffn_gate_exps.weight"))?,
+            up_exps:   HostExps::load(e, g, &p("ffn_up_exps.weight"))?,
+            down_exps: HostExps::load(e, g, &p("ffn_down_exps.weight"))?,
             gate_shexp: load_t(e, g, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_t(e, g, &p("ffn_up_shexp.weight"))?,
             down_shexp: load_t(e, g, &p("ffn_down_shexp.weight"))?,

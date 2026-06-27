@@ -130,6 +130,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              emitted, dt, emitted as f64 / dt, gen_out.stop_reason);
     println!("tokens: {out:?}");
 
+    // --- EDGE-1 §D.4: MoE residency-cache PCIe report. The Stage-1 (no-cache) baseline re-stages
+    //     every routed block every layer every token = `stage1_h2d_per_token()` (~907 MB/decode-token
+    //     for the 35B-A3B over 40 layers). The cache drives that toward the one-time hot-set fill;
+    //     after warmup the per-decode-token H2D should be a fraction of that. ---
+    if let Some((hits, misses, _staged, n_slots)) = e.moe_cache_stats() {
+        let total = hits + misses;
+        let base_mb = model.stage1_h2d_per_token() as f64 / (1024.0 * 1024.0);
+        println!("MoE cache: {n_slots} slots | cumulative hits={hits} misses={misses} (hit-rate={:.1}%) | \
+                  Stage-1 baseline = {:.0} MB/decode-token (every block, every layer, every token)",
+                 if total > 0 { hits as f64 / total as f64 * 100.0 } else { 0.0 }, base_mb);
+
+        // Steady-state window: keep the WARM residency cache, re-build only the (dropped) KV cache by
+        // re-priming, then reset the byte/hit counters and run BW24_NMEASURE more greedy decode tokens.
+        // This isolates the post-warmup per-token H2D — the hot set is resident so PCIe -> a fraction.
+        let n_measure: usize = std::env::var("BW24_NMEASURE").ok().and_then(|s| s.parse().ok()).unwrap_or(32);
+        if n_measure > 0 {
+            let mut warm_cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + n_measure + 8)?;
+            let mut ll = Vec::new();
+            for &t in &prompt { ll = model.decode_step(&e, t, &mut warm_cache)?; }
+            for &t in &out { ll = model.decode_step(&e, t, &mut warm_cache)?; }
+            e.moe_cache_reset_counters();   // measure ONLY the steady-state window below
+            for _ in 0..n_measure {
+                let next = argmax(&ll) as u32;
+                ll = model.decode_step(&e, next, &mut warm_cache)?;
+            }
+            if let Some((h2, m2, s2, _)) = e.moe_cache_stats() {
+                let mb_tok = (s2 as f64 / (1024.0 * 1024.0)) / n_measure as f64;
+                let tot2 = h2 + m2;
+                println!("MoE cache STEADY-STATE ({n_measure} tokens after warmup): \
+                          hit-rate={:.1}% | {:.1} MB/decode-token (vs {:.0} MB/token Stage-1 => {:.1}x less PCIe)",
+                         if tot2 > 0 { h2 as f64 / tot2 as f64 * 100.0 } else { 0.0 },
+                         mb_tok, base_mb, if mb_tok > 0.0 { base_mb / mb_tok } else { f64::INFINITY });
+            }
+        }
+    }
+
     // --- detokenize the output ids back to TEXT (text path only) ---
     if let Some(tok) = &tokenizer {
         // drop a trailing EOS for the printed text (keep it in the raw `tokens:` line above).

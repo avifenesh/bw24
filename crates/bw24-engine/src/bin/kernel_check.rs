@@ -673,6 +673,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  if bnd_err < bnd_d { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- EDGE-1 §D.1: fused-router top-k vs the Stage-1 host softmax+sort+renorm (BIT-IDENTITY). ---
+    // Synthetic logits [T,256] (no model needed). The host oracle = the exact moe_ffn host path
+    // (softmax-256 -> stable DESC top-8 by (prob DESC, idx ASC) -> renorm w/ F16-min clamp). The
+    // device kernel must produce IDENTICAL selected indices and weights within 0 ULP. A tie flip
+    // changes routing -> would drift the argmax-1178 gate, so this MUST be exact.
+    {
+        let (t, n_expert, n_used) = (8usize, 256usize, 8usize);
+        // include a deliberate exact tie pair so the tiebreak (smallest index wins) is exercised.
+        let mut logits: Vec<f32> = (0..t * n_expert).map(|i| pr(i + 123) * 4.0).collect();
+        for tok in 0..t { logits[tok * n_expert + 17] = logits[tok * n_expert + 200]; } // tie 17 vs 200
+        // host oracle
+        let host_route = |row: &[f32]| -> (Vec<i32>, Vec<f32>) {
+            let maxl = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut probs = vec![0f32; n_expert];
+            let mut den = 0f32;
+            for i in 0..n_expert { let x = (row[i] - maxl).exp(); probs[i] = x; den += x; }
+            for p in probs.iter_mut() { *p /= den; }
+            let mut idx: Vec<usize> = (0..n_expert).collect();
+            idx.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
+            let sel = &idx[..n_used];
+            let mut w: Vec<f32> = sel.iter().map(|&i| probs[i]).collect();
+            let mut ws: f32 = w.iter().sum();
+            ws = ws.max(6.103515625e-5_f32);
+            for x in w.iter_mut() { *x /= ws; }
+            (sel.iter().map(|&i| i as i32).collect(), w)
+        };
+        let ld = e.htod(&logits)?;
+        let (sel_d, w_d) = e.moe_router_topk(&ld, t, n_expert, n_used)?;
+        let sel_g = e.dtoh_i32(&sel_d)?;
+        let w_g = e.dtoh(&w_d)?;
+        let mut idx_ok = true;
+        let mut w_max_rel = 0f32;     // max relative weight diff (host f32::exp vs device expf)
+        let mut w_max_ulp = 0i64;     // max ULP gap (informational)
+        for tok in 0..t {
+            let (sh, wh) = host_route(&logits[tok * n_expert..(tok + 1) * n_expert]);
+            for j in 0..n_used {
+                if sel_g[tok * n_used + j] != sh[j] { idx_ok = false; }
+                let (a, b) = (w_g[tok * n_used + j], wh[j]);
+                let rel = (a - b).abs() / b.abs().max(1e-12);
+                if rel > w_max_rel { w_max_rel = rel; }
+                let ulp = (a.to_bits() as i64 - b.to_bits() as i64).abs();
+                if ulp > w_max_ulp { w_max_ulp = ulp; }
+            }
+        }
+        // SELECTION must be exact (a tie flip would drift the argmax-1178 gate). Weights differ only
+        // by host-libm-exp vs device-expf last-ULP noise; gate on tiny relative error, report ULP.
+        println!("moe_router idx-match (incl. tie 17/200): {}", if idx_ok { "OK" } else { fails += 1; "FAIL" });
+        println!("moe_router weight rel={w_max_rel:.2e} (max {w_max_ulp} ULP, host-exp vs device-expf): {}",
+                 if w_max_rel < 1e-5 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- EDGE-1 §D.2: cache-HIT bit-identity. Stage an expert into a fresh scratch (stage-every-token)
+    // and into a residency-cache slot, run the SAME qmatvec_view from each, assert BITWISE-equal y.
+    // Mechanically guaranteed by §B.3 (same bytes, same kernel); this pins it vs a future refactor. ---
+    {
+        use bw24_gguf::{GgufFile, GgmlType};
+        use bw24_engine::moe_cache::{MoeSlotCache, BlockId, PROJ_GATE};
+        const GGUF_35B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
+        if std::path::Path::new(GGUF_35B).exists() {
+            let g = GgufFile::open(GGUF_35B)?;
+            let t = g.find("blk.0.ffn_gate_exps.weight").expect("gate_exps");
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize; let n_expert = t.ne[2] as usize;
+            let qt_opt = match t.ggml_type {
+                GgmlType::IQ3_S => Some(bw24_engine::QT_IQ3_S), GgmlType::IQ4_XS => Some(bw24_engine::QT_IQ4_XS),
+                GgmlType::Q6_K => Some(bw24_engine::QT_Q6_K), GgmlType::Q8_0 => Some(bw24_engine::QT_Q8_0),
+                other => { println!("D.2 cache: gate_exps {other:?} unhandled — SKIP"); None },
+            };
+            if let Some(qt) = qt_opt {
+                let raw = g.tensor_data(t);
+                let expert_stride = raw.len() / n_expert;
+                let row_bytes = raw.len() / (out_f * n_expert);
+                let ex = 5usize; // arbitrary expert
+                let host_bytes = &raw[ex * expert_stride..(ex + 1) * expert_stride];
+                let x: Vec<f32> = (0..in_f).map(|i| pr(i + 999) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                // (a) stage-every-token: fresh scratch
+                let mut scratch = e.alloc_u8(expert_stride)?;
+                e.stage_expert(host_bytes, &mut scratch, 0)?;
+                let y_stage = e.dtoh(&e.qmatvec_view(&scratch, 0..expert_stride, &xd.slice(0..in_f), 1,
+                    in_f, out_f, qt, row_bytes)?)?;
+                // (b) residency cache: force-admit, then qmatvec_view from the resident slot.
+                let mut cache = MoeSlotCache::new(&e, expert_stride)?;
+                let id = BlockId::new(0, PROJ_GATE, ex as u16);
+                let slot = cache.force_admit(id, host_bytes, &e)?;
+                let y_hit = e.dtoh(&e.qmatvec_view(cache.slot(slot), 0..expert_stride, &xd.slice(0..in_f), 1,
+                    in_f, out_f, qt, row_bytes)?)?;
+                // also exercise the dispatch() HIT path (second access should be Resident).
+                let _ = cache.dispatch(id, host_bytes, &e)?;
+                let bitwise = y_stage.iter().zip(&y_hit).all(|(a, b)| a.to_bits() == b.to_bits());
+                println!("moe cache-HIT bit-identity (stage==cache): {}",
+                         if bitwise { "OK" } else { fails += 1; "FAIL" });
+            }
+        } else {
+            println!("D.2 cache bit-identity: 35B GGUF absent — SKIP");
+        }
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }

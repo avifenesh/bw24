@@ -76,7 +76,7 @@ impl HybridModel {
                     e.silu_mul(&gate, &up, &mut act, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn(e, m, &z, 1)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
             };
             let mut x2 = e.zeros(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;

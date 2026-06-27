@@ -1,6 +1,6 @@
 //! bw24 engine: Stage-1 correctness-first forward-pass kernels + ops, on sm_120 via cudarc.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use cudarc::driver::{CudaContext, CudaStream, CudaModule, CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::Ptx;
 
@@ -15,12 +15,14 @@ pub mod cache;
 pub mod decode;
 pub mod spec;
 pub mod sampler;
+pub mod moe_cache;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
 const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
 const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
 const GEMM_FATBIN_PATH: &str = env!("BW24_GEMM_FATBIN");
+const ROUTER_FATBIN_PATH: &str = env!("BW24_ROUTER_FATBIN");
 
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
@@ -40,6 +42,13 @@ pub struct Engine {
     qmatvec: Arc<CudaModule>,
     flash: Arc<CudaModule>,
     gemm: Arc<CudaModule>,
+    router: Arc<CudaModule>,
+    /// EDGE-1 §B: one shared SLRU expert-residency cache, lazily built on first MoE dispatch under
+    /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
+    /// memcpy-issue (µs), NOT the GEMM, so streams still overlap. `None` => cache disabled.
+    moe_cache: Mutex<Option<crate::moe_cache::MoeSlotCache>>,
+    /// EDGE-1 §C.2: dedicated H2D copy stream for async prefetch (event-synced to the compute stream).
+    pub copy_stream: Arc<CudaStream>,
 }
 
 impl Engine {
@@ -50,7 +59,10 @@ impl Engine {
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
         let flash = gpu.ctx.load_module(Ptx::from_file(FLASH_FATBIN_PATH))?;
         let gemm = gpu.ctx.load_module(Ptx::from_file(GEMM_FATBIN_PATH))?;
-        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm })
+        let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
+        let copy_stream = gpu.ctx.new_stream()?;
+        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
+                  moe_cache: Mutex::new(None), copy_stream })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
@@ -61,7 +73,38 @@ impl Engine {
             .or_else(|_| self.qmatvec.load_function(name))
             .or_else(|_| self.flash.load_function(name))
             .or_else(|_| self.gemm.load_function(name))
+            .or_else(|_| self.router.load_function(name))
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
+    }
+
+    /// Access the shared MoE residency cache (EDGE-1 §B), building it on first use under
+    /// BW24_MOE_CACHE. The closure runs while the lock is held — keep it to lookup/admit/issue, not
+    /// the GEMM. `max_block_bytes` sizes the slots (largest of gate/up/down). Returns the closure's
+    /// result. If BW24_MOE_CACHE is unset this is never called (the caller checks the env first).
+    pub fn with_moe_cache<R>(&self, max_block_bytes: usize,
+                             f: impl FnOnce(&mut crate::moe_cache::MoeSlotCache, &Engine) -> Result<R, Box<dyn std::error::Error>>)
+                             -> Result<R, Box<dyn std::error::Error>> {
+        let mut guard = self.moe_cache.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(crate::moe_cache::MoeSlotCache::new(self, max_block_bytes)?);
+        }
+        let cache = guard.as_mut().unwrap();
+        f(cache, self)
+    }
+
+    /// True if the MoE residency cache is enabled (BW24_MOE_CACHE set).
+    pub fn moe_cache_enabled() -> bool { std::env::var("BW24_MOE_CACHE").is_ok() }
+
+    /// Snapshot the MoE cache counters (hits, misses, staged_bytes, n_slots) for the §D.4 PCIe gate.
+    /// Returns None if the cache was never built (disabled or no MoE forward ran).
+    pub fn moe_cache_stats(&self) -> Option<(u64, u64, u64, usize)> {
+        let guard = self.moe_cache.lock().unwrap();
+        guard.as_ref().map(|c| (c.hits, c.misses, c.staged_bytes, c.n_slots()))
+    }
+
+    /// Reset the MoE cache perf counters (to separate warmup from steady-state windows).
+    pub fn moe_cache_reset_counters(&self) {
+        if let Some(c) = self.moe_cache.lock().unwrap().as_mut() { c.reset_counters(); }
     }
 
     pub fn htod_bytes(&self, v: &[u8]) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
@@ -170,6 +213,41 @@ impl Engine {
                         -> Result<(), Box<dyn std::error::Error>> {
         let mut dst = scratch.slice_mut(off..off + host_bytes.len());  // CudaViewMut<u8>
         self.gpu.stream.memcpy_htod(host_bytes, &mut dst)?;            // accepts &[u8] HostSlice src
+        Ok(())
+    }
+
+    /// EDGE-1 §A: fused MoE router. `logits` is the router output [t, n_expert] (device, f32, the
+    /// `gate_inp @ z` result). Returns (sel_idx [t, n_used] i32, sel_w [t, n_used] f32): the top-k
+    /// expert ids (DESC by prob, ascending-index tiebreak) and renormalized weights. Replaces the
+    /// host dtoh + softmax-256 + stable DESC top-8 sort + renorm (hybrid_forward.rs ~281-298).
+    /// One CTA per token row, 256 threads (one per expert).
+    pub fn moe_router_topk(&self, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
+                           -> Result<(CudaSlice<i32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("moe_router_topk_f32");
+        let mut sel_idx = self.gpu.stream.alloc_zeros::<i32>(t * n_used)?;
+        let mut sel_w = self.gpu.stream.alloc_zeros::<f32>(t * n_used)?;
+        let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (ne, nu) = (n_expert as i32, n_used as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu);
+        unsafe { b.launch(cfg)?; }
+        Ok((sel_idx, sel_w))
+    }
+
+    /// EDGE-1 §C.2: async H2D of `host_bytes` into `scratch[off..]` on the COPY stream, returning a
+    /// recorded event the compute stream can `wait` on before the dependent GEMM. Used for in-token
+    /// expert prefetch (pipeline by one). `host_bytes` should be pinned for a true DMA (§C.1).
+    pub fn stage_expert_async(&self, host_bytes: &[u8], scratch: &mut CudaSlice<u8>, off: usize)
+                              -> Result<cudarc::driver::CudaEvent, Box<dyn std::error::Error>> {
+        let mut dst = scratch.slice_mut(off..off + host_bytes.len());
+        self.copy_stream.memcpy_htod(host_bytes, &mut dst)?;
+        Ok(self.copy_stream.record_event(None)?)
+    }
+
+    /// Make the compute stream wait for an async copy event (the consumer side of `stage_expert_async`).
+    pub fn compute_wait(&self, ev: &cudarc::driver::CudaEvent) -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.wait(ev)?;
         Ok(())
     }
 
@@ -325,6 +403,12 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v)
+    }
+    /// Device-to-host copy of an i32 buffer (fused-router sel_idx readback).
+    pub fn dtoh_i32(&self, d: &CudaSlice<i32>) -> Result<Vec<i32>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
         self.gpu.stream.synchronize()?;
         Ok(v)
