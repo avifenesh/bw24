@@ -55,6 +55,14 @@ pub struct Engine {
     moe_cache: Mutex<Option<crate::moe_cache::MoeSlotCache>>,
     /// EDGE-1 §C.2: dedicated H2D copy stream for async prefetch (event-synced to the compute stream).
     pub copy_stream: Arc<CudaStream>,
+    /// Resident CUTLASS NVFP4 prefill scratch (workspace + a_packed + sfa_linear + sfa_sw + y + alpha),
+    /// allocated ONCE and grown to the largest prefill GEMM shape, then reused per-call. Removes the
+    /// 6 fresh allocations + alpha htod that `cutlass_fp4_gemm` did every prefill matmul (~200/prefill).
+    /// Safe as a single shared buffer because all GPU compute serializes on the one `gpu.stream` worker
+    /// thread (the server runs one GPU worker; no concurrent CUTLASS GEMMs share this scratch). `None`
+    /// until the first CUTLASS FP4 GEMM. Mutex guards lazy build/grow only (matches `moe_cache`).
+    #[cfg(bw24_cutlass)]
+    cutlass_scratch: Mutex<Option<crate::cutlass_ffi::CutlassScratch>>,
 }
 
 impl Engine {
@@ -68,7 +76,9 @@ impl Engine {
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;
         Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
-                  moe_cache: Mutex::new(None), copy_stream })
+                  moe_cache: Mutex::new(None), copy_stream,
+                  #[cfg(bw24_cutlass)]
+                  cutlass_scratch: Mutex::new(None) })
     }
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }

@@ -12,6 +12,35 @@
 
 use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
 
+/// Resident scratch for the CUTLASS NVFP4 prefill GEMM, allocated ONCE and grown to the largest
+/// prefill GEMM shape seen, then reused for every call (no per-call cudaMalloc / alpha htod).
+///
+/// The per-call path used to allocate 6 buffers + an htod of a single f32 EVERY matmul (~200/prefill):
+/// a_packed [m,k/2], sfa_linear [m,k/16], sfa_sw [sfa_size], workspace [ws_bytes], y [m,n], alpha [1].
+/// All six are now resident here. Each buffer is sized for the MAX shape encountered and the GEMM /
+/// quant kernels touch only the leading `m*..` / `n*..` prefix (row-major, contiguous from offset 0,
+/// bounded by the m,n,k passed to the FFI), so passing the full resident buffer is bit-identical to a
+/// freshly-allocated exact-size buffer. `y` and `a_packed`/`sfa*` are fully overwritten each call.
+///
+/// SINGLE-STREAM SAFETY: bw24 runs ONE GPU worker thread / one compute stream (`Engine::gpu.stream`);
+/// the HTTP server serializes all GPU work on that worker, so no two CUTLASS GEMMs touch this scratch
+/// concurrently. The `Mutex<Option<>>` on the Engine guards only the lazy build/grow (matches moe_cache);
+/// the GEMM itself runs on `gpu.stream` under that lock for the call's duration (one worker => no contention).
+pub struct CutlassScratch {
+    pub workspace: CudaSlice<u8>,   // >= max over shapes of cutlass_fp4_workspace_size(m,n,k)
+    pub a_packed: CudaSlice<u8>,    // >= max m*k/2
+    pub sfa_linear: CudaSlice<u8>,  // >= max m*k/16
+    pub sfa_sw: CudaSlice<u8>,      // >= max cutlass_sfa_size(m,k)
+    pub y: CudaSlice<f32>,          // >= max m*n
+    pub alpha: CudaSlice<f32>,      // resident [1], written in-place via memcpy_htod each call
+    // Current capacities (in elements/bytes) so we only grow when a bigger shape appears.
+    cap_ws: usize,
+    cap_a: usize,
+    cap_sfa_lin: usize,
+    cap_sfa_sw: usize,
+    cap_y: usize,
+}
+
 #[allow(dead_code)]
 unsafe extern "C" {
     /// Host-only workspace size for an (m,n,k) GEMM. No launch.
@@ -150,22 +179,110 @@ impl crate::Engine {
     }
 
     /// High-level CUTLASS NVFP4 GEMM for the dispatch seam: given the repacked weight (b_packed,
-    /// sfb_swizzled), quantize the activation to CUTLASS layout, run the GEMM with alpha=1/scale folded
+    /// sfb_swizzled), quantize the activation to CUTLASS layout, run the GEMM with alpha=scale folded
     /// into the epilogue (replaces the post-matmul scale_inplace), and return y [m,n] f32 RowMajor.
-    /// The CUTLASS workspace is allocated per-call (sized via the host-only query); the SyncOnDrop
-    /// guards are held across the FFI in cutlass_fp4_gemm_raw.
+    ///
+    /// All scratch (a_packed, sfa_linear, sfa_sw, workspace, y, alpha) is RESIDENT: allocated once and
+    /// grown to the largest prefill GEMM shape, then reused. No per-call cudaMalloc / alpha htod. The
+    /// kernels touch only the leading m*../n*.. prefix of each (row-major contiguous from offset 0,
+    /// bounded by m,n,k), and y/a_packed/sfa are fully overwritten — bit-identical to a per-call alloc.
+    /// Returns an owned y copy (caller expects an owned CudaSlice); the resident y is the work buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn cutlass_fp4_gemm(&self, b_packed: &CudaSlice<u8>, sfb_swizzled: &CudaSlice<u8>,
                             x: &CudaSlice<f32>, alpha: f32, m: usize, n: usize, k: usize)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let (a_packed, sfa_sw) = self.quantize_fp4_act_cutlass(x, m, k)?;
-        let alpha_d = self.htod(&[alpha])?;
-        let ws_bytes = self.cutlass_fp4_workspace_size(m, n, k);
-        let mut workspace = self.alloc_u8(ws_bytes.max(1))?;
-        let mut y = self.alloc_uninit::<f32>(m * n)?;
-        self.cutlass_fp4_gemm_raw(&a_packed, b_packed, &sfa_sw, sfb_swizzled, &alpha_d,
-                                  &mut y, m, n, k, &mut workspace)?;
-        Ok(y)
+        // Size the scratch for THIS shape (grows if a bigger shape appears; no-op once at max).
+        self.ensure_cutlass_scratch(m, n, k)?;
+        let mut guard = self.cutlass_scratch.lock().unwrap();
+        let s = guard.as_mut().unwrap();
+
+        // 1) Quantize activation x[m,k] -> a_packed[m,k/2] + sfa_linear[m,k/16], then swizzle SFA.
+        //    Full-overwrite of the leading prefix; resident buffers reused.
+        self.cutlass_nvfp4_quant_ref(x, &mut s.a_packed, &mut s.sfa_linear, m, k)?;
+        {
+            let stream = &self.gpu.stream;
+            let (src, _g1) = s.sfa_linear.device_ptr(stream);
+            let (dst, _g2) = s.sfa_sw.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_cutlass_repack_sfa(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
+                                        m as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into()); }
+        }
+
+        // 2) Write alpha IN PLACE into the resident [1] f32 (no fresh htod alloc per call).
+        self.gpu.stream.memcpy_htod(&[alpha], &mut s.alpha)?;
+
+        // 3) Run the GEMM into the resident y[m,n] (full overwrite), reusing the resident workspace.
+        //    The raw FFI reads workspace.len() as the byte count; the resident workspace is sized to
+        //    the max shape's query and CUTLASS accepts a workspace >= its requirement, so a larger
+        //    resident workspace is safe for any smaller shape.
+        {
+            let stream = &self.gpu.stream;
+            let ws_bytes = s.workspace.len();
+            let (a_p, _ga) = s.a_packed.device_ptr(stream);
+            let (b_p, _gb) = b_packed.device_ptr(stream);
+            let (sfa_p, _gsa) = s.sfa_sw.device_ptr(stream);
+            let (sfb_p, _gsb) = sfb_swizzled.device_ptr(stream);
+            let (al_p, _gal) = s.alpha.device_ptr(stream);
+            let (d_p, _gd) = s.y.device_ptr_mut(stream);
+            let (ws_p, _gw) = s.workspace.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_cutlass_fp4_gemm(
+                    a_p as *const core::ffi::c_void,
+                    b_p as *const core::ffi::c_void,
+                    sfa_p as *const core::ffi::c_void,
+                    sfb_p as *const core::ffi::c_void,
+                    al_p as *const f32,
+                    d_p as *mut core::ffi::c_void,
+                    m as i32, n as i32, k as i32,
+                    ws_p as *mut core::ffi::c_void, ws_bytes,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 { return Err(format!("bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)").into()); }
+        }
+
+        // 4) Copy the [m,n] result out of the resident work buffer into an owned slice (D2D, on-stream).
+        //    The caller's downstream consumes an owned CudaSlice; the resident y stays for the next call.
+        let mut out = self.alloc_uninit::<f32>(m * n)?;
+        self.gpu.stream.memcpy_dtod(&s.y.slice(0..m * n), &mut out)?;
+        Ok(out)
+    }
+
+    /// Lazily build / grow the resident CutlassScratch so every buffer covers the (m,n,k) shape.
+    /// Each buffer is sized to the MAX shape seen; the workspace takes the max over per-shape queries
+    /// (CUTLASS accepts a workspace >= its requirement). Only reallocates a buffer when a bigger shape
+    /// appears — in steady prefill this fires a handful of times then never again (zero per-call alloc).
+    fn ensure_cutlass_scratch(&self, m: usize, n: usize, k: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let need_ws = self.cutlass_fp4_workspace_size(m, n, k).max(1);
+        let need_a = m * k / 2;
+        let need_sfa_lin = m * (k / 16);
+        let need_sfa_sw = self.cutlass_sfa_size(m, k).max(1);
+        let need_y = m * n;
+
+        let mut guard = self.cutlass_scratch.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(CutlassScratch {
+                workspace: self.alloc_u8(need_ws)?,
+                a_packed: self.alloc_u8(need_a)?,
+                sfa_linear: self.alloc_u8(need_sfa_lin)?,
+                sfa_sw: self.alloc_u8(need_sfa_sw)?,
+                y: self.alloc_uninit::<f32>(need_y)?,
+                alpha: self.alloc_uninit::<f32>(1)?,
+                cap_ws: need_ws, cap_a: need_a, cap_sfa_lin: need_sfa_lin,
+                cap_sfa_sw: need_sfa_sw, cap_y: need_y,
+            });
+            return Ok(());
+        }
+        let s = guard.as_mut().unwrap();
+        if need_ws > s.cap_ws { s.workspace = self.alloc_u8(need_ws)?; s.cap_ws = need_ws; }
+        if need_a > s.cap_a { s.a_packed = self.alloc_u8(need_a)?; s.cap_a = need_a; }
+        if need_sfa_lin > s.cap_sfa_lin { s.sfa_linear = self.alloc_u8(need_sfa_lin)?; s.cap_sfa_lin = need_sfa_lin; }
+        if need_sfa_sw > s.cap_sfa_sw { s.sfa_sw = self.alloc_u8(need_sfa_sw)?; s.cap_sfa_sw = need_sfa_sw; }
+        if need_y > s.cap_y { s.y = self.alloc_uninit::<f32>(need_y)?; s.cap_y = need_y; }
+        Ok(())
     }
 
     /// TEST oracle: quantize a [rows,k] f32 device matrix to packed e2m1 + linear ue4m3 scales using
