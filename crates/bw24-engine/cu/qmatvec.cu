@@ -512,7 +512,9 @@ extern "C" __global__ void qmatvec_q8_0_mmvq(
         const unsigned char* wb = wrow + blk * 34;
         float dw = half_to_float(*(const unsigned short*)wb);   // 2-byte aligned OK
         const unsigned char* wq = wb + 2;                       // qs: 2-byte aligned -> get_int_b2
-        const int* aq4 = (const int*)(arow + blk * 32);         // 32-aligned int* OK
+        const int4* aq16 = (const int4*)(arow + blk * 32);      // 32-aligned -> 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++)
@@ -552,7 +554,9 @@ extern "C" __global__ void qmatvec_q4_K_mmvq(
         int chunk = grp >> 1;
         const int* q4 = (const int*)(qs + chunk * 32);          // 4-byte aligned
         bool hi = (grp & 1);
-        const int* aq4 = (const int*)(arow + (size_t)g * 32);
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi_d = 0, sumi_sum = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -597,8 +601,9 @@ extern "C" __global__ void qmatvec_q6_K_mmvq(
         const unsigned char* qlh = ql + n * 64;
         const unsigned char* qhh = qh + n * 32;
         const signed char*   scn = scales + n * 8;
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int is0 = run * 2 + 0;
         int is1 = run * 2 + 1;
         int sumi0 = 0, sumi1 = 0;
@@ -697,7 +702,9 @@ extern "C" __global__ void qmatvec_q8_0_dp4a(
         const unsigned char* wb = wrow + blk * 34;
         float dw = half_to_float(*(const unsigned short*)wb);   // weight block scale (2-byte aligned OK)
         const unsigned char* wq = wb + 2;                       // qs: 2-byte aligned -> get_int_b2
-        const int* aq4 = (const int*)(arow + blk * 32);         // activation: 32-aligned, int* OK
+        const int4* aq16 = (const int4*)(arow + blk * 32);      // 2x int4 (128-bit), 32-aligned
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++)
@@ -738,7 +745,9 @@ extern "C" __global__ void qmatvec_q4_K_dp4a(
         // qs at byte off 16 in a 144B superblock -> 4-byte aligned; chunk*32 keeps it 4-byte aligned.
         const int* q4 = (const int*)(qs + chunk * 32);
         bool hi = (grp & 1);
-        const int* aq4 = (const int*)(arow + (size_t)g * 32);
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi_d = 0, sumi_sum = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -784,8 +793,9 @@ extern "C" __global__ void qmatvec_q6_K_dp4a(
         const unsigned char* qlh = ql + n * 64;
         const unsigned char* qhh = qh + n * 32;
         const signed char*   scn = scales + n * 8;
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int is0 = run * 2 + 0;
         int is1 = run * 2 + 1;
         int sumi0 = 0, sumi1 = 0;
@@ -848,8 +858,9 @@ extern "C" __global__ void qmatvec_q5_K_dp4a(
                mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
         int g64 = grp >> 1; bool hi = (grp & 1); int hbit = 2 * g64 + (hi ? 1 : 0);
         const unsigned char* q = qs + g64 * 32;
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi_d = 0, sumi_sum = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -920,8 +931,9 @@ extern "C" __global__ void qmatvec_q3_K_dp4a(
         const unsigned char* hm = hmask;               // hmask not chunked: index by element directly
         int is_lo = half * 8 + jiter * 2 + 0;          // scale for lo 16 elems
         int is_hi = half * 8 + jiter * 2 + 1;          // scale for hi 16 elems
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumlo = 0, sumhi = 0;
         #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -977,8 +989,9 @@ extern "C" __global__ void qmatvec_nvfp4_dp4a(
         const unsigned char* qs = b + 4;
         int s0 = whichHalf * 2, s1 = s0 + 1;
         (void)s1;
-        const signed char* aqb = arow + (size_t)g * 32;
-        const int* aq4 = (const int*)aqb;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);  // 2x int4 (128-bit)
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         // sub-block s_local=0 -> activation ints aq4[0..3], s_local=1 -> aq4[4..7]
         float partial = 0.0f;
         #pragma unroll
