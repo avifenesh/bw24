@@ -108,6 +108,20 @@ impl EmbedHost {
         let v = src.find(name).unwrap_or_else(|| panic!("missing embed {name}"));
         EmbedHost { raw: v.bytes.to_vec(), ggml_type: v.ggml_type, n_embd: v.ne[0] as usize }
     }
+    /// QT int + row_bytes for this embed table's dtype (for the device embed-gather kernel).
+    /// CUDA-GRAPH-PLAN Phase 1. Mirrors the GpuTensor qtype mapping.
+    pub fn qt_and_row_bytes(&self, n_embd: usize) -> (i32, usize) {
+        let (blk, tsize) = self.ggml_type.block_and_type_size();
+        let row_bytes = (n_embd as u64 / blk * tsize) as usize;
+        let qt = match self.ggml_type {
+            GgmlType::Q8_0 => QT_Q8_0, GgmlType::Q4_K => QT_Q4_K, GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q5_K => QT_Q5_K, GgmlType::Q3_K => QT_Q3_K, GgmlType::IQ4_XS => QT_IQ4_XS,
+            GgmlType::IQ3_S => QT_IQ3_S, GgmlType::NVFP4 => QT_NVFP4, GgmlType::F32 => QT_F32,
+            other => panic!("embed_gather: unsupported dtype {other:?}"),
+        };
+        (qt, row_bytes)
+    }
+
     /// Gather rows for tokens -> [T, n_embd] f32. Dequant per-row from raw bytes.
     pub fn gather(&self, n_embd: usize, tokens: &[u32]) -> Vec<f32> {
         let (blk, tsize) = self.ggml_type.block_and_type_size();

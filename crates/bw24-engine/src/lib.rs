@@ -507,6 +507,26 @@ impl Engine {
         self.gpu.stream.synchronize()?;
         Ok(v[0])
     }
+    /// Upload raw bytes to a resident device u8 buffer (e.g. the embed table for device gather).
+    pub fn upload_u8(&self, bytes: &[u8]) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.clone_htod(bytes)?)
+    }
+    /// Embed-from-device (CUDA-GRAPH-PLAN Phase 1): gather+dequant the row for the token id in
+    /// `token_d[0]` from the resident embed table `embd` -> x_out[n_embd]. Bit-identical to host
+    /// EmbedHost::gather (same per-dtype `deq`). No host round-trip of the token id.
+    pub fn embed_gather_device(&self, embd: &CudaSlice<u8>, token_d: &CudaSlice<u32>,
+                               n_embd: usize, qtype: i32, row_bytes: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("embed_gather_u32");
+        let mut x = self.alloc_uninit::<f32>(n_embd)?;
+        let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ne, qt, rb) = (n_embd as i32, qtype, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(embd).arg(token_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(x)
+    }
 
     /// Uninitialized device buffer — SKIPS the memset that `alloc_zeros` always issues. Decode
     /// profile (nsys): ~1050 memsets/token = 6.5% of decode GPU time + ~half the launch count, the

@@ -334,6 +334,23 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     return 0.0f;
 }
 
+// ---- Embed-from-device (CUDA-GRAPH-PLAN Phase 1): gather + dequant ONE token row whose id lives
+// in a device u32 buffer (the argmax output), so the token never round-trips to host in steady
+// state. x_out[j] = deq(qtype, embd_row(token_d[0]), j) for j in [0,n_embd). Bit-identical to host
+// EmbedHost::gather (same per-dtype deq path). Single token (decode T=1). row_bytes = bytes/embed-row.
+extern "C" __global__ void embed_gather_u32(
+        const unsigned char* __restrict__ embd, const unsigned int* __restrict__ token_d,
+        float* __restrict__ x_out, int n_embd, int qtype, long row_bytes) {
+    unsigned int tok = token_d[0];
+    const unsigned char* row = embd + (size_t)tok * row_bytes;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n_embd; j += gridDim.x * blockDim.x)
+        x_out[j] = deq(qtype, row, j);
+}
+
+// ---- Device i32 increment (CUDA-GRAPH-PLAN Phase 1): pos_d[0] += 1 inside the captured graph,
+// replacing the per-step host htod_i32(&[pos]). One thread.
+extern "C" __global__ void inc_i32(int* __restrict__ p) { if (threadIdx.x == 0 && blockIdx.x == 0) p[0] += 1; }
+
 // ================= Stage-B: int8 dp4a MMVQ (decode hot path) =================
 // Quantize activation row to q8_1 blocks (32 vals -> int8 + fp16 scale d), then weight-int8 dot.
 // Activation buffer layout per block i: [32 int8 qs][1 float d]. We pack as: int8 qs in a byte array
