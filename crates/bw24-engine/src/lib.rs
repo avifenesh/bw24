@@ -570,6 +570,7 @@ impl Engine {
         // re-read. Gated behind BW24_GEMM; only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's
         // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
         const GEMM_M_THRESHOLD: usize = 16;
+
         // Stage-C FP4: native mxf4 block-scale GEMM (BW24_FP4) for NVFP4 weights — the BEAT-llama
         // lever (762 TFLOP vs int8 219). Prefill only (m>=16); takes precedence over the int8 GEMM.
         if m >= GEMM_M_THRESHOLD {
