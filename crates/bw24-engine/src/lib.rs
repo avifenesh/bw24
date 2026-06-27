@@ -35,6 +35,8 @@ pub const QT_Q3_K: i32 = 4;
 pub const QT_IQ4_XS: i32 = 5;
 pub const QT_IQ3_S: i32 = 6;
 pub const QT_NVFP4: i32 = 7;
+/// Unquantized f32 weight (safetensors MoE Path A: experts dequantized to f32 host-resident).
+pub const QT_F32: i32 = 8;
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {

@@ -6,13 +6,19 @@
 //! (`GgmlType`, `ModelConfig`) and both readers live here. bw24-engine already depends on
 //! bw24-gguf, so `GpuTensor::load_from_source(&dyn TensorSource, ...)` introduces no new dep.
 
+use std::borrow::Cow;
 use crate::config::{Arch, ModelConfig};
 use crate::safetensors::StModel;
 use crate::{GgufFile, GgmlType};
 
 /// A view of one tensor's data, source-agnostic.
+///
+/// `bytes` is a `Cow`: the GGUF path and the zero-copy dense safetensors path BORROW the mmap
+/// (no allocation); the hybrid-SSM transforms (`-exp(A_log)`, norm `+1`, conv1d squeeze, V-reorder)
+/// produce an OWNED buffer (ST-MOE-PLAN §2.1) since they cannot be expressed as a borrow of the
+/// on-disk bytes. All consumers read it as `&[u8]` via `&v.bytes`, so the fast path is untouched.
 pub struct TensorView<'a> {
-    pub bytes: &'a [u8],
+    pub bytes: Cow<'a, [u8]>,
     pub ggml_type: GgmlType,
     pub ne: Vec<u64>, // inner-fastest (ne[0] = in_features for a [in,out] weight)
 }
@@ -27,6 +33,9 @@ pub trait TensorSource {
     fn has(&self, ggml_name: &str) -> bool {
         self.find(ggml_name).is_some()
     }
+    /// The backing GGUF file, if this source IS a GGUF (None for safetensors). Used by the
+    /// disk-spill tier, which needs the on-disk file mmap (`g.path()` / per-expert byte ranges).
+    fn gguf(&self) -> Option<&GgufFile> { None }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -39,11 +48,12 @@ impl<'g> TensorSource for GgufSource<'g> {
     fn find(&self, name: &str) -> Option<TensorView<'_>> {
         let t = self.0.find(name)?;
         Some(TensorView {
-            bytes: self.0.tensor_data(t),
+            bytes: Cow::Borrowed(self.0.tensor_data(t)),
             ggml_type: t.ggml_type,
             ne: t.ne.clone(),
         })
     }
+    fn gguf(&self) -> Option<&GgufFile> { Some(self.0) }
 }
 
 /// safetensors-backed source: an HF checkpoint (config.json + one/more .safetensors shards).
@@ -79,10 +89,39 @@ impl SafetensorsSource {
         &self.cfg.arch
     }
 
-    /// Direct HF-name access (used by the MoE expert gather path; not arch-mapped).
+    /// Direct HF-name access (zero-copy). Applies the prefix-fallback so a wrapper prefix like
+    /// `model.language_model.` (qwen35 VLM) resolves against the plain `model.` namespace and vice
+    /// versa (ST-MOE-PLAN §2.0). Returns a BORROWED view (no transform).
     pub fn raw_hf(&self, hf_name: &str) -> Option<TensorView<'_>> {
-        let (info, bytes) = self.model.raw(hf_name)?;
-        Some(TensorView { bytes, ggml_type: info.ggml_type(), ne: info.ne() })
+        let (info, bytes) = self.lookup(hf_name)?;
+        Some(TensorView { bytes: Cow::Borrowed(bytes), ggml_type: info.ggml_type(), ne: info.ne() })
+    }
+
+    /// Resolve an HF tensor name, trying it verbatim then with the qwen35 multimodal wrapper prefix
+    /// inserted/removed (`model.` <-> `model.language_model.`). The dense map and the SSM map share
+    /// one `model.layers.{il}.` namespace this way (ST-MOE-PLAN §2.0).
+    fn lookup(&self, hf_name: &str) -> Option<(&crate::safetensors::StInfo, &[u8])> {
+        if let Some(r) = self.model.raw(hf_name) { return Some(r); }
+        // model.layers.* -> model.language_model.layers.*  (and the symmetric strip)
+        if let Some(rest) = hf_name.strip_prefix("model.") {
+            if !rest.starts_with("language_model.") && !rest.starts_with("visual.") {
+                let alt = format!("model.language_model.{rest}");
+                if let Some(r) = self.model.raw(&alt) { return Some(r); }
+            }
+        }
+        if let Some(rest) = hf_name.strip_prefix("model.language_model.") {
+            let alt = format!("model.{rest}");
+            if let Some(r) = self.model.raw(&alt) { return Some(r); }
+        }
+        None
+    }
+
+    /// Dequantize an HF tensor (F32/F16/BF16) to f32 (used by the value-transform producers).
+    fn deq_f32(&self, hf_name: &str) -> Option<(Vec<f32>, Vec<u64>)> {
+        let (info, bytes) = self.lookup(hf_name)?;
+        let ne = info.ne();
+        let n: u64 = ne.iter().product();
+        Some((crate::dequant::dequantize(info.ggml_type(), bytes, n as usize), ne))
     }
 }
 
@@ -91,8 +130,18 @@ impl TensorSource for SafetensorsSource {
         self.cfg.clone()
     }
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
-        let hf = crate::hf_mapping::ggml_to_hf(ggml_name, &self.cfg.arch)?;
-        self.raw_hf(&hf)
+        use crate::hf_mapping::{HfTarget, resolve_ggml};
+        match resolve_ggml(ggml_name, &self.cfg)? {
+            // Zero-copy: a plain rename (dense path + most SSM matrices), borrow the mmap directly.
+            HfTarget::Plain(hf) => self.raw_hf(&hf),
+            // Owned f32 buffer: a value transform that cannot borrow the on-disk bytes (§2.1).
+            HfTarget::Transform { hf, kind } => {
+                let (mut data, ne_in) = self.deq_f32(&hf)?;
+                let cfg = &self.cfg;
+                let (ne, bytes) = kind.apply(&mut data, ne_in, cfg);
+                Some(TensorView { bytes: Cow::Owned(bytes), ggml_type: GgmlType::F32, ne })
+            }
+        }
     }
 }
 

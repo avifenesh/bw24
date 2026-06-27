@@ -7,7 +7,7 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
 use bw24_gguf::source::{TensorSource, GgufSource};
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4};
+use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -59,12 +59,12 @@ impl GpuTensor {
                         None => 1.0,
                     }
                 } else { 1.0 };
-                Ok(GpuTensor::Quant { bytes: e.htod_bytes(v.bytes)?, qtype: qt, row_bytes, ne: v.ne.clone(), scale })
+                Ok(GpuTensor::Quant { bytes: e.htod_bytes(&v.bytes)?, qtype: qt, row_bytes, ne: v.ne.clone(), scale })
             }
             None => {
                 // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.
                 let n: u64 = v.ne.iter().product();
-                let f32v = dequant::dequantize(v.ggml_type, v.bytes, n as usize);
+                let f32v = dequant::dequantize(v.ggml_type, &v.bytes, n as usize);
                 Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: v.ne.clone() })
             }
         }
@@ -89,7 +89,9 @@ pub struct Layer {
     pub wq: GpuTensor, pub wk: GpuTensor, pub wv: GpuTensor, pub wo: GpuTensor,
     pub q_norm: Option<GpuTensor>, pub k_norm: Option<GpuTensor>,
     pub ffn_norm: GpuTensor,
-    pub ffn_gate: GpuTensor, pub ffn_up: GpuTensor, pub ffn_down: GpuTensor,
+    /// FFN: dense SwiGLU or routed MoE (OLMoE — dense attention + MoE FFN). Reuses the hybrid
+    /// `Ffn` enum + `load_ffn` so the routed-expert forward is shared with `HybridModel::moe_ffn`.
+    pub ffn: crate::hybrid::Ffn,
 }
 
 /// Host-resident embedding table for row gather (dequant only the needed token rows).
@@ -135,16 +137,16 @@ impl Model {
         Self::load_dense_from_source(e, &GgufSource(g))
     }
 
-    /// Load a dense model from any `TensorSource` — GGUF or a safetensors HF checkpoint.
-    /// The whole loop speaks ggml names; the source maps them. Panics on SSM/MoE arches.
+    /// Load a dense-attention model from any `TensorSource` — GGUF or a safetensors HF checkpoint.
+    /// The whole loop speaks ggml names; the source maps them. The FFN is dense SwiGLU OR routed MoE
+    /// (OLMoE: dense full-attention + MoE FFN). Panics on hybrid (SSM) arches — use the hybrid path.
     pub fn load_dense_from_source(e: &Engine, src: &dyn TensorSource) -> Result<Self, Box<dyn std::error::Error>> {
         let cfg = src.config();
         assert!(cfg.full_attention_interval == 0, "model has linear-attn layers; use hybrid path");
-        assert!(cfg.moe.is_none(), "model is MoE; use MoE path");
 
         let embd = EmbedHost::from_source(src, "token_embd.weight");
         let output_norm = GpuTensor::load_from_source(e, src, "output_norm.weight")?;
-        // tied embeddings: fall back to tok_embd if output.weight absent
+        // tied embeddings: fall back to tok_embd if output.weight absent (OLMoE has untied output).
         let output = if src.has("output.weight") {
             GpuTensor::load_from_source(e, src, "output.weight")?
         } else {
@@ -163,12 +165,25 @@ impl Model {
                 q_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_q_norm.weight"))?,
                 k_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_k_norm.weight"))?,
                 ffn_norm: GpuTensor::load_from_source(e, src, &p("ffn_norm.weight"))?,
-                ffn_gate: GpuTensor::load_from_source(e, src, &p("ffn_gate.weight"))?,
-                ffn_up: GpuTensor::load_from_source(e, src, &p("ffn_up.weight"))?,
-                ffn_down: GpuTensor::load_from_source(e, src, &p("ffn_down.weight"))?,
+                ffn: crate::hybrid::load_ffn(e, src, &cfg, il, None)?,
             });
         }
         Ok(Model { cfg, embd, output_norm, output, layers })
+    }
+
+    /// Largest expert block (bytes) across all MoE layers — the fixed cache-slot size (mirrors
+    /// `HybridModel::max_moe_block`). 0 for a dense (non-MoE) model.
+    pub(crate) fn max_moe_block(&self) -> usize {
+        use crate::hybrid::Ffn;
+        let mut mx = 0usize;
+        for l in &self.layers {
+            if let Ffn::Moe(m) = &l.ffn {
+                mx = mx.max(m.gate_exps.expert_stride)
+                       .max(m.up_exps.expert_stride)
+                       .max(m.down_exps.expert_stride);
+            }
+        }
+        mx
     }
 
     /// Gather embedding rows into f32 [T, n_embd] (token-major) by dequantizing only the needed
@@ -272,9 +287,18 @@ impl HostExps {
     /// context for the optional pinned allocation (§C.1). Default storage is pageable `Vec<u8>`
     /// (identical to the prior behavior); pinned is chosen when BW24_MOE_PINNED or BW24_MOE_CACHE is set.
     pub fn load(e: &Engine, g: &GgufFile, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let t = g.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
+        Self::load_stacked_from_source(e, &GgufSource(g), name)
+    }
+
+    /// Load a STACKED 3D expert tensor (`ne=[in_f,out_f,n_expert]`) from any source. GGUF stores the
+    /// experts this way; the source returns the same mmap bytes (`GgufSource::find` == `tensor_data`),
+    /// so the GGUF path is byte-identical to the prior direct-`GgufFile` loader. (Safetensors stores N
+    /// 2D tensors instead — those go through `load_from_source`, which gathers them.)
+    pub fn load_stacked_from_source(e: &Engine, src: &dyn TensorSource, name: &str)
+                                    -> Result<Self, Box<dyn std::error::Error>> {
+        let t = src.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
         assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
-        let raw = g.tensor_data(t);
+        let raw: &[u8] = &t.bytes;
         // All quant types the staged-expert qmatvec can decode (dp4a-fast or Stage-A f32).
         let qtype = match t.ggml_type {
             GgmlType::Q8_0 => QT_Q8_0,
@@ -361,6 +385,76 @@ impl HostExps {
             tiers: Some(tiers),
             qtype, in_f, out_f, n_expert, row_bytes, expert_stride,
         })
+    }
+
+    /// MoE expert GATHER from a `TensorSource` (the safetensors path; ST-MOE-PLAN §1.3). GGUF stacks
+    /// all experts into ONE 3D tensor; HF stores them as N separate 2D tensors
+    /// `model.layers.{il}.mlp.experts.{e}.{gate,up,down}_proj.weight`. `find` returns `None` for the
+    /// ggml `*_exps` name on purpose, so the experts are gathered out-of-band here.
+    ///
+    /// PATH A (load-time only, no quantize): each HF 2D expert tensor is dequantized to f32 and the
+    /// per-expert blocks are concatenated expert-axis-slowest into ONE contiguous buffer — exactly the
+    /// layout `expert_bytes(e)` slices and the staged `qmatvec_view` (qtype=QT_F32) reads. The same
+    /// `expert_stride == out_f*row_bytes` invariant as the GGUF path is asserted at the end.
+    ///
+    /// `ggml_exps_name` is `blk.{il}.ffn_{gate,up,down}_exps.weight`; it is split to recover `il` and
+    /// the proj. `n_expert` comes from `cfg.moe`. The HF per-expert literal `mlp.experts.{e}.{p}_proj`
+    /// is the qwen3moe / olmoe layout (a future arch with `block_sparse_moe.experts.*` would need a
+    /// branch in `hf_expert_name`).
+    pub fn load_from_source(e: &Engine, src: &dyn TensorSource, ggml_exps_name: &str, n_expert: usize)
+                            -> Result<Self, Box<dyn std::error::Error>> {
+        // Recover il + proj from `blk.{il}.ffn_{gate,up,down}_exps.weight`.
+        let rest = ggml_exps_name.strip_prefix("blk.")
+            .unwrap_or_else(|| panic!("not a blk.* name: {ggml_exps_name}"));
+        let (il_s, suffix) = rest.split_once('.').unwrap();
+        let il: u32 = il_s.parse().unwrap();
+        let proj = match suffix {
+            "ffn_gate_exps.weight" => "gate",
+            "ffn_up_exps.weight"   => "up",
+            "ffn_down_exps.weight" => "down",
+            other => panic!("not a *_exps suffix: {other}"),
+        };
+
+        // expert 0 fixes (in_f, out_f); every later expert must match (catches a layer/arch mixup).
+        let mut buf: Vec<u8> = Vec::new();
+        let mut in_f = 0usize;
+        let mut out_f = 0usize;
+        for ex in 0..n_expert {
+            // Per-expert ggml name; the source maps it to the HF expert tensor (ST-MOE-PLAN §1.3).
+            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+            let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+            assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
+            let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+            if ex == 0 { in_f = cur_in; out_f = cur_out; }
+            else { assert_eq!((cur_in, cur_out), (in_f, out_f),
+                "expert {ex} dims {:?} != expert 0 [{in_f},{out_f}]", (cur_in, cur_out)); }
+            // PATH A: dequant the 2D expert (F32/F16/BF16) to f32, append its bytes verbatim. The
+            // dequantized [out_f, in_f] row-major f32 block is exactly one expert_stride slow→fast.
+            let n = cur_in * cur_out;
+            let f32v = dequant::dequantize(v.ggml_type, &v.bytes, n);
+            buf.reserve(n * 4);
+            for f in &f32v { buf.extend_from_slice(&f.to_le_bytes()); }
+        }
+        let row_bytes = in_f * 4;                 // one out-row = in_f contiguous f32s
+        let expert_stride = out_f * row_bytes;
+        assert_eq!(buf.len(), n_expert * expert_stride,
+            "{ggml_exps_name} gather size {} != n_expert*stride {}", buf.len(), n_expert * expert_stride);
+        // Hold to the identical invariant as the GGUF path (ST-MOE-PLAN §1.3 step 4).
+        assert_eq!(expert_stride, out_f * row_bytes,
+            "{ggml_exps_name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
+
+        // Same pinned-vs-paged choice as the GGUF loader (the bytes are H2D-only on the hot path).
+        let pinned = std::env::var("BW24_MOE_PINNED").is_ok() || std::env::var("BW24_MOE_CACHE").is_ok();
+        let bytes = if pinned {
+            let mut p = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
+            { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
+            let base = p.as_ptr()? as *const u8;
+            let len = buf.len();
+            HostBuf::Pinned { slice: p, base, len }
+        } else {
+            HostBuf::Paged(buf)
+        };
+        Ok(HostExps { bytes, tiers: None, qtype: QT_F32, in_f, out_f, n_expert, row_bytes, expert_stride })
     }
 
     /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.

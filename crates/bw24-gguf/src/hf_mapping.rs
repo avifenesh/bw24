@@ -6,14 +6,21 @@
 //!
 //! Direction is ggml -> HF (one lookup per requested tensor; no full-table build needed).
 //!
-//! Coverage: dense transformer (Qwen3 / Llama / Gemma style). MoE expert stacking and
-//! hybrid (qwen35) SSM tensors are NOT mapped here — see the TODOs below — because no
-//! safetensors test model for those was available to validate against.
+//! Coverage:
+//!   * dense transformer (Qwen3 / Llama / OLMoE-attention style) — `ggml_to_hf`, zero-copy.
+//!   * MoE stacked experts — per-expert ggml name `blk.{il}.ffn_{proj}_exps.{e}.weight` ->
+//!     `model.layers.{il}.mlp.experts.{e}.{proj}_proj.weight` (gathered by HostExps::load_from_source).
+//!   * hybrid (qwen35) linear-attn SSM tensors — `resolve_ggml`, with the value transforms
+//!     (`-exp(A_log)`, norm `+1`, conv1d squeeze, V-reorder) materialized as owned buffers.
+//!
+//! The SSM name map + transforms are cited against llama.cpp's converter (conversion/qwen.py,
+//! gguf-py/gguf/tensor_mapping.py) — see `resolve_ggml` and `TransformKind`.
 
-use crate::config::Arch;
+use crate::config::{Arch, ModelConfig};
 
-/// Translate a requested ggml tensor name into the HF safetensors name.
-/// Returns `None` if the ggml name has no known HF equivalent for this arch.
+/// Translate a requested ggml tensor name into the HF safetensors name (DENSE tensors only —
+/// a plain rename with no value transform). Returns `None` if the ggml name has no known HF
+/// equivalent for this arch (e.g. SSM tensors, which go through `resolve_ggml`).
 pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
     // Top-level tensors (arch-independent across Llama/Qwen dense).
     match ggml {
@@ -50,11 +57,6 @@ pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
         "ffn_up_shexp.weight" => "mlp.shared_expert.up_proj.weight",
         "ffn_down_shexp.weight" => "mlp.shared_expert.down_proj.weight",
         "ffn_gate_inp_shexp.weight" => "mlp.shared_expert_gate.weight",
-        // NOT MAPPED (no safetensors test model to validate against):
-        //   * stacked MoE experts: ggml "blk.N.ffn_{gate,up,down}_exps.weight" is ONE 3D tensor,
-        //     HF stores them as N separate 2D tensors "model.layers.N.mlp.experts.{e}.*_proj.weight".
-        //     Requires a gather+concat, not a single-name lookup — see hf_expert_name() below.
-        //   * hybrid/SSM: "attn_qkv", "attn_gate", "ssm_*" (qwen35) have no validated HF name map.
         _ => return None,
     };
     Some(format!("model.layers.{il}.{hf_suffix}"))
@@ -62,8 +64,8 @@ pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
 
 /// HF name for a single expert's projection weight (for the MoE gather+concat path).
 /// ggml stacks all experts into one 3D tensor; HF stores them separately. `proj` is one of
-/// "gate", "up", "down". NOT yet wired into the loader (no MoE safetensors test model available),
-/// but provided so the expert-staging code has the canonical name to gather from.
+/// "gate", "up", "down". This is the qwen3moe / olmoe layout (`mlp.experts.{e}.{p}_proj.weight`);
+/// a future arch using `block_sparse_moe.experts.*` (Mixtral) would need a branch here.
 pub fn hf_expert_name(il: u32, e: u32, proj: &str) -> String {
     let p = match proj {
         "gate" => "gate_proj",
@@ -72,6 +74,267 @@ pub fn hf_expert_name(il: u32, e: u32, proj: &str) -> String {
         other => panic!("unknown expert proj {other}"),
     };
     format!("model.layers.{il}.mlp.experts.{e}.{p}.weight")
+}
+
+/// Resolved HF target for a requested ggml name.
+pub enum HfTarget {
+    /// A plain rename — borrow the on-disk bytes zero-copy.
+    Plain(String),
+    /// A rename PLUS a value transform that must materialize an owned f32 buffer (§2.1).
+    Transform { hf: String, kind: TransformKind },
+}
+
+/// The value transforms the qwen35 HF->GGUF converter applies (llama.cpp conversion/qwen.py).
+/// All operate on the dequantized-to-f32 tensor and return the GGUF-equivalent owned bytes.
+#[derive(Clone, Copy)]
+pub enum TransformKind {
+    /// `ssm_a` <- `A_log`: elementwise `-exp(x)`, then V-head reorder (qwen.py:296-297, 496-503).
+    NegExpReorderHeads,
+    /// `ssm_dt.bias` <- `dt_bias`: V-head reorder only (qwen.py:496-503).
+    ReorderHeads,
+    /// `ssm_norm.weight` <- `linear_attn.norm.weight`: NO +1, NO reorder (qwen.py:302-303 carve-out).
+    /// Materialized only to keep a single owned-arm code path; value is unchanged.
+    Identity,
+    /// qwen35 norm `+1` (every `*norm.weight` EXCEPT linear_attn.norm) (qwen.py:302-303).
+    NormPlusOne,
+    /// `ssm_conv1d.weight` <- `conv1d.weight`: squeeze `[C,1,K]->[C,K]`, V-channel reorder (qwen.py:300-301,505-512).
+    Conv1dSqueezeReorder,
+    /// `attn_qkv.weight` <- `in_proj_qkv.weight`: reorder ONLY the V row-block (rows 4096:8192) (qwen.py:478-486).
+    QkvVReorderRows,
+    /// `attn_gate.weight` <- `in_proj_z.weight`: reorder ALL rows (qwen.py:488-490).
+    ZReorderRows,
+    /// `ssm_alpha`/`ssm_beta` <- `in_proj_a`/`in_proj_b`: reorder ALL rows, head_dim=1 (qwen.py:492-494).
+    AbReorderRows,
+    /// `ssm_out.weight` <- `out_proj.weight`: reorder COLUMNS (in-dim), head_dim=128 (qwen.py:514-516).
+    OutReorderCols,
+}
+
+impl TransformKind {
+    /// Apply the transform to `data` (dequantized f32, row-major matching the HF shape whose ggml
+    /// `ne` is `ne_in`). Returns the new ggml `ne` and the owned little-endian f32 bytes.
+    pub fn apply(&self, data: &mut [f32], ne_in: Vec<u64>, cfg: &ModelConfig) -> (Vec<u64>, Vec<u8>) {
+        let (nk, nv, hk, hv) = head_params(cfg);
+        match self {
+            TransformKind::Identity => (ne_in, f32_to_le(data)),
+            TransformKind::NormPlusOne => {
+                for x in data.iter_mut() { *x += 1.0; }
+                (ne_in, f32_to_le(data))
+            }
+            TransformKind::NegExpReorderHeads => {
+                for x in data.iter_mut() { *x = -x.exp(); }
+                // 1D [nv]: per-head reorder, head_dim=1.
+                let out = reorder_v_heads_axis0(data, nv, nk, 1);
+                (ne_in, f32_to_le(&out))
+            }
+            TransformKind::ReorderHeads => {
+                let out = reorder_v_heads_axis0(data, nv, nk, 1);
+                (ne_in, f32_to_le(&out))
+            }
+            TransformKind::AbReorderRows => {
+                // in_proj_a/b: HF [out=nv, in=hidden] -> ne [hidden, nv]. Reorder the `nv` out-rows
+                // (head_dim=1). data is row-major [nv][hidden]; row index = V-head.
+                let in_f = ne_in[0] as usize;
+                let out = reorder_rows_v(data, nv, nk, 1, in_f, 0, nv);
+                (ne_in, f32_to_le(&out))
+            }
+            TransformKind::ZReorderRows => {
+                // in_proj_z: HF [out=value_dim, in=hidden] -> ne [hidden, value_dim]. Reorder ALL
+                // value_dim out-rows, head_dim=hv. data row-major [value_dim][hidden].
+                let in_f = ne_in[0] as usize;
+                let total_out = ne_in[1] as usize;       // value_dim = nv*hv
+                let out = reorder_rows_v(data, nv, nk, hv, in_f, 0, total_out);
+                (ne_in, f32_to_le(&out))
+            }
+            TransformKind::QkvVReorderRows => {
+                // in_proj_qkv: HF [out=conv_dim, in=hidden] -> ne [hidden, conv_dim].
+                // q rows [0, qk), k rows [qk, 2qk) UNTOUCHED; V rows [2qk, conv_dim) reordered (head_dim=hv).
+                let in_f = ne_in[0] as usize;
+                let conv_dim = ne_in[1] as usize;
+                let qk = nk * hk;                          // q_dim = k_dim = num_k_heads*head_k_dim
+                let out = reorder_rows_v(data, nv, nk, hv, in_f, 2 * qk, conv_dim);
+                (ne_in, f32_to_le(&out))
+            }
+            TransformKind::Conv1dSqueezeReorder => {
+                // conv1d HF [C, 1, K] -> ne_in reversed = [K, 1, C]. Squeeze -> ggml [K, C] (ne[K,C]).
+                // data row-major [C][1][K] == [C][K]; channels [0,2qk) untouched, V channels reordered (hv).
+                let k = ne_in[0] as usize;                 // kernel taps (4)
+                // ne_in could be [K,1,C] or [K,C]; channel count is the product of the rest.
+                let c: usize = ne_in[1..].iter().map(|&d| d as usize).product();
+                let qk = nk * hk;
+                let out = reorder_rows_v(data, nv, nk, hv, k, 2 * qk, c);
+                (vec![k as u64, c as u64], f32_to_le(&out))
+            }
+            TransformKind::OutReorderCols => {
+                // out_proj: HF [out=hidden, in=value_dim] -> ne [value_dim, hidden]. Reorder the
+                // `value_dim` INPUT columns (head_dim=hv). data row-major [hidden][value_dim].
+                let value_dim = ne_in[0] as usize;          // in-features
+                let hidden = ne_in[1] as usize;             // out-features
+                let out = reorder_cols_v(data, hidden, value_dim, nv, nk, hv);
+                (ne_in, f32_to_le(&out))
+            }
+        }
+    }
+}
+
+/// (num_k_heads, num_v_heads, head_k_dim, head_v_dim) from cfg.ssm / cfg fields (qwen35).
+fn head_params(cfg: &ModelConfig) -> (usize, usize, usize, usize) {
+    let ssm = cfg.ssm.as_ref().expect("ssm config for hybrid transform");
+    let nk = ssm.group_count as usize;       // linear_num_key_heads = 16
+    let nv = ssm.time_step_rank as usize;    // linear_num_value_heads = 32 (stored here, see config.rs)
+    let hk = ssm.state_size as usize;        // linear_key_head_dim = 128
+    let hv = hk;                              // linear_value_head_dim == key (qwen35: both 128)
+    (nk, nv, hk, hv)
+}
+
+/// Core V-head permutation primitive for a flat axis of `num_v_heads*head_dim` elements
+/// (qwen.py:366-376 `_reorder_v_heads`). Output enumerates `j` (within-K-group) OUTER, `g`
+/// (K-group) INNER: output V-head slot `j*num_k_heads + g` <- source HF V-head `g*num_v_per_k + j`.
+/// `block` is one contiguous V axis (length num_v_heads*head_dim); returns the permuted copy.
+fn reorder_v_axis(block: &[f32], num_v_heads: usize, num_k_heads: usize, head_dim: usize) -> Vec<f32> {
+    let num_v_per_k = num_v_heads / num_k_heads;
+    debug_assert_eq!(block.len(), num_v_heads * head_dim);
+    let mut out = vec![0f32; block.len()];
+    for j in 0..num_v_per_k {
+        for g in 0..num_k_heads {
+            let dst_head = j * num_k_heads + g;
+            let src_head = g * num_v_per_k + j;
+            let dst = dst_head * head_dim;
+            let src = src_head * head_dim;
+            out[dst..dst + head_dim].copy_from_slice(&block[src..src + head_dim]);
+        }
+    }
+    out
+}
+
+/// 1D tensor [num_v_heads*head_dim] (here head_dim is the per-head element count). Thin wrapper.
+fn reorder_v_heads_axis0(data: &[f32], num_v_heads: usize, num_k_heads: usize, head_dim: usize) -> Vec<f32> {
+    reorder_v_axis(data, num_v_heads, num_k_heads, head_dim)
+}
+
+/// Reorder the V-head rows of a row-major [out_rows][in_f] matrix in-place over the row-band
+/// `[row_lo, row_hi)` (which must span `num_v_heads*head_dim` rows). Rows outside the band copy
+/// through unchanged. Used for in_proj_qkv (V band), in_proj_z / a / b (whole band), conv1d (V band).
+fn reorder_rows_v(data: &[f32], num_v_heads: usize, num_k_heads: usize, head_dim: usize,
+                  in_f: usize, row_lo: usize, row_hi: usize) -> Vec<f32> {
+    let num_v_per_k = num_v_heads / num_k_heads;
+    let mut out = data.to_vec();
+    debug_assert_eq!(row_hi - row_lo, num_v_heads * head_dim);
+    for j in 0..num_v_per_k {
+        for g in 0..num_k_heads {
+            let dst_head = j * num_k_heads + g;
+            let src_head = g * num_v_per_k + j;
+            for d in 0..head_dim {
+                let dst_row = row_lo + dst_head * head_dim + d;
+                let src_row = row_lo + src_head * head_dim + d;
+                out[dst_row * in_f..dst_row * in_f + in_f]
+                    .copy_from_slice(&data[src_row * in_f..src_row * in_f + in_f]);
+            }
+        }
+    }
+    out
+}
+
+/// Reorder the V-head COLUMNS of a row-major [out_rows][in_f=value_dim] matrix (out_proj, dim=1).
+/// Column index = V-head*head_dim + d over the whole `value_dim` input axis.
+fn reorder_cols_v(data: &[f32], out_rows: usize, in_f: usize,
+                  num_v_heads: usize, num_k_heads: usize, head_dim: usize) -> Vec<f32> {
+    let num_v_per_k = num_v_heads / num_k_heads;
+    debug_assert_eq!(in_f, num_v_heads * head_dim);
+    let mut out = data.to_vec();
+    for r in 0..out_rows {
+        let base = r * in_f;
+        for j in 0..num_v_per_k {
+            for g in 0..num_k_heads {
+                let dst_head = j * num_k_heads + g;
+                let src_head = g * num_v_per_k + j;
+                for d in 0..head_dim {
+                    out[base + dst_head * head_dim + d] = data[base + src_head * head_dim + d];
+                }
+            }
+        }
+    }
+    out
+}
+
+fn f32_to_le(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v { out.extend_from_slice(&f.to_le_bytes()); }
+    out
+}
+
+/// Resolve a requested ggml name to an HF target (+ optional transform), arch-aware.
+/// Order: per-expert MoE name -> dense plain map -> qwen35 SSM map / norm `+1`.
+pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
+    // 1. Per-expert MoE: blk.{il}.ffn_{gate,up,down}_exps.{e}.weight (gathered one expert at a time).
+    if let Some(rest) = ggml.strip_prefix("blk.") {
+        if let Some((il, suffix)) = rest.split_once('.') {
+            for (tag, proj) in [("ffn_gate_exps.", "gate"), ("ffn_up_exps.", "up"), ("ffn_down_exps.", "down")] {
+                if let Some(e_part) = suffix.strip_prefix(tag) {
+                    if let Some(e) = e_part.strip_suffix(".weight") {
+                        if let Ok(eid) = e.parse::<u32>() {
+                            if let Ok(ilid) = il.parse::<u32>() {
+                                return Some(HfTarget::Plain(hf_expert_name(ilid, eid, proj)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. qwen35 norm +1: every `*norm.weight` EXCEPT linear_attn (ssm_norm). The dense map below
+    //    renames them; for hybrid we must additionally add +1 (qwen.py:302-303). Catch the dense
+    //    norm names here so they take the Transform arm.
+    if cfg.arch.is_hybrid() {
+        if let Some(t) = resolve_hybrid_ssm(ggml, cfg) { return Some(t); }
+        // norm +1 on the dense-mapped norms (attn_norm / ffn_norm / q_norm / k_norm / output_norm).
+        if is_plusone_norm(ggml) {
+            if let Some(hf) = ggml_to_hf(ggml, &cfg.arch) {
+                return Some(HfTarget::Transform { hf, kind: TransformKind::NormPlusOne });
+            }
+        }
+    }
+
+    // 3. Dense plain rename (zero-copy).
+    ggml_to_hf(ggml, &cfg.arch).map(HfTarget::Plain)
+}
+
+/// True for the ggml norm names that get qwen35 `+1` (all norms except ssm_norm/linear_attn.norm).
+fn is_plusone_norm(ggml: &str) -> bool {
+    match ggml {
+        "output_norm.weight" => true,
+        _ => {
+            let Some(rest) = ggml.strip_prefix("blk.") else { return false };
+            let Some((_, suffix)) = rest.split_once('.') else { return false };
+            matches!(suffix,
+                "attn_norm.weight" | "ffn_norm.weight"
+                | "attn_q_norm.weight" | "attn_k_norm.weight"
+                | "post_attention_norm.weight")
+        }
+    }
+}
+
+/// qwen35 linear-attn SSM tensor map (the `blk.{il}.{ssm/attn_qkv/attn_gate}` family). HF prefix is
+/// `model.layers.{il}.linear_attn.` (the `model.language_model.` wrapper is handled by the source's
+/// prefix-fallback). Cited against llama.cpp gguf-py/gguf/tensor_mapping.py + conversion/qwen.py.
+fn resolve_hybrid_ssm(ggml: &str, _cfg: &ModelConfig) -> Option<HfTarget> {
+    let rest = ggml.strip_prefix("blk.")?;
+    let (il, suffix) = rest.split_once('.')?;
+    let la = |t: &str| format!("model.layers.{il}.linear_attn.{t}");
+    let (hf, kind) = match suffix {
+        // matrices with a V-reorder transform (owned f32 buffer)
+        "attn_qkv.weight"   => (la("in_proj_qkv.weight"), TransformKind::QkvVReorderRows),  // tensor_mapping.py:251
+        "attn_gate.weight"  => (la("in_proj_z.weight"),   TransformKind::ZReorderRows),     // :386
+        "ssm_beta.weight"   => (la("in_proj_b.weight"),   TransformKind::AbReorderRows),    // :909
+        "ssm_alpha.weight"  => (la("in_proj_a.weight"),   TransformKind::AbReorderRows),    // :885
+        "ssm_a"             => (la("A_log"),              TransformKind::NegExpReorderHeads), // :846
+        "ssm_dt.bias"       => (la("dt_bias"),            TransformKind::ReorderHeads),      // :831
+        "ssm_conv1d.weight" => (la("conv1d.weight"),      TransformKind::Conv1dSqueezeReorder), // :816
+        "ssm_norm.weight"   => (la("norm.weight"),        TransformKind::Identity),          // :871 (NO +1)
+        "ssm_out.weight"    => (la("out_proj.weight"),    TransformKind::OutReorderCols),    // :880
+        _ => return None,
+    };
+    Some(HfTarget::Transform { hf, kind })
 }
 
 #[cfg(test)]
@@ -103,7 +366,7 @@ mod tests {
 
     #[test]
     fn unmapped_returns_none() {
-        let a = Arch::Qwen35; // hybrid SSM tensors intentionally unmapped
+        let a = Arch::Qwen35; // SSM tensors are NOT in the plain dense map (they go through resolve_ggml)
         assert!(ggml_to_hf("blk.0.ssm_a", &a).is_none());
         assert!(ggml_to_hf("blk.0.attn_qkv.weight", &a).is_none());
         assert!(ggml_to_hf("totally.unknown", &a).is_none());
@@ -113,5 +376,27 @@ mod tests {
     fn expert_names() {
         assert_eq!(hf_expert_name(2, 13, "gate"), "model.layers.2.mlp.experts.13.gate_proj.weight");
         assert_eq!(hf_expert_name(0, 0, "down"), "model.layers.0.mlp.experts.0.down_proj.weight");
+    }
+
+    /// The V-head reorder permutation: HF grouped [0,1, 2,3, ...] -> ggml tiled [0,2,...,1,3,...].
+    /// For nv=4, nk=2, head_dim=1: src heads [0,1,2,3] (grouped g*2+j) -> dst slots j*2+g.
+    /// dst0=src0(g0,j0), dst1=src2(g1,j0), dst2=src1(g0,j1), dst3=src3(g1,j1) => [v0,v2,v1,v3].
+    #[test]
+    fn v_reorder_permutation() {
+        let block = vec![10.0f32, 11.0, 12.0, 13.0]; // 4 heads, head_dim=1
+        let out = reorder_v_axis(&block, 4, 2, 1);
+        assert_eq!(out, vec![10.0, 12.0, 11.0, 13.0]);
+        // identity when nv == nk (num_v_per_k == 1): order unchanged.
+        let id = reorder_v_axis(&block, 4, 4, 1);
+        assert_eq!(id, block);
+    }
+
+    /// reorder_rows_v over a band: a [4 rows x 2 cols] matrix, reorder all 4 rows (nv=4,nk=2,hd=1).
+    #[test]
+    fn v_reorder_rows() {
+        // rows: r0=[0,1] r1=[2,3] r2=[4,5] r3=[6,7]; expect dst order [r0,r2,r1,r3].
+        let data = vec![0.0f32,1.0, 2.0,3.0, 4.0,5.0, 6.0,7.0];
+        let out = reorder_rows_v(&data, 4, 2, 1, 2, 0, 4);
+        assert_eq!(out, vec![0.0,1.0, 4.0,5.0, 2.0,3.0, 6.0,7.0]);
     }
 }

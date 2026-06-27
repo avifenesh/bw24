@@ -304,7 +304,8 @@ __device__ __forceinline__ float deq_nvfp4(const uint8_t* row, int j) {
 }
 
 enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
-             QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7 };
+             QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7,
+             QT_F32 = 8 };
 
 __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     switch (qtype) {
@@ -316,6 +317,9 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
         case QT_IQ4_XS: return deq_iq4_xs(row, j);
         case QT_IQ3_S:  return deq_iq3_s(row, j);
         case QT_NVFP4:  return deq_nvfp4(row, j);
+        // Unquantized f32 weight row (safetensors MoE Path A: experts gathered + dequantized to f32
+        // host-resident, staged verbatim). `row` is the start of one out-row of `in_f` contiguous f32s.
+        case QT_F32:    return ((const float*)row)[j];
     }
     return 0.0f;
 }

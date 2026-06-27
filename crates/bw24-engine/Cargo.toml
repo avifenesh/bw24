@@ -23,6 +23,14 @@ name = "run-hybrid"
 path = "src/bin/run_hybrid.rs"
 
 [[bin]]
+name = "run-safetensors"
+path = "src/bin/run_safetensors.rs"
+
+[[bin]]
+name = "st-vs-gguf"
+path = "src/bin/st_vs_gguf.rs"
+
+[[bin]]
 name = "run-gen"
 path = "src/bin/run_gen.rs"
 

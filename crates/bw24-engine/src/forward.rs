@@ -26,8 +26,10 @@ impl Model {
 
         // x: [T, n_embd] (token-major)
         let mut x = self.embed_tokens(e, tokens)?;
+        // Fixed MoE cache-slot size (0 for a non-MoE dense model). Computed once for the whole run.
+        let max_block = self.max_moe_block();
 
-        for layer in &self.layers {
+        for (il, layer) in self.layers.iter().enumerate() {
             // --- attention block ---
             let mut h = e.zeros(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
@@ -81,15 +83,21 @@ impl Model {
             let mut x1 = e.zeros(t * n_embd)?;
             e.add(&x, &o, &mut x1, t * n_embd)?;
 
-            // --- ffn block ---
+            // --- ffn block: dense SwiGLU or routed MoE (OLMoE) ---
             let mut z = e.zeros(t * n_embd)?;
             e.rms_norm(&x1, layer.ffn_norm.float_data(), &mut z, n_embd, t, eps)?;
-            let n_ff = layer.ffn_gate.out_features();
-            let gate = e.matmul(&layer.ffn_gate, &z, t)?;
-            let up = e.matmul(&layer.ffn_up, &z, t)?;
-            let mut act = e.zeros(t * n_ff)?;
-            e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-            let down = e.matmul(&layer.ffn_down, &act, t)?;
+            let down = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let gate = e.matmul(ffn_gate, &z, t)?;
+                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut act = e.zeros(t * n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) =>
+                    crate::hybrid::HybridModel::moe_ffn(e, m, &z, t, cfg, il as u16, max_block)?,
+            };
 
             // residual 2
             let mut x2 = e.zeros(t * n_embd)?;

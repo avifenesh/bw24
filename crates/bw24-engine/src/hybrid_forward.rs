@@ -3,6 +3,7 @@
 //! llama.cpp src/models/qwen35.cpp node-for-node.
 
 use cudarc::driver::CudaSlice;
+use bw24_gguf::config::ModelConfig;
 use crate::Engine;
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
 
@@ -250,10 +251,23 @@ impl HybridModel {
     /// Routing: host softmax+sort (default) OR the fused router kernel (BW24_FUSED_ROUTER).
     /// Dispatch: stage-every-token into 3 scratch slots (default) OR the SLRU residency cache
     /// (BW24_MOE_CACHE). The cache-HIT weight path is bit-identical to stage-every-token (§B.3).
+    /// Convenience wrapper used by the hybrid trunk/MTP loops: pulls dims + max-block from `self`.
     pub(crate) fn moe_ffn_il(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize, il: u16)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Self::moe_ffn(e, m, z, t, &self.cfg, il, self.max_moe_block())
+    }
+
+    /// MoE FFN (EDGE-1), source-/model-agnostic. z: [T, n_embd] (already post-attention-normed).
+    /// Returns moe_out [T, n_embd]. Node-for-node vs llama.cpp build_moe_ffn. Shared by the hybrid
+    /// (qwen35moe, shared expert present) and the dense-attention MoE (OLMoE, no shared expert) paths;
+    /// `cfg.moe` supplies the dims and the optional shexp fields decide whether step 3 runs.
+    ///
+    /// `il` is the layer index — the residency-cache key prefix. `max_block` is the global max expert
+    /// stride (fixed cache-slot size); pass `self.max_moe_block()`.
+    pub(crate) fn moe_ffn(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
+                          cfg: &ModelConfig, il: u16, max_block: usize)
+               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{PROJ_GATE, PROJ_UP, PROJ_DOWN};
-        let cfg = &self.cfg;
         let moe = cfg.moe.as_ref().unwrap();
         let n_embd = cfg.n_embd as usize;          // 2048 (gate/up in_f, down out_f)
         let n_expert = moe.expert_count as usize;  // 256
@@ -270,7 +284,7 @@ impl HybridModel {
         // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> e.linear.
         let logits = e.matmul(&m.gate_inp, z, t)?;
         // Per-token (sel[8], w[8]) — either fused-router (device top-k) or host softmax+sort.
-        let (sel_all, w_all) = self.moe_route(e, &logits, t, n_expert, n_used)?;
+        let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
 
         let mut moe_out = e.zeros(t * n_embd)?;
 
@@ -281,10 +295,8 @@ impl HybridModel {
         let mut scratch_g = e.alloc_u8(g_len)?;
         let mut scratch_u = e.alloc_u8(u_len)?;
         let mut scratch_d = e.alloc_u8(d_len)?;
-        // The cache slots are FIXED-ADDRESS — they must fit ANY layer's block, so size to the GLOBAL
-        // max across all layers (UD/dynamic GGUFs use different quant types per layer => per-layer
-        // strides differ). Sizing to this layer's max would underflow a slot on a fatter later layer.
-        let max_block = self.max_moe_block();
+        // `max_block` (the GLOBAL max expert stride across all layers) is passed in — the cache slots
+        // are FIXED-ADDRESS and must fit any layer's block (UD/dynamic GGUFs vary quant per layer).
 
         let use_cache = Engine::moe_cache_enabled();
 
@@ -313,12 +325,12 @@ impl HybridModel {
                     // MISS => staged slot) then run the SAME unchanged qmatvec_view from that slot.
                     // The bytes the kernel reads are byte-for-byte the same GGUF block (§B.3); the
                     // only difference between HIT and MISS is whether the memcpy_htod ran.
-                    let gate = self.moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
-                    let up   = self.moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
+                    let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
+                    let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
                     let mut act = e.zeros(n_ff_exp)?;
                     e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
-                    let y = self.moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
+                    let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                     e.axpy_into(&y, w[j], &mut dst, n_embd)?;
                 } else {
@@ -345,22 +357,27 @@ impl HybridModel {
             }
         }
 
-        // 3. SHARED EXPERT (ALWAYS-ON, no routing) on the SAME z.
-        let n_ff_sh = m.gate_shexp.out_features();  // 512
-        let sg_gate = e.matmul(&m.gate_shexp, z, t)?;  // [T, 512]
-        let sg_up = e.matmul(&m.up_shexp, z, t)?;      // [T, 512]
-        let mut sa = e.zeros(t * n_ff_sh)?;
-        e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
-        let sh = e.matmul(&m.down_shexp, &sa, t)?;     // [T, n_embd]
+        // 3. SHARED EXPERT (ALWAYS-ON, no routing) on the SAME z — qwen35moe only. OLMoE and most
+        //    vanilla MoE have NO shared expert (the shexp tensors are absent / `None`); skip it then.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();  // 512
+            let sg_gate = e.matmul(gate_shexp, z, t)?;  // [T, 512]
+            let sg_up = e.matmul(up_shexp, z, t)?;      // [T, 512]
+            let mut sa = e.zeros(t * n_ff_sh)?;
+            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            let sh = e.matmul(down_shexp, &sa, t)?;     // [T, n_embd]
 
-        // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
-        // NOT matmul/out_features (which would index ne[1] out of bounds).
-        let gs = e.linear(z, m.gate_inp_shexp.float_data(), t, n_embd, 1)?;  // [T, 1]
-        let mut g = e.zeros(t)?;
-        e.sigmoid(&gs, &mut g, t)?;
+            // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
+            // NOT matmul/out_features (which would index ne[1] out of bounds).
+            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;  // [T, 1]
+            let mut g = e.zeros(t)?;
+            e.sigmoid(&gs, &mut g, t)?;
 
-        // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate)
-        e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+            // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate)
+            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+        }
 
         Ok(moe_out)
     }
@@ -403,7 +420,7 @@ impl HybridModel {
     /// renorm). BW24_FUSED_ROUTER = the device kernel (§A) which reproduces the same numerics; we
     /// still dtoh the tiny [T,n_used] sel/w buffers (64 B/token vs 1 KB/token) — the host loop
     /// indexes HostExps.bytes on the CPU to choose the DMA source (§A.2 output staging).
-    fn moe_route(&self, e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
+    fn moe_route(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
         if std::env::var("BW24_FUSED_ROUTER").is_ok() {
             let (sel_d, w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
@@ -443,7 +460,7 @@ impl HybridModel {
     /// EDGE-1 §B.3: dispatch one expert projection through the SLRU cache, then run the SAME
     /// `qmatvec_view` from whichever slot it landed in (resident HIT or staged MISS). `x` is the
     /// sliced activation row. `proj` selects the gate/up/down HostExps tensor. Returns y = W_expert @ x.
-    fn moe_cached_gemm(&self, e: &Engine, il: u16, proj: u8, ex: usize, m: &MoeWeights,
+    fn moe_cached_gemm(e: &Engine, il: u16, proj: u8, ex: usize, m: &MoeWeights,
                        max_block: usize, x: &cudarc::driver::CudaView<f32>)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};

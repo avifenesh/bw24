@@ -10,6 +10,7 @@ pub enum Arch {
     Qwen3Moe,
     Qwen35,       // hybrid: gated-deltanet linear-attn + periodic full-attn + MTP
     Qwen35Moe,
+    Olmoe,        // dense full-attention + MoE FFN (no shared expert, no SSM, no MTP)
     Llama,
     Other(String),
 }
@@ -21,6 +22,7 @@ impl Arch {
             "qwen3moe" => Arch::Qwen3Moe,
             "qwen35" => Arch::Qwen35,
             "qwen35moe" => Arch::Qwen35Moe,
+            "olmoe" => Arch::Olmoe,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -34,6 +36,7 @@ impl Arch {
             "qwen3_moe" => "qwen3moe",
             "qwen3_5" | "qwen3_5_text" | "qwen3_next" => "qwen35",
             "qwen3_5_moe" | "qwen3_next_moe" => "qwen35moe",
+            "olmoe" => "olmoe",
             "llama" => "llama",
             other => other,
         };
@@ -43,8 +46,9 @@ impl Arch {
     pub fn is_hybrid(&self) -> bool {
         matches!(self, Arch::Qwen35 | Arch::Qwen35Moe)
     }
+    /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
-        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe)
+        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe)
     }
 }
 
@@ -182,7 +186,8 @@ impl ModelConfig {
             Some(MoeConfig {
                 expert_count: c.num_experts.unwrap_or(0),
                 expert_used_count: c.num_experts_per_tok.unwrap_or(0),
-                expert_ff_length: c.moe_intermediate_size.unwrap_or(0),
+                // OLMoE has no separate `moe_intermediate_size`; its experts use `intermediate_size`.
+                expert_ff_length: c.moe_intermediate_size.unwrap_or(c.intermediate_size),
                 expert_shared_ff_length: c.shared_expert_intermediate_size.unwrap_or(0),
             })
         } else {
@@ -190,13 +195,14 @@ impl ModelConfig {
         };
 
         let ssm = if arch.is_hybrid() {
-            // qwen3_5 linear-attn config keys (text_config). Best-effort; full hybrid safetensors
-            // bring-up is out of scope (no validated checkpoint), so missing keys default to 0.
+            // qwen3_5 linear-attn config keys (text_config). Mirror the GGUF ssm.* fields the hybrid
+            // forward reads: state_size=key_head_dim(128), group_count=num_key_heads(16),
+            // time_step_rank=num_value_heads(32), conv_kernel(4), inner_size=value_head_dim*num_value.
             Some(SsmConfig {
                 conv_kernel: c.linear_conv_kernel_dim.unwrap_or(0),
                 inner_size: c.linear_value_head_dim.unwrap_or(0) * c.linear_num_value_heads.unwrap_or(0),
                 state_size: c.linear_key_head_dim.unwrap_or(0),
-                time_step_rank: 0,
+                time_step_rank: c.linear_num_value_heads.unwrap_or(0),
                 group_count: c.linear_num_key_heads.unwrap_or(0),
             })
         } else {

@@ -1,0 +1,49 @@
+//! Load an HF safetensors checkpoint (config.json + shards) through the source-agnostic seam and
+//! run a forward, printing argmax + top-5 of the last-token logits. Dispatches Model (dense /
+//! dense-attn MoE like OLMoE) vs HybridModel (qwen35 linear-attn + full-attn) on the arch.
+//!
+//! Gate harness for ST-MOE-PLAN: `run-safetensors <hf_dir> [tok ids...]`.
+
+use bw24_engine::Engine;
+use bw24_engine::model::Model;
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::forward::argmax;
+use bw24_gguf::source::{SafetensorsSource, TensorSource};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: run-safetensors <hf_dir> [tok ids...]");
+    let e = Engine::new(0)?;
+    let src = SafetensorsSource::open(std::path::Path::new(&path))?;
+    let cfg = src.config();
+    println!("GPU: {}  arch: {:?}", e.ctx().name()?, cfg.arch);
+
+    let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+    let toks = if toks.is_empty() { vec![1u32, 2, 3, 4] } else { toks };
+    println!("tokens: {toks:?}");
+
+    let logits = if cfg.arch.is_hybrid() {
+        let model = HybridModel::load_from_source(&e, &src)?;
+        let full = model.cfg.n_full_attn_layers();
+        println!("loaded hybrid: n_layer={} ({} full-attn, {} linear) n_embd={} n_head={}/{} head_dim={} n_vocab={}",
+            model.cfg.n_layer, full, model.cfg.n_layer - full, model.cfg.n_embd,
+            model.cfg.n_head, model.cfg.n_head_kv, model.cfg.head_dim_k, model.cfg.n_vocab);
+        model.forward_last(&e, &toks)?
+    } else {
+        let model = Model::load_dense_from_source(&e, &src)?;
+        let moe = model.cfg.moe.as_ref().map(|m| format!("MoE {}x{}/tok", m.expert_count, m.expert_used_count))
+            .unwrap_or_else(|| "dense".into());
+        println!("loaded {moe}: n_layer={} n_embd={} n_head={}/{} head_dim={} n_ff={} n_vocab={}",
+            model.cfg.n_layer, model.cfg.n_embd, model.cfg.n_head, model.cfg.n_head_kv,
+            model.cfg.head_dim_k, model.cfg.n_ff, model.cfg.n_vocab);
+        model.forward_last(&e, &toks)?
+    };
+
+    let am = argmax(&logits);
+    let mut idx: Vec<usize> = (0..logits.len()).collect();
+    idx.sort_unstable_by(|&a, &b| logits[b].total_cmp(&logits[a]));
+    let bad = logits.iter().filter(|v| !v.is_finite()).count();
+    println!("argmax token = {am}  logit = {:.4}  non-finite={bad}/{}", logits[am], logits.len());
+    println!("top-5: {:?}", idx[..5].iter().map(|&i| (i, logits[i])).collect::<Vec<_>>());
+    assert_eq!(bad, 0, "non-finite logits — forward is broken");
+    Ok(())
+}
