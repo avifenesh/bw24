@@ -446,6 +446,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- PERF-3 MMVQ (warp-per-row decode) vs dp4a matvec: BIT-EQUIVALENCE gate. ---
+    // The _mmvq kernels lift the dequant body VERBATIM from _dp4a; only layout (warp-per-row) +
+    // reduction (warp-only shfl) change -> int sumi identical, only f32 reduction-order rounding
+    // differs. Require rel < 1e-3. m=1 (decode regime) across in_f ∈ {model shapes} and out_f
+    // small + 4096. Q8_0/Q4_K/Q6_K on the model-path arg; NVFP4 on the 9B model below.
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        let mmvq_cases: [(&str, i32, &str); 5] = [
+            ("blk.0.ffn_gate.weight",  bw24_engine::QT_Q8_0,  "q8_0"),
+            ("blk.0.attn_qkv.weight",  bw24_engine::QT_Q8_0,  "q8_0"),
+            ("blk.3.attn_q.weight",    bw24_engine::QT_Q4_K,  "q4_K"),
+            ("blk.0.attn_v.weight",    bw24_engine::QT_Q6_K,  "q6_K"),
+            ("output.weight",          bw24_engine::QT_Q6_K,  "q6_K"),
+        ];
+        for (tname, want_qt, sel) in mmvq_cases {
+            let t = match g.find(tname) { Some(t) => t, None => continue };
+            let gt = match t.ggml_type {
+                GgmlType::Q8_0 => bw24_engine::QT_Q8_0, GgmlType::Q4_K => bw24_engine::QT_Q4_K,
+                GgmlType::Q6_K => bw24_engine::QT_Q6_K, GgmlType::NVFP4 => bw24_engine::QT_NVFP4,
+                _ => continue,
+            };
+            if gt != want_qt { continue; }
+            if t.ne.len() > 2 { continue; } // skip 3D MoE expert tensors
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            // m=1 decode regime (the path matmul_pre routes); also m=2 to exercise blockIdx.y>0.
+            for mm in [1usize, 2] {
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 101) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let ydp = match sel {
+                    "q8_0" => e.qmatvec_q8_0_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?,
+                    "q4_K" => e.qmatvec_q4_K_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?,
+                    "q6_K" => e.qmatvec_q6_K_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?,
+                    _ => unreachable!(),
+                };
+                let ya = e.dtoh(&ydp)?;
+                let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes)?)?;
+                let d = maxdiff(&ya, &yb);
+                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = d / scale;
+                println!("MMVQ {tname} [{:?}] m={mm}: rel={rel:.2e} {}", t.ggml_type,
+                         if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // NVFP4 MMVQ vs dp4a on the 9B model (in_f%64; macro-scale skipped in both raw paths).
+    {
+        use bw24_gguf::{GgufFile, GgmlType};
+        const GGUF_9B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
+        if std::path::Path::new(GGUF_9B).exists() {
+            let g = GgufFile::open(GGUF_9B)?;
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let wd = e.htod_bytes(raw)?;
+                for mm in [1usize, 2] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 111) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?)?;
+                    let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let d = maxdiff(&ya, &yb);
+                    let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("MMVQ blk.0.ffn_gate.weight [NVFP4] m={mm}: rel={rel:.2e} {}",
+                             if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+
     // --- FlashAttention prefill + decode vs CPU SDPA oracle (head_dim 256, GQA 16/4, causal) ---
     {
         let (hd, nh, nhkv) = (256usize, 16usize, 4usize);

@@ -380,6 +380,202 @@ __device__ __forceinline__ int get_int_b2(const void* p) {
     return (int)u[0] | ((int)u[1] << 16);
 }
 
+// ============================ Stage-B MMVQ (warp-per-row decode) ============================
+// PERF-3 (DECODE-GEMV-PLAN): warp-per-row layout matching llama.cpp mmvq.cu. block=(32,ROWS,1):
+// one WARP (threadIdx.y) owns one output row. Reduction is warp-only __shfl_xor_sync (no smem,
+// no __syncthreads — removes the cross-warp barrier from the m=1 critical path). The per-element
+// DEQUANT BODIES are LIFTED VERBATIM from the matching _dp4a kernels (same get_int_b2/codebook
+// math), so the int sumi is bit-for-bit identical; only the layout + reduction order change.
+// ROWS_PER_BLOCK = 4 (128 threads, 4 independent rows in flight) is llama's GENERIC ncols_dst=1.
+#define BW24_MMVQ_ROWS 4
+
+// Warp-only reduce: full-warp shfl-xor (butterfly), all lanes hold the sum. No smem/barrier.
+__device__ __forceinline__ float warp_reduce_sum(float v) {
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) v += __shfl_xor_sync(0xffffffff, v, off);
+    return v;
+}
+
+// ----- Q8_0 warp-per-row MMVQ. Body lifted from qmatvec_q8_0_dp4a (loop @ ~line 398). -----
+extern "C" __global__ void qmatvec_q8_0_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;   // this warp's output row
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;                              // 0..31
+    int nblk = in_f / 32;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nblk;
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {        // per-warp contiguous stride (32 lanes)
+        const unsigned char* wb = wrow + blk * 34;
+        float dw = half_to_float(*(const unsigned short*)wb);   // 2-byte aligned OK
+        const unsigned char* wq = wb + 2;                       // qs: 2-byte aligned -> get_int_b2
+        const int* aq4 = (const int*)(arow + blk * 32);         // 32-aligned int* OK
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++)
+            sumi = dp4a(get_int_b2(wq + k * 4), aq4[k], sumi);
+        acc += dw * adrow[blk] * (float)sumi;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// ----- Q4_K warp-per-row MMVQ. Body lifted from qmatvec_q4_K_dp4a (loop @ ~line 427). -----
+extern "C" __global__ void qmatvec_q4_K_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 144;
+        float d_sb    = half_to_float(*(const unsigned short*)b);
+        float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+        const unsigned char* scales = b + 4;
+        const unsigned char* qs     = b + 16;
+        unsigned char sc, mn;
+        if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+        else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+               mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+        int chunk = grp >> 1;
+        const int* q4 = (const int*)(qs + chunk * 32);          // 4-byte aligned
+        bool hi = (grp & 1);
+        const int* aq4 = (const int*)(arow + (size_t)g * 32);
+        int sumi_d = 0, sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            int raw = q4[k];
+            int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+            int a = aq4[k];
+            sumi_d   = dp4a(wpack, a, sumi_d);
+            sumi_sum = dp4a(0x01010101, a, sumi_sum);
+        }
+        float d8 = adrow[g];
+        acc += d_sb   * (float)((int)sc * sumi_d) * d8
+             - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// ----- Q6_K warp-per-row MMVQ. Body lifted from qmatvec_q6_K_dp4a (loop @ ~line 476). -----
+extern "C" __global__ void qmatvec_q6_K_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 210;
+        const unsigned char* ql = b;
+        const unsigned char* qh = b + 128;
+        const signed char*   scales = (const signed char*)(b + 192);
+        float d = half_to_float(*(const unsigned short*)(b + 208));
+        int n   = grp >> 2;
+        int run = grp & 3;
+        const unsigned char* qlh = ql + n * 64;
+        const unsigned char* qhh = qh + n * 32;
+        const signed char*   scn = scales + n * 8;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        int is0 = run * 2 + 0;
+        int is1 = run * 2 + 1;
+        int sumi0 = 0, sumi1 = 0;
+        int ql_off = (run & 1) ? 32 : 0;
+        int ql_hi  = (run >= 2);
+        int qh_sh  = run * 2;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            unsigned int vpack = 0;
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int il = k * 4 + e;
+                int ql_bits = ql_hi ? (qlh[il + ql_off] >> 4) : (qlh[il + ql_off] & 0xF);
+                int qh_bits = (qhh[il] >> qh_sh) & 3;
+                unsigned int w = (unsigned int)(ql_bits | (qh_bits << 4));   // 0..63
+                vpack |= (w & 0xff) << (e * 8);
+            }
+            int wpack = __vsubss4((int)vpack, 0x20202020);   // subtract 32 per byte (signed sat)
+            int a = aq4[k];
+            if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
+            else       sumi1 = dp4a(wpack, a, sumi1);
+        }
+        float d8 = adrow[g];
+        acc += d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// ----- NVFP4 warp-per-row MMVQ. Body lifted from qmatvec_nvfp4_dp4a (loop @ ~line 674). -----
+extern "C" __global__ void qmatvec_nvfp4_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;          // which 64-elem block_nvfp4 (36 bytes)
+        int whichHalf = g & 1;      // 0 -> sub 0,1 ; 1 -> sub 2,3
+        const unsigned char* b = wrow + (long)sblk * 36;
+        const unsigned char* d_bytes = b;
+        const unsigned char* qs = b + 4;
+        int s0 = whichHalf * 2;
+        const signed char* aqb = arow + (size_t)g * 32;
+        const int* aq4 = (const int*)aqb;
+        float partial = 0.0f;
+        #pragma unroll
+        for (int sl = 0; sl < 2; sl++) {
+            int s = s0 + sl;
+            const unsigned char* qss = qs + s * 8;
+            int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
+            int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+            int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+            int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+            int base = sl * 4;
+            int sumi = 0;
+            sumi = dp4a(va.x, aq4[base + 0], sumi);
+            sumi = dp4a(vb.x, aq4[base + 1], sumi);
+            sumi = dp4a(va.y, aq4[base + 2], sumi);
+            sumi = dp4a(vb.y, aq4[base + 3], sumi);
+            partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
+        }
+        acc += adrow[g] * partial;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 // Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).
 // W: block_q8_0 rows (34 bytes/block). aq: int8 [m,in]; ad: f32 [m, in/32].
 // grid (out, m); block 128 threads (4 warps), each warp strides the in/32 blocks.

@@ -430,6 +430,21 @@ impl Engine {
         // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
         // behind BW24_FAST until it passes the isolation gate vs Stage-A.
         let fast = std::env::var("BW24_FAST").is_ok();
+        // PERF-3 decode-GEMV: m=1 warp-per-row MMVQ (BW24_MMVQ). The big decode matvecs reach
+        // `matmul` directly (ffn_down, lm_head output, wo), so route them here too — not only the
+        // matmul_pre siblings. qmatvec_mmvq_raw quantizes the activation internally (q8_1) like the
+        // _fast paths; the NVFP4 macro-scale is applied by the `scale != 1.0` block below.
+        if m == 1 && fast {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, .. } = w {
+                if self.mmvq_supports(*qtype) {
+                    let mut y = self.qmatvec_mmvq_raw(bytes, x, m, in_f, out_f, *qtype, *row_bytes)?;
+                    if let GpuTensor::Quant { scale, .. } = w {
+                        if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
+                    }
+                    return Ok(y);
+                }
+            }
+        }
         let mut y = match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
                 self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
@@ -495,6 +510,12 @@ impl Engine {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
             _ => unreachable!("uses_q8_1_fast guaranteed Quant"),
         };
+        // PERF-3 decode-GEMV: warp-per-row MMVQ for the m=1 decode arm, gated behind BW24_MMVQ.
+        // Only the 4 daily-hot dtypes have an _mmvq kernel (Q8_0/Q4_K/Q6_K/NVFP4); Q5_K/Q3_K/IQ4_XS
+        // keep _dp4a (the oracle/fallback). Bit-equivalent to _dp4a up to f32 reduction order.
+        if m == 1 && self.mmvq_supports(qtype) {
+            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale);
+        }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
             QT_Q6_K => "qmatvec_q6_K_dp4a", QT_Q5_K => "qmatvec_q5_K_dp4a",
@@ -511,6 +532,51 @@ impl Engine {
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
         Ok(y)
+    }
+
+    /// True if `qtype` has a warp-per-row MMVQ decode kernel AND BW24_MMVQ is set. Only the 4
+    /// daily-hot dtypes (Q8_0, Q4_K, Q6_K, NVFP4) — others keep the _dp4a matvec (oracle/fallback).
+    pub fn mmvq_supports(&self, qtype: i32) -> bool {
+        if std::env::var("BW24_MMVQ").is_err() { return false; }
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_NVFP4)
+    }
+
+    /// PERF-3 warp-per-row MMVQ launcher (decode m=1 hot path). block=(32,ROWS_PER_BLOCK,1):
+    /// one warp owns one output row, warp-only __shfl reduction (no smem barrier). Bit-equivalent
+    /// to qmatvec_*_dp4a up to f32 reduction order. Pre-quantized q8_1 activation (aq,ad). NVFP4
+    /// per-tensor macro-scale applied post (scale==1.0 for other dtypes -> no-op).
+    pub fn qmatvec_mmvq(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                        m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
+        let name = match qtype {
+            QT_Q8_0 => "qmatvec_q8_0_mmvq", QT_Q4_K => "qmatvec_q4_K_mmvq",
+            QT_Q6_K => "qmatvec_q6_K_mmvq", QT_NVFP4 => "qmatvec_nvfp4_mmvq",
+            _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
+        };
+        let f = self.func(name);
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK, m as u32, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row
+            shared_mem_bytes: 0,                  // warp-only reduce at m=1
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        Ok(y)
+    }
+
+    /// Test entry for the kernel_check bit-equivalence gate: run the warp-per-row MMVQ directly
+    /// from raw weight bytes (quantize the f32 activation `x` to q8_1 internally). NVFP4 per-tensor
+    /// macro-scale is NOT applied (caller compares bare, like qmatvec_*_fast). Mirrors qmatvec_gemm_raw.
+    pub fn qmatvec_mmvq_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                            out_f: usize, qtype: i32, row_bytes: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0)
     }
 
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
