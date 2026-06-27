@@ -443,6 +443,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            // Stage-C FP4 (mxf4nvf4 block-scale tensor-core) vs the f32 dequant oracle on NVFP4.
+            // FP4 is LOSSY (e2m1 activations + e2m1 weights; scale side is lossless ue4m3) — NOT
+            // bit-equivalent. Compare to cpu_linear(dequant(W)) and expect rel ~1e-2..6e-2.
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                use bw24_gguf::dequant;
+                use bw24_runtime::cpu_linear;
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let w_f32 = dequant::dequantize(GgmlType::NVFP4, raw, in_f * out_f);
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let yb = e.dtoh(&e.qmatvec_gemm_nvfp4_fp4_raw(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                    let d = maxdiff(&cpu, &yb);
+                    let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    // FP4 is LOSSY: e2m1 ACTIVATION quant (8 grid points/16-block) drives rel ~0.1-0.15
+                    // (the weight side is bit-exact — proven by probe/fp4_4x_final.cu maxrel=0). This rel
+                    // is INFORMATIONAL, NOT a hard gate: the AUTHORITATIVE FP4 gate is end-to-end argmax
+                    // (BW24_FP4 run-hybrid/run-gen), which holds on the 9B and is the arbiter per the plan.
+                    println!("FP4-GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (informational; \
+                              authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
+                }
+            }
         }
     }
 

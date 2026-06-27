@@ -319,6 +319,65 @@ impl Engine {
         Ok((q, d))
     }
 
+    /// Stage-C FP4: quantize activation [m,in] f32 -> e2m1 nibbles (aq4: u32 [m, in/8]) + per-16
+    /// UE4M3 scale (ad4: u8 [m, in/16]), the layout the mxf4nvf4 block-scale GEMM B-operand wants.
+    /// in_f must be a multiple of 64 (one NVFP4 K-block). One thread per (token, 16-block).
+    pub fn quantize_fp4_act(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
+                     -> Result<(CudaSlice<u32>, CudaSlice<u8>), Box<dyn std::error::Error>> {
+        let f = self.func("quantize_fp4_act");
+        let nb16 = in_f / 16;
+        let mut aq4 = self.gpu.stream.alloc_zeros::<u32>(m * (in_f / 8))?;
+        let mut ad4 = self.gpu.stream.alloc_zeros::<u8>(m * nb16)?;
+        let cfg = LaunchConfig::for_num_elems((m * nb16) as u32);
+        let (inf, mi) = (in_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut aq4).arg(&mut ad4).arg(&inf).arg(&mi);
+        unsafe { b.launch(cfg)?; }
+        Ok((aq4, ad4))
+    }
+
+    /// Stage-C FP4 GEMM (NVFP4 weights): native mxf4nvf4 block-scale tensor-core matmul. Feeds raw
+    /// e2m1 weight nibbles + raw UE4M3 micro-scales directly to mma.sync.m16n8k64 (762 TFLOP/s peak,
+    /// 3.5x int8). Activation `x` is quantized to FP4 e2m1 here. NVFP4 per-tensor macro-scale applied
+    /// post (scale==1.0 -> no-op). `bytes` = raw NVFP4 weight rows. Used by the BW24_FP4 prefill path.
+    pub fn qmatvec_gemm_nvfp4_fp4(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                  in_f: usize, out_f: usize, row_bytes: usize, scale: f32)
+                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 64 == 0, "FP4 GEMM requires in_f % 64 == 0, got {in_f}");
+        let (aq4, ad4) = self.quantize_fp4_act(x, m, in_f)?;
+        let mut y = self.fp4_gemm_launch(bytes, &aq4, &ad4, m, in_f, out_f, row_bytes)?;
+        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        Ok(y)
+    }
+
+    /// Shared mxf4 GEMM launch (pre-quantized FP4 activation aq4/ad4). Same CTA tile as the int8 GEMM
+    /// (BM=64 rows x BN=128 tokens, 4 warps). No macro-scale applied here.
+    fn fp4_gemm_launch(&self, bytes: &CudaSlice<u8>, aq4: &CudaSlice<u32>, ad4: &CudaSlice<u8>,
+                       m: usize, in_f: usize, out_f: usize, row_bytes: usize)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("qmatvec_gemm_nvfp4_fp4");
+        let mut y = self.gpu.stream.alloc_zeros::<f32>(m * out_f)?;
+        const BM: u32 = 64; const BN: u32 = 128;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(aq4).arg(ad4).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Test entry (kernel_check): run the FP4 GEMM from raw bytes; NO macro-scale (caller compares bare).
+    pub fn qmatvec_gemm_nvfp4_fp4_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                      in_f: usize, out_f: usize, row_bytes: usize)
+                                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 64 == 0, "FP4 GEMM requires in_f % 64 == 0, got {in_f}");
+        let (aq4, ad4) = self.quantize_fp4_act(x, m, in_f)?;
+        self.fp4_gemm_launch(bytes, &aq4, &ad4, m, in_f, out_f, row_bytes)
+    }
+
     /// Stage-B: Q8_0 weight x q8_1 activation int8 dp4a matmul. y[m,out]=x@W^T.
     pub fn qmatvec_q8_0_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -511,6 +570,11 @@ impl Engine {
         // re-read. Gated behind BW24_GEMM; only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's
         // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
         const GEMM_M_THRESHOLD: usize = 16;
+        // Stage-C FP4: native mxf4 block-scale GEMM (BW24_FP4) for NVFP4 weights — the BEAT-llama
+        // lever (762 TFLOP vs int8 219). Prefill only (m>=16); takes precedence over the int8 GEMM.
+        if m >= GEMM_M_THRESHOLD {
+            if let Some(y) = self.try_fp4_gemm(w, x, m, in_f, out_f)? { return Ok(y); }
+        }
         if m >= GEMM_M_THRESHOLD && self.gemm_supports(w) {
             let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
             return self.qmatvec_gemm(w, &aq, &ad, m);
@@ -586,6 +650,13 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
+        // from q8_1), so re-quantize from x_fallback rather than reuse aq/ad. NVFP4 only, m>=16.
+        if m >= 16 {
+            if let Some(y) = self.try_fp4_gemm(w, x_fallback, m, w.in_features(), w.out_features())? {
+                return Ok(y);
+            }
+        }
         // Prefill GEMM root fix: if T>1 and the dtype has a GEMM kernel, batch via tensor cores
         // (reuses the already-quantized aq/ad — no extra quantize). m=1 falls through to dp4a.
         if m >= 16 && self.gemm_supports(w) {
@@ -665,6 +736,23 @@ impl Engine {
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0)
+    }
+
+    /// Stage-C FP4 gate (BW24_FP4): if `w` is an NVFP4 weight with in_f%64==0, run the native mxf4
+    /// block-scale GEMM and apply the per-tensor macro-scale, returning Some(y). Else None (caller
+    /// falls through to the int8 GEMM / dp4a). Strict opt-in over the proven int8 path; m>=16 only.
+    fn try_fp4_gemm(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize,
+                    in_f: usize, out_f: usize)
+                    -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if std::env::var("BW24_FP4").is_err() { return Ok(None); }
+        if let GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } = w {
+            if *qtype == QT_NVFP4 && in_f % 64 == 0 {
+                let y = self.qmatvec_gemm_nvfp4_fp4(bytes, x, m, in_f, out_f, *row_bytes, *scale)?;
+                return Ok(Some(y));
+            }
+        }
+        Ok(None)
     }
 
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).

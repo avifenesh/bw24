@@ -177,6 +177,16 @@ __device__ __forceinline__ float ue4m3_to_f32_d(unsigned char x) {
     float raw = (exp == 0) ? ldexpf(man, -9) : ldexpf(1.0f + man / 8.0f, exp - 7);
     return raw * 0.5f;
 }
+// HW UE4M3 -> f32 (OCP E4M3, bias 7, NO x0.5). This is what the mxf4nvf4 block_scale MMA decodes
+// its sa/sb operand as (verified by probe/fp4_4x_final.cu, maxrel=0). The GGUF NVFP4 micro-scale
+// byte fed RAW here decodes to exactly 2x the GGUF value — which is cancelled by the e2m1 nibble
+// being GGUF-codebook/2 (GGUF dequant = (2*e2m1_hw)*(0.5*ue4m3_hw) = e2m1_hw*ue4m3_hw). So GGUF
+// scale bytes + GGUF e2m1 nibbles fed verbatim == GGUF dequant exactly. (used by quantize_fp4_act).
+__device__ __forceinline__ float ue4m3_to_f32_hw(unsigned char x) {
+    int   exp = (x >> 3) & 0xF;
+    float man = (float)(x & 0x7);
+    return (exp == 0) ? ldexpf(man / 8.0f, -6) : ldexpf(1.0f + man / 8.0f, exp - 7);
+}
 
 // ---- Q5_K f32 deq (oracle for the dp4a kernel) ----
 __device__ __forceinline__ float deq_q5_k(const uint8_t* row, int j) {
@@ -358,6 +368,82 @@ extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed cha
     signed char* oq = out_q + (size_t)t * in_f + b * 32;
     for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(xr[j] * id);
     out_d[(size_t)t * nblk_row + b] = d;
+}
+
+// ================= Stage-C: FP4 (e2m1) activation quantize for the mxf4 block-scale GEMM =========
+// Quantize an [m, in] f32 activation to NVFP4-style e2m1 nibbles + per-16 UE4M3 scale, in the EXACT
+// layout the mxf4nvf4 GEMM B-fragment gather wants (verified by probe/fp4_4x_*.cu):
+//   aq4 : u32 [m][in_f/8]  — nibble (k&7) of word (k/8) = e2m1 code of activation element k
+//   ad4 : u8  [m][in_f/16] — one UE4M3 scale byte per 16-elem K block
+// e2m1 magnitudes: {0,0.5,1,1.5,2,3,4,6}; HW value of a nibble == kvalues here are GGUF-codebook
+// (=2x HW e2m1); but for the B operand we feed RAW e2m1 nibbles whose HW value is the GGUF/2. So we
+// must encode x/d to the *HW* e2m1 grid (max 6.0). The UE4M3 d is chosen so amax/d <= 6.
+// HW UE4M3 (OCP E4M3, bias 7, NO x0.5): enc/dec below. Scale stored as the HW byte (NOT the GGUF
+// 0.5x form) — the GEMM treats sb as HW UE4M3.
+__device__ __forceinline__ int e2m1_encode_hw(float v) {
+    // nearest of the 8 signed e2m1 grid points {0,.5,1,1.5,2,3,4,6}. sign bit = bit3.
+    float a = fabsf(v);
+    int code;
+    // round-to-nearest on the irregular grid
+    if (a < 0.25f) code = 0;            // 0
+    else if (a < 0.75f) code = 1;       // 0.5
+    else if (a < 1.25f) code = 2;       // 1.0
+    else if (a < 1.75f) code = 3;       // 1.5
+    else if (a < 2.5f) code = 4;        // 2.0
+    else if (a < 3.5f) code = 5;        // 3.0
+    else if (a < 5.0f) code = 6;        // 4.0
+    else code = 7;                      // 6.0
+    if (code != 0 && v < 0.0f) code |= 0x8;
+    return code;
+}
+// HW UE4M3 encode of a NON-NEGATIVE scale s: round to nearest E4M3 (bias 7, no x0.5). Clamp [2^-9, 448].
+__device__ __forceinline__ unsigned char ue4m3_encode_hw(float s) {
+    if (!(s > 0.0f)) return 0;
+    s = fminf(s, 448.0f);
+    int e; float m = frexpf(s, &e);    // s = m*2^e, m in [0.5,1)
+    // normalized: s = 2^(E-7)*(1+man/8), E = exponent field (1..15), man 0..7
+    int E = e - 1 + 7;                 // since m in [0.5,1): s = 2^(e-1)*(2m), 2m in [1,2)
+    float frac = 2.0f * m - 1.0f;      // in [0,1)
+    if (E <= 0) {                      // subnormal: s = (man/8)*2^-6
+        float q = s * 64.0f * 8.0f;    // man = round(s / 2^-9)
+        int man = (int)(q + 0.5f);
+        if (man > 7) man = 7;
+        return (unsigned char)man;     // E=0
+    }
+    int man = (int)(frac * 8.0f + 0.5f);
+    if (man == 8) { man = 0; E += 1; }
+    if (E > 15) { E = 15; man = 7; }
+    return (unsigned char)((E << 3) | man);
+}
+// One CTA-thread per (token, 16-block). amax over 16 -> UE4M3 d (so amax/d ~ 6) -> e2m1 encode.
+extern "C" __global__ void quantize_fp4_act(const float* __restrict__ x, unsigned* __restrict__ aq4,
+                                            unsigned char* __restrict__ ad4, int in_f, int m) {
+    int b16 = blockIdx.x * blockDim.x + threadIdx.x;  // global 16-block index
+    int nb16_row = in_f / 16;
+    if (b16 >= m * nb16_row) return;
+    int t = b16 / nb16_row;
+    int blk = b16 % nb16_row;
+    const float* xr = x + (size_t)t * in_f + blk * 16;
+    float amax = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 16; j++) amax = fmaxf(amax, fabsf(xr[j]));
+    // choose d so that amax/d == 6 (the e2m1 max). d ~ amax/6, quantized to UE4M3.
+    float dwant = amax > 0.0f ? amax / 6.0f : 0.0f;
+    unsigned char db = ue4m3_encode_hw(dwant);
+    float d = ue4m3_to_f32_hw(db);
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    ad4[(size_t)t * nb16_row + blk] = db;
+    // encode 16 nibbles into two u32 words (k/8 within the 16-block -> word blk*2 + (k/8)).
+    #pragma unroll
+    for (int half = 0; half < 2; half++) {
+        unsigned w = 0;
+        #pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int code = e2m1_encode_hw(xr[half * 8 + n] * id);
+            w |= ((unsigned)code) << (4 * n);
+        }
+        aq4[((size_t)t * (in_f / 8)) + blk * 2 + half] = w;
+    }
 }
 
 // Block reduce shared by the dp4a MMVQ kernels: full-warp shfl, then warp0 sums the per-warp

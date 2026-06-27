@@ -865,3 +865,180 @@ extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4(
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel2<GQT_NVFP4>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
+
+// ===================================================================== //
+//  STAGE-C: native FP4 block-scale GEMM for NVFP4 weights (sm_120a).     //
+//  mma.sync.m16n8k64.kind::mxf4nvf4.block_scale.scale_vec::4X .ue4m3     //
+//  — 762 TFLOP/s peak (vs int8 219). Feeds the RAW e2m1 weight nibbles + //
+//  RAW UE4M3 micro-scales DIRECTLY to the tensor core: NO dequant-to-int8//
+//  (drops gtable16). The GGUF e2m1 codebook value = 2x the HW e2m1, and  //
+//  GGUF UE4M3 = 0.5x the HW UE4M3, so feeding both RAW reproduces the    //
+//  GGUF dequant EXACTLY (factors cancel). Activations are FP4 e2m1 too   //
+//  (quantize_fp4_act), per-16 UE4M3 scale. K-step = one 64-elem NVFP4    //
+//  block (BK=64). All fragment/scale layouts verified on-device by       //
+//  probe/fp4_4x_final.cu (maxrel=0 vs f32 oracle).                       //
+//
+//  Layout facts (probe-verified, sm_120a):
+//   A-frag (lane L): reg0=row L/4 K[(L%4)*8..+7]; reg1=row L/4+8 same K;
+//     reg2=row L/4 K[+32..+7]; reg3=row L/4+8 K[+32]. nibble n -> K base+n.
+//   B-frag (lane L): col L/4; reg0=K[(L%4)*8], reg1=K[+32]; nibble n->K+n.
+//   SFA(4X): 4 ue4m3 bytes = K16 blocks 0..3. Lane L%4==2 supplies row L/4;
+//            L%4==3 supplies row L/4+8.
+//   SFB(4X): 4 ue4m3 bytes = K16 blocks 0..3. Lane L%4==1 supplies col L/4.
+// ===================================================================== //
+__device__ __forceinline__ void mma_mxf4_m16n8k64(
+        float (&d)[4], const unsigned (&a)[4], const unsigned (&b)[2],
+        unsigned sa, unsigned sb) {
+    asm volatile(
+      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+      ".f32.e2m1.e2m1.f32.ue4m3 "
+      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,1},{%11},{0,1};"
+      : "+f"(d[0]),"+f"(d[1]),"+f"(d[2]),"+f"(d[3])
+      : "r"(a[0]),"r"(a[1]),"r"(a[2]),"r"(a[3]),"r"(b[0]),"r"(b[1]),"r"(sa),"r"(sb));
+}
+
+// The GGUF NVFP4 36-byte block (4 ue4m3 scale bytes + 32 qs e2m1 bytes) is repacked into the
+// A-fragment-friendly smem form INLINE in the kernel's `fetch` (from a register copy, not per-byte
+// global loads). Layout: word gi (0..7) holds 8 e2m1 nibbles for K-group gi<4? gi*8 : (gi-4)*8+32
+// (i.e. gi 0..3 -> K {0,8,16,24}; gi 4..7 -> K {32,40,48,56}; nibble n -> K base+n). The 4 ue4m3
+// micro-scale bytes are fed RAW. GGUF qs: element k -> sub-block s=k/16, within=k%16, byte
+// qs[s*8+(within&7)], low nibble if within<8 else high; a K-group g (g%8==0) is all-low (g%16==0) or
+// all-high (g%16==8) of qs[s*8..s*8+7]. (Layout verified on-device by probe/fp4_4x_final.cu.)
+
+// y[T, out_f] = aq4[T, in_f](e2m1) . W[out_f, in_f](NVFP4 e2m1)^T, per-16 UE4M3 block scales applied
+// inside the MMA. Token-major output. BK=64 (one NVFP4 block / K-step). NSTAGE=2 cp.async ring: the
+// next K-block's RAW 36-byte weight rows + the activation words/scales are async-copied to smem one
+// step ahead, then the A-fragment repack (nvfp4_repack_block) runs from RESIDENT smem — off the
+// global-read critical path (same discipline as the int8 GEMM's FIX-A pre-decode). The weight repack
+// (e2m1 nibble gather) is amortized 1/(BN tokens) since the staged tile feeds all 128 tokens' mma.
+#define FP4_NS 2
+__device__ void qmatvec_gemm_mxf4_kernel(
+        const unsigned char* __restrict__ W, const unsigned* __restrict__ aq4,
+        const unsigned char* __restrict__ ad4, float* __restrict__ y,
+        int in_f, int out_f, int T, long row_bytes)
+{
+    const int rowtile = blockIdx.x * BM;
+    const int toktile = blockIdx.y * BN;
+    const int warp = threadIdx.y;
+    const int lane = threadIdx.x;
+    const int tid  = warp * WARP_SZ + lane;
+    const int nblk64 = in_f / 64;                 // K-blocks (64-elem NVFP4 blocks)
+    const int aw_per_tok = in_f / 8;              // u32 words per token in aq4
+    const int as_per_tok = in_f / 16;             // ue4m3 scale bytes per token in ad4
+
+    // Repacked staged tiles (cp.async-free ring): A-fragment-ready weight nibbles (8 u32 groups/row)
+    // + 1 u32 of 4 packed ue4m3 scales/row; activation 8 u32 groups + 4 scale bytes/token. The weight
+    // REPACK (e2m1 nibble gather) is done ONCE per row at stage time (not per lane in the mma loop),
+    // amortized across all BN tokens — the heavy ALU leaves the mma critical path.
+    __shared__ unsigned      sWq[FP4_NS][BM][8];    // 8 u32 groups / row (A-fragment-ready)
+    __shared__ unsigned      sWsc[FP4_NS][BM];      // 4 ue4m3 packed into 1 u32 / row
+    __shared__ unsigned      sAq[FP4_NS][BN][8];    // 8 u32 groups / token
+    __shared__ unsigned char sAsc[FP4_NS][BN][4];   // 4 ue4m3 / token
+
+    float facc[BN / 8][4];
+    #pragma unroll
+    for (int nt = 0; nt < BN / 8; nt++)
+        #pragma unroll
+        for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
+
+    // stage + repack K-block g into ring slot s. Weight: coalesced u32 reads of the 36B block into
+    // registers (9 u32/row), then repack the e2m1 nibbles from REGISTERS (no per-byte global loads).
+    auto fetch = [&](int s, int g) {
+        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+            int o = rowtile + r;
+            if (o < out_f) {
+                const unsigned* bw = (const unsigned*)(W + (long)o * row_bytes + (long)g * 36);
+                unsigned blk[9];
+                #pragma unroll
+                for (int u = 0; u < 9; u++) blk[u] = bw[u];      // coalesced-ish 36B load
+                sWsc[s][r] = blk[0];                              // 4 ue4m3 scale bytes (K16 0..3)
+                const unsigned char* qs = (const unsigned char*)&blk[1];   // 32 qs bytes
+                #pragma unroll
+                for (int gi = 0; gi < 8; gi++) {
+                    int base = (gi < 4) ? (gi * 8) : ((gi - 4) * 8 + 32);
+                    int sb = base >> 4, hinib = (base & 8) ? 4 : 0;
+                    const unsigned char* q = qs + sb * 8;
+                    unsigned w = 0;
+                    #pragma unroll
+                    for (int n = 0; n < 8; n++) w |= ((unsigned)((q[n] >> hinib) & 0xF)) << (4 * n);
+                    sWq[s][r][gi] = w;
+                }
+            } else {
+                #pragma unroll
+                for (int gi = 0; gi < 8; gi++) sWq[s][r][gi] = 0;
+                sWsc[s][r] = 0;
+            }
+        }
+        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+            int t = toktile + n;
+            if (t < T) {
+                const unsigned* aw = aq4 + (size_t)t * aw_per_tok + (size_t)g * 8;
+                const unsigned char* asc = ad4 + (size_t)t * as_per_tok + (size_t)g * 4;
+                #pragma unroll
+                for (int gi = 0; gi < 8; gi++) sAq[s][n][gi] = aw[gi];
+                #pragma unroll
+                for (int k = 0; k < 4; k++) sAsc[s][n][k] = asc[k];
+            } else {
+                #pragma unroll
+                for (int gi = 0; gi < 8; gi++) sAq[s][n][gi] = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) sAsc[s][n][k] = 0;
+            }
+        }
+    };
+
+    if (nblk64 > 0) fetch(0, 0);
+    __syncthreads();
+
+    int r0 = lane / 4;          // 0..15 within the warp's 16-row tile
+    int kg = lane % 4;          // K-group selector
+    int q  = lane & 3;
+    int srow = (q == 2) ? r0 : (q == 3 ? r0 + 8 : -1);   // SFA-supplying row (or none)
+
+    for (int g = 0; g < nblk64; g++) {
+        int cur = g % FP4_NS;
+        if (g + 1 < nblk64) fetch((g + 1) % FP4_NS, g + 1);   // prefetch+repack next, overlap mma
+
+        // A fragment: direct u32 loads from the repacked smem tile (no per-lane gather).
+        unsigned afrag[4];
+        afrag[0] = sWq[cur][warp * WARP_M + r0    ][kg];
+        afrag[1] = sWq[cur][warp * WARP_M + r0 + 8][kg];
+        afrag[2] = sWq[cur][warp * WARP_M + r0    ][kg + 4];
+        afrag[3] = sWq[cur][warp * WARP_M + r0 + 8][kg + 4];
+        unsigned sa = (srow >= 0) ? sWsc[cur][warp * WARP_M + srow] : 0u;
+
+        #pragma unroll
+        for (int nt = 0; nt < BN / 8; nt++) {
+            int tok = nt * 8 + (lane / 4);
+            unsigned bfrag[2];
+            bfrag[0] = sAq[cur][tok][kg];
+            bfrag[1] = sAq[cur][tok][kg + 4];
+            unsigned sb = 0;
+            if (q == 1) {
+                const unsigned char* s = &sAsc[cur][tok][0];
+                sb = (unsigned)s[0] | ((unsigned)s[1] << 8) | ((unsigned)s[2] << 16) | ((unsigned)s[3] << 24);
+            }
+            mma_mxf4_m16n8k64(facc[nt], afrag, bfrag, sa, sb);
+        }
+        __syncthreads();
+    }
+
+    // write out: y[t*out_f + o]. D layout: reg ci -> row = lane/4 + (ci>>1)*8, col = (lane%4)*2 + (ci&1).
+    #pragma unroll
+    for (int nt = 0; nt < BN / 8; nt++) {
+        #pragma unroll
+        for (int ci = 0; ci < 4; ci++) {
+            int rr = lane / 4 + (ci >> 1) * 8;
+            int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);
+            int o = rowtile + warp * WARP_M + rr;
+            int t = toktile + nn;
+            if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[nt][ci];
+        }
+    }
+}
+extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4_fp4(
+        const unsigned char* __restrict__ W, const unsigned* __restrict__ aq4,
+        const unsigned char* __restrict__ ad4, float* __restrict__ y,
+        int in_f, int out_f, int T, long row_bytes) {
+    qmatvec_gemm_mxf4_kernel(W, aq4, ad4, y, in_f, out_f, T, row_bytes);
+}
