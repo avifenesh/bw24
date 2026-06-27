@@ -470,6 +470,14 @@ __device__ __forceinline__ int get_int_b2(const void* p) {
     return (int)u[0] | ((int)u[1] << 16);
 }
 
+// Vectorized weight-int load: 4 int8 starting at `p`, single 32-bit LDG. Mirrors llama get_int_b4
+// (vecdotq.cuh). Safe for any 4-byte-aligned source. NVFP4 qss is provably 4-aligned
+// (row_bytes=(in_f/64)*36 -> mult of 4; qs=b+4; qss=qs+s*8) so the qs stream qualifies. Do NOT
+// widen to int2/LDG.E.64 there: rows are only 8-aligned when in_f%128==0 -> faults on odd in_f/64.
+__device__ __forceinline__ int get_int_b4(const void* p) {
+    return *(const int*)p;
+}
+
 // ============================ Stage-B MMVQ (warp-per-row decode) ============================
 // PERF-3 (DECODE-GEMV-PLAN): warp-per-row layout matching llama.cpp mmvq.cu. block=(32,ROWS,1):
 // one WARP (threadIdx.y) owns one output row. Reduction is warp-only __shfl_xor_sync (no smem,
@@ -648,8 +656,8 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq(
         for (int sl = 0; sl < 2; sl++) {
             int s = s0 + sl;
             const unsigned char* qss = qs + s * 8;
-            int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
-            int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+            int q4a = get_int_b4(qss);      // P1: single LDG.E.32 (was 4x LDG.E.U8); qss 4-aligned
+            int q4b = get_int_b4(qss + 4);
             int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
             int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
             int base = sl * 4;
@@ -976,9 +984,11 @@ extern "C" __global__ void qmatvec_nvfp4_dp4a(
             // Codebook the 16 packed 4-bit weights via __byte_perm (get_int_from_table_16_d) instead
             // of 16 scalar kvalues_mxfp4_d[] loads — this loop was ALU-bound (19% of BW ceiling).
             // For 4 packed bytes, .x = low-nibble codes (4 int8s packed) = old wlo*, .y = high-nibble
-            // codes = old whi*. Assemble the input int from bytes (36-byte blocks => no 4-align guarantee).
-            int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
-            int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+            // codes = old whi*. P1: qss is 4-aligned (row_bytes=(in_f/64)*36 mult of 4; qs=b+4; qss=+s*8)
+            // -> single LDG.E.32 each via get_int_b4 (was 4x LDG.E.U8). int2/64-bit NOT safe: rows only
+            // 8-aligned when in_f%128==0.
+            int q4a = get_int_b4(qss);
+            int q4b = get_int_b4(qss + 4);
             int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);  // .x=wlo0 (elems0..3) .y=whi0 (elems8..11)
             int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);  // .x=wlo1 (elems4..7) .y=whi1 (elems12..15)
             int base = sl * 4;
