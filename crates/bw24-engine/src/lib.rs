@@ -1137,11 +1137,16 @@ impl Engine {
     }
 
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
-    /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. Gated behind BW24_GEMM env var.
-    /// NVFP4 needs in_f % 64 == 0 (two 16-sub-blocks per 32-block; same constraint as the dp4a path).
+    /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. NVFP4 needs in_f % 64 == 0.
+    /// DEFAULT-ON (2026-06-28): measured pp512 9B-NVFP4 = 1413 tok/s WITH this GEMM vs 298 with the
+    /// dp4a fallback (4.7x) AND MORE accurate (prefill logit maxdiff 0.159 vs dp4a 0.55, both argmax
+    /// MATCH). The int8 tensor-core GEMM was gated behind BW24_GEMM "until Phase 0 lands" — Phase 0
+    /// (mma + smem swizzle + cp.async, tasks #30-36) shipped, so the gate is stale. Prefill-only
+    /// (m>=GEMM_M_THRESHOLD); m=1 decode keeps dp4a/MMVQ (this returns true but matmul only calls it
+    /// at m>=threshold). BW24_NO_GEMM forces the dp4a fallback (the bit-reference).
     pub fn gemm_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if std::env::var("BW24_GEMM").is_err() { return false; }
+        if std::env::var("BW24_NO_GEMM").is_ok() { return false; }
         match w {
             GpuTensor::Quant { qtype, .. } =>
                 matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K)
