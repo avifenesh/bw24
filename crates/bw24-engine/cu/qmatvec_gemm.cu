@@ -44,20 +44,49 @@
 #define GQT_NVFP4 7
 
 #define WARP_SZ 32
-// CTA tile: BM output rows x BN tokens x BK contraction. 4 warps, each owns a 32x32 output quad
-// (2 m16-row-frags x 4 n8-col-frags). One mma K-step = BK=32 (one quant/q8_1 block).
-#define BM 64      // output rows per CTA  (4 warps x 16 rows)
-#define BN 128     // tokens   per CTA (each warp covers all BN tokens; reduces weight re-decode)
+// CTA tile: BM output rows x BN tokens x BK contraction. One mma K-step = BK=32 (one quant/q8_1 block).
+//
+// MMQ-PORT (llama mmq.cuh structure on this sm_120 silicon): the single-scale GEMM (kernel1, used by
+// Q8_0/Q4_K/Q5_K) runs the PROVEN llama layout — 8 WARPS/CTA + a row-PADDED weight smem tile + a small
+// per-warp accumulator — instead of the prior 4-warp / 64-reg big-accum that left this kernel
+// occupancy-bound at 2 CTA/SM with ~20-24M smem bank conflicts (ncu, this box). The two structural
+// levers ported (NOT a bw24 re-tile guess, which reverted twice as PERF-1c):
+//   (1) 8 warps (NWARP=8, MMQ_NWARPS=8 in mmq.cuh:15) split as a 2D warp grid: NTX=2 token-groups x
+//       NWY=4 row-groups. Each warp owns WARP_M=16 rows (one m16 frag) x BN/NTX=64 tokens (8 n-tiles).
+//       facc[BN/NTX/8][4] = 8x4 = 32 s32->f32 accum regs/warp (HALF the old facc[16][4]=64) so 8 warps
+//       co-reside (the granularity/rows_per_warp accumulator of vec_dot_q8_1_q8_1_mma, mmq.cuh:1384).
+//   (2) the x_qs ROW PAD: llama's x_qs tile stride is MMQ_MMA_TILE_X_K_Q8_1 = 2*32+8+4 ints, the +4
+//       making stride%8==4 to break smem bank conflicts BY CONSTRUCTION (mmq.cuh:219-227, why llama has
+//       0.13M conflicts vs bw24 24M). bw24 analog: pad the int8 weight tile row from BK=32 to SW_STRIDE
+//       =36 bytes (=9 ints, odd -> the row-to-row bank step is now coprime to 32, scattering ldmatrix +
+//       decode-store accesses across banks). The decoded weights are still the SAME bytes (decode math
+//       unchanged) -> bit-exact; only the storage stride differs. The mma atom is unchanged
+//       (mma_s8_m16n8k32, == llama's tile<16,8> mma.cuh:942).
+#define BM 64      // output rows per CTA  (4 row-groups x 16 rows)
+#define BN 128     // tokens   per CTA (NTX=2 token-groups x 64)
 #define BK 32      // contraction per K-step (== quant 32-block)
-#define NWARP 4
+#define NWARP 8    // MMQ-PORT (kernel1: Q8_0/Q4_K/Q5_K): 8 warps/CTA (was 4) — hide mma+decode latency
+#define NTX 2      // token-groups: warps split BN into NTX groups (llama ntx)
+#define NWY (NWARP / NTX)  // row-groups (=4): warps split BM into NWY groups of WARP_M rows
+// kernel2 (Q6_K/NVFP4 two-sub-scale) and the FP4 mxf4 kernel KEEP the original 4-warp / all-tokens-per-warp
+// layout (out of scope for the MMQ k-quant port; their two-scale split + FP4 ldmatrix swizzle are tuned
+// for it). They use NWARP2 and are launched with block (32, NWARP2). Only kernel1 takes the 8-warp port.
+#define NWARP2 4
 #define WARP_M 16  // each warp's M rows (one m16 frag)
+#define WARP_N (BN / NTX)  // each warp's tokens (=64 = 8 n-tiles of 8)
+// MMQ-PORT weight smem int8 row stride (bytes). KEPT at BK=32 (no pad). MEASURED FINDING: llama's
+// x_qs %8==4 pad is conflict-free for ITS 76-int (2-K-block) row + load_ldmatrix k-offset addressing,
+// but bw24's ld_A_s8 per-lane addr = (lane%16)*S4 + (lane/16)*4 has a (lane/16)*4 two-8-row-group split
+// that, for ANY 16B-aligned stride S4 (the ldmatrix alignment constraint forces S4 % 4 == 0), keeps the
+// two halves bank-aligned mod 32 -> >=4-way conflict regardless of pad (bank-model verified: strides 8/
+// 12/16/20/24/28/36 ints ALL give >=4-way; the conflict-free 10/17-int strides break ldmatrix's 16B
+// alignment). So a row pad cannot make THIS A-load conflict-free (matches bw24's prior no-op pad results)
+// and only costs smem/occupancy. The MMQ structural win here is the 8-warp + small-accumulator, NOT the
+// pad; the residual smem-LD conflicts are the same population the dp4a-fold already tolerates. (Killing
+// them needs an XOR-swizzle of the ldmatrix chunk index like the FP4 path's SWZ_CHUNK, a separate lever.)
+#define SW_STRIDE BK
 // cp.async ring buffer depth (overlap next K-step's global->smem behind current mma).
 #define NSTAGE 3
-// NOTE on smem K-stride: BK=32 is kept (16B-aligned, so ldmatrix.x4.b16 + cp.async.cg-16 are legal).
-// A 16B-aligned pad to 48 reduces ldmatrix bank conflicts (33M->~10M) but the extra 8KB/CTA smem
-// drops kernel2 occupancy 4->3 blocks, exactly cancelling the gain (pp512 flat). At this BN=128 /
-// 64-reg-accumulator tile the kernel is occupancy-bound, not conflict-bound, so the pad is a no-op
-// here; revisit (XOR-swizzle at stride 32) only after the accumulator/tile redesign frees occupancy.
 
 __device__ __forceinline__ float ghalf2float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));
@@ -352,10 +381,17 @@ __device__ void qmatvec_gemm_kernel(
 {
     const int rowtile = blockIdx.x * BM;     // first out-row of this CTA
     const int toktile = blockIdx.y * BN;     // first token of this CTA
-    const int warp = threadIdx.y;            // 0..NWARP-1
+    const int warp = threadIdx.y;            // 0..NWARP-1 (8)
     const int lane = threadIdx.x;            // 0..31
-    const int tid  = warp * WARP_SZ + lane;  // 0..127
+    const int tid  = warp * WARP_SZ + lane;  // 0..255
     const int nblk = in_f / 32;
+    // MMQ-PORT 2D warp grid (llama ntx split): wy = row-group (0..NWY-1), wx = token-group (0..NTX-1).
+    // This warp owns rows [wy*WARP_M .. +WARP_M) of the BM tile and tokens [wx*WARP_N .. +WARP_N) of BN.
+    const int wy = warp / NTX;               // 0..NWY-1 -> which 16-row band
+    const int wx = warp % NTX;               // 0..NTX-1 -> which 64-token half
+    const int rowbase = wy * WARP_M;         // this warp's first tile row (0..BM-WARP_M)
+    const int tokbase = wx * WARP_N;         // this warp's first tile token (0..BN-WARP_N)
+    const int cta_threads = NWARP * WARP_SZ; // 8 warps = 256 (grid-stride over BM/BN fetch+decode)
 
     // NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
     // tile, and per-tile scales for one K-step. The already-int8 activations are cp.async'd straight
@@ -363,7 +399,9 @@ __device__ void qmatvec_gemm_kernel(
     // ring keyed by SUPERBLOCK) one superblock ahead; the ALU decode reads that RESIDENT smem (not
     // global) during prefetch -> the long-scoreboard global weight read leaves the mma chain, and
     // superblock DRAM traffic drops GPSB-fold (8x for Q4_K/Q5_K).
-    __shared__ int8_t sW[NSTAGE][BM][BK];   // BK=32 (16-aligned) -> ldmatrix.x4.b16 addr legal
+    // MMQ-PORT: weight tile row-PADDED to SW_STRIDE (llama x_qs %8==4 pad) -> conflict-free decode-store +
+    // ldmatrix. Decoded 32 int8 live in [0..31]; [32..47] is the bank-conflict-breaking pad.
+    __shared__ __align__(16) int8_t sW[NSTAGE][BM][SW_STRIDE];
     __shared__ int8_t sA[NSTAGE][BN][BK];   // BK (16-aligned) so cp.async.cg 16B copies are legal
     __shared__ float  sWd[NSTAGE][BM];
     __shared__ float  sWb[NSTAGE][BM];
@@ -379,11 +417,13 @@ __device__ void qmatvec_gemm_kernel(
            RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
     __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
-    // each warp accumulates its 16 rows x BN(=64) tokens = 16x8 frags over the 8 n-tiles.
-    // acc[ntile][4] s32. We apply scales per K-step into f32 (because dw/da vary per 32-block).
-    float facc[BN / 8][4];   // BN/8 = 8 n-tiles per warp
+    // MMQ-PORT small accumulator: each warp owns WARP_M=16 rows x WARP_N=64 tokens = one m16 frag x
+    // (WARP_N/8=8) n-tiles. facc[8][4] = 32 s32->f32 regs/warp (HALF the old facc[16][4]=64), the
+    // granularity/rows-per-warp accumulator that lets 8 warps co-reside. Scales applied per K-step
+    // into f32 (dw/da vary per 32-block).
+    float facc[WARP_N / 8][4];   // 8 n-tiles per warp
     #pragma unroll
-    for (int nt = 0; nt < BN / 8; nt++)
+    for (int nt = 0; nt < WARP_N / 8; nt++)
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
@@ -392,7 +432,7 @@ __device__ void qmatvec_gemm_kernel(
     //      only at superblock boundaries (caller gates on g%GPSB==0). ----
     auto fetch_superblock = [&](int sb) {
         int rs = sb % NSTAGE_RAW;
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
                 long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
@@ -405,7 +445,7 @@ __device__ void qmatvec_gemm_kernel(
     };
     // ---- cp.async the activation tile for K-block g into stage `s` (unchanged from the inline path). ----
     auto fetch_activation = [&](int s, int g) {
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+        for (int n = tid; n < BN; n += cta_threads) {
             int t = toktile + n;
             if (t < T) {
                 const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
@@ -430,7 +470,7 @@ __device__ void qmatvec_gemm_kernel(
     auto decode_stage = [&](int s, int g) {
         int rs  = (g / GPSB) % NSTAGE_RAW;
         int grp = g & (GPSB - 1);
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             float bias = 0.0f, dw;
             if (o < out_f) {
@@ -450,7 +490,7 @@ __device__ void qmatvec_gemm_kernel(
     //      path). Used only when !USE_PREDECODE; the global read is on the chain but Q8_0's decode is a
     //      trivial memcpy of already-int8 weights, so the long-scoreboard is mild for it. ----
     auto decode_stage_inline = [&](int s, int g) {
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             float bias = 0.0f, dw;
             if (o < out_f) {
@@ -518,17 +558,19 @@ __device__ void qmatvec_gemm_kernel(
         }
         asm volatile("cp.async.commit_group;");
 
-        // ---- build A fragment for this warp's 16 rows via ldmatrix.x4.b16 ----
-        // The 16-row x 32-int8 weight subtile == 16x16 b16; ldmatrix loads the 4 .b32 A-operands
-        // in the exact m16n8k32.s8 layout the scalar byte-assembly produced (bit-equivalent).
+        // ---- build A fragment for THIS warp's WARP_M=16 rows (rowbase) via ldmatrix.x4.b16 ----
+        // The 16-row x 32-int8 weight subtile == 16x16 b16; ldmatrix loads the 4 .b32 A-operands in the
+        // exact m16n8k32.s8 layout the scalar byte-assembly produced (bit-equivalent). MMQ-PORT: stride is
+        // SW_STRIDE (the %8==4 row pad), row base &sW[cur][rowbase] (rowbase = wy*16).
         int afrag[4];
-        ld_A_s8(afrag, &sW[cur][warp * WARP_M][0], BK);
-        // ---- per 8-token n-tile: build B fragment + mma, then scale s32 -> f32 ----
+        ld_A_s8(afrag, &sW[cur][rowbase][0], SW_STRIDE);
+        // ---- per 8-token n-tile (THIS warp's WARP_N=64 tokens, tokbase) : B frag + mma, scale s32->f32 --
         #pragma unroll
-        for (int nt = 0; nt < BN / 8; nt++) {
+        for (int nt = 0; nt < WARP_N / 8; nt++) {
+            int ntok = tokbase + nt * 8;   // 0..BN-8 token-tile base in the CTA's BN tokens
             // B is 8x32 s8, col-major (.col): ldmatrix.x2.b16 from the 8-token n-tile.
             int bfrag[2];
-            ld_B_s8(bfrag, &sA[cur][nt * 8][0], BK);
+            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);
             int dacc[4] = {0, 0, 0, 0};
             mma_s8_m16n8k32(dacc, afrag, bfrag);
             // s32 partials -> f32 with this 32-block's (dw, da) scales (+ bias for min-quants).
@@ -536,41 +578,42 @@ __device__ void qmatvec_gemm_kernel(
             // C/D layout: reg ci (0..3): row = lane/4 + (ci>>1)*8 ; col = (lane%4)*2 + (ci&1)
             #pragma unroll
             for (int ci = 0; ci < 4; ci++) {
-                int rr = warp * WARP_M + lane / 4 + (ci >> 1) * 8;  // 0..BM-1 GLOBAL tile row
-                int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);  // 0..63 token within tile
+                int rr = rowbase + lane / 4 + (ci >> 1) * 8;   // 0..BM-1 CTA tile row
+                int nn = ntok + (lane % 4) * 2 + (ci & 1);     // 0..BN-1 token within CTA
                 float da = sAd[cur][nn];
                 facc[nt][ci] += sWd[cur][rr] * da * (float)dacc[ci] + sWb[cur][rr] * da * sAsum[cur][nn];
             }
         }
     }
 
-    // ===== write out: y[t*out_f + o] (token-major). =====
+    // ===== write out: y[t*out_f + o] (token-major). MMQ-PORT: this warp's rows (rowbase) x tokens (tokbase). =====
     #pragma unroll
-    for (int nt = 0; nt < BN / 8; nt++) {
+    for (int nt = 0; nt < WARP_N / 8; nt++) {
+        int ntok = tokbase + nt * 8;
         #pragma unroll
         for (int ci = 0; ci < 4; ci++) {
-            int rr = lane / 4 + (ci >> 1) * 8;
-            int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);
-            int o = rowtile + warp * WARP_M + rr;
+            int rr = rowbase + lane / 4 + (ci >> 1) * 8;
+            int nn = ntok + (lane % 4) * 2 + (ci & 1);
+            int o = rowtile + rr;
             int t = toktile + nn;
             if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[nt][ci];
         }
     }
 }
 
-extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q8_0(
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q8_0(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q8_0>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q4_K(
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q4_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q4_K>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q5_K(
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q5_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
@@ -715,6 +758,7 @@ __device__ void qmatvec_gemm_kernel2(
     const int lane = threadIdx.x;
     const int tid  = warp * WARP_SZ + lane;
     const int nblk = in_f / 32;
+    const int cta_threads = NWARP2 * WARP_SZ;   // kernel2/FP4 keep the 4-warp grid-stride (launched 32x4)
 
     // NSTAGE ring buffer. ONE full 32-wide weight tile (no separate lo/hi smem): the two-sub-scale
     // split is done at fragment level by zeroing the off-half A-registers (afrag[0,1]=k0..15 lo,
@@ -739,7 +783,7 @@ __device__ void qmatvec_gemm_kernel2(
     // ---- FETCH raw superblock sb (16B-floored window) into the raw ring (FIX A; NVFP4 only). ----
     auto fetch_superblock = [&](int sb) {
         int rs = sb % NSTAGE_RAW;
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
                 long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
@@ -752,7 +796,7 @@ __device__ void qmatvec_gemm_kernel2(
     };
     // ---- cp.async the activation tile for K-block g into stage s (unchanged). ----
     auto fetch_activation = [&](int s, int g) {
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+        for (int n = tid; n < BN; n += cta_threads) {
             int t = toktile + n;
             if (t < T) {
                 const signed char* arow = aq + (size_t)t * in_f + (size_t)g * 32;
@@ -769,7 +813,7 @@ __device__ void qmatvec_gemm_kernel2(
     // ---- DECODE group g off the mma chain: ALU-unpack the RESIDENT raw block smem -> sW[s] + scales. --
     auto decode_stage = [&](int s, int g) {
         int rs = (g / GPSB) % NSTAGE_RAW;
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             int8_t wq[32];
             float s0 = 0.0f, s1 = 0.0f;
@@ -791,7 +835,7 @@ __device__ void qmatvec_gemm_kernel2(
     };
     // ---- INLINE-global decode (Q6_K, and NVFP4 fallback): the original path. ----
     auto decode_stage_inline = [&](int s, int g) {
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             int8_t wq[32];
             float s0 = 0.0f, s1 = 0.0f;
@@ -1036,6 +1080,7 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     const int nblk64 = in_f / 64;                 // K-blocks (64-elem NVFP4 blocks)
     const int aw_per_tok = in_f / 8;              // u32 words per token in aq4
     const int as_per_tok = in_f / 16;             // ue4m3 scale bytes per token in ad4
+    const int cta_threads = NWARP2 * WARP_SZ;     // FP4 kernel keeps the 4-warp grid-stride (launched 32x4)
 
     // Repacked staged tiles: A-fragment-ready weight nibbles (8 u32 groups/row) + 1 u32 of 4 packed
     // ue4m3 scales/row; activation 8 u32 groups + 4 scale bytes/token. The weight REPACK (e2m1 nibble
@@ -1063,7 +1108,7 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     //      window). Async; nothing on the mma critical path. Kept >=1 block ahead of its repack. ----
     auto fetch_raw = [&](int g) {
         int rs = g % FP4_NS_RAW;
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
                 long off  = (long)o * row_bytes + (long)g * 36;
@@ -1077,7 +1122,7 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     // ---- FETCH_ACT (cp.async): the activation u32 groups + scale bytes for K-block g straight into
     //      sAq/sAsc (already the final mma form -> no repack needed). Async, off the mma chain. ----
     auto fetch_act = [&](int s, int g) {
-        for (int n = tid; n < BN; n += NWARP * WARP_SZ) {
+        for (int n = tid; n < BN; n += cta_threads) {
             int t = toktile + n;
             if (t < T) {
                 const unsigned* aw = aq4 + (size_t)t * aw_per_tok + (size_t)g * 8;   // 32B, 16B-aligned
@@ -1105,7 +1150,7 @@ __device__ void qmatvec_gemm_mxf4_kernel(
     //   extra MIO pressure on this smem-throughput-bound tile. Kept the P3 single-thread-per-row form.
     auto repack = [&](int s, int g) {
         int rs = g % FP4_NS_RAW;
-        for (int r = tid; r < BM; r += NWARP * WARP_SZ) {
+        for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
                 long off = (long)o * row_bytes + (long)g * 36;
