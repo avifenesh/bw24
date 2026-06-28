@@ -122,53 +122,69 @@ impl SafetensorsSource {
     /// block scale × the per-tensor `weight_scale_2`), so the hybrid SSM V-reorder transforms (which
     /// operate on f32) work on an NVFP4 checkpoint exactly as on a BF16 one.
     fn deq_f32(&self, hf_name: &str) -> Option<(Vec<f32>, Vec<u64>)> {
-        let (info, bytes) = self.lookup(hf_name)?;
-        // modelopt NVFP4 weight? (U8 .weight with a sibling .weight_scale)
-        if info.dtype == "U8" && hf_name.ends_with(".weight") {
-            if let Some((out_f, in_f, wscale, scale2)) = self.modelopt_nvfp4(hf_name) {
+        // NVFP4 weight (modelopt OR Reza)? Dequant through the NVFP4 path so the hybrid SSM V-reorder
+        // transforms (which operate on f32) work on an NVFP4 checkpoint exactly as on a BF16 one.
+        if hf_name.ends_with(".weight") {
+            if let Some((out_f, in_f, wbytes, wscale, macro_s)) = self.nvfp4_quant(hf_name) {
                 use crate::nvfp4_repack::dequant_modelopt_row;
                 let in_bytes = in_f / 2;
                 let scl_bytes = in_f / 16;
                 let mut data = vec![0f32; out_f * in_f];
                 for o in 0..out_f {
                     let row = dequant_modelopt_row(
-                        &bytes[o * in_bytes..(o + 1) * in_bytes],
+                        &wbytes[o * in_bytes..(o + 1) * in_bytes],
                         &wscale[o * scl_bytes..(o + 1) * scl_bytes],
                         in_f,
                     );
                     for (e, v) in row.iter().enumerate() {
-                        data[o * in_f + e] = v * scale2; // fold the per-tensor macro-scale into f32
+                        data[o * in_f + e] = v * macro_s; // fold the per-tensor macro-scale into f32
                     }
                 }
                 return Some((data, vec![in_f as u64, out_f as u64]));
             }
         }
+        let (info, bytes) = self.lookup(hf_name)?;
         let ne = info.ne();
         let n: u64 = ne.iter().product();
         Some((crate::dequant::dequantize(info.ggml_type(), bytes, n as usize), ne))
     }
 
-    /// If `hf_weight` (a `<name>.weight`) is a modelopt NVFP4 quantized Linear, return
-    /// `(out_f, in_f, weight_scale_bytes, weight_scale_2)`. `None` otherwise (plain dense weight, or
-    /// missing siblings). `out_f`/`in_f` are the logical [out, in] dims (weight is [out, in/2] U8).
-    fn modelopt_nvfp4(&self, hf_weight: &str) -> Option<(usize, usize, &[u8], f32)> {
-        let (winfo, _) = self.lookup(hf_weight)?;
+    /// Detect an HF NVFP4 quantized Linear under EITHER on-disk encoding and return everything the
+    /// repack needs: `(out_f, in_f, packed_bytes, per16_fp8_scale_bytes, macro_scale)`. Both encodings
+    /// store the SAME e2m1 weights + per-16 FP8(e4m3) scales — only names + macro-scale differ:
+    ///   * modelopt: `<name>.weight`(U8 packed) + `<name>.weight_scale`(F8_E4M3) +
+    ///     `<name>.weight_scale_2`(F32 per-tensor macro, default 1.0).
+    ///   * Reza "custom_nvfp4_e2m1_e4m3_scales": `<name>.weight.nvfp4_packed`(U8) +
+    ///     `<name>.weight.nvfp4_scale_e4m3`(U8/FP8 bytes), NO macro-scale (=> 1.0).
+    /// `out_f`/`in_f` are the logical [out, in] dims (packed weight is [out, in/2] U8). `None` for a
+    /// plain (non-quantized) weight or missing siblings.
+    fn nvfp4_quant(&self, hf_weight: &str) -> Option<(usize, usize, &[u8], &[u8], f32)> {
+        // modelopt: the `.weight` itself is the U8 packed tensor with a `.weight_scale` sibling.
+        if let Some((winfo, wbytes)) = self.lookup(hf_weight) {
+            if winfo.dtype == "U8" && winfo.shape.len() == 2 {
+                let stem = hf_weight.strip_suffix(".weight")?;
+                if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                    if sinfo.dtype == "F8_E4M3" {
+                        let out_f = winfo.shape[0] as usize; // HF row-major [out, in/2]
+                        let in_f = (winfo.shape[1] as usize) * 2; // U8 packs 2 codes/byte
+                        let macro_s = match self.lookup(&format!("{stem}.weight_scale_2")) {
+                            Some((_, b)) if b.len() >= 4 => f32::from_le_bytes(b[..4].try_into().unwrap()),
+                            _ => 1.0,
+                        };
+                        return Some((out_f, in_f, wbytes, sbytes, macro_s));
+                    }
+                }
+            }
+        }
+        // Reza custom: `<name>.weight.nvfp4_packed` (U8) + `<name>.weight.nvfp4_scale_e4m3`. No macro.
+        let (winfo, wbytes) = self.lookup(&format!("{hf_weight}.nvfp4_packed"))?;
         if winfo.dtype != "U8" || winfo.shape.len() != 2 {
             return None;
         }
-        let stem = hf_weight.strip_suffix(".weight")?;
-        let (sinfo, sbytes) = self.lookup(&format!("{stem}.weight_scale"))?;
-        if sinfo.dtype != "F8_E4M3" {
-            return None;
-        }
-        let out_f = winfo.shape[0] as usize; // HF row-major [out, in/2]
-        let in_f = (winfo.shape[1] as usize) * 2; // logical in-features (U8 packs 2 codes/byte)
-        // weight_scale_2 is a per-tensor F32 scalar; default to 1.0 if absent (then macro-scale==1).
-        let scale2 = match self.lookup(&format!("{stem}.weight_scale_2")) {
-            Some((_, b)) if b.len() >= 4 => f32::from_le_bytes(b[..4].try_into().unwrap()),
-            _ => 1.0,
-        };
-        Some((out_f, in_f, sbytes, scale2))
+        let (_sinfo, sbytes) = self.lookup(&format!("{hf_weight}.nvfp4_scale_e4m3"))?;
+        let out_f = winfo.shape[0] as usize;
+        let in_f = (winfo.shape[1] as usize) * 2;
+        Some((out_f, in_f, wbytes, sbytes, 1.0))
     }
 }
 
@@ -185,6 +201,8 @@ impl TensorSource for SafetensorsSource {
             let hf_weight = match resolve_ggml(&format!("{stem}.weight"), &self.cfg)? {
                 HfTarget::Plain(hf) | HfTarget::Transform { hf, .. } => hf,
             };
+            // Only the modelopt encoding carries a per-tensor `weight_scale_2`. Reza has no macro-scale,
+            // so its `.scale` lookup returns None and the engine defaults the macro-scale to 1.0.
             let s2 = format!("{}.weight_scale_2", hf_weight.strip_suffix(".weight")?);
             let (info, bytes) = self.lookup(&s2)?;
             // weight_scale_2 is a 0-dim F32 scalar (4 bytes); surface it as ne=[1] F32.
@@ -198,10 +216,10 @@ impl TensorSource for SafetensorsSource {
             // Zero-copy: a plain rename (dense path + most SSM matrices), borrow the mmap directly.
             // NVFP4 modelopt weights take the repack arm (owned GGUF block bytes); else borrow.
             HfTarget::Plain(hf) => {
-                if let Some((out_f, in_f, wscale, _scale2)) = self.modelopt_nvfp4(&hf) {
-                    // Repack modelopt NVFP4 -> bw24 internal GGUF block_nvfp4 bytes (NO kernel change).
-                    let (winfo, wbytes) = self.lookup(&hf)?;
-                    let _ = winfo;
+                // NVFP4 (modelopt OR Reza) -> repack to bw24 internal GGUF block_nvfp4 bytes (NO kernel
+                // change). `nvfp4_quant` returns the packed bytes directly (in Reza the packed tensor
+                // is `<hf>.nvfp4_packed`, not `<hf>` itself), so no second lookup.
+                if let Some((out_f, in_f, wbytes, wscale, _macro)) = self.nvfp4_quant(&hf) {
                     let packed = crate::nvfp4_repack::repack_modelopt_to_gguf(wbytes, wscale, out_f, in_f);
                     return Some(TensorView {
                         bytes: Cow::Owned(packed),
@@ -219,8 +237,7 @@ impl TensorSource for SafetensorsSource {
             //  (b) f32 fallback: value transforms (`-exp`, `+1`, conv1d squeeze, identity) operate on
             //      the tiny BF16 SSM tensors; `deq_f32` is NVFP4-aware for any NVFP4 weight here too.
             HfTarget::Transform { hf, kind } => {
-                if let Some((out_f, in_f, wscale, _scale2)) = self.modelopt_nvfp4(&hf) {
-                    let (_winfo, wbytes) = self.lookup(&hf)?;
+                if let Some((out_f, in_f, wbytes, wscale, _macro)) = self.nvfp4_quant(&hf) {
                     let packed = crate::nvfp4_repack::repack_modelopt_to_gguf(wbytes, wscale, out_f, in_f);
                     if let Some((ne, bytes)) = kind.apply_nvfp4(&packed, out_f, in_f, &self.cfg) {
                         return Some(TensorView { bytes: Cow::Owned(bytes), ggml_type: GgmlType::NVFP4, ne });
