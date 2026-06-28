@@ -410,7 +410,7 @@ impl Engine {
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("qmatvec_gemm_nvfp4_fp4");
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite output: skip memset
-        const BM: u32 = 64; const BN: u32 = 128;
+        const BM: u32 = 64; const BN: u32 = 256;
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
             block_dim: (32, 4, 1), shared_mem_bytes: 0,
@@ -1189,7 +1189,7 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         // CTA tile: BM=64 out-rows x BN=128 tokens x BK=32. MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) runs the
         // 8-warp llama layout (block 32x8 = 256 thr); kernel2 (Q6_K/NVFP4) keeps the 4-warp layout.
-        const BM: u32 = 64; const BN: u32 = 128;
+        const BM: u32 = 64; const BN: u32 = 256;
         let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
@@ -1220,7 +1220,7 @@ impl Engine {
         };
         let f = self.func(name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
-        const BM: u32 = 64; const BN: u32 = 128;
+        const BM: u32 = 64; const BN: u32 = 256;
         // MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) = 8 warps; kernel2 (Q6_K/NVFP4) = 4 warps.
         let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
         let cfg = LaunchConfig {

@@ -63,7 +63,11 @@
 //       unchanged) -> bit-exact; only the storage stride differs. The mma atom is unchanged
 //       (mma_s8_m16n8k32, == llama's tile<16,8> mma.cuh:942).
 #define BM 64      // output rows per CTA  (4 row-groups x 16 rows)
-#define BN 128     // tokens   per CTA (NTX=2 token-groups x 64)
+// BN=256 (was 128): ncu showed the prefill GEMM is SMEM-BANDWIDTH-SATURATED (L1 70%, issue 28%) at
+// 2 CTAs/SM. A bigger token tile (256) doubles weight REUSE per CTA (1 weight-decode serves 256
+// tokens vs 128) = HALF the weight-smem traffic per output, and the larger smem pushes toward 1
+// CTA/SM (llama's winning config: 1 CTA, big tile, owns all L1 bw). facc grows 32->64 regs/warp.
+#define BN 256     // tokens per CTA (NTX token-groups; weight reused across all BN)
 #define BK 32      // contraction per K-step (== quant 32-block)
 #define NWARP 8    // MMQ-PORT (kernel1: Q8_0/Q4_K/Q5_K): 8 warps/CTA (was 4) — hide mma+decode latency
 // ARITHMETIC-INTENSITY LEVER (2026-06-28): MFRAG m16-fragments per warp. ncu showed llama's 5451 GEMM
