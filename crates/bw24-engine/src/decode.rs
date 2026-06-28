@@ -61,6 +61,38 @@ impl HybridModel {
         Ok(self.decode_step_h(e, token, cache)?.0)
     }
 
+    /// Dense-FFN SwiGLU (T=1 decode): `down @ (silu(gate@z) * (up@z))`. RANK3 LEVER 2 folds the
+    /// gate+up NVFP4 macro-scales into ONE `silu_mul_scaled` launch (via `matmul_pre_noscale`),
+    /// saving the two separate `scale_inplace` launches per dense FFN layer. BIT-IDENTICAL to the
+    /// prior `matmul_pre`+`matmul_pre`+`silu_mul` sequence (same float ops, same order). Falls back
+    /// to the unscaled-fast or Stage-A path + plain `silu_mul` whenever the fused noscale path is
+    /// unavailable (non-fast dtype, Float, or a path that applies the scale non-separably).
+    fn ffn_swiglu_decode(&self, e: &Engine, ffn_gate: &crate::model::GpuTensor,
+                         ffn_up: &crate::model::GpuTensor, z: &CudaSlice<f32>, n_embd: usize, n_ff: usize)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut act = e.uninit(n_ff)?;
+        if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+            let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
+            // Try the fused epilogue: raw (un-scaled) gate/up + their per-tensor scales -> one launch.
+            match (e.matmul_pre_noscale(ffn_gate, &zq, &zd, 1)?, e.matmul_pre_noscale(ffn_up, &zq, &zd, 1)?) {
+                (Some((gate, gs)), Some((up, us))) => {
+                    e.silu_mul_scaled(&gate, &up, gs, us, &mut act, n_ff)?;
+                }
+                _ => {
+                    // one (or both) not on the separable-scale fast path: scaled matmul + plain silu_mul.
+                    let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
+                    let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
+                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                }
+            }
+        } else {
+            let gate = e.matmul(ffn_gate, z, 1)?;
+            let up = e.matmul(ffn_up, z, 1)?;
+            e.silu_mul(&gate, &up, &mut act, n_ff)?;
+        }
+        Ok(act)
+    }
+
     /// EAGLE3 aux-hidden capture (EAGLE-PLAN N1): one decode step that ALSO returns the trunk
     /// residual-stream `x` taken AFTER each of the blocks in `aux_layers` (the EAGLE3 encoder feeds
     /// these 3 layer hiddens through `fc`). Returns (logits[n_vocab] host, aux: Vec<[n_embd] dev>),
@@ -92,14 +124,7 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
-                    };
-                    let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    let act = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, &z, n_embd, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
@@ -150,16 +175,9 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    // gate and up share input `z` (in_f = n_embd) — quantize q8_1 ONCE, feed both,
-                    // instead of re-quantizing the identical row twice (quantize_q8_1 was 13.5% of decode).
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
-                    };
-                    let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    // gate and up share input `z` (in_f = n_embd) — quantize q8_1 ONCE, feed both
+                    // (ffn_swiglu_decode also folds the gate/up NVFP4 macro-scale into the silu*mul).
+                    let act = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, &z, n_embd, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
@@ -219,14 +237,7 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
-                    };
-                    let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    let act = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, &z, n_embd, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
@@ -283,14 +294,7 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
-                    };
-                    let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    let act = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, &z, n_embd, n_ff)?;
                     e.matmul(ffn_down, &act, 1)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,

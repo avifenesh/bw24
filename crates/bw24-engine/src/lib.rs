@@ -685,6 +685,24 @@ impl Engine {
         Ok(())
     }
 
+    /// FFN SwiGLU epilogue fusion (RANK3 LEVER 2): `dst = silu(gate*gs) * (up*us)` in ONE launch,
+    /// folding the per-tensor NVFP4 macro-scale (`gs`,`us`) that would otherwise be two separate
+    /// `scale_inplace` launches on the gate/up matmul outputs. BIT-IDENTICAL to
+    /// scale_inplace(gate,gs); scale_inplace(up,us); silu_mul(gate,up,dst) — identical float ops in
+    /// identical order. For non-NVFP4 weights gs==us==1.0 -> identical to `silu_mul`. Net: -2
+    /// launches per dense FFN layer (the gate+up post-matmul scales).
+    pub fn silu_mul_scaled(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, gs: f32, us: f32,
+                           dst: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("silu_mul_scaled_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let (gsf, usf) = (gs, us);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gsf).arg(&usf).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn add(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("add_f32");
@@ -841,6 +859,46 @@ impl Engine {
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
         Ok(y)
+    }
+
+    /// Like `matmul_pre` but RETURNS THE RAW (un-macro-scaled) matmul output together with the
+    /// per-tensor NVFP4 scale, instead of applying `scale_inplace` internally. Used by the fused
+    /// SwiGLU epilogue (RANK3 LEVER 2) so the gate/up scales fold into one `silu_mul_scaled` launch.
+    /// `Some((y_raw, scale))` only on the m==1 decode fast path (mmvq / dp4a) where the scale is a
+    /// separate post-launch op we can defer; returns `None` for every other path (prefill GEMM, FP4
+    /// GEMM, Stage-A, Float) so the caller falls back to the scaled `matmul_pre` + `silu_mul`.
+    pub fn matmul_pre_noscale(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                              m: usize) -> Result<Option<(CudaSlice<f32>, f32)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        // Only the m==1 fast path applies the scale as a separable post-op; bail everywhere else.
+        if m != 1 || !self.uses_q8_1_fast(w) { return Ok(None); }
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        let (bytes, qtype, row_bytes, scale) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => return Ok(None),
+        };
+        // MMVQ warp-per-row (scale==1.0 passed -> kernel skips its internal scale; we return scale).
+        if self.mmvq_supports(qtype) {
+            let y = self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, /*scale*/ 1.0)?;
+            return Ok(Some((y, scale)));
+        }
+        // dp4a fallback: same launch as matmul_pre but WITHOUT the post scale_inplace.
+        let name = match qtype {
+            QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
+            QT_Q6_K => "qmatvec_q6_K_dp4a", QT_Q5_K => "qmatvec_q5_K_dp4a",
+            QT_Q3_K => "qmatvec_q3_K_dp4a", QT_NVFP4 => "qmatvec_nvfp4_dp4a",
+            QT_IQ4_XS => "qmatvec_iq4_XS_dp4a",
+            _ => return Ok(None),
+        };
+        let f = self.func(name);
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, m as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some((y, scale)))
     }
 
     /// True if `qtype` has a warp-per-row MMVQ decode kernel AND BW24_MMVQ is set. Only the 4

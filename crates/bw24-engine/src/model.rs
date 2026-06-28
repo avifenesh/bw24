@@ -38,6 +38,9 @@ impl GpuTensor {
     pub fn ne(&self) -> &[u64] { match self { GpuTensor::Quant { ne, .. } => ne, GpuTensor::Float { ne, .. } => ne } }
     pub fn in_features(&self) -> usize { self.ne()[0] as usize }
     pub fn out_features(&self) -> usize { self.ne()[1] as usize }
+    /// Per-tensor post-matmul macro-scale (NVFP4 carries scale != 1.0; all others -> 1.0, a no-op).
+    /// Used by the fused SwiGLU epilogue to fold the gate/up scale into one kernel.
+    pub fn scale(&self) -> f32 { match self { GpuTensor::Quant { scale, .. } => *scale, GpuTensor::Float { .. } => 1.0 } }
 
     /// Load a tensor, keeping quant types packed and float types as f32. (GGUF entry point —
     /// thin wrapper over the source-agnostic `load_from_source`; behavior is unchanged.)

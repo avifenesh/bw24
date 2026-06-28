@@ -124,6 +124,16 @@ extern "C" __global__ void silu_mul_f32(const float* __restrict__ gate, const fl
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) { float g = gate[i]; dst[i] = (g / (1.0f + expf(-g))) * up[i]; }
 }
+// FFN SwiGLU epilogue fusion (RANK3 LEVER 2). Folds the per-tensor NVFP4 macro-scale of the gate
+// and up matmuls INTO the silu*mul, removing the two separate `scale_f32` launches per dense FFN
+// layer. BIT-IDENTICAL to scale_f32(gate,gs); scale_f32(up,us); silu_mul_f32(gate,up,dst): same
+// float ops in the same order — multiply by scale, then silu(g'), then multiply by up'. For
+// non-NVFP4 weights gs==us==1.0, so this reduces exactly to silu_mul_f32.
+extern "C" __global__ void silu_mul_scaled_f32(const float* __restrict__ gate, const float* __restrict__ up,
+                                               float gs, float us, float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) { float g = gate[i] * gs; dst[i] = (g / (1.0f + expf(-g))) * (up[i] * us); }
+}
 extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
