@@ -767,7 +767,10 @@ __device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whi
 // two-scale split. (llama's NVFP4 MMQ is ALSO q8_1-activation/W4A8 at pp512=5451 — int8 W4A8 is NOT
 // capped; this closes the 4-warp implementation gap.) Q6_K keeps NW=4, NTX_K=1 (wy=warp, wx=0,
 // rowbase=warp*16, tokbase=0) -> reproduces the OLD kernel2 EXACTLY -> bit-identical.
-template<int QT, int NW, int NTX_K>
+// MF = m16-frags per warp (B-reuse arithmetic-intensity lever, same as kernel1 MFRAG). NVFP4: MF=2,
+// NTX_K=4 -> NWY=2 row-groups x MF=2 frags = BM=64 rows; each warp reuses each B-frag across both
+// m-frags (AND across the lo/hi two-scale mma) = 4 mma per B-load. Q6_K: MF=1, NTX_K=1 (bit-identical).
+template<int QT, int NW, int NTX_K, int MF>
 __device__ void qmatvec_gemm_kernel2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -781,10 +784,10 @@ __device__ void qmatvec_gemm_kernel2(
     const int nblk = in_f / 32;
     const int cta_threads = NW * WARP_SZ;        // NW warps grid-stride over BM/BN fetch+decode
     constexpr int NWY_K = NW / NTX_K;            // row-groups
-    constexpr int WARP_N_K = BN / NTX_K;         // tokens per warp (NVFP4: 64 ; Q6_K: 128)
+    constexpr int WARP_N_K = BN / NTX_K;         // tokens per warp
     const int wy = warp / NTX_K;
     const int wx = warp % NTX_K;
-    const int rowbase = wy * WARP_M;
+    const int rowbase = wy * (WARP_M * MF);      // this warp's first row; owns MF m16-frags
     const int tokbase = wx * WARP_N_K;
     (void)NWY_K;
 
@@ -802,12 +805,14 @@ __device__ void qmatvec_gemm_kernel2(
            RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
     __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
-    constexpr int NT_W = WARP_N_K / 8;           // n-tiles per warp (NVFP4: 8 ; Q6_K: 16)
-    float facc[NT_W][4];
+    constexpr int NT_W = WARP_N_K / 8;           // n-tiles per warp
+    float facc[MF][NT_W][4];
     #pragma unroll
-    for (int nt = 0; nt < NT_W; nt++)
+    for (int mf = 0; mf < MF; mf++)
         #pragma unroll
-        for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
+        for (int nt = 0; nt < NT_W; nt++)
+            #pragma unroll
+            for (int i = 0; i < 4; i++) facc[mf][nt][i] = 0.0f;
 
     // ---- FETCH raw superblock sb (16B-floored window) into the raw ring (FIX A; NVFP4 only). ----
     auto fetch_superblock = [&](int sb) {
@@ -932,56 +937,66 @@ __device__ void qmatvec_gemm_kernel2(
         }
         asm volatile("cp.async.commit_group;");
 
-        // ONE ldmatrix loads all 32 k; split into lo (k0..15 = af[0,1]) / hi (k16..31 = af[2,3])
-        // by zeroing the off-half registers. The mma sums over 32 k; zeroed regs contribute 0.
-        // this warp's A tile rows = [rowbase, rowbase+WARP_M); tokens = [tokbase, tokbase+WARP_N_K).
-        int af[4];
-        ld_A_s8(af, &sW[cur][rowbase][0], BK);
-        int aflo[4] = { af[0], af[1], 0, 0 };
-        int afhi[4] = { 0, 0, af[2], af[3] };
+        // load MF A m16-frags (one per 16-row sub-band). Each: ONE ldmatrix of 32 k, split lo (k0..15
+        // = af[0,1]) / hi (k16..31 = af[2,3]) by zeroing the off-half regs (the two-sub-scale split).
+        int aflo[MF][4], afhi[MF][4];
+        #pragma unroll
+        for (int mf = 0; mf < MF; mf++) {
+            int af[4];
+            ld_A_s8(af, &sW[cur][rowbase + mf * WARP_M][0], BK);
+            aflo[mf][0] = af[0]; aflo[mf][1] = af[1]; aflo[mf][2] = 0; aflo[mf][3] = 0;
+            afhi[mf][0] = 0; afhi[mf][1] = 0; afhi[mf][2] = af[2]; afhi[mf][3] = af[3];
+        }
         #pragma unroll
         for (int nt = 0; nt < NT_W; nt++) {
             int ntok = tokbase + nt * 8;          // this warp's global n-tile token base
             int bfrag[2];
-            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);
-            int dlo[4] = {0,0,0,0}, dhi[4] = {0,0,0,0};
-            mma_s8_m16n8k32(dlo, aflo, bfrag);
-            mma_s8_m16n8k32(dhi, afhi, bfrag);
+            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);   // ONE B-load reused across MF m-frags x lo/hi
             #pragma unroll
-            for (int ci = 0; ci < 4; ci++) {
-                int rr = rowbase + lane / 4 + (ci >> 1) * 8;        // GLOBAL tile row (this warp's band)
-                int nn = ntok + (lane % 4) * 2 + (ci & 1);          // GLOBAL tile token
-                float da = sAd[cur][nn];
-                facc[nt][ci] += (sS0[cur][rr] * (float)dlo[ci] + sS1[cur][rr] * (float)dhi[ci]) * da;
+            for (int mf = 0; mf < MF; mf++) {
+                int dlo[4] = {0,0,0,0}, dhi[4] = {0,0,0,0};
+                mma_s8_m16n8k32(dlo, aflo[mf], bfrag);
+                mma_s8_m16n8k32(dhi, afhi[mf], bfrag);
+                #pragma unroll
+                for (int ci = 0; ci < 4; ci++) {
+                    int rr = rowbase + mf * WARP_M + lane / 4 + (ci >> 1) * 8;   // GLOBAL tile row
+                    int nn = ntok + (lane % 4) * 2 + (ci & 1);                   // GLOBAL tile token
+                    float da = sAd[cur][nn];
+                    facc[mf][nt][ci] += (sS0[cur][rr] * (float)dlo[ci] + sS1[cur][rr] * (float)dhi[ci]) * da;
+                }
             }
         }
     }
 
     #pragma unroll
-    for (int nt = 0; nt < NT_W; nt++) {
+    for (int mf = 0; mf < MF; mf++) {
         #pragma unroll
-        for (int ci = 0; ci < 4; ci++) {
-            int rr = rowbase + lane / 4 + (ci >> 1) * 8;
-            int nn = tokbase + nt * 8 + (lane % 4) * 2 + (ci & 1);
-            int o = rowtile + rr;
-            int t = toktile + nn;
-            if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[nt][ci];
+        for (int nt = 0; nt < NT_W; nt++) {
+            #pragma unroll
+            for (int ci = 0; ci < 4; ci++) {
+                int rr = rowbase + mf * WARP_M + lane / 4 + (ci >> 1) * 8;
+                int nn = tokbase + nt * 8 + (lane % 4) * 2 + (ci & 1);
+                int o = rowtile + rr;
+                int t = toktile + nn;
+                if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[mf][nt][ci];
+            }
         }
     }
 }
 
+// Q6_K: MF=1, NTX_K=1, NW=4 (bit-identical to the original kernel2).
 extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q6_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
-    qmatvec_gemm_kernel2<GQT_Q6_K, 4, 1>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+    qmatvec_gemm_kernel2<GQT_Q6_K, 4, 1, 1>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-// NVFP4 W4A8: 8-warp 2D MMQ layout (NW=8, NTX_K=2), 256 thr — the kernel1/llama port.
+// NVFP4 W4A8: 8-warp 2D MMQ + MF=2 B-reuse (NW=8, NTX_K=4 -> NWY=2 row-groups x MF=2 = BM=64).
 extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
-    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 2>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 4, 2>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 
 // ===================================================================== //
