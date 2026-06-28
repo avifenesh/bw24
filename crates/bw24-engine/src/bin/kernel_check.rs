@@ -599,6 +599,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
                 }
             }
+            // --- VENDORED llama NVFP4 MMQ GEMM vs the f32 dequant oracle. ---
+            // W4A4-native (mxf4nvf4 block-scale mma) but with llama's 2-level FP8-e8m0/UE4M3 activation
+            // quant -> should be MUCH closer to the f32 oracle than the bw24 hand-roll FP4 (rel ~0.1).
+            // Authoritative gate is still end-to-end argmax; this rel is the accuracy signal that
+            // llama's activation quant fixed bw24's W4A4 maxdiff 1.46.
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                use bw24_gguf::dequant;
+                use bw24_runtime::cpu_linear;
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let _ = row_bytes;
+                let w_f32 = dequant::dequantize(GgmlType::NVFP4, raw, in_f * out_f);
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let d = maxdiff(&cpu, &yb);
+                    let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (informational; \
+                              authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
+                }
+            }
+            // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
+            // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
+            {
+                const G27: &str = "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf";
+                if std::path::Path::new(G27).exists() {
+                    let g27 = GgufFile::open(G27)?;
+                    for tn in ["blk.0.ffn_down.weight", "blk.0.ffn_gate.weight"] {
+                        if let Some(t) = g27.find(tn).filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                            let raw = g27.tensor_data(t); let row_bytes = raw.len() / out_f;
+                            let wd = e.htod_bytes(raw)?;
+                            for tt in [16usize, 512] {
+                                let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
+                                let xd = e.htod(&x)?;
+                                let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, tt, in_f, out_f, row_bytes)?)?;
+                                let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                                let d = maxdiff(&ya, &yb);
+                                let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                                let rel = d / scale;
+                                println!("MMQ-27B {tn} [NVFP4 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} (W4A4-vs-dp4a band ~0.1) {}",
+                                         if rel < 2.5e-1 { "OK" } else { "HIGH" });
+                            }
+                        }
+                    }
+                }
+            }
             // --- Phase-1 CUTLASS FP4 GEMM: REPACK CORRECTNESS gate. ---
             // The de-interleave (GGUF -> plain packed e2m1) + SFB swizzle is the ONLY place a silent
             // wrong-answer hides. TWO checks isolate it:

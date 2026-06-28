@@ -25,6 +25,46 @@ fn main() {
         println!("cargo:rustc-env={env}={}", fatbin.display());
     }
 
+    // ---- Vendored llama NVFP4 MMQ GEMM: a STATIC LIB with C-ABI host launchers (extern "C"). ----
+    // Same kind as the CUTLASS artifact (a host-side launcher cannot go through the device-only fatbin
+    // path), but ALWAYS built (no external header deps — fully ggml-decoupled). The launcher does
+    // cudaFuncSetAttribute (>48KB dynamic smem) + the mul_mat_q NVFP4 kernel launch internally.
+    // Called from Rust via FFI (mmq_ffi.rs), dispatched behind BW24_MMQ=1.
+    {
+        let mmq_src = "cu/llama_mmq_nvfp4.cu";
+        println!("cargo:rerun-if-changed={mmq_src}");
+        let obj = out.join("llama_mmq_nvfp4.o");
+        let lib = out.join("libbw24_mmq.a");
+        let status = Command::new(&nvcc)
+            .args([
+                "-gencode", "arch=compute_120a,code=sm_120a",
+                "-O3", "-std=c++17", "--expt-relaxed-constexpr",
+                "-c", mmq_src, "-o", obj.to_str().unwrap(),
+            ])
+            .status()
+            .expect("spawn nvcc (mmq)");
+        assert!(status.success(), "nvcc static-lib build failed for {mmq_src}");
+        let _ = std::fs::remove_file(&lib);
+        let status = Command::new("ar")
+            .args(["crus", lib.to_str().unwrap(), obj.to_str().unwrap()])
+            .status()
+            .expect("spawn ar (mmq)");
+        assert!(status.success(), "ar failed for {}", lib.display());
+        // --whole-archive: keep the CUDART fatbin-registration global ctor so the device kernel
+        // registers (same MANDATORY reasoning as the CUTLASS link below).
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg={}", lib.display());
+        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+        let cuda_lib = std::path::Path::new(&nvcc).parent().and_then(|p| p.parent())
+            .map(|p| p.join("lib64")).unwrap_or_else(|| std::path::PathBuf::from("/usr/local/cuda-13.1/lib64"));
+        println!("cargo:rustc-link-search=native={}", cuda_lib.display());
+        println!("cargo:rustc-link-arg=-Wl,--push-state,--as-needed");
+        println!("cargo:rustc-link-arg=-lcudart");
+        println!("cargo:rustc-link-arg=-lstdc++");
+        println!("cargo:rustc-link-arg=-Wl,--pop-state");
+    }
+
     // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----
     // CUTLASS needs its host-side GemmUniversalAdapter::run() (host C++), so it cannot go through the
     // fatbin/load_module path above. It is compiled to an object, archived, and whole-archived at link.

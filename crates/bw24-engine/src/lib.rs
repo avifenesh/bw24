@@ -20,6 +20,7 @@ pub mod moe_cache;
 pub mod spill;
 #[cfg(bw24_cutlass)]
 pub mod cutlass_ffi;
+pub mod mmq_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
@@ -851,6 +852,17 @@ impl Engine {
         // worst offender). The dp4a path grids (out_f, m) = far more CTAs, filling the GPU. So route
         // out_f < 2*BM to dp4a (skip the tiling GEMM which structurally can't fill the SMs here).
         const GEMM_MIN_OUT_F: usize = 128;   // 2*BM; below this the GEMM grid.x starves the 82 SMs
+        // VENDORED llama NVFP4 MMQ prefill GEMM (BW24_MMQ=1). The 5150-pp512 kernel from llama.cpp,
+        // ggml-decoupled: native mxf4nvf4 block-scale mma + llama's 2-level FP8/UE4M3 activation quant
+        // (the accurate W4A8-via-FP8 path that fixes bw24's W4A4 maxdiff 1.46). A/B vs the int8 W4A8
+        // default below. Feeds raw f32 activation `x` + raw NVFP4 weight bytes (the launcher quantizes
+        // the activation internally). out_f>=MMQ_Y/2 guard keeps the tile grid from starving the SMs.
+        if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F
+            && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
+            if let crate::model::GpuTensor::Quant { bytes, scale, .. } = w {
+                return self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale);
+            }
+        }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.gemm_supports(w) {
             let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
             return self.qmatvec_gemm(w, &aq, &ad, m);
@@ -949,6 +961,14 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // VENDORED llama NVFP4 MMQ prefill GEMM (BW24_MMQ=1) — uses the RAW f32 activation (its own
+        // 2-level FP8/UE4M3 quant), so it reads x_fallback not aq/ad. A/B vs the int8 W4A8 GEMM below.
+        if m >= 16 && w.out_features() >= 128
+            && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
+            if let GpuTensor::Quant { bytes, scale, .. } = w {
+                return self.qmatvec_mmq_nvfp4(bytes, x_fallback, m, w.in_features(), w.out_features(), *scale);
+            }
+        }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
         // from q8_1), so re-quantize from x_fallback rather than reuse aq/ad. NVFP4 only, m>=16.
         if m >= 16 {
