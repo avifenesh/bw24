@@ -70,3 +70,7 @@ path = "src/bin/graph_decode_gate.rs"
 [[bin]]
 name = "cutlass-smoke"
 path = "src/bin/cutlass_smoke.rs"
+
+[[bin]]
+name = "gdn-bench"
+path = "src/bin/gdn_bench.rs"

@@ -5,12 +5,23 @@
 
 __device__ __forceinline__ float silu(float x) { return x / (1.0f + expf(-x)); }
 
+// All-reduce sum via XOR butterfly: EVERY lane ends with the 32-lane sum in
+// WARP/2 == log2(WARP) shuffles (5 for WARP=32) — no separate broadcast op.
+// (Replaces the old down-then-shfl(0) form = WARP/2 + 1 shuffles. Bit-identical
+// up to f32 add-order; same form already proven in flash_attn.cu:179.)
 template <int WARP>
 __device__ __forceinline__ float warp_reduce_sum(float v) {
 #pragma unroll
+    for (int o = WARP / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
+    return v;
+}
+// Down-only sum: result valid ONLY on lane 0; saves the broadcast shuffle when
+// the consumer is lane-0-gated (the attn output write).
+template <int WARP>
+__device__ __forceinline__ float warp_sum_down(float v) {
+#pragma unroll
     for (int o = WARP / 2; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-    // broadcast lane0 result to all lanes
-    return __shfl_sync(0xffffffff, v, 0);
+    return v;
 }
 
 // ---- Depthwise causal conv1d + optional SiLU. Single sequence. ----
@@ -100,7 +111,7 @@ __device__ void gdn_scan_kernel(
             s_shard[r] = g_val * s_shard[r] + k_reg[r] * delta_col;
             attn_partial += s_shard[r] * q_reg[r];
         }
-        float attn_col = warp_reduce_sum<WARP>(attn_partial);
+        float attn_col = warp_sum_down<WARP>(attn_partial);   // lane-0-valid only (write below)
         if (lane == 0) o[((size_t)t * H + h) * S_v + col] = attn_col * scale;
     }
     // write state back
