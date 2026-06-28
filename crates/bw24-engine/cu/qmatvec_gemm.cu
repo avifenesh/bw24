@@ -66,8 +66,15 @@
 #define BN 128     // tokens   per CTA (NTX=2 token-groups x 64)
 #define BK 32      // contraction per K-step (== quant 32-block)
 #define NWARP 8    // MMQ-PORT (kernel1: Q8_0/Q4_K/Q5_K): 8 warps/CTA (was 4) — hide mma+decode latency
-#define NTX 2      // token-groups: warps split BN into NTX groups (llama ntx)
-#define NWY (NWARP / NTX)  // row-groups (=4): warps split BM into NWY groups of WARP_M rows
+// ARITHMETIC-INTENSITY LEVER (2026-06-28): MFRAG m16-fragments per warp. ncu showed llama's 5451 GEMM
+// wins via higher SM throughput (40% vs bw24 22%) = more mma per smem-load. MFRAG=2: each warp owns 2
+// m16 row-frags (32 rows) and REUSES each loaded B-frag across BOTH -> per K-step a warp does 8 mma
+// from 4 B-loads + 2 A-loads (6 smem loads) instead of 8 mma from 8 B-loads + 1 A-load (9 loads) =
+// 33% fewer smem transactions per mma, NO extra smem tile, same 32 accum regs. With MFRAG=2 the grid
+// is NTX=4 token-groups x NWY=2 row-groups; each row-group covers WARP_M*MFRAG=32 rows (NWY*32=BM=64).
+#define MFRAG 2
+#define NTX 4      // token-groups (MFRAG=2 -> NTX=4 so NWY=2 row-groups cover BM=64 at 32 rows each)
+#define NWY (NWARP / NTX)  // row-groups (=2): each covers WARP_M*MFRAG=32 rows
 // kernel2 (Q6_K/NVFP4 two-sub-scale) and the FP4 mxf4 kernel KEEP the original 4-warp / all-tokens-per-warp
 // layout (out of scope for the MMQ k-quant port; their two-scale split + FP4 ldmatrix swizzle are tuned
 // for it). They use NWARP2 and are launched with block (32, NWARP2). Only kernel1 takes the 8-warp port.
@@ -387,10 +394,10 @@ __device__ void qmatvec_gemm_kernel(
     const int nblk = in_f / 32;
     // MMQ-PORT 2D warp grid (llama ntx split): wy = row-group (0..NWY-1), wx = token-group (0..NTX-1).
     // This warp owns rows [wy*WARP_M .. +WARP_M) of the BM tile and tokens [wx*WARP_N .. +WARP_N) of BN.
-    const int wy = warp / NTX;               // 0..NWY-1 -> which 16-row band
-    const int wx = warp % NTX;               // 0..NTX-1 -> which 64-token half
-    const int rowbase = wy * WARP_M;         // this warp's first tile row (0..BM-WARP_M)
-    const int tokbase = wx * WARP_N;         // this warp's first tile token (0..BN-WARP_N)
+    const int wy = warp / NTX;               // 0..NWY-1 -> which row band (covers WARP_M*MFRAG rows)
+    const int wx = warp % NTX;               // 0..NTX-1 -> which token group
+    const int rowbase = wy * (WARP_M * MFRAG); // this warp's first tile row; owns MFRAG m16-frags
+    const int tokbase = wx * WARP_N;         // this warp's first tile token (WARP_N = BN/NTX = 32)
     const int cta_threads = NWARP * WARP_SZ; // 8 warps = 256 (grid-stride over BM/BN fetch+decode)
 
     // NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
@@ -421,11 +428,14 @@ __device__ void qmatvec_gemm_kernel(
     // (WARP_N/8=8) n-tiles. facc[8][4] = 32 s32->f32 regs/warp (HALF the old facc[16][4]=64), the
     // granularity/rows-per-warp accumulator that lets 8 warps co-reside. Scales applied per K-step
     // into f32 (dw/da vary per 32-block).
-    float facc[WARP_N / 8][4];   // 8 n-tiles per warp
+    // MFRAG m16-frags x (WARP_N/8) n-tiles, 4 accum regs each = MFRAG*4*4 = 32 regs (same as before).
+    float facc[MFRAG][WARP_N / 8][4];
     #pragma unroll
-    for (int nt = 0; nt < WARP_N / 8; nt++)
+    for (int mf = 0; mf < MFRAG; mf++)
         #pragma unroll
-        for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
+        for (int nt = 0; nt < WARP_N / 8; nt++)
+            #pragma unroll
+            for (int i = 0; i < 4; i++) facc[mf][nt][i] = 0.0f;
 
     // ---- FETCH: cp.async the RAW superblock `sb` (== g/GPSB) into the raw ring (one row per out-row),
     //      from the 16B-FLOOR of its byte offset; record nothing (phase recomputed at decode). Issued
@@ -562,41 +572,46 @@ __device__ void qmatvec_gemm_kernel(
         // The 16-row x 32-int8 weight subtile == 16x16 b16; ldmatrix loads the 4 .b32 A-operands in the
         // exact m16n8k32.s8 layout the scalar byte-assembly produced (bit-equivalent). MMQ-PORT: stride is
         // SW_STRIDE (the %8==4 row pad), row base &sW[cur][rowbase] (rowbase = wy*16).
-        int afrag[4];
-        ld_A_s8(afrag, &sW[cur][rowbase][0], SW_STRIDE);
-        // ---- per 8-token n-tile (THIS warp's WARP_N=64 tokens, tokbase) : B frag + mma, scale s32->f32 --
+        // load MFRAG A m16-frags (one per 16-row sub-band of this warp's 32-row span).
+        int afrag[MFRAG][4];
+        #pragma unroll
+        for (int mf = 0; mf < MFRAG; mf++)
+            ld_A_s8(afrag[mf], &sW[cur][rowbase + mf * WARP_M][0], SW_STRIDE);
+        // ---- per 8-token n-tile: load B ONCE, mma against BOTH A-frags (B reuse = the AI lever) --
         #pragma unroll
         for (int nt = 0; nt < WARP_N / 8; nt++) {
-            int ntok = tokbase + nt * 8;   // 0..BN-8 token-tile base in the CTA's BN tokens
-            // B is 8x32 s8, col-major (.col): ldmatrix.x2.b16 from the 8-token n-tile.
+            int ntok = tokbase + nt * 8;
             int bfrag[2];
-            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);
-            int dacc[4] = {0, 0, 0, 0};
-            mma_s8_m16n8k32(dacc, afrag, bfrag);
-            // s32 partials -> f32 with this 32-block's (dw, da) scales (+ bias for min-quants).
-            //   y += dw*da*sumi + bias*da*sumA   (exactly the dp4a fold)
-            // C/D layout: reg ci (0..3): row = lane/4 + (ci>>1)*8 ; col = (lane%4)*2 + (ci&1)
+            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);   // ONE B-load reused across MFRAG m-frags
             #pragma unroll
-            for (int ci = 0; ci < 4; ci++) {
-                int rr = rowbase + lane / 4 + (ci >> 1) * 8;   // 0..BM-1 CTA tile row
-                int nn = ntok + (lane % 4) * 2 + (ci & 1);     // 0..BN-1 token within CTA
-                float da = sAd[cur][nn];
-                facc[nt][ci] += sWd[cur][rr] * da * (float)dacc[ci] + sWb[cur][rr] * da * sAsum[cur][nn];
+            for (int mf = 0; mf < MFRAG; mf++) {
+                int dacc[4] = {0, 0, 0, 0};
+                mma_s8_m16n8k32(dacc, afrag[mf], bfrag);
+                #pragma unroll
+                for (int ci = 0; ci < 4; ci++) {
+                    int rr = rowbase + mf * WARP_M + lane / 4 + (ci >> 1) * 8;   // CTA tile row
+                    int nn = ntok + (lane % 4) * 2 + (ci & 1);                   // token within CTA
+                    float da = sAd[cur][nn];
+                    facc[mf][nt][ci] += sWd[cur][rr] * da * (float)dacc[ci] + sWb[cur][rr] * da * sAsum[cur][nn];
+                }
             }
         }
     }
 
-    // ===== write out: y[t*out_f + o] (token-major). MMQ-PORT: this warp's rows (rowbase) x tokens (tokbase). =====
+    // ===== write out: y[t*out_f + o] (token-major). MFRAG m-frags x (WARP_N/8) n-tiles per warp. =====
     #pragma unroll
-    for (int nt = 0; nt < WARP_N / 8; nt++) {
-        int ntok = tokbase + nt * 8;
+    for (int mf = 0; mf < MFRAG; mf++) {
         #pragma unroll
-        for (int ci = 0; ci < 4; ci++) {
-            int rr = rowbase + lane / 4 + (ci >> 1) * 8;
-            int nn = ntok + (lane % 4) * 2 + (ci & 1);
-            int o = rowtile + rr;
-            int t = toktile + nn;
-            if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[nt][ci];
+        for (int nt = 0; nt < WARP_N / 8; nt++) {
+            int ntok = tokbase + nt * 8;
+            #pragma unroll
+            for (int ci = 0; ci < 4; ci++) {
+                int rr = rowbase + mf * WARP_M + lane / 4 + (ci >> 1) * 8;
+                int nn = ntok + (lane % 4) * 2 + (ci & 1);
+                int o = rowtile + rr;
+                int t = toktile + nn;
+                if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[mf][nt][ci];
+            }
         }
     }
 }
