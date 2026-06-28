@@ -131,10 +131,11 @@ impl HybridModel {
                 Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
+            // RANK3 LEVER (add+rmsnorm fuse): residual add (x1 = x + mixed) + post-attn RMSNorm
+            // (z = rms_norm(x1)*w) in ONE kernel. x1 is still produced (the post-ffn add reads it).
             let mut x1 = e.uninit(n_embd)?;
-            e.add(&x, &mixed, &mut x1, n_embd)?;
             let mut z = e.uninit(n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+            e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z, n_embd, 1, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
@@ -299,10 +300,11 @@ impl HybridModel {
                 Mixer::Full(fa) => self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max)?,
                 Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il)?,
             };
+            // RANK3 LEVER (add+rmsnorm fuse): residual add (x1 = x + mixed) + post-attn RMSNorm
+            // (z = rms_norm(x1)*w) in ONE kernel. x1 is still produced (the post-ffn add reads it).
             let mut x1 = e.uninit(n_embd)?;
-            e.add(&x, &mixed, &mut x1, n_embd)?;
             let mut z = e.uninit(n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+            e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z, n_embd, 1, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
@@ -694,7 +696,6 @@ impl HybridModel {
         let conv_dim = key_dim * 2 + value_dim;
         let eps = cfg.rms_eps;
         let scale = 1.0 / (d_state as f32).sqrt();
-        let pad = d_conv - 1;
 
         // projections (T=1): wqkv, wqkv_gate, ssm_beta, ssm_alpha ALL take input `h` (in_f = n_embd)
         // -> quantize q8_1 ONCE, feed all four (was 4x redundant quantize_q8_1 of the same row).
@@ -709,14 +710,13 @@ impl HybridModel {
              e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
         };
 
-        // conv input = [conv_state (pad cols) | new col]  channel-major [conv_dim, pad+1].
-        // Assemble + roll the ring ON-DEVICE from the resident conv_state (no dtoh/host-loop/htod).
+        // RANK3 LEVER (conv fuse): assemble [conv_state | new col], depthwise causal conv + SiLU, and
+        // roll the ring — ALL in ONE kernel (`ssm_conv1d_fused_decode`), never materializing conv_in
+        // to HBM. Replaces conv_assemble_and_roll + ssm_conv1d. Bit-identical (same accumulation order).
         let rl = cache.recur[il].as_mut().unwrap();
-        let tp = pad + 1;
-        let mut conv_in = e.uninit(conv_dim * tp)?;
-        e.conv_assemble_and_roll(&qkv_mixed, &mut rl.conv_state, &mut conv_in, conv_dim, pad)?;
         let mut conv_out = e.uninit(conv_dim)?;  // [conv_dim, 1] channel-major, SiLU
-        e.ssm_conv1d(&conv_in, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, 1, d_conv, true)?;
+        e.ssm_conv1d_fused_decode(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                                  &mut conv_out, conv_dim, d_conv)?;
 
         // split + repack to GDN [d_state, num_v, 1] ON-DEVICE; q/k repeat 16->32 via modulo
         // (ggml_repeat_4d, kh = vh % num_k). No dtoh/host-loop/3x-htod.

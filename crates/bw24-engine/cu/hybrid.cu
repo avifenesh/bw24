@@ -300,3 +300,42 @@ extern "C" __global__ void conv_assemble_and_roll_f32(
     float* so = conv_state + (size_t)c * pad;
     for (int j = 0; j < pad; j++) so[j] = ci[1 + j];
 }
+
+// RANK3 LEVER (conv fuse, T=1 DECODE): fuse conv_assemble_and_roll + ssm_conv1d_silu into ONE
+// kernel. The two-kernel path materializes conv_in[conv_dim, pad+1] to HBM then reads it straight
+// back; here one thread per channel assembles the conv window [state | new] IN REGISTERS, computes
+// the depthwise conv + SiLU, writes conv_out[c], and rolls the ring — never touching conv_in HBM.
+// Saves 1 launch + the conv_in write/read per linear-attn layer per token.
+// BIT-IDENTICAL to conv_assemble_and_roll_f32 -> ssm_conv1d_silu_f32(T=1, apply_silu=1): the conv
+// window equals the assembled conv_in (cols 0..pad-1 = state, col pad = new), and the accumulation
+// reproduces ssm_conv1d's EXACT 8-wide order (acc += win[j]*wreg[j], j=0..7, wreg[j]=0 for j>=d_conv).
+//   qkv_col:    [conv_dim] new token (channel c at index c), the matmul output (token-major T=1).
+//   conv_state: resident [conv_dim, pad] (channel c, tap j at c*pad + j). pad = d_conv-1.
+//   w:          [d_conv, conv_dim] kernel-major (channel c tap j at c*d_conv + j).
+//   conv_out:   [conv_dim] (channel c at index c), SiLU(conv).
+// One thread per channel c. Launch: grid=ceil(conv_dim/256), block=256.
+extern "C" __global__ void ssm_conv1d_fused_decode_f32(
+        const float* __restrict__ qkv_col, float* __restrict__ conv_state,
+        const float* __restrict__ w, float* __restrict__ conv_out, int conv_dim, int d_conv) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= conv_dim) return;
+    int pad = d_conv - 1;
+    float* st = conv_state + (size_t)c * pad;
+    const float* wc = w + (size_t)c * d_conv;
+    // assemble the conv window in registers: win[0..pad-1] = state, win[pad] = new.
+    float win[8];
+    #pragma unroll
+    for (int j = 0; j < 8; j++) win[j] = (j < pad) ? st[j] : 0.0f;
+    win[pad] = qkv_col[c];          // pad <= 7 (d_conv <= 8); the new column
+    float wreg[8];
+    #pragma unroll
+    for (int j = 0; j < 8; j++) wreg[j] = (j < d_conv) ? wc[j] : 0.0f;
+    // depthwise causal conv — SAME 8-wide accumulation order as ssm_conv1d_silu_f32 (t=0).
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) acc += win[j] * wreg[j];
+    conv_out[c] = silu(acc);
+    // roll the ring: conv_state[j] = win[1 + j] for j in 0..pad-1 (drop oldest, append new).
+    #pragma unroll
+    for (int j = 0; j < 8; j++) if (j < pad) st[j] = win[1 + j];
+}

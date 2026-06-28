@@ -674,6 +674,21 @@ impl Engine {
         Ok(())
     }
 
+    /// RANK3 LEVER (add+rmsnorm fuse): `res = a + b; dst = rms_norm(res) * w` in ONE launch. Fuses
+    /// e.add(a,b,res) + e.rms_norm(res,w,dst), removing one launch + one HBM read of the residual per
+    /// residual+norm pair. BIT-IDENTICAL to the two-kernel sequence (same IEEE add, same reduction).
+    pub fn add_rms_norm(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                        res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
+                        eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_rms_norm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b2 = self.gpu.stream.launch_builder(&f);
+        b2.arg(a).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
+        unsafe { b2.launch(cfg)?; }
+        Ok(())
+    }
+
     /// L2 norm per row (head_dim), no weight.
     pub fn l2_norm(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                    eps: f32) -> Result<(), Box<dyn std::error::Error>> {
@@ -1612,6 +1627,24 @@ impl Engine {
         let (cd, p) = (conv_dim as i32, pad as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(qkv_col).arg(conv_state).arg(conv_in).arg(&cd).arg(&p);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// RANK3 LEVER (conv fuse, T=1 DECODE): fused conv_assemble_and_roll + ssm_conv1d_silu in ONE
+    /// launch. Assembles the conv window [conv_state | qkv_col] in registers, computes the depthwise
+    /// causal conv + SiLU into `conv_out`, and rolls the ring — never materializing conv_in to HBM.
+    /// Replaces e.conv_assemble_and_roll(...) + e.ssm_conv1d(...). BIT-IDENTICAL to that two-kernel
+    /// sequence (same 8-wide accumulation order, same SiLU). `conv_out` is [conv_dim] (T=1).
+    pub fn ssm_conv1d_fused_decode(&self, qkv_col: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
+                                   w: &CudaSlice<f32>, conv_out: &mut CudaSlice<f32>,
+                                   conv_dim: usize, d_conv: usize)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_fused_decode_f32");
+        let cfg = LaunchConfig::for_num_elems(conv_dim as u32);
+        let (cd, dc) = (conv_dim as i32, d_conv as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_col).arg(conv_state).arg(w).arg(conv_out).arg(&cd).arg(&dc);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

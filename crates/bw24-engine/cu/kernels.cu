@@ -157,6 +157,37 @@ extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
+// ---- RANK3 LEVER (add+rmsnorm fuse): residual-add THEN RMSNorm in ONE kernel. ----
+// res = a + b  (the residual, written out for the next residual-add); dst = rms_norm(res) * w.
+// Fuses e.add(a,b,res) + e.rms_norm(res,w,dst) — removes one launch + one HBM read of `res` per
+// residual+norm pair. BIT-IDENTICAL to add_f32 then rms_norm_f32: r=a[i]+b[i] is the same IEEE add,
+// and the sum-of-squares reduction reads the same r values in the same per-thread/strided order.
+// One block per row (row stride = ncols). a,b,res,dst: [ncols, nrows]; w: [ncols].
+extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                            const float* __restrict__ w, float* __restrict__ res,
+                                            float* __restrict__ dst, int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i] + br[i]; rr[i] = v; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = rr[i] * scale * w[i];
+}
+
 // ---- L2 norm per head_dim (no weight). y = x / sqrt(sum(x^2)+eps). one block per row ----
 extern "C" __global__ void l2_norm_f32(const float* __restrict__ x, float* __restrict__ dst,
                                        int ncols, float eps) {

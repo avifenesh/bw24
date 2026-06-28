@@ -36,6 +36,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("rms_norm     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- RANK3 LEVER (add+rmsnorm fuse): add_rms_norm must be BIT-IDENTICAL to add_f32 then
+    //     rms_norm_f32 (same residual `res` AND same normed `dst`). ---
+    {
+        let (ncols, nrows) = (4096usize, 1usize);
+        let eps = 1e-6f32;
+        let a: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 61)).collect();
+        let b: Vec<f32> = (0..ncols * nrows).map(|i| pr(i + 67)).collect();
+        let w: Vec<f32> = (0..ncols).map(|i| 0.5 + pr(i + 71) * 0.1).collect();
+        let ad = e.htod(&a)?; let bd = e.htod(&b)?; let wd = e.htod(&w)?;
+        // reference: add then rms_norm.
+        let mut res_ref = e.zeros(ncols * nrows)?;
+        e.add(&ad, &bd, &mut res_ref, ncols * nrows)?;
+        let mut z_ref = e.zeros(ncols * nrows)?;
+        e.rms_norm(&res_ref, &wd, &mut z_ref, ncols, nrows, eps)?;
+        // fused.
+        let mut res_f = e.zeros(ncols * nrows)?;
+        let mut z_f = e.zeros(ncols * nrows)?;
+        e.add_rms_norm(&ad, &bd, &wd, &mut res_f, &mut z_f, ncols, nrows, eps)?;
+        let rr = e.dtoh(&res_ref)?; let rf = e.dtoh(&res_f)?;
+        let zr = e.dtoh(&z_ref)?; let zf = e.dtoh(&z_f)?;
+        let rbad = rr.iter().zip(&rf).filter(|(x, y)| x != y).count();
+        let zbad = zr.iter().zip(&zf).filter(|(x, y)| x != y).count();
+        println!("add_rms_norm fused: res_mismatch={rbad} norm_mismatch={zbad} {}",
+                 if rbad == 0 && zbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- L2 norm ---
     {
         let (ncols, nrows) = (128usize, 6usize);
@@ -182,6 +208,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gpu = e.dtoh(&yd)?;
         let d = maxdiff(&cpu, &gpu);
         println!("ssm_conv1d   maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
+    }
+
+    // --- RANK3 LEVER (conv fuse, T=1 decode): ssm_conv1d_fused_decode must be BIT-IDENTICAL to the
+    //     two-kernel conv_assemble_and_roll -> ssm_conv1d(T=1) path (same conv_out AND rolled state). ---
+    {
+        let (conv_dim, d_conv) = (96usize, 4usize);
+        let pad = d_conv - 1;
+        let qkv: Vec<f32> = (0..conv_dim).map(|i| pr(i + 31)).collect();
+        let st0: Vec<f32> = (0..conv_dim * pad).map(|i| pr(i + 41) * 0.7).collect();
+        let w: Vec<f32> = (0..d_conv * conv_dim).map(|i| pr(i + 51) * 0.3).collect();
+        let qd = e.htod(&qkv)?;
+        let wd = e.htod(&w)?;
+        // two-kernel reference (separate state buffer).
+        let mut st_ref = e.htod(&st0)?;
+        let mut conv_in = e.zeros(conv_dim * (pad + 1))?;
+        e.conv_assemble_and_roll(&qd, &mut st_ref, &mut conv_in, conv_dim, pad)?;
+        let mut out_ref = e.zeros(conv_dim)?;
+        e.ssm_conv1d(&conv_in, &wd, &mut out_ref, conv_dim, 1, d_conv, true)?;
+        // fused (its own state buffer).
+        let mut st_f = e.htod(&st0)?;
+        let mut out_f = e.zeros(conv_dim)?;
+        e.ssm_conv1d_fused_decode(&qd, &mut st_f, &wd, &mut out_f, conv_dim, d_conv)?;
+        let or = e.dtoh(&out_ref)?; let of = e.dtoh(&out_f)?;
+        let sr = e.dtoh(&st_ref)?; let sf = e.dtoh(&st_f)?;
+        let obad = or.iter().zip(&of).filter(|(a, b)| a != b).count();
+        let sbad = sr.iter().zip(&sf).filter(|(a, b)| a != b).count();
+        println!("ssm_conv1d fused: out_mismatch={obad} state_mismatch={sbad} {}",
+                 if obad == 0 && sbad == 0 { "OK" } else { fails += 1; "FAIL" });
     }
 
     // --- gdn_scan (M3): one head, S_v=128, T=3. CPU ref of the exact recurrence. ---
