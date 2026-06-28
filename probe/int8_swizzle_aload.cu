@@ -32,16 +32,27 @@ __device__ void ld_A_ldmatrix(int (&t)[4], const int8_t* base) {
 // Swizzle: store row r at physical word-col (c ^ (r & 7)) [the standard 8-way XOR for 32B stride];
 // load with the SAME xor so the value read == the value stored at logical (r,c). The fragment regs
 // are thus identical to ldmatrix's, but the 16 rows now map to 8 distinct bank groups (conflict-free).
+// CORRECT manual load from the EMPIRICAL map (full dump): lane L holds rows {L/4, L/4+8}:
+//   reg0 = row(L/4) k-words [0..3]  (low k-half),  reg2 = row(L/4) k-words [4..7] (high k-half)
+//   reg1 = row(L/4+8) low,          reg3 = row(L/4+8) high.
+// Wait — the dump shows reg0_row=reg2_row=L/4 and reg1_row=reg3_row=L/4+8. Each .b32 reg = 4 int8
+// of ONE row's k-run. reg0/reg2 differ by k-offset (reg0=k of the low quadrant, reg2=k+16). So:
+//   t[0]=row0 word(klo), t[1]=row8 word(klo), t[2]=row0 word(khi), t[3]=row8 word(khi)
+// where row0=L/4, row8=L/4+8, and the k-word index within the row is (L%4) (the 4 lanes sharing a
+// row each take a different k-word). Swizzle: XOR the physical word-col by (row&7) at store+load.
 __device__ void ld_A_swizzled(int (&t)[4], const int8_t* base) {
-    int row = threadIdx.x % 16;       // logical row this lane's frag rows come from
-    int half = threadIdx.x / 16;      // k-half (0: k0..15, 1: k16..31) -> word base half*4
-    const uint32_t* rowp = (const uint32_t*)(base + row * STRIDE);  // 8 u32 words/row
-    #pragma unroll
-    for (int w = 0; w < 4; w++) {
-        int c = half * 4 + w;                 // logical word column 0..7
-        int cphys = c ^ (row & 7);            // XOR-swizzle: scatter rows across bank groups
-        t[w] = rowp[cphys];
-    }
+    int r0 = threadIdx.x / 4;          // this lane's low row (0..7 for L<32... wait L/4 = 0..7)
+    int r8 = r0 + 8;
+    int kw = threadIdx.x % 4;          // which k-word (0..3) of this row's 8 words
+    const uint32_t* p0 = (const uint32_t*)(base + r0 * STRIDE);
+    const uint32_t* p8 = (const uint32_t*)(base + r8 * STRIDE);
+    // klo words = 0..3, khi words = 4..7. lane's kw selects within each half.
+    int clo = kw;          // low k-half word
+    int chi = kw + 4;      // high k-half word
+    t[0] = p0[clo ^ (r0 & 7)];
+    t[1] = p8[clo ^ (r8 & 7)];
+    t[2] = p0[chi ^ (r0 & 7)];
+    t[3] = p8[chi ^ (r8 & 7)];
 }
 
 // DUMP: fill tile so each int8 byte = its row index (0..15); ldmatrix it; print per-lane what
@@ -55,12 +66,11 @@ __global__ void dump_map() {
     int t[4];
     ld_A_ldmatrix(t, &tile[0][0]);
     // print lanes 0,1,2,16,17 — enough to see the quadrant/half distribution.
-    if (tid == 0 || tid == 1 || tid == 2 || tid == 16 || tid == 17) {
-        int8_t* bytes = (int8_t*)t;
-        printf("lane %2d rows: r0=%d r1=%d r2=%d r3=%d | r4=%d r5=%d r6=%d r7=%d | r8=%d r9=%d r10=%d r11=%d | r12=%d r13=%d r14=%d r15=%d\n",
-            tid, bytes[0],bytes[1],bytes[2],bytes[3], bytes[4],bytes[5],bytes[6],bytes[7],
-            bytes[8],bytes[9],bytes[10],bytes[11], bytes[12],bytes[13],bytes[14],bytes[15]);
-    }
+    // dump ALL 32 lanes, but only the distinct rows per reg-group (bytes 0,4,8,12 = first byte of
+    // each .b32 reg) — that's enough to see the full lane->row map across all L%16 quadrant-rows.
+    int8_t* bytes = (int8_t*)t;
+    printf("lane %2d: reg0_row=%d reg1_row=%d reg2_row=%d reg3_row=%d\n",
+        tid, bytes[0], bytes[4], bytes[8], bytes[12]);
 }
 
 __global__ void probe(int* mism, int* conflict_marker) {
