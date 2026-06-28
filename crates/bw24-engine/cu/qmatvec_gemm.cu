@@ -746,7 +746,13 @@ __device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whi
 // The activation full-32 is used both times; zeroed weight lanes contribute 0 to the s32 sum.
 // Q6_K: sub-scale is int (scn) and overall block scale is d (f32) -> half_scale = d * scn * da.
 // NVFP4: sub-scale is f32 (UE4M3) and block d is 1 -> half_scale = su * da. (macro-scale post.)
-template<int QT>
+// kernel2 (two-sub-scale: Q6_K, NVFP4), generic over (NW warps, NTX_K token-groups). NVFP4 W4A8 runs
+// the 8-warp 2D MMQ layout (NW=8, NTX_K=2: NWY=4 row-groups x 2 token-groups, each warp 16 rows x 64
+// tokens, facc[8][4]=32 regs) — the SAME port that made kernel1 (Q4_K) 4.5x faster, applied to the
+// two-scale split. (llama's NVFP4 MMQ is ALSO q8_1-activation/W4A8 at pp512=5451 — int8 W4A8 is NOT
+// capped; this closes the 4-warp implementation gap.) Q6_K keeps NW=4, NTX_K=1 (wy=warp, wx=0,
+// rowbase=warp*16, tokbase=0) -> reproduces the OLD kernel2 EXACTLY -> bit-identical.
+template<int QT, int NW, int NTX_K>
 __device__ void qmatvec_gemm_kernel2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -758,7 +764,14 @@ __device__ void qmatvec_gemm_kernel2(
     const int lane = threadIdx.x;
     const int tid  = warp * WARP_SZ + lane;
     const int nblk = in_f / 32;
-    const int cta_threads = NWARP2 * WARP_SZ;   // kernel2/FP4 keep the 4-warp grid-stride (launched 32x4)
+    const int cta_threads = NW * WARP_SZ;        // NW warps grid-stride over BM/BN fetch+decode
+    constexpr int NWY_K = NW / NTX_K;            // row-groups
+    constexpr int WARP_N_K = BN / NTX_K;         // tokens per warp (NVFP4: 64 ; Q6_K: 128)
+    const int wy = warp / NTX_K;
+    const int wx = warp % NTX_K;
+    const int rowbase = wy * WARP_M;
+    const int tokbase = wx * WARP_N_K;
+    (void)NWY_K;
 
     // NSTAGE ring buffer. ONE full 32-wide weight tile (no separate lo/hi smem): the two-sub-scale
     // split is done at fragment level by zeroing the off-half A-registers (afrag[0,1]=k0..15 lo,
@@ -774,9 +787,10 @@ __device__ void qmatvec_gemm_kernel2(
            RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
     __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
-    float facc[BN / 8][4];
+    constexpr int NT_W = WARP_N_K / 8;           // n-tiles per warp (NVFP4: 8 ; Q6_K: 16)
+    float facc[NT_W][4];
     #pragma unroll
-    for (int nt = 0; nt < BN / 8; nt++)
+    for (int nt = 0; nt < NT_W; nt++)
         #pragma unroll
         for (int i = 0; i < 4; i++) facc[nt][i] = 0.0f;
 
@@ -905,21 +919,23 @@ __device__ void qmatvec_gemm_kernel2(
 
         // ONE ldmatrix loads all 32 k; split into lo (k0..15 = af[0,1]) / hi (k16..31 = af[2,3])
         // by zeroing the off-half registers. The mma sums over 32 k; zeroed regs contribute 0.
+        // this warp's A tile rows = [rowbase, rowbase+WARP_M); tokens = [tokbase, tokbase+WARP_N_K).
         int af[4];
-        ld_A_s8(af, &sW[cur][warp * WARP_M][0], BK);
+        ld_A_s8(af, &sW[cur][rowbase][0], BK);
         int aflo[4] = { af[0], af[1], 0, 0 };
         int afhi[4] = { 0, 0, af[2], af[3] };
         #pragma unroll
-        for (int nt = 0; nt < BN / 8; nt++) {
+        for (int nt = 0; nt < NT_W; nt++) {
+            int ntok = tokbase + nt * 8;          // this warp's global n-tile token base
             int bfrag[2];
-            ld_B_s8(bfrag, &sA[cur][nt * 8][0], BK);
+            ld_B_s8(bfrag, &sA[cur][ntok][0], BK);
             int dlo[4] = {0,0,0,0}, dhi[4] = {0,0,0,0};
             mma_s8_m16n8k32(dlo, aflo, bfrag);
             mma_s8_m16n8k32(dhi, afhi, bfrag);
             #pragma unroll
             for (int ci = 0; ci < 4; ci++) {
-                int rr = warp * WARP_M + lane / 4 + (ci >> 1) * 8;  // GLOBAL tile row
-                int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);
+                int rr = rowbase + lane / 4 + (ci >> 1) * 8;        // GLOBAL tile row (this warp's band)
+                int nn = ntok + (lane % 4) * 2 + (ci & 1);          // GLOBAL tile token
                 float da = sAd[cur][nn];
                 facc[nt][ci] += (sS0[cur][rr] * (float)dlo[ci] + sS1[cur][rr] * (float)dhi[ci]) * da;
             }
@@ -927,12 +943,12 @@ __device__ void qmatvec_gemm_kernel2(
     }
 
     #pragma unroll
-    for (int nt = 0; nt < BN / 8; nt++) {
+    for (int nt = 0; nt < NT_W; nt++) {
         #pragma unroll
         for (int ci = 0; ci < 4; ci++) {
-            int rr = lane / 4 + (ci >> 1) * 8;
-            int nn = nt * 8 + (lane % 4) * 2 + (ci & 1);
-            int o = rowtile + warp * WARP_M + rr;
+            int rr = rowbase + lane / 4 + (ci >> 1) * 8;
+            int nn = tokbase + nt * 8 + (lane % 4) * 2 + (ci & 1);
+            int o = rowtile + rr;
             int t = toktile + nn;
             if (o < out_f && t < T) y[(size_t)t * out_f + o] = facc[nt][ci];
         }
@@ -943,13 +959,14 @@ extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_q6_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
-    qmatvec_gemm_kernel2<GQT_Q6_K>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+    qmatvec_gemm_kernel2<GQT_Q6_K, 4, 1>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
-extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4(
+// NVFP4 W4A8: 8-warp 2D MMQ layout (NW=8, NTX_K=2), 256 thr — the kernel1/llama port.
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
-    qmatvec_gemm_kernel2<GQT_NVFP4>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 2>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 
 // ===================================================================== //
