@@ -1015,16 +1015,30 @@ impl Engine {
                         m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
-        let name = match qtype {
-            QT_Q8_0 => "qmatvec_q8_0_mmvq", QT_Q4_K => "qmatvec_q4_K_mmvq",
-            QT_Q6_K => "qmatvec_q6_K_mmvq", QT_NVFP4 => "qmatvec_nvfp4_mmvq",
+        // MLP LEVER (BW24_MMVQ_MR=2|4): NVFP4 m=1 multi-row-per-warp variant. Each warp computes RPW
+        // output rows in one activation pass (RPW acc chains + weight loads in flight -> hides the
+        // weight-load latency that pins the single-row kernel at 30-46% DRAM). NVFP4 only (the big
+        // matvec); other dtypes keep the single-row kernel. grid.x covers RPW rows per warp.
+        // Default RPW=2 (clean clock-locked graph A/B: +1.7%@128, +0.7%@512, +1.8%@2048 vs single-row;
+        // RPW=4 regresses on register pressure). Bit-identical per row (argmax 142, same logit maxdiff
+        // as single-row on 9B). BW24_MMVQ_MR overrides (1 = single-row reference).
+        let mr: u32 = if m == 1 && qtype == QT_NVFP4 {
+            std::env::var("BW24_MMVQ_MR").ok().and_then(|s| s.parse().ok()).unwrap_or(2)
+        } else { 1 };
+        let name = match (qtype, mr) {
+            (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_mr2",
+            (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_mr4",
+            (QT_Q8_0, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q6_K, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
+        // each block still has ROWS_PER_BLOCK warps; with mr rows/warp it covers ROWS_PER_BLOCK*mr rows.
+        let rows_per_block = ROWS_PER_BLOCK * mr;
         let cfg = LaunchConfig {
-            grid_dim: ((out_f as u32 + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK, m as u32, 1),
-            block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, m as u32, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row (x mr rows each)
             shared_mem_bytes: 0,                  // warp-only reduce at m=1
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);

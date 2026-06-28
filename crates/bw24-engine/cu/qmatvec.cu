@@ -700,6 +700,88 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ---- NVFP4 MMVQ, MULTI-ROW-PER-WARP (MLP lever). The single-row mmvq above is m=1 LATENCY-bound
+// (ncu: 30-46% DRAM, loads-in-flight starved — one acc chain per warp waits on each weight LDG
+// before the next dp4a). This variant has ONE warp compute RPW output rows in ONE pass over the
+// shared activation: the activation int8 (loaded once as 2x int4) is REUSED across all RPW rows, and
+// RPW independent weight rows are loaded + RPW independent acc chains run per iteration -> RPW x the
+// memory-level parallelism, hiding the weight-load latency WITHOUT a cross-warp reduce barrier (the
+// barrier was why more-WARPS-per-row was slower; more-ROWS-per-warp has no barrier). Activation
+// bytes leave HBM/L2 1x per warp instead of 1x per row. BIT-IDENTICAL per row to qmatvec_nvfp4_mmvq:
+// same dp4a order, same ue4m3 scale, same warp_reduce_sum, same write. grid.x sized for RPW rows/warp.
+template<int RPW>
+__device__ __forceinline__ void nvfp4_mmvq_multirow(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;   // first of this warp's RPW rows
+    int t = blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int whichHalf = g & 1;
+        int s0 = whichHalf * 2;
+        // activation loaded ONCE, reused across all RPW rows.
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0];
+        int4 a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float adg = adrow[g];
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            const unsigned char* b = W + (long)o * row_bytes + (long)sblk * 36;
+            const unsigned char* d_bytes = b;
+            const unsigned char* qs = b + 4;
+            float partial = 0.0f;
+            #pragma unroll
+            for (int sl = 0; sl < 2; sl++) {
+                int s = s0 + sl;
+                const unsigned char* qss = qs + s * 8;
+                int q4a = get_int_b4(qss);
+                int q4b = get_int_b4(qss + 4);
+                int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+                int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+                int base = sl * 4;
+                int sumi = 0;
+                sumi = dp4a(va.x, aq4[base + 0], sumi);
+                sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                sumi = dp4a(va.y, aq4[base + 2], sumi);
+                sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
+            }
+            acc[r] += adg * partial;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[(size_t)t * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_mr4(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_multirow<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).
 // W: block_q8_0 rows (34 bytes/block). aq: int8 [m,in]; ad: f32 [m, in/32].
 // grid (out, m); block 128 threads (4 warps), each warp strides the in/32 blocks.
