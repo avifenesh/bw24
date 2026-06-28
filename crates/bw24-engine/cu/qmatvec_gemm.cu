@@ -582,6 +582,16 @@ __device__ void qmatvec_gemm_kernel(
         asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
         __syncthreads();   // cur visible (sA landed + sW decoded last iter); WAR-safe prefetch
 
+        // LATENCY-HIDE (2026-06-28): issue the A-frag ldmatrix HERE, right after the sync, BEFORE the
+        // decode/prefetch block — so the ldmatrix's smem-load latency overlaps the decode_stage ALU
+        // (which writes sW[nxt], a DIFFERENT stage, so no hazard with this read of sW[cur]). Previously
+        // the ldmatrix sat after the prefetch, on the mma critical path. Bit-identical (same loads,
+        // reordered earlier). The proven A-load layout (ldmatrix x4.b16) is unchanged.
+        int afrag[MFRAG][4];
+        #pragma unroll
+        for (int mf = 0; mf < MFRAG; mf++)
+            ld_A_s8(afrag[mf], &sW[cur][rowbase + mf * WARP_M][0], SW_STRIDE);
+
         // (A) prefetch gp's activation; (pre-decode path) fetch superblock gp/GPSB+1 when gp enters a new
         //     superblock (keeps raw ring 1 superblock ahead) then DECODE gp from RESIDENT smem (no global
         //     read on chain). (inline path) inline-global decode gp straight into sW (original behavior).
@@ -595,16 +605,6 @@ __device__ void qmatvec_gemm_kernel(
             }
         }
         asm volatile("cp.async.commit_group;");
-
-        // ---- build A fragment for THIS warp's WARP_M=16 rows (rowbase) via ldmatrix.x4.b16 ----
-        // The 16-row x 32-int8 weight subtile == 16x16 b16; ldmatrix loads the 4 .b32 A-operands in the
-        // exact m16n8k32.s8 layout the scalar byte-assembly produced (bit-equivalent). MMQ-PORT: stride is
-        // SW_STRIDE (the %8==4 row pad), row base &sW[cur][rowbase] (rowbase = wy*16).
-        // load MFRAG A m16-frags (one per 16-row sub-band of this warp's 32-row span).
-        int afrag[MFRAG][4];
-        #pragma unroll
-        for (int mf = 0; mf < MFRAG; mf++)
-            ld_A_s8(afrag[mf], &sW[cur][rowbase + mf * WARP_M][0], SW_STRIDE);
         // ---- per 8-token n-tile: load B ONCE, mma against BOTH A-frags (B reuse = the AI lever) --
         #pragma unroll
         for (int nt = 0; nt < WARP_N / 8; nt++) {
