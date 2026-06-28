@@ -31,6 +31,11 @@
 // REGRESSED them, same occupancy-bound tradeoff as the reverted swizzle-pad/tile-redesign). FIX B
 // (barrier batching via deeper NSTAGE) was tested and REJECTED: NSTAGE=4 regressed pp512 1287->1220
 // (more smem -> fewer CTAs/SM); this tile is occupancy-bound, not barrier-frequency-bound at depth.
+// REJECTED 2026-06-28 (all measured+reverted): BN=512 (1546->1040 occ collapse), NSTAGE=2 (flat),
+//   big-accum 4-warp (-3%), MFRAG=4 (flat), kernel1 A-load XOR-swizzle (flat; only kernel2 NVFP4 +1.7%,
+//   shipped 72df46c), sAd/sAsum scale-hoist (flat, compiler already CSE'd). SHIPPED: BN=256 (+6-8%),
+//   MFRAG=2 (+6.6% 27B), kernel2 swizzle (+1.7%). AMDAHL (prefill-only profile): ~98% GEMM, <3%
+//   fa_prefill/SSM -> the register-K-pipeline GEMM rewrite ALONE crosses llama; non-GEMM needs no work.
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
