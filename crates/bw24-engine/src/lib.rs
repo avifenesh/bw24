@@ -1012,7 +1012,7 @@ impl Engine {
     /// daily-hot dtypes (Q8_0, Q4_K, Q6_K, NVFP4) — others keep the _dp4a matvec (oracle/fallback).
     pub fn mmvq_supports(&self, qtype: i32) -> bool {
         if std::env::var("BW24_MMVQ").is_err() { return false; }
-        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_NVFP4)
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
     }
 
     /// PERF-3 warp-per-row MMVQ launcher (decode m=1 hot path). block=(32,ROWS_PER_BLOCK,1):
@@ -1045,6 +1045,7 @@ impl Engine {
             (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_mr4",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_mr2",
             (QT_Q8_0, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q5_K, _) => "qmatvec_q5_K_mmvq",
             (QT_Q6_K, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
