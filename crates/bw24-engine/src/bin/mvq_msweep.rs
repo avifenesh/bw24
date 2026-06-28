@@ -23,10 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wd = e.htod_bytes(raw)?;
     println!("weight blk.0.ffn_down [NVFP4] in_f={in_f} out_f={out_f} row_bytes={row_bytes}");
     let iters = 2000;
+    println!("--- grid.y=m (current, no weight reuse) ---");
     for m in [1usize, 2, 4, 8] {
         let x: Vec<f32> = (0..m * in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
         let xd = e.htod(&x)?;
-        // warm
         for _ in 0..50 { let _ = e.qmatvec_mmvq_raw(&wd, &xd, m, in_f, out_f, qtype, row_bytes)?; }
         e.stream().synchronize()?;
         let t0 = Instant::now();
@@ -34,6 +34,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         e.stream().synchronize()?;
         let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
         println!("  m={m}: {us:.2} us/call  ({:.2} us/token)", us / m as f64);
+    }
+    println!("--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---");
+    for (m, mcols) in [(2usize, 2usize), (4, 4)] {
+        let x: Vec<f32> = (0..m * in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
+        let xd = e.htod(&x)?;
+        // bit-identity vs grid.y=m reference
+        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, m, in_f, out_f, qtype, row_bytes)?)?;
+        let r_bat = e.dtoh(&e.qmatvec_nvfp4_batched_raw(&wd, &xd, m, in_f, out_f, row_bytes, mcols)?)?;
+        let bad = r_ref.iter().zip(&r_bat).filter(|(a, b)| (*a - *b).abs() > 1e-3).count();
+        for _ in 0..50 { let _ = e.qmatvec_nvfp4_batched_raw(&wd, &xd, m, in_f, out_f, row_bytes, mcols)?; }
+        e.stream().synchronize()?;
+        let t0 = Instant::now();
+        for _ in 0..iters { let _ = e.qmatvec_nvfp4_batched_raw(&wd, &xd, m, in_f, out_f, row_bytes, mcols)?; }
+        e.stream().synchronize()?;
+        let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+        println!("  m={m} (b{mcols}): {us:.2} us/call  ({:.2} us/token)  bit-bad={bad}", us / m as f64);
     }
     Ok(())
 }

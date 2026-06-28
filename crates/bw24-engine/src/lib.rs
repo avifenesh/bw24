@@ -1059,6 +1059,29 @@ impl Engine {
         self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0)
     }
 
+    /// BATCHED weight-tile-resident NVFP4 matvec (the m=2-4 concurrent-decode win). One warp walks the
+    /// weight row ONCE, dp4a vs all m activation columns -> weight HBM/L2 traffic 1x for m tokens (vs
+    /// grid.y=m re-reading it m times). `mcols` ∈ {2,4} picks the compile-time batch; m must be <= mcols.
+    /// y is [m, out_f] token-major. BIT-IDENTICAL per (token,row) to qmatvec_nvfp4_mmvq.
+    pub fn qmatvec_nvfp4_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                     in_f: usize, out_f: usize, row_bytes: usize, mcols: usize)
+                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        let name = match mcols { 2 => "qmatvec_nvfp4_mmvq_b2", 4 => "qmatvec_nvfp4_mmvq_b4",
+                                 _ => return Err("batched mcols must be 2 or 4".into()) };
+        let f = self.func(name);
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK, 1, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
     /// Stage-C FP4 gate (BW24_FP4): if `w` is an NVFP4 weight with in_f%64==0, run the native mxf4
     /// block-scale GEMM and apply the per-tensor macro-scale, returning Some(y). Else None (caller
     /// falls through to the int8 GEMM / dp4a). Strict opt-in over the proven int8 path; m>=16 only.

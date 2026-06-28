@@ -782,6 +782,93 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_mr4(
     nvfp4_mmvq_multirow<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ---- NVFP4 BATCHED matvec, WEIGHT-TILE-RESIDENT across M token columns (the m=2-4 concurrent-decode
+// win). The current mmvq launches grid.y=m INDEPENDENT blocks per output row -> the weight row is
+// re-read m times from HBM/L2. Here ONE warp owns ONE output row and walks the weight ONCE, doing
+// dp4a against ALL m activation columns (m independent accumulators in regs). The weight quant
+// bytes + decoded e2m1 values leave HBM/L2 ONCE and serve all m tokens (the activation is tiny: m*32
+// int8 per group). So m tokens cost ~1 weight-read instead of m. y is [m, out_f] (token-major, same
+// as the per-m kernel writes y[t*out_f+o]). MCOLS is the compile-time batch (2 or 4). For m<MCOLS the
+// extra columns are computed against zero-padded activation (caller sizes y for exactly m; we guard).
+// BIT-IDENTICAL per (token,row) to qmatvec_nvfp4_mmvq: same dp4a order, same ue4m3 scale, same reduce.
+template<int MCOLS>
+__device__ __forceinline__ void nvfp4_mmvq_batched(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;   // this warp's output row
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int whichHalf = g & 1;
+        const unsigned char* b = wrow + (long)sblk * 36;
+        const unsigned char* d_bytes = b;
+        const unsigned char* qs = b + 4;
+        int s0 = whichHalf * 2;
+        // decode the weight nibbles ONCE for this group (reused across all m token columns).
+        int2 wv[2][2];   // [sl][0]=va, [sl][1]=vb
+        float wscale[2];
+        #pragma unroll
+        for (int sl = 0; sl < 2; sl++) {
+            int s = s0 + sl;
+            const unsigned char* qss = qs + s * 8;
+            int q4a = get_int_b4(qss);
+            int q4b = get_int_b4(qss + 4);
+            wv[sl][0] = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+            wv[sl][1] = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+            wscale[sl] = ue4m3_to_f32_d(d_bytes[s]);
+        }
+        // for each token column: load its 32 int8 activation + per-group scale, dp4a vs the decoded W.
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+            int4 a01 = aq16[0];
+            int4 a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            float adg = ad[(size_t)c * nsb + g];
+            float partial = 0.0f;
+            #pragma unroll
+            for (int sl = 0; sl < 2; sl++) {
+                int base = sl * 4;
+                int2 va = wv[sl][0], vb = wv[sl][1];
+                int sumi = 0;
+                sumi = dp4a(va.x, aq4[base + 0], sumi);
+                sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                sumi = dp4a(va.y, aq4[base + 2], sumi);
+                sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                partial += wscale[sl] * (float)sumi;
+            }
+            acc[c] += adg * partial;
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).
 // W: block_q8_0 rows (34 bytes/block). aq: int8 [m,in]; ad: f32 [m, in/32].
 // grid (out, m); block 128 threads (4 warps), each warp strides the in/32 blocks.
