@@ -878,6 +878,24 @@ impl Engine {
                 }
             }
         }
+        // BATCHED weight-resident matvec for the m=2-4 band (the MTP/verify forward's ffn_down, wo, and
+        // lm_head `output` reach `matmul` directly at m=T=2..4). Walks the weight ONCE, dp4a vs all m
+        // activation columns -> 1 weight read for m tokens (vs grid.y=m re-reading m times below). Quant
+        // the activation once here (q8_1) like the _fast paths; macro-scale applied via the scale!=1.0
+        // block below. BIT-IDENTICAL per (token,row) to the _dp4a path. BW24_NO_BATCHED -> per-m path.
+        if (2..=4).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err() {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, .. } = w {
+                if self.batched_supports(*qtype) {
+                    let mcols = if m == 2 { 2 } else { 4 };
+                    let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                    let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0)?;
+                    if let GpuTensor::Quant { scale, .. } = w {
+                        if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
+                    }
+                    return Ok(y);
+                }
+            }
+        }
         let mut y = match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
                 self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
@@ -955,6 +973,18 @@ impl Engine {
         // keep _dp4a (the oracle/fallback). Bit-equivalent to _dp4a up to f32 reduction order.
         if m == 1 && self.mmvq_supports(qtype) {
             return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale);
+        }
+        // BATCHED weight-resident matvec for the m=2-4 band (the MTP/verify forward: full_attn_verify
+        // and decode_step_t run their projections at m=T=k=2..4). The plain _dp4a path below launches
+        // grid.y=m INDEPENDENT blocks per output row -> the weight row is re-read m times from HBM/L2.
+        // The _b2/_b4 kernels walk the weight ONCE and dp4a vs all m activation columns, so m tokens
+        // cost ~1 weight read instead of m (decode is weight-BW-bound). BIT-IDENTICAL per (token,row)
+        // to the _dp4a/_mmvq path. m=2 -> mcols=2; m∈{3,4} -> mcols=4 (kernel guards c>=m). Default-on;
+        // BW24_NO_BATCHED forces the per-m grid.y=m path (the A/B reference).
+        if (2..=4).contains(&m) && self.batched_supports(qtype)
+            && std::env::var("BW24_NO_BATCHED").is_err() {
+            let mcols = if m == 2 { 2 } else { 4 };
+            return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale);
         }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
@@ -1082,17 +1112,37 @@ impl Engine {
         self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0)
     }
 
-    /// BATCHED weight-tile-resident NVFP4 matvec (the m=2-4 concurrent-decode win). One warp walks the
-    /// weight row ONCE, dp4a vs all m activation columns -> weight HBM/L2 traffic 1x for m tokens (vs
-    /// grid.y=m re-reading it m times). `mcols` ∈ {2,4} picks the compile-time batch; m must be <= mcols.
-    /// y is [m, out_f] token-major. BIT-IDENTICAL per (token,row) to qmatvec_nvfp4_mmvq.
-    pub fn qmatvec_nvfp4_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                     in_f: usize, out_f: usize, row_bytes: usize, mcols: usize)
-                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    /// True if `qtype` has a batched weight-resident (`_b2`/`_b4`) matvec kernel. These mirror the
+    /// `_mmvq` kernels but iterate the m token columns INSIDE one warp/row, so the weight bytes leave
+    /// HBM/L2 once for m tokens (vs grid.y=m re-reading m times). The 5 daily-hot dtypes have them.
+    pub fn batched_supports(&self, qtype: i32) -> bool {
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
+    }
+
+    /// Kernel name for the batched matvec of `(qtype, mcols)`. mcols ∈ {2,4}.
+    fn batched_kernel_name(qtype: i32, mcols: usize) -> Option<&'static str> {
+        Some(match (qtype, mcols) {
+            (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
+            (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
+            (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
+            (QT_Q6_K, 2) => "qmatvec_q6_K_mmvq_b2", (QT_Q6_K, 4) => "qmatvec_q6_K_mmvq_b4",
+            (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
+            _ => return None,
+        })
+    }
+
+    /// BATCHED weight-tile-resident matvec from a PRE-QUANTIZED q8_1 activation (the m=2-4 verify/MTP
+    /// win). One warp walks the weight row ONCE, dp4a vs all m activation columns -> weight HBM/L2
+    /// traffic 1x for m tokens (vs grid.y=m re-reading it m times). `mcols` ∈ {2,4} is the compile-time
+    /// batch; m must be <= mcols. y is [m, out_f] token-major. NVFP4 per-tensor macro-scale applied post
+    /// (scale==1.0 for other dtypes -> no-op). BIT-IDENTICAL per (token,row) to qmatvec_*_mmvq.
+    pub fn qmatvec_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize,
+                                mcols: usize, scale: f32)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
-        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-        let name = match mcols { 2 => "qmatvec_nvfp4_mmvq_b2", 4 => "qmatvec_nvfp4_mmvq_b4",
-                                 _ => return Err("batched mcols must be 2 or 4".into()) };
+        let name = Self::batched_kernel_name(qtype, mcols)
+            .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
         let f = self.func(name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         let cfg = LaunchConfig {
@@ -1100,9 +1150,27 @@ impl Engine {
             block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
         unsafe { b.launch(cfg)?; }
+        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
         Ok(y)
+    }
+
+    /// BATCHED weight-tile-resident matvec from raw weight bytes (quantizes the f32 activation `x` to
+    /// q8_1 internally; macro-scale NOT applied — caller compares bare, like qmatvec_*_fast). For the
+    /// kernel_check bit-equivalence gate. `mcols` ∈ {2,4}. Works for Q8_0/Q4_K/Q5_K/Q6_K/NVFP4.
+    pub fn qmatvec_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                               in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, mcols: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, 1.0)
+    }
+
+    /// Back-compat NVFP4-only batched raw launcher (used by older gates). Delegates to the generic one.
+    pub fn qmatvec_nvfp4_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                     in_f: usize, out_f: usize, row_bytes: usize, mcols: usize)
+                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_batched_raw(bytes, x, m, in_f, out_f, QT_NVFP4, row_bytes, mcols)
     }
 
     /// Stage-C FP4 gate (BW24_FP4): if `w` is an NVFP4 weight with in_f%64==0, run the native mxf4

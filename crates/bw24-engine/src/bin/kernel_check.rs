@@ -723,6 +723,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- BATCHED weight-resident matvec (_b2/_b4) vs the per-m _mmvq reference (the MTP/verify path).
+    // Both quantize the same f32 activation to q8_1; the batched kernel only changes the loop nest
+    // (weight loaded once, reused across m token columns) so per-(token,row) it MUST be bit-identical
+    // to qmatvec_mmvq_raw (grid.y=m). m∈{2,3,4}; mcols=2 for m=2, mcols=4 for m∈{3,4}. rel<1e-3. ---
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        // pick ONE 2D tensor per daily dtype (so Q8_0/Q5_K get covered regardless of model naming).
+        let want: [(GgmlType, i32); 4] = [
+            (GgmlType::Q8_0, bw24_engine::QT_Q8_0), (GgmlType::Q4_K, bw24_engine::QT_Q4_K),
+            (GgmlType::Q5_K, bw24_engine::QT_Q5_K), (GgmlType::Q6_K, bw24_engine::QT_Q6_K),
+        ];
+        for (gtype, gt) in want {
+            let t = match g.tensors.iter().find(|t| t.ggml_type == gtype && t.ne.len() == 2
+                                                 && t.ne[0] % 256 == 0 && t.ne[1] >= 4) {
+                Some(t) => t, None => continue,
+            };
+            let tname = t.name.clone();
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+            let wd = e.htod_bytes(raw)?;
+            for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 131) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                // reference: per-m _mmvq (warp-per-row, grid.y=m). batched: _b{mcols} weight-resident.
+                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes)?)?;
+                let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, mcols)?)?;
+                let d = maxdiff(&yref, &ybat);
+                let scale = yref.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = d / scale;
+                println!("BATCHED {tname} [{:?}] m={mm} mcols={mcols}: rel={rel:.2e} {}", t.ggml_type,
+                         if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+    // NVFP4 batched vs per-m _mmvq on the 9B model.
+    {
+        use bw24_gguf::{GgufFile, GgmlType};
+        const GGUF_9B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
+        if std::path::Path::new(GGUF_9B).exists() {
+            let g = GgufFile::open(GGUF_9B)?;
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let wd = e.htod_bytes(raw)?;
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 141) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols)?)?;
+                    let d = maxdiff(&yref, &ybat);
+                    let scale = yref.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("BATCHED blk.0.ffn_gate.weight [NVFP4] m={mm} mcols={mcols}: rel={rel:.2e} {}",
+                             if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+
     // --- FlashAttention prefill + decode vs CPU SDPA oracle (head_dim 256, GQA 16/4, causal) ---
     {
         let (hd, nh, nhkv) = (256usize, 16usize, 4usize);
