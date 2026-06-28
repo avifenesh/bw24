@@ -1122,17 +1122,17 @@ extern "C" __global__ void qmatvec_q5_K_dp4a(
         int4 a01 = aq16[0], a23 = aq16[1];
         int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
         int sumi_d = 0, sumi_sum = 0;
+        // VECTORIZED unpack (was scalar 4-byte inner loop = ~16 ALU ops/k starving DRAM to 31%).
+        // The 4 q bytes (idx=k*4..+3) and 4 qh bytes are contiguous -> one get_int_b2 each (2-aligned:
+        // q5_K block=176, qs=b+48, qh=b+16 all even). SIMD-extract: low nibble per byte + bit hbit of
+        // qh per byte. BIT-IDENTICAL: same byte->bit e*8 packing, same lowbits|(h<<4) per byte.
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            int wpack = 0;
-            #pragma unroll
-            for (int e = 0; e < 4; e++) {
-                int idx = k * 4 + e;
-                int lowbits = hi ? (q[idx] >> 4) : (q[idx] & 0x0F);
-                int h = (qh[idx] >> hbit) & 1;
-                int w = lowbits | (h << 4);          // 0..31
-                wpack |= (w & 0xff) << (e * 8);
-            }
+            int q4  = get_int_b2(q  + k * 4);                    // 4 q bytes
+            int qh4 = get_int_b2(qh + k * 4);                    // 4 qh bytes
+            int low = hi ? ((q4 >> 4) & 0x0F0F0F0F) : (q4 & 0x0F0F0F0F);
+            int h   = (qh4 >> hbit) & 0x01010101;                // bit hbit per byte, 0/1
+            int wpack = low | (h << 4);                          // per byte 0..31
             int a = aq4[k];
             sumi_d   = dp4a(wpack, a, sumi_d);
             sumi_sum = dp4a(0x01010101, a, sumi_sum);
