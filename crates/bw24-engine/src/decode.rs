@@ -142,6 +142,92 @@ impl HybridModel {
     /// 1-2 launches + the f32 `z` HBM round-trip per layer. BIT-IDENTICAL to the unfused
     /// add_rms_norm(or add+rms_norm) + quantize_q8_1 + ffn (all proven bit-identical in kernel_check).
     /// BW24_NO_FUSE_NORMQ forces the unfused f32 path. Returns (x1 residual f32, ffn_out f32).
+    /// True when ALL of a mixer's input projections are on the q8_1 fast path (so the attn-input
+    /// rms_norm can emit q8_1 directly and the mixer skips its internal quantize_q8_1).
+    fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
+        match mixer {
+            Mixer::Full(fa) => e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv),
+            Mixer::Linear(la) => e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
+                && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha),
+        }
+    }
+
+    /// attn_norm + mixer for the EAGER loop, with the attn-input NORM-FUSION. BW24_NO_FUSE_NORMQ
+    /// forces the unfused (separate rms_norm + mixer-internal quantize) path.
+    fn attn_in_norm_mixer(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                          pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize,
+                          n_embd: usize, eps: f32)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            // h is unused on the fast path (matmul_pre x_fallback only used at m>=16); pass a zero-len.
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_pre(e, fa, &h0, Some((&hq, &hd)), pos_d, pos, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, pos_d, pos, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+            }
+        }
+    }
+
+    /// attn_norm + mixer for the DEVICE-COUNTER loop (decode_step_dc). Full-attn uses the dc path;
+    /// linear uses the eager-state path (persistent=false), same as decode_step_dc. NORM-FUSED.
+    fn attn_in_norm_mixer_dc(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                             pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, n_embd: usize, eps: f32)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_pre(e, fa, &h0, &hq, &hd, pos_d, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc(e, fa, &h, pos_d, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+            }
+        }
+    }
+
+    /// attn_norm + mixer for the CAPTURE loop (decode_step_dc_cap). Full-attn uses the dc_cap path
+    /// (fixed bucket_max); linear uses the persistent-state path. NORM-FUSED; capture-safe (rms_norm_q8_1
+    /// + the *_pre mixers enqueue the same kernels every replay, stable buffers).
+    fn attn_in_norm_mixer_dc_cap(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                                 pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize,
+                                 n_embd: usize, eps: f32)
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_cap_pre(e, fa, &h0, &hq, &hd, pos_d, cache, il, bucket_max),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, true),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max),
+                Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il),
+            }
+        }
+    }
+
     fn residual_norm_ffn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
                          mixed: &CudaSlice<f32>, n_embd: usize, il: usize, eps: f32)
                          -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
@@ -192,12 +278,8 @@ impl HybridModel {
         let mut aux: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.uninit(n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
-            let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
-            };
+            // attn-input NORM-FUSION (eager); shared with decode_step_h.
+            let mixed = self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?;
             // DECODE NORM-FUSION LEVER (residual_norm_ffn): residual add + post_attn RMSNorm +
             // q8_1-quantize fused into ONE add_rms_norm_q8_1 launch on the Dense q8_1-fast path, then
             // the FFN consumes the pre-quantized activation. Bit-identical to the unfused path.
@@ -232,13 +314,11 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.uninit(n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
-
-            let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
-            };
+            // DECODE attn-input NORM-FUSION: when the mixer's projections are q8_1-fast, emit the
+            // attn_norm output PRE-QUANTIZED (rms_norm_q8_1) and feed the *_pre mixer (skips its
+            // internal quantize_q8_1 + the f32 `h` HBM round-trip). h only materialized on the
+            // non-fast fallback. Bit-identical (rms_norm_q8_1 == rms_norm then quantize_q8_1).
+            let mixed = self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?;
 
             // DECODE NORM-FUSION LEVER (residual_norm_ffn): add+post_attn_norm+q8_1 fused on the Dense
             // fast path. Bit-identical to add + rms_norm + ffn (add_rms_norm == add then rms_norm,
@@ -283,13 +363,8 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_row_bytes)?;
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.uninit(n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
-
-            let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_decode_dc(e, fa, &h, pos_d, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
-            };
+            // attn-input NORM-FUSION (dc path); bit-identical to decode_step_h (Phase-2 gate).
+            let mixed = self.attn_in_norm_mixer_dc(e, layer, &x, pos_d, cache, il, n_embd, eps)?;
 
             // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_h. Shared helper -> dc
             // path stays bit-identical to decode_step_h's token stream (the Phase-2 gate).
@@ -334,12 +409,8 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_row_bytes)?;
 
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.uninit(n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
-            let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max)?,
-                Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il)?,
-            };
+            // attn-input NORM-FUSION (capture path); capture-safe + bit-identical to eager.
+            let mixed = self.attn_in_norm_mixer_dc_cap(e, layer, &x, pos_d, cache, il, bucket_max, n_embd, eps)?;
             // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_aux. Shared helper keeps
             // the capture path bit-identical to eager by construction.
             let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
@@ -479,7 +550,23 @@ impl HybridModel {
         // eager-mirror path: advance host counters and size n_splits from the live t_kv (bit-identical
         // to fa_decode). The capture path uses full_attn_decode_dc_cap (fixed bucket_max, no host
         // advance, full-buffer K/V view).
-        self.full_attn_decode_dc_inner(e, fa, h, pos_d, cache, il, None)
+        self.full_attn_decode_dc_inner(e, fa, h, None, pos_d, cache, il, None)
+    }
+
+    /// PRE-QUANTIZED-INPUT dc full-attn (device-counter path). See full_attn_decode_pre. BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_dc_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            hq: &CudaSlice<i8>, hd: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_dc_inner(e, fa, h, Some((hq, hd)), pos_d, cache, il, None)
+    }
+
+    /// PRE-QUANTIZED-INPUT CAPTURE dc full-attn (graph path, fixed bucket_max). BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_dc_cap_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            hq: &CudaSlice<i8>, hd: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_dc_inner(e, fa, h, Some((hq, hd)), pos_d, cache, il, Some(bucket_max))
     }
 
     /// CAPTURE variant of `full_attn_decode_dc` (CUDA-GRAPH-PLAN Phase 3). `bucket_max` sizes the
@@ -491,10 +578,11 @@ impl HybridModel {
     pub(crate) fn full_attn_decode_dc_cap(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                             pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.full_attn_decode_dc_inner(e, fa, h, pos_d, cache, il, Some(bucket_max))
+        self.full_attn_decode_dc_inner(e, fa, h, None, pos_d, cache, il, Some(bucket_max))
     }
 
     fn full_attn_decode_dc_inner(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
                             pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize,
                             cap_bucket_max: Option<usize>)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -507,8 +595,11 @@ impl HybridModel {
 
         let n_embd = cfg.n_embd as usize;
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
-            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+            }
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
@@ -633,6 +724,16 @@ impl HybridModel {
     pub(crate) fn full_attn_decode(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                         pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_pre(e, fa, h, None, pos_d, pos, cache, il)
+    }
+
+    /// PRE-QUANTIZED-INPUT eager full-attn (attn-input NORM-FUSION lever): caller passes the
+    /// attn-normed activation already q8_1 `(hq,hd)` (rms_norm_q8_1) -> skips internal quantize_q8_1.
+    /// `None` = quantize h here (the spec / non-fused path). BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                        pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                        pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -643,8 +744,11 @@ impl HybridModel {
         // wq|wk|wv all take the same input `h` (in_f = n_embd) — quantize q8_1 ONCE, feed all three.
         let n_embd = cfg.n_embd as usize;
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
-            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+            }
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
@@ -696,7 +800,19 @@ impl HybridModel {
     pub(crate) fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
                           cache: &mut Cache, il: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.linear_attn_decode_inner(e, la, h, cache, il, false)
+        self.linear_attn_decode_inner(e, la, h, None, cache, il, false)
+    }
+
+    /// PRE-QUANTIZED-INPUT variant (DECODE attn-input NORM-FUSION lever): the caller passes the
+    /// post-attn-norm activation ALREADY q8_1-quantized `(hq,hd)` (produced by rms_norm_q8_1, fusing
+    /// the attn_norm + the mixer's internal quantize_q8_1). Skips the internal quantize. Caller
+    /// GUARANTEES the projections are q8_1-fast. `persistent` selects the capture-safe state plumbing.
+    /// BIT-IDENTICAL to linear_attn_decode(h) when (hq,hd)==quantize_q8_1(rms_norm(x)*w).
+    pub(crate) fn linear_attn_decode_pre(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          hq: &CudaSlice<i8>, hd: &CudaSlice<f32>, cache: &mut Cache, il: usize,
+                          persistent: bool)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.linear_attn_decode_inner(e, la, h, Some((hq, hd)), cache, il, persistent)
     }
 
     /// CAPTURE variant of `linear_attn_decode` (CUDA-GRAPH-PLAN Phase 3). The GDN scan needs distinct
@@ -709,10 +825,11 @@ impl HybridModel {
     pub(crate) fn linear_attn_decode_cap(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
                           cache: &mut Cache, il: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.linear_attn_decode_inner(e, la, h, cache, il, true)
+        self.linear_attn_decode_inner(e, la, h, None, cache, il, true)
     }
 
     fn linear_attn_decode_inner(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
                           cache: &mut Cache, il: usize, persistent_state: bool)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -731,11 +848,18 @@ impl HybridModel {
         // projections (T=1): wqkv, wqkv_gate, ssm_beta, ssm_alpha ALL take input `h` (in_f = n_embd)
         // -> quantize q8_1 ONCE, feed all four (was 4x redundant quantize_q8_1 of the same row).
         let n_embd = cfg.n_embd as usize;
-        let (qkv_mixed, z, beta_raw, alpha) = if e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
-            && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha) {
-            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-            (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?,
-             e.matmul_pre(&la.ssm_beta, &hq, &hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, &hq, &hd, h, 1)?)
+        let all_fast = e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
+            && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha);
+        let (qkv_mixed, z, beta_raw, alpha) = if all_fast {
+            // attn-input NORM-FUSION: use the caller's pre-quantized (hq,hd) when provided (the
+            // attn_norm already emitted q8_1 via rms_norm_q8_1), else quantize h here. Bit-identical.
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&la.wqkv, hq, hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?,
+                                   e.matmul_pre(&la.ssm_beta, hq, hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?,
+                     e.matmul_pre(&la.ssm_beta, &hq, &hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, &hq, &hd, h, 1)?) }
+            }
         } else {
             (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?,
              e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
