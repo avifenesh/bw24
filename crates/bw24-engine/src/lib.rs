@@ -730,6 +730,28 @@ impl Engine {
         Ok(())
     }
 
+    /// RANK2 LEVER (q8_1 quant-fold): SwiGLU epilogue that EMITS the q8_1 quantization of `act`
+    /// directly (aq int8 [n] + ad f32 [n/32]), so ffn_down's standalone `quantize_q8_1` launch is
+    /// removed — the down-proj activation has one consumer, so the quant folds into the producer for
+    /// free (no extra HBM read; no f32 `act` write). gs/us fold the gate/up NVFP4 macro-scales like
+    /// `silu_mul_scaled`. BIT-IDENTICAL q8_1 to silu_mul_scaled(...) then quantize_q8_1(...). Only
+    /// valid when ffn_down uses the q8_1 dp4a/mmvq path; the caller checks `uses_q8_1_fast(ffn_down)`.
+    /// n must be a multiple of 32 (n_ff always is).
+    pub fn silu_mul_scaled_q8_1(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, gs: f32, us: f32,
+                                n: usize)
+                                -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("silu_mul_scaled_q8_1");
+        let nblk = n / 32;
+        let mut aq = self.alloc_uninit::<i8>(n)?;       // full-overwrite output
+        let mut ad = self.alloc_uninit::<f32>(nblk)?;   // full-overwrite output
+        let cfg = LaunchConfig::for_num_elems(nblk as u32);
+        let (gsf, usf, ni) = (gs, us, n as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gsf).arg(&usf).arg(&mut aq).arg(&mut ad).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok((aq, ad))
+    }
+
     pub fn add(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("add_f32");

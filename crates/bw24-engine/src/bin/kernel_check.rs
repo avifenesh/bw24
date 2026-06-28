@@ -97,6 +97,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("silu_mul     maxdiff={d:.2e} {}", if d < 1e-5 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- RANK2 LEVER (q8_1 quant-fold): silu_mul_scaled_q8_1 must produce BIT-IDENTICAL q8_1 to the
+    //     unfused silu_mul_scaled -> quantize_q8_1 (same int8 bytes, same f32 block scales). ---
+    {
+        let n = 2048usize;                 // multiple of 32
+        let (gs, us) = (1.31f32, 0.77f32); // non-unit scales (NVFP4 macro-scale case)
+        let g: Vec<f32> = (0..n).map(|i| pr(i + 3)).collect();
+        let u: Vec<f32> = (0..n).map(|i| pr(i + 5)).collect();
+        let gd = e.htod(&g)?;
+        let ud = e.htod(&u)?;
+        // unfused reference: scaled silu*mul into f32 act, then quantize_q8_1.
+        let mut act = e.zeros(n)?;
+        e.silu_mul_scaled(&gd, &ud, gs, us, &mut act, n)?;
+        let (aq_ref, ad_ref) = e.quantize_q8_1(&act, 1, n)?;
+        // fused: silu*mul + q8_1 emit in one launch.
+        let (aq_f, ad_f) = e.silu_mul_scaled_q8_1(&gd, &ud, gs, us, n)?;
+        let q_ref: Vec<i8> = e.stream().clone_dtoh(&aq_ref)?; e.stream().synchronize()?;
+        let q_f: Vec<i8> = e.stream().clone_dtoh(&aq_f)?; e.stream().synchronize()?;
+        let d_ref = e.dtoh(&ad_ref)?;
+        let d_f = e.dtoh(&ad_f)?;
+        let qbad = q_ref.iter().zip(&q_f).filter(|(a, b)| a != b).count();
+        let dbad = d_ref.iter().zip(&d_f).filter(|(a, b)| a != b).count();
+        println!("silu_mul_q8_1 fold: int8_mismatch={qbad} scale_mismatch={dbad} {}",
+                 if qbad == 0 && dbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- naive SDPA (1 head, no GQA, causal, head_dim=64, T=T_kv=4) ---
     {
         let (hd, nh, nhkv, t, tkv) = (64usize, 2usize, 1usize, 4usize, 4usize);

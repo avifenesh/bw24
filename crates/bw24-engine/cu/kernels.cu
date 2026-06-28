@@ -221,6 +221,38 @@ extern "C" __global__ void silu_mul_scaled_f32(const float* __restrict__ gate, c
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) { float g = gate[i] * gs; dst[i] = (g / (1.0f + expf(-g))) * (up[i] * us); }
 }
+// RANK2 LEVER (q8_1 quant-fold): FFN SwiGLU epilogue that ALSO emits the q8_1 quantization of its
+// own output, so ffn_down's activation is produced pre-quantized and the standalone quantize_q8_1
+// launch is removed (1 fewer launch + no f32 `act` HBM round-trip per dense FFN layer). The down-proj
+// activation has EXACTLY ONE consumer (ffn_down's matvec), so folding the quant into the producer is
+// free — silu*mul already touches every element once; here each thread owns one 32-block, computes
+// its 32 silu*mul values, finds amax over the block, and writes q8_1 (aq int8 + ad f32 scale).
+// BIT-IDENTICAL q8_1 to scale->silu_mul->quantize_q8_1: same float silu*mul (g*gs, up*us), same
+// d=amax/127, same id=1/d, same __float2int_rn rounding. n must be a multiple of 32 (n_ff always is).
+extern "C" __global__ void silu_mul_scaled_q8_1(
+        const float* __restrict__ gate, const float* __restrict__ up, float gs, float us,
+        signed char* __restrict__ out_q, float* __restrict__ out_d, int n) {
+    int blk = blockIdx.x * blockDim.x + threadIdx.x;   // global 32-block index
+    int nblk = n / 32;
+    if (blk >= nblk) return;
+    int base = blk * 32;
+    float v[32];
+    float amax = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 32; j++) {
+        float g = gate[base + j] * gs;
+        float r = (g / (1.0f + expf(-g))) * (up[base + j] * us);   // silu(g)*up, bit-identical
+        v[j] = r;
+        amax = fmaxf(amax, fabsf(r));
+    }
+    float d = amax / 127.0f;
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    signed char* oq = out_q + base;
+    #pragma unroll
+    for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(v[j] * id);
+    out_d[blk] = d;
+}
+
 extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
