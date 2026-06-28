@@ -142,6 +142,20 @@ __device__ __forceinline__ void cp_async_window(void* smem, const void* g16, int
 // ldmatrix x4.b16: per-lane addr = (lane%16)*stride_b16 + (lane/16)*4 (in .b16 units), built as a
 // 32-bit .shared address (proven in flash_attn.cu ld_A / mma_validate.cu). Loads 4x .b32 = 16
 // int8 A-operands in the exact m16n8k32.s8 A-fragment layout the scalar byte-assembly produced.
+// SWIZZLED int8 A-load (probe/int8_swizzle_aload.cu PROVEN: 0 frag mismatch vs ldmatrix, A-load
+// conflict 4-way->2-way). Manual load matching ldmatrix's empirical map (lane L -> rows {L/4, L/4+8},
+// k-word L%4) with physical word-col XORed by (row&7) — pairs with a decode-store that writes word c
+// of row r at phys col (c^(r&7)). stride_bytes must be 32 (8 u32 words/row, the swizzle domain).
+__device__ __forceinline__ void ld_A_s8_sw(int (&t)[4], const int8_t* base, int stride_bytes) {
+    int L = threadIdx.x;
+    int r0 = L / 4, r8 = r0 + 8, kw = L % 4;
+    const uint32_t* p0 = (const uint32_t*)(base + r0 * stride_bytes);
+    const uint32_t* p8 = (const uint32_t*)(base + r8 * stride_bytes);
+    t[0] = p0[kw       ^ (r0 & 7)];
+    t[1] = p8[kw       ^ (r8 & 7)];
+    t[2] = p0[(kw + 4) ^ (r0 & 7)];
+    t[3] = p8[(kw + 4) ^ (r8 & 7)];
+}
 __device__ __forceinline__ void ld_A_s8(int (&t)[4], const int8_t* base, int stride_bytes) {
     const uint32_t* xs = (const uint32_t*)base + (threadIdx.x % 16) * (stride_bytes / 4) + (threadIdx.x / 16) * 4;
     uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
@@ -779,7 +793,9 @@ __device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whi
 // MF = m16-frags per warp (B-reuse arithmetic-intensity lever, same as kernel1 MFRAG). NVFP4: MF=2,
 // NTX_K=4 -> NWY=2 row-groups x MF=2 frags = BM=64 rows; each warp reuses each B-frag across both
 // m-frags (AND across the lo/hi two-scale mma) = 4 mma per B-load. Q6_K: MF=1, NTX_K=1 (bit-identical).
-template<int QT, int NW, int NTX_K, int MF>
+// SWZ: apply the proven A-load XOR-swizzle (probe 81e513e) on the sW store + ld_A_s8_sw load to
+// halve the A-load bank conflicts. NVFP4 path only (SWZ=true); Q6_K SWZ=false (untouched, bit-id).
+template<int QT, int NW, int NTX_K, int MF, bool SWZ = false>
 __device__ void qmatvec_gemm_kernel2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -871,8 +887,13 @@ __device__ void qmatvec_gemm_kernel2(
                 #pragma unroll
                 for (int k = 0; k < 32; k++) wq[k] = 0;
             }
+            // SWZ store: word w (=k/4) of row r written at phys word (w^(r&7)) -> bank-scattered,
+            // matched by ld_A_s8_sw. Non-SWZ: contiguous (Q6_K, bit-identical).
             #pragma unroll
-            for (int k = 0; k < 32; k++) sW[s][r][k] = wq[k];
+            for (int k = 0; k < 32; k++) {
+                int kk = SWZ ? (((k >> 2) ^ (r & 7)) << 2) | (k & 3) : k;
+                sW[s][r][kk] = wq[k];
+            }
             sS0[s][r] = s0; sS1[s][r] = s1;
         }
     };
@@ -895,8 +916,13 @@ __device__ void qmatvec_gemm_kernel2(
                 #pragma unroll
                 for (int k = 0; k < 32; k++) wq[k] = 0;
             }
+            // SWZ store: word w (=k/4) of row r written at phys word (w^(r&7)) -> bank-scattered,
+            // matched by ld_A_s8_sw. Non-SWZ: contiguous (Q6_K, bit-identical).
             #pragma unroll
-            for (int k = 0; k < 32; k++) sW[s][r][k] = wq[k];
+            for (int k = 0; k < 32; k++) {
+                int kk = SWZ ? (((k >> 2) ^ (r & 7)) << 2) | (k & 3) : k;
+                sW[s][r][kk] = wq[k];
+            }
             sS0[s][r] = s0; sS1[s][r] = s1;
         }
     };
@@ -952,7 +978,8 @@ __device__ void qmatvec_gemm_kernel2(
         #pragma unroll
         for (int mf = 0; mf < MF; mf++) {
             int af[4];
-            ld_A_s8(af, &sW[cur][rowbase + mf * WARP_M][0], BK);
+            if (SWZ) ld_A_s8_sw(af, &sW[cur][rowbase + mf * WARP_M][0], BK);
+            else     ld_A_s8(af, &sW[cur][rowbase + mf * WARP_M][0], BK);
             aflo[mf][0] = af[0]; aflo[mf][1] = af[1]; aflo[mf][2] = 0; aflo[mf][3] = 0;
             afhi[mf][0] = 0; afhi[mf][1] = 0; afhi[mf][2] = af[2]; afhi[mf][3] = af[3];
         }
@@ -1005,7 +1032,7 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
-    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 4, 2>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 4, 2, true>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 
 // ===================================================================== //
