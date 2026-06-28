@@ -837,14 +837,22 @@ impl Engine {
         // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
         const GEMM_M_THRESHOLD: usize = 16;
 
-        // Stage-C FP4: native mxf4 block-scale GEMM (BW24_FP4) for NVFP4 weights — the BEAT-llama
-        // lever (762 TFLOP vs int8 219). Prefill only (m>=16); takes precedence over the int8 GEMM.
-        if m >= GEMM_M_THRESHOLD {
-            if let Some(y) = self.try_fp4_gemm(w, x, m, in_f, out_f)? { return Ok(y); }
-        }
+        // PREFILL GEMM (m>=16). ACCURACY-FIRST dispatch (2026-06-28, prefill-gemm-beat-research wf
+        // wllbyo6vc step 1): the int8 W4A8 GEMM (qmatvec_gemm, q8_1 activation, s32 accumulate) is
+        // ACCURATE (prefill logit maxdiff 0.159, < dp4a 0.55) and the default. The FP4 W4A4 mxf4 path
+        // (try_fp4_gemm) quantizes the ACTIVATION to e2m1 4-bit (8 magnitude levels) -> maxdiff 1.0
+        // when combined — a real accuracy loss, NOT a math bug. So FP4-W4A4 is taken ONLY under the
+        // explicit BW24_FP4 opt-in AND it must come SECOND (int8 W4A8 is the correct default for NVFP4).
+        // The workflow plan rebuilds the FP4 path (kill per-K repack, widen K, deepen pipeline, TMA) to
+        // be both fast AND accurate; until then NVFP4 prefill defaults to the accurate int8 GEMM.
         if m >= GEMM_M_THRESHOLD && self.gemm_supports(w) {
             let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
             return self.qmatvec_gemm(w, &aq, &ad, m);
+        }
+        // FP4 W4A4 only as an explicit speed/accuracy tradeoff opt-in, and only if the int8 GEMM
+        // above didn't already handle this weight (e.g. NVFP4 with in_f%64!=0, or BW24_NO_GEMM set).
+        if m >= GEMM_M_THRESHOLD {
+            if let Some(y) = self.try_fp4_gemm(w, x, m, in_f, out_f)? { return Ok(y); }
         }
         // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
         // behind BW24_FAST until it passes the isolation gate vs Stage-A.
