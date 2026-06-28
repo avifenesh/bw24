@@ -1174,10 +1174,19 @@ __device__ __forceinline__ void cp_async4(void* smem, const void* g) {
 // overlap from a deeper ring does not pay for the lost occupancy (same occupancy tradeoff that reverted
 // the int8 NSTAGE=4 and tile-redesign experiments).
 #define FP4_NS 2
-// Raw-block ring depth. The repack of K-block `gp` reads a raw block that must have been cp.async'd
-// FP4_NS-1 iters earlier (so it is landed under wait_group(FP4_NS-2)); the loop therefore fetches the
-// raw block 2*(FP4_NS-1) iters ahead of consumption, keeping that many distinct blocks alive at once.
-#define FP4_NS_RAW (2 * (FP4_NS - 1))
+// STEP 5 (depth-1 transient raw slot — mirrors the kernel1 Step-1 win, commit ea7d89a): the raw 36B
+// NVFP4 weight block now lives in a DEPTH-1 transient slot instead of a depth-2 ring. The depth-2 ring
+// existed because the OLD scheme fetched the raw block 1 iter AHEAD of its repack (gr=gp+1), so 2
+// consecutive raw blocks were alive (one being repacked, one just fetched). The depth-1 scheme drops the
+// 1-ahead raw lead for the WEIGHT only: each iter fetches its OWN raw block into the one slot, drains
+// (cp.async.wait_group 0 + barrier), then repacks it from resident smem — byte-identical (the e2m1
+// nibble gather + ue4m3 scale pack are deterministic; the slot is fully repacked + barriered before the
+// next iter overwrites it -> aliasing-safe). Proven 0-mismatch in probe/mxf4_transient_repack.cu.
+// The ACTIVATION cp.async lead (sAq/sAsc, FP4_NS-1 ahead) is UNCHANGED — only the raw weight stops
+// leading. This frees sWraw 2->1 slots (10240->5120B): SHARED 34304->~29184B -> BlockLimitSmem 2->3 CTA/SM
+// (REG=128 @ __launch_bounds__(128,4) already allows 4; smem was the SOLE blocker). The per-iter raw
+// fetch+drain replaces the prior 1-ahead overlap — measured win/loss decided by the main agent's perf.
+#define FP4_NS_RAW 1
 // sWraw row stride (bytes). The repack reads the resident raw block per-BYTE (LDS.U8 of qs[]/scale[]),
 // 64+ scalar shared loads per K-step — these (NOT the ldmatrix operand loads, which the SWZ_CHUNK/x4.b16
 // path already drives conflict-free) are the dominant shared-load population (ncu SASS: 72 LDS.U8 +
@@ -1315,19 +1324,19 @@ __device__ void qmatvec_gemm_mxf4_kernel(
         }
     };
 
-    // ===== PROLOGUE: seed the raw ring with blocks 0..FP4_NS_RAW-1 (blocks 0..FP4_NS-2 read by the
-    //       prologue-stage repacks; the rest are the FP4_NS-1-ahead lead for the loop's first repacks)
-    //       + the FP4_NS-1 prologue activation stages; drain; repack the prologue stages from resident
-    //       raw smem. The loop then fetches raw block gp+(FP4_NS-1) each iter; the FP4_NS_RAW =
-    //       2*(FP4_NS-1) consecutive in-flight blocks map to distinct slots mod FP4_NS_RAW. =====
+    // ===== PROLOGUE (STEP 5, depth-1 transient raw slot): seed the FP4_NS-1 prologue repack stages
+    //       (blocks 0..FP4_NS-2) into the ONE raw slot + the FP4_NS-1 prologue activations; drain;
+    //       repack the prologue stages from the resident slot. With depth-1 there is no 1-ahead raw
+    //       lead — each block's raw is fetched at its own iter in the loop (mirrors kernel1's per-
+    //       superblock fetch+drain+decode). For FP4_NS=2 this prologue stages exactly block 0. =====
     #pragma unroll
-    for (int sb = 0; sb < FP4_NS_RAW; sb++)
-        if (sb < nblk64) fetch_raw(sb);
+    for (int s = 0; s < FP4_NS - 1; s++)
+        if (s < nblk64) fetch_raw(s);                  // raw block s into the ONE depth-1 slot
     #pragma unroll
     for (int s = 0; s < FP4_NS - 1; s++)
         if (s < nblk64) fetch_act(s, s);               // FP4_NS-1 prologue activation stages
     asm volatile("cp.async.commit_group;");
-    asm volatile("cp.async.wait_group 0;");           // drain: raw blocks + prologue activations
+    asm volatile("cp.async.wait_group 0;");           // drain: prologue raw block + prologue activations
     __syncthreads();
     #pragma unroll
     for (int s = 0; s < FP4_NS - 1; s++)
@@ -1343,21 +1352,24 @@ __device__ void qmatvec_gemm_mxf4_kernel(
         int cur = g % FP4_NS;
         int nxt = (g + FP4_NS - 1) % FP4_NS;
         int gp  = g + FP4_NS - 1;                  // the K-block prefetched(activation)/repacked this iter
-        // Raw weight lead = FP4_NS-1 iters: a cp.async committed j iters ago is landed under
-        // wait_group(FP4_NS-2) iff j >= FP4_NS-1. repack reads raw block `gp`; to guarantee it is
-        // resident now, it must have been fetched FP4_NS-1 iters ago -> this iter fetches block
-        // gp + (FP4_NS-1) = g + 2*(FP4_NS-1). The raw ring holds FP4_NS_RAW(=FP4_NS) consecutive
-        // blocks [gp .. gp+FP4_NS-1] -> distinct slots mod FP4_NS_RAW.
-        int gr  = gp + (FP4_NS - 1);               // raw block fetched this iter (FP4_NS-1 ahead of repack)
 
         // wait until only FP4_NS-2 newest groups remain pending -> stage `cur`'s activation (committed
-        // FP4_NS-1 iters ago) has landed AND the raw block for `gp` (fetched FP4_NS-1 iters ago) is resident.
+        // FP4_NS-1 iters ago) has landed. (FP4_NS=2 -> wait_group 0.)
         asm volatile("cp.async.wait_group %0;" :: "n"(FP4_NS - 2));
         __syncthreads();   // cur visible (sA landed + sW repacked last iter); WAR-safe prefetch
 
         if (gp < nblk64) {
+            // STEP 5 (depth-1 transient raw slot): the ONE slot still holds the PRIOR block's raw bytes.
+            // The barrier above guarantees all warps finished reading it (the last read was repack(gp-1)
+            // in the previous iter, ordered before this barrier) -> the cp.async overwrite is WAR-safe.
+            // Fetch raw block `gp` into the slot, then DRAIN + barrier so it is resident before repack
+            // reads it (no 1-ahead lead; mirrors kernel1's per-superblock fetch+drain+decode). The
+            // activation (fetch_act) KEEPS its FP4_NS-1 cp.async lead — only the raw weight serializes.
+            fetch_raw(gp);                         // cp.async raw block gp into the ONE depth-1 slot
+            asm volatile("cp.async.commit_group;");
+            asm volatile("cp.async.wait_group 0;"); // raw block gp resident before repack reads it
+            __syncthreads();                         // RAW: slot visible to all warps' repack
             fetch_act(nxt, gp);                    // cp.async stage `nxt`'s activations (FP4_NS-1 ahead)
-            if (gr < nblk64) fetch_raw(gr);        // cp.async the raw weight FP4_NS-1 blocks ahead of repack
             repack(nxt, gp);                       // repack gp from RESIDENT raw smem (no global on chain)
         }
         asm volatile("cp.async.commit_group;");
