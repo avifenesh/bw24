@@ -134,6 +134,11 @@ __device__ __forceinline__ void cp_async_window(void* smem, const void* g16, int
     for (int c = 0; c < nchunk; c++)
         asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s + (uint32_t)(c * 16)), "l"(src + c * 16));
 }
+// EMPIRICAL ldmatrix.x4.b16 lane->row map (probe/int8_swizzle_aload.cu dump_map, sm_120a, 2026-06-28):
+// lane L's 4 regs hold A-rows by the m8n8 QUADRANT, NOT "row L%16": measured L0..2 -> rows {0,8},
+// L16,17 -> rows {4,12}, i.e. row = (L/16)*4 + quadrant-row, regs[0..3]->R regs[4..7]->R+8 (repeat).
+// The naive "lane reads its own row" swizzle = 32 frag mismatches (DISPROVED). A conflict-killing
+// manual swizzled load must preserve THIS map. (de-risk lever for the int8 A-load 21M-conflict fix.)
 // ldmatrix x4.b16: per-lane addr = (lane%16)*stride_b16 + (lane/16)*4 (in .b16 units), built as a
 // 32-bit .shared address (proven in flash_attn.cu ld_A / mma_validate.cu). Loads 4x .b32 = 16
 // int8 A-operands in the exact m16n8k32.s8 A-fragment layout the scalar byte-assembly produced.
