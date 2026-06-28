@@ -9,3 +9,7 @@ memmap2 = "0.9"
 [[bin]]
 name = "gguf-inspect"
 path = "src/bin/inspect.rs"
+
+[[bin]]
+name = "nvfp4-validate"
+path = "src/bin/nvfp4_validate.rs"

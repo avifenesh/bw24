@@ -17,6 +17,7 @@ pub mod dequant;
 pub mod config;
 pub mod safetensors;
 pub mod hf_mapping;
+pub mod nvfp4_repack;
 pub mod source;
 
 pub const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
