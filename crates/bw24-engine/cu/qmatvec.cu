@@ -700,18 +700,19 @@ extern "C" __global__ void qmatvec_q6_K_mmvq(
         int ql_off = (run & 1) ? 32 : 0;
         int ql_hi  = (run >= 2);
         int qh_sh  = run * 2;
+        // VECTORIZED unpack (was a scalar 4-byte inner loop = ~20 ALU ops/k starving DRAM to 19%).
+        // For each k the 4 ql bytes (il=k*4..k*4+3) and 4 qh bytes are CONTIGUOUS -> read each as one
+        // 32-bit word (get_int_b2: 2-aligned-safe, q6_K block=210 is even) and extract all 4 nibbles/
+        // 2-bit groups with SIMD masks. BIT-IDENTICAL: get_int_b2 packs byte e at bit e*8, exactly the
+        // old `<<(e*8)` order; per-byte ql_bits|(qh_bits<<4) and __vsubss4 are unchanged.
         #pragma unroll
         for (int k = 0; k < 8; k++) {
-            unsigned int vpack = 0;
-            #pragma unroll
-            for (int e = 0; e < 4; e++) {
-                int il = k * 4 + e;
-                int ql_bits = ql_hi ? (qlh[il + ql_off] >> 4) : (qlh[il + ql_off] & 0xF);
-                int qh_bits = (qhh[il] >> qh_sh) & 3;
-                unsigned int w = (unsigned int)(ql_bits | (qh_bits << 4));   // 0..63
-                vpack |= (w & 0xff) << (e * 8);
-            }
-            int wpack = __vsubss4((int)vpack, 0x20202020);   // subtract 32 per byte (signed sat)
+            int ql4 = get_int_b2(qlh + k * 4 + ql_off);          // 4 ql bytes
+            int qh4 = get_int_b2(qhh + k * 4);                   // 4 qh bytes
+            int qln = ql_hi ? ((ql4 >> 4) & 0x0F0F0F0F) : (ql4 & 0x0F0F0F0F);
+            int qhn = (qh4 >> qh_sh) & 0x03030303;               // 2-bit group per byte, 0..3
+            int vpack = qln | (qhn << 4);                        // per byte = ql_bits|(qh_bits<<4), 0..63
+            int wpack = __vsubss4(vpack, 0x20202020);            // subtract 32 per byte (signed sat)
             int a = aq4[k];
             if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
             else       sumi1 = dp4a(wpack, a, sumi1);
