@@ -674,6 +674,41 @@ impl Engine {
         Ok(())
     }
 
+    /// DECODE GLUE-FUSION LEVER: `z = rms_norm(x)*w` emitted DIRECTLY as q8_1 (no f32 `z` materialized,
+    /// no standalone quantize_q8_1 launch). Returns (out_q [nrows*ncols i8], out_d [nrows*nblk f32])
+    /// ready to feed matmul_pre. BIT-IDENTICAL to rms_norm + quantize_q8_1. ncols % 32 == 0.
+    pub fn rms_norm_q8_1(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, ncols: usize, nrows: usize,
+                         eps: f32) -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let nblk = ncols / 32;
+        let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut d = self.alloc_uninit::<f32>(nrows * nblk)?;
+        let f = self.func("rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok((q, d))
+    }
+
+    /// DECODE GLUE-FUSION LEVER: `res = a+b; z = rms_norm(res)*w` with z emitted as q8_1. `res` is
+    /// still written (the post-ffn residual add reads it). Fuses add_rms_norm + quantize_q8_1.
+    /// Returns (out_q, out_d) for matmul_pre. BIT-IDENTICAL. ncols % 32 == 0.
+    pub fn add_rms_norm_q8_1(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                             res: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                             -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let nblk = ncols / 32;
+        let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut d = self.alloc_uninit::<f32>(nrows * nblk)?;
+        let f = self.func("add_rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut bld = self.gpu.stream.launch_builder(&f);
+        bld.arg(a).arg(b_in).arg(w).arg(res).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
+        unsafe { bld.launch(cfg)?; }
+        Ok((q, d))
+    }
+
     /// RANK3 LEVER (add+rmsnorm fuse): `res = a + b; dst = rms_norm(res) * w` in ONE launch. Fuses
     /// e.add(a,b,res) + e.rms_norm(res,w,dst), removing one launch + one HBM read of the residual per
     /// residual+norm pair. BIT-IDENTICAL to the two-kernel sequence (same IEEE add, same reduction).

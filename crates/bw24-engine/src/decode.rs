@@ -107,6 +107,73 @@ impl HybridModel {
         Ok(e.matmul(ffn_down, &act, 1)?)
     }
 
+    /// Like `ffn_swiglu_decode` but the input is ALREADY q8_1-quantized `(zq, zd)` — used by the
+    /// DECODE NORM-FUSION lever where `add_rms_norm_q8_1` emits the post-attn-normed activation
+    /// pre-quantized (no f32 `z` materialized, no standalone quantize_q8_1 launch). Caller GUARANTEES
+    /// ffn_gate and ffn_up are q8_1-fast (so `matmul_pre_noscale` returns Some at m=1). BIT-IDENTICAL
+    /// to ffn_swiglu_decode(z) when (zq,zd) == quantize_q8_1(z): same matmul_pre_noscale, same
+    /// silu_mul_scaled_q8_1 / silu_mul_scaled, same ffn_down dot.
+    fn ffn_swiglu_decode_pre(&self, e: &Engine, ffn_gate: &crate::model::GpuTensor,
+                             ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
+                             zq: &CudaSlice<i8>, zd: &CudaSlice<f32>, n_ff: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        match (e.matmul_pre_noscale(ffn_gate, zq, zd, 1)?, e.matmul_pre_noscale(ffn_up, zq, zd, 1)?) {
+            (Some((gate, gs)), Some((up, us))) => {
+                if e.uses_q8_1_fast(ffn_down) {
+                    let (aq, ad) = e.silu_mul_scaled_q8_1(&gate, &up, gs, us, n_ff)?;
+                    Ok(e.matmul_pre(ffn_down, &aq, &ad, &gate, 1)?)
+                } else {
+                    let mut act = e.uninit(n_ff)?;
+                    e.silu_mul_scaled(&gate, &up, gs, us, &mut act, n_ff)?;
+                    Ok(e.matmul(ffn_down, &act, 1)?)
+                }
+            }
+            // Unreachable when the caller's q8_1-fast guarantee holds (m==1 + fast => Some). Guard
+            // anyway: re-quant from the dequantized pair would need f32; surface a clear error.
+            _ => Err("ffn_swiglu_decode_pre: gate/up not separable-scale at m=1 (caller must guarantee q8_1-fast)".into()),
+        }
+    }
+
+    /// Shared post-attention residual + post-attn-norm + FFN for ONE decode layer, routed by ALL
+    /// decode loops (eager + dc + dc_cap) so they stay bit-identical by construction. DECODE
+    /// NORM-FUSION LEVER: when the layer is Dense AND ffn_gate/ffn_up are q8_1-fast (the daily NVFP4
+    /// case), fuses residual-add + post_attn_norm + q8_1-quantize into ONE `add_rms_norm_q8_1` launch
+    /// and feeds the FFN the pre-quantized activation (skipping its internal quantize_q8_1) — removing
+    /// 1-2 launches + the f32 `z` HBM round-trip per layer. BIT-IDENTICAL to the unfused
+    /// add_rms_norm(or add+rms_norm) + quantize_q8_1 + ffn (all proven bit-identical in kernel_check).
+    /// BW24_NO_FUSE_NORMQ forces the unfused f32 path. Returns (x1 residual f32, ffn_out f32).
+    fn residual_norm_ffn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                         mixed: &CudaSlice<f32>, n_embd: usize, il: usize, eps: f32)
+                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let pnorm = layer.post_attn_norm.float_data();
+        match &layer.ffn {
+            crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                let n_ff = ffn_gate.out_features();
+                let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                    && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up);
+                if fuse {
+                    let mut x1 = e.uninit(n_embd)?;
+                    let (zq, zd) = e.add_rms_norm_q8_1(x, mixed, pnorm, &mut x1, n_embd, 1, eps)?;
+                    let ffn_out = self.ffn_swiglu_decode_pre(e, ffn_gate, ffn_up, ffn_down, &zq, &zd, n_ff)?;
+                    Ok((x1, ffn_out))
+                } else {
+                    let mut x1 = e.uninit(n_embd)?;
+                    let mut z = e.uninit(n_embd)?;
+                    e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
+                    let ffn_out = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?;
+                    Ok((x1, ffn_out))
+                }
+            }
+            crate::hybrid::Ffn::Moe(m) => {
+                let mut x1 = e.uninit(n_embd)?;
+                let mut z = e.uninit(n_embd)?;
+                e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
+                let ffn_out = self.moe_ffn_il(e, m, &z, 1, il as u16)?;
+                Ok((x1, ffn_out))
+            }
+        }
+    }
+
     /// EAGLE3 aux-hidden capture (EAGLE-PLAN N1): one decode step that ALSO returns the trunk
     /// residual-stream `x` taken AFTER each of the blocks in `aux_layers` (the EAGLE3 encoder feeds
     /// these 3 layer hiddens through `fc`). Returns (logits[n_vocab] host, aux: Vec<[n_embd] dev>),
@@ -131,18 +198,10 @@ impl HybridModel {
                 Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, &pos_d, pos, cache, il)?,
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
-            // RANK3 LEVER (add+rmsnorm fuse): residual add (x1 = x + mixed) + post-attn RMSNorm
-            // (z = rms_norm(x1)*w) in ONE kernel. x1 is still produced (the post-ffn add reads it).
-            let mut x1 = e.uninit(n_embd)?;
-            let mut z = e.uninit(n_embd)?;
-            e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z, n_embd, 1, eps)?;
-            let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
-                    let n_ff = ffn_gate.out_features();
-                    self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?
-                }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
-            };
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): residual add + post_attn RMSNorm +
+            // q8_1-quantize fused into ONE add_rms_norm_q8_1 launch on the Dense q8_1-fast path, then
+            // the FFN consumes the pre-quantized activation. Bit-identical to the unfused path.
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
             let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             // EAGLE3 N1: capture this block's residual output if it is an aux layer.
@@ -181,20 +240,10 @@ impl HybridModel {
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
 
-            let mut x1 = e.uninit(n_embd)?;
-            e.add(&x, &mixed, &mut x1, n_embd)?;
-
-            let mut z = e.uninit(n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
-            let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
-                    let n_ff = ffn_gate.out_features();
-                    // gate and up share input `z` (in_f = n_embd) — quantize q8_1 ONCE, feed both
-                    // (ffn_swiglu_decode also folds the gate/up NVFP4 macro-scale into the silu*mul).
-                    self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?
-                }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
-            };
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): add+post_attn_norm+q8_1 fused on the Dense
+            // fast path. Bit-identical to add + rms_norm + ffn (add_rms_norm == add then rms_norm,
+            // proven in kernel_check; add_rms_norm_q8_1 == add_rms_norm then quantize_q8_1).
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
             let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             x = x2;
@@ -242,18 +291,9 @@ impl HybridModel {
                 Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il)?,
             };
 
-            let mut x1 = e.uninit(n_embd)?;
-            e.add(&x, &mixed, &mut x1, n_embd)?;
-
-            let mut z = e.uninit(n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
-            let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
-                    let n_ff = ffn_gate.out_features();
-                    self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?
-                }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
-            };
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_h. Shared helper -> dc
+            // path stays bit-identical to decode_step_h's token stream (the Phase-2 gate).
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
             let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             x = x2;
@@ -300,18 +340,9 @@ impl HybridModel {
                 Mixer::Full(fa) => self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max)?,
                 Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il)?,
             };
-            // RANK3 LEVER (add+rmsnorm fuse): residual add (x1 = x + mixed) + post-attn RMSNorm
-            // (z = rms_norm(x1)*w) in ONE kernel. x1 is still produced (the post-ffn add reads it).
-            let mut x1 = e.uninit(n_embd)?;
-            let mut z = e.uninit(n_embd)?;
-            e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z, n_embd, 1, eps)?;
-            let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
-                    let n_ff = ffn_gate.out_features();
-                    self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?
-                }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, il as u16)?,
-            };
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_aux. Shared helper keeps
+            // the capture path bit-identical to eager by construction.
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
             let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
             x = x2;

@@ -188,6 +188,108 @@ extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = rr[i] * scale * w[i];
 }
 
+// ---- RMSNorm with FUSED q8_1 quantize epilogue (decode glue-fusion lever). ----
+// Computes z = rms_norm(x)*w THEN emits z directly as q8_1 (out_q int8 + out_d f32 per-32 scale),
+// so the standalone `quantize_q8_1` launch + the f32 `z` HBM round-trip are removed. The normed
+// activation has exactly the matvec(s) as consumers, all on the q8_1 fast path — so producing it
+// pre-quantized is free (rms_norm already touches every element). BIT-IDENTICAL to
+// rms_norm_f32(x,w,z) then quantize_q8_1(z): the scale `s = rsqrt(mean(x^2)+eps)` reduction reads
+// the same x in the same strided order; the normed value is the SAME (x[i]*s)*w[i] association;
+// the per-32-block amax/d=amax/127/id=1/d/__float2int_rn rounding is quantize_q8_1's exactly.
+// One block per row (decode: nrows=1). ncols must be a multiple of 32 (n_embd always is).
+extern "C" __global__ void rms_norm_q8_1(const float* __restrict__ x, const float* __restrict__ w,
+                                         signed char* __restrict__ out_q, float* __restrict__ out_d,
+                                         int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    // pass 1: sum of squares -> scale (identical reduction to rms_norm_f32)
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = xr[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    // pass 2: thread tid owns 32-block `blk` (strided). Recompute z=(x*scale)*w for its 32 elems,
+    // amax over them, write q8_1. Same per-block math as quantize_q8_1 -> bit-identical.
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    for (int blk = tid; blk < nblk; blk += blockDim.x) {
+        int off = blk * 32;
+        float z[32];
+        float amax = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < 32; j++) {
+            float v = (xr[off + j] * scale) * w[off + j];
+            z[j] = v;
+            amax = fmaxf(amax, fabsf(v));
+        }
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        signed char* oq = base_q + off;
+        #pragma unroll
+        for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(z[j] * id);
+        base_d[blk] = d;
+    }
+}
+
+// ---- add+RMSNorm with FUSED q8_1 quantize epilogue. res = a+b (written out for the next residual);
+// then z = rms_norm(res)*w emitted directly as q8_1. Fuses add_rms_norm + quantize_q8_1 for the FFN
+// input path (z feeds ffn_gate/ffn_up matvecs, both q8_1-fast). BIT-IDENTICAL to add_rms_norm_f32
+// then quantize_q8_1: r=a[i]+b[i] same IEEE add (and written to `res` for the post-ffn add), the
+// sum-of-squares reduction reads the same r, z=(r*scale)*w same association, per-32 q8_1 identical.
+extern "C" __global__ void add_rms_norm_q8_1(const float* __restrict__ a, const float* __restrict__ b,
+                                             const float* __restrict__ w, float* __restrict__ res,
+                                             signed char* __restrict__ out_q, float* __restrict__ out_d,
+                                             int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i] + br[i]; rr[i] = v; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    for (int blk = tid; blk < nblk; blk += blockDim.x) {
+        int off = blk * 32;
+        float z[32];
+        float amax = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < 32; j++) {
+            float v = (rr[off + j] * scale) * w[off + j];
+            z[j] = v;
+            amax = fmaxf(amax, fabsf(v));
+        }
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        signed char* oq = base_q + off;
+        #pragma unroll
+        for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(z[j] * id);
+        base_d[blk] = d;
+    }
+}
+
 // ---- L2 norm per head_dim (no weight). y = x / sqrt(sum(x^2)+eps). one block per row ----
 extern "C" __global__ void l2_norm_f32(const float* __restrict__ x, float* __restrict__ dst,
                                        int ncols, float eps) {
