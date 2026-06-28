@@ -15,3 +15,4 @@ probe/*.o
 tools/llama_logits
 tools/ggml_dequant_ref
 tools/ggml_list_tensors
+.claude/worktrees/

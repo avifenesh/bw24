@@ -1284,8 +1284,13 @@ impl Engine {
         // At VERY short ctx (t_kv<96) even 1 split can't fill the GPU from 8 KV heads, so the
         // broadcast can't beat the scalar path's 4x-more-blocks latency hiding — fall back to
         // scalar there (measured crossover: vec 0.68x at t_kv=64, 1.23x at t_kv=96, 2.2x at 256).
+        // DEFAULT-ON (2026-06-28): clean clock-locked sweep proved vec beats scalar at every
+        // t_kv>=96 and the gain WIDENS with ctx (graph decode: +9.5% @128, +11.6% @512, +11.8%
+        // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
+        // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
+        // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
         const FA_VEC_MIN_TKV: usize = 96;
-        let fa_vec = std::env::var("BW24_FA_VEC").is_ok() && t_kv >= FA_VEC_MIN_TKV;
+        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
@@ -1342,8 +1347,10 @@ impl Engine {
                         -> Result<(), Box<dyn std::error::Error>> {
         const FA_VEC_MIN_TKV: usize = 96;
         // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
-        // reads the ACTUAL t_kv from t_kv_dev for the per-split bound.
-        let fa_vec = std::env::var("BW24_FA_VEC").is_ok() && bucket_max >= FA_VEC_MIN_TKV;
+        // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
+        // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
+        // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
+        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= FA_VEC_MIN_TKV;
         let n_splits = if fa_vec { ((bucket_max + 63) / 64).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
@@ -1384,7 +1391,10 @@ impl Engine {
     /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
     pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize) -> (bool, usize) {
         const FA_VEC_MIN_TKV: usize = 96;
-        let mut fa_vec = std::env::var("BW24_FA_VEC").is_ok() && t_kv >= FA_VEC_MIN_TKV;
+        // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
+        // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
+        // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
         let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
