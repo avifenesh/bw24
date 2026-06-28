@@ -1022,12 +1022,20 @@ impl Engine {
         // Default RPW=2 (clean clock-locked graph A/B: +1.7%@128, +0.7%@512, +1.8%@2048 vs single-row;
         // RPW=4 regresses on register pressure). Bit-identical per row (argmax 142, same logit maxdiff
         // as single-row on 9B). BW24_MMVQ_MR overrides (1 = single-row reference).
+        // NVFP4 default RPW=2 (clean +1-2% on 9B). Q4_K multi-row is AVAILABLE (qmatvec_q4_K_mmvq_mr2)
+        // but NOT default: measured only +0.7% on the 27B (q4_K is 8% of its decode, multi-row barely
+        // helps the k-quant load pattern) — within noise, not worth the default. BW24_MMVQ_MR forces it
+        // (=2 enables multi-row for both NVFP4 and Q4_K; =1 single-row reference everywhere).
+        let mr_env = std::env::var("BW24_MMVQ_MR").ok().and_then(|s| s.parse::<u32>().ok());
         let mr: u32 = if m == 1 && qtype == QT_NVFP4 {
-            std::env::var("BW24_MMVQ_MR").ok().and_then(|s| s.parse().ok()).unwrap_or(2)
+            mr_env.unwrap_or(2)
+        } else if m == 1 && qtype == QT_Q4_K {
+            mr_env.unwrap_or(1)   // q4_K multi-row off by default (+0.7% only)
         } else { 1 };
         let name = match (qtype, mr) {
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_mr4",
+            (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_mr2",
             (QT_Q8_0, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _) => "qmatvec_q4_K_mmvq",
             (QT_Q6_K, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),

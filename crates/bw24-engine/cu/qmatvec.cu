@@ -591,6 +591,79 @@ extern "C" __global__ void qmatvec_q4_K_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ----- Q4_K MULTI-ROW-PER-WARP MMVQ (MLP lever for the 27B daily, whose weights are Q4_K_M). Each
+// warp computes RPW output rows in one activation pass: the activation int8 (loaded once as 2x int4)
+// is reused across all RPW rows; RPW weight rows + RPW acc chains -> RPW x loads-in-flight, hiding
+// the q4_K weight-load latency without a cross-warp barrier. BIT-IDENTICAL per row to qmatvec_q4_K_mmvq
+// (same scale/min unpack, same dp4a order, same warp_reduce_sum). -----
+template<int RPW>
+__device__ __forceinline__ void q4k_mmvq_multirow(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
+    int t = blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        int grp  = g & 7;
+        int chunk = grp >> 1;
+        bool hi = (grp & 1);
+        // activation loaded ONCE, reused across RPW rows.
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi_sum = dp4a(0x01010101, aq4[k], sumi_sum);  // shared across rows
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            const unsigned char* b = W + (long)o * row_bytes + (long)sblk * 144;
+            float d_sb    = half_to_float(*(const unsigned short*)b);
+            float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+            const unsigned char* scales = b + 4;
+            const unsigned char* qs     = b + 16;
+            unsigned char sc, mn;
+            if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+            else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+                   mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+            const int* q4 = (const int*)(qs + chunk * 32);
+            int sumi_d = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                int raw = q4[k];
+                int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+                sumi_d = dp4a(wpack, aq4[k], sumi_d);
+            }
+            acc[r] += d_sb * (float)((int)sc * sumi_d) * d8
+                    - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[(size_t)t * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_q4_K_mmvq_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4k_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ----- Q6_K warp-per-row MMVQ. Body lifted from qmatvec_q6_K_dp4a (loop @ ~line 476). -----
 extern "C" __global__ void qmatvec_q6_K_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
