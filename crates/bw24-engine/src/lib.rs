@@ -1193,12 +1193,14 @@ impl Engine {
         };
         let f = self.func(name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
-        // CTA tile: BM=64 out-rows x BN=128 tokens x BK=32. MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) runs the
-        // 8-warp llama layout (block 32x8 = 256 thr); kernel2 (Q6_K/NVFP4) keeps the 4-warp layout.
-        const BM: u32 = 64; const BN: u32 = 256;
+        // CTA tile MUST match the .cu per-kernel tile. MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) runs llama's
+        // 128x128 SQUARE tile (K1_BM=128 x K1_BN=128, 8 warps); kernel2 (Q6_K/NVFP4) keeps 64x256, 4 warps
+        // (the macro BM/BN in the .cu). Grid dims are selected by qtype so each launches its own tile.
+        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
+        let (bm, bn): (u32, u32) = if is_k1 { (128, 128) } else { (64, 256) };
         let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
         let cfg = LaunchConfig {
-            grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
+            grid_dim: ((out_f as u32 + bm - 1) / bm, (m as u32 + bn - 1) / bn, 1),
             block_dim: (32, warps, 1),
             shared_mem_bytes: 0,
         };
@@ -1226,11 +1228,13 @@ impl Engine {
         };
         let f = self.func(name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
-        const BM: u32 = 64; const BN: u32 = 256;
-        // MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) = 8 warps; kernel2 (Q6_K/NVFP4) = 4 warps.
+        // MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) = llama 128x128 tile, 8 warps; kernel2 (Q6_K/NVFP4) = 64x256,
+        // 4/8 warps. Grid tile per qtype (must match the .cu K1_BM/K1_BN vs BM/BN). KEEP IN SYNC w/ qmatvec_gemm.
+        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
+        let (bm, bn): (u32, u32) = if is_k1 { (128, 128) } else { (64, 256) };
         let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
         let cfg = LaunchConfig {
-            grid_dim: ((out_f as u32 + BM - 1) / BM, (m as u32 + BN - 1) / BN, 1),
+            grid_dim: ((out_f as u32 + bm - 1) / bm, (m as u32 + bn - 1) / bn, 1),
             block_dim: (32, warps, 1), shared_mem_bytes: 0,
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
