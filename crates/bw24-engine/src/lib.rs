@@ -63,7 +63,16 @@ pub struct Engine {
     /// until the first CUTLASS FP4 GEMM. Mutex guards lazy build/grow only (matches `moe_cache`).
     #[cfg(bw24_cutlass)]
     cutlass_scratch: Mutex<Option<crate::cutlass_ffi::CutlassScratch>>,
+    /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
+    /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
+    /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
+    /// before capture under the generate_graph tracking-off window so it carries no events).
+    argmax_partials: Mutex<Option<(CudaSlice<f32>, CudaSlice<i32>)>>,
 }
+
+/// Number of pass-1 blocks for the parallel argmax (fan-out across SMs to saturate HBM). 256 blocks
+/// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
+pub const ARGMAX_NB: usize = 256;
 
 impl Engine {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
@@ -77,6 +86,7 @@ impl Engine {
         let copy_stream = gpu.ctx.new_stream()?;
         Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
                   moe_cache: Mutex::new(None), copy_stream,
+                  argmax_partials: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -530,32 +540,49 @@ impl Engine {
     }
 
     /// GPU-resident greedy argmax (CUDA-GRAPH-PLAN Phase 1): logits[n_vocab] -> token id in a
-    /// resident device u32 [1]. Single CTA, 256 threads. Bit-identical to host `argmax` (smallest
-    /// index on tie). The whole point is NOT to dtoh logits — only a [1] u32 is read back (or kept
-    /// resident for graph replay). Returns the device token buffer.
+    /// resident device u32 [1]. PARALLEL 2-pass (RANK1 LEVER): the old single-CTA scan (one 256-thread
+    /// block on one SM over 248K logits) was memory-starved at ~426us/token. Now pass 1 fans NB=256
+    /// blocks across the SMs to saturate HBM, pass 2 reduces the NB partials. Bit-identical to host
+    /// `argmax` (smallest index on tie). The whole point is NOT to dtoh logits — only a [1] u32 is read
+    /// back (or kept resident for graph replay). Returns the device token buffer.
     pub fn argmax_token_device(&self, logits: &CudaSlice<f32>, n_vocab: usize)
                                -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        let f = self.func("argmax_logits_f32_to_u32");
         let mut tok = unsafe { self.gpu.stream.alloc::<u32>(1)? };
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
-        let nv = n_vocab as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(logits).arg(&mut tok).arg(&nv);
-        unsafe { b.launch(cfg)?; }
+        self.argmax_token_device_into(logits, &mut tok, n_vocab)?;
         Ok(tok)
     }
     /// Like `argmax_token_device` but writes into a PERSISTENT `tok` buffer (stable pointer) instead
     /// of allocating a fresh one. Required for CUDA-graph capture: the captured argmax must write the
     /// next token into the SAME device buffer the next replay's embed_gather reads, so the buffer
-    /// pointer is baked once and the token id never round-trips to host inside steady state.
+    /// pointer is baked once and the token id never round-trips to host inside steady state. The
+    /// pass-1 partials scratch (`argmax_partials`) is also a resident stable-pointer buffer so both
+    /// captured passes bake fixed addresses.
     pub fn argmax_token_device_into(&self, logits: &CudaSlice<f32>, tok: &mut CudaSlice<u32>,
                                     n_vocab: usize) -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("argmax_logits_f32_to_u32");
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nb = ARGMAX_NB;
+        let f1 = self.func("argmax_partial_f32");
+        let f2 = self.func("argmax_final_f32");
+        let mut guard = self.argmax_partials.lock().unwrap();
+        if guard.is_none() {
+            // allocate ONCE; under generate_graph this runs in the tracking-off prime window so the
+            // buffers carry no cudarc events (illegal inside capture).
+            let pv = self.gpu.stream.alloc_zeros::<f32>(nb)?;
+            let pi = self.gpu.stream.alloc_zeros::<i32>(nb)?;
+            *guard = Some((pv, pi));
+        }
+        let (part_v, part_i) = guard.as_mut().unwrap();
         let nv = n_vocab as i32;
-        let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(logits).arg(tok).arg(&nv);
-        unsafe { b.launch(cfg)?; }
+        let nbi = nb as i32;
+        // pass 1: NB blocks x 256 threads grid-stride scan -> per-block (val, idx) partials.
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(logits).arg(&mut *part_v).arg(&mut *part_i).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        // pass 2: one block reduces NB partials -> token_out[0].
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&*part_v).arg(&*part_i).arg(tok).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
     /// embed_gather into a PERSISTENT `x_out` buffer (stable pointer) for CUDA-graph capture (the

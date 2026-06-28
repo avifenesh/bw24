@@ -266,7 +266,8 @@ impl HybridModel {
     ///     in-graph. The host `kvl.len`/`cache.pos` are NOT advanced here (the driver advances the host
     ///     mirrors once per replay; only the DEVICE counters advance inside the graph).
     ///   - linear-attn layers use the persistent-state variant (copy-back, stable pointers).
-    ///   - lm_head -> `argmax_logits_f32_to_u32` writes the next id into the PERSISTENT `token_d`.
+    ///   - lm_head -> parallel 2-pass argmax (`argmax_partial_f32`+`argmax_final_f32`) writes the
+    ///     next id into the PERSISTENT `token_d`.
     ///   - `inc_seqlen(pos_d)` advances the rope-pos device counter in-graph.
     /// Captured ONCE per `bucket_max`; replayed for every t_kv in that bucket. Bit-identical to eager
     /// when `bucket_max` reproduces eager's n_splits for the replayed t_kv (the bucket-key contract).

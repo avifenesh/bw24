@@ -8,6 +8,9 @@
 // graph-capture blocker). Single CTA, 256 threads. Tie-break = SMALLEST index wins, bit-identical
 // to the host argmax (forward.rs `if v > bv` strictly-greater keeps the first max). Each thread
 // scans a strided slice keeping (best_val,best_id); reduce keeps the lower id on equal value.
+// SUPERSEDED for the live path by the parallel 2-pass kernels below (argmax_partial_f32 +
+// argmax_final_f32): one 256-thread block scanning 248K logits on ONE SM is HBM-starved (~448us/
+// token, ncu clock-locked). Kept as the bit-exact single-CTA reference (same tie-break contract).
 extern "C" __global__ void argmax_logits_f32_to_u32(
         const float* __restrict__ logits, uint32_t* __restrict__ token_out, int n_vocab) {
     int tid = threadIdx.x;
@@ -19,6 +22,90 @@ extern "C" __global__ void argmax_logits_f32_to_u32(
         if (v > best_v || (v == best_v && i < best_i)) { best_v = v; best_i = i; }
     }
     // warp butterfly reduce: max value, smallest index on tie.
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+        int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+        if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+    }
+    __shared__ float sv[32];
+    __shared__ int   si[32];
+    int warp = tid >> 5, lane = tid & 31;
+    if (lane == 0) { sv[warp] = best_v; si[warp] = best_i; }
+    __syncthreads();
+    if (warp == 0) {
+        int nwarps = (blockDim.x + 31) >> 5;
+        best_v = (lane < nwarps) ? sv[lane] : -3.402823466e38f;
+        best_i = (lane < nwarps) ? si[lane] : 0x7fffffff;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+            int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+            if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+        }
+        if (lane == 0) token_out[0] = (uint32_t)best_i;
+    }
+}
+
+// ---- PARALLEL argmax (2-pass, multi-CTA). RANK1 LEVER: the single-CTA argmax above scans the full
+// 248320-vocab logits with ONE 256-thread block on ONE SM — memory-starved, ~426us/token. This pair
+// fans the scan across NB blocks so HBM is saturated, then a 1-block final reduce picks the winner.
+// BIT-IDENTICAL to the single-CTA kernel and to host `argmax` (forward.rs `v>bv`): strictly-greater
+// takes the new value, ties keep the SMALLEST index. Pass 1 -> (part_v[NB], part_i[NB]); pass 2
+// reduces those NB partials into token_out[0]. Both passes are plain launches (graph-capturable).
+//
+// Pass 1: block b, thread tid scans logits[b*blockDim + tid : n_vocab : NB*blockDim] keeping
+// (best_v, smallest best_i), block-reduces, writes part_v[b]/part_i[b].
+extern "C" __global__ void argmax_partial_f32(
+        const float* __restrict__ logits, float* __restrict__ part_v, int* __restrict__ part_i,
+        int n_vocab) {
+    int tid = threadIdx.x;
+    int gtid = blockIdx.x * blockDim.x + tid;
+    int gstride = gridDim.x * blockDim.x;
+    float best_v = -3.402823466e38f;
+    int   best_i = 0x7fffffff;
+    for (int i = gtid; i < n_vocab; i += gstride) {
+        float v = logits[i];
+        if (v > best_v || (v == best_v && i < best_i)) { best_v = v; best_i = i; }
+    }
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+        int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+        if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+    }
+    __shared__ float sv[32];
+    __shared__ int   si[32];
+    int warp = tid >> 5, lane = tid & 31;
+    if (lane == 0) { sv[warp] = best_v; si[warp] = best_i; }
+    __syncthreads();
+    if (warp == 0) {
+        int nwarps = (blockDim.x + 31) >> 5;
+        best_v = (lane < nwarps) ? sv[lane] : -3.402823466e38f;
+        best_i = (lane < nwarps) ? si[lane] : 0x7fffffff;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            float ov = __shfl_xor_sync(0xffffffff, best_v, off);
+            int   oi = __shfl_xor_sync(0xffffffff, best_i, off);
+            if (ov > best_v || (ov == best_v && oi < best_i)) { best_v = ov; best_i = oi; }
+        }
+        if (lane == 0) { part_v[blockIdx.x] = best_v; part_i[blockIdx.x] = best_i; }
+    }
+}
+
+// Pass 2: ONE block reduces the NB partials into token_out[0]. Same tie-break (smallest index).
+// nb = number of pass-1 blocks. Launch with block_dim >= 32 (256 used); strided over nb.
+extern "C" __global__ void argmax_final_f32(
+        const float* __restrict__ part_v, const int* __restrict__ part_i,
+        uint32_t* __restrict__ token_out, int nb) {
+    int tid = threadIdx.x;
+    float best_v = -3.402823466e38f;
+    int   best_i = 0x7fffffff;
+    for (int i = tid; i < nb; i += blockDim.x) {
+        float v = part_v[i];
+        int   id = part_i[i];
+        if (v > best_v || (v == best_v && id < best_i)) { best_v = v; best_i = id; }
+    }
     #pragma unroll
     for (int off = 16; off > 0; off >>= 1) {
         float ov = __shfl_xor_sync(0xffffffff, best_v, off);
