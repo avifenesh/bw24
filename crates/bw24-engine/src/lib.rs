@@ -845,7 +845,13 @@ impl Engine {
         // explicit BW24_FP4 opt-in AND it must come SECOND (int8 W4A8 is the correct default for NVFP4).
         // The workflow plan rebuilds the FP4 path (kill per-K repack, widen K, deepen pipeline, TMA) to
         // be both fast AND accurate; until then NVFP4 prefill defaults to the accurate int8 GEMM.
-        if m >= GEMM_M_THRESHOLD && self.gemm_supports(w) {
+        // TINY-OUT_F GUARD (2026-06-28, ncu trace): the tiling GEMM's grid is (ceil(out_f/BM=64),
+        // ceil(m/BN=256)). For tiny out_f (ssm_beta/ssm_alpha out_f=num_v_heads~32), grid.x=1 -> only
+        // ceil(m/256) CTAs (e.g. 2 for m=512) on 82 SMs = 0.39% SM throughput, 852us EACH (measured
+        // worst offender). The dp4a path grids (out_f, m) = far more CTAs, filling the GPU. So route
+        // out_f < 2*BM to dp4a (skip the tiling GEMM which structurally can't fill the SMs here).
+        const GEMM_MIN_OUT_F: usize = 128;   // 2*BM; below this the GEMM grid.x starves the 82 SMs
+        if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.gemm_supports(w) {
             let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
             return self.qmatvec_gemm(w, &aq, &ad, m);
         }
