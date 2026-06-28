@@ -136,6 +136,69 @@ pub fn dequant_gguf_row(row: &[u8], in_f: usize) -> Vec<f32> {
     out
 }
 
+// ── NVFP4-preserving structural permutations (keep the weight quantized; no f32 blow-up) ──────────
+//
+// The qwen35 SSM V-head reorders are pure index permutations that, on a GGUF NVFP4 weight, move whole
+// 64-elem blocks: a row reorder moves whole rows (= `row_bytes` byte-blocks); an in-column head reorder
+// moves contiguous groups of `head_dim/64` blocks (head_dim=128 == 2 blocks here, block-aligned). So
+// they can be applied DIRECTLY to the repacked bytes — no dequant-to-f32 (saves ~16 GB on the 27B).
+//
+// These mirror `hf_mapping::reorder_rows_v` / `reorder_cols_v` exactly (same `dst_head=j*nk+g <-
+// src_head=g*num_v_per_k+j` mapping), but operate on packed rows of `row_bytes` instead of f32.
+
+/// Reorder the V-head OUT-ROWS of a packed NVFP4 weight (rows are independent `row_bytes` blocks).
+/// `out_f` rows of `row_bytes`; rows in the band `[row_lo, row_hi)` (== `nv*head_dim` rows) are
+/// permuted by the V-head map, rows outside copy through. (qkv V band; z/a/b whole band.)
+pub fn reorder_rows_nvfp4(packed: &[u8], out_f: usize, row_bytes: usize, num_v_heads: usize,
+                          num_k_heads: usize, head_dim: usize, row_lo: usize, row_hi: usize) -> Vec<u8> {
+    assert_eq!(packed.len(), out_f * row_bytes, "packed size != out_f*row_bytes");
+    assert_eq!(row_hi - row_lo, num_v_heads * head_dim, "reorder band != nv*head_dim");
+    let num_v_per_k = num_v_heads / num_k_heads;
+    let mut out = packed.to_vec();
+    for j in 0..num_v_per_k {
+        for g in 0..num_k_heads {
+            let dst_head = j * num_k_heads + g;
+            let src_head = g * num_v_per_k + j;
+            for d in 0..head_dim {
+                let dst_row = row_lo + dst_head * head_dim + d;
+                let src_row = row_lo + src_head * head_dim + d;
+                out[dst_row * row_bytes..dst_row * row_bytes + row_bytes]
+                    .copy_from_slice(&packed[src_row * row_bytes..src_row * row_bytes + row_bytes]);
+            }
+        }
+    }
+    out
+}
+
+/// Reorder the V-head IN-COLUMNS of a packed NVFP4 weight (out_proj). Columns are in-features; a head
+/// is `head_dim` contiguous in-features == `head_dim/64` contiguous 64-elem blocks (must be block-
+/// aligned: head_dim % 64 == 0). Permutes the per-head block-groups within EVERY row. `in_f` columns.
+pub fn reorder_cols_nvfp4(packed: &[u8], out_f: usize, in_f: usize, num_v_heads: usize,
+                          num_k_heads: usize, head_dim: usize) -> Vec<u8> {
+    assert_eq!(in_f, num_v_heads * head_dim, "in_f != nv*head_dim");
+    assert_eq!(head_dim % 64, 0, "head_dim must be NVFP4-block-aligned (got {head_dim})");
+    let blocks_per_head = head_dim / 64;
+    let row_bytes = (in_f / 64) * 36;
+    assert_eq!(packed.len(), out_f * row_bytes, "packed size != out_f*row_bytes");
+    let num_v_per_k = num_v_heads / num_k_heads;
+    let head_bytes = blocks_per_head * 36; // bytes for one head's worth of in-feature blocks
+    let mut out = packed.to_vec();
+    for r in 0..out_f {
+        let base = r * row_bytes;
+        for j in 0..num_v_per_k {
+            for g in 0..num_k_heads {
+                let dst_head = j * num_k_heads + g;
+                let src_head = g * num_v_per_k + j;
+                out[base + dst_head * head_bytes..base + dst_head * head_bytes + head_bytes]
+                    .copy_from_slice(
+                        &packed[base + src_head * head_bytes..base + src_head * head_bytes + head_bytes],
+                    );
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +236,75 @@ mod tests {
                 let b = ggu[e];
                 let denom = a.abs().max(1e-6);
                 assert!((a - b).abs() / denom < 1e-6, "row {o} elem {e}: modelopt {a} != gguf {b}");
+            }
+        }
+    }
+
+    /// NVFP4-preserving row permutation == f32 row permutation: repack -> permute packed -> dequant
+    /// must equal dequant -> f32 permute, for a ZReorderRows-style whole-band out-row reorder.
+    #[test]
+    fn row_perm_nvfp4_equals_f32() {
+        // nv=4, nk=2, head_dim=1 -> 4 out-rows reordered; in_f=64 (1 block).
+        let (nv, nk, hd, in_f, out_f) = (4usize, 2usize, 1usize, 64usize, 4usize);
+        let in_bytes = in_f / 2;
+        let scl_bytes = in_f / 16;
+        let mut weight = vec![0u8; out_f * in_bytes];
+        let mut wscale = vec![0u8; out_f * scl_bytes];
+        for (i, b) in weight.iter_mut().enumerate() { *b = ((i * 41 + 7) & 0xFF) as u8; }
+        for (i, b) in wscale.iter_mut().enumerate() { *b = (0x20 + ((i * 11 + 5) % 0x50)) as u8; }
+        let row_bytes = (in_f / 64) * 36;
+        let packed = repack_modelopt_to_gguf(&weight, &wscale, out_f, in_f);
+        // NVFP4 path: permute packed rows, then dequant each row.
+        let perm = reorder_rows_nvfp4(&packed, out_f, row_bytes, nv, nk, hd, 0, out_f);
+        // f32 path: dequant each row, then apply the same row permutation in f32.
+        let f32rows: Vec<Vec<f32>> = (0..out_f).map(|o| dequant_modelopt_row(
+            &weight[o * in_bytes..(o + 1) * in_bytes],
+            &wscale[o * scl_bytes..(o + 1) * scl_bytes], in_f)).collect();
+        let num_v_per_k = nv / nk;
+        for j in 0..num_v_per_k {
+            for g in 0..nk {
+                let dst = j * nk + g;       // head_dim=1 -> head index == row index
+                let src = g * num_v_per_k + j;
+                let nvfp4_row = dequant_gguf_row(&perm[dst * row_bytes..(dst + 1) * row_bytes], in_f);
+                for e in 0..in_f {
+                    let a = f32rows[src][e];
+                    let b = nvfp4_row[e];
+                    let denom = a.abs().max(1e-6);
+                    assert!((a - b).abs() / denom < 1e-6, "dst {dst}<-src {src} e {e}: {a} != {b}");
+                }
+            }
+        }
+    }
+
+    /// NVFP4-preserving in-column head permutation == f32 column permutation (out_proj). head_dim=128
+    /// = 2 blocks; nv=4, nk=2 -> in_f=512 = 8 blocks; 1 out-row.
+    #[test]
+    fn col_perm_nvfp4_equals_f32() {
+        let (nv, nk, hd, out_f) = (4usize, 2usize, 128usize, 1usize);
+        let in_f = nv * hd; // 512
+        let in_bytes = in_f / 2;
+        let scl_bytes = in_f / 16;
+        let mut weight = vec![0u8; out_f * in_bytes];
+        let mut wscale = vec![0u8; out_f * scl_bytes];
+        for (i, b) in weight.iter_mut().enumerate() { *b = ((i * 29 + 13) & 0xFF) as u8; }
+        for (i, b) in wscale.iter_mut().enumerate() { *b = (0x21 + ((i * 7 + 1) % 0x50)) as u8; }
+        let row_bytes = (in_f / 64) * 36;
+        let packed = repack_modelopt_to_gguf(&weight, &wscale, out_f, in_f);
+        let perm = reorder_cols_nvfp4(&packed, out_f, in_f, nv, nk, hd);
+        // f32 reference: dequant the row, permute the per-head column groups.
+        let f32row = dequant_modelopt_row(&weight, &wscale, in_f);
+        let nvfp4_row = dequant_gguf_row(&perm, in_f);
+        let num_v_per_k = nv / nk;
+        for j in 0..num_v_per_k {
+            for g in 0..nk {
+                let dst = j * nk + g;
+                let src = g * num_v_per_k + j;
+                for d in 0..hd {
+                    let a = f32row[src * hd + d];
+                    let b = nvfp4_row[dst * hd + d];
+                    let denom = a.abs().max(1e-6);
+                    assert!((a - b).abs() / denom < 1e-6, "col dst {dst}<-src {src} d {d}: {a} != {b}");
+                }
             }
         }
     }

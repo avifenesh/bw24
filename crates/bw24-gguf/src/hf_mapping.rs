@@ -176,6 +176,42 @@ impl TransformKind {
     }
 }
 
+impl TransformKind {
+    /// Apply this transform to a REPACKED GGUF NVFP4 weight WITHOUT dequantizing, when it is a pure
+    /// structural V-head permutation (qkv/z/a/b out-row reorder, out_proj in-column reorder). Keeps
+    /// the weight NVFP4 (no ~8x f32 blow-up). Returns `Some((ne, packed_bytes))` for the permutable
+    /// kinds, `None` for the value transforms (`-exp`, `+1`, conv1d squeeze, identity) which must go
+    /// through f32. `packed`/`out_f`/`in_f` describe the repacked weight (`ne = [in_f, out_f]`).
+    pub fn apply_nvfp4(&self, packed: &[u8], out_f: usize, in_f: usize, cfg: &ModelConfig)
+                       -> Option<(Vec<u64>, Vec<u8>)> {
+        use crate::nvfp4_repack::{reorder_cols_nvfp4, reorder_rows_nvfp4};
+        let (nk, nv, hk, hv) = head_params(cfg);
+        let row_bytes = (in_f / 64) * 36;
+        let ne = vec![in_f as u64, out_f as u64];
+        match self {
+            TransformKind::QkvVReorderRows => {
+                // V band = out-rows [2*qk, conv_dim); q/k rows untouched (copied through).
+                let qk = nk * hk;
+                Some((ne, reorder_rows_nvfp4(packed, out_f, row_bytes, nv, nk, hv, 2 * qk, out_f)))
+            }
+            TransformKind::ZReorderRows => {
+                // all value_dim=out_f out-rows reordered (head_dim=hv).
+                Some((ne, reorder_rows_nvfp4(packed, out_f, row_bytes, nv, nk, hv, 0, out_f)))
+            }
+            TransformKind::AbReorderRows => {
+                // out-rows reordered, head_dim=1 (a/b: out_f == nv).
+                Some((ne, reorder_rows_nvfp4(packed, out_f, row_bytes, nv, nk, 1, 0, out_f)))
+            }
+            TransformKind::OutReorderCols => {
+                // in-columns (value_dim) reordered, head_dim=hv (block-aligned: hv % 64 == 0).
+                Some((ne, reorder_cols_nvfp4(packed, out_f, in_f, nv, nk, hv)))
+            }
+            // value transforms (operate on tiny BF16 tensors) — no NVFP4 fast path.
+            _ => None,
+        }
+    }
+}
+
 /// (num_k_heads, num_v_heads, head_k_dim, head_v_dim) from cfg.ssm / cfg fields (qwen35).
 fn head_params(cfg: &ModelConfig) -> (usize, usize, usize, usize) {
     let ssm = cfg.ssm.as_ref().expect("ssm config for hybrid transform");

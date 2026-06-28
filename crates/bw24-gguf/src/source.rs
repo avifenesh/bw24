@@ -211,9 +211,22 @@ impl TensorSource for SafetensorsSource {
                 }
                 self.raw_hf(&hf)
             }
-            // Owned f32 buffer: a value transform that cannot borrow the on-disk bytes (§2.1).
-            // `deq_f32` is NVFP4-aware, so an NVFP4 SSM weight dequants through the modelopt path.
+            // A value transform. Two paths:
+            //  (a) NVFP4-preserving: a modelopt NVFP4 weight + a pure structural V-head permutation
+            //      (qkv/z/a/b row reorder, out_proj col reorder) -> repack then permute the PACKED
+            //      bytes, keeping the weight NVFP4 (no ~8x f32 blow-up; the macro-scale rides the
+            //      `<stem>.scale` sibling, applied post-matmul exactly like the Plain NVFP4 arm).
+            //  (b) f32 fallback: value transforms (`-exp`, `+1`, conv1d squeeze, identity) operate on
+            //      the tiny BF16 SSM tensors; `deq_f32` is NVFP4-aware for any NVFP4 weight here too.
             HfTarget::Transform { hf, kind } => {
+                if let Some((out_f, in_f, wscale, _scale2)) = self.modelopt_nvfp4(&hf) {
+                    let (_winfo, wbytes) = self.lookup(&hf)?;
+                    let packed = crate::nvfp4_repack::repack_modelopt_to_gguf(wbytes, wscale, out_f, in_f);
+                    if let Some((ne, bytes)) = kind.apply_nvfp4(&packed, out_f, in_f, &self.cfg) {
+                        return Some(TensorView { bytes: Cow::Owned(bytes), ggml_type: GgmlType::NVFP4, ne });
+                    }
+                    // fall through to f32 (value transform on an NVFP4 weight — rare/none in qwen35).
+                }
                 let (mut data, ne_in) = self.deq_f32(&hf)?;
                 let cfg = &self.cfg;
                 let (ne, bytes) = kind.apply(&mut data, ne_in, cfg);
