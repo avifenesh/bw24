@@ -15,6 +15,10 @@ name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 
 [[bin]]
+name = "mvq-msweep"
+path = "src/bin/mvq_msweep.rs"
+
+[[bin]]
 name = "fa-sanitize"
 path = "src/bin/fa_sanitize.rs"
 
