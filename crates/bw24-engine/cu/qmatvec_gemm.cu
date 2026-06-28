@@ -115,6 +115,17 @@
 #define SW_STRIDE BK
 // cp.async ring buffer depth (overlap next K-step's global->smem behind current mma).
 #define NSTAGE 3
+// STEP 1 of the prefill-GEMM rewrite (cross 1->2 CTA/SM for Q4_K/Q5_K): kernel1's pipeline depth.
+// kernel1 was smem-bound to 1 CTA/SM SOLELY by the 40KB (q4_K) / 49KB (q5_K) depth-2 sWraw raw ring
+// (cuobjdump: q4_K SHARED=72704 = 30720 fixed + 40960 ring; regs allow 2 CTA at __launch_bounds__(256,2)
+// REG=128). Dropping the raw ring to DEPTH-1 (a transient slot, made aliasing-safe by bulk-decoding a
+// superblock's GPSB blocks before the next superblock overwrites the slot — proven byte-identical in
+// probe/q4k_transient_decode.cu) halves the ring to 20KB/24KB. Combined with K1_NSTAGE=2 for the decoded
+// sW/sA pipeline ring (the global NSTAGE=3 is KEPT for kernel2/mxf4 which are out of scope and must stay
+// byte-identical), the budget is: q4_K 30720*(2/3)+20480 = 20480+20480 = 40960; q5_K 20480+24576 = 45056
+// — both under the 50176B 2-CTA/SM threshold (sm_120 100KB/SM, 1KB/CTA driver reserve). Only kernel1's
+// templated tile uses K1_NSTAGE; kernel2/mxf4 use the global NSTAGE.
+#define K1_NSTAGE 2
 
 __device__ __forceinline__ float ghalf2float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));
@@ -440,29 +451,32 @@ __device__ void qmatvec_gemm_kernel(
     const int tokbase = wx * K1_WARP_N;      // this warp's first tile token (K1_WARP_N = K1_BN/K1_NTX = 64)
     const int cta_threads = NWARP * WARP_SZ; // 8 warps = 256 (grid-stride over K1_BM/K1_BN fetch+decode)
 
-    // NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
+    // K1_NSTAGE-deep ring buffer: stage s holds the decoded weight tile, async-copied activation
     // tile, and per-tile scales for one K-step. The already-int8 activations are cp.async'd straight
-    // from global. FIX A: the RAW quant superblock is cp.async'd into sWraw (a separate NSTAGE_RAW
-    // ring keyed by SUPERBLOCK) one superblock ahead; the ALU decode reads that RESIDENT smem (not
-    // global) during prefetch -> the long-scoreboard global weight read leaves the mma chain, and
-    // superblock DRAM traffic drops GPSB-fold (8x for Q4_K/Q5_K).
+    // from global. FIX A: the RAW quant superblock is cp.async'd into the DEPTH-1 sWraw1 slot (STEP 1:
+    // was a depth-2 ring; the 40KB/49KB ring was the SOLE 1-CTA/SM smem cap), then the ALU decode reads
+    // that RESIDENT smem (not global) during prefetch -> the long-scoreboard global weight read leaves
+    // the mma chain. The depth-1 slot is fetched+drained at each superblock boundary in the K-loop.
     // MMQ-PORT: weight tile row-PADDED to SW_STRIDE (llama x_qs %8==4 pad) -> conflict-free decode-store +
     // ldmatrix. Decoded 32 int8 live in [0..31]; [32..47] is the bank-conflict-breaking pad.
-    __shared__ __align__(16) int8_t sW[NSTAGE][K1_BM][SW_STRIDE];
-    __shared__ int8_t sA[NSTAGE][K1_BN][BK];   // BK (16-aligned) so cp.async.cg 16B copies are legal
-    __shared__ float  sWd[NSTAGE][K1_BM];
-    __shared__ float  sWb[NSTAGE][K1_BM];
-    __shared__ float  sAd[NSTAGE][K1_BN];
-    __shared__ float  sAsum[NSTAGE][K1_BN];
-    // raw superblock ring (FIX A). FIX A applies to GPSB>=2 dtypes (Q4_K/Q5_K, GPSB=8): a 16B-floored
-    // superblock window cp.async'd ONE superblock ahead (lead = GPSB K-steps >= NSTAGE, so always landed
-    // at the per-iter wait_group), decoded from RESIDENT smem -> global read off the mma chain + GPSB-fold
-    // less weight DRAM. Keyed by superblock; depth NSTAGE_RAW=2 (decoding-sb + 1 prefetched). Q8_0 (GPSB=1)
-    // has no superblock sharing AND a 1-step lead can't beat the wait_group, so it KEEPS the inline-global
-    // decode (USE_PREDECODE=false): the dead raw ring compiles to nothing (NSTAGE_RAW*BM*1).
+    __shared__ __align__(16) int8_t sW[K1_NSTAGE][K1_BM][SW_STRIDE];
+    __shared__ int8_t sA[K1_NSTAGE][K1_BN][BK];   // BK (16-aligned) so cp.async.cg 16B copies are legal
+    __shared__ float  sWd[K1_NSTAGE][K1_BM];
+    __shared__ float  sWb[K1_NSTAGE][K1_BM];
+    __shared__ float  sAd[K1_NSTAGE][K1_BN];
+    __shared__ float  sAsum[K1_NSTAGE][K1_BN];
+    // STEP 1: DEPTH-1 raw superblock slot (was a depth-2 ring; the 40KB/49KB ring was the SOLE reason
+    // kernel1 was smem-capped at 1 CTA/SM). FIX A pre-decode applies to GPSB>=2 dtypes (Q4_K/Q5_K,
+    // GPSB=8): a 16B-floored superblock window is cp.async'd into this ONE slot, then BULK-DECODED (all
+    // GPSB blocks at once) into the decoded sW ring BEFORE the next superblock's cp.async overwrites the
+    // slot — that bulk-decode-then-overwrite is what makes depth-1 aliasing-safe (a depth-1 per-K-step
+    // ring broke before: it overwrote a slot still being read across the 8 K-steps; the bulk decode reads
+    // all 8 blocks while the slot is resident, then frees it). Proven byte-identical in
+    // probe/q4k_transient_decode.cu (0 mismatch, q4_K + q5_K). Q8_0 (GPSB=1, USE_PREDECODE=false) keeps
+    // the inline-global decode; the dead slot compiles to nothing (RAW_W=1).
     enum { GPSB = StageMeta<QT>::GPSB, USE_PREDECODE = StageMeta<QT>::PREDEC,
-           RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
-    __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][K1_BM][RAW_W];
+           RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1 };
+    __shared__ __align__(16) unsigned char sWraw1[K1_BM][RAW_W];
 
     // MMQ-PORT small accumulator: each warp owns WARP_M*MFRAG=32 rows x K1_WARP_N=64 tokens =
     // MFRAG m16-frags x (K1_WARP_N/8=8) n-tiles, 4 accum regs each = MFRAG*8*4 = 64 regs/warp.
@@ -478,7 +492,6 @@ __device__ void qmatvec_gemm_kernel(
     //      from the 16B-FLOOR of its byte offset; record nothing (phase recomputed at decode). Issued
     //      only at superblock boundaries (caller gates on g%GPSB==0). ----
     auto fetch_superblock = [&](int sb) {
-        int rs = sb % NSTAGE_RAW;
         for (int r = tid; r < K1_BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
@@ -486,7 +499,7 @@ __device__ void qmatvec_gemm_kernel(
                 long aoff = off & ~(long)15;          // 16B floor of the superblock
                 int  phase = (int)(off - aoff);       // 0..15
                 int  nchunk = (phase + (int)StageMeta<QT>::SB_BYTES + 15) >> 4;
-                cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+                cp_async_window(&sWraw1[r][0], W + aoff, nchunk);  // STEP 1: the ONE depth-1 slot
             }
         }
     };
@@ -511,11 +524,11 @@ __device__ void qmatvec_gemm_kernel(
             }
         }
     };
-    // ---- DECODE group g (off the mma chain): ALU-unpack the RESIDENT raw superblock smem -> sW[s].
-    //      Reads sWraw[(g/GPSB)%NSTAGE_RAW] at phase = (rowbyteoff & 15); bit-identical to the global
-    //      decode (same intra-superblock math, smem base). Result visible at the next barrier. ----
+    // ---- DECODE group g (off the mma chain): ALU-unpack the RESIDENT depth-1 raw slot -> sW[s].
+    //      Reads sWraw1 (the ONE slot, holding superblock g/GPSB) at phase = (rowbyteoff & 15);
+    //      bit-identical to the global decode (same intra-superblock math, smem base). Result visible
+    //      at the next barrier. The slot is fetched+drained at each superblock boundary in the K-loop. ----
     auto decode_stage = [&](int s, int g) {
-        int rs  = (g / GPSB) % NSTAGE_RAW;
         int grp = g & (GPSB - 1);
         for (int r = tid; r < K1_BM; r += cta_threads) {
             int o = rowtile + r;
@@ -523,7 +536,7 @@ __device__ void qmatvec_gemm_kernel(
             if (o < out_f) {
                 long off = (long)o * row_bytes + (long)(g / GPSB) * (long)StageMeta<QT>::SB_BYTES;
                 int  phase = (int)(off & 15);
-                const unsigned char* b = &sWraw[rs][r][phase];
+                const unsigned char* b = &sWraw1[r][phase];   // STEP 1: the ONE depth-1 slot
                 dw = decode_block_s<QT>(b, grp, &sW[s][r][0], &bias);
             } else {
                 dw = 0.0f;
@@ -554,26 +567,25 @@ __device__ void qmatvec_gemm_kernel(
 
     const int nsb = (nblk + GPSB - 1) / GPSB;            // total superblocks along K
     if (USE_PREDECODE) {
-        // ===== PROLOGUE (pre-decode): seed raw superblocks 0..1 (read by prologue stages + loop's
-        //       first decode) + prologue activations; drain; decode prologue stages from resident smem.
-        //       seed count (2) == NSTAGE_RAW so seeds land in distinct slots. =====
+        // ===== PROLOGUE (STEP 1, depth-1 raw slot): seed superblock 0 into the ONE slot + the
+        //       K1_NSTAGE-1 prologue activations; drain; decode prologue stages (all from superblock 0,
+        //       since K1_NSTAGE-1 < GPSB) from the resident slot. With the depth-1 slot there is no
+        //       one-superblock-ahead prefetch: each superblock is fetched at its boundary in the loop. =====
+        if (0 < nsb) fetch_superblock(0);
         #pragma unroll
-        for (int sb = 0; sb < NSTAGE_RAW; sb++)
-            if (sb < nsb) fetch_superblock(sb);
-        #pragma unroll
-        for (int s = 0; s < NSTAGE - 1; s++)
+        for (int s = 0; s < K1_NSTAGE - 1; s++)
             if (s < nblk) fetch_activation(s, s);
         asm volatile("cp.async.commit_group;");
-        asm volatile("cp.async.wait_group 0;");          // drain: raw superblocks + activations resident
+        asm volatile("cp.async.wait_group 0;");          // drain: superblock 0 + prologue activations resident
         __syncthreads();
         #pragma unroll
-        for (int s = 0; s < NSTAGE - 1; s++)
-            if (s < nblk) decode_stage(s, s);            // decode prologue stages from resident raw smem
+        for (int s = 0; s < K1_NSTAGE - 1; s++)
+            if (s < nblk) decode_stage(s, s);            // prologue stages decode from the resident slot
         asm volatile("cp.async.commit_group;");          // keep per-iter commit cadence (empty group ok)
     } else {
         // ===== PROLOGUE (inline): original path — fetch activation + inline-global decode per stage. ==
         #pragma unroll
-        for (int s = 0; s < NSTAGE - 1; s++) {
+        for (int s = 0; s < K1_NSTAGE - 1; s++) {
             if (s < nblk) { decode_stage_inline(s, s); fetch_activation(s, s); }
             asm volatile("cp.async.commit_group;");
         }
@@ -582,14 +594,28 @@ __device__ void qmatvec_gemm_kernel(
     // ===== K loop over 32-blocks (SINGLE barrier/step: top __syncthreads guards both cur's
     //       visibility AND the WAR for the prefetch that follows it). =====
     for (int g = 0; g < nblk; g++) {
-        int cur = g % NSTAGE;
-        int nxt = (g + NSTAGE - 1) % NSTAGE;
-        int gp  = g + NSTAGE - 1;             // the K-block prefetched/decoded this iter
+        int cur = g % K1_NSTAGE;
+        int nxt = (g + K1_NSTAGE - 1) % K1_NSTAGE;
+        int gp  = g + K1_NSTAGE - 1;          // the K-block prefetched/decoded this iter
 
-        // wait until only NSTAGE-2 newest groups remain pending -> stage `cur`'s activation (committed
-        // NSTAGE-1 iters ago) has landed; raw superblocks (fetched >=1 superblock ago) are long landed.
-        asm volatile("cp.async.wait_group %0;" :: "n"(NSTAGE - 2));
+        // wait until only K1_NSTAGE-2 newest groups remain pending -> stage `cur`'s activation (committed
+        // K1_NSTAGE-1 iters ago) has landed.
+        asm volatile("cp.async.wait_group %0;" :: "n"(K1_NSTAGE - 2));
         __syncthreads();   // cur visible (sA landed + sW decoded last iter); WAR-safe prefetch
+
+        // STEP 1 (depth-1 raw slot): if `gp` enters a NEW superblock, the ONE slot still holds the OLD
+        // superblock. The barrier above guarantees ALL warps finished reading the old superblock (the
+        // last read was the decode of gp-1 in the previous iter, which happened before that iter's commit
+        // and is ordered before this barrier) -> the cp.async overwrite is WAR-safe. We fetch the new
+        // superblock, then DRAIN + barrier so it is resident before decode_stage reads it. This serializes
+        // the superblock fetch (no one-ahead overlap; the depth-1 slot can hold only one superblock) — the
+        // smem cost of the depth-2 ring is traded for this per-superblock fetch latency (1/GPSB K-steps).
+        if (USE_PREDECODE && gp < nblk && (gp % GPSB == 0)) {
+            fetch_superblock(gp / GPSB);
+            asm volatile("cp.async.commit_group;");
+            asm volatile("cp.async.wait_group 0;");      // new superblock resident before any decode reads it
+            __syncthreads();                              // RAW: slot visible to all warps' decode
+        }
 
         // LATENCY-HIDE (2026-06-28): issue the A-frag ldmatrix HERE, right after the sync, BEFORE the
         // decode/prefetch block — so the ldmatrix's smem-load latency overlaps the decode_stage ALU
@@ -601,14 +627,13 @@ __device__ void qmatvec_gemm_kernel(
         for (int mf = 0; mf < MFRAG; mf++)
             ld_A_s8(afrag[mf], &sW[cur][rowbase + mf * WARP_M][0], SW_STRIDE);
 
-        // (A) prefetch gp's activation; (pre-decode path) fetch superblock gp/GPSB+1 when gp enters a new
-        //     superblock (keeps raw ring 1 superblock ahead) then DECODE gp from RESIDENT smem (no global
-        //     read on chain). (inline path) inline-global decode gp straight into sW (original behavior).
+        // (A) prefetch gp's activation; (pre-decode path) DECODE gp from the RESIDENT depth-1 slot (the
+        //     superblock was fetched+drained at its boundary above; no global weight read on the chain).
+        //     (inline path) inline-global decode gp straight into sW (original behavior).
         if (gp < nblk) {
             fetch_activation(nxt, gp);
             if (USE_PREDECODE) {
-                if (gp % GPSB == 0) { int sbf = gp / GPSB + 1; if (sbf < nsb) fetch_superblock(sbf); }
-                decode_stage(nxt, gp);        // reads raw smem (resident); NO global read on chain
+                decode_stage(nxt, gp);        // reads the resident depth-1 slot; NO global read on chain
             } else {
                 decode_stage_inline(nxt, gp); // Q8_0: original inline-global decode
             }

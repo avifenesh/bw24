@@ -17,4 +17,5 @@ tools/ggml_dequant_ref
 tools/ggml_list_tensors
 .claude/worktrees/
 probe/int8_swizzle_aload
+probe/q4k_transient_decode
 probe/*.o
