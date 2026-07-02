@@ -67,14 +67,28 @@
 //       decode-store accesses across banks). The decoded weights are still the SAME bytes (decode math
 //       unchanged) -> bit-exact; only the storage stride differs. The mma atom is unchanged
 //       (mma_s8_m16n8k32, == llama's tile<16,8> mma.cuh:942).
+// TUNABLE (tools/sweep): the FREE tile parameters below (BM, BN, BK, NWARP, NSTAGE, K1_BM,
+// K1_BN, K1_NSTAGE) are #ifndef-guarded so `nvcc -D NAME=val` overrides them for autotune
+// sweeps. Defaults are byte-identical to the shipped kernel (no -D => same preprocessed
+// source). DERIVED macros (NWY, WARP_N, K1_NWY, K1_WARP_N, SW_STRIDE) stay derived. NOTE:
+// BK is structurally pinned to 32 (== the quant/q8_1 block AND the mma k); overriding it
+// compiles a wrong kernel — the sweep's argmax gate records it as a negative label.
+#ifndef BM
 #define BM 64      // output rows per CTA  (4 row-groups x 16 rows)
+#endif
 // BN=256 (was 128): ncu showed the prefill GEMM is SMEM-BANDWIDTH-SATURATED (L1 70%, issue 28%) at
 // 2 CTAs/SM. A bigger token tile (256) doubles weight REUSE per CTA (1 weight-decode serves 256
 // tokens vs 128) = HALF the weight-smem traffic per output, and the larger smem pushes toward 1
 // CTA/SM (llama's winning config: 1 CTA, big tile, owns all L1 bw). facc grows 32->64 regs/warp.
+#ifndef BN
 #define BN 256     // tokens per CTA (NTX token-groups; weight reused across all BN)
+#endif
+#ifndef BK
 #define BK 32      // contraction per K-step (== quant 32-block)
+#endif
+#ifndef NWARP
 #define NWARP 8    // MMQ-PORT (kernel1: Q8_0/Q4_K/Q5_K): 8 warps/CTA (was 4) — hide mma+decode latency
+#endif
 // ARITHMETIC-INTENSITY LEVER (2026-06-28): MFRAG m16-fragments per warp. ncu showed llama's 5451 GEMM
 // wins via higher SM throughput (40% vs bw24 22%) = more mma per smem-load. MFRAG=2: each warp owns 2
 // m16 row-frags (32 rows) and REUSES each loaded B-frag across BOTH -> per K-step a warp does 8 mma
@@ -97,8 +111,12 @@
 // row-band doubles (NWY=4 row-groups) -> longer register-resident mma run per K-step to hide the smem
 // latency; K1_BN 128 keeps facc=64 regs (no spill) and halves the sA ring. kernel2/mxf4 KEEP 64x256
 // (BM/BN macros) — only kernel1's templated tile changes, so NVFP4/Q6_K paths are byte-untouched.
+#ifndef K1_BM
 #define K1_BM   128
+#endif
+#ifndef K1_BN
 #define K1_BN   128
+#endif
 #define K1_NTX  2                       // MFRAG=2 -> NWY=K1_BM/(WARP_M*MFRAG)=4 row-groups; NWY*NTX=8 warps
 #define K1_NWY  (NWARP / K1_NTX)         // =4 row-groups, each WARP_M*MFRAG=32 rows (4*32=128=K1_BM)
 #define K1_WARP_N (K1_BN / K1_NTX)       // =64 tokens/warp (8 n-tiles of 8)
@@ -114,7 +132,9 @@
 // them needs an XOR-swizzle of the ldmatrix chunk index like the FP4 path's SWZ_CHUNK, a separate lever.)
 #define SW_STRIDE BK
 // cp.async ring buffer depth (overlap next K-step's global->smem behind current mma).
+#ifndef NSTAGE
 #define NSTAGE 3
+#endif
 // STEP 1 of the prefill-GEMM rewrite (cross 1->2 CTA/SM for Q4_K/Q5_K): kernel1's pipeline depth.
 // kernel1 was smem-bound to 1 CTA/SM SOLELY by the 40KB (q4_K) / 49KB (q5_K) depth-2 sWraw raw ring
 // (cuobjdump: q4_K SHARED=72704 = 30720 fixed + 40960 ring; regs allow 2 CTA at __launch_bounds__(256,2)
@@ -125,7 +145,9 @@
 // byte-identical), the budget is: q4_K 30720*(2/3)+20480 = 20480+20480 = 40960; q5_K 20480+24576 = 45056
 // — both under the 50176B 2-CTA/SM threshold (sm_120 100KB/SM, 1KB/CTA driver reserve). Only kernel1's
 // templated tile uses K1_NSTAGE; kernel2/mxf4 use the global NSTAGE.
+#ifndef K1_NSTAGE
 #define K1_NSTAGE 2
+#endif
 
 __device__ __forceinline__ float ghalf2float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));

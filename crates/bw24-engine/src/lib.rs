@@ -29,6 +29,30 @@ const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
 const GEMM_FATBIN_PATH: &str = env!("BW24_GEMM_FATBIN");
 const ROUTER_FATBIN_PATH: &str = env!("BW24_ROUTER_FATBIN");
 
+/// TUNE SEAM (tools/sweep): a RUNTIME `BW24_GEMM_FATBIN=<path>` overrides the baked-in
+/// qmatvec_gemm.cu fatbin path (build.rs bakes the same name at COMPILE time via
+/// cargo:rustc-env — that constant is the default). Lets the sweep harness swap in a
+/// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
+/// compile-time default (zero behavior change).
+fn gemm_fatbin_path() -> String {
+    std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
+}
+
+/// TUNE SEAM (tools/sweep): kernel1 (Q8_0/Q4_K/Q5_K) launch-tile override,
+/// `BW24_GEMM_K1_LAUNCH="BM,BN,NWARP"`. MUST match the `-D K1_BM/K1_BN/NWARP` the swept
+/// fatbin was compiled with (the .cu tile and the host launch grid/block have to agree —
+/// the hardcoded (128,128,8) in qmatvec_gemm/qmatvec_gemm_raw is the shipped default).
+/// Kernel2 (Q6_K/NVFP4) launch is untouched. Unset or malformed => None => shipped
+/// defaults (zero behavior change).
+fn k1_launch_override() -> Option<(u32, u32, u32)> {
+    static K1: std::sync::OnceLock<Option<(u32, u32, u32)>> = std::sync::OnceLock::new();
+    *K1.get_or_init(|| {
+        let v = std::env::var("BW24_GEMM_K1_LAUNCH").ok()?;
+        let p: Vec<u32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        match p.as_slice() { [bm, bn, w] => Some((*bm, *bn, *w)), _ => None }
+    })
+}
+
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
 pub const QT_Q4_K: i32 = 1;
@@ -82,7 +106,7 @@ impl Engine {
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
         let flash = gpu.ctx.load_module(Ptx::from_file(FLASH_FATBIN_PATH))?;
-        let gemm = gpu.ctx.load_module(Ptx::from_file(GEMM_FATBIN_PATH))?;
+        let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;
         Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
@@ -1285,8 +1309,12 @@ impl Engine {
         // 128x128 SQUARE tile (K1_BM=128 x K1_BN=128, 8 warps); kernel2 (Q6_K/NVFP4) keeps 64x256, 4 warps
         // (the macro BM/BN in the .cu). Grid dims are selected by qtype so each launches its own tile.
         let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
-        let (bm, bn): (u32, u32) = if is_k1 { (128, 128) } else { (64, 256) };
-        let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
+        // TUNE SEAM: BW24_GEMM_K1_LAUNCH overrides kernel1's launch tile to match a -D-swept fatbin.
+        let k1_tile = if is_k1 { k1_launch_override().unwrap_or((128, 128, 8)) } else { (128, 128, 8) };
+        let (bm, bn): (u32, u32) = if is_k1 { (k1_tile.0, k1_tile.1) } else { (64, 256) };
+        let warps: u32 = if is_k1 { k1_tile.2 } else {
+            match qtype { QT_NVFP4 => 8, _ => 4 }
+        };
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + bm - 1) / bm, (m as u32 + bn - 1) / bn, 1),
             block_dim: (32, warps, 1),
@@ -1319,8 +1347,12 @@ impl Engine {
         // MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) = llama 128x128 tile, 8 warps; kernel2 (Q6_K/NVFP4) = 64x256,
         // 4/8 warps. Grid tile per qtype (must match the .cu K1_BM/K1_BN vs BM/BN). KEEP IN SYNC w/ qmatvec_gemm.
         let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
-        let (bm, bn): (u32, u32) = if is_k1 { (128, 128) } else { (64, 256) };
-        let warps: u32 = match qtype { QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_NVFP4 => 8, _ => 4 };
+        // TUNE SEAM: BW24_GEMM_K1_LAUNCH overrides kernel1's launch tile to match a -D-swept fatbin.
+        let k1_tile = if is_k1 { k1_launch_override().unwrap_or((128, 128, 8)) } else { (128, 128, 8) };
+        let (bm, bn): (u32, u32) = if is_k1 { (k1_tile.0, k1_tile.1) } else { (64, 256) };
+        let warps: u32 = if is_k1 { k1_tile.2 } else {
+            match qtype { QT_NVFP4 => 8, _ => 4 }
+        };
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + bm - 1) / bm, (m as u32 + bn - 1) / bn, 1),
             block_dim: (32, warps, 1), shared_mem_bytes: 0,
