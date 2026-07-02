@@ -883,9 +883,7 @@ impl Engine {
         // the activation internally). out_f>=MMQ_Y/2 guard keeps the tile grid from starving the SMs.
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F
             && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
-            if let crate::model::GpuTensor::Quant { bytes, scale, .. } = w {
-                return self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale);
-            }
+            return self.qmatvec_mmq(w, x, m);
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.gemm_supports(w) {
             let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
@@ -985,13 +983,11 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
-        // VENDORED llama NVFP4 MMQ prefill GEMM (BW24_MMQ=1) — uses the RAW f32 activation (its own
-        // 2-level FP8/UE4M3 quant), so it reads x_fallback not aq/ad. A/B vs the int8 W4A8 GEMM below.
+        // VENDORED llama MMQ prefill GEMMs (BW24_MMQ=1) — use the RAW f32 activation (their own
+        // internal quant: FP8/UE4M3 for NVFP4, q8_1 DS4 for Q4_K/Q5_K), so read x_fallback not aq/ad.
         if m >= 16 && w.out_features() >= 128
             && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
-            if let GpuTensor::Quant { bytes, scale, .. } = w {
-                return self.qmatvec_mmq_nvfp4(bytes, x_fallback, m, w.in_features(), w.out_features(), *scale);
-            }
+            return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
         // from q8_1), so re-quantize from x_fallback rather than reuse aq/ad. NVFP4 only, m>=16.

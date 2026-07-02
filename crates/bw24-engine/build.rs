@@ -25,28 +25,36 @@ fn main() {
         println!("cargo:rustc-env={env}={}", fatbin.display());
     }
 
-    // ---- Vendored llama NVFP4 MMQ GEMM: a STATIC LIB with C-ABI host launchers (extern "C"). ----
+    // ---- Vendored llama MMQ GEMMs: a STATIC LIB with C-ABI host launchers (extern "C"). ----
     // Same kind as the CUTLASS artifact (a host-side launcher cannot go through the device-only fatbin
-    // path), but ALWAYS built (no external header deps — fully ggml-decoupled). The launcher does
-    // cudaFuncSetAttribute (>48KB dynamic smem) + the mul_mat_q NVFP4 kernel launch internally.
+    // path), but ALWAYS built (no external header deps — fully ggml-decoupled). The launchers do
+    // cudaFuncSetAttribute (>48KB dynamic smem) + the mul_mat_q kernel launch internally.
     // Called from Rust via FFI (mmq_ffi.rs), dispatched behind BW24_MMQ=1.
+    // Two translation units: llama_mmq_nvfp4.cu (Blackwell mxf4nvf4 W4A4) and llama_mmq_q45k.cu
+    // (Q4_K/Q5_K int8-MMA W4A8, sm_75+ portable). Both archived into one libbw24_mmq.a.
     {
-        let mmq_src = "cu/llama_mmq_nvfp4.cu";
-        println!("cargo:rerun-if-changed={mmq_src}");
-        let obj = out.join("llama_mmq_nvfp4.o");
+        let mut objs: Vec<PathBuf> = Vec::new();
+        for mmq_src in ["cu/llama_mmq_nvfp4.cu", "cu/llama_mmq_q45k.cu"] {
+            println!("cargo:rerun-if-changed={mmq_src}");
+            let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
+            let obj = out.join(format!("{stem}.o"));
+            let status = Command::new(&nvcc)
+                .args([
+                    "-gencode", "arch=compute_120a,code=sm_120a",
+                    "-O3", "-std=c++17", "--expt-relaxed-constexpr",
+                    "-c", mmq_src, "-o", obj.to_str().unwrap(),
+                ])
+                .status()
+                .expect("spawn nvcc (mmq)");
+            assert!(status.success(), "nvcc static-lib build failed for {mmq_src}");
+            objs.push(obj);
+        }
         let lib = out.join("libbw24_mmq.a");
-        let status = Command::new(&nvcc)
-            .args([
-                "-gencode", "arch=compute_120a,code=sm_120a",
-                "-O3", "-std=c++17", "--expt-relaxed-constexpr",
-                "-c", mmq_src, "-o", obj.to_str().unwrap(),
-            ])
-            .status()
-            .expect("spawn nvcc (mmq)");
-        assert!(status.success(), "nvcc static-lib build failed for {mmq_src}");
         let _ = std::fs::remove_file(&lib);
+        let mut ar_args = vec!["crus".to_string(), lib.to_str().unwrap().to_string()];
+        ar_args.extend(objs.iter().map(|o| o.to_str().unwrap().to_string()));
         let status = Command::new("ar")
-            .args(["crus", lib.to_str().unwrap(), obj.to_str().unwrap()])
+            .args(&ar_args)
             .status()
             .expect("spawn ar (mmq)");
         assert!(status.success(), "ar failed for {}", lib.display());

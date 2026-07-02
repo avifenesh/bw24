@@ -624,6 +624,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
                 }
             }
+            // --- VENDORED llama Q4_K/Q5_K MMQ GEMM vs the f32 dequant oracle. ---
+            // W-exact (int8 tile-load dequant is lossless for k-quants) + q8_1 int8 activation ->
+            // rel should sit in the int8-activation band (~1e-3..1e-2). A layout/scale bug shows as
+            // rel ~1.0, so a 2e-2 hard gate catches real breakage without flapping on quant noise.
+            for (tname, want, qt) in [("blk.3.attn_q.weight",    GgmlType::Q4_K, bw24_engine::QT_Q4_K),
+                                      ("blk.0.attn_gate.weight", GgmlType::Q5_K, bw24_engine::QT_Q5_K)] {
+                let Some(t) = g.find(tname).filter(|t| t.ggml_type == want) else { continue };
+                use bw24_gguf::dequant;
+                use bw24_runtime::cpu_linear;
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t);
+                let w_f32 = dequant::dequantize(want, raw, in_f * out_f);
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 87) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let yb = e.dtoh(&e.qmatvec_mmq_q45k_raw(&wd, &xd, tt, in_f, out_f, qt)?)?;
+                    let d = maxdiff(&cpu, &yb);
+                    let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("MMQ-GEMM {tname} [{want:?}] T={tt}: rel={rel:.2e} {}",
+                             if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
             // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
             // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
             {
