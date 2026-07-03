@@ -77,6 +77,8 @@ Commits: **16e896c** (`feat(prefill): vendor llama Q4_K/Q5_K int8-MMA MMQ GEMM �
 
 Next prefill levers in order: (a) port stream-K to the q45k MMQ (llama's mul_mat_q_stream_k_fixup — biggest single delta), (b) fuse the SSM prep chain (transpose+repack+pad+conv into 1-2 kernels — pure bw24 self-inflicted, llama does ONE concat), (c) FA prefill tile config, (d) fold macro-scale into MMQ epilogue.
 
+**FA-decode grid starvation (27B ncu, 2026-07-03):** register-dequant kernel at short ctx runs grid (n_head_kv=4, n_splits=2) x (32,6) = 8 CTAs on 82 SMs; long-scoreboard stall 77%, warps_active 12.5%, DRAM 0.08%. It's LATENCY-bound (serial dependent K loads per warp), not BW. Split=32 helps 27B +3.4% but BREAKS 9B spec exactness (even with same-kernel per-row verify — combine order still shifts) so default stays 64. Structural fixes to evaluate: (a) per-thread ILP — process 2 keys per iteration per warp (independent load chains, hides latency without changing split partition/combine order), (b) fold the combine INTO the last split CTA via atomics/counter, (c) K-int8 dp4a dot (llama's actual trick: quantize Q to q8_1, dp4a on raw K bytes = 4 loads/lane fewer + int pipeline). (a)+(c) preserve n_splits so spec order is untouched.
+
 **Ranked levers (updated post-decode-session):**
 1. **FA decode port** (llama fattn-vec structure: q8_1 Q + dp4a on raw K bytes, no smem staging) — agent running in background; bw24 FA ~1.3ms/tok vs llama ~0.6ms.
 2. **MTP K=4 exactness fix** — debug agent running (worktree); K=1/2 PASS, K=4 diverges on ALL kernel paths (garbage special tokens ~idx 25 => indexing/state bug, not numerics). MTP is the profit lever: K=1 already 0.85x of plain at 81% acceptance.
