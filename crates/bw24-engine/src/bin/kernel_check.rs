@@ -948,6 +948,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("fa_decode_vec_q(KVQ) Tkv={tkv}: rel={rel_v:.2e} (scalar {rel:.2e}) {}",
                      if rel_v<6e-2 && !regress {"OK"} else {fails+=1;"FAIL"});
         }
+
+        // --- MULTI-ROW verify FA vs per-row loop: BYTE identity (the spec-exactness contract) ---
+        // fa_decode_rows must reproduce the per-row fa_decode loop of full_attn_verify EXACTLY
+        // (same per-row split partition + walk + combine order). Any nonzero bit diff here means
+        // the fused kernel's per-row program diverged from fa_decode_vec_q — a run-spec argmax
+        // flip waiting to happen. Cases cross a 64-key split boundary (128->129 keys => n_splits
+        // 2->3 between rows) and sit at the vec-path floor (t_kv=96).
+        for (base_len, t) in [(95usize, 5usize), (127, 4), (256, 3), (1000, 5)] {
+            let tkv_max = base_len + t;
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i+3)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv_max).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv_max).map(|i| pr(i+11)*0.2).collect();
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv_max * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv_max * v_tok_bytes)?;
+            for tok in 0..tkv_max {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+            }
+            // reference: the per-row loop exactly as full_attn_verify's fallback runs it
+            let mut o_loop = e.zeros(hd*nh*t)?;
+            for r in 0..t {
+                let t_kv_r = base_len + r + 1;
+                let kview=e.view_u8(&kc, t_kv_r*k_tok_bytes);
+                let vview=e.view_u8(&vc, t_kv_r*v_tok_bytes);
+                let mut q_row = e.zeros(hd*nh)?;
+                let q_src = qd.slice(r*nh*hd..(r+1)*nh*hd);
+                e.copy_view_into(&mut q_row, 0, &q_src, nh*hd)?;
+                let mut o_row = e.zeros(hd*nh)?;
+                e.fa_decode(&q_row,&kview,&vview,&mut o_row,hd,nh,nhkv,t_kv_r,scale,k_tok_bytes,v_tok_bytes)?;
+                e.copy_into(&mut o_loop, r*nh*hd, &o_row, nh*hd)?;
+            }
+            // fused multi-row launch on the same cache
+            let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
+            let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
+            let mut o_rows = e.zeros(hd*nh*t)?;
+            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes)?;
+            let a = e.dtoh(&o_loop)?; let b = e.dtoh(&o_rows)?;
+            let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
+                     if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
+        }
     }
 
     // --- KV-cache quantization round-trip: append-quantize then dequant (matches §A formulas) ---

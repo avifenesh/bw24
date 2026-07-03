@@ -63,6 +63,12 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
 /// (the bigger lever) outranks a <=1.2% decode win -> default stays FIXED 64; sweeps use the env.
 /// Takes t_kv so eager, _dc capture, and fa_geom_eager stay signature-compatible for future
 /// adaptive retries (any retry MUST pass run-spec self-consistency first).
+/// Minimum t_kv for the warp-per-token vec FA path (below it the scalar path's 4x-more-blocks
+/// hides latency better — measured crossover, see `fa_decode`). Shared by fa_decode / fa_decode_dc /
+/// fa_geom_eager / fa_decode_rows-eligibility (spec verify) so the kernel pick NEVER diverges
+/// between eager decode and the verify (the spec-exactness law).
+pub const FA_VEC_MIN_TKV: usize = 96;
+
 fn fa_split_keys(_t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     if let Some(forced) = *S.get_or_init(|| {
@@ -1791,7 +1797,6 @@ impl Engine {
         // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
         // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
-        const FA_VEC_MIN_TKV: usize = 96;
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
@@ -1829,6 +1834,62 @@ impl Engine {
         Ok(())
     }
 
+    /// True iff the MULTI-ROW verify FA (`fa_decode_rows`) is usable for a verify batch whose
+    /// FIRST row attends `base_len + 1` keys: every row must take the SAME kernel eager decode
+    /// would (the vec path) — mirrors fa_decode's gate exactly (BW24_NO_FA_VEC + FA_VEC_MIN_TKV +
+    /// head_dim), evaluated at the MINIMUM row bound so no row could have picked scalar.
+    /// BW24_FA_ROWS_OFF=1 is the A/B + fallback seam (per-row loop).
+    pub fn fa_rows_eligible(&self, base_len: usize, head_dim: usize) -> bool {
+        std::env::var("BW24_NO_FA_VEC").is_err()
+            && std::env::var("BW24_FA_ROWS_OFF").is_err()
+            && base_len + 1 >= FA_VEC_MIN_TKV
+            && head_dim <= 256 && head_dim % 32 == 0
+    }
+
+    /// MULTI-ROW verify FA: run fa_decode_vec_q's EXACT per-row program for T causal query rows
+    /// (row r attends keys [0..base_len+r+1)) in ONE kernel launch with grid.z = row, plus ONE
+    /// row-batched combine. Replaces the T separate (fa_decode + combine) launches of the spec
+    /// verify — same per-row split partition (n_splits_r = ceil(t_kv_r/split_keys), the
+    /// fa_split_keys formula), same key-walk order, same reduce shapes => bit-identical outputs
+    /// per row (kernel-check pins rows-vs-loop byte identity; run-spec is the end gate).
+    /// Caller must have checked `fa_rows_eligible(base_len, head_dim)`.
+    /// q is the verify's token-major [T, n_head, head_dim] stack; o is written [T, n_head, head_dim].
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_decode_rows(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                          v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                          head_dim: usize, n_head: usize, n_head_kv: usize,
+                          base_len: usize, t: usize, scale: f32,
+                          k_tok_bytes: usize, v_tok_bytes: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(base_len + 1 >= FA_VEC_MIN_TKV && head_dim <= 256 && head_dim % 32 == 0);
+        let t_kv_max = base_len + t;                       // LAST row's key bound
+        let sp = fa_split_keys(t_kv_max, n_head_kv);       // env/default — same value every row
+        let n_splits_max = (t_kv_max + sp - 1) / sp;
+        let mut part_o = self.zeros(t * n_head * n_splits_max * head_dim)?;
+        let mut part_m = self.zeros(t * n_head * n_splits_max)?;
+        let mut part_l = self.zeros(t * n_head * n_splits_max)?;
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let gqa = (n_head / n_head_kv).max(1) as u32;
+        let f = self.func("fa_decode_vec_q_rows");
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+            block_dim: (32, gqa, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
+         .arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        let fc = self.func("fa_decode_combine_rows");
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+          .arg(&base_i).arg(&nspm).arg(&spk);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     /// Device-counter variant of `fa_decode` (CUDA-GRAPH-PLAN Phase 2). The sequence length is read
     /// from `t_kv_dev[0]` (resident device i32[1]) for the attention loop bound + per-split key range;
     /// the GRID `n_splits` is sized for `bucket_max` (the bucket's max t_kv — baked at capture time).
@@ -1845,7 +1906,6 @@ impl Engine {
                         t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
                         k_tok_bytes: usize, v_tok_bytes: usize)
                         -> Result<(), Box<dyn std::error::Error>> {
-        const FA_VEC_MIN_TKV: usize = 96;
         // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
         // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
@@ -1889,7 +1949,6 @@ impl Engine {
     /// n_splits bit-for-bit. (Per = ceil(t_kv/n_splits) is then recomputed from the DEVICE t_kv inside
     /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
     pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
-        const FA_VEC_MIN_TKV: usize = 96;
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.

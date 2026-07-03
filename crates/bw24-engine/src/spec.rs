@@ -714,26 +714,42 @@ impl HybridModel {
         }
         kvl.len += t;
 
-        // BIT-IDENTICAL VERIFY ATTENTION (spec-exactness fix): run fa_decode PER TOKEN ROW so the
-        // FP accumulation order is byte-for-byte identical to the eager decode path. fa_prefill uses
-        // a different tile size (BLOCK_Q=64, BK=32) and online-softmax structure than fa_decode's
-        // split-K + combine, which changes FP summation order and can flip argmax at tight logit
-        // margins. Query row r attends to keys [0..base_len+r+1) — each successive row sees one
-        // more key (the causal property). This matches eager: decode appends k at len, then fa_decode
-        // sees t_kv = len+1 keys. The verify appends all T tokens first but adjusts the view per row.
+        // BIT-IDENTICAL VERIFY ATTENTION (spec-exactness fix): the FP accumulation order must be
+        // byte-for-byte identical to the eager decode path. fa_prefill uses a different tile size
+        // (BLOCK_Q=64, BK=32) and online-softmax structure than fa_decode's split-K + combine,
+        // which changes FP summation order and can flip argmax at tight logit margins. Query row r
+        // attends to keys [0..base_len+r+1) — each successive row sees one more key (the causal
+        // property). This matches eager: decode appends k at len, then fa_decode sees t_kv = len+1
+        // keys. The verify appends all T tokens first but bounds the key range per row.
+        //
+        // MULTI-ROW FUSED PATH (the long-ctx spec fix, 2026-07-03): when every row takes the vec
+        // kernel (base_len+1 >= FA_VEC_MIN_TKV), ONE fa_decode_rows launch executes the exact
+        // per-row program for all T rows (grid.z = row, per-row n_splits from the same
+        // fa_split_keys formula) — replacing T x (2 launches + 2 dtod copies + 5 partial allocs)
+        // and multiplying resident CTAs by T on a latency-bound kernel. Bit-identical per row by
+        // construction; kernel-check pins rows-vs-loop byte identity, run-spec is the end gate.
+        // Short ctx (any row below the vec crossover) and BW24_NO_FA_VEC/BW24_FA_ROWS_OFF keep the
+        // per-row loop (whose fa_decode picks scalar/vec per row exactly like eager decode).
         let mut attn = e.zeros(t * n_head * head_dim)?;
         let base_len = kvl.len - t;   // KV len BEFORE this round's T tokens were appended
-        for r in 0..t {
-            let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
-            let k_view_r = e.view_u8(&kvl.k, t_kv_r * ktb);
-            let v_view_r = e.view_u8(&kvl.v, t_kv_r * vtb);
-            // copy q row into an owned buffer (fa_decode takes &CudaSlice, not CudaView)
-            let mut q_row = e.zeros(n_head * head_dim)?;
-            let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
-            e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
-            let mut attn_row = e.zeros(n_head * head_dim)?;
-            e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
-            e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
+        if t > 1 && e.fa_rows_eligible(base_len, head_dim) {
+            let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
+            let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
+            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                             base_len, t, scale, ktb, vtb)?;
+        } else {
+            for r in 0..t {
+                let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
+                let k_view_r = e.view_u8(&kvl.k, t_kv_r * ktb);
+                let v_view_r = e.view_u8(&kvl.v, t_kv_r * vtb);
+                // copy q row into an owned buffer (fa_decode takes &CudaSlice, not CudaView)
+                let mut q_row = e.zeros(n_head * head_dim)?;
+                let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
+                e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
+                let mut attn_row = e.zeros(n_head * head_dim)?;
+                e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
+                e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
+            }
         }
 
         let mut gsig = e.zeros(t * n_head * head_dim)?;
