@@ -55,7 +55,11 @@
 #define MMQ_WARP_SIZE 32
 #define MMQ_NWARPS    8
 #define MMQ_Y         128
+// MMQ_X guarded for -D sweeps: 128 (57KB smem, 1 CTA/SM) vs 64 (47KB, 2 CTA/SM — the occupancy
+// lever ncu pointed at: warps_active 16.7% at 1 CTA/SM).
+#ifndef MMQ_X
 #define MMQ_X         128
+#endif
 
 #define CUDA_QUANTIZE_BLOCK_SIZE_MMQ 128
 

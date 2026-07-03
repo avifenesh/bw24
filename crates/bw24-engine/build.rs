@@ -34,16 +34,24 @@ fn main() {
     // (Q4_K/Q5_K int8-MMA W4A8, sm_75+ portable). Both archived into one libbw24_mmq.a.
     {
         let mut objs: Vec<PathBuf> = Vec::new();
+        // TUNE SEAM: BW24_MMQ_X_Q45K=64 rebuilds the k-quant MMQ with a 64-token tile
+        // (47KB smem -> 2 CTA/SM vs 57KB/1; the q45k occupancy ceiling found by ncu).
+        println!("cargo:rerun-if-env-changed=BW24_MMQ_X_Q45K");
+        let q45k_x = std::env::var("BW24_MMQ_X_Q45K").ok();
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
+            let mut args: Vec<String> = vec![
+                "-gencode".into(), "arch=compute_120a,code=sm_120a".into(),
+                "-O3".into(), "-std=c++17".into(), "--expt-relaxed-constexpr".into(),
+            ];
+            if mmq_src.ends_with("mmq_q45k.cu") {
+                if let Some(x) = &q45k_x { args.push(format!("-DMMQ_X={x}")); }
+            }
+            args.extend(["-c".into(), mmq_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
-                .args([
-                    "-gencode", "arch=compute_120a,code=sm_120a",
-                    "-O3", "-std=c++17", "--expt-relaxed-constexpr",
-                    "-c", mmq_src, "-o", obj.to_str().unwrap(),
-                ])
+                .args(&args)
                 .status()
                 .expect("spawn nvcc (mmq)");
             assert!(status.success(), "nvcc static-lib build failed for {mmq_src}");
