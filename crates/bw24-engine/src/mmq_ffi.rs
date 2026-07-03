@@ -31,6 +31,7 @@ unsafe extern "C" {
         in_f: i32, out_f: i32, n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
+        out_scale: f32,
     ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -118,22 +119,27 @@ impl Engine {
         Ok(y)
     }
 
-    /// Run the vendored llama NVFP4 MMQ prefill GEMM from raw weight bytes + f32 activation.
-    /// y[m, out_f] = x[m, in_f] @ W^T. Applies the per-tensor NVFP4 macro-scale post (scale==1.0 no-op).
+    /// Run the vendored NVFP4 MMQ prefill GEMM from raw weight bytes + f32 activation.
+    /// y[m, out_f] = x[m, in_f] @ W^T. The per-tensor NVFP4 macro-scale is FOLDED into the MMQ
+    /// write-back epilogue (was a separate scale_inplace launch + full y round-trip per matmul).
+    /// Same elementwise multiply -> bit-identical to the two-launch form.
     /// `x` is the RAW f32 activation (the launcher quantizes it to block_fp4_mmq internally).
     pub fn qmatvec_mmq_nvfp4(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
                              in_f: usize, out_f: usize, scale: f32)
                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        assert!(in_f % 64 == 0, "MMQ NVFP4 requires in_f % 64 == 0, got {in_f}");
-        let mut y = self.qmatvec_mmq_nvfp4_raw(bytes, x, m, in_f, out_f)?;
-        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
-        Ok(y)
+        self.qmatvec_mmq_nvfp4_scaled(bytes, x, m, in_f, out_f, scale)
     }
 
     /// Bare MMQ launch (no macro-scale) — for the kernel_check accuracy gate.
     pub fn qmatvec_mmq_nvfp4_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
                                  in_f: usize, out_f: usize)
                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_scaled(bytes, x, m, in_f, out_f, 1.0)
+    }
+
+    fn qmatvec_mmq_nvfp4_scaled(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                in_f: usize, out_f: usize, scale: f32)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert!(in_f % 64 == 0, "MMQ NVFP4 requires in_f % 64 == 0, got {in_f}");
         let act_bytes = unsafe { bw24_mmq_nvfp4_act_bytes(in_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
@@ -152,6 +158,7 @@ impl Engine {
                     in_f as i32, out_f as i32, m as i32,
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
+                    scale,
                 )
             };
             if rc != 0 { return Err(format!("bw24_mmq_nvfp4 rc={rc}").into()); }

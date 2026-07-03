@@ -306,7 +306,7 @@ static __device__ __forceinline__ void vec_dot_nvfp4_mma(
 template <int mmq_x, int mmq_y, bool need_check>
 static __device__ __forceinline__ void mmq_write_back_nvfp4(
         const float * __restrict__ sum, const int * __restrict__ ids_dst, float * __restrict__ dst,
-        const int stride, const int i_max, const int j_max) {
+        const int stride, const int i_max, const int j_max, const float out_scale) {
     constexpr int granularity = mmq_get_granularity_device(mmq_x);
     constexpr int nwarps = MMQ_NWARPS;
     typedef tile<16, 8, int> tile_C;
@@ -326,7 +326,9 @@ static __device__ __forceinline__ void mmq_write_back_nvfp4(
                 if (j > j_max) { continue; }
                 const int i = i0 + n * tile_C::I + tile_C::get_i(l);
                 if (need_check && i > i_max) { continue; }
-                dst[ids_dst[j] * stride + i] = sum[(j0 / tile_C::J + n) * tile_C::ne + l];
+                // FOLDED per-tensor NVFP4 macro-scale (was a separate scale_f32 launch + full
+                // y round-trip per matmul, 4.2ms of pp512). scale==1.0 for non-scaled tensors.
+                dst[ids_dst[j] * stride + i] = sum[(j0 / tile_C::J + n) * tile_C::ne + l] * out_scale;
             }
         }
     }
@@ -338,7 +340,8 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
-        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
+        const float out_scale) {
     constexpr int warp_size = MMQ_WARP_SIZE;
     constexpr int nwarps    = MMQ_NWARPS;
     constexpr int qk        = QK_NVFP4;
@@ -383,7 +386,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4(
         __syncthreads();
     }
 
-    mmq_write_back_nvfp4<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+    mmq_write_back_nvfp4<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
 }
 
 // ======================= mul_mat_q (conventional xy-tiling, NVFP4) =======================
@@ -394,7 +397,7 @@ __launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
 static __global__ void mul_mat_q_nvfp4(
         const char * __restrict__ x, const int * __restrict__ y, float * __restrict__ dst,
         const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y,
-        const int stride_col_dst, const int blocks_per_ne00) {
+        const int stride_col_dst, const int blocks_per_ne00, const float out_scale) {
     constexpr int nwarps = MMQ_NWARPS;
     constexpr int warp_size = MMQ_WARP_SIZE;
     constexpr int mmq_y = MMQ_Y;
@@ -423,7 +426,7 @@ static __global__ void mul_mat_q_nvfp4(
 
     mul_mat_q_process_tile_nvfp4<mmq_x, need_check>(
         x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
-        stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00);
+        stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
 }
 
 // ======================= activation quantizer (quantize.cu:78 quantize_mmq_nvfp4) =======================
@@ -537,7 +540,8 @@ static size_t mmq_nvfp4_nbytes_shared() {
 //   act_scratch    : pre-allocated quant buffer, >= bw24_mmq_nvfp4_act_bytes(in_f, n_tokens).
 // Returns 0 on success, else (1000 + cudaError).
 int bw24_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * y,
-                   int in_f, int out_f, int n_tokens, void * act_scratch, void * stream) {
+                   int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
+                   float out_scale) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
 
     // ---- 1) quantize activation f32 -> block_fp4_mmq (quantize_mmq_fp4_cuda, NVFP4 branch) ----
@@ -579,11 +583,11 @@ int bw24_mmq_nvfp4(const void * W_nvfp4_blocks, const float * act_f32, float * y
     if (need_check) {
         cudaFuncSetAttribute(mul_mat_q_nvfp4<MMQ_X, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
         mul_mat_q_nvfp4<MMQ_X, true><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
+            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
     } else {
         cudaFuncSetAttribute(mul_mat_q_nvfp4<MMQ_X, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
         mul_mat_q_nvfp4<MMQ_X, false><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
+            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
     }
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { return 1000 + (int) e; }
