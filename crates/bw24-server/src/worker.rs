@@ -70,11 +70,34 @@ pub enum Cmd {
 /// Live per-session state on the worker thread. One `Session` per in-flight generation.
 /// Holds the per-session `Cache` (model-specific dims — NO sharing between sessions, which is what
 /// makes the concurrent streams byte-identical to isolated runs) and per-session `Sampler`.
+/// KV PREFIX REUSE (append-only continuation): retired sessions park (fed tokens, Cache,
+/// last_logits) here; a new request whose prompt EXACTLY EXTENDS a parked `fed` sequence takes
+/// the Cache and primes only the suffix. Correct by construction for hybrid models: the
+/// recurrent (conv/ssm) state in the Cache is the state AFTER the last fed token — the exact
+/// resume point for an append-only continuation. NO arbitrary-prefix truncation is attempted
+/// (GDN state cannot roll back without checkpoints); a non-extending prompt takes the cold path.
+/// NOTE chat-template callers: templates that rewrite history (e.g. stripping think blocks from
+/// prior assistant turns) break exact-extension and simply miss the pool — raw `prompt_ids`
+/// callers (agent loops) always hit. Pool: at most REUSE_POOL_PER_MODEL entries per model, LRU.
+struct ReuseEntry {
+    fed: Vec<u32>,
+    cache: Cache,
+    last_logits: Vec<f32>,
+    cap: usize,
+}
+const REUSE_POOL_PER_MODEL: usize = 2;
+/// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
+const REUSE_MIN_PREFIX: usize = 16;
+
 struct Session {
     model: String,
     cache: Cache,
     sampler: Sampler,
     last_logits: Vec<f32>,
+    /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
+    /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
+    /// point for KV PREFIX REUSE on retire (see ReusePool).
+    fed: Vec<u32>,
     /// prompt tokens still to be primed (consumed one per scheduler tick during prefill).
     prefill_queue: std::collections::VecDeque<u32>,
     prefill_done: bool,
@@ -132,6 +155,8 @@ pub fn run(
     // ---- scheduler loop ----
     let mut active: Vec<Session> = Vec::new();
     let mut queue: std::collections::VecDeque<Box<Request>> = std::collections::VecDeque::new();
+    // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
+    let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
@@ -155,7 +180,7 @@ pub fn run(
         // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
         while active.len() < MAX_ACTIVE {
             let Some(req) = queue.pop_front() else { break };
-            match admit(&engine, &loaded, *req) {
+            match admit(&engine, &loaded, &mut reuse, *req) {
                 Ok(s) => active.push(s),
                 Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
             }
@@ -173,8 +198,19 @@ pub fn run(
                 }
             }
         }
-        // retire finished sessions (reverse order so indices stay valid).
-        for &i in finished.iter().rev() { active.remove(i); }
+        // retire finished sessions (reverse order so indices stay valid). Long-enough sessions
+        // park their (fed, cache, last_logits) in the reuse pool instead of dropping the cache.
+        for &i in finished.iter().rev() {
+            let s = active.remove(i);
+            if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
+                let pool = reuse.entry(s.model.clone()).or_default();
+                if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
+                let cap = s.cache.max_ctx;
+                pool.push(ReuseEntry {
+                    fed: s.fed, cache: s.cache, last_logits: s.last_logits, cap,
+                });
+            }
+        }
     }
 }
 
@@ -202,6 +238,7 @@ fn handle_cmd(
 fn admit(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
+    reuse: &mut HashMap<String, Vec<ReuseEntry>>,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
     let lm = &loaded[&req.model];
@@ -229,22 +266,47 @@ fn admit(
     let room = ctx_cap - prompt.len();
     let budget = req.params.max_new.min(room);
 
-    let cache = match Cache::new(engine, &lm.model.cfg, ctx_cap) {
-        Ok(c) => c,
-        Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+    // KV PREFIX REUSE probe: a parked session whose fed sequence is an EXACT PREFIX of this
+    // prompt (and whose cache has room) resumes — only the suffix gets primed. The sampler's
+    // penalty history is replayed on host (cheap) so sampling matches a cold run exactly.
+    let mut reused: Option<ReuseEntry> = None;
+    let reuse_on = std::env::var("BW24_KV_REUSE").is_ok();  // opt-in until the identity gate runs
+    if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&req.model)) {
+        if let Some(idx) = pool.iter().rposition(|e|
+            e.fed.len() >= REUSE_MIN_PREFIX && e.cap >= ctx_cap
+                && prompt.len() >= e.fed.len() && prompt.starts_with(&e.fed)) {
+            reused = Some(pool.remove(idx));
+        }
+    }
+    let (cache, seed_fed, seed_logits) = match reused {
+        Some(e) => {
+            eprintln!("[worker] kv-reuse: {} of {} prompt tokens resumed (model {})",
+                      e.fed.len(), prompt.len(), req.model);
+            (e.cache, e.fed, e.last_logits)
+        }
+        None => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+            Ok(c) => (c, Vec::new(), Vec::new()),
+            Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+        },
     };
 
     // EOS: union of caller-supplied eos + the model's own eos id.
     let mut params = req.params;
     if !params.eos.contains(&lm.eos_id) { params.eos.push(lm.eos_id); }
 
+    // Suffix-only prefill on a reuse hit; sampler penalty history replayed over the whole prefix.
+    let mut sampler = Sampler::new(req.sampler_cfg);
+    for &t in &seed_fed { sampler.accept(t); }
+    let suffix: Vec<u32> = prompt[seed_fed.len()..].to_vec();
+    let prefill_done_at_admit = suffix.is_empty();
     Ok(Session {
         model: req.model,
         cache,
-        sampler: Sampler::new(req.sampler_cfg),
-        last_logits: Vec::new(),
-        prefill_queue: prompt.into_iter().collect(),
-        prefill_done: false,
+        sampler,
+        last_logits: seed_logits,
+        fed: seed_fed,
+        prefill_queue: suffix.into_iter().collect(),
+        prefill_done: prefill_done_at_admit,
         generated: Vec::new(),
         params,
         stop_strings: req.stop_strings,
@@ -271,6 +333,7 @@ fn step_session(
     if !s.prefill_done {
         if let Some(tok) = s.prefill_queue.pop_front() {
             s.last_logits = lm.model.decode_step(engine, tok, &mut s.cache)?;
+            s.fed.push(tok);
             s.sampler.accept(tok);
             if s.prefill_queue.is_empty() { s.prefill_done = true; }
         }
@@ -320,6 +383,7 @@ fn step_session(
 
     // produce next logits (the ONE decode_step that advances this session).
     s.last_logits = lm.model.decode_step(engine, next, &mut s.cache)?;
+    s.fed.push(next);
     Ok(true)
 }
 

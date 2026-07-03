@@ -66,19 +66,18 @@ fn main() {
             .status()
             .expect("spawn ar (mmq)");
         assert!(status.success(), "ar failed for {}", lib.display());
-        // --whole-archive: keep the CUDART fatbin-registration global ctor so the device kernel
-        // registers (same MANDATORY reasoning as the CUTLASS link below).
+        // rustc-link-lib (NOT rustc-link-arg): link-arg applies only to THIS package's own
+        // binaries, so downstream crates (bw24-server) failed to link the MMQ symbols. link-lib
+        // metadata propagates through the dependency graph; +whole-archive keeps the CUDART
+        // fatbin-registration global ctor alive (same MANDATORY reasoning as the CUTLASS link).
         println!("cargo:rustc-link-search=native={}", out.display());
-        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo:rustc-link-arg={}", lib.display());
-        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+        println!("cargo:rustc-link-lib=static:+whole-archive=bw24_mmq");
         let cuda_lib = std::path::Path::new(&nvcc).parent().and_then(|p| p.parent())
             .map(|p| p.join("lib64")).unwrap_or_else(|| std::path::PathBuf::from("/usr/local/cuda-13.1/lib64"));
         println!("cargo:rustc-link-search=native={}", cuda_lib.display());
-        println!("cargo:rustc-link-arg=-Wl,--push-state,--as-needed");
-        println!("cargo:rustc-link-arg=-lcudart");
-        println!("cargo:rustc-link-arg=-lstdc++");
-        println!("cargo:rustc-link-arg=-Wl,--pop-state");
+        // dylib link-lib (not link-arg) so cudart/stdc++ propagate to downstream binaries too.
+        println!("cargo:rustc-link-lib=dylib=cudart");
+        println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 
     // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----
@@ -132,10 +131,9 @@ fn main() {
         let cuda_lib = std::path::Path::new(&nvcc).parent().and_then(|p| p.parent())
             .map(|p| p.join("lib64")).unwrap_or_else(|| std::path::PathBuf::from("/usr/local/cuda-13.1/lib64"));
         println!("cargo:rustc-link-search=native={}", cuda_lib.display());
-        println!("cargo:rustc-link-arg=-Wl,--push-state,--as-needed");
-        println!("cargo:rustc-link-arg=-lcudart");
-        println!("cargo:rustc-link-arg=-lstdc++");
-        println!("cargo:rustc-link-arg=-Wl,--pop-state");
+        // dylib link-lib (not link-arg) so cudart/stdc++ propagate to downstream binaries too.
+        println!("cargo:rustc-link-lib=dylib=cudart");
+        println!("cargo:rustc-link-lib=dylib=stdc++");
         // Let the smoke-test bin gate compile out cleanly when CUTLASS is not built.
         println!("cargo:rustc-cfg=bw24_cutlass");
     }
