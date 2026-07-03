@@ -537,6 +537,16 @@ impl HybridModel {
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             let mut e_tok = last_token;
             let mut d_seed = e.clone_dtod(&h_seed)?;
+            // P-MIN CONFIDENCE GATE (BW24_SPEC_PMIN, the serve script's --spec-draft-p-min
+            // mechanism): stop the draft chain early when the head's softmax confidence in its
+            // own pick drops below p_min — low-confidence tail tokens are the ones the verify
+            // rejects, and every drafted-but-rejected token costs a full verify column. Exactness
+            // is untouched (verify still checks whatever WAS drafted; a shorter draft is just a
+            // smaller K this round). p=0.0/unset = always draft K (the prior behavior).
+            static PMIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+            let p_min = *PMIN.get_or_init(|| {
+                std::env::var("BW24_SPEC_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
+            });
             for j in 0..k {
                 // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token read
                 // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
@@ -546,10 +556,20 @@ impl HybridModel {
                 let idx = e.dtoh_u32_one(&tok_d)?;
                 // trimmed draft vocab -> target token id (identity when no d2t map)
                 let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                if p_min > 0.0 {
+                    let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
+                    let p = e.dtoh(&p_d)?[0];
+                    if p < p_min && j > 0 {
+                        // keep at least 1 draft token (j==0 always drafts — a 0-draft round would
+                        // degenerate to plain decode plus overhead).
+                        break;
+                    }
+                }
                 draft.push(d);
                 e_tok = d;
                 d_seed = h_nextn;
             }
+            let k_round = draft.len();
 
             // --- 2. VERIFY: one batched target forward over draft[0..k] at positions pos..pos+k-1
             //         (T=k). Column j follows draft[j], predicting slot pos+1+j. ---
@@ -564,13 +584,13 @@ impl HybridModel {
                 else { argmax(&tlogits[(j - 1) * n_vocab..j * n_vocab]) as u32 }
             };
             let mut n_acc = 0usize;
-            for j in 0..k {
+            for j in 0..k_round {
                 if t_pred(j) == draft[j] { n_acc += 1; } else { break; }
             }
             // bonus = target's own token at the first non-accepted slot. n_acc in 0..=k; t_pred is
             // defined for j in 0..=k (j==0 -> last_logits, j>=1 -> tlogits col j-1, last col = k-1).
             let bonus = t_pred(n_acc);
-            total_drafted += k;
+            total_drafted += k_round;
             total_accepted += n_acc;
 
             if debug_spec {
@@ -587,7 +607,7 @@ impl HybridModel {
             last_token = bonus;
 
             // --- 5. ROLLBACK + advance to exactly pos + n_acc + 1 committed tokens (§C) ---
-            if n_acc == k {
+            if n_acc == k_round {
                 // FULL ACCEPT: all k draft columns are committed; KV+recur already correct.
                 // cache.pos == pos + k. Feed `bonus` (T=1) to commit its KV/recur and obtain the
                 // next-round last_logits + h_seed. (No rollback — Reader-3 full-accept path.)

@@ -54,6 +54,54 @@ extern "C" __global__ void argmax_logits_f32_to_u32(
 // takes the new value, ties keep the SMALLEST index. Pass 1 -> (part_v[NB], part_i[NB]); pass 2
 // reduces those NB partials into token_out[0]. Both passes are plain launches (graph-capturable).
 //
+// Greedy-token softmax probability, pass 1: partial sums of exp(logit - max) where max =
+// logits[tok] (tok = the argmax token, already on device). p(tok) = 1 / sum. Feeds the
+// spec-decode p-min confidence gate (stop drafting when the head is unsure — the mechanism
+// behind the serve script's --spec-draft-p-min): one extra ~1-4MB logits read per draft token.
+extern "C" __global__ void prob_of_token_partial_f32(
+        const float* __restrict__ logits, const uint32_t* __restrict__ tok,
+        float* __restrict__ part_s, int n_vocab) {
+    const float mx = logits[tok[0]];
+    int tid = threadIdx.x;
+    int gtid = blockIdx.x * blockDim.x + tid;
+    int gstride = gridDim.x * blockDim.x;
+    float sum = 0.0f;
+    for (int i = gtid; i < n_vocab; i += gstride) sum += expf(logits[i] - mx);
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, off);
+    __shared__ float ss[32];
+    int warp = tid >> 5, lane = tid & 31;
+    if (lane == 0) ss[warp] = sum;
+    __syncthreads();
+    if (warp == 0) {
+        int nwarps = (blockDim.x + 31) >> 5;
+        sum = (lane < nwarps) ? ss[lane] : 0.0f;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, off);
+        if (lane == 0) part_s[blockIdx.x] = sum;
+    }
+}
+// pass 2: p = 1 / sum(partials).
+extern "C" __global__ void prob_of_token_final_f32(
+        const float* __restrict__ part_s, float* __restrict__ p_out, int nb) {
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < nb; i += blockDim.x) sum += part_s[i];
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, off);
+    __shared__ float ss[32];
+    int warp = tid >> 5, lane = tid & 31;
+    if (lane == 0) ss[warp] = sum;
+    __syncthreads();
+    if (warp == 0) {
+        int nwarps = (blockDim.x + 31) >> 5;
+        sum = (lane < nwarps) ? ss[lane] : 0.0f;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, off);
+        if (lane == 0) p_out[0] = 1.0f / sum;
+    }
+}
+
 // Pass 1: block b, thread tid scans logits[b*blockDim + tid : n_vocab : NB*blockDim] keeping
 // (best_v, smallest best_i), block-reduces, writes part_v[b]/part_i[b].
 extern "C" __global__ void argmax_partial_f32(

@@ -595,6 +595,28 @@ impl Engine {
     /// blocks across the SMs to saturate HBM, pass 2 reduces the NB partials. Bit-identical to host
     /// `argmax` (smallest index on tie). The whole point is NOT to dtoh logits — only a [1] u32 is read
     /// back (or kept resident for graph replay). Returns the device token buffer.
+    /// Softmax probability of the (already-argmaxed) token `tok` under `logits` — the spec-decode
+    /// p-min confidence signal. 2-pass like the parallel argmax; returns a device [1] f32.
+    pub fn prob_of_token_device(&self, logits: &CudaSlice<f32>, tok: &CudaSlice<u32>, n_vocab: usize)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let nb = ARGMAX_NB;
+        let mut part = self.alloc_uninit::<f32>(nb)?;
+        let mut p = self.alloc_uninit::<f32>(1)?;
+        let f1 = self.func("prob_of_token_partial_f32");
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(logits).arg(tok).arg(&mut part).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let f2 = self.func("prob_of_token_final_f32");
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nbi = nb as i32;
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&part).arg(&mut p).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(p)
+    }
+
     pub fn argmax_token_device(&self, logits: &CudaSlice<f32>, n_vocab: usize)
                                -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
         let mut tok = unsafe { self.gpu.stream.alloc::<u32>(1)? };
