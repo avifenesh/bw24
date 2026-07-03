@@ -101,6 +101,14 @@ Next prefill levers in order: (a) port stream-K to the q45k MMQ (llama's mul_mat
 - MoE caching/spill, KV reuse/eviction, striped-vocab MTP, safetensors loaders for gemma4/minimax/deepseek: ROADMAP items 6-9/11-15 — feature work, untouched this session by priority (arm 1 = perf on daily 9B/27B first).
 - L40S benches: blocked on hardware (box terminated). All commits compile-mirrored to sm89.
 
+## USER'S OWN LLAMA WORK (2026-07-04 — read these before touching spec/quant/MoE)
+- **Issue 25187 (his)**: FR-Spec draft-vocab trim for native MTP — HIS branch `avifenesh/llama.cpp/frspec-mtp-vocab-trim` (047bfa508), HIS trimmed GGUFs on disk (frspec32768 variants + d2t tensor). llama measured: draft lm_head -85%, e2e 83.9→85.1 (public map) / 86.5 (code map) tok/s on the 27B daily config. bw24 FR-Spec consumer = agent in flight.
+- **PR 25153 (open, his)**: imatrix-aware NVFP4 quantization (scale search) — the NVFP4 quality side.
+- **PR 23170 (closed, his)**: MoE experts as cache residents during offloading — EDGE-1 ancestor.
+- **Serve script daily config** (~/.local/bin/serve-qwen36-27b): NVFP4 trunk + SEPARATE Q4_K_M MTP draft GGUF, `--spec-draft-n-max 3 --spec-draft-p-min 0.1`, KV q8_0(rotated)/q5_1, graphs ON, 175W, 128k ctx. **llama 27B e2e ≈ 84 tok/s WITH spec — THE number to beat, not plain tg128 42.4.** bw24 27B spec unprofitable (54% blind-draft acceptance) because it lacks p-min CONFIDENCE GATING: llama stops the draft chain when token confidence < p-min, converting low-acceptance rounds into cheap short drafts. That + FR-Spec are the two 27B spec unlocks. Note llama accept ~0.75 at n-max=3 with p-min — same head, gated drafting.
+
+**Vendor-from-everything directive (user, 2026-07-04):** edges can come from ANY tool — sglang, vllm, ktransformers, lmcache, flashinfer, cuBLAS, TensorRT-LLM, ollama, DeepSeek-4 stack, papers. research/inference-maps/ already maps vllm/sglang/ktransformers/lmcache/flashinfer/trt-llm/cutlass-marlin/exllamav3 — USE them per component. E2E tok/s vs llama at the daily serve config (spec+KV-quant on) is the headline bench, not kernel microbenches.
+
 **Ranked levers (updated post-decode-session):**
 1. **FA decode port** (llama fattn-vec structure: q8_1 Q + dp4a on raw K bytes, no smem staging) — agent running in background; bw24 FA ~1.3ms/tok vs llama ~0.6ms.
 2. **MTP K=4 exactness fix** — debug agent running (worktree); K=1/2 PASS, K=4 diverges on ALL kernel paths (garbage special tokens ~idx 25 => indexing/state bug, not numerics). MTP is the profit lever: K=1 already 0.85x of plain at 81% acceptance.
