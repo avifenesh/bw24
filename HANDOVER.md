@@ -38,7 +38,7 @@ _Written 2026-07-03. Read this cold, then continue. bw24 = from-scratch Rust+CUD
 
 | metric | bw24 | llama.cpp | ratio |
 |---|---|---|---|
-| pp512 INTERLEAVED A/B (honest protocol) | **4655** | 5092 | **0.91x** |
+| pp512 INTERLEAVED A/B (honest protocol) | **5049** | 5072 | **0.995x — PARITY BAND** (was 0.91 at session start; conv-tm fuse -> 0.936, scale-fold -> 0.95, conv+GDN-repack fuse -> 0.995) |
 | decode tg128 graph @ctx128 (clock-locked, NOT interleaved) | **109.6** | 117.8 | **~0.93x** |
 | decode tg128 graph @512 / @2048 | 109.5 / 106.3 | — | — |
 
