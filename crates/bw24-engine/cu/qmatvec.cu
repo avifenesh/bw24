@@ -1422,6 +1422,289 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_pfr2(
     nvfp4_mmvq_batched_pfr2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ---- NVFP4 batched matvec, cp.async SMEM WEIGHT RING (A5, 2026-07-04 — Marlin/CUTLASS multi-stage
+// staging pattern). ncu on the post-pf/r2w8 dispatch showed the residual stall is STILL memory
+// latency (long_scoreboard 8.8-16.4/issue vs FMA-dep wait <=1.9, DRAM only 48-69%): the register
+// double-buffer (pf) and 2-row ILP (r2) top out at 1-2 weight wavefronts in flight per warp because
+// every extra wavefront costs ~20 registers. cp.async.cg stages weight bytes global->smem WITHOUT
+// register cost, so a STAGES-deep ring holds (STAGES-1) full 576B warp-windows in flight per warp.
+// Layout law: one warp k-iteration consumes a CONTIGUOUS 576-byte window (16 NVFP4 36B blocks —
+// 32 lanes x half-block) at window g-iter*576 of the row; when row_bytes%16==0 (all trunk shapes:
+// in_f%256==0 -> (in_f/64)*36 % 16 == 0) every window is 16B-aligned in GLOBAL space, so the ring
+// copies 36 16B cp.async.cg chunks per window. Lanes then read their 5 words (4 quant + 1 scale)
+// from smem (LDS, no long_scoreboard). Host dispatch gates _ca on row_bytes%16==0 && nsb%32==0;
+// otherwise falls back to pf/r2. BIT-IDENTICAL per (token,row): the staged bytes ARE the global
+// bytes (cp.async is a byte copy); identical dp4a order, scales, adg factor, warp_reduce_sum —
+// only WHERE the bytes stage changes, not the dot order.
+#define CA_WIN 576   // bytes per warp-window: 16 blocks x 36B
+__device__ __forceinline__ void cp_async16_g(void* smem, const void* g) {
+    uint32_t s = (uint32_t)__cvta_generic_to_shared(smem);
+    asm volatile("cp.async.cg.shared.global [%0],[%1],16;" :: "r"(s), "l"(g));
+}
+__device__ __forceinline__ void cp_async_commit() { asm volatile("cp.async.commit_group;"); }
+template<int N>
+__device__ __forceinline__ void cp_async_wait() { asm volatile("cp.async.wait_group %0;" :: "n"(N)); }
+
+// Issue one row-window (36 x 16B chunks) into `dst`. Lane L copies chunk L, lanes 0..3 also copy
+// chunk 32+L. `src` = wrow + iter*CA_WIN, 16B-aligned by the dispatch gate.
+__device__ __forceinline__ void ca_issue_window(unsigned char* dst, const unsigned char* src, int lane) {
+    cp_async16_g(dst + lane * 16, src + lane * 16);
+    if (lane < 4) cp_async16_g(dst + (32 + lane) * 16, src + (32 + lane) * 16);
+}
+
+// WROWS=1: one row/warp, STAGES-deep ring (smem 4 warps x STAGES x 576B).
+// WROWS=2: two rows/warp (r2's activation-reuse + halved grid) x STAGES ring on both row streams.
+template<int MCOLS, int WROWS, int STAGES>
+__device__ __forceinline__ void nvfp4_mmvq_batched_ca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * WROWS;
+    if (o0 >= out_f) return;
+    const bool has1 = (WROWS == 2) && (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int niter = nsb >> 5;                       // dispatch gate: nsb%32==0
+    const unsigned char* wrow0 = W + (long)o0 * row_bytes;
+    __shared__ __align__(16) unsigned char smw[BW24_MMVQ_ROWS][STAGES][WROWS][CA_WIN];
+    unsigned char (*ring)[WROWS][CA_WIN] = smw[threadIdx.y];
+    float acc[WROWS][MCOLS];
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) acc[r][c] = 0.0f;
+    // prologue: ALWAYS commit STAGES-1 groups (empty commits keep the per-thread group count
+    // uniform when niter < STAGES, so wait<STAGES-2> below really completes the oldest stage).
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; s++) {
+        if (s < niter) {
+            ca_issue_window(&ring[s][0][0], wrow0 + s * CA_WIN, lane);
+            if (WROWS == 2 && has1)
+                ca_issue_window(&ring[s][1][0], wrow0 + row_bytes + s * CA_WIN, lane);
+        }
+        cp_async_commit();
+    }
+    for (int it = 0; it < niter; it++) {
+        cp_async_wait<STAGES - 2>();            // oldest committed stage (it) landed
+        __syncwarp();
+        const unsigned char* wnd0 = &ring[it % STAGES][0][0];
+        int g = it * 32 + lane;
+        int loff = (lane >> 1) * 36;            // this lane's block within the window
+        int qoff = loff + 4 + (lane & 1) * 16;  // its 16B quant half (4B-aligned in smem)
+        int s0 = (lane & 1) * 2;
+        #pragma unroll
+        for (int r = 0; r < WROWS; r++) {
+            if (WROWS == 2 && r == 1 && !has1) break;
+            const unsigned char* wnd = wnd0 + (WROWS == 2 ? r * CA_WIN : 0);
+            int cscw = *(const int*)(wnd + loff);
+            int cq0 = *(const int*)(wnd + qoff);
+            int cq1 = *(const int*)(wnd + qoff + 4);
+            int cq2 = *(const int*)(wnd + qoff + 8);
+            int cq3 = *(const int*)(wnd + qoff + 12);
+            // decode ONCE per group, exactly like pf (sl=0 -> cq0/cq1, sl=1 -> cq2/cq3).
+            int2 wv[2][2];
+            float wscale[2];
+            wv[0][0] = get_int_from_table_16_d(cq0, kvalues_mxfp4_d);
+            wv[0][1] = get_int_from_table_16_d(cq1, kvalues_mxfp4_d);
+            wv[1][0] = get_int_from_table_16_d(cq2, kvalues_mxfp4_d);
+            wv[1][1] = get_int_from_table_16_d(cq3, kvalues_mxfp4_d);
+            wscale[0] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 *  s0     )) & 0xFF));
+            wscale[1] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + 1))) & 0xFF));
+            #pragma unroll
+            for (int c = 0; c < MCOLS; c++) {
+                if (c >= m) break;
+                const signed char* arow = aq + (size_t)c * in_f;
+                const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+                int4 a01 = aq16[0];
+                int4 a23 = aq16[1];
+                int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+                float adg = ad[(size_t)c * nsb + g];
+                float partial = 0.0f;
+                #pragma unroll
+                for (int sl = 0; sl < 2; sl++) {
+                    int base = sl * 4;
+                    int2 va = wv[sl][0], vb = wv[sl][1];
+                    int sumi = 0;
+                    sumi = dp4a(va.x, aq4[base + 0], sumi);
+                    sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                    sumi = dp4a(va.y, aq4[base + 2], sumi);
+                    sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                    partial += wscale[sl] * (float)sumi;
+                }
+                acc[r][c] += adg * partial;
+            }
+        }
+        // refill: consume slot (it%STAGES) is done for THIS warp's lanes after the reads above
+        // retire; the overwrite targets slot (it+STAGES-1)%STAGES = (it-1)%STAGES, whose reads
+        // finished an iteration ago (separated by the next iter's __syncwarp).
+        int itn = it + STAGES - 1;
+        if (itn < niter) {
+            ca_issue_window(&ring[itn % STAGES][0][0], wrow0 + (size_t)itn * CA_WIN, lane);
+            if (WROWS == 2 && has1)
+                ca_issue_window(&ring[itn % STAGES][1][0], wrow0 + row_bytes + (size_t)itn * CA_WIN, lane);
+        }
+        cp_async_commit();
+    }
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++) {
+        if (WROWS == 2 && r == 1 && !has1) break;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            float a = warp_reduce_sum(acc[r][c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + r] = a;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_ca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_ca<2, 1, 4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_ca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_ca<4, 1, 4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_car2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_ca<2, 2, 3>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_car2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_ca<4, 2, 3>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
+// ---- NVFP4 batched matvec, SPLIT-PLANE WALK-ORDER REPACK (A6, 2026-07-04 — Marlin-style offline
+// repack). The GGUF 36B block interleaves a 4B scale word with 32B of quants, so a lane's per-g
+// weight read is 5 scattered 4B LDGs at 36B stride (the "18B straggle": 4x LDG.32 quants at a
+// 4B-aligned address + 1 scale LDG). The repacked layout splits the tensor into two planes:
+//   quant plane: out_f rows x (in_f/64) x 32B  — lane's 16B half at row_q + g*16, PERFECTLY
+//                16B-aligned; the warp reads 512B contiguous per g-iter = one LDG.128 wavefront;
+//   scale plane: out_f rows x (in_f/64) x 4B   — block's scale word at row_s + (g>>1)*4 (the
+//                warp reads 64B contiguous; lane pairs broadcast-share a word).
+// Same total bytes (36/block), byte-for-byte the same values — only their ADDRESSES move, so the
+// decode (same word order cq0..cq3 + same scale-byte extraction as _pf) is BIT-IDENTICAL per
+// (token,row). W points at the repacked tensor base; the scale plane starts at
+// out_f*(in_f/64)*32 (32B-multiple -> aligned). row_bytes is unused (kept for ABI parity).
+template<int MCOLS, int WROWS>
+__device__ __forceinline__ void nvfp4_mmvq_batched_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * WROWS;
+    if (o0 >= out_f) return;
+    const bool has1 = (WROWS == 2) && (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;         // 32-elem groups
+    int nsb64 = in_f >> 6;       // 64-elem NVFP4 blocks
+    const unsigned char* qplane = W;
+    const unsigned char* splane = W + (size_t)out_f * nsb64 * 32;
+    const unsigned char* rowq0 = qplane + (size_t)o0 * nsb64 * 32;
+    const unsigned char* rows0 = splane + (size_t)o0 * nsb64 * 4;
+    float acc[WROWS][MCOLS];
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) acc[r][c] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int s0 = (g & 1) * 2;
+        int2 wv[WROWS][2][2];
+        float wscale[WROWS][2];
+        #pragma unroll
+        for (int r = 0; r < WROWS; r++) {
+            if (WROWS == 2 && r == 1 && !has1) break;
+            // ONE 16B load for the quant half (vs 4x LDG.32 at a 36B-stride address), one 4B
+            // scale-word load from the dense plane. Word order cq0..cq3 identical to _pf.
+            const int4* qh = (const int4*)(rowq0 + (size_t)r * nsb64 * 32 + (size_t)g * 16);
+            int4 qw = *qh;
+            int cscw = *(const int*)(rows0 + (size_t)r * nsb64 * 4 + (size_t)sblk * 4);
+            wv[r][0][0] = get_int_from_table_16_d(qw.x, kvalues_mxfp4_d);
+            wv[r][0][1] = get_int_from_table_16_d(qw.y, kvalues_mxfp4_d);
+            wv[r][1][0] = get_int_from_table_16_d(qw.z, kvalues_mxfp4_d);
+            wv[r][1][1] = get_int_from_table_16_d(qw.w, kvalues_mxfp4_d);
+            wscale[r][0] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 *  s0     )) & 0xFF));
+            wscale[r][1] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + 1))) & 0xFF));
+        }
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+            int4 a01 = aq16[0];
+            int4 a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            float adg = ad[(size_t)c * nsb + g];
+            #pragma unroll
+            for (int r = 0; r < WROWS; r++) {
+                if (WROWS == 2 && r == 1 && !has1) break;
+                float partial = 0.0f;
+                #pragma unroll
+                for (int sl = 0; sl < 2; sl++) {
+                    int base = sl * 4;
+                    int2 va = wv[r][sl][0], vb = wv[r][sl][1];
+                    int sumi = 0;
+                    sumi = dp4a(va.x, aq4[base + 0], sumi);
+                    sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                    sumi = dp4a(va.y, aq4[base + 2], sumi);
+                    sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                    partial += wscale[r][sl] * (float)sumi;
+                }
+                acc[r][c] += adg * partial;
+            }
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++) {
+        if (WROWS == 2 && r == 1 && !has1) break;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            float a = warp_reduce_sum(acc[r][c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + r] = a;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<2, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<4, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_rpr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<2, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_rpr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<4, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// 8-resident-block twin of b4_rpr2 (r2w8 precedent: wins when the extra residency deletes a
+// straggler wave of the halved grid).
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b4_rpr2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<4, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ============================ k-quant BATCHED weight-resident matvec ============================
 // Same structure as nvfp4_mmvq_batched: ONE warp owns ONE output row and walks the weight ONCE,
 // decoding each weight group's quant bytes a SINGLE time and dp4a-ing the decoded weight against

@@ -27,6 +27,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ~50MB tensor; L2 is 64MB). The default 1-copy loop is L2/DRAM-mixed and OVERSTATES wins that
     // don't transfer (mmvq-b4-clamp-NEGATIVE lesson) — use N>=8 for transfer-grade numbers.
     let copies: usize = std::env::var("MSWEEP_COPIES").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    // MSWEEP_RP=1 (A6 split-plane repack prototype): host-repack the GGUF 36B blocks into
+    // [quant plane out_f x nsb64 x 32B][scale plane out_f x nsb64 x 4B] and feed the rp kernels
+    // (BW24_MMVQ_BV=rp|rpr2|rpr2w8). Roundtrip gate: un-repack must reproduce the original bytes.
+    let rp = std::env::var("MSWEEP_RP").is_ok();
+    let raw_owned: Vec<u8>;
+    let raw = if rp {
+        let nsb64 = in_f / 64;
+        assert_eq!(row_bytes, nsb64 * 36, "unexpected NVFP4 row_bytes");
+        let qplane = out_f * nsb64 * 32;
+        let mut rpb = vec![0u8; raw.len()];
+        for o in 0..out_f {
+            for s in 0..nsb64 {
+                let src = &raw[o * row_bytes + s * 36..o * row_bytes + s * 36 + 36];
+                rpb[qplane + o * nsb64 * 4 + s * 4..qplane + o * nsb64 * 4 + s * 4 + 4]
+                    .copy_from_slice(&src[0..4]);
+                rpb[o * nsb64 * 32 + s * 32..o * nsb64 * 32 + s * 32 + 32]
+                    .copy_from_slice(&src[4..36]);
+            }
+        }
+        // roundtrip gate
+        let mut back = vec![0u8; raw.len()];
+        for o in 0..out_f {
+            for s in 0..nsb64 {
+                back[o * row_bytes + s * 36..o * row_bytes + s * 36 + 4]
+                    .copy_from_slice(&rpb[qplane + o * nsb64 * 4 + s * 4..qplane + o * nsb64 * 4 + s * 4 + 4]);
+                back[o * row_bytes + s * 36 + 4..o * row_bytes + s * 36 + 36]
+                    .copy_from_slice(&rpb[o * nsb64 * 32 + s * 32..o * nsb64 * 32 + s * 32 + 32]);
+            }
+        }
+        let rt_bad = raw.iter().zip(&back).filter(|(a, b)| a != b).count();
+        println!("repack roundtrip: {} mismatched bytes of {}", rt_bad, raw.len());
+        assert_eq!(rt_bad, 0, "repack roundtrip FAILED");
+        raw_owned = rpb;
+        &raw_owned[..]
+    } else { raw };
+    // the grid.y=m reference + rp bit-identity check always read the ORIGINAL layout.
+    let wd_orig = if rp { Some(e.htod_bytes(g.tensor_data(t))?) } else { None };
     let wds: Vec<_> = (0..copies).map(|_| e.htod_bytes(raw)).collect::<Result<_, _>>()?;
     let bv = std::env::var("BW24_MMVQ_BV").unwrap_or_else(|_| "auto".into());
     println!("weight {tname} [NVFP4] in_f={in_f} out_f={out_f} row_bytes={row_bytes} \
@@ -47,11 +84,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---");
-    for (m, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+    // MSWEEP_M1=1 adds an m=1 row through the batched launcher (the A6 m=1-consumer probe:
+    // compares the repacked kernel at m=1 vs the m=1 mmvq reference path).
+    let mut cells = vec![(2usize, 2usize), (3, 4), (4, 4)];
+    if std::env::var("MSWEEP_M1").is_ok() { cells.insert(0, (1, 2)); }
+    for (m, mcols) in cells {
         let x: Vec<f32> = (0..m * in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
         let xd = e.htod(&x)?;
-        // bit-identity vs grid.y=m reference
-        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(&wds[0], &xd, m, in_f, out_f, qtype, row_bytes)?)?;
+        // bit-identity vs grid.y=m reference (original layout when the sweep buffers are repacked)
+        let wref = wd_orig.as_ref().unwrap_or(&wds[0]);
+        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(wref, &xd, m, in_f, out_f, qtype, row_bytes)?)?;
         let r_bat = e.dtoh(&e.qmatvec_nvfp4_batched_raw(&wds[0], &xd, m, in_f, out_f, row_bytes, mcols)?)?;
         let bad = r_ref.iter().zip(&r_bat).filter(|(a, b)| (*a - *b).abs() > 1e-3).count();
         let bit = r_ref.iter().zip(&r_bat).filter(|(a, b)| a.to_bits() != b.to_bits()).count();

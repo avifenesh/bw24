@@ -1493,9 +1493,16 @@ impl Engine {
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
             Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
-            Ok("pfr2") => "pfr2",
+            Ok("pfr2") => "pfr2", Ok("ca") => "ca", Ok("car2") => "car2",
+            // rp* = SPLIT-PLANE REPACKED layout kernels (A6 prototype): W must already be the
+            // repacked buffer (msweep MSWEEP_RP harness) — never valid on GGUF-layout weights.
+            Ok("rp") => "rp", Ok("rpr2") => "rpr2", Ok("rpr2w8") => "rpr2w8",
             _ => "auto",
         });
+        // cp.async ring variants need 16B-aligned rows (in_f%256==0 -> (in_f/64)*36 % 16 == 0)
+        // and whole 32-group warp iterations (nsb%32==0 <=> in_f%1024==0). All 27B/9B trunk
+        // shapes qualify; anything else falls back to the register variants.
+        let ca_ok = qtype == QT_NVFP4 && (row_bytes % 16 == 0) && (in_f % 1024 == 0);
         static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
         let sms = *SMS.get_or_init(|| {
             use cudarc::driver::sys::CUdevice_attribute_enum as A;
@@ -1507,7 +1514,12 @@ impl Engine {
             "base"
         } else if bv != "auto" {
             // r2w8 only exists for b4 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
-            if bv == "r2w8" && mcols == 2 { "r2" } else { bv }
+            // ca/car2 need the alignment gate; unsupported shapes fall back to pf/r2.
+            if bv == "r2w8" && mcols == 2 { "r2" }
+            else if bv == "ca" && !ca_ok { "pf" }
+            else if bv == "car2" && !ca_ok { "r2" }
+            else if (bv == "rpr2w8" || bv == "rpr2") && mcols == 2 { "rpr2" }
+            else { bv }
         } else if mcols == 4 {
             // r2 runs 7 resident blocks/SM (67 regs); its __launch_bounds__(128,8) twin `r2w8`
             // (64 regs) runs 8. grid = ceil(out_f/8) for both.
@@ -1534,6 +1546,8 @@ impl Engine {
         let (name, rows_per_warp): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), 1),
             "pf" => (format!("{base_name}_pf").into(), 1),
+            "ca" => (format!("{base_name}_ca").into(), 1),
+            "rp" => (format!("{base_name}_rp").into(), 1),
             v => (format!("{base_name}_{v}").into(), 2),
         };
         let f = self.func(&name);
