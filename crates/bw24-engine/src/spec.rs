@@ -47,16 +47,19 @@ impl HybridModel {
     /// Device-resident: returns draft logits ON DEVICE (no [n_vocab] dtoh). The greedy draft
     /// loop only needs argmax — paired with `argmax_token_device` this cuts the ~600KB logits
     /// transfer + host argmax per draft token from the K-token draft chain.
+    #[allow(clippy::too_many_arguments)]
     fn mtp_head_forward_dev(&self, e: &Engine, mtp: &MtpHead, e_tok: u32, h_seed: &CudaSlice<f32>,
-                            scratch: &mut MtpScratch, mtp_pos: usize)
+                            scratch: &mut MtpScratch, mtp_pos: usize,
+                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize)
                             -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
         let pos_d = e.htod_i32(&[mtp_pos as i32])?;
 
-        // op A: embed the predict-from token e -> [n_embd]
-        let e_emb = e.htod(&self.embd.gather(n_embd, &[e_tok]))?;
+        // op A: embed the predict-from token ON DEVICE (was host dequant + 14-20KB htod per draft
+        // token — with the resident table the transfer is one 4B token id).
+        let e_emb = e.embed_gather_device_t(embd_gpu, &[e_tok], n_embd, embd_qt, embd_rb)?;
 
         // op 1/2: e_norm = RMSNorm(e, enorm); h_norm = RMSNorm(h_seed, hnorm)
         let mut e_norm = e.zeros(n_embd)?;
@@ -190,6 +193,14 @@ impl HybridModel {
     /// At batch=1 decode is bandwidth-bound, so batching the replay is THE MTP profitability lever.
     pub fn decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        self.decode_step_t_h_emb(e, tokens, pos0, cache, None)
+    }
+
+    /// Like `decode_step_t_h` with an optional RESIDENT embed table (spec hot loop): device
+    /// gather instead of host dequant + [T, n_embd] f32 htod. Bit-identical rows.
+    pub fn decode_step_t_h_emb(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                               embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
+                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -197,8 +208,11 @@ impl HybridModel {
         let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
         let pos_d = e.htod_i32(&pos_vec)?;
 
-        // embed T tokens -> [T, n_embd] token-major
-        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        // embed T tokens -> [T, n_embd] token-major (device gather on the spec hot loop)
+        let mut x = match embd_dev {
+            Some((g, qt, rb)) => e.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
+            None => e.htod(&self.embd.gather(n_embd, tokens))?,
+        };
 
         for (il, layer) in self.layers.iter().enumerate() {
             // DECODE-EXACT RMSNorm: blockDim=1024 matches the fused rms_norm_q8_1 / add_rms_norm_q8_1
@@ -516,6 +530,12 @@ impl HybridModel {
             prime_logits = l;
         }
 
+        // Resident embed table (model-lifetime, lazy first-use upload; kills the per-draft-token
+        // and per-verify host-dequant+htod that nsys measured at 84% of spec API time).
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
         let mut scratch = MtpScratch::new(e, &self.cfg, k + 1)?;
         let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let mut total_drafted = 0usize;
@@ -569,7 +589,7 @@ impl HybridModel {
                 // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
                 // smallest-index tie-break as host argmax (argmax_gate-validated) -> same tokens.
                 let mtp_pos = pos + if pending.is_some() { 1 } else { 0 } + j;
-                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos)?;
+                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos, &embd_gpu, embd_qt, embd_rb)?;
                 let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
                 let idx = e.dtoh_u32_one(&tok_d)?;
                 // trimmed draft vocab -> target token id (identity when no d2t map)
@@ -596,7 +616,8 @@ impl HybridModel {
                 None => draft.clone(),
             };
             let base = if pending.is_some() { 1 } else { 0 };
-            let (tlogits, vh_seed) = self.decode_step_t_h(e, &verify_tokens, pos, &mut cache)?;
+            let (tlogits, vh_seed) = self.decode_step_t_h_emb(e, &verify_tokens, pos, &mut cache,
+                                                              Some((embd_gpu, embd_qt, embd_rb)))?;
 
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
             // t_pred[j] = target's greedy prediction for the slot after draft[j-1] (j>=1) or after
@@ -637,7 +658,8 @@ impl HybridModel {
                 // bonus position: one MTP-block pass (~1/33 trunk cost) replaces the trunk read.
                 // last_logits is dead in the pending path (t_pred reads verify col 0).
                 let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                    e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round)?;
+                    e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round,
+                    &embd_gpu, embd_qt, embd_rb)?;
                 pending = Some(bonus);
                 h_seed = h_bonus_pseudo;
                 if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending)"); }
@@ -658,7 +680,8 @@ impl HybridModel {
                 if let Some(b) = pending.take() { replay.push(b); }
                 replay.extend_from_slice(&draft[0..n_acc]);
                 replay.push(bonus);
-                let (rl, rh) = self.decode_step_t_h(e, &replay, pos, &mut cache)?;
+                let (rl, rh) = self.decode_step_t_h_emb(e, &replay, pos, &mut cache,
+                                                        Some((embd_gpu, embd_qt, embd_rb)))?;
                 // last_logits = last column's logits (predicts the token after `bonus`).
                 last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
                 h_seed = rh;

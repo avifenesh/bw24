@@ -346,6 +346,20 @@ extern "C" __global__ void embed_gather_u32(
     for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n_embd; j += gridDim.x * blockDim.x)
         x_out[j] = deq(qtype, row, j);
 }
+// T-token variant (spec verify/replay): tokens_d[T] device ids -> x_out[T, n_embd]. grid.y = t.
+// Replaces the host-side per-row dequant + ~T*14KB HtoD of EmbedHost::gather on the spec hot loop
+// (nsys: cuMemcpyHtoDAsync was 84% of spec API time). Same per-dtype deq -> bit-identical rows.
+extern "C" __global__ void embed_gather_u32_t(
+        const unsigned char* __restrict__ embd, const unsigned int* __restrict__ tokens_d,
+        float* __restrict__ x_out, int n_embd, int qtype, long row_bytes, int t) {
+    int ti = blockIdx.y;
+    if (ti >= t) return;
+    unsigned int tok = tokens_d[ti];
+    const unsigned char* row = embd + (size_t)tok * row_bytes;
+    float* xr = x_out + (size_t)ti * n_embd;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < n_embd; j += gridDim.x * blockDim.x)
+        xr[j] = deq(qtype, row, j);
+}
 
 // ---- Device i32 increment (CUDA-GRAPH-PLAN Phase 1): pos_d[0] += 1 inside the captured graph,
 // replacing the per-step host htod_i32(&[pos]). One thread.

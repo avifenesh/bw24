@@ -717,6 +717,25 @@ impl Engine {
         Ok(x)
     }
 
+    /// T-token device embed gather (spec verify/replay): tokens uploaded as a tiny [T] u32 htod,
+    /// rows dequanted on-device -> x[T, n_embd]. Replaces host per-row dequant + T*n_embd*4B htod
+    /// (nsys: 84% of spec API time was HtoD). Bit-identical rows (same per-dtype deq).
+    pub fn embed_gather_device_t(&self, embd: &CudaSlice<u8>, tokens: &[u32],
+                                 n_embd: usize, qtype: i32, row_bytes: usize)
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let t = tokens.len();
+        let tok_d = self.gpu.stream.clone_htod(tokens)?;
+        let f = self.func("embed_gather_u32_t");
+        let mut x = self.alloc_uninit::<f32>(t * n_embd)?;
+        let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(embd).arg(&tok_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(x)
+    }
+
     /// Uninitialized device buffer — SKIPS the memset that `alloc_zeros` always issues. Decode
     /// profile (nsys): ~1050 memsets/token = 6.5% of decode GPU time + ~half the launch count, the
     /// dominant contributor to the 19% inter-kernel idle gap and a blocker for clean CUDA-graph
@@ -1147,6 +1166,15 @@ impl Engine {
             _ => return self.matmul(w, x, m),
         };
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        // Batched weight-resident matvec for m=2-4: BIT-IDENTICAL per (token,row) to MMVQ (exact
+        // integer dp4a, same warp reduce — kernel-check gate rel=0.00e0), one weight read for m
+        // tokens. The dispatch the divergence fix must avoid is dp4a's 128-thread two-level
+        // reduce, NOT this.
+        if (2..=4).contains(&m) && self.batched_supports(qtype)
+            && std::env::var("BW24_NO_BATCHED").is_err() {
+            let mcols = if m == 2 { 2 } else { 4 };
+            return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale);
+        }
         if self.mmvq_supports(qtype) {
             // MMVQ at grid.y=m: each row is processed by its own warp independently — same 32-thread
             // accumulation + warp_reduce_sum as m=1 decode. Bit-identical per row.

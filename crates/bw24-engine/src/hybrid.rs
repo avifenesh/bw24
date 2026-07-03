@@ -243,6 +243,9 @@ pub struct HybridModel {
     pub output: GpuTensor,
     pub layers: Vec<HybridLayer>,
     pub mtp: Option<MtpHead>,        // NextN spec-decode head (None if nextn_predict_layers == 0)
+    /// Lazily-uploaded DEVICE copy of the raw embed table (spec/graph hot loops gather rows
+    /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
+    pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
 }
 
 impl HybridModel {
@@ -340,7 +343,7 @@ impl HybridModel {
                       ctx.n_pinned, ctx.n_mmap, ctx.mmap_bytes >> 20);
         }
 
-        Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp })
+        Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp, embd_gpu: std::sync::OnceLock::new() })
     }
 
     pub fn embed(&self, e: &Engine, tokens: &[u32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
