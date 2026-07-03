@@ -3,7 +3,7 @@
 //! conv1d + gdn_scan kernels (M2/M3) and the dense full-attn path (M0).
 
 use cudarc::driver::CudaSlice;
-use bw24_gguf::GgufFile;
+use bw24_gguf::{GgufFile, GgmlType};
 use bw24_gguf::config::{ModelConfig, LayerKind};
 use bw24_gguf::source::{TensorSource, GgufSource};
 use crate::Engine;
@@ -159,6 +159,81 @@ pub struct MtpHead {
     pub ffn: Ffn,                    // Dense or Moe, same loader as trunk
     pub shared_head_norm: Option<GpuTensor>,  // blk.N.nextn.shared_head_norm (else reuse output_norm)
     pub shared_head_head: Option<GpuTensor>,  // blk.N.nextn.shared_head      (else reuse output)
+    /// FR-Spec draft->target vocab map: the draft lm_head is TRIMMED to the highest-frequency
+    /// tokens (e.g. 32768 rows of the full 248320-row head); `d2t[draft_idx]` = the target vocab
+    /// token id of trimmed row `draft_idx`. `None` for a full-vocab head (identity map). Host-side:
+    /// the draft argmax already lands on host as one u32, so the map is a single Vec index.
+    pub d2t: Option<Vec<u32>>,
+}
+
+impl MtpHead {
+    /// Load an MTP/NextN head from a STANDALONE draft GGUF (BW24_MTP_DRAFT override). The draft
+    /// file carries ONLY the NextN block (blk.N.nextn.* glue + attn/ffn) plus its own lm_head
+    /// (`output.weight`) — which for an FR-Spec draft is TRIMMED to the top-frequency rows, with
+    /// a `d2t` (i32/i64) tensor mapping trimmed-row index -> target vocab token id. Draft-token
+    /// embedding still uses the MAIN model's token_embd (identical weights, saves VRAM), so the
+    /// draft file's full-vocab token_embd copy is ignored.
+    pub fn load_draft(e: &Engine, g: &GgufFile, main_cfg: &ModelConfig)
+                      -> Result<Self, Box<dyn std::error::Error>> {
+        let src = GgufSource(g);
+        let dcfg = src.config();
+        // The head forward runs with the MAIN model's cfg (eps/rope/head geometry) — the draft
+        // block must be the same shape or the forward is garbage.
+        assert_eq!(dcfg.n_embd, main_cfg.n_embd, "draft n_embd != model n_embd");
+        assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
+        assert_eq!(dcfg.n_head_kv, main_cfg.n_head_kv, "draft n_head_kv != model n_head_kv");
+        assert_eq!(dcfg.head_dim_k, main_cfg.head_dim_k, "draft head_dim != model head_dim");
+        assert!(dcfg.nextn_predict_layers > 0, "draft GGUF has no nextn_predict_layers");
+
+        // NextN block index INSIDE THE DRAFT FILE (its block_count includes the trunk numbering).
+        let n = dcfg.n_layer - dcfg.nextn_predict_layers;
+        let p = |s: &str| format!("blk.{n}.{s}");
+
+        // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
+        // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
+        let head = load_t(e, &src, "output.weight")?;
+        let head_norm = match load_opt(e, &src, &p("nextn.shared_head_norm.weight"))? {
+            Some(t) => Some(t),
+            None => load_opt(e, &src, "output_norm.weight")?,
+        };
+
+        // d2t: draft-row -> target-token-id map (absolute ids, verified against the tokenizer).
+        let d2t: Option<Vec<u32>> = g.find("d2t").map(|t| {
+            let bytes = g.tensor_data(t);
+            match t.ggml_type {
+                GgmlType::I32 => bytes.chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect(),
+                GgmlType::I64 => bytes.chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as u32).collect(),
+                other => panic!("d2t must be I32/I64, got {other:?}"),
+            }
+        });
+        if let Some(map) = &d2t {
+            assert_eq!(map.len(), head.out_features(),
+                       "d2t len {} != draft head rows {}", map.len(), head.out_features());
+            let n_vocab = main_cfg.n_vocab as u64;
+            assert!(map.iter().all(|&t| (t as u64) < n_vocab),
+                    "d2t contains token id >= model n_vocab {n_vocab}");
+        }
+        eprintln!("[mtp-draft] external draft head: blk.{n}, head_vocab={}{}",
+                  head.out_features(),
+                  if d2t.is_some() { " (trimmed, d2t map)" } else { " (full)" });
+
+        Ok(MtpHead {
+            enorm:  load_t(e, &src, &p("nextn.enorm.weight"))?,
+            hnorm:  load_t(e, &src, &p("nextn.hnorm.weight"))?,
+            eh_proj: load_t(e, &src, &p("nextn.eh_proj.weight"))?,
+            attn_norm: load_t(e, &src, &p("attn_norm.weight"))?,
+            post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
+                .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
+                .expect("draft NextN block needs post_attention_norm or ffn_norm"),
+            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention)?,
+            ffn: load_ffn(e, &src, &dcfg, n, None)?,
+            shared_head_norm: head_norm,
+            shared_head_head: Some(head),
+            d2t,
+        })
+    }
 }
 
 pub struct HybridModel {
@@ -242,10 +317,23 @@ impl HybridModel {
                     ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
+                    d2t: None,
                 }),
                 false => None,  // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }
         } else { None };
+
+        // BW24_MTP_DRAFT=<path.gguf>: REPLACE the MTP head with one loaded from a standalone
+        // draft GGUF (e.g. an FR-Spec trimmed-vocab draft). Verify-based spec decode stays exact
+        // regardless of the draft — a different draft only changes WHICH tokens get proposed.
+        let mtp = match std::env::var("BW24_MTP_DRAFT") {
+            Ok(path) if !path.is_empty() => {
+                eprintln!("[mtp-draft] loading external MTP draft: {path}");
+                let dg = GgufFile::open(&path)?;
+                Some(MtpHead::load_draft(e, &dg, &cfg)?)
+            }
+            _ => mtp,
+        };
 
         if let Some(ctx) = spill.as_ref() {
             eprintln!("[spill] experts placed: {} pinned (Tier 1), {} mmap'd from disk (Tier 2, {} MiB)",

@@ -492,6 +492,10 @@ impl HybridModel {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
         let n_vocab = self.output.out_features();
+        // FR-Spec: the draft head may be TRIMMED (fewer rows than n_vocab); the draft argmax runs
+        // over the draft vocab and the winning index maps through d2t to a TARGET token id.
+        // Everything downstream (verify/accept/commit) sees target ids only — exactness unchanged.
+        let d_vocab = mtp.shared_head_head.as_ref().unwrap_or(&self.output).out_features();
         let n_embd = self.cfg.n_embd as usize;
         let max_ctx = prompt.len() + max_new + k + 8;
         let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
@@ -538,8 +542,10 @@ impl HybridModel {
                 // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
                 // smallest-index tie-break as host argmax (argmax_gate-validated) -> same tokens.
                 let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, pos + j)?;
-                let tok_d = e.argmax_token_device(&dl_d, n_vocab)?;
-                let d = e.dtoh_u32_one(&tok_d)?;
+                let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
+                let idx = e.dtoh_u32_one(&tok_d)?;
+                // trimmed draft vocab -> target token id (identity when no d2t map)
+                let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
                 draft.push(d);
                 e_tok = d;
                 d_seed = h_nextn;
