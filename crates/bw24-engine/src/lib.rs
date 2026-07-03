@@ -53,20 +53,22 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
     })
 }
 
-/// TUNE SEAM: keys per FA-decode split (`BW24_FA_SPLIT` forces a fixed size). Smaller splits raise
-/// grid.y so grid = n_head_kv * n_splits fills the 82 SMs at short/mid ctx (vec path launches only
-/// n_head_kv=8 CTAs per split). Swept clock-locked 2026-07-03 (graph tg128): 32 beats 64 at ctx
-/// 128/512 (+0.5/+1.2%), loses at 2048 (-3%: combine + partial-buffer overhead once ~256 CTAs
-/// already saturate; 16 loses everywhere) -> adaptive: 32 up to 1024 keys, 64 above. Takes t_kv
-/// (or bucket_max) so eager, _dc capture, and fa_geom_eager derive the SAME n_splits (graph
-/// bit-identity contract: all three call this with the same value).
-fn fa_split_keys(t_kv: usize) -> usize {
+/// TUNE SEAM: keys per FA-decode split (`BW24_FA_SPLIT` forces a fixed size; default 64). Smaller
+/// splits raise grid.y so grid = n_head_kv * n_splits fills the 82 SMs at short/mid ctx (vec path
+/// launches only n_head_kv=8 CTAs per split). Swept clock-locked 2026-07-03 (graph tg128): 32 beat
+/// 64 at ctx 128/512 (+0.5/+1.2%) and lost at 2048 (-3%) — BUT the adaptive 32/64 default BROKE the
+/// MTP spec-decode exact-match gate (run-spec K=1/2 self-consistency FAIL with 32; PASS with 64):
+/// the split count changes the combine's FP summation order, and the spec verify's batched forward
+/// only argmax-matches single-step decode under the 64-split order on real prompts. Spec exactness
+/// (the bigger lever) outranks a <=1.2% decode win -> default stays FIXED 64; sweeps use the env.
+/// Takes t_kv so eager, _dc capture, and fa_geom_eager stay signature-compatible for future
+/// adaptive retries (any retry MUST pass run-spec self-consistency first).
+fn fa_split_keys(_t_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    if let Some(forced) = *S.get_or_init(|| {
+    (*S.get_or_init(|| {
         std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
             .filter(|&s: &usize| s >= 8 && s % 8 == 0)
-    }) { return forced; }
-    if t_kv <= 1024 { 32 } else { 64 }
+    })).unwrap_or(64)
 }
 
 /// Quant type codes matching qmatvec.cu QType enum.
