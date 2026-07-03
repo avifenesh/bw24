@@ -49,13 +49,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(32usize);
 
     // --- ORACLE: plain greedy generate (the exact reference) ---
+    // PRIME-SUBTRACT TIMING (2026-07-04): generate()/generate_spec() prime the prompt inside the
+    // timed region, deflating tok/s ~2x on long prompts (the run_gen.rs known-bug class). Measure
+    // a prime-only pass (max_new=1, minimal gen) and subtract its cost from every timed run so the
+    // printed number is GEN-ONLY throughput, comparable to llama-bench tg / serve-script numbers.
+    let _ = model.generate(&e, &prompt, 1)?;   // cold-start warmup (weights/L2/allocator)
+    e.stream().synchronize()?;
+    let tp = std::time::Instant::now();
+    let _ = model.generate(&e, &prompt, 1)?;
+    e.stream().synchronize()?;
+    let prime_dt = tp.elapsed().as_secs_f64();
     e.stream().synchronize()?;
     let t0 = std::time::Instant::now();
     let gold = model.generate(&e, &prompt, n_new)?;
     e.stream().synchronize()?;
-    let gen_dt = t0.elapsed().as_secs_f64();
-    let gen_tps = n_new as f64 / gen_dt;
-    println!("\n[generate]   {n_new} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s");
+    let gen_dt = (t0.elapsed().as_secs_f64() - prime_dt).max(1e-9);
+    let gen_tps = (n_new - 1) as f64 / gen_dt;
+    println!("\n[generate]   {} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s (gen-only, prime {prime_dt:.3}s subtracted)", n_new - 1);
     println!("  tokens: {gold:?}");
 
     let mut all_pass = true;
@@ -64,8 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t1 = std::time::Instant::now();
         let (spec, drafted, accepted) = model.generate_spec(&e, &prompt, n_new, k)?;
         e.stream().synchronize()?;
-        let spec_dt = t1.elapsed().as_secs_f64();
-        let spec_tps = n_new as f64 / spec_dt;
+        let spec_dt = (t1.elapsed().as_secs_f64() - prime_dt).max(1e-9);
+        let spec_tps = (n_new - 1) as f64 / spec_dt;
         let acc_rate = if drafted > 0 { accepted as f64 / drafted as f64 } else { 0.0 };
 
         let pass = first_divergence(&gold, &spec).is_none();
