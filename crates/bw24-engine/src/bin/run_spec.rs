@@ -32,8 +32,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let prompt: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
-    let prompt = if prompt.is_empty() { vec![55u32] } else { prompt };
+    // TEXT prompt path (BW24_PROMPT env): tokenize with the model's own tokenizer — REAL prompts
+    // give the true acceptance rate (synthetic numeric sequences under-state it badly: the 27B
+    // measured 45% on seq-101..228 vs ~75% on real code in the llama serve config).
+    let prompt: Vec<u32> = if let Ok(text) = std::env::var("BW24_PROMPT") {
+        let tok = bw24_tokenizer::Tokenizer::from_gguf(&g)?;
+        let ids = tok.encode(&text, true);
+        println!("text prompt ({} chars) -> {} tokens", text.len(), ids.len());
+        ids
+    } else {
+        let p: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        if p.is_empty() { vec![55u32] } else { p }
+    };
     println!("prompt tokens: {prompt:?}");
 
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(32usize);
