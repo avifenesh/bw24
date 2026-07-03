@@ -3,6 +3,18 @@
 Goal (user): beat **vLLM + SGLang + llama.cpp** on **prefill, decode, AND overall**.
 Box: RTX 5090 Laptop sm_120, gpu-full-power on. Model: Qwen3.5-9B Q8_0 (8.86 GiB, hybrid arch).
 
+## CURRENT STATE (2026-07-03, 9B-NVFP4, INTERLEAVED A/B protocol — the only valid ratio protocol)
+
+| metric | bw24 | llama.cpp | ratio |
+|---|---|---|---|
+| pp512 | 5049 | 5072 | **0.995x (parity band)** |
+| tg128 graph @ctx128 | **110.5** | 106.3 | **1.04x — ABOVE** |
+| MTP spec K=1..4 | exact (PASS) | — | 0.95x of plain @K=2-4 (needs draft-cost cut to profit) |
+
+Protocol rule (measured 2026-07-03): sequential cross-session numbers LIE by up to 10% — llama
+holds higher clocks when run alone/cold. Interleave the two engines in the same minute, N>=3 pairs,
+both orders. Prior "llama 117.8 / 5451" baselines in this file are sequential-protocol numbers.
+
 ## Baselines (measured 2026-06-26)
 
 | Engine | prefill pp64 (tok/s) | decode tg32 (tok/s) | tool |
