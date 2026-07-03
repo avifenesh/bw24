@@ -103,6 +103,53 @@ extern "C" __global__ void ssm_conv1d_gdn_f32(
     }
 }
 
+// ---- BATCHED verify conv: token-major input, CARRIED conv state, ring update, T>1. ----
+// The spec verify path runs T=K+1 tokens through a linear-attn layer in one pass. This is
+// ssm_conv1d_tm_f32 with the zero left-pad replaced by the RESIDENT conv ring (window rows
+// t-pad..t; negative rows read conv_state[c*pad + (pad+tt)]), plus the decode kernel's ring roll:
+// after the pass conv_state holds the last `pad` input columns (exactly what T sequential
+// ssm_conv1d_fused_decode steps would leave). Same 8-tap ascending-j accumulation as BOTH the
+// prefill and decode conv kernels -> each output value is BIT-IDENTICAL to the T=1 chain.
+extern "C" __global__ void ssm_conv1d_tm_state_f32(
+        const float* __restrict__ qkv_tm,   // [T, conv_dim] token-major (the batched matmul output)
+        float* __restrict__ conv_state,     // [conv_dim, pad] resident ring (read + rewritten)
+        const float* __restrict__ w,        // [conv_dim, d_conv]
+        float* __restrict__ y,              // [conv_dim, T] channel-major, SiLU applied
+        int conv_dim, int T, int d_conv) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    const float* st = conv_state + (size_t)c * pad;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;
+            float xv = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c]
+                                 : st[pad + tt];              // carried state column (tt in -pad..-1)
+            acc += xv * wc[j];
+        }
+    }
+    y[(size_t)c * T + t] = silu(acc);
+}
+// Ring roll companion (separate launch so every window read of the pass sees the OLD state):
+// conv_state[c][j] = input column at time T-pad+j. Host guarantees T >= pad, so every source is
+// an INPUT column (tt >= 0) — no in-place state read, no race. (T < pad falls back to the T=1
+// sequential chain host-side.)
+extern "C" __global__ void ssm_conv_ring_update_f32(
+        const float* __restrict__ qkv_tm, float* __restrict__ conv_state,
+        int conv_dim, int T, int d_conv) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pad = d_conv - 1;
+    if (idx >= conv_dim * pad) return;
+    int c = idx / pad;
+    int j = idx % pad;
+    int tt = T - pad + j;                     // >= 0 by the host T>=pad guarantee
+    conv_state[(size_t)c * pad + j] = qkv_tm[(size_t)tt * conv_dim + c];
+}
+
 // ---- FUSED decode GDN prep: repack + q/k L2-norm + beta sigmoid + g_log in ONE kernel (T=1). ----
 // Replaces qkv_to_gdn_repack + 2x l2_norm + sigmoid + gdn_glog (5 launches, ~8.6us/layer of
 // serialized tiny kernels on the decode critical path). One CTA per v-head vh (grid = num_v):

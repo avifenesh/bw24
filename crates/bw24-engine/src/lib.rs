@@ -1783,6 +1783,37 @@ impl Engine {
         Ok(())
     }
 
+    /// BATCHED verify conv (T>1, carried state): window reads the resident conv ring for
+    /// negative rows; separate ring-update launch afterwards. Requires T >= d_conv-1 (host
+    /// guarantees; verify runs T=K+1 with K>=2). BIT-IDENTICAL per value to the T=1 chain.
+    pub fn ssm_conv1d_tm_state(&self, qkv_tm: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
+                               w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                               conv_dim: usize, t: usize, d_conv: usize)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        assert!(t >= d_conv - 1, "ssm_conv1d_tm_state requires T >= pad");
+        {
+            let f = self.func("ssm_conv1d_tm_state_f32");
+            let cfg = LaunchConfig {
+                grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+                block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
+            unsafe { b.launch(cfg)?; }
+        }
+        {
+            let f = self.func("ssm_conv_ring_update_f32");
+            let n = conv_dim * (d_conv - 1);
+            let cfg = LaunchConfig::for_num_elems(n as u32);
+            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+            unsafe { b.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
     /// FUSED decode GDN prep (T=1): repack + q/k L2-norm + beta sigmoid + g_log in one launch.
     /// Replaces 5 tiny serialized kernels on the decode critical path. L2 reduce runs as a 32-lane
     /// warp tree (vs l2_norm_f32's 256-thread two-level tree) — same math, different FP sum order;

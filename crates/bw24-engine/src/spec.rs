@@ -9,7 +9,7 @@
 
 use cudarc::driver::CudaSlice;
 use crate::Engine;
-use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, MtpHead};
+use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MtpHead};
 use crate::cache::{Cache, KvLayer};
 use crate::forward::argmax;
 
@@ -207,18 +207,25 @@ impl HybridModel {
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
                 Mixer::Linear(la) => {
-                    // recurrent: cannot batch — run T sequential T=1 steps advancing the recur state
-                    // exactly like decode (MTP-PLAN §D.3.3). Each step reads its own column of h.
-                    let mut out = e.zeros(t * n_embd)?;
-                    for col in 0..t {
-                        // extract column `col` of h ([T,n_embd] token-major) as an owned [n_embd] buffer
-                        let mut h_col = e.zeros(n_embd)?;
-                        let src = h.slice(col * n_embd..(col + 1) * n_embd);
-                        e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
-                        let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
-                        e.copy_into(&mut out, col * n_embd, &m_col, n_embd)?;
+                    // BATCHED linear verify (2026-07-03, the MTP-profit lever): one T-token pass —
+                    // batched projections (weight read ONCE, hits the m=2-4 weight-resident matvec),
+                    // carried-state conv (ssm_conv1d_tm_state), GDN prep on the prefill kernels, and
+                    // ONE gdn_scan whose internal sequential t-loop is the SAME recurrence as T
+                    // chained T=1 steps (bit-identical). Falls back to the sequential per-column
+                    // chain when T < d_conv-1 (conv ring update needs T >= pad).
+                    if t >= 3 {
+                        self.linear_attn_verify_t(e, la, &h, t, cache, il)?
+                    } else {
+                        let mut out = e.zeros(t * n_embd)?;
+                        for col in 0..t {
+                            let mut h_col = e.zeros(n_embd)?;
+                            let src = h.slice(col * n_embd..(col + 1) * n_embd);
+                            e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
+                            let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
+                            e.copy_into(&mut out, col * n_embd, &m_col, n_embd)?;
+                        }
+                        out
                     }
-                    out
                 }
             };
 
@@ -260,6 +267,67 @@ impl HybridModel {
         let host = e.dtoh(&logits)?;
         cache.pos += t;
         Ok((host, h_seed))
+    }
+
+    /// BATCHED linear-attn verify (T=K+1): the whole layer in ~10 launches instead of T x the
+    /// T=1 decode chain (T x ~12 launches + T weight reads of the four projections). The GDN
+    /// recurrence itself is inherently sequential — gdn_scan_s128 runs its internal t-loop with
+    /// the SAME per-token math as chained T=1 calls (bit-identical state evolution); everything
+    /// around it (projections, conv, prep, gated norm, out-proj) batches. Advances conv ring +
+    /// ssm state exactly like T sequential decode steps.
+    fn linear_attn_verify_t(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
+                            cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let d_conv = ssm.conv_kernel as usize;
+        let key_dim = d_state * num_k;
+        let conv_dim = key_dim * 2 + d_state * num_v;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (d_state as f32).sqrt();
+
+        // batched projections ([T, n_embd] @ W^T — the m=2-4 band hits the weight-resident matvec)
+        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;
+        let z = e.matmul(&la.wqkv_gate, h, t)?;
+        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;
+        let alpha = e.matmul(&la.ssm_alpha, h, t)?;
+
+        // conv with CARRIED state + ring roll (T >= pad guaranteed by caller).
+        let rl = cache.recur[il].as_mut().unwrap();
+        let mut conv_out = e.uninit(conv_dim * t)?;
+        e.ssm_conv1d_tm_state(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                              &mut conv_out, conv_dim, t, d_conv)?;
+
+        // GDN prep via the prefill kernels (repack + L2 + sigmoid + glog), T-wide.
+        let mut q_g = e.uninit(d_state * num_v * t)?;
+        let mut k_g = e.uninit(d_state * num_v * t)?;
+        let mut v_g = e.uninit(d_state * num_v * t)?;
+        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        let mut q_l2 = e.uninit(d_state * num_v * t)?;
+        e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        let mut k_l2 = e.uninit(d_state * num_v * t)?;
+        e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        let mut beta = e.uninit(t * num_v)?;
+        e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
+        let mut g_log = e.uninit(t * num_v)?;
+        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
+
+        // ONE gdn_scan over T tokens from the carried state (internal sequential loop ==
+        // T chained T=1 steps). Ping-pong the resident buffers like eager decode.
+        let mut o = e.uninit(d_state * num_v * t)?;
+        {
+            let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
+            e.gdn_scan_s128(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+        }
+        std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
+
+        // gated RMSNorm + out projection, T-wide.
+        let mut gn = e.uninit(d_state * num_v * t)?;
+        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+        Ok(e.matmul(&la.ssm_out, &gn, t)?)
     }
 
     /// EAGLE3 aux-capturing verify forward over `tokens` (T) — mirrors `decode_step_t_h` exactly
