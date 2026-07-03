@@ -201,6 +201,18 @@ impl HybridModel {
     pub fn decode_step_t_h_emb(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
                                embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (logits_d, h_seed) = self.decode_step_t_h_emb_dev(e, tokens, pos0, cache, embd_dev)?;
+        Ok((e.dtoh(&logits_d)?, h_seed))
+    }
+
+    /// DEVICE-LOGITS verify forward (spec device-argmax lever): identical kernel chain to
+    /// `decode_step_t_h_emb` but returns the [T, n_vocab] logits ON DEVICE — the accept walk
+    /// argmaxes each column on-device and reads back ONE [T] u32 instead of dtoh'ing the full
+    /// T x n_vocab f32 block (~1-4 MB + T host argmaxes, every round). Kernel dispatch is
+    /// UNCHANGED (same decode-exact kernels); only the post-logits transfer moves.
+    pub fn decode_step_t_h_emb_dev(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                               embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
+                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -306,9 +318,8 @@ impl HybridModel {
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
-        let host = e.dtoh(&logits)?;
         cache.pos += t;
-        Ok((host, h_seed))
+        Ok((logits, h_seed))
     }
 
     /// BATCHED linear-attn verify (T=K+1): the whole layer in ~10 launches instead of T x the
@@ -589,10 +600,15 @@ impl HybridModel {
         let mut last_token = argmax(&prime_logits) as u32;
         out.push(last_token);
         // INVARIANT at loop top: `last_token` is the most-recently-committed/emitted token, its
-        // KV+recur state IS in `cache` (cache.pos = position right AFTER last_token), `last_logits`
-        // predicts the token that should FOLLOW last_token, and `h_seed` = last_token's
-        // pre-output_norm hidden. Establish it by feeding last_token once (mirrors plain greedy).
-        let (mut last_logits, mut h_seed) = self.decode_step_h(e, last_token, &mut cache)?;
+        // KV+recur state IS in `cache` (cache.pos = position right AFTER last_token), `last_pred`
+        // is the greedy ARGMAX of the logits that predict the token FOLLOWING last_token, and
+        // `h_seed` = last_token's pre-output_norm hidden. Establish it by feeding last_token once
+        // (mirrors plain greedy). DEVICE-ARGMAX lever: the accept walk only ever consumes the
+        // argmax of those logits — never the full vector — so a host u32 replaces the Vec<f32>.
+        let (init_logits, mut h_seed) = self.decode_step_h(e, last_token, &mut cache)?;
+        let mut last_pred = argmax(&init_logits) as u32;
+        // Persistent device prediction slots for the accept walk (max k+1 verify columns).
+        let mut preds_d = e.alloc_u32_zeroed(k + 2)?;
 
         let debug_spec = std::env::var("BW24_DEBUG_SPEC").is_ok();
         let mut round = 0usize;
@@ -659,16 +675,23 @@ impl HybridModel {
                 None => draft.clone(),
             };
             let base = if pending.is_some() { 1 } else { 0 };
-            let (tlogits, vh_seed) = self.decode_step_t_h_emb(e, &verify_tokens, pos, &mut cache,
+            let (tlogits_d, vh_seed) = self.decode_step_t_h_emb_dev(e, &verify_tokens, pos, &mut cache,
                                                               Some((embd_gpu, embd_qt, embd_rb)))?;
 
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
+            // DEVICE-ARGMAX ACCEPT: argmax every verify column ON DEVICE (same 2-pass kernels +
+            // smallest-index tie-break as host argmax, argmax_gate-validated) and read back ONE
+            // [T] u32 — replaces the T x n_vocab f32 dtoh + T host argmaxes per round.
             // t_pred[j] = target's greedy prediction for the slot after draft[j-1] (j>=1) or after
             // last_token (j==0). With a pending bonus, col 0 IS the prediction after last_token
-            // (== the bonus), so every index shifts by `base` and last_logits is unused.
+            // (== the bonus), so every index shifts by `base` and last_pred is unused.
+            let t_v = verify_tokens.len();
+            for j in 0..t_v {
+                e.argmax_token_device_col(&tlogits_d, j, n_vocab, &mut preds_d, j)?;
+            }
+            let preds = e.dtoh_u32(&preds_d)?;
             let t_pred = |j: usize| -> u32 {
-                if j == 0 && base == 0 { argmax(&last_logits) as u32 }
-                else { argmax(&tlogits[(base + j - 1) * n_vocab..(base + j) * n_vocab]) as u32 }
+                if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
             };
             let mut n_acc = 0usize;
             for j in 0..k_round {
@@ -699,7 +722,7 @@ impl HybridModel {
                 // cache; the NEW bonus stays PENDING for the next round's verify batch — NO extra
                 // T=1 trunk pass. The next draft chain seeds from the MTP block's h_nextn at the
                 // bonus position: one MTP-block pass (~1/33 trunk cost) replaces the trunk read.
-                // last_logits is dead in the pending path (t_pred reads verify col 0).
+                // last_pred is dead in the pending path (t_pred reads verify col 0).
                 let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
                     e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round,
                     &embd_gpu, embd_qt, embd_rb)?;
@@ -723,12 +746,14 @@ impl HybridModel {
                 if let Some(b) = pending.take() { replay.push(b); }
                 replay.extend_from_slice(&draft[0..n_acc]);
                 replay.push(bonus);
-                let (rl, rh) = self.decode_step_t_h_emb(e, &replay, pos, &mut cache,
+                let (rl_d, rh) = self.decode_step_t_h_emb_dev(e, &replay, pos, &mut cache,
                                                         Some((embd_gpu, embd_qt, embd_rb)))?;
-                // last_logits = last column's logits (predicts the token after `bonus`).
-                last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
+                // last_pred = argmax of the LAST column's logits (predicts the token after `bonus`)
+                // — device argmax + one 4-byte read instead of the full-vocab column dtoh.
+                e.argmax_token_device_col(&rl_d, replay.len() - 1, n_vocab, &mut preds_d, 0)?;
+                last_pred = e.dtoh_u32(&preds_d)?[0];
                 h_seed = rh;
-                if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={}", argmax(&last_logits)); }
+                if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
             }
             round += 1;
         }

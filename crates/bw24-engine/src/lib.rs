@@ -657,6 +657,48 @@ impl Engine {
         unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
+    /// Column-`col` device argmax over a stacked verify-logits buffer [t, n_vocab] (spec accept
+    /// walk): toks[out_idx] = argmax(logits[col*n_vocab .. (col+1)*n_vocab]). SAME 2-pass kernels
+    /// and tie-break contract as `argmax_token_device_into` (bit-identical to host argmax,
+    /// argmax_gate-validated) — only the input pointer (a column view) and the output slot differ.
+    /// Lets the accept walk read ONE [t] u32 instead of dtoh'ing the full [t, n_vocab] logits.
+    pub fn argmax_token_device_col(&self, logits: &CudaSlice<f32>, col: usize, n_vocab: usize,
+                                   toks: &mut CudaSlice<u32>, out_idx: usize)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let nb = ARGMAX_NB;
+        let f1 = self.func("argmax_partial_f32");
+        let f2 = self.func("argmax_final_f32");
+        let mut guard = self.argmax_partials.lock().unwrap();
+        if guard.is_none() {
+            let pv = self.gpu.stream.alloc_zeros::<f32>(nb)?;
+            let pi = self.gpu.stream.alloc_zeros::<i32>(nb)?;
+            *guard = Some((pv, pi));
+        }
+        let (part_v, part_i) = guard.as_mut().unwrap();
+        let col_view = logits.slice(col * n_vocab..(col + 1) * n_vocab);
+        let nv = n_vocab as i32;
+        let nbi = nb as i32;
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(&col_view).arg(&mut *part_v).arg(&mut *part_i).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let mut tok_view = toks.slice_mut(out_idx..out_idx + 1);
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&*part_v).arg(&*part_i).arg(&mut tok_view).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+    /// Read back a device u32 buffer (the spec accept walk's [t] per-column argmax tokens).
+    pub fn dtoh_u32(&self, d: &CudaSlice<u32>) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let v = self.gpu.stream.clone_dtoh(d)?;
+        self.gpu.stream.synchronize()?;
+        Ok(v)
+    }
+    /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
+    pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.alloc_zeros::<u32>(n)?)
+    }
     /// embed_gather into a PERSISTENT `x_out` buffer (stable pointer) for CUDA-graph capture (the
     /// embed output starts the per-step kernel chain and must be at a fixed address across replays).
     pub fn embed_gather_device_into(&self, embd: &CudaSlice<u8>, token_d: &CudaSlice<u32>,
