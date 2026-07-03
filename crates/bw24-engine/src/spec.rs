@@ -201,8 +201,12 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
 
         for (il, layer) in self.layers.iter().enumerate() {
+            // DECODE-EXACT RMSNorm: blockDim=1024 matches the fused rms_norm_q8_1 / add_rms_norm_q8_1
+            // kernels used by decode_step_h. The standard rms_norm (blockDim=256) produces a different
+            // sum-of-squares accumulation order that shifts the scale factor by ULPs, propagating
+            // through the GDN recurrence into argmax flips (the 9B text prompt K=1 failure).
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
@@ -233,19 +237,18 @@ impl HybridModel {
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
 
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            // DECODE-EXACT FFN projections: force MMVQ for gate/up/down at any T to match the
+            // T=1 decode FP accumulation order. At T>=5 the generic matmul/matmul_pre falls to dp4a
+            // (128-thread, different FP sum order). At T=2-4 the batched MMVQ is already bit-identical.
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, t, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, t)?, e.matmul_pre(ffn_up, &zq, &zd, &z, t)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, t)?, e.matmul(ffn_up, &z, t)?)
-                    };
+                    let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
+                    let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
                     e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-                    e.matmul(ffn_down, &act, t)?
+                    e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
@@ -262,8 +265,8 @@ impl HybridModel {
             hs
         };
         let mut hn = e.zeros(t * n_embd)?;
-        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let logits = e.matmul(&self.output, &hn, t)?;
+        e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         cache.pos += t;
         Ok((host, h_seed))
@@ -289,11 +292,14 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (d_state as f32).sqrt();
 
-        // batched projections ([T, n_embd] @ W^T — the m=2-4 band hits the weight-resident matvec)
-        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;
-        let z = e.matmul(&la.wqkv_gate, h, t)?;
-        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;
-        let alpha = e.matmul(&la.ssm_alpha, h, t)?;
+        // DECODE-EXACT projections: matmul_decode_exact forces the MMVQ (warp-per-row, 32-thread)
+        // accumulation order for EVERY m, matching the T=1 decode path bit-for-bit. The generic
+        // `matmul` at m>=5 falls to dp4a (128-thread, two-level reduce) which has a different FP
+        // sum order — ULP differences propagate through gdn_scan and flip argmax on the 27B.
+        let qkv_mixed = e.matmul_decode_exact(&la.wqkv, h, t)?;
+        let z = e.matmul_decode_exact(&la.wqkv_gate, h, t)?;
+        let beta_raw = e.matmul_decode_exact(&la.ssm_beta, h, t)?;
+        let alpha = e.matmul_decode_exact(&la.ssm_alpha, h, t)?;
 
         // conv with CARRIED state + ring roll (T >= pad guaranteed by caller).
         let rl = cache.recur[il].as_mut().unwrap();
@@ -307,9 +313,9 @@ impl HybridModel {
         let mut v_g = e.uninit(d_state * num_v * t)?;
         e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         let mut q_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        e.l2_norm_decode(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        e.l2_norm_decode(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
         let mut beta = e.uninit(t * num_v)?;
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;
@@ -327,7 +333,9 @@ impl HybridModel {
         // gated RMSNorm + out projection, T-wide.
         let mut gn = e.uninit(d_state * num_v * t)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
-        Ok(e.matmul(&la.ssm_out, &gn, t)?)
+        // DECODE-EXACT out-projection: same MMVQ path as the T=1 decode (ssm_out at m>=5 would
+        // fall to dp4a with a different FP reduction order — same class of bug as the input projs).
+        Ok(e.matmul_decode_exact(&la.ssm_out, &gn, t)?)
     }
 
     /// EAGLE3 aux-capturing verify forward over `tokens` (T) — mirrors `decode_step_t_h` exactly
@@ -352,7 +360,7 @@ impl HybridModel {
 
         for (il, layer) in self.layers.iter().enumerate() {
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
                 Mixer::Linear(la) => {
@@ -370,19 +378,15 @@ impl HybridModel {
             let mut x1 = e.zeros(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                        let (zq, zd) = e.quantize_q8_1(&z, t, n_embd)?;
-                        (e.matmul_pre(ffn_gate, &zq, &zd, &z, t)?, e.matmul_pre(ffn_up, &zq, &zd, &z, t)?)
-                    } else {
-                        (e.matmul(ffn_gate, &z, t)?, e.matmul(ffn_up, &z, t)?)
-                    };
+                    let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
+                    let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
                     e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
-                    e.matmul(ffn_down, &act, t)?
+                    e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
@@ -401,8 +405,8 @@ impl HybridModel {
             x = x2;
         }
         let mut hn = e.zeros(t * n_embd)?;
-        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let logits = e.matmul(&self.output, &hn, t)?;
+        e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         cache.pos += t;
         Ok((host, aux_last, if want_pred { Some(aux_pred) } else { None }))
@@ -422,12 +426,14 @@ impl HybridModel {
         let scale = 1.0 / (head_dim as f32).sqrt();
         let n_embd = cfg.n_embd as usize;
 
-        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
-            let (hq, hd) = e.quantize_q8_1(h, t, n_embd)?;
-            (e.matmul_pre(&fa.wq, &hq, &hd, h, t)?, e.matmul_pre(&fa.wk, &hq, &hd, h, t)?, e.matmul_pre(&fa.wv, &hq, &hd, h, t)?)
-        } else {
-            (e.matmul(&fa.wq, h, t)?, e.matmul(&fa.wk, h, t)?, e.matmul(&fa.wv, h, t)?)
-        };
+        // DECODE-EXACT Q/K/V projections: matmul_decode_exact forces the MMVQ (warp-per-row) path
+        // for every m, matching the T=1 decode's FP accumulation order. matmul_pre at m>=5 would
+        // fall to dp4a (128-thread, two-level reduce) with a different FP sum order.
+        let (qf, mut k, v) = (
+            e.matmul_decode_exact(&fa.wq, h, t)?,
+            e.matmul_decode_exact(&fa.wk, h, t)?,
+            e.matmul_decode_exact(&fa.wv, h, t)?,
+        );
         let mut q = e.zeros(t * n_head * head_dim)?;
         let mut gate = e.zeros(t * n_head * head_dim)?;
         e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
@@ -480,7 +486,9 @@ impl HybridModel {
         e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
         let mut attn_g = e.zeros(t * n_head * head_dim)?;
         e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
-        Ok(e.matmul(&fa.wo, &attn_g, t)?)
+        // DECODE-EXACT wo projection: at m>=5 (K=4+ with pending) the generic matmul would use dp4a
+        // (128-thread, different FP sum order than MMVQ). Force MMVQ for bit-identity with decode.
+        Ok(e.matmul_decode_exact(&fa.wo, &attn_g, t)?)
     }
 
     /// Greedy MTP speculative decode (§B). Token-identical to `generate(prompt, max_new)` but uses

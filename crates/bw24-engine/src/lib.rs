@@ -746,6 +746,24 @@ impl Engine {
         Ok(())
     }
 
+    /// RMS-norm with blockDim=1024 — BIT-IDENTICAL to the fused `rms_norm_q8_1` and
+    /// `add_rms_norm_q8_1` kernels' sum-of-squares reduction. The spec verify path MUST use this
+    /// to match decode's FP accumulation order: the standard `rms_norm` at blockDim=256 has a
+    /// different per-thread stride (ncols/256 partials vs ncols/1024 partials) and therefore a
+    /// different shfl-tree reduction that can shift `scale = rsqrt(sum/n + eps)` by ULPs, causing
+    /// divergence through the GDN scan and argmax flips on the 9B text prompt. The underlying
+    /// `rms_norm_f32` kernel supports any blockDim (generic reduce with shared[32]).
+    pub fn rms_norm_decode(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                           ncols: usize, nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// DECODE GLUE-FUSION LEVER: `z = rms_norm(x)*w` emitted DIRECTLY as q8_1 (no f32 `z` materialized,
     /// no standalone quantize_q8_1 launch). Returns (out_q [nrows*ncols i8], out_d [nrows*nblk f32])
     /// ready to feed matmul_pre. BIT-IDENTICAL to rms_norm + quantize_q8_1. ncols % 32 == 0.
@@ -804,6 +822,22 @@ impl Engine {
                    eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("l2_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(dst).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// L2-norm with blockDim=32 (warp-tree reduction) — BIT-IDENTICAL to gdn_prep_decode_f32's
+    /// per-warp L2 norm. The verify path MUST use this to match decode's FP accumulation order:
+    /// l2_norm at blockDim=256 produces a different shfl-tree reduction of the 128-element
+    /// squared-sum (pairwise tree vs serial-4-then-warp-tree), causing ULP differences that
+    /// propagate through gdn_scan and flip argmax on marginal logits.
+    pub fn l2_norm_decode(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize,
+                          nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("l2_norm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(dst).arg(&nc).arg(&e);
@@ -1093,6 +1127,34 @@ impl Engine {
         unsafe { b.launch(cfg)?; }
         if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
         Ok(y)
+    }
+
+    /// DECODE-EXACT matmul at any m: guarantees the SAME warp-per-row (MMVQ, 32-thread) FP
+    /// accumulation order as the T=1 decode path for EVERY token row. The spec-decode verify MUST
+    /// use this for linear-attn projections to be bit-identical to greedy decode. The dp4a kernel
+    /// (128 threads, two-level reduction) used by `matmul`/`matmul_pre` at m>=5 has a different
+    /// shfl-tree shape that produces ULP differences propagating through gdn_scan into argmax flips.
+    /// The MMVQ kernel with grid.y=m already processes each row independently (same 32-thread warp
+    /// reduce as m=1); this method just forces that path unconditionally.
+    pub fn matmul_decode_exact(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
+        let in_f = w.in_features();
+        let out_f = w.out_features();
+        let (bytes, qtype, row_bytes, scale) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => return self.matmul(w, x, m),
+        };
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        if self.mmvq_supports(qtype) {
+            // MMVQ at grid.y=m: each row is processed by its own warp independently — same 32-thread
+            // accumulation + warp_reduce_sum as m=1 decode. Bit-identical per row.
+            return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, scale);
+        }
+        // Fallback for non-MMVQ quant types (Q5_K, Q3_K): use dp4a (the only available kernel).
+        // These types are not used in the 27B's linear-attn NVFP4+Q4_K layers.
+        self.matmul_pre(w, &aq, &ad, x, m)
     }
 
     /// Like `matmul_pre` but RETURNS THE RAW (un-macro-scaled) matmul output together with the
