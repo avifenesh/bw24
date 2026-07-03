@@ -5,7 +5,13 @@
 use cudarc::driver::CudaSlice;
 use bw24_gguf::config::ModelConfig;
 use crate::Engine;
+use crate::cache::Cache;
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
+
+/// Minimum prompt length for the BATCHED cache prime (`prime_cache`). Below this the tokenwise
+/// decode loop wins anyway (the batched path's GEMM dispatch needs m>=16, and the stateful conv
+/// kernel needs T >= d_conv-1). Callers: generate / generate_spec.
+pub const PRIME_MIN_T: usize = 16;
 
 impl HybridModel {
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
@@ -107,6 +113,201 @@ impl HybridModel {
         e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
         let logits = e.matmul(&self.output, &hlast, 1)?;   // [1, n_vocab] — lm_head on ONE row
         Ok(e.dtoh(&logits)?)
+    }
+
+    /// BATCHED PROMPT PRIME (the measured #1 e2e gap, e2e-image-1): `forward_last`'s batched
+    /// prefill body EXTENDED to leave a DECODE-READY cache behind — vs the tokenwise prime's
+    /// ~102/38 tok/s (9B/27B) decode_step loop, this runs the whole prompt at prefill throughput.
+    ///   (a) full-attn layers append their T post-RoPE K/V rows into `cache.kv[il]` via the SAME
+    ///       per-row quantize kernel as the decode append (bit-identical cache bytes per row);
+    ///   (b) linear layers run STATEFULLY from the cache's current recurrent state (zero at a
+    ///       fresh prime): carried-ring conv (ssm_conv1d_tm_state) + ONE gdn_scan(state_in,
+    ///       state_out) whose internal sequential t-loop equals T chained T=1 steps — but with
+    ///       the NORMAL prefill matmul dispatch (GEMM at m>=16), NOT the decode-exact MMVQ the
+    ///       spec verify uses (prime is a prefill-regime pass; the run-gen prefill==decode
+    ///       argmax gate is the accuracy authority, exactly as for forward_last);
+    ///   (c) `cache.pos`/KV len/len_d advance by T.
+    /// Returns (last-row logits host, h_seed = last-row PRE-output_norm hidden [n_embd],
+    /// hiddens = the full pre-output_norm hidden stack [T, n_embd] — generate_spec's prompt_h).
+    /// FRESH-PROMPT ONLY (cache.pos == 0): the fa_prefill tiles attend within `tokens` alone.
+    /// forward_last itself stays untouched (kernel-check / run-gen gate on it).
+    pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+                       -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let t = tokens.len();
+        let eps = cfg.rms_eps;
+        assert!(cache.pos == 0, "prime_cache is a fresh-prompt prime (cache.pos must be 0)");
+        assert!(t >= PRIME_MIN_T, "prime_cache needs T >= {PRIME_MIN_T} (caller gates)");
+        assert!(t <= cache.max_ctx, "prime_cache: prompt exceeds cache max_ctx");
+        let pos: Vec<i32> = (0..t as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+
+        let mut x = self.embed(e, tokens)?;   // [T, n_embd]
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.zeros(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let mixed = match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, &pos_d, t, cache, il)?,
+                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, t, cache, il)?,
+            };
+            let mut x1 = e.zeros(t * n_embd)?;
+            e.add(&x, &mixed, &mut x1, t * n_embd)?;
+            let mut z = e.zeros(t * n_embd)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let gate = e.matmul(ffn_gate, &z, t)?;
+                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut act = e.zeros(t * n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    e.matmul(ffn_down, &act, t)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+            };
+            let mut x2 = e.zeros(t * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
+            x = x2;
+        }
+
+        // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A seed convention).
+        let mut h_seed = e.zeros(n_embd)?;
+        e.copy_view_into(&mut h_seed, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        // last-row logits, exactly like forward_last (norm all T — per-row op — then lm_head on 1 row).
+        let mut hn = e.zeros(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let last = e.view(&hn, t * n_embd);
+        let last_row = last.slice((t - 1) * n_embd..t * n_embd);
+        let mut hlast = e.zeros(n_embd)?;
+        e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
+        let logits = e.matmul(&self.output, &hlast, 1)?;
+        cache.pos += t;
+        Ok((e.dtoh(&logits)?, h_seed, x))
+    }
+
+    /// `full_attn` (batched prefill mixer) + the cache side-effect: append the T post-RoPE K/V
+    /// rows into the resident quantized KV cache (q8_0 K / q5_1 V) and advance len/len_d. Row
+    /// bytes are BIT-IDENTICAL to the decode append (same per-warp quant kernel per row; the
+    /// batched `append_kv_quantized_rows` runs that exact warp math on a (block, token) grid).
+    /// The attention itself is unchanged prefill math (fa_prefill over the f32 K/V).
+    fn full_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        let qf = e.matmul(&fa.wq, h, t)?;
+        let mut q = e.zeros(t * n_head * head_dim)?;
+        let mut gate = e.zeros(t * n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+        let mut k = e.matmul(&fa.wk, h, t)?;
+        let v = e.matmul(&fa.wv, h, t)?;
+
+        let mut qn = e.zeros(t * n_head * head_dim)?;
+        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
+        q = qn;
+        let mut kn = e.zeros(t * n_head_kv * head_dim)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
+        k = kn;
+        let rope_dims = cfg.rope_dim_count as usize;
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+
+        // CACHE SIDE-EFFECT: append the T post-rope K/V token rows (token-major [T, kv_dim] ==
+        // the cache row layout) quantized into cache.kv[il], then advance len + device len_d.
+        {
+            let kvl = cache.kv[il].as_mut().unwrap();
+            assert!(kvl.len + t <= cache.max_ctx, "prime_cache: KV overflow");
+            e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            kvl.len += t;
+            let new_len = kvl.len as i32;
+            e.set_i32_one(&mut kvl.len_d, new_len)?;
+        }
+
+        // batched prefill attention (unchanged forward_last math).
+        let mut attn = e.zeros(t * n_head * head_dim)?;
+        if std::env::var("BW24_NOFA").is_ok() {
+            e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        } else {
+            e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        }
+
+        let mut gsig = e.zeros(t * n_head * head_dim)?;
+        e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
+        let mut attn_g = e.zeros(t * n_head * head_dim)?;
+        e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
+        Ok(e.matmul(&fa.wo, &attn_g, t)?)
+    }
+
+    /// STATEFUL batched linear-attention prime: `linear_attn`'s prefill-dispatch pass (normal
+    /// `e.matmul` — GEMM at m>=16 — plus the prefill repack/L2/glog kernels) but with the state
+    /// carried THROUGH the cache like the spec verify does: carried-ring conv
+    /// (ssm_conv1d_tm_state writes the final ring back) + ONE gdn_scan from cache.recur[il]'s
+    /// current state (zero at a fresh prime) whose final state ping-pongs back into the cache.
+    /// Wiring mirrors `linear_attn_verify_t` (spec.rs); dispatch mirrors `linear_attn` (prefill).
+    fn linear_attn_prime(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
+                         cache: &mut Cache, il: usize)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;       // 128
+        let num_k = ssm.group_count as usize;        // 16
+        let num_v = ssm.time_step_rank as usize;     // 32
+        let d_conv = ssm.conv_kernel as usize;       // 4
+        let key_dim = d_state * num_k;               // 2048
+        let value_dim = d_state * num_v;             // 4096
+        let conv_dim = key_dim * 2 + value_dim;      // 8192
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (d_state as f32).sqrt();
+        debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
+
+        // NORMAL prefill dispatch (GEMM at m>=16) — same as linear_attn/forward_last.
+        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;       // [T, conv_dim] token-major
+        let z = e.matmul(&la.wqkv_gate, h, t)?;          // [T, value_dim]
+        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
+        let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
+
+        // conv with CARRIED ring state + ring roll (state read + final-window write-back).
+        let rl = cache.recur[il].as_mut().unwrap();
+        let mut conv_out = e.uninit(conv_dim * t)?;      // [conv_dim, T] channel-major, SiLU
+        e.ssm_conv1d_tm_state(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                              &mut conv_out, conv_dim, t, d_conv)?;
+
+        // GDN prep via the PREFILL kernels (repack + 256-thread l2_norm + sigmoid + glog) —
+        // the same kernels forward_last's fused path reproduces value-for-value.
+        let mut q_g = e.uninit(d_state * num_v * t)?;
+        let mut k_g = e.uninit(d_state * num_v * t)?;
+        let mut v_g = e.uninit(d_state * num_v * t)?;
+        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        let mut q_l2 = e.zeros(d_state * num_v * t)?;
+        e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        let mut k_l2 = e.zeros(d_state * num_v * t)?;
+        e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        let mut beta = e.zeros(t * num_v)?;
+        e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
+        let mut g_log = e.zeros(t * num_v)?;
+        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
+
+        // ONE gdn_scan over T from the cache's CURRENT state (zero at fresh prime); the final
+        // state lands in the spare buffer and ping-pongs back (stable resident pointers, the
+        // decode-determinism discipline from linear_attn_decode_inner).
+        let mut o = e.zeros(d_state * num_v * t)?;
+        {
+            let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
+            e.gdn_scan_s128(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+        }
+        std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
+
+        // gated RMSNorm + out projection (prefill dispatch).
+        let mut gn = e.zeros(d_state * num_v * t)?;
+        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+        Ok(e.matmul(&la.ssm_out, &gn, t)?)
     }
 
     /// Full-attention mixer with QK-norm, partial RoPE, sigmoid output gate (qwen35 :257-336).

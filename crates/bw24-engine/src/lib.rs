@@ -247,6 +247,38 @@ impl Engine {
         Ok(())
     }
 
+    /// Append-quantize T token rows in one shot (BATCHED PROMPT PRIME). k_rows/v_rows are
+    /// token-major [T, kv_dim] post-RoPE f32; rows land at cache slots t0..t0+T. Default = the
+    /// batched `_rows` kernel: one (nblk, T) launch whose per-(block,token) warp program is the
+    /// per-token append kernel verbatim -> every written row is BIT-IDENTICAL to T sequential
+    /// `append_kv_quantized_view` calls (kernel_check pins the bytes). BW24_PRIME_APPEND_LOOP=1
+    /// forces the T-launch per-row loop (the A/B seam that measured the launch overhead).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_kv_quantized_rows(&self, k_rows: &CudaSlice<f32>, v_rows: &CudaSlice<f32>,
+                                    kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
+                                    t0: usize, t: usize, kv_dim_k: usize, kv_dim_v: usize,
+                                    k_tok_bytes: usize, v_tok_bytes: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("BW24_PRIME_APPEND_LOOP").is_ok() {
+            for i in 0..t {
+                let k_row = k_rows.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
+                let v_row = v_rows.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
+                self.append_kv_quantized_view(&k_row, &v_row, kc, vc, t0 + i,
+                                              kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+            }
+            return Ok(());
+        }
+        let f = self.func("append_quantize_kv_q8_0_q5_1_rows");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (t0i, kdk, kdv) = (t0 as i32, kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_rows).arg(v_rows).arg(kc).arg(vc).arg(&t0i).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Increment a device i32[1] counter in place (p[0] += 1) via the resident `inc_i32` kernel.
     /// Used to advance the device-resident seqlen/pos counters inside the decode-dc path (and,
     /// later, inside a captured graph) without a host round-trip.

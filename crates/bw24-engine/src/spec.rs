@@ -793,16 +793,29 @@ impl HybridModel {
         // + fallback seam; acceptance-only — exactness is verify's job either way).
         let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
 
-        // prime: feed the prompt token-by-token (decode_step_h builds KV+state, returns h_seed).
-        // Persistent draft KV: collect every prompt position's trunk hidden for the batched fill.
+        // prime: BATCHED cache prime (prime_cache — the measured #1 e2e gap: tokenwise primed at
+        // ~102/38 tok/s vs the engine's ~2000-5900 tok/s batched prefill). prime_cache returns the
+        // full pre-output_norm hidden stack [T, n_embd], which IS prompt_h (the persistent-draft-KV
+        // mtp_kv_fill input) — no per-token collection needed. Prompts below PRIME_MIN_T, and
+        // BW24_PRIME_TOKENWISE=1 (the escape seam), take the tokenwise decode_step_h loop.
         assert!(!prompt.is_empty(), "prompt must be non-empty");
-        let mut prime_logits = Vec::new();
-        let mut prompt_h = if kv_local { None } else { Some(e.uninit(prompt.len() * n_embd)?) };
+        let mut prime_logits;
+        let mut prompt_h: Option<CudaSlice<f32>> = None;
         let t_prime = std::time::Instant::now();
-        for (i, &tok) in prompt.iter().enumerate() {
-            let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
-            if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
+        let batched_prime = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
+            && std::env::var("BW24_PRIME_TOKENWISE").is_err();
+        if batched_prime {
+            let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut cache)?;
             prime_logits = l;
+            if !kv_local { prompt_h = Some(hiddens); }
+        } else {
+            prime_logits = Vec::new();
+            if !kv_local { prompt_h = Some(e.uninit(prompt.len() * n_embd)?); }
+            for (i, &tok) in prompt.iter().enumerate() {
+                let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
+                if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
+                prime_logits = l;
+            }
         }
         e.stream().synchronize()?;
         // Harness timing contract (see crate::PRIME_NANOS): gen-only throughput without the

@@ -241,6 +241,63 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1(
     }
 }
 
+// ----- BATCHED-ROWS variant (BATCHED PROMPT PRIME): appends T token rows in ONE
+// launch. grid = (max(kv_dim_k,kv_dim_v)/32, T); block = (32,1,1). Each (b, tt)
+// warp executes EXACTLY the per-token kernel's warp program on token row tt of the
+// token-major k_rows/v_rows ([T, kv_dim]) writing at slot t0+tt — so every written
+// cache row is BIT-IDENTICAL to T sequential append_quantize_kv_q8_0_q5_1 calls
+// (kernel_check pins this bytewise). Replaces the T-launch loop (~T*n_layers*3us
+// of launch overhead per prime).
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows(
+        const float* __restrict__ k_rows,  // [T, kv_dim_k] token-major
+        const float* __restrict__ v_rows,  // [T, kv_dim_v] token-major
+        uint8_t* __restrict__ K,           // cache base (q8_0)
+        uint8_t* __restrict__ V,           // cache base (q5_1)
+        int t0, int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int b    = blockIdx.x;           // 32-elem block index within the token
+    const int tt   = blockIdx.y;           // token index within the batch
+    const int lane = threadIdx.x;          // 0..31
+    const int eidx = b * 32 + lane;        // element index within token
+    const int t    = t0 + tt;              // cache write slot
+
+    // ---- K block b -> q8_0 (symmetric); identical math to the per-token kernel ----
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? k_rows[(size_t)tt * kv_dim_k + eidx] : 0.0f;
+        float amax = warp_amax(x);
+        float d = amax / 127.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q = (int)lrintf(x * id);
+        q = max(-127, min(127, q));
+        uint8_t* blk = K + (size_t)t * k_tok_bytes + (size_t)b * 34;
+        if (lane == 0) *(half*)blk = __float2half(d);
+        ((int8_t*)(blk + 2))[lane] = (int8_t)q;
+    }
+
+    // ---- V block b -> q5_1 (affine); identical math to the per-token kernel ----
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? v_rows[(size_t)tt * kv_dim_v + eidx] : 0.0f;
+        float mn = warp_min(x);
+        float mx = warp_max(x);
+        float d = (mx - mn) / 31.0f;
+        float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+        int q5 = (int)lrintf((x - mn) * id);
+        q5 = max(0, min(31, q5));
+        uint32_t qh = __ballot_sync(0xffffffffu, (q5 >> 4) & 1);
+        uint8_t* blk = V + (size_t)t * v_tok_bytes + (size_t)b * 24;
+        if (lane == 0) {
+            *(half*)blk        = __float2half(d);
+            *(half*)(blk + 2)  = __float2half(mn);
+            *(uint32_t*)(blk + 4) = qh;
+        }
+        uint8_t* qs = blk + 8;
+        int nib = q5 & 0x0F;
+        int partner_nib = __shfl_sync(0xffffffffu, nib, lane + 16) & 0x0F;
+        if (lane < 16) qs[lane] = (uint8_t)(nib | (partner_nib << 4));
+    }
+}
+
 // ----- DEVICE-COUNTER variant (CUDA-GRAPH-PLAN Phase 2): identical math to
 // append_quantize_kv_q8_0_q5_1, but the per-step WRITE OFFSET `t` is read from a
 // device int[1] counter (t_dev[0]) instead of a host int arg. This is the only

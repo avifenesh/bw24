@@ -1014,6 +1014,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  if bnd_err < bnd_d { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- BATCHED PROMPT PRIME: batched-rows KV append vs T sequential per-token appends must be
+    // BYTE-IDENTICAL (same warp program per (block,token); this pins the (b,tt) grid mapping +
+    // token-major row addressing against refactors). Non-trivial T and a non-zero slot base t0.
+    {
+        let nblk = 4usize;
+        let kv_dim_k = nblk * 32;
+        let kv_dim_v = nblk * 32;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;
+        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        let (t0, t) = (3usize, 7usize);
+        let cap = t0 + t;
+        let kin: Vec<f32> = (0..t * kv_dim_k).map(|i| pr(i + 301) * 1.1).collect();
+        let vin: Vec<f32> = (0..t * kv_dim_v).map(|i| pr(i + 401) * 0.6 - 0.1).collect();
+        let kd = e.htod(&kin)?; let vd = e.htod(&vin)?;
+        // (a) reference: T sequential per-token appends (the decode append kernel).
+        let mut kc_ref = e.alloc_u8(cap * k_tok_bytes)?; let mut vc_ref = e.alloc_u8(cap * v_tok_bytes)?;
+        for i in 0..t {
+            let k_row = kd.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
+            let v_row = vd.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
+            e.append_kv_quantized_view(&k_row, &v_row, &mut kc_ref, &mut vc_ref, t0 + i,
+                                       kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+        }
+        // (b) batched-rows kernel, one launch.
+        let mut kc_b = e.alloc_u8(cap * k_tok_bytes)?; let mut vc_b = e.alloc_u8(cap * v_tok_bytes)?;
+        e.append_kv_quantized_rows(&kd, &vd, &mut kc_b, &mut vc_b, t0, t,
+                                   kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+        let (kr, kb) = (e.dtoh_u8(&kc_ref)?, e.dtoh_u8(&kc_b)?);
+        let (vr, vb) = (e.dtoh_u8(&vc_ref)?, e.dtoh_u8(&vc_b)?);
+        // compare only the written slots [t0, t0+t) — the rest is uninitialized alloc garbage.
+        let kmis = (t0 * k_tok_bytes..cap * k_tok_bytes).filter(|&i| kr[i] != kb[i]).count();
+        let vmis = (t0 * v_tok_bytes..cap * v_tok_bytes).filter(|&i| vr[i] != vb[i]).count();
+        println!("kv append rows-vs-loop bit-identity (T={t}, t0={t0}): k_mismatch={kmis} v_mismatch={vmis} {}",
+                 if kmis == 0 && vmis == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- EDGE-1 §D.1: fused-router top-k vs the Stage-1 host softmax+sort+renorm (BIT-IDENTITY). ---
     // Synthetic logits [T,256] (no model needed). The host oracle = the exact moe_ffn host path
     // (softmax-256 -> stable DESC top-8 by (prob DESC, idx ASC) -> renorm w/ F16-min clamp). The

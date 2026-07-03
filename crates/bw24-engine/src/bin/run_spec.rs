@@ -53,7 +53,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // timed region, deflating tok/s ~2x on long prompts (the run_gen.rs known-bug class). Measure
     // a prime-only pass (max_new=1, minimal gen) and subtract its cost from every timed run so the
     // printed number is GEN-ONLY throughput, comparable to llama-bench tg / serve-script numbers.
-    let _ = model.generate(&e, &prompt, 1)?;   // cold-start warmup (weights/L2/allocator)
+    // BW24_GEN_ONLY=1: run ONLY the plain-generate oracle (no warmup, no spec Ks) and exit —
+    // the prime-path A/B gate mode (compare `tokens:` between BW24_PRIME_TOKENWISE=1 and
+    // batched-prime runs without paying 3 primes per invocation).
+    let gen_only = std::env::var("BW24_GEN_ONLY").is_ok();
+    if !gen_only {
+        let _ = model.generate(&e, &prompt, 1)?;   // cold-start warmup (weights/L2/allocator)
+    }
     e.stream().synchronize()?;
     let t0 = std::time::Instant::now();
     let gold = model.generate(&e, &prompt, n_new)?;
@@ -65,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gen_tps = (n_new - 1) as f64 / gen_dt;
     println!("\n[generate]   {} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s (gen-only; this run's prime {prime_dt:.3}s)", n_new - 1);
     println!("  tokens: {gold:?}");
+    if gen_only { return Ok(()); }
 
     let mut all_pass = true;
     // BW24_SPEC_K=<k>: run ONLY one K (e2e bench mode — the full sweep is the gate battery).
@@ -85,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pass = first_divergence(&gold, &spec).is_none();
         all_pass &= pass;
         println!("\n[generate_spec K={k}] {n_new} tok in {spec_dt:.3}s = {spec_tps:.2} tok/s \
-                  ({:.2}x vs generate)", spec_tps / gen_tps);
+                  ({:.2}x vs generate; this run's prime {spec_prime:.3}s)", spec_tps / gen_tps);
         println!("  acceptance: {accepted}/{drafted} = {:.1}%   self-consistency: {}",
                  acc_rate * 100.0, if pass { "PASS (identical to generate)" } else { "FAIL" });
         if !pass {

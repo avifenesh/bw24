@@ -677,10 +677,19 @@ impl HybridModel {
         let max_ctx = prompt.len() + max_new + 8;
         let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
         let mut last_logits = Vec::new();
-        // prime: feed each prompt token (decode_step builds KV + state incrementally)
+        // prime: BATCHED cache prime (prime_cache — the prefill-throughput path, the measured #1
+        // e2e gap: tokenwise primed at ~102/38 tok/s vs ~2000-5900 tok/s batched). Prompts below
+        // PRIME_MIN_T, and BW24_PRIME_TOKENWISE=1 (the escape seam), take the tokenwise loop.
         let t_prime = std::time::Instant::now();
-        for &tok in prompt {
-            last_logits = self.decode_step(e, tok, &mut cache)?;
+        let batched_prime = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
+            && std::env::var("BW24_PRIME_TOKENWISE").is_err();
+        if batched_prime {
+            let (l, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+            last_logits = l;
+        } else {
+            for &tok in prompt {
+                last_logits = self.decode_step(e, tok, &mut cache)?;
+            }
         }
         e.stream().synchronize()?;
         // Harness timing contract: prime wall time published for gen-only throughput math
