@@ -1749,6 +1749,29 @@ impl Engine {
         Ok(())
     }
 
+    /// FUSED prefill conv + GDN repack: token-major qkv -> q_g/k_g/v_g in ONE launch (no conv_out
+    /// materialization, no qkv_to_gdn_repack pass). BIT-IDENTICAL values; scatter matches
+    /// qkv_to_gdn_repack's modulo head-repeat mapping exactly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_gdn(&self, qkv_tm: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                          q_g: &mut CudaSlice<f32>, k_g: &mut CudaSlice<f32>, v_g: &mut CudaSlice<f32>,
+                          conv_dim: usize, t: usize, d_conv: usize,
+                          d_state: usize, num_v: usize, num_k: usize, key_dim: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_gdn_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+        let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_tm).arg(w).arg(q_g).arg(k_g).arg(v_g)
+         .arg(&cd).arg(&ti).arg(&dc).arg(&ds).arg(&nv).arg(&nk).arg(&kd);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn ssm_conv1d(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
                       conv_dim: usize, t: usize, d_conv: usize, silu: bool)
                       -> Result<(), Box<dyn std::error::Error>> {

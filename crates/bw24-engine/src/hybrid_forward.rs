@@ -185,22 +185,18 @@ impl HybridModel {
         let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
         let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
 
-        // conv, FUSED (2026-07-03): ssm_conv1d_tm reads qkv_mixed [T, conv_dim] token-major
-        // DIRECTLY (causal window = rows t-pad..t, rows<0 = the zero prefill state) and emits the
-        // channel-major SiLU'd output in ONE launch. Replaces transpose + zeros + conv_left_pad +
-        // ssm_conv1d (4 launches, 2 scratch buffers, ~4.5ms of pp512). BIT-IDENTICAL accumulation.
-        let mut conv_out = e.uninit(conv_dim * t)?;  // [conv_dim, T] channel-major, SiLU applied
-        e.ssm_conv1d_tm(&qkv_mixed, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv)?;
-
-        // split conv_out channels into q/k/v and repack to GDN [d_state, num_v, T] ON-DEVICE.
-        // conv_out channel c, time tt at c*t + tt. q channels [0,key_dim), k [key_dim,2key_dim),
-        // v [2key_dim,conv_dim). q/k head-repeat kh = vh % num_k (ggml_repeat_4d MODULO mapping).
-        // head_v == head_k == d_state. No dtoh/host-loop/3x-htod.
+        // conv + GDN repack, FUSED (2026-07-03): ssm_conv1d_gdn reads qkv_mixed [T, conv_dim]
+        // token-major DIRECTLY (causal window rows t-pad..t, rows<0 = zero prefill state), applies
+        // the 8-tap conv + SiLU, and scatters straight into the GDN [d_state, num_v, T] q/k/v
+        // layout with the modulo head-repeat. Replaces transpose + zeros + conv_left_pad +
+        // ssm_conv1d + qkv_to_gdn_repack (5 launches, conv_in/conv_out scratch + a 16MB@T=512
+        // round-trip). BIT-IDENTICAL accumulation and scatter mapping.
         let _ = (head_k, head_v);
-        let mut q_g = e.zeros(d_state * num_v * t)?;
-        let mut k_g = e.zeros(d_state * num_v * t)?;
-        let mut v_g = e.zeros(d_state * num_v * t)?;
-        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        let mut q_g = e.uninit(d_state * num_v * t)?;
+        let mut k_g = e.uninit(d_state * num_v * t)?;
+        let mut v_g = e.uninit(d_state * num_v * t)?;
+        e.ssm_conv1d_gdn(&qkv_mixed, la.ssm_conv1d.float_data(), &mut q_g, &mut k_g, &mut v_g,
+                         conv_dim, t, d_conv, d_state, num_v, num_k, key_dim)?;
         // L2-norm q,k per (head_dim) row — rows are contiguous d_state in q_g.
         let mut q_l2 = e.zeros(d_state * num_v * t)?;
         e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;

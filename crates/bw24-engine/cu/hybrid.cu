@@ -55,6 +55,54 @@ extern "C" __global__ void ssm_conv1d_tm_f32(
     y[(size_t)c * T + t] = silu(acc);
 }
 
+// ---- FUSED conv + GDN repack: one kernel from token-major qkv straight to q_g/k_g/v_g. ----
+// Extends ssm_conv1d_tm_f32: instead of materializing the channel-major conv_out (16MB at T=512)
+// and re-reading it in qkv_to_gdn_repack, each (channel, time) thread computes its conv+SiLU value
+// ONCE and scatters it directly to the GDN [d_state, num_v, T] layout:
+//   c in [0, key_dim)          -> q: kh = c/d_state, i = c%d_state, written for EVERY vh with
+//                                 vh % num_k == kh (the ggml_repeat_4d modulo head-repeat,
+//                                 num_v/num_k copies — same VALUE, scatter only).
+//   c in [key_dim, 2*key_dim)  -> k: same mapping.
+//   c >= 2*key_dim             -> v: vh = (c-2key)/d_state, single write.
+// Output index (t*num_v + vh)*d_state + i == qkv_to_gdn_repack's exactly. BIT-IDENTICAL values
+// (same 8-tap accumulation as ssm_conv1d_tm_f32; scatter does not change the float).
+// Launch: grid=(ceil(conv_dim/256), T), block=256.
+extern "C" __global__ void ssm_conv1d_gdn_f32(
+        const float* __restrict__ qkv_tm,   // [T, conv_dim] token-major
+        const float* __restrict__ w,        // [conv_dim, d_conv]
+        float* __restrict__ q_g, float* __restrict__ k_g, float* __restrict__ v_g,
+        int conv_dim, int T, int d_conv, int d_state, int num_v, int num_k, int key_dim) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;
+            float xv = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c] : 0.0f;
+            acc += xv * wc[j];
+        }
+    }
+    float val = silu(acc);
+    if (c < 2 * key_dim) {
+        int cc = (c < key_dim) ? c : c - key_dim;
+        float* dst = (c < key_dim) ? q_g : k_g;
+        int kh = cc / d_state;
+        int i  = cc % d_state;
+        for (int vh = kh; vh < num_v; vh += num_k) {
+            dst[((size_t)t * num_v + vh) * d_state + i] = val;
+        }
+    } else {
+        int cc = c - 2 * key_dim;
+        int vh = cc / d_state;
+        int i  = cc % d_state;
+        v_g[((size_t)t * num_v + vh) * d_state + i] = val;
+    }
+}
+
 // ---- Depthwise causal conv1d + optional SiLU. Single sequence. ----
 // x: [conv_dim, T] but stored as [T, conv_dim] token-major? No — ggml ssm_conv input is
 // [d_conv-1+T, conv_dim] (time-major per channel). We take a simpler contract for the engine:
