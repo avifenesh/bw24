@@ -44,9 +44,12 @@ impl HybridModel {
     /// the trunk's pre-output_norm hidden of that token (§A op 2 input). `mtp_pos` = absolute
     /// position of the token being predicted from. Returns (draft_logits[n_vocab] host, h_nextn dev).
     /// `h_nextn` (§A op 10) becomes `h_seed` for the next autoregressive draft step.
-    fn mtp_head_forward(&self, e: &Engine, mtp: &MtpHead, e_tok: u32, h_seed: &CudaSlice<f32>,
-                        scratch: &mut MtpScratch, mtp_pos: usize)
-                        -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    /// Device-resident: returns draft logits ON DEVICE (no [n_vocab] dtoh). The greedy draft
+    /// loop only needs argmax — paired with `argmax_token_device` this cuts the ~600KB logits
+    /// transfer + host argmax per draft token from the K-token draft chain.
+    fn mtp_head_forward_dev(&self, e: &Engine, mtp: &MtpHead, e_tok: u32, h_seed: &CudaSlice<f32>,
+                            scratch: &mut MtpScratch, mtp_pos: usize)
+                            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -115,11 +118,10 @@ impl HybridModel {
         let mut final_h = e.zeros(n_embd)?;
         e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
 
-        // op 12: draft_logits = (shared_head_head OR output) @ final
+        // op 12: draft_logits = (shared_head_head OR output) @ final — stays ON DEVICE.
         let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
         let logits = e.matmul(head, &final_h, 1)?;
-        let host = e.dtoh(&logits)?;
-        Ok((host, h_nextn))
+        Ok((logits, h_nextn))
     }
 
     /// MTP-block full attention, T=1, on the scratch KV (mirror of full_attn_decode but on a
@@ -461,8 +463,12 @@ impl HybridModel {
             let mut e_tok = last_token;
             let mut d_seed = e.clone_dtod(&h_seed)?;
             for j in 0..k {
-                let (dl, h_nextn) = self.mtp_head_forward(e, mtp, e_tok, &d_seed, &mut scratch, pos + j)?;
-                let d = argmax(&dl) as u32;
+                // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token read
+                // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
+                // smallest-index tie-break as host argmax (argmax_gate-validated) -> same tokens.
+                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, pos + j)?;
+                let tok_d = e.argmax_token_device(&dl_d, n_vocab)?;
+                let d = e.dtoh_u32_one(&tok_d)?;
                 draft.push(d);
                 e_tok = d;
                 d_seed = h_nextn;
