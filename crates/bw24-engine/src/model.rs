@@ -112,6 +112,25 @@ impl GpuTensor {
         }
     }
 
+    /// Build a Quant tensor directly from raw ggml block bytes (FR-Spec self-trim: byte-level row
+    /// gather from an already-loaded weight — rows in every ggml quant are independent, so a
+    /// contiguous per-row byte copy is a lossless "trim"). `ne0` = in_features, `ne1` = rows.
+    pub fn from_quant_bytes(e: &Engine, bytes: &[u8], ty: GgmlType, ne0: u64, ne1: u64, scale: f32)
+                            -> Result<Self, Box<dyn std::error::Error>> {
+        let qt = match ty {
+            GgmlType::Q8_0 => QT_Q8_0, GgmlType::Q4_K => QT_Q4_K, GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q5_K => QT_Q5_K, GgmlType::Q3_K => QT_Q3_K, GgmlType::IQ4_XS => QT_IQ4_XS,
+            GgmlType::IQ3_S => QT_IQ3_S, GgmlType::NVFP4 => QT_NVFP4,
+            other => panic!("from_quant_bytes: unsupported dtype {other:?}"),
+        };
+        let row_bytes = bytes.len() / ne1 as usize;
+        Ok(GpuTensor::Quant {
+            bytes: e.htod_bytes(bytes)?, qtype: qt, row_bytes, ne: vec![ne0, ne1], scale,
+            #[cfg(bw24_cutlass)]
+            cutlass: None,
+        })
+    }
+
     pub fn load_opt(e: &Engine, g: &GgufFile, name: &str) -> Result<Option<Self>, Box<dyn std::error::Error>> {
         Self::load_opt_from_source(e, &GgufSource(g), name)
     }

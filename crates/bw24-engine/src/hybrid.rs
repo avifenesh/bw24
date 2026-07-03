@@ -338,6 +338,51 @@ impl HybridModel {
             _ => mtp,
         };
 
+        // BW24_FRSPEC_TRIM=<frspec.gguf>: SELF-TRIMMED draft head. Reads ONLY the d2t ranked-token
+        // list from the given file and gathers those rows from the MAIN model's own output.weight
+        // bytes (quantized rows are independent — a byte-level row gather, zero requant). The MTP
+        // block, norms, and head quant all stay main-model, so there is no cross-file quality
+        // mismatch (the external Q4_K draft file measured -15pts acceptance vs the native block).
+        // Draft lm_head reads drop vocab/32768-fold; verify stays full-vocab -> exactness unchanged.
+        let mtp = match (std::env::var("BW24_FRSPEC_TRIM"), mtp) {
+            (Ok(path), Some(mut head)) if !path.is_empty() => {
+                let tg = GgufFile::open(&path)?;
+                let d2t_t = tg.find("d2t").expect("BW24_FRSPEC_TRIM file has no d2t tensor");
+                let d2t_bytes = tg.tensor_data(d2t_t);
+                let d2t: Vec<u32> = match d2t_t.ggml_type {
+                    GgmlType::I32 => d2t_bytes.chunks_exact(4)
+                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as u32).collect(),
+                    GgmlType::I64 => d2t_bytes.chunks_exact(8)
+                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as u32).collect(),
+                    other => panic!("d2t must be I32/I64, got {other:?}"),
+                };
+                let v = src.find("output.weight")
+                    .or_else(|| src.find("token_embd.weight"))
+                    .expect("model has no output.weight for FR-Spec trim");
+                let out_f = v.ne[1] as usize;
+                let row_bytes = v.bytes.len() / out_f;
+                assert!(d2t.iter().all(|&t| (t as usize) < out_f),
+                        "d2t token id >= lm_head rows {out_f}");
+                let mut gathered = Vec::with_capacity(d2t.len() * row_bytes);
+                for &t in &d2t {
+                    let off = t as usize * row_bytes;
+                    gathered.extend_from_slice(&v.bytes[off..off + row_bytes]);
+                }
+                let trimmed = GpuTensor::from_quant_bytes(
+                    e, &gathered, v.ggml_type, v.ne[0], d2t.len() as u64,
+                    /*nvfp4 macro-scale*/ match src.find("output.scale") {
+                        Some(sv) => f32::from_le_bytes(sv.bytes[..4].try_into().unwrap()),
+                        None => 1.0,
+                    })?;
+                eprintln!("[frspec-trim] self-trimmed head: {} rows of main output.weight ({:?})",
+                          d2t.len(), v.ggml_type);
+                head.shared_head_head = Some(trimmed);
+                head.d2t = Some(d2t);
+                Some(head)
+            }
+            (_, m) => m,
+        };
+
         if let Some(ctx) = spill.as_ref() {
             eprintln!("[spill] experts placed: {} pinned (Tier 1), {} mmap'd from disk (Tier 2, {} MiB)",
                       ctx.n_pinned, ctx.n_mmap, ctx.mmap_bytes >> 20);
