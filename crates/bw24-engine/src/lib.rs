@@ -1492,7 +1492,8 @@ impl Engine {
         const ROWS_PER_BLOCK: u32 = 4;
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
-            Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("pfr2") => "pfr2",
+            Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
+            Ok("pfr2") => "pfr2",
             _ => "auto",
         });
         static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
@@ -1505,15 +1506,30 @@ impl Engine {
         let variant: &str = if qtype != QT_NVFP4 {
             "base"
         } else if bv != "auto" {
-            bv
+            // r2w8 only exists for b4 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
+            if bv == "r2w8" && mcols == 2 { "r2" } else { bv }
         } else if mcols == 4 {
-            // r2 runs 7 resident blocks/SM (67 regs); grid = ceil(out_f/8).
+            // r2 runs 7 resident blocks/SM (67 regs); its __launch_bounds__(128,8) twin `r2w8`
+            // (64 regs) runs 8. grid = ceil(out_f/8) for both.
             let blocks = (out_f + 7) / 8;
-            let resident = 7 * sms as usize;
-            let waves = blocks as f64 / resident as f64;
-            // <=1-wave branch also needs the grid to actually fill the SMs (>=4 blocks/SM ~ half
-            // of r2's 7-block residency); tiny shapes (out_f<=1024) stay pf (max row-parallelism).
-            if waves >= 2.0 || (waves <= 1.0 && blocks >= 4 * sms as usize) { "r2" } else { "pf" }
+            let r7 = 7 * sms as usize;
+            let r8 = 8 * sms as usize;
+            let waves = blocks as f64 / r7 as f64;
+            let filled = blocks >= 4 * sms as usize;
+            if filled && blocks.div_ceil(r8) < blocks.div_ceil(r7) {
+                // the extra residency drops the INTEGER wave count -> the straggler wave a
+                // latency-bound kernel pays in full disappears (ffn_down 1.11 -> 0.98 waves:
+                // 112.5 -> 81.6us, beats pf 90.1; qkv 2.23 -> 1.95: 58.1 -> 51.1).
+                "r2w8"
+            } else if waves >= 2.0 || (waves <= 1.0 && filled) {
+                // tail amortized (>=2 waves) or single wave: unbounded r2 (no reg-squeeze tax —
+                // gate/up 81.1 vs 83.9 bounded, attn_q 61.0 vs 63.4).
+                "r2"
+            } else {
+                // fractional straggler-wave window with no crossing, or grid too small to fill
+                // the SMs (tiny out_f<=1024 shapes want max row-parallelism): prefetch variant.
+                "pf"
+            }
         } else if in_f >= 6144 { "r2" } else { "base" };
         let (name, rows_per_warp): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), 1),

@@ -1290,6 +1290,19 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_r2(
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// 8-RESIDENT-BLOCK twin of b4_r2: __launch_bounds__(128, 8) squeezes 67 -> 64 regs (STACK:8, no
+// LOCAL spill) so 8 blocks fit per SM instead of 7. Same template, bit-identical per (token,row).
+// Only wins when the extra residency DROPS the integer wave count of the halved grid — measured
+// DRAM-cold m=4: ffn_down 640 blocks 1.11 -> 0.98 waves = 112.5 -> 81.6us (beats pf 90.1);
+// ssm_out 44.9 -> 34.1; qkv 1280 blocks 2.23 -> 1.95 waves = 58.1 -> 51.1. When ceil(waves) does
+// NOT drop, the reg squeeze is a pure ~3-4% per-block tax (gate/up 81.1 -> 83.9, attn_q 12288
+// 61.0 -> 63.4) — the dispatcher compares ceil(waves) at both residencies and picks.
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b4_r2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ---- NVFP4 batched matvec, PREFETCH x TWO-ROWS combined (4 weight wavefronts in flight/warp:
 // 2 rows x double-buffer). Highest register pressure of the family; measured, not assumed.
