@@ -24,6 +24,37 @@ __device__ __forceinline__ float warp_sum_down(float v) {
     return v;
 }
 
+// ---- FUSED prefill conv: token-major input, zero left-state, conv+SiLU in ONE kernel. ----
+// Replaces the transpose -> zeros -> conv_left_pad -> ssm_conv1d chain (was 4 launches + 2
+// scratch buffers + a full channel-major round-trip, ~4.5ms of pp512). Reads the matmul output
+// qkv_mixed DIRECTLY in its native [T, conv_dim] token-major layout; the causal window for time
+// t is rows t-pad..t (rows < 0 are the zero prefill state). Output stays channel-major [conv_dim,
+// T] (what qkv_to_gdn_repack consumes). BIT-IDENTICAL to the old chain: same 8-tap register
+// accumulation order as ssm_conv1d_silu_f32 (j ascending), same silu, same values — only the
+// addressing changed. Token-major reads are coalesced over c (adjacent threads read adjacent
+// channels of the same row). Launch: grid=(ceil(conv_dim/256), T), block=256.
+extern "C" __global__ void ssm_conv1d_tm_f32(
+        const float* __restrict__ qkv_tm,   // [T, conv_dim] token-major (matmul output as-is)
+        const float* __restrict__ w,        // [conv_dim, d_conv] kernel-major
+        float* __restrict__ y,              // [conv_dim, T] channel-major, SiLU applied
+        int conv_dim, int T, int d_conv) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;                       // input time for tap j (zero state if <0)
+            float xv = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c] : 0.0f;
+            acc += xv * wc[j];
+        }
+    }
+    y[(size_t)c * T + t] = silu(acc);
+}
+
 // ---- Depthwise causal conv1d + optional SiLU. Single sequence. ----
 // x: [conv_dim, T] but stored as [T, conv_dim] token-major? No — ggml ssm_conv input is
 // [d_conv-1+T, conv_dim] (time-major per channel). We take a simpler contract for the engine:

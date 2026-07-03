@@ -185,16 +185,12 @@ impl HybridModel {
         let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
         let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
 
-        // conv: need channel-major [conv_dim, T+pad]. transpose qkv_mixed -> [conv_dim, T],
-        // then prepend (d_conv-1) zero cols of state (prefill from zero state).
-        let qkv_cm = e.transpose(&qkv_mixed, t, conv_dim)?;   // [conv_dim, T]
-        let pad = d_conv - 1;
-        let tp = t + pad;
-        // build padded channel-major buffer ON-DEVICE (zero state prepended). No dtoh/host-loop/htod.
-        let mut conv_in = e.zeros(conv_dim * tp)?;
-        e.conv_left_pad(&qkv_cm, &mut conv_in, conv_dim, t, pad)?;
-        let mut conv_out = e.zeros(conv_dim * t)?;  // [conv_dim, T] channel-major, SiLU applied
-        e.ssm_conv1d(&conv_in, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv, true)?;
+        // conv, FUSED (2026-07-03): ssm_conv1d_tm reads qkv_mixed [T, conv_dim] token-major
+        // DIRECTLY (causal window = rows t-pad..t, rows<0 = the zero prefill state) and emits the
+        // channel-major SiLU'd output in ONE launch. Replaces transpose + zeros + conv_left_pad +
+        // ssm_conv1d (4 launches, 2 scratch buffers, ~4.5ms of pp512). BIT-IDENTICAL accumulation.
+        let mut conv_out = e.uninit(conv_dim * t)?;  // [conv_dim, T] channel-major, SiLU applied
+        e.ssm_conv1d_tm(&qkv_mixed, la.ssm_conv1d.float_data(), &mut conv_out, conv_dim, t, d_conv)?;
 
         // split conv_out channels into q/k/v and repack to GDN [d_state, num_v, T] ON-DEVICE.
         // conv_out channel c, time tt at c*t + tt. q channels [0,key_dim), k [key_dim,2key_dim),

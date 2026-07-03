@@ -1731,6 +1731,24 @@ impl Engine {
     /// Depthwise causal conv1d + optional SiLU.
     /// x:[conv_dim, T+d_conv-1] channel-major (first d_conv-1 cols = carried state),
     /// w:[d_conv, conv_dim] kernel-major, y:[conv_dim, T] channel-major.
+    /// FUSED prefill conv (token-major input, zero left-state): replaces
+    /// transpose + zeros + conv_left_pad + ssm_conv1d with ONE launch reading the matmul output
+    /// directly. Output channel-major [conv_dim, T], SiLU applied. BIT-IDENTICAL accumulation.
+    pub fn ssm_conv1d_tm(&self, qkv_tm: &CudaSlice<f32>, w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
+                         conv_dim: usize, t: usize, d_conv: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_tm_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (((conv_dim + 255) / 256) as u32, t as u32, 1),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_tm).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn ssm_conv1d(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
                       conv_dim: usize, t: usize, d_conv: usize, silu: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
