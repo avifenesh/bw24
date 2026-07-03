@@ -149,6 +149,22 @@ extern "C" __global__ void ssm_conv_ring_update_f32(
     int tt = T - pad + j;                     // >= 0 by the host T>=pad guarantee
     conv_state[(size_t)c * pad + j] = qkv_tm[(size_t)tt * conv_dim + c];
 }
+// PREFIX ring rebuild (spec REPLAY-FREE partial accept): the ring a T=1 chain would hold after
+// processing only the FIRST Tc input columns = the last `pad` entries of [ring_old | cols 0..Tc-1].
+// PURE COPIES (the ring stores raw input columns — no arithmetic, so this cannot perturb any FP
+// order). ring_old = the pre-round snapshot ring; sources fall back to it when Tc < pad.
+extern "C" __global__ void ssm_conv_ring_rebuild_f32(
+        const float* __restrict__ qkv_tm, const float* __restrict__ ring_old,
+        float* __restrict__ conv_state, int conv_dim, int Tc, int d_conv) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pad = d_conv - 1;
+    if (idx >= conv_dim * pad) return;
+    int c = idx / pad;
+    int j = idx % pad;
+    int tt = Tc - pad + j;                    // may be negative when Tc < pad
+    conv_state[(size_t)c * pad + j] = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c]
+                                               : ring_old[(size_t)c * pad + (pad + tt)];
+}
 
 // ---- FUSED decode GDN prep: repack + q/k L2-norm + beta sigmoid + g_log in ONE kernel (T=1). ----
 // Replaces qkv_to_gdn_repack + 2x l2_norm + sigmoid + gdn_glog (5 launches, ~8.6us/layer of

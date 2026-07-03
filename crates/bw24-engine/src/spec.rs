@@ -65,6 +65,37 @@ impl MtpScratch {
     }
 }
 
+/// Retained verify intermediates for the REPLAY-FREE partial accept (2026-07-03, the profiled
+/// #1 spec cost at long ctx: the partial-accept replay was a DUPLICATE trunk pass — ~0.54 extra
+/// full weight reads per round — recomputing columns the verify had already produced
+/// bit-identically). Holds, per linear layer, everything needed to rebuild its recurrent state
+/// to "after the first j verify columns" WITHOUT re-running the trunk:
+/// - BATCHED-path layers (`gdn`): the exact token-major inputs the round's ONE gdn_scan
+///   consumed. A prefix re-run of the SAME kernel (t=j) from the snapshot state is bit-identical
+///   to the first j iterations of the verify's scan — the kernel's t-loop carries state in
+///   registers and iteration t never depends on T. `qkv_mixed` (the conv input) feeds the
+///   pure-copy ring rebuild.
+/// - PER-COLUMN-path layers (`cols`): dtod clones of (conv_state, ssm_state) taken after each
+///   column 0..t-2 — pure copies of the actual chain states (the last column is never a rebuild
+///   target: j <= t-1).
+/// Full-attn layers need nothing: their verify KV rows are bit-identical to eager's (the
+/// decode-exact contract; verify-probe pins it), so rollback = len truncation.
+struct GdnStash {
+    qkv_mixed: CudaSlice<f32>,                     // [t, conv_dim] token-major (conv input)
+    q_l2: CudaSlice<f32>, k_l2: CudaSlice<f32>, v_g: CudaSlice<f32>,  // [t, num_v, d_state]
+    g_log: CudaSlice<f32>, beta: CudaSlice<f32>,   // [t, num_v]
+}
+struct VerifyCkpt {
+    gdn: Vec<Option<GdnStash>>,                    // [n_layer], Some iff batched linear path ran
+    cols: Vec<Option<Vec<(CudaSlice<f32>, CudaSlice<f32>)>>>, // [n_layer][col] = (conv, ssm) after col
+}
+impl VerifyCkpt {
+    fn new(n_layer: usize) -> Self {
+        VerifyCkpt { gdn: (0..n_layer).map(|_| None).collect(),
+                     cols: (0..n_layer).map(|_| None).collect() }
+    }
+}
+
 impl HybridModel {
     /// NextN head forward for ONE draft token (§A ops 1-13, T=1).
     /// Inputs: `e_tok` = the token to predict FROM (last committed / previous draft); `h_seed` =
@@ -303,11 +334,15 @@ impl HybridModel {
     /// The p-min confidence lands in the persistent `p_d` iff `with_prob` (env is fixed per run).
     /// Same kernels, same dispatch as the eager mtp_head_forward_dev chain -> same draft tokens
     /// (exactness never depends on drafts — the verify arbitrates — but acceptance parity does).
+    /// `with_head=false` captures the HEAD-LESS twin for the pseudo-seed replay (2026-07-03):
+    /// the pseudo pass only needs h_nextn (op 10) + the scratch append — the lm_head read
+    /// (~1.06ms q6_K on the 9B), argmax and prob are dead weight there. h_nextn's inputs are
+    /// untouched, so the seed value is identical; round-start resets overwrite tok_d/p_d anyway.
     #[allow(clippy::too_many_arguments)]
     fn mtp_head_forward_cap(&self, e: &Engine, mtp: &MtpHead,
                             tok_d: &mut CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
                             h_seed_d: &mut CudaSlice<f32>, p_d: &mut CudaSlice<f32>,
-                            scratch: &mut MtpScratch, with_prob: bool,
+                            scratch: &mut MtpScratch, with_prob: bool, with_head: bool,
                             embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize)
                             -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -349,14 +384,16 @@ impl HybridModel {
         };
         let mut h_nextn = e.zeros(n_embd)?;
         e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
-        let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
-        let mut final_h = e.zeros(n_embd)?;
-        e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
-        let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
-        let logits = e.matmul(head, &final_h, 1)?;
-        // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
-        e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
-        if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+        if with_head {
+            let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
+            let mut final_h = e.zeros(n_embd)?;
+            e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
+            let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
+            let logits = e.matmul(head, &final_h, 1)?;
+            // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
+            e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
+            if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+        }
         // h_nextn becomes the next draft step's h_seed — copy into the persistent seed buffer.
         e.copy_into(h_seed_d, 0, &h_nextn, n_embd)?;
         // advance the draft rope position in-graph.
@@ -398,6 +435,24 @@ impl HybridModel {
     /// UNCHANGED (same decode-exact kernels); only the post-logits transfer moves.
     pub fn decode_step_t_h_emb_dev(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
                                embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
+                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let (logits, x) = self.decode_step_t_core(e, tokens, pos0, cache, embd_dev, None)?;
+        // h_seed for the next round = LAST column's pre-output_norm hidden ([n_embd]).
+        let mut hs = e.zeros(n_embd)?;
+        e.copy_view_into(&mut hs, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        Ok((logits, hs))
+    }
+
+    /// CORE verify forward: the `decode_step_t_h_emb_dev` kernel chain, returning the FULL
+    /// pre-output_norm hidden stack x ([T, n_embd], any column extractable) and optionally
+    /// filling a `VerifyCkpt` (retained per-layer state-rebuild inputs) for the REPLAY-FREE
+    /// partial accept. `ckpt: None` => byte-for-byte the old behavior (the ckpt writes are pure
+    /// retains/copies — they never change what any kernel computes).
+    fn decode_step_t_core(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                          embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+                          mut ckpt: Option<&mut VerifyCkpt>)
                          -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -442,15 +497,35 @@ impl HybridModel {
                     // tensor to cuBLAS at m=t (different FP accumulation than eager's per-token
                     // GEMV), so mixed-dtype layers stay on the eager-identical per-column chain.
                     if t >= 3 && mixer_fast && e.uses_q8_1_fast(&la.ssm_out) {
-                        self.linear_attn_verify_t(e, la, &h, t, cache, il)?
+                        let want = ckpt.is_some();
+                        let (out, stash) = self.linear_attn_verify_t(e, la, &h, t, cache, il, want)?;
+                        if let (Some(ck), Some(st)) = (ckpt.as_deref_mut(), stash) {
+                            ck.gdn[il] = Some(st);
+                        }
+                        out
                     } else {
                         let mut out = e.zeros(t * n_embd)?;
+                        let mut col_states: Option<Vec<(CudaSlice<f32>, CudaSlice<f32>)>> =
+                            if ckpt.is_some() && t >= 2 { Some(Vec::with_capacity(t - 1)) } else { None };
                         for col in 0..t {
                             let mut h_col = e.zeros(n_embd)?;
                             let src = h.slice(col * n_embd..(col + 1) * n_embd);
                             e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
                             let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
                             e.copy_into(&mut out, col * n_embd, &m_col, n_embd)?;
+                            // REPLAY-FREE ckpt: clone the chain's ACTUAL state after this column
+                            // (pure dtod — cannot change any computed value). Last column skipped:
+                            // rebuild targets are j <= t-1 columns.
+                            if let Some(cs) = col_states.as_mut() {
+                                if col + 1 < t {
+                                    let rl = cache.recur[il].as_ref().unwrap();
+                                    cs.push((e.clone_dtod(&rl.conv_state)?,
+                                             e.clone_dtod(&rl.ssm_state)?));
+                                }
+                            }
+                        }
+                        if let (Some(ck), Some(cs)) = (ckpt.as_deref_mut(), col_states) {
+                            ck.cols[il] = Some(cs);
                         }
                         out
                     }
@@ -494,18 +569,11 @@ impl HybridModel {
             x = x2;
         }
 
-        // h_seed for the next round = LAST column's pre-output_norm hidden ([n_embd]).
-        let h_seed = {
-            let mut hs = e.zeros(n_embd)?;
-            let src = x.slice((t - 1) * n_embd..t * n_embd);
-            e.copy_view_into(&mut hs, 0, &src, n_embd)?;
-            hs
-        };
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         cache.pos += t;
-        Ok((logits, h_seed))
+        Ok((logits, x))
     }
 
     /// BATCHED linear-attn verify (T=K+1): the whole layer in ~10 launches instead of T x the
@@ -514,9 +582,11 @@ impl HybridModel {
     /// the SAME per-token math as chained T=1 calls (bit-identical state evolution); everything
     /// around it (projections, conv, prep, gated norm, out-proj) batches. Advances conv ring +
     /// ssm state exactly like T sequential decode steps.
+    /// `want_stash`: additionally RETAIN the gdn-scan inputs (pure buffer keep-alives, zero extra
+    /// kernels) so a partial accept can rebuild the state after any column prefix (REPLAY-FREE).
     fn linear_attn_verify_t(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
-                            cache: &mut Cache, il: usize)
-                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+                            cache: &mut Cache, il: usize, want_stash: bool)
+                            -> Result<(CudaSlice<f32>, Option<GdnStash>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;
@@ -571,7 +641,61 @@ impl HybridModel {
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
         // DECODE-EXACT out-projection: same MMVQ path as the T=1 decode (ssm_out at m>=5 would
         // fall to dp4a with a different FP reduction order — same class of bug as the input projs).
-        Ok(e.matmul_decode_exact(&la.ssm_out, &gn, t)?)
+        let out = e.matmul_decode_exact(&la.ssm_out, &gn, t)?;
+        let stash = if want_stash {
+            Some(GdnStash { qkv_mixed, q_l2, k_l2, v_g, g_log, beta })
+        } else { None };
+        Ok((out, stash))
+    }
+
+    /// REPLAY-FREE partial-accept commit (2026-07-03): make the cache state == "committed through
+    /// the first `j` verify columns" WITHOUT the legacy rollback + duplicate trunk replay.
+    /// - Full-attn KV: truncate len to snapshot + j. The verify's appended rows for those columns
+    ///   are bit-identical to what an eager T=1 chain writes (the decode-exact contract the
+    ///   verify-probe gates), so keeping them == replaying them.
+    /// - Linear layers, batched path: rebuild the conv ring by PURE COPIES (ring holds raw input
+    ///   columns) and the ssm state by a prefix re-run of the SAME gdn_scan kernel (t=j) from the
+    ///   snapshot state over the stash's identical inputs — the kernel's t-loop carries state in
+    ///   registers and writes it once at the end, so iterations 0..j-1 are independent of T:
+    ///   bit-identical to the verify's own state after j tokens == the eager chain state.
+    /// - Linear layers, per-column path: restore the cloned actual state after column j-1.
+    /// Caller guarantees 1 <= j <= t-1 (j==0 rounds take the legacy rollback; j==t is full accept).
+    fn commit_verified_prefix(&self, e: &Engine, cache: &mut Cache,
+                              snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt, j: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let d_conv = ssm.conv_kernel as usize;
+        let conv_dim = d_state * num_k * 2 + d_state * num_v;
+        let scale = 1.0 / (d_state as f32).sqrt();
+        for il in 0..self.layers.len() {
+            if let (Some(kvl), Some(saved)) = (cache.kv[il].as_mut(), snap.kv_len[il]) {
+                kvl.len = saved + j;
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            if let Some(rl) = cache.recur[il].as_mut() {
+                if let Some(st) = &ckpt.gdn[il] {
+                    let ring_old = snap.conv[il].as_ref().expect("snapshot missing conv");
+                    e.ssm_conv_ring_rebuild(&st.qkv_mixed, ring_old, &mut rl.conv_state,
+                                            conv_dim, j, d_conv)?;
+                    let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
+                    let mut o = e.uninit(d_state * num_v * j)?;   // scan output, discarded
+                    e.gdn_scan_s128(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
+                                    state_in, &mut rl.ssm_state, &mut o, num_v, j, scale)?;
+                } else if let Some(cols) = &ckpt.cols[il] {
+                    let (c, s) = &cols[j - 1];
+                    e.copy_into(&mut rl.conv_state, 0, c, c.len())?;
+                    e.copy_into(&mut rl.ssm_state, 0, s, s.len())?;
+                } else {
+                    return Err("commit_verified_prefix: verify ckpt missing for linear layer".into());
+                }
+            }
+        }
+        cache.pos = snap.pos + j;
+        Ok(())
     }
 
     /// EAGLE3 aux-capturing verify forward over `tokens` (T) — mirrors `decode_step_t_h` exactly
@@ -808,6 +932,16 @@ impl HybridModel {
         // chain attends over full history. BW24_SPEC_KVLOCAL=1 = legacy round-local scratch (A/B
         // + fallback seam; acceptance-only — exactness is verify's job either way).
         let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
+        // REPLAY-FREE PARTIAL ACCEPT (default, 2026-07-03): partial rounds keep the verify's own
+        // bit-identical committed-prefix state (KV truncate + recur rebuild from the VerifyCkpt)
+        // and leave the bonus PENDING — no duplicate trunk pass (profiled ~0.54 extra full weight
+        // reads/round at long ctx). BW24_SPEC_REPLAY=1 restores the legacy rollback+replay (A/B
+        // + fallback seam).
+        let spec_replay = std::env::var("BW24_SPEC_REPLAY").is_ok();
+        // TRUE-HIDDEN REFRESH (default in persistent-draft-KV mode): every round overwrites the
+        // committed positions' scratch entries from the verify's exact hiddens (mtp_kv_fill batch)
+        // instead of keeping chain-approximate entries. BW24_SPEC_NOREFRESH=1 = legacy (A/B seam).
+        let refresh = !kv_local && std::env::var("BW24_SPEC_NOREFRESH").is_err();
 
         // prime: BATCHED cache prime (prime_cache — the measured #1 e2e gap: tokenwise primed at
         // ~102/38 tok/s vs the engine's ~2000-5900 tok/s batched prefill). prime_cache returns the
@@ -888,17 +1022,36 @@ impl HybridModel {
         let mut g_seed = e.zeros(n_embd)?;
         let mut g_p = e.zeros(1)?;
         let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
+        let mut seed_graph: Option<cudarc::driver::CudaGraph> = None;
         if graph_draft {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                          &mut scratch, p_min > 0.0, embd_gpu, embd_qt, embd_rb,
-                                          d_vocab)
+                                          &mut scratch, p_min > 0.0, true, embd_gpu, embd_qt,
+                                          embd_rb, d_vocab)
             });
             match cap_res {
                 Ok(g) => { scratch.set_len(e, 0)?; draft_graph = Some(g); }
                 Err(err) => {
                     scratch.set_len(e, 0)?;
                     if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
+                }
+            }
+            // HEAD-LESS pseudo-seed twin (2026-07-03): the once-per-round pseudo replay only needs
+            // h_nextn + the scratch append — capturing it without lm_head/argmax/prob saves the
+            // draft head's full weight read per round (~1.06ms q6_K on the 9B). Same kernels up to
+            // op 10 -> identical seed value; capture-failure falls back to the full graph.
+            if draft_graph.is_some() {
+                let cap_res = e.capture_graph(|e| {
+                    self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
+                                              &mut scratch, false, false, embd_gpu, embd_qt,
+                                              embd_rb, d_vocab)
+                });
+                match cap_res {
+                    Ok(g) => { scratch.set_len(e, 0)?; seed_graph = Some(g); }
+                    Err(err) => {
+                        scratch.set_len(e, 0)?;
+                        if debug_spec { eprintln!("[spec] seed-graph capture failed ({err}); full-graph pseudo"); }
+                    }
                 }
             }
         }
@@ -992,8 +1145,12 @@ impl HybridModel {
                 None => draft.clone(),
             };
             let base = if pending.is_some() { 1 } else { 0 };
-            let (tlogits_d, vh_seed) = self.decode_step_t_h_emb_dev(e, &verify_tokens, pos, &mut cache,
-                                                              Some((embd_gpu, embd_qt, embd_rb)))?;
+            // ckpt (REPLAY-FREE partial accept): retain per-layer state-rebuild inputs alongside
+            // the verify. Pure buffer keep-alives + dtod clones — kernel work is unchanged.
+            let mut ckpt = if spec_replay { None } else { Some(VerifyCkpt::new(self.layers.len())) };
+            let (tlogits_d, vx) = self.decode_step_t_core(e, &verify_tokens, pos, &mut cache,
+                                                          Some((embd_gpu, embd_qt, embd_rb)),
+                                                          ckpt.as_mut())?;
 
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
             // DEVICE-ARGMAX ACCEPT: argmax every verify column ON DEVICE (same 2-pass kernels +
@@ -1047,7 +1204,19 @@ impl HybridModel {
                 // trunk hidden (the last verify column). set_len first: a p-min break may have
                 // left one extra chain append at that slot. Partial accepts need NO fill (the
                 // chain already covered every accepted position; round-start set_len truncates).
-                if !kv_local {
+                let mut vh_seed = e.zeros(n_embd)?;
+                e.copy_view_into(&mut vh_seed, 0, &vx.slice((t_v - 1) * n_embd..t_v * n_embd), n_embd)?;
+                if refresh {
+                    // TRUE-HIDDEN REFRESH (2026-07-03, the HANDOVER-listed acceptance lever):
+                    // overwrite ALL committed positions' scratch entries with K/V from their EXACT
+                    // verify hiddens — the reference engine's mtp_update fills from true hiddens;
+                    // the full stack (vx) is already resident from the verify. Replaces both the
+                    // chain-approximate entries AND the old last-token-only fill. Acceptance-only
+                    // (draft attention quality); exactness stays the verify's job.
+                    scratch.set_len(e, pos)?;
+                    self.mtp_kv_fill(e, mtp, &verify_tokens, &vx, pos, &mut scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                } else if !kv_local {
                     scratch.set_len(e, pos + base + k_round - 1)?;
                     self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &vh_seed,
                                      pos + base + k_round - 1, &mut scratch,
@@ -1056,7 +1225,7 @@ impl HybridModel {
                 // Pseudo-seed pass rope: persistent keeps the chain convention rope(token@p)=p+1
                 // (bonus sits at position pos+base+k_round); legacy keeps its historical value.
                 let pseudo_pos = pos + base + k_round + if kv_local { 0 } else { 1 };
-                if let Some(gr) = &draft_graph {
+                if let Some(gr) = seed_graph.as_ref().or(draft_graph.as_ref()) {
                     // pseudo-hidden seed via ONE graph replay (same MTP forward, inputs re-set).
                     // vh_seed is copied into the baked seed buffer BEFORE the replay, so its own
                     // (pool-transient) storage is dead by the time the graph writes scratch.
@@ -1075,19 +1244,57 @@ impl HybridModel {
                 }
                 pending = Some(bonus);
                 if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending)"); }
+            } else if !spec_replay && base + n_acc >= 1 {
+                // PARTIAL ACCEPT, REPLAY-FREE (2026-07-03 — the profiled #1 long-ctx spec cost):
+                // the verify's first j = base+n_acc columns ARE the committed sequence, computed
+                // bit-identically to eager (decode-exact contract) — so KEEP them: KV truncates to
+                // pos+j, recurrent state rebuilds from the VerifyCkpt (same-kernel gdn prefix
+                // re-run / pure state-clone restore), and the bonus stays PENDING exactly like the
+                // full-accept path — the legacy duplicate trunk replay is gone. The next chain
+                // seeds from the MTP pseudo-hidden of the bonus, whose seed = the TRUE verify
+                // hidden of its predecessor (col j-1) — same one-hop pseudo structure as full
+                // accept (never compounds: the next verify recomputes true hiddens for all
+                // committed columns).
+                let j = base + n_acc;
+                self.commit_verified_prefix(e, &mut cache, &snap, ckpt.as_ref().unwrap(), j)?;
+                let mut seed = e.zeros(n_embd)?;
+                e.copy_view_into(&mut seed, 0, &vx.slice((j - 1) * n_embd..j * n_embd), n_embd)?;
+                // Draft scratch: TRUE-HIDDEN REFRESH of the committed prefix (see the full-accept
+                // branch); without it the chain entries stand and only the tail truncates. Either
+                // way len ends at pos+j so the pseudo append lands at the bonus's slot pos+j
+                // (persistent mode), rope pos+j+1 (chain convention).
+                if refresh {
+                    scratch.set_len(e, pos)?;
+                    self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vx, pos, &mut scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                } else if !kv_local {
+                    scratch.set_len(e, pos + j)?;
+                }
+                let pseudo_pos = pos + j + if kv_local { 0 } else { 1 };
+                if let Some(gr) = seed_graph.as_ref().or(draft_graph.as_ref()) {
+                    e.set_u32_one(&mut g_tok, bonus)?;
+                    e.copy_into(&mut g_seed, 0, &seed, n_embd)?;
+                    e.set_i32_one(&mut g_pos, pseudo_pos as i32)?;
+                    gr.launch()?;
+                    scratch.kv.len += 1;
+                    e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
+                } else {
+                    let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
+                        e, mtp, bonus, &seed, &mut scratch, pseudo_pos,
+                        embd_gpu, embd_qt, embd_rb)?;
+                    e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
+                }
+                pending = Some(bonus);
+                if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending)"); }
             } else {
-                // PARTIAL ACCEPT: verify appended k draft columns but only n_acc are committed.
-                // Restore EVERYTHING to the pre-round snapshot (KV truncate to pos + recur restore),
-                // then replay the committed prefix draft[0..n_acc] ++ [bonus] as ONE batched
-                // T=(n_acc+1) forward — single weight read, bit-identical to greedy (the verify-all-
-                // columns path is the same math). This is the MTP profitability lever: replaying
-                // n_acc+1 tokens in one decode_step_t_h reads every weight ONCE vs n_acc+1 times in
-                // the old per-token loop (decode is bandwidth-bound at batch=1). KV+recur rebuilt.
-                let _ = n_embd;
+                // PARTIAL ACCEPT, LEGACY REPLAY (seam BW24_SPEC_REPLAY=1 — or j==0: nothing of
+                // this round survives, only possible before the first pending exists, ~round 0):
+                // restore EVERYTHING to the pre-round snapshot (KV truncate to pos + recur
+                // restore), then replay the committed prefix pending? ++ draft[0..n_acc] ++
+                // [bonus] as ONE batched T forward — single weight read, bit-identical to greedy
+                // (the verify-all-columns path is the same math). Commits the bonus with a TRUE
+                // trunk hidden.
                 cache.rollback(e, &snap, 0)?;   // accept_len=0: KV len = pos, recur = snapshot
-                // Replay = pending bonus (if any) ++ accepted drafts ++ new bonus: commits the
-                // pending token with a TRUE trunk hidden, so pseudo-seeding never survives a
-                // rejection round.
                 let mut replay: Vec<u32> = Vec::with_capacity(base + n_acc + 1);
                 if let Some(b) = pending.take() { replay.push(b); }
                 replay.extend_from_slice(&draft[0..n_acc]);
