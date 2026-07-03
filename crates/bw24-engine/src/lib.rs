@@ -53,6 +53,22 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
     })
 }
 
+/// TUNE SEAM: keys per FA-decode split (`BW24_FA_SPLIT` forces a fixed size). Smaller splits raise
+/// grid.y so grid = n_head_kv * n_splits fills the 82 SMs at short/mid ctx (vec path launches only
+/// n_head_kv=8 CTAs per split). Swept clock-locked 2026-07-03 (graph tg128): 32 beats 64 at ctx
+/// 128/512 (+0.5/+1.2%), loses at 2048 (-3%: combine + partial-buffer overhead once ~256 CTAs
+/// already saturate; 16 loses everywhere) -> adaptive: 32 up to 1024 keys, 64 above. Takes t_kv
+/// (or bucket_max) so eager, _dc capture, and fa_geom_eager derive the SAME n_splits (graph
+/// bit-identity contract: all three call this with the same value).
+fn fa_split_keys(t_kv: usize) -> usize {
+    static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    if let Some(forced) = *S.get_or_init(|| {
+        std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
+            .filter(|&s: &usize| s >= 8 && s % 8 == 0)
+    }) { return forced; }
+    if t_kv <= 1024 { 32 } else { 64 }
+}
+
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
 pub const QT_Q4_K: i32 = 1;
@@ -1516,7 +1532,8 @@ impl Engine {
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
         const FA_VEC_MIN_TKV: usize = 96;
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
-        let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
+        let sp = fa_split_keys(t_kv);
+        let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
         let mut part_l = self.zeros(n_head * n_splits)?;
@@ -1576,7 +1593,8 @@ impl Engine {
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
         // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= FA_VEC_MIN_TKV;
-        let n_splits = if fa_vec { ((bucket_max + 63) / 64).max(1) } else { ((bucket_max + 255) / 256).max(1) };
+        let sp = fa_split_keys(bucket_max);
+        let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
         let mut part_l = self.zeros(n_head * n_splits)?;
@@ -1621,7 +1639,8 @@ impl Engine {
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
         let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let n_splits = if fa_vec { ((t_kv + 63) / 64).max(1) } else { ((t_kv + 255) / 256).max(1) };
+        let sp = fa_split_keys(t_kv);
+        let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
     }
 
