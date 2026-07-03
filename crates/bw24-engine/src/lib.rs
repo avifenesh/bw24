@@ -1464,17 +1464,67 @@ impl Engine {
     /// traffic 1x for m tokens (vs grid.y=m re-reading it m times). `mcols` ∈ {2,4} is the compile-time
     /// batch; m must be <= mcols. y is [m, out_f] token-major. NVFP4 per-tensor macro-scale applied post
     /// (scale==1.0 for other dtypes -> no-op). BIT-IDENTICAL per (token,row) to qmatvec_*_mmvq.
+    ///
+    /// NVFP4 VARIANT DISPATCH: the batched NVFP4 kernel measured memory-LATENCY bound on the real
+    /// 27B verify (ncu --set full, 12 steady launches: long_scoreboard 18-30 stalls/issue vs <=1.7
+    /// for every other reason, DRAM only 41-51% active, lg_throttle 0.7, L1 hit 94% — ONE 6-LDG
+    /// weight wavefront in flight per warp is the binding constraint, NOT bandwidth and NOT the
+    /// column-unroll break). Two exactness-free fixes, chosen PER SHAPE from the DRAM-cold 8-copy
+    /// msweep on all six 27B shapes (2026-07-03):
+    ///   `pf` = next-g weight-prefetch double-buffer (48 regs, occupancy intact) — wins everywhere
+    ///          it applies for b4 (-3..-14%), never loses;
+    ///   `r2` = two rows/warp (67 regs -> 7 resident blocks/SM) — the bigger win (-8.5..-30%) but
+    ///          wave-quantization-sensitive: with the grid halved to ceil(out_f/8) blocks, a
+    ///          fractional straggler wave (waves in ~1.05-1.5) costs a full extra latency round on
+    ///          a latency-bound kernel (27B ffn_down 640 blocks / 574 resident = 1.11 waves: +17%),
+    ///          while <=1 wave (9B ffn_down 0.89: -30%) or >=2 waves (tail amortized; qkv 2.2:
+    ///          -8.5%, ffn_gate 3.8: -12.5%) win. For b2, r2 wins on DEEP k-loops (in_f>=6144:
+    ///          -8..-19%) where the 2-col body starves weight MLP hardest; pf measured negative.
+    /// b4: r2 when waves(out_f) <= 1 (and grid fills >=half the SMs) or >= 2, else pf.
+    /// b2: in_f>=6144 -> r2, else base.
+    /// BW24_MMVQ_BV=base|pf|r2|pfr2 forces one variant everywhere (A/B + rollback seam).
+    /// All variants BIT-IDENTICAL per (token,row): same dp4a order, scales, adg factor, reduce —
+    /// only load issue time and the row->warp mapping change (kernel-check gates all of them).
     pub fn qmatvec_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                 m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize,
                                 mcols: usize, scale: f32)
                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
-        let name = Self::batched_kernel_name(qtype, mcols)
+        static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
+            Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("pfr2") => "pfr2",
+            _ => "auto",
+        });
+        static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+        let sms = *SMS.get_or_init(|| {
+            use cudarc::driver::sys::CUdevice_attribute_enum as A;
+            self.gpu.ctx.attribute(A::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT).unwrap_or(82)
+        });
+        let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
-        let f = self.func(name);
+        let variant: &str = if qtype != QT_NVFP4 {
+            "base"
+        } else if bv != "auto" {
+            bv
+        } else if mcols == 4 {
+            // r2 runs 7 resident blocks/SM (67 regs); grid = ceil(out_f/8).
+            let blocks = (out_f + 7) / 8;
+            let resident = 7 * sms as usize;
+            let waves = blocks as f64 / resident as f64;
+            // <=1-wave branch also needs the grid to actually fill the SMs (>=4 blocks/SM ~ half
+            // of r2's 7-block residency); tiny shapes (out_f<=1024) stay pf (max row-parallelism).
+            if waves >= 2.0 || (waves <= 1.0 && blocks >= 4 * sms as usize) { "r2" } else { "pf" }
+        } else if in_f >= 6144 { "r2" } else { "base" };
+        let (name, rows_per_warp): (std::borrow::Cow<'static, str>, u32) = match variant {
+            "base" => (base_name.into(), 1),
+            "pf" => (format!("{base_name}_pf").into(), 1),
+            v => (format!("{base_name}_{v}").into(), 2),
+        };
+        let f = self.func(&name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let rows_per_block = ROWS_PER_BLOCK * rows_per_warp;
         let cfg = LaunchConfig {
-            grid_dim: ((out_f as u32 + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK, 1, 1),
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 1, 1),
             block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
