@@ -1547,15 +1547,12 @@ impl Engine {
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
         let (f, cfg) = if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            // sK + sV bf16 tiles: 2 * FA_DEC_TILE(32) * head_dim * 2 B (32 KB at head_dim=256).
-            // Under the 48 KB default so no opt-in strictly needed, but set it for headroom.
-            let smem = (2 * 32 * head_dim * 2) as u32;
+            // REGISTER-DEQUANT kernel (2026-07-03): no smem KV tile anymore — per-warp direct
+            // q8_0/q5_1 register dequant, zero dynamic shared memory.
             let fv = self.func("fa_decode_vec_q");
-            use cudarc::driver::sys::CUfunction_attribute_enum as A;
-            fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem as i32)?;
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
-                 block_dim: (32, gqa, 1), shared_mem_bytes: smem })
+                 block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else {
             (self.func("fa_decode_f32"),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
@@ -1605,13 +1602,11 @@ impl Engine {
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
         let (f, cfg) = if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let smem = (2 * 32 * head_dim * 2) as u32;
+            // REGISTER-DEQUANT twin: zero dynamic smem (see fa_decode above).
             let fv = self.func("fa_decode_vec_q_dc");
-            use cudarc::driver::sys::CUfunction_attribute_enum as A;
-            fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem as i32)?;
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
-                 block_dim: (32, gqa, 1), shared_mem_bytes: smem })
+                 block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else {
             (self.func("fa_decode_f32_dc"),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),

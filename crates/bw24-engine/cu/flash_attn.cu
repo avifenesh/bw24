@@ -1079,12 +1079,6 @@ extern "C" __global__ void fa_decode_vec_q(
     const int t_lo = split * per;
     const int t_hi = min(T_kv, t_lo + per);
 
-    // ---- shared KV tile, dequanted ONCE per block and broadcast to all gqa warps ----
-    // bf16 tiles (NOT f32): 2*32*256*2 = 32 KB, vs 64 KB f32 — doubles achievable occupancy.
-    extern __shared__ __nv_bfloat16 ssh_vec[];   // sK[FA_DEC_TILE*head_dim] then sV[...]
-    __nv_bfloat16* sK = ssh_vec;                 // [FA_DEC_TILE][head_dim]
-    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim; // [FA_DEC_TILE][head_dim]
-
     // stage this warp's Q row (one Q head, head_dim) into registers, PRE-SCALED by `scale`.
     // lane owns dims { lane, lane+32, ..., lane+32*(dpl-1) }.
     float q_reg[FA_DEC_MAX_DPL];
@@ -1102,44 +1096,55 @@ extern "C" __global__ void fa_decode_vec_q(
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
 
-    // cooperative dequant uses ALL block threads (32*gqa). Flat thread id over the block.
-    const int bt   = wy * WARP_SZ + lane;        // 0 .. 32*gqa-1
-    const int bsz  = WARP_SZ * gqa;
-
-    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
-        const int nt = min(FA_DEC_TILE, t_hi - t0);    // valid keys this tile
-
-        // ---- dequant K & V tile ONCE into smem (the GQA broadcast). All block threads
-        //      stride over the nt*head_dim elements; eidx = kv_head*head_dim + d. ----
-        for (int idx = bt; idx < nt * head_dim; idx += bsz) {
-            int j = idx / head_dim;              // key within tile
-            int d = idx - j * head_dim;          // head_dim element
-            int eidx = kv_head * head_dim + d;
-            sK[idx] = __float2bfloat16(dq_q8_0_elem(K, (long)(t0 + j), k_tok_bytes, eidx));
-            sV[idx] = __float2bfloat16(dq_q5_1_elem(V, (long)(t0 + j), v_tok_bytes, eidx));
-        }
-        __syncthreads();
-
-        // ---- per-warp: for each key in the tile, dot(q, K_j) -> online softmax -> acc += p*V_j ----
-        for (int j = 0; j < nt; ++j) {
-            const __nv_bfloat16* kj = sK + (size_t)j * head_dim;
+    // REGISTER-DEQUANT REWRITE (2026-07-03, the fattn-vec structural port): no smem staging, no
+    // block syncs, no bf16 round-trip. Each warp walks its split's keys directly; lane owns dims
+    // {lane, lane+32, ...} — its K element of dim-block i is byte `lane` of q8_0 block
+    // (kv_head*hd/32 + i), so the 32 lanes read 32 CONSECUTIVE bytes per block = coalesced. The
+    // 4 GQA warps re-read the same KV bytes; L2 serves the reuse (KV @2048 ctx = 2.2MB << 64MB L2)
+    // — the old cross-warp smem broadcast bought nothing and cost 2 __syncthreads per 32-key tile
+    // + a full bf16 smem round-trip (measured 126us vs the reference engine's 10.4us structure).
+    // Same per-lane ascending-i accumulation + same warp butterfly as before; only numeric change
+    // is REMOVING the bf16 rounding of dequanted K/V (more accurate; gate battery is the arbiter).
+    {
+        const int kblk0 = (kv_head * head_dim) >> 5;      // first q8_0/q5_1 block of this kv head
+        for (int t = t_lo; t < t_hi; ++t) {
+            const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * 34;
             float part = 0.0f;
             #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl) part += q_reg[i] * __bfloat162float(kj[lane + (i << 5)]);
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = kt + i * 34;
+                    const float d = __half2float(*(const half*)blk);
+                    const int8_t q = ((const int8_t*)(blk + 2))[lane];
+                    // bf16 round-trip: BIT-IDENTICAL to the old smem-staged path (which stored
+                    // dequanted K as bf16). Pure ALU on a DRAM-bound kernel — keeps every gate
+                    // (incl. run-spec exactness) exactly where the validated kernel had it.
+                    part += q_reg[i] * __bfloat162float(__float2bfloat16(d * (float)q));
+                }
+            }
             float score = warp_reduce_sum(part);     // every lane gets the full QK score (already *scale)
 
             float m_new = fmaxf(m_i, score);
             float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
             float p     = exp2f((score - m_new) * LOG2E);
-            const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+            const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * 24;
             #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl) acc[i] = acc[i] * alpha + p * __bfloat162float(vj[lane + (i << 5)]);
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = vt + i * 24;
+                    const float d = __half2float(*(const half*)blk);
+                    const float m = __half2float(*(const half*)(blk + 2));
+                    const uint32_t qh = *(const uint32_t*)(blk + 4);
+                    const uint8_t* qs = blk + 8;
+                    const int lo = (lane < 16) ? (qs[lane] & 0x0F) : (qs[lane - 16] >> 4);
+                    const int q5 = lo | (int)(((qh >> lane) & 1u) << 4);
+                    // bf16 round-trip: see K above.
+                    acc[i] = acc[i] * alpha + p * __bfloat162float(__float2bfloat16(d * (float)q5 + m));
+                }
+            }
             l_i = l_i * alpha + p;
             m_i = m_new;
         }
-        __syncthreads();   // tile fully consumed before the next dequant overwrites sK/sV
     }
 
     // write this Q head's split partial (UNNORMALIZED acc, + m_i/l_i for the combine).
@@ -1284,10 +1289,6 @@ extern "C" __global__ void fa_decode_vec_q_dc(
     const int t_lo = split * per;
     const int t_hi = min(T_kv, t_lo + per);
 
-    extern __shared__ __nv_bfloat16 ssh_vec[];
-    __nv_bfloat16* sK = ssh_vec;
-    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim;
-
     float q_reg[FA_DEC_MAX_DPL];
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
@@ -1302,40 +1303,48 @@ extern "C" __global__ void fa_decode_vec_q_dc(
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
 
-    const int bt   = wy * WARP_SZ + lane;
-    const int bsz  = WARP_SZ * gqa;
-
-    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
-        const int nt = min(FA_DEC_TILE, t_hi - t0);
-
-        for (int idx = bt; idx < nt * head_dim; idx += bsz) {
-            int j = idx / head_dim;
-            int d = idx - j * head_dim;
-            int eidx = kv_head * head_dim + d;
-            sK[idx] = __float2bfloat16(dq_q8_0_elem(K, (long)(t0 + j), k_tok_bytes, eidx));
-            sV[idx] = __float2bfloat16(dq_q5_1_elem(V, (long)(t0 + j), v_tok_bytes, eidx));
-        }
-        __syncthreads();
-
-        for (int j = 0; j < nt; ++j) {
-            const __nv_bfloat16* kj = sK + (size_t)j * head_dim;
+    // REGISTER-DEQUANT (2026-07-03): same rewrite as fa_decode_vec_q — see comment there. The _dc
+    // twin must stay numerically IDENTICAL to the eager kernel (graph bit-identity contract).
+    {
+        const int kblk0 = (kv_head * head_dim) >> 5;
+        for (int t = t_lo; t < t_hi; ++t) {
+            const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * 34;
             float part = 0.0f;
             #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl) part += q_reg[i] * __bfloat162float(kj[lane + (i << 5)]);
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = kt + i * 34;
+                    const float d = __half2float(*(const half*)blk);
+                    const int8_t q = ((const int8_t*)(blk + 2))[lane];
+                    // bf16 round-trip: BIT-IDENTICAL to the old smem-staged path (which stored
+                    // dequanted K as bf16). Pure ALU on a DRAM-bound kernel — keeps every gate
+                    // (incl. run-spec exactness) exactly where the validated kernel had it.
+                    part += q_reg[i] * __bfloat162float(__float2bfloat16(d * (float)q));
+                }
+            }
             float score = warp_reduce_sum(part);
 
             float m_new = fmaxf(m_i, score);
             float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
             float p     = exp2f((score - m_new) * LOG2E);
-            const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+            const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * 24;
             #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl) acc[i] = acc[i] * alpha + p * __bfloat162float(vj[lane + (i << 5)]);
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = vt + i * 24;
+                    const float d = __half2float(*(const half*)blk);
+                    const float m = __half2float(*(const half*)(blk + 2));
+                    const uint32_t qh = *(const uint32_t*)(blk + 4);
+                    const uint8_t* qs = blk + 8;
+                    const int lo = (lane < 16) ? (qs[lane] & 0x0F) : (qs[lane - 16] >> 4);
+                    const int q5 = lo | (int)(((qh >> lane) & 1u) << 4);
+                    // bf16 round-trip: see K above.
+                    acc[i] = acc[i] * alpha + p * __bfloat162float(__float2bfloat16(d * (float)q5 + m));
+                }
+            }
             l_i = l_i * alpha + p;
             m_i = m_new;
         }
-        __syncthreads();
     }
 
     #pragma unroll
