@@ -42,6 +42,19 @@ _Written 2026-07-03. Read this cold, then continue. bw24 = from-scratch Rust+CUD
 | decode tg128 graph @ctx128 INTERLEAVED A/B | **110.5** | 106.3 | **1.04x — ABOVE llama** |
 | decode tg128 graph @512 / @2048 | 109.5 / 106.3 | — | — |
 
+## E2E SCOREBOARD (real-prompt protocol, 27/1845/6257-tok prompts; llama = serve-script config)
+
+**BATCHED PROMPT PRIME LANDED (03787d9, 2026-07-03) — gap 1 of e2e-image-1 CLOSED.** generate/generate_spec now prime via `prime_cache` (forward_last's prefill body + cache side-effects: batched quantized KV append `_rows` kernel + stateful linear layers via carried-ring conv + one gdn_scan from cache state) instead of the ~102/38 tok/s tokenwise decode_step loop. Seams: `BW24_PRIME_TOKENWISE=1` (escape), prompts <16 tok stay tokenwise, `BW24_PRIME_APPEND_LOOP=1` (per-row append A/B — measured equal, launch overhead hides in the async queue).
+
+| metric (27/1845/6257 tok) | bw24 BEFORE (e2e-image-1) | bw24 NOW | llama |
+|---|---|---|---|
+| 9B prime/TTFT | 0.26s / 18.1s / **61s** | 0.10s / 0.80s / **2.66s** (~2350 tok/s) | 0.20s / 0.32s / 1.05s (5934 tok/s) |
+| 27B prime/TTFT | 0.7s / 48s / **163s** | 0.32s / 2.72s / **8.74s** (~716 tok/s) | 0.17s / 0.94s / 2.96s (2114 tok/s) |
+| 9B gen plain / specK3 | 106.3/100.2/99.2 / 116.6/81.5/73.1 | 104.9/99.3/98.9 / 114.1/84.8/71.9 (noise) | 121.3/120.3/116.5 |
+| 27B gen plain / specK3 | 39.4/37.6/37.7 / 53.4/39.7/35.5 | 39.4/38.1/37.9 / 49.4/43.0/35.8 (noise) | 87.6/92.7/75.9 (spec) |
+
+Remaining prime gap vs llama = the PREFILL gap itself (9B 0.40x, 27B 0.34x at 6k) — prime rides forward_last, so every prefill kernel win now transfers 1:1 to TTFT. Gates: kernel-check ALL GREEN (incl new rows-vs-loop byte-identity), run-gen 82==82, run-spec K=1..8 PASS x {9B synth, 9B text, 27B real} all with batched prime, first-token A/B batched-vs-tokenwise agrees 6/6 (full-16 identical 5/6; 9B p2 flips at index 11 — allowed cache-state FP, argmax-level agreement holds where it matters). **Gap 2 is now the #1 e2e lever: per-row verify fa_decode re-reads the full KV per round → spec DEGRADES with ctx (9B specK3 0.73x@6k, 27B 0.94x@6k) — exact batched verify FA is next.**
+
 **MEASUREMENT LESSON (2026-07-03): cross-session pp512 numbers lied.** Sequential runs gave bw24 5531 vs llama 5451 ("parity") — but interleaved same-minute A/B gives 4655 vs 5092 = 0.91x. Root cause: llama holds 1852MHz during its run; bw24 sags to 1710MHz under the same clock lock (bw24 draws more power for the same work → worse perf/W → thermal sag). ALL ratio claims must be interleaved A/B from now on. bw24 has BOTH a remaining kernel gap (~9%) AND a power-efficiency gap (clock sag under load). Decode ratio not yet re-measured interleaved.
 
 **Decode session 2026-07-03 (landed levers, all gate-passing):**
