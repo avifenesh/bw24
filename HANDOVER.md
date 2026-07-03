@@ -44,10 +44,17 @@ _Written 2026-07-03. Read this cold, then continue. bw24 = from-scratch Rust+CUD
 
 **MEASUREMENT LESSON (2026-07-03): cross-session pp512 numbers lied.** Sequential runs gave bw24 5531 vs llama 5451 ("parity") — but interleaved same-minute A/B gives 4655 vs 5092 = 0.91x. Root cause: llama holds 1852MHz during its run; bw24 sags to 1710MHz under the same clock lock (bw24 draws more power for the same work → worse perf/W → thermal sag). ALL ratio claims must be interleaved A/B from now on. bw24 has BOTH a remaining kernel gap (~9%) AND a power-efficiency gap (clock sag under load). Decode ratio not yet re-measured interleaved.
 
-**Decode session 2026-07-03 (three landed levers, all bit-identical + gated):**
+**Decode session 2026-07-03 (landed levers, all gate-passing):**
 1. warp-per-block coalesced q8_1 epilogues (silu_mul_scaled_q8_1, quantize_q8_1, norm pass-2): 88.4→95.1 graph.
 2. float4 warp-per-4-blocks norm pass-2 + 1024-thread CTA: 95.1→104.4.
-3. adaptive FA split (32 keys ≤1024 ctx, 64 above; `BW24_FA_SPLIT` seam): →109.8/109.5/106.3.
+3. adaptive FA split REVERTED (broke run-spec exactness — split count changes combine FP order). Fixed 64 + BW24_FA_SPLIT seam kept. ~109.6 stands.
+4. gdn_prep_decode_f32: repack+2xL2+sigmoid+glog fused 5→1 launches (perf re-measure pending GPU free).
+
+**Prefill session 2026-07-03 part 2 — INTERLEAVED PARITY (0.995x):**
+1. ssm_conv1d_tm_f32: transpose+zeros+pad+conv → 1 token-major kernel (0.91→0.936x).
+2. NVFP4 macro-scale folded into MMQ write-back — bw24 now does strictly LESS work than llama here (0.936→0.95x).
+3. ssm_conv1d_gdn_f32: conv+SiLU scatters straight into GDN q/k/v layout, SSM prep 5 kernels→1 (0.95→0.995x).
+Background agents: FA-decode port (fattn-vec structure), stream-K for q45k MMQ, K=4 spec-divergence debug.
 
 **ncu parity probes (measured, clock-locked):** bw24 NVFP4 matvec = llama mul_mat_vec_q<40> EXACTLY (42% DRAM, ~74us both). Q6_K lm_head 1.07ms/tok — llama same (1.07ms). Matvec is NO LONGER the gap. Remaining 0.93→1.0x gap: FA decode kernels (bw24 fa_decode_vec_q 126us vs llama flash_attn_ext_vec 10.5us/launch — llama fuses whole-layer attention, bw24 splits+combines), graph-tail/launch overhead, elementwise remnants (l2_norm, scale, sigmoid still separate launches; llama has them too). MR=4 multirow kernel crashes ILLEGAL_ADDRESS (pre-existing, non-default — fix or remove).
 
