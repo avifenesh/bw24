@@ -152,7 +152,7 @@ impl HybridModel {
     /// BW24_NO_FUSE_NORMQ forces the unfused f32 path. Returns (x1 residual f32, ffn_out f32).
     /// True when ALL of a mixer's input projections are on the q8_1 fast path (so the attn-input
     /// rms_norm can emit q8_1 directly and the mixer skips its internal quantize_q8_1).
-    fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
+    pub(crate) fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
         match mixer {
             Mixer::Full(fa) => e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv),
             Mixer::Linear(la) => e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
@@ -805,7 +805,7 @@ impl HybridModel {
     }
 
     /// Linear-attention decode: conv with ring-buffer state, GDN scan carrying SSM state.
-    pub(crate) fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+    pub fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
                           cache: &mut Cache, il: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.linear_attn_decode_inner(e, la, h, None, cache, il, false)
@@ -816,7 +816,7 @@ impl HybridModel {
     /// the attn_norm + the mixer's internal quantize_q8_1). Skips the internal quantize. Caller
     /// GUARANTEES the projections are q8_1-fast. `persistent` selects the capture-safe state plumbing.
     /// BIT-IDENTICAL to linear_attn_decode(h) when (hq,hd)==quantize_q8_1(rms_norm(x)*w).
-    pub(crate) fn linear_attn_decode_pre(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+    pub fn linear_attn_decode_pre(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
                           hq: &CudaSlice<i8>, hd: &CudaSlice<f32>, cache: &mut Cache, il: usize,
                           persistent: bool)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {

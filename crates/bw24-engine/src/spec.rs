@@ -215,12 +215,21 @@ impl HybridModel {
         };
 
         for (il, layer) in self.layers.iter().enumerate() {
-            // DECODE-EXACT RMSNorm: blockDim=1024 matches the fused rms_norm_q8_1 / add_rms_norm_q8_1
-            // kernels used by decode_step_h. The standard rms_norm (blockDim=256) produces a different
-            // sum-of-squares accumulation order that shifts the scale factor by ULPs, propagating
-            // through the GDN recurrence into argmax flips (the 9B text prompt K=1 failure).
+            // DISPATCH-MIRRORED attn-input RMSNorm (FP-order lesson #8): eager decode fuses the
+            // 1024-thread rms_norm_q8_1 ONLY when every mixer projection is q8_1-fast; layers with
+            // Float projections (ssm_beta/ssm_alpha on layers 1/2/4 of the 9B NVFP4 GGUF) take the
+            // UNFUSED 256-thread rms_norm. The verify norm must mirror that PER-LAYER choice —
+            // blockDim changes the sum-of-squares reduce order, and the ULP shift amplifies through
+            // the GDN recurrence into argmax flips (measured: 9B text prompt, 1 ULP at layer 2 ->
+            // 2.3e-1 logit maxdiff at the head -> K=1..8 divergence at a 0.03-margin token).
+            let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
+            let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            if norm_fused {
+                e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            } else {
+                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            }
 
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
@@ -230,8 +239,11 @@ impl HybridModel {
                     // carried-state conv (ssm_conv1d_tm_state), GDN prep on the prefill kernels, and
                     // ONE gdn_scan whose internal sequential t-loop is the SAME recurrence as T
                     // chained T=1 steps (bit-identical). Falls back to the sequential per-column
-                    // chain when T < d_conv-1 (conv ring update needs T >= pad).
-                    if t >= 3 {
+                    // chain when T < d_conv-1 (conv ring update needs T >= pad) — or when ANY
+                    // projection is off the q8_1 fast path: matmul_decode_exact would route a Float
+                    // tensor to cuBLAS at m=t (different FP accumulation than eager's per-token
+                    // GEMV), so mixed-dtype layers stay on the eager-identical per-column chain.
+                    if t >= 3 && mixer_fast && e.uses_q8_1_fast(&la.ssm_out) {
                         self.linear_attn_verify_t(e, la, &h, t, cache, il)?
                     } else {
                         let mut out = e.zeros(t * n_embd)?;
@@ -247,11 +259,24 @@ impl HybridModel {
                 }
             };
 
+            // DISPATCH-MIRRORED post-attn norm: eager residual_norm_ffn fuses add+norm+quant
+            // (1024-thread add_rms_norm_q8_1) only for Dense FFNs whose gate+up are q8_1-fast;
+            // otherwise (and for MoE) it runs the 256-thread fused add_rms_norm. Mirror per layer.
+            let ffn_fuse = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, .. } =>
+                    std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                        && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
+                crate::hybrid::Ffn::Moe(_) => false,
+            };
             let mut x1 = e.zeros(t * n_embd)?;
-            e.add(&x, &mixed, &mut x1, t * n_embd)?;
-
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            if ffn_fuse {
+                e.add(&x, &mixed, &mut x1, t * n_embd)?;
+                e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            } else {
+                e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z,
+                               n_embd, t, eps)?;
+            }
             // DECODE-EXACT FFN projections: force MMVQ for gate/up/down at any T to match the
             // T=1 decode FP accumulation order. At T>=5 the generic matmul/matmul_pre falls to dp4a
             // (128-thread, different FP sum order). At T=2-4 the batched MMVQ is already bit-identical.
@@ -373,8 +398,15 @@ impl HybridModel {
         let want_pred = pred_col.is_some();
 
         for (il, layer) in self.layers.iter().enumerate() {
+            // DISPATCH-MIRRORED norms (FP-order lesson #8) — see decode_step_t_h_emb.
+            let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
+            let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
             let mut h = e.zeros(t * n_embd)?;
-            e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            if norm_fused {
+                e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            } else {
+                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
                 Mixer::Linear(la) => {
@@ -389,10 +421,21 @@ impl HybridModel {
                     out
                 }
             };
+            let ffn_fuse = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, .. } =>
+                    std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                        && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
+                crate::hybrid::Ffn::Moe(_) => false,
+            };
             let mut x1 = e.zeros(t * n_embd)?;
-            e.add(&x, &mixed, &mut x1, t * n_embd)?;
             let mut z = e.zeros(t * n_embd)?;
-            e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            if ffn_fuse {
+                e.add(&x, &mixed, &mut x1, t * n_embd)?;
+                e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+            } else {
+                e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z,
+                               n_embd, t, eps)?;
+            }
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
