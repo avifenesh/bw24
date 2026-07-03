@@ -35,23 +35,32 @@ unsafe extern "C" {
     ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Bytes needed for the stream-K fixup scratch (partial-tile f32 sums, one dense 128x128 tile
+    /// per stream-K CTA). 0 when this shape takes the conventional xy-tiling path (then
+    /// `fixup_scratch` may be null). Policy lives in the launcher: conventional by DEFAULT
+    /// (stream-K reorders f32 k-summation and flips the argmax gate — see mmq_q45k.cu note),
+    /// stream-K only under BW24_MMQ_STREAMK=1.
+    pub fn bw24_mmq_q45k_fixup_bytes(in_f: i32, out_f: i32, n_tokens: i32) -> usize;
     /// Run the Q4_K W4A8 MMQ prefill GEMM. Same contract as bw24_mmq_nvfp4 (raw ggml block_q4_K
-    /// weight rows, in_f/256 144B superblocks per row). Returns 0 or (1000 + cudaError).
+    /// weight rows, in_f/256 144B superblocks per row) plus the nullable stream-K `fixup_scratch`
+    /// (>= bw24_mmq_q45k_fixup_bytes). Returns 0 or (1000 + cudaError).
     pub fn bw24_mmq_q4_K(
         w_q4k_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
         in_f: i32, out_f: i32, n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
+        fixup_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
-    /// Run the Q5_K W4A8 MMQ prefill GEMM (176B superblocks). Returns 0 or (1000 + cudaError).
+    /// Run the Q5_K W4A8 MMQ prefill GEMM (176B superblocks). Same contract as bw24_mmq_q4_K.
     pub fn bw24_mmq_q5_K(
         w_q5k_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
         in_f: i32, out_f: i32, n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
+        fixup_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
 }
@@ -90,12 +99,22 @@ impl Engine {
     }
 
     /// Bare Q4_K/Q5_K MMQ launch (no macro-scale) — also the kernel_check accuracy-gate entry.
+    /// The launcher picks conventional xy-tiling by default; BW24_MMQ_STREAMK=1 switches to the
+    /// stream-K decomposition (kept behind the env flag — negative result, see mmq_q45k.cu).
+    /// When stream-K needs a fixup pass we pre-alloc the partial-tile scratch here like the act
+    /// scratch (the fixup kernel fully consumes it in-stream).
     pub fn qmatvec_mmq_q45k_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
                                 in_f: usize, out_f: usize, qtype: i32)
                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert!(in_f % 256 == 0, "MMQ Q4_K/Q5_K requires in_f % 256 == 0, got {in_f}");
         let act_bytes = unsafe { bw24_mmq_q45k_act_bytes(in_f as i32, m as i32) };
+        let fixup_bytes = unsafe { bw24_mmq_q45k_fixup_bytes(in_f as i32, out_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        let mut fixup = if fixup_bytes > 0 {
+            Some(self.alloc_uninit::<u8>(fixup_bytes)?)
+        } else {
+            None
+        };
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         {
             let stream = &self.gpu.stream;
@@ -103,6 +122,10 @@ impl Engine {
             let (x_p, _gx) = x.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
             let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let (f_p, _gf) = match fixup.as_mut() {
+                Some(f) => { let (p, g) = f.device_ptr_mut(stream); (p, Some(g)) }
+                None => (0, None),
+            };
             let launcher = if qtype == crate::QT_Q4_K { bw24_mmq_q4_K } else { bw24_mmq_q5_K };
             let rc = unsafe {
                 launcher(
@@ -111,6 +134,7 @@ impl Engine {
                     y_p as *mut f32,
                     in_f as i32, out_f as i32, m as i32,
                     s_p as *mut core::ffi::c_void,
+                    f_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             };
