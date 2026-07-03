@@ -132,6 +132,27 @@ impl Cache {
         Ok(CacheSnapshot { kv_len, conv, ssm, pos: self.pos })
     }
 
+    /// PERSISTENT-BUFFER snapshot (spec-decode hot loop): refresh `snap` IN PLACE — same values as
+    /// `snapshot()` but the conv/ssm device buffers are reused across rounds (D2D copy-into, ZERO
+    /// allocations vs 2 fresh clones per linear layer per round). `snap` must come from a prior
+    /// `snapshot()` of THIS cache (same layer shapes).
+    pub fn snapshot_into(&self, e: &Engine, snap: &mut CacheSnapshot)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        for il in 0..n {
+            snap.kv_len[il] = self.kv[il].as_ref().map(|kvl| kvl.len);
+            if let Some(rl) = &self.recur[il] {
+                let dc = snap.conv[il].as_mut().expect("snapshot_into: shape mismatch (conv)");
+                let ds = snap.ssm[il].as_mut().expect("snapshot_into: shape mismatch (ssm)");
+                let (cn, sn) = (rl.conv_state.len(), rl.ssm_state.len());
+                e.copy_into(dc, 0, &rl.conv_state, cn)?;
+                e.copy_into(ds, 0, &rl.ssm_state, sn)?;
+            }
+        }
+        snap.pos = self.pos;
+        Ok(())
+    }
+
     /// Roll the cache back to exactly `snap.pos + accept_len` committed tokens (MTP-PLAN §C).
     /// - Full-attn KV (C.1): set len = snapshot_len + accept_len (truncate, no copy).
     /// - Linear-attn (C.2): RESTORE the snapshot conv/ssm (real D2D copy back into the resident

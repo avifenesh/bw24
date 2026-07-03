@@ -453,9 +453,12 @@ impl HybridModel {
 
         let debug_spec = std::env::var("BW24_DEBUG_SPEC").is_ok();
         let mut round = 0usize;
+        // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
+        // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
+        let mut snap = cache.snapshot(e)?;
         while out.len() < max_new {
             let pos = cache.pos;            // #tokens already committed in the cache
-            let snap = cache.snapshot(e)?;  // §C: snapshot BEFORE draft+verify
+            cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
 
             // --- 1. DRAFT k tokens with the NextN head (autoregressive, T=1 each) ---
             scratch.reset();
