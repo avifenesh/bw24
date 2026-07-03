@@ -383,16 +383,28 @@ impl HybridModel {
                                        kv_dim_k, kv_dim_v, ktb, vtb)?;
         }
         kvl.len += t;
-        let t_kv = kvl.len;
 
-        // causal attention of the T query rows over [0..t_kv) resident byte K/V. fa_prefill is causal:
-        // query row r (absolute pos pos0+r) sees keys [0 .. (t_kv - t) + r]. With pos0 == t_kv - t
-        // (the verify tokens are appended at the tail), the causal mask aligns: q row r attends
-        // up to absolute key (t_kv - t) + r == pos0 + r. Correct.
-        let k_view = e.view_u8(&kvl.k, t_kv * ktb);
-        let v_view = e.view_u8(&kvl.v, t_kv * vtb);
+        // BIT-IDENTICAL VERIFY ATTENTION (spec-exactness fix): run fa_decode PER TOKEN ROW so the
+        // FP accumulation order is byte-for-byte identical to the eager decode path. fa_prefill uses
+        // a different tile size (BLOCK_Q=64, BK=32) and online-softmax structure than fa_decode's
+        // split-K + combine, which changes FP summation order and can flip argmax at tight logit
+        // margins. Query row r attends to keys [0..base_len+r+1) — each successive row sees one
+        // more key (the causal property). This matches eager: decode appends k at len, then fa_decode
+        // sees t_kv = len+1 keys. The verify appends all T tokens first but adjusts the view per row.
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t, t_kv, scale, true, ktb, vtb)?;
+        let base_len = kvl.len - t;   // KV len BEFORE this round's T tokens were appended
+        for r in 0..t {
+            let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
+            let k_view_r = e.view_u8(&kvl.k, t_kv_r * ktb);
+            let v_view_r = e.view_u8(&kvl.v, t_kv_r * vtb);
+            // copy q row into an owned buffer (fa_decode takes &CudaSlice, not CudaView)
+            let mut q_row = e.zeros(n_head * head_dim)?;
+            let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
+            e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
+            let mut attn_row = e.zeros(n_head * head_dim)?;
+            e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
+            e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
+        }
 
         let mut gsig = e.zeros(t * n_head * head_dim)?;
         e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
@@ -437,6 +449,8 @@ impl HybridModel {
         // pre-output_norm hidden. Establish it by feeding last_token once (mirrors plain greedy).
         let (mut last_logits, mut h_seed) = self.decode_step_h(e, last_token, &mut cache)?;
 
+        let debug_spec = std::env::var("BW24_DEBUG_SPEC").is_ok();
+        let mut round = 0usize;
         while out.len() < max_new {
             let pos = cache.pos;            // #tokens already committed in the cache
             let snap = cache.snapshot(e)?;  // §C: snapshot BEFORE draft+verify
@@ -476,6 +490,10 @@ impl HybridModel {
             total_drafted += k;
             total_accepted += n_acc;
 
+            if debug_spec {
+                eprintln!("[R{round}] pos={pos} out_len={} last_tok={last_token} draft={draft:?} n_acc={n_acc} bonus={bonus} t_pred0={}", out.len(), t_pred(0));
+            }
+
             // --- 4. COMMIT: draft[0..n_acc] then bonus (n_acc + 1 tokens) ---
             for j in 0..n_acc {
                 if out.len() >= max_new { break; }
@@ -492,6 +510,7 @@ impl HybridModel {
                 // next-round last_logits + h_seed. (No rollback — Reader-3 full-accept path.)
                 let (l, h) = self.decode_step_h(e, bonus, &mut cache)?;
                 last_logits = l; h_seed = h;
+                if debug_spec { eprintln!("  -> FULL ACCEPT, next_pred={}", argmax(&last_logits)); }
             } else {
                 // PARTIAL ACCEPT: verify appended k draft columns but only n_acc are committed.
                 // Restore EVERYTHING to the pre-round snapshot (KV truncate to pos + recur restore),
@@ -508,7 +527,9 @@ impl HybridModel {
                 // last_logits = last column's logits (predicts the token after `bonus`).
                 last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
                 h_seed = rh;
+                if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={}", argmax(&last_logits)); }
             }
+            round += 1;
         }
 
         out.truncate(max_new);

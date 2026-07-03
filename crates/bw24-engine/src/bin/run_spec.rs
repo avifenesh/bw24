@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  tokens: {gold:?}");
 
     let mut all_pass = true;
-    for &k in &[1usize, 2, 4] {
+    for &k in &[1usize, 2, 3, 4] {
         e.stream().synchronize()?;
         let t1 = std::time::Instant::now();
         let (spec, drafted, accepted) = model.generate_spec(&e, &prompt, n_new, k)?;
