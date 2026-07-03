@@ -5,7 +5,9 @@
 //!   - `mtp_head_forward`  (§A, T=1): one NextN draft-token forward.
 //!   - `decode_step_t`     (§D.3, T=K+1): batched target verify forward, all-column logits.
 //!   - `generate_spec`     (§B): the draft/verify/accept/rollback orchestrator.
-//! Cache snapshot/rollback lives in cache.rs (§D.4). The MTP head uses its OWN scratch KV (§D.6).
+//! Cache snapshot/rollback lives in cache.rs (§D.4). The MTP head uses its OWN scratch KV (§D.6),
+//! PERSISTENT over the committed sequence by default (see `MtpScratch`; BW24_SPEC_KVLOCAL=1 for
+//! the legacy round-local scratch).
 
 use cudarc::driver::CudaSlice;
 use crate::Engine;
@@ -13,11 +15,27 @@ use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MtpHead}
 use crate::cache::{Cache, KvLayer};
 use crate::forward::argmax;
 
-/// Tiny scratch KV for the MTP block (one full-attn layer). Reset each draft round (§D.6).
+/// Scratch KV for the MTP block (one full-attn layer).
+///
+/// PERSISTENT MODE (default, 2026-07-03 — the acceptance lever): sized cap = max_ctx and kept in
+/// sync with the COMMITTED sequence — slot p holds the MTP block's K/V for committed token p
+/// (roped p+1, the chain's rope convention), so the draft chain's self-attention sees the FULL
+/// committed history instead of only the current round's 1..K+1 chain tokens (the reference
+/// engine's "mtp_update" design). Entries come from two sources:
+///   - chain appends: accepted positions KEEP their chain-computed entries (embedding exact,
+///     hidden chain-approximate — the reference engine accepts the same);
+///   - `mtp_kv_fill` batches: prompt positions + the last-draft position on full accept, computed
+///     from EXACT trunk hiddens (K/V-only MTP-block pass, no attention/FFN/lm_head).
+/// Rejected drafts / p-min extras / pseudo-seed appends are all discarded by the round-start
+/// `set_len` truncation (the KvLayer len mechanism — §C rollback for the draft side).
+/// BW24_SPEC_KVLOCAL=1 restores the legacy round-local scratch (reset to empty each round, cap=k+1).
 struct MtpScratch {
     kv: KvLayer,
-    /// Row capacity (k+1). Doubles as the fa_decode_dc bucket_max for the GRAPH draft path:
-    /// cap < 96 keeps the scalar-kernel/n_splits=1 geometry for every in-round t_kv.
+    /// Row capacity. Doubles as the fa_decode_dc bucket_max for BOTH draft paths (graph + eager):
+    /// n_splits is sized from it ONCE, so the graph captured at round 0 stays valid for every
+    /// later t_kv (splits beyond the device len_d exit empty; the shared combine skips them) —
+    /// KV growth without recapture. Eager uses the SAME bucket_max -> identical dispatch ->
+    /// bit-identical drafts (the graph-vs-eager parity gate).
     cap: usize,
 }
 impl MtpScratch {
@@ -38,12 +56,12 @@ impl MtpScratch {
             len_d: e.htod_i32(&[0])?,
         }, cap })
     }
-    fn reset(&mut self) { self.kv.len = 0; }
-    /// GRAPH-DRAFT reset: host len AND the device len_d counter the captured append/fa read
+    /// Set BOTH length counters: the host mirror AND the device len_d the captured append/fa read
     /// (a 4-byte in-place htod — the counter pointer is baked into the graph, never realloc'd).
-    fn reset_dc(&mut self, e: &Engine) -> Result<(), Box<dyn std::error::Error>> {
-        self.kv.len = 0;
-        e.set_i32_one(&mut self.kv.len_d, 0)
+    /// This is the ONLY truncation/rollback mechanism the persistent draft KV needs.
+    fn set_len(&mut self, e: &Engine, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        self.kv.len = n;
+        e.set_i32_one(&mut self.kv.len_d, n as i32)
     }
 }
 
@@ -88,9 +106,16 @@ impl HybridModel {
         let mut a_norm = e.zeros(n_embd)?;
         e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
 
-        // op 6: attention (same body as full_attn_decode, on the MTP block's own scratch KV).
+        // op 6: attention on the scratch KV. SAME dc launcher as the graph path (bucket_max =
+        // scratch.cap, length from the device len_d) so eager drafts match graph drafts
+        // bit-for-bit at any t_kv (the parity gate). Host len mirrored here (the dc append
+        // advances only the device counter).
         let attn_out = match &mtp.mixer {
-            Mixer::Full(fa) => self.mtp_full_attn(e, fa, &a_norm, &pos_d, scratch)?,
+            Mixer::Full(fa) => {
+                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch)?;
+                scratch.kv.len += 1;
+                out
+            }
             Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
         };
 
@@ -136,63 +161,15 @@ impl HybridModel {
         Ok((logits, h_nextn))
     }
 
-    /// MTP-block full attention, T=1, on the scratch KV (mirror of full_attn_decode but on a
-    /// caller-owned KvLayer instead of `cache.kv[il]`).
-    fn mtp_full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                     pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch)
-                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
-        let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
-        let n_embd = cfg.n_embd as usize;
-
-        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
-            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
-        } else {
-            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
-        };
-        let mut q = e.zeros(n_head * head_dim)?;
-        let mut gate = e.zeros(n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
-
-        let mut qn = e.zeros(n_head * head_dim)?;
-        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
-        q = qn;
-        let mut kn = e.zeros(n_head_kv * head_dim)?;
-        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
-        k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
-
-        let kv = &mut scratch.kv;
-        e.append_kv_quantized(&k, &v, &mut kv.k, &mut kv.v, kv.len,
-                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
-        kv.len += 1;
-        let t_kv = kv.len;
-        let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
-        let k_view = e.view_u8(&kv.k, t_kv * kv.k_tok_bytes);
-        let v_view = e.view_u8(&kv.v, t_kv * kv.v_tok_bytes);
-        let mut attn = e.zeros(n_head * head_dim)?;
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
-
-        let mut gsig = e.zeros(n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
-        let mut attn_g = e.zeros(n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
-        Ok(e.matmul(&fa.wo, &attn_g, 1)?)
-    }
-
-    /// Device-counter twin of `mtp_full_attn` (GRAPH DRAFT): the scratch write slot and the
-    /// attention bound come from `scratch.kv.len_d` (device i32[1]) so the launch args are FIXED
-    /// across draft steps — ONE captured graph serves the whole chain. Geometry contract: scratch
-    /// t_kv <= cap < 96, so eager fa_decode picks the SCALAR kernel with n_splits=1 for every
-    /// draft index, and fa_decode_dc with bucket_max=cap reproduces exactly that (fa_vec=false,
-    /// n_splits=1, per-split bound read from the DEVICE t_kv) -> bit-identical draft tokens.
+    /// MTP-block full attention, T=1, on the scratch KV (BOTH draft paths — eager and graph):
+    /// the scratch write slot and the attention bound come from `scratch.kv.len_d` (device i32[1])
+    /// so the launch args are FIXED across draft steps — ONE captured graph serves the whole
+    /// chain, and replays keep seeing KV growth through the device counter (no recapture).
+    /// Geometry contract: n_splits is sized from `scratch.cap` (the persistent capacity); splits
+    /// whose key range lies beyond the device t_kv exit empty and the shared combine skips them
+    /// (fa_decode_dc bit-correct-for-any-t_kv<=bucket_max contract). The eager path uses the SAME
+    /// launcher with the SAME bucket_max -> identical dispatch -> bit-identical draft tokens (the
+    /// graph-vs-eager parity gate). Host len is NOT advanced here (graph contract); callers mirror.
     fn mtp_full_attn_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                         pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -244,6 +221,76 @@ impl HybridModel {
         let mut attn_g = e.zeros(n_head * head_dim)?;
         e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
+    }
+
+    /// PERSISTENT-DRAFT-KV fill (the reference engine's "mtp_update" analogue): compute the MTP
+    /// block's K/V for `tokens` (committed tokens at positions pos0..pos0+T) from their EXACT
+    /// trunk hiddens `h` ([T, n_embd] token-major, pre-output_norm) and append at slots pos0.. of
+    /// the scratch KV. K/V-ONLY — ops A/1-5 plus the K-side of op 6 (wk/wv + k_norm + rope +
+    /// quantized append); no wq/attention/FFN/lm_head, so per-token cost ~= eh_proj + wk/wv (a
+    /// small fraction of one trunk layer), T-batched. Rope follows the chain convention
+    /// rope(token@p) = p+1. Runs at round boundaries OUTSIDE the captured graph in BOTH draft
+    /// modes -> draft parity by construction. Caller must have scratch.kv.len == pos0.
+    #[allow(clippy::too_many_arguments)]
+    fn mtp_kv_fill(&self, e: &Engine, mtp: &MtpHead, tokens: &[u32], h: &CudaSlice<f32>,
+                   pos0: usize, scratch: &mut MtpScratch,
+                   embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize)
+                   -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let t = tokens.len();
+        assert_eq!(scratch.kv.len, pos0, "mtp_kv_fill: append slot mismatch");
+        assert!(pos0 + t <= scratch.cap, "mtp_kv_fill: scratch overflow");
+        let Mixer::Full(fa) = &mtp.mixer else {
+            panic!("MTP block is full-attn in qwen35; linear MTP not supported")
+        };
+        let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i + 1) as i32).collect();
+        let pos_d = e.htod_i32(&pos_vec)?;
+
+        // ops A/1/2: embed + the two input norms, T-wide.
+        let e_emb = e.embed_gather_device_t(embd_gpu, tokens, n_embd, embd_qt, embd_rb)?;
+        let mut e_norm = e.zeros(t * n_embd)?;
+        e.rms_norm(&e_emb, mtp.enorm.float_data(), &mut e_norm, n_embd, t, eps)?;
+        let mut h_norm = e.zeros(t * n_embd)?;
+        e.rms_norm(h, mtp.hnorm.float_data(), &mut h_norm, n_embd, t, eps)?;
+
+        // op 3: per-row [e_norm ; h_norm] concat, token-major [T, 2*n_embd].
+        let mut concat = e.zeros(t * 2 * n_embd)?;
+        for i in 0..t {
+            e.copy_view_into(&mut concat, i * 2 * n_embd,
+                             &e_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
+            e.copy_view_into(&mut concat, i * 2 * n_embd + n_embd,
+                             &h_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
+        }
+
+        // ops 4/5: eh_proj + attn_norm, T-wide.
+        let inp_sa = e.matmul(&mtp.eh_proj, &concat, t)?;
+        let mut a_norm = e.zeros(t * n_embd)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, t, eps)?;
+
+        // op 6 (K/V half): wk/wv + k_norm + rope + per-row quantized append. No wq/attention —
+        // the fill only has to leave correct K/V rows behind for later chains to attend over.
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let mut k = e.matmul(&fa.wk, &a_norm, t)?;
+        let v = e.matmul(&fa.wv, &a_norm, t)?;
+        let mut kn = e.zeros(t * n_head_kv * head_dim)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
+        k = kn;
+        let rope_dims = cfg.rope_dim_count as usize;
+        e.rope_neox(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+
+        let kv = &mut scratch.kv;
+        for i in 0..t {
+            let k_row = k.slice(i * kv.kv_dim_k..(i + 1) * kv.kv_dim_k);
+            let v_row = v.slice(i * kv.kv_dim_v..(i + 1) * kv.kv_dim_v);
+            e.append_kv_quantized_view(&k_row, &v_row, &mut kv.k, &mut kv.v, kv.len + i,
+                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+        }
+        kv.len += t;
+        e.set_i32_one(&mut kv.len_d, kv.len as i32)?;
+        Ok(())
     }
 
     /// CAPTURE body for the GRAPH DRAFT (stage 2 of graph-grade spec): ONE MTP head forward with
@@ -741,12 +788,19 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         let max_ctx = prompt.len() + max_new + k + 8;
         let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+        // PERSISTENT DRAFT KV (default): the scratch mirrors the committed sequence so the draft
+        // chain attends over full history. BW24_SPEC_KVLOCAL=1 = legacy round-local scratch (A/B
+        // + fallback seam; acceptance-only — exactness is verify's job either way).
+        let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
 
         // prime: feed the prompt token-by-token (decode_step_h builds KV+state, returns h_seed).
+        // Persistent draft KV: collect every prompt position's trunk hidden for the batched fill.
         assert!(!prompt.is_empty(), "prompt must be non-empty");
         let mut prime_logits = Vec::new();
-        for &tok in prompt {
-            let (l, _h) = self.decode_step_h(e, tok, &mut cache)?;
+        let mut prompt_h = if kv_local { None } else { Some(e.uninit(prompt.len() * n_embd)?) };
+        for (i, &tok) in prompt.iter().enumerate() {
+            let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
+            if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
             prime_logits = l;
         }
 
@@ -756,7 +810,8 @@ impl HybridModel {
             e.upload_u8(&self.embd.raw).expect("embed table upload")
         });
         let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
-        let mut scratch = MtpScratch::new(e, &self.cfg, k + 1)?;
+        // Persistent scratch = max_ctx rows (~2KB/token quantized — trivial); legacy = k+1.
+        let mut scratch = MtpScratch::new(e, &self.cfg, if kv_local { k + 1 } else { max_ctx })?;
         let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let mut total_drafted = 0usize;
         let mut total_accepted = 0usize;
@@ -805,12 +860,20 @@ impl HybridModel {
                                           d_vocab)
             });
             match cap_res {
-                Ok(g) => { scratch.reset_dc(e)?; draft_graph = Some(g); }
+                Ok(g) => { scratch.set_len(e, 0)?; draft_graph = Some(g); }
                 Err(err) => {
-                    scratch.reset_dc(e)?;
+                    scratch.set_len(e, 0)?;
                     if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
                 }
             }
+        }
+        // PERSISTENT DRAFT KV: fill the MTP block's K/V for every prompt position from the exact
+        // trunk hiddens collected during prime — ONE batched K/V-only pass (overwrites any
+        // capture-warmup garbage; capture left len at 0). last_token (the init feed) needs no
+        // fill: the first chain step processes it and appends its entry at slot prompt.len().
+        if let Some(ph) = &prompt_h {
+            scratch.set_len(e, 0)?;
+            self.mtp_kv_fill(e, mtp, prompt, ph, 0, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
         }
         let mut round = 0usize;
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
@@ -834,12 +897,17 @@ impl HybridModel {
             // its own pick drops below p_min — the just-drafted token is DISCARDED, but its
             // scratch append stands (identical to the eager chain's ordering). j==0 always drafts.
             let base0 = if pending.is_some() { 1usize } else { 0usize };
+            // Round-start draft-KV sync (BOTH paths). Persistent: truncate/align to the committed
+            // history — slots 0..P hold entries for the tokens before last_token@P (P = pos +
+            // base0 - 1); this single set_len IS the draft-side rollback (drops last round's
+            // rejected drafts, p-min extras and the pseudo-seed append via the len mechanism).
+            // Legacy (BW24_SPEC_KVLOCAL): reset to empty, chain-only attention.
+            scratch.set_len(e, if kv_local { 0 } else { pos + base0 - 1 })?;
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             if let Some(gr) = &draft_graph {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
                 // inc'd in-graph); the host only reads 4B token (+4B p) and decides the break.
-                scratch.reset_dc(e)?;
                 e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
                 e.set_u32_one(&mut g_tok, last_token)?;
                 e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
@@ -860,7 +928,6 @@ impl HybridModel {
                 }
             } else {
                 // EAGER DRAFT (fallback: MoE head/trunk, huge k, BW24_SPEC_NOGRAPH, capture fail).
-                scratch.reset();
                 let mut e_tok = last_token;
                 let mut d_seed = e.clone_dtod(&h_seed_buf)?;
                 for j in 0..k {
@@ -938,20 +1005,36 @@ impl HybridModel {
                 // T=1 trunk pass. The next draft chain seeds from the MTP block's h_nextn at the
                 // bonus position: one MTP-block pass (~1/33 trunk cost) replaces the trunk read.
                 // last_pred is dead in the pending path (t_pred reads verify col 0).
+                //
+                // PERSISTENT DRAFT KV, full-accept fill: the chain covered last_token +
+                // draft[0..k_round-2] as INPUTS (slots P..P'-2); draft[k_round-1] (slot P'-1) was
+                // only ever an output, so its entry is MISSING. Fill it from vh_seed — its EXACT
+                // trunk hidden (the last verify column). set_len first: a p-min break may have
+                // left one extra chain append at that slot. Partial accepts need NO fill (the
+                // chain already covered every accepted position; round-start set_len truncates).
+                if !kv_local {
+                    scratch.set_len(e, pos + base + k_round - 1)?;
+                    self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &vh_seed,
+                                     pos + base + k_round - 1, &mut scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                }
+                // Pseudo-seed pass rope: persistent keeps the chain convention rope(token@p)=p+1
+                // (bonus sits at position pos+base+k_round); legacy keeps its historical value.
+                let pseudo_pos = pos + base + k_round + if kv_local { 0 } else { 1 };
                 if let Some(gr) = &draft_graph {
                     // pseudo-hidden seed via ONE graph replay (same MTP forward, inputs re-set).
                     // vh_seed is copied into the baked seed buffer BEFORE the replay, so its own
                     // (pool-transient) storage is dead by the time the graph writes scratch.
                     e.set_u32_one(&mut g_tok, bonus)?;
                     e.copy_into(&mut g_seed, 0, &vh_seed, n_embd)?;
-                    e.set_i32_one(&mut g_pos, (pos + base + k_round) as i32)?;
+                    e.set_i32_one(&mut g_pos, pseudo_pos as i32)?;
                     gr.launch()?;
                     scratch.kv.len += 1;
                     // next round's seed = the pseudo hidden the replay left in g_seed.
                     e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
                 } else {
                     let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                        e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round,
+                        e, mtp, bonus, &vh_seed, &mut scratch, pseudo_pos,
                         embd_gpu, embd_qt, embd_rb)?;
                     e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
                 }
