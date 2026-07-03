@@ -1749,6 +1749,28 @@ impl Engine {
         Ok(())
     }
 
+    /// FUSED decode GDN prep (T=1): repack + q/k L2-norm + beta sigmoid + g_log in one launch.
+    /// Replaces 5 tiny serialized kernels on the decode critical path. L2 reduce runs as a 32-lane
+    /// warp tree (vs l2_norm_f32's 256-thread two-level tree) — same math, different FP sum order;
+    /// the argmax + run-spec gates are the authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_prep_decode(&self, conv_out: &CudaSlice<f32>, beta_raw: &CudaSlice<f32>,
+                           alpha: &CudaSlice<f32>, dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+                           q_l2: &mut CudaSlice<f32>, k_l2: &mut CudaSlice<f32>, v_g: &mut CudaSlice<f32>,
+                           beta: &mut CudaSlice<f32>, g_log: &mut CudaSlice<f32>,
+                           d_state: usize, num_v: usize, num_k: usize, key_dim: usize, eps: f32)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_prep_decode_f32");
+        let cfg = LaunchConfig { grid_dim: (num_v as u32, 1, 1), block_dim: (32, 4, 1), shared_mem_bytes: 0 };
+        let (ds, nv, nk, kd) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(conv_out).arg(beta_raw).arg(alpha).arg(dt_bias).arg(a)
+         .arg(q_l2).arg(k_l2).arg(v_g).arg(beta).arg(g_log)
+         .arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&eps);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// FUSED prefill conv + GDN repack: token-major qkv -> q_g/k_g/v_g in ONE launch (no conv_out
     /// materialization, no qkv_to_gdn_repack pass). BIT-IDENTICAL values; scatter matches
     /// qkv_to_gdn_repack's modulo head-repeat mapping exactly.

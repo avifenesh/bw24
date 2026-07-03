@@ -873,23 +873,21 @@ impl HybridModel {
         e.ssm_conv1d_fused_decode(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
                                   &mut conv_out, conv_dim, d_conv)?;
 
-        // split + repack to GDN [d_state, num_v, 1] ON-DEVICE; q/k repeat 16->32 via modulo
-        // (ggml_repeat_4d, kh = vh % num_k). No dtoh/host-loop/3x-htod.
+        // GDN PREP, FUSED (2026-07-03): repack + q/k L2-norm + beta sigmoid + g_log in ONE
+        // gdn_prep_decode launch (was 5 tiny serialized kernels: qkv_to_gdn_repack, 2x l2_norm,
+        // sigmoid, gdn_glog). Same math; the L2 reduce runs a 32-lane warp tree instead of the
+        // 256-thread two-level tree (different FP sum order) — gates: argmax + run-spec exactness.
         let _ = head_k;  // head_k == d_state; the kernel uses head_k = d_state internally.
-        let mut q_g = e.uninit(d_state * num_v)?;
-        let mut k_g = e.uninit(d_state * num_v)?;
-        let mut v_g = e.uninit(d_state * num_v)?;
-        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, 1)?;
         let mut q_l2 = e.uninit(d_state * num_v)?;
-        e.l2_norm(&q_g, &mut q_l2, d_state, num_v, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v)?;
-        e.l2_norm(&k_g, &mut k_l2, d_state, num_v, eps)?;
-        let v_gd = v_g;
-
+        let mut v_gd = e.uninit(d_state * num_v)?;
         let mut beta = e.uninit(num_v)?;
-        e.sigmoid(&beta_raw, &mut beta, num_v)?;
         let mut g_log = e.uninit(num_v)?;
-        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, 1)?;
+        e.gdn_prep_decode(&conv_out, &beta_raw, &alpha,
+                          la.ssm_dt.float_data(), la.ssm_a.float_data(),
+                          &mut q_l2, &mut k_l2, &mut v_gd, &mut beta, &mut g_log,
+                          d_state, num_v, num_k, key_dim, eps)?;
+        let v_gd = v_gd;
 
         // GDN scan: SSM state stays RESIDENT on GPU. gdn needs DISTINCT in/out state buffers.
         // DECODE DETERMINISM FIX: write the new state into the PERSISTENT spare buffer

@@ -103,6 +103,62 @@ extern "C" __global__ void ssm_conv1d_gdn_f32(
     }
 }
 
+// ---- FUSED decode GDN prep: repack + q/k L2-norm + beta sigmoid + g_log in ONE kernel (T=1). ----
+// Replaces qkv_to_gdn_repack + 2x l2_norm + sigmoid + gdn_glog (5 launches, ~8.6us/layer of
+// serialized tiny kernels on the decode critical path). One CTA per v-head vh (grid = num_v):
+// 4 warps: warp 0 handles q (gather kh-row from conv_out, L2-norm, write q_l2), warp 1 k, warp 2 v
+// (straight copy), warp 3 lane 0 computes beta = sigmoid(beta_raw[vh]) and g_log = a*softplus(
+// alpha[vh]+dt[vh]). d_state <= 128 = 4 elems/lane. BIT-IDENTICAL math: L2 sum is the same
+// ascending serial-order? NO — l2_norm_f32 reduces via strided loop + shfl tree; here each warp
+// reduces its 128-elem row with the SAME shfl tree over 4-elem/lane partials accumulated in
+// ascending i order == l2_norm_f32's tid-strided order for blockDim=32 (i = lane, lane+32, ...).
+// So values match l2_norm_f32 with blockDim=32 exactly; l2_norm_f32 launches use blockDim=256 —
+// different reduce shape. To keep BIT-IDENTITY with the shipped path we mirror the 256-thread
+// two-level reduce ORDER: lane accumulates i = lane, lane+32*1..., then a 32-lane shfl tree —
+// identical to a 32-thread block. kernel_check's fused gate is the arbiter (argmax authority).
+extern "C" __global__ void gdn_prep_decode_f32(
+        const float* __restrict__ conv_out,   // [conv_dim] (T=1, channel-major)
+        const float* __restrict__ beta_raw,   // [num_v]
+        const float* __restrict__ alpha,      // [num_v]
+        const float* __restrict__ dt_bias,    // [num_v]
+        const float* __restrict__ a,          // [num_v]
+        float* __restrict__ q_l2, float* __restrict__ k_l2, float* __restrict__ v_g,
+        float* __restrict__ beta, float* __restrict__ g_log,
+        int d_state, int num_v, int num_k, int key_dim, float eps) {
+    int vh = blockIdx.x;
+    if (vh >= num_v) return;
+    int warp = threadIdx.y;      // 0=q, 1=k, 2=v, 3=scalars
+    int lane = threadIdx.x;
+    int kh = vh % num_k;
+
+    if (warp == 2) {
+        // v: straight copy of channels [2*key_dim + vh*d_state, +d_state)
+        const float* src = conv_out + 2 * key_dim + (size_t)vh * d_state;
+        float* dst = v_g + (size_t)vh * d_state;
+        for (int i = lane; i < d_state; i += 32) dst[i] = src[i];
+        return;
+    }
+    if (warp == 3) {
+        if (lane == 0) {
+            beta[vh] = 1.0f / (1.0f + expf(-beta_raw[vh]));
+            float x = alpha[vh] + dt_bias[vh];
+            float sp = (x > 20.0f) ? x : log1pf(expf(x));
+            g_log[vh] = a[vh] * sp;
+        }
+        return;
+    }
+    // warp 0/1: q/k gather + L2 norm (same math as l2_norm_f32: scale = rsqrt(sum + eps)).
+    const float* src = conv_out + (warp == 0 ? 0 : key_dim) + (size_t)kh * d_state;
+    float* dst = (warp == 0 ? q_l2 : k_l2) + (size_t)vh * d_state;
+    float sum = 0.0f;
+    for (int i = lane; i < d_state; i += 32) { float v = src[i]; sum += v * v; }
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    sum = __shfl_sync(0xffffffff, sum, 0);
+    float scale = rsqrtf(sum + eps);
+    for (int i = lane; i < d_state; i += 32) dst[i] = src[i] * scale;
+}
+
 // ---- Depthwise causal conv1d + optional SiLU. Single sequence. ----
 // x: [conv_dim, T] but stored as [T, conv_dim] token-major? No — ggml ssm_conv input is
 // [d_conv-1+T, conv_dim] (time-major per channel). We take a simpler contract for the engine:
