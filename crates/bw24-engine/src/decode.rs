@@ -77,8 +77,12 @@ impl HybridModel {
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
             let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
-            // Try the fused epilogue: raw (un-scaled) gate/up + their per-tensor scales -> one launch.
-            match (e.matmul_pre_noscale(ffn_gate, &zq, &zd, 1)?, e.matmul_pre_noscale(ffn_up, &zq, &zd, 1)?) {
+            // DUAL mm-fusion first (NVFP4 gate+up in ONE launch), else two noscale launches.
+            let pair = match e.matmul_pre_dual_noscale(ffn_gate, ffn_up, &zq, &zd, 1)? {
+                Some((g, u)) => (Some(g), Some(u)),
+                None => (e.matmul_pre_noscale(ffn_gate, &zq, &zd, 1)?, e.matmul_pre_noscale(ffn_up, &zq, &zd, 1)?),
+            };
+            match pair {
                 (Some((gate, gs)), Some((up, us))) => {
                     // RANK2 fold: if ffn_down is q8_1-fast, emit act PRE-QUANTIZED and skip the
                     // standalone quantize_q8_1 before ffn_down.
@@ -117,7 +121,11 @@ impl HybridModel {
                              ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
                              zq: &CudaSlice<i8>, zd: &CudaSlice<f32>, n_ff: usize)
                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        match (e.matmul_pre_noscale(ffn_gate, zq, zd, 1)?, e.matmul_pre_noscale(ffn_up, zq, zd, 1)?) {
+        let pair = match e.matmul_pre_dual_noscale(ffn_gate, ffn_up, zq, zd, 1)? {
+            Some((g, u)) => (Some(g), Some(u)),
+            None => (e.matmul_pre_noscale(ffn_gate, zq, zd, 1)?, e.matmul_pre_noscale(ffn_up, zq, zd, 1)?),
+        };
+        match pair {
             (Some((gate, gs)), Some((up, us))) => {
                 if e.uses_q8_1_fast(ffn_down) {
                     let (aq, ad) = e.silu_mul_scaled_q8_1(&gate, &up, gs, us, n_ff)?;

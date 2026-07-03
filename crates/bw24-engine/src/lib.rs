@@ -1073,6 +1073,45 @@ impl Engine {
     /// `Some((y_raw, scale))` only on the m==1 decode fast path (mmvq / dp4a) where the scale is a
     /// separate post-launch op we can defer; returns `None` for every other path (prefill GEMM, FP4
     /// GEMM, Stage-A, Float) so the caller falls back to the scaled `matmul_pre` + `silu_mul`.
+    /// DUAL gate+up NVFP4 matvec (mm-fusion): ONE launch computes both projections (same
+    /// activation, same shape) — grid.y selects the tensor. Bit-identical per element to two
+    /// mr2 launches at m=1. Returns (gate_raw, up_raw) un-scaled (caller folds the two macro
+    /// scales into the SwiGLU epilogue, same as the matmul_pre_noscale contract). None unless
+    /// both tensors are NVFP4 q8_1-fast with identical (in_f, out_f, row_bytes) and m==1.
+    pub fn matmul_pre_dual_noscale(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                   aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
+        -> Result<Option<((CudaSlice<f32>, f32), (CudaSlice<f32>, f32))>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if m != 1 || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
+        let (in_f, out_f) = (w0.in_features(), w0.out_features());
+        if w1.in_features() != in_f || w1.out_features() != out_f { return Ok(None); }
+        let (b0, q0, rb0, s0) = match w0 {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => return Ok(None),
+        };
+        let (b1, q1, rb1, s1) = match w1 {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+            _ => return Ok(None),
+        };
+        if q0 != QT_NVFP4 || q1 != QT_NVFP4 || rb0 != rb1 { return Ok(None); }
+        const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
+        const RPW: u32 = 2;
+        let rows_per_block = ROWS_PER_BLOCK * RPW;
+        let f = self.func("qmatvec_nvfp4_mmvq_dual_mr2");
+        let mut y0 = self.alloc_uninit::<f32>(out_f)?;
+        let mut y1 = self.alloc_uninit::<f32>(out_f)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 2, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, rb0 as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+         .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some(((y0, s0), (y1, s1))))
+    }
+
     pub fn matmul_pre_noscale(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                               m: usize) -> Result<Option<(CudaSlice<f32>, f32)>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;

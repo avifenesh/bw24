@@ -901,6 +901,68 @@ __device__ __forceinline__ void nvfp4_mmvq_multirow(
         if (lane == 0) y[(size_t)t * out_f + o] = a;
     }
 }
+// t=0-pinned single-token body of nvfp4_mmvq_multirow (blockIdx.y is repurposed by the dual
+// kernel for tensor select). SAME dp4a order / scales / reduce as the multirow helper -> the
+// dual kernel's per-element results are bit-identical to the mr2 kernel at m=1.
+template<int RPW>
+__device__ __forceinline__ void nvfp4_mmvq_dual_row(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char*   arow = aq;
+    const float*         adrow = ad;
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int whichHalf = g & 1;
+        int s0 = whichHalf * 2;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0];
+        int4 a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float adg = adrow[g];
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            const unsigned char* b = W + (long)o * row_bytes + (long)sblk * 36;
+            const unsigned char* d_bytes = b;
+            const unsigned char* qs = b + 4;
+            float partial = 0.0f;
+            #pragma unroll
+            for (int sl = 0; sl < 2; sl++) {
+                int s = s0 + sl;
+                const unsigned char* qss = qs + s * 8;
+                int q4a = get_int_b4(qss);
+                int q4b = get_int_b4(qss + 4);
+                int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+                int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+                int base = sl * 4;
+                int sumi = 0;
+                sumi = dp4a(va.x, aq4[base + 0], sumi);
+                sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                sumi = dp4a(va.y, aq4[base + 2], sumi);
+                sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
+            }
+            acc[r] += adg * partial;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[o] = a;
+    }
+}
+
 extern "C" __global__ void qmatvec_nvfp4_mmvq_mr2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -912,6 +974,25 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_mr4(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_multirow<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// DUAL gate+up matvec (mm-fusion, 2026-07-03): the FFN gate and up projections share the SAME
+// activation and the same (in_f, out_f) shape; running them as two sequential launches leaves the
+// tail of each under-filled and pays two launch latencies. ONE grid computes both: blockIdx.y
+// selects the tensor (0=gate -> y0, 1=up -> y1). Per (tensor, row) the body is nvfp4_mmvq_multirow
+// verbatim -> BIT-IDENTICAL per output element to two separate launches. (The reference engine
+// runs the same fusion as its top 27B decode kernel at 47-50% DRAM vs ~40% for singles.)
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_mr2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    const unsigned char* W = (blockIdx.y == 0) ? W0 : W1;
+    float* y = (blockIdx.y == 0) ? y0 : y1;
+    // nvfp4_mmvq_multirow reads blockIdx.y as the token index; decode m==1 -> token 0. Inline the
+    // call with t forced to 0 via a shifted grid: we reuse the body by passing m=1 and mapping
+    // blockIdx.y ourselves — the helper uses blockIdx.y for t, so temporarily this kernel only
+    // supports m==1 (asserted host-side).
+    nvfp4_mmvq_dual_row<2>(W, aq, ad, y, in_f, out_f, row_bytes);
 }
 
 // ---- NVFP4 BATCHED matvec, WEIGHT-TILE-RESIDENT across M token columns (the m=2-4 concurrent-decode
