@@ -63,6 +63,22 @@ algorithmic improvements adapted to sm_120 (FA3/FA4 binaries don't run here: no 
     (copy user's serve scripts for flags: -fa on, KV q8_0/q5_1, MTP spec, CUDA graphs, full power, ctx 64k).
     N=5 medians, gpu-full-power on. research/benchmarks.md tracks it.
 
+### Web-sweep ranked techniques (folded 2026-07-03 from the web-sweep agent output)
+11. **DFlash-style spec decode integration** — vLLM's scheduler reserves `num_speculative_tokens+1`
+    lookahead slots for DFlash drafts (vllm.md:60). For bw24: the MTP verify band already exists;
+    the DFlash lever is block-diffusion drafting (parallel draft of K tokens in one pass) — evaluate
+    AFTER MTP re-measure (run-spec) since acceptance-rate lift is the profitable axis (DECODE-GAP L6).
+12. **TCQ KV quant** (per-token/channel quant): our KV is q8_0/q5_1 per-token already; TCQ's win is
+    per-CHANNEL K scales at low bit. Only worth it below q8 K — pairs with KVQUANT-PLAN.md, not before.
+13. **FR-Spec vocab trim** — draft head scores only the top-frequency vocab slice (~25% lm_head cost
+    in draft). bw24 hook: striped-vocab MTP head (mtp-tail work) + q6_K lm_head is 1.07ms/tok — a
+    frequency-sliced draft head skips most of it per draft token. MED value, needs MTP live first.
+14. **NVFP4 tensor-split fix** (llama PR) — multi-GPU tensor-split only; DEAD for the single-GPU
+    local rig, note for L40S/fleet mirrors if they ever go multi-card.
+15. **ST-MoE prefetch** — layer-wise async expert prefetch on a dedicated stream (lmcache.md:99-100
+    pattern + ST-MOE-PLAN.md). The lmcache async load/store stream template is the substrate; wire
+    into moe_cache.rs SLRU when MoE spilling becomes the active target.
+
 ## Reference docs (all researched)
 ARCHITECTURE.md, PHASE1-HYBRID.md, QUANT-GEMM-DECISION.md, SAFETENSORS-DECISION.md,
 research/{sm120-empirical-capabilities, benchmarks, current-model-targets, claim-verification-report}.md
