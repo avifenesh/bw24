@@ -495,7 +495,7 @@ impl HybridModel {
         for _ in 0..max_new {
             // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
             let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(t_kv, head_dim);
+            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize);
             if !gs.graphs.contains_key(&key) {
                 // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
                 let bucket_max = t_kv;

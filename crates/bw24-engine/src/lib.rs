@@ -63,12 +63,18 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
 /// (the bigger lever) outranks a <=1.2% decode win -> default stays FIXED 64; sweeps use the env.
 /// Takes t_kv so eager, _dc capture, and fa_geom_eager stay signature-compatible for future
 /// adaptive retries (any retry MUST pass run-spec self-consistency first).
-fn fa_split_keys(_t_kv: usize) -> usize {
+fn fa_split_keys(_t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    (*S.get_or_init(|| {
+    if let Some(forced) = *S.get_or_init(|| {
         std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
             .filter(|&s: &usize| s >= 8 && s % 8 == 0)
-    })).unwrap_or(64)
+    }) { return forced; }
+    // Default FIXED 64. A per-model n_head_kv discriminator was tried 2026-07-03 and REVERTED:
+    // both 9B and 27B have n_head_kv=4, and split=32 breaks 9B run-spec exactness while PASSING
+    // on the 27B (K=1..8) — the difference is model-margin luck, not geometry, so it cannot be a
+    // default. BW24_FA_SPLIT=32 stays the documented 27B serving opt-in (+3.4% decode there).
+    let _ = n_head_kv;
+    64
 }
 
 /// Quant type codes matching qmatvec.cu QType enum.
@@ -1573,7 +1579,7 @@ impl Engine {
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
         const FA_VEC_MIN_TKV: usize = 96;
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
-        let sp = fa_split_keys(t_kv);
+        let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
@@ -1631,7 +1637,7 @@ impl Engine {
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
         // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= FA_VEC_MIN_TKV;
-        let sp = fa_split_keys(bucket_max);
+        let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
         let mut part_m = self.zeros(n_head * n_splits)?;
@@ -1668,14 +1674,14 @@ impl Engine {
     /// bucket on the same `(kernel, n_splits)` pair and pass a `bucket_max` that reproduces eager's
     /// n_splits bit-for-bit. (Per = ceil(t_kv/n_splits) is then recomputed from the DEVICE t_kv inside
     /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
-    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize) -> (bool, usize) {
+    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
         const FA_VEC_MIN_TKV: usize = 96;
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
         let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let sp = fa_split_keys(t_kv);
+        let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
     }
@@ -1685,8 +1691,8 @@ impl Engine {
     /// launcher derives both from `bucket_max` via the same formulas, we just hand it `t_kv` itself:
     /// the n_splits is then identical, and the per-split boundaries (computed from the DEVICE t_kv in
     /// the kernel) match eager exactly. The bucket KEY (for the graph HashMap) is `(fa_vec, n_splits)`.
-    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize) -> (bool, usize) {
-        self.fa_geom_eager(t_kv, head_dim)
+    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
+        self.fa_geom_eager(t_kv, head_dim, n_head_kv)
     }
 
     /// CUDA-graph capture wrapper (CUDA-GRAPH-PLAN §3.2, llama.cpp warmup pattern). Runs `step`
