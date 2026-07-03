@@ -218,13 +218,34 @@ extern "C" __global__ void rms_norm_q8_1(const float* __restrict__ x, const floa
     }
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
-    // pass 2, WARP-PER-BLOCK (ncu 2026-07-03): warp handles 32-block `blk`, lane j owns element j
-    // -> coalesced 128B x/w reads + 32B q8 writes (old form: thread-owns-block, 32-way strided).
-    // shfl-max amax is order-independent -> q8_1 output BIT-IDENTICAL to quantize_q8_1.
+    // pass 2, WARP-PER-4-BLOCKS float4 (ncu 2026-07-03): lane j reads float4 -> a warp covers 128
+    // elements = FOUR 32-blocks per iteration (512B coalesced x/w reads, char4 writes). Each block
+    // maps to an 8-lane group; amax reduces within the group (3 shfl_xor steps, width 8). Order of
+    // max over the same 32 values is irrelevant -> q8_1 output BIT-IDENTICAL to quantize_q8_1.
+    // (Plain warp-per-block regressed here: single-CTA kernel, 8 warps -> too little MLP.)
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
     int lane = tid & 31;
-    for (int blk = tid >> 5; blk < nblk; blk += blockDim.x >> 5) {
+    const float4* x4 = (const float4*)xr;
+    const float4* w4 = (const float4*)w;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;               // float4 index; 32 lanes * 4 = 128 elems = 4 blocks
+        float4 xv = x4[i4];
+        float4 wv = w4[i4];
+        float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                               (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+    // tail (nblk % 4 != 0): scalar warp-per-block for the last <4 blocks.
+    for (int blk = (nblk & ~3) + (tid >> 5); blk < nblk; blk += blockDim.x >> 5) {
         int i = blk * 32 + lane;
         float v = (xr[i] * scale) * w[i];
         float amax = fabsf(v);
@@ -265,12 +286,30 @@ extern "C" __global__ void add_rms_norm_q8_1(const float* __restrict__ a, const 
     }
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
-    // pass 2, WARP-PER-BLOCK: same coalesced form as rms_norm_q8_1 (see comment there). Reads the
-    // just-written `res` row (rr) — still bit-identical (same IEEE values back from cache/HBM).
+    // pass 2, WARP-PER-4-BLOCKS float4: same coalesced form as rms_norm_q8_1 (see comment there).
+    // Reads the just-written `res` row (rr) — bit-identical (same IEEE values back from cache/HBM).
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
     int lane = tid & 31;
-    for (int blk = tid >> 5; blk < nblk; blk += blockDim.x >> 5) {
+    const float4* r4 = (const float4*)rr;
+    const float4* w4 = (const float4*)w;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        float4 xv = r4[i4];
+        float4 wv = w4[i4];
+        float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                               (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+    for (int blk = (nblk & ~3) + (tid >> 5); blk < nblk; blk += blockDim.x >> 5) {
         int i = blk * 32 + lane;
         float v = (rr[i] * scale) * w[i];
         float amax = fabsf(v);

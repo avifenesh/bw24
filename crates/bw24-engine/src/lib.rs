@@ -709,7 +709,9 @@ impl Engine {
         let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut d = self.alloc_uninit::<f32>(nrows * nblk)?;
         let f = self.func("rms_norm_q8_1");
-        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        // 1024 threads: decode is nrows=1 -> ONE CTA; 32 warps hide the pass1->pass2 latency
+        // (s[32] reduce already sized for 32 warps). Same shape math at any blockDim.
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
@@ -727,7 +729,8 @@ impl Engine {
         let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut d = self.alloc_uninit::<f32>(nrows * nblk)?;
         let f = self.func("add_rms_norm_q8_1");
-        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        // 1024 threads: same single-CTA-at-decode reasoning as rms_norm_q8_1.
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut bld = self.gpu.stream.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(w).arg(res).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
