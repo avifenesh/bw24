@@ -258,7 +258,12 @@ fn admit(
     }
 
     // Context guard mirrors generate_with: prompt + generated must fit ctx_cap.
-    let ctx_cap = req.params.max_ctx.unwrap_or(prompt.len() + req.params.max_new + 8);
+    // BW24_CTX (default 8192): FLOOR for session cache allocation — per-request-sized caches can
+    // never serve a LONGER continuation, which made the KV-reuse pool structurally unhittable in
+    // multi-turn (parked cap 168 < next turn's need 240). Fixed-size sessions are also how the
+    // reference server allocates (--ctx-size). KV cost @8192 on the 9B ≈ 119MB/session.
+    let ctx_floor: usize = std::env::var("BW24_CTX").ok().and_then(|v| v.parse().ok()).unwrap_or(8192);
+    let ctx_cap = req.params.max_ctx.unwrap_or(prompt.len() + req.params.max_new + 8).max(ctx_floor);
     if prompt.len() >= ctx_cap {
         return Err((req.tx, format!(
             "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
