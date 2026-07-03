@@ -1,6 +1,6 @@
-// llama_mmq_q45k.cu — VENDORED llama.cpp Q4_K/Q5_K W4A8 MMQ prefill GEMM, ggml-decoupled.
+// mmq_q45k.cu — Q4_K/Q5_K W4A8 int8-MMA MMQ prefill GEMM (vendored floor, ggml-decoupled).
 //
-// Same vendor-the-floor move as llama_mmq_nvfp4.cu, for the two hand-rolled k-quant GEMMs that
+// Same vendor-the-floor move as mmq_fp4.cu, for the two hand-rolled k-quant GEMMs that
 // dominate the prefill busy-% (q4_K 32% + q5_K 28%). Source: /data/projects/llama.cpp/ggml/src/ggml-cuda/
 //   - quantize.cu  : quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_DS4> (activation f32 -> block_q8_1_mmq,
 //                    (d, sum) half2 per 32 values — Q4_K/Q5_K carry a min-offset so the sum term is live)

@@ -1,4 +1,4 @@
-//! FFI to the VENDORED llama MMQ prefill GEMMs (cu/llama_mmq_nvfp4.cu + cu/llama_mmq_q45k.cu).
+//! FFI to the MMQ prefill GEMMs (cu/mmq_fp4.cu + cu/mmq_q45k.cu) — vendored floor kernels.
 //!
 //! NVFP4: the 5150-pp512 kernel from llama.cpp, ggml-decoupled into a static lib with a C-ABI host
 //! launcher. The launcher quantizes the f32 activation to block_fp4_mmq internally (llama's 2-level

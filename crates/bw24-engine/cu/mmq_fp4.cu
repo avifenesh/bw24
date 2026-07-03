@@ -1,4 +1,4 @@
-// llama_mmq_nvfp4.cu — VENDORED llama.cpp NVFP4 W4A4 MMQ prefill GEMM, ggml-decoupled for sm_120a.
+// mmq_fp4.cu — NVFP4 W4A4 block-scale MMQ prefill GEMM (vendored floor, ggml-decoupled, sm_120a).
 //
 // This is the 5150-pp512 kernel from llama.cpp brought into bw24 wholesale (the user's "copy the
 // working fast kernel, tune the edges" mandate). Source: /data/projects/llama.cpp/ggml/src/ggml-cuda/

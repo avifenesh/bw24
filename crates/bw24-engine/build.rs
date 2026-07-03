@@ -30,11 +30,11 @@ fn main() {
     // path), but ALWAYS built (no external header deps — fully ggml-decoupled). The launchers do
     // cudaFuncSetAttribute (>48KB dynamic smem) + the mul_mat_q kernel launch internally.
     // Called from Rust via FFI (mmq_ffi.rs), dispatched behind BW24_MMQ=1.
-    // Two translation units: llama_mmq_nvfp4.cu (Blackwell mxf4nvf4 W4A4) and llama_mmq_q45k.cu
+    // Two translation units: mmq_fp4.cu (Blackwell mxf4nvf4 W4A4) and mmq_q45k.cu
     // (Q4_K/Q5_K int8-MMA W4A8, sm_75+ portable). Both archived into one libbw24_mmq.a.
     {
         let mut objs: Vec<PathBuf> = Vec::new();
-        for mmq_src in ["cu/llama_mmq_nvfp4.cu", "cu/llama_mmq_q45k.cu"] {
+        for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
