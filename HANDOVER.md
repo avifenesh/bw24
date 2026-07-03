@@ -110,7 +110,12 @@ Next prefill levers in order: (a) port stream-K to the q45k MMQ (llama's mul_mat
 
 **Vendor-from-everything directive (user, 2026-07-04):** edges can come from ANY tool — sglang, vllm, ktransformers, lmcache, flashinfer, cuBLAS, TensorRT-LLM, ollama, DeepSeek-4 stack, papers. research/inference-maps/ already maps vllm/sglang/ktransformers/lmcache/flashinfer/trt-llm/cutlass-marlin/exllamav3 — USE them per component. E2E tok/s vs llama at the daily serve config (spec+KV-quant on) is the headline bench, not kernel microbenches.
 
-## SPEC SCOREBOARD (2026-07-04, 9B, exact greedy)
+## SPEC SCOREBOARD — CORRECTED HONEST NUMBERS (2026-07-04, run-spec now gen-only timed)
+9B plain eager 90.3 tok/s → **spec K=3 pmin=0.2: 105.8 tok/s (1.17x), all K=1..8 exact** ≈ llama plain tg128 (106.3). Prior 47/52 prints were prime-polluted (ratios stood, absolutes didn't).
+Stack rank remains: plain GRAPH decode 110.5 > eager spec 105.8 > plain eager 90.3. **The multiplier that unlocks spec as the daily winner = graph-capturing the spec loop** (draft chain is fixed-shape T=1; verify is bucketed T=k+1): eager→graph is +22% on plain, and spec's 1.17x compounds on top → projected ~129 tok/s. Blocked only by engineering (capture the MTP head + verify with device counters like decode_step_dc), not by any measured wall.
+sm89/L40S status (ARM 3, subagent-only per user): first hardware run happened — argmax gate PASS but kernel-check/prefill CRASH (illegal address) and decode 0.23x of llama; the sm89 branch compiles but is NOT execution-ready on real Ada hardware. Debug = future subagent work; box artifacts at fpv-train:~/bw24-bench/.
+
+## SPEC SCOREBOARD (2026-07-04, 9B, exact greedy — PRE-TIMING-FIX prints below, ratios valid)
 plain 47.1 → K=4 ungated 1.03x → p-min 1.11x → **bonus-fold + pmin 0.2 @K=3: 52.17 tok/s (1.11x), K-curve flattened (K=4/6 hold 1.05/1.06 under pmin 0.3), K=1..8 all exact.**
 Bonus-fold trade measured: 1 trunk read/round saved vs ~10pts acceptance (pseudo-hidden draft seed); STRUCTURAL OPTIMUM — a true-hidden fold requires knowing the bonus pre-verify, which IS the pseudo-seed. Recorded in JSONL.
 Landed chain: batched linear verify → GPU-argmax draft → persistent snapshots → FR-Spec consumer (BW24_MTP_DRAFT + d2t) → p-min gate (BW24_SPEC_PMIN).
