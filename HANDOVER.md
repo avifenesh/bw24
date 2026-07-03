@@ -109,6 +109,12 @@ Next prefill levers in order: (a) port stream-K to the q45k MMQ (llama's mul_mat
 
 **Vendor-from-everything directive (user, 2026-07-04):** edges can come from ANY tool — sglang, vllm, ktransformers, lmcache, flashinfer, cuBLAS, TensorRT-LLM, ollama, DeepSeek-4 stack, papers. research/inference-maps/ already maps vllm/sglang/ktransformers/lmcache/flashinfer/trt-llm/cutlass-marlin/exllamav3 — USE them per component. E2E tok/s vs llama at the daily serve config (spec+KV-quant on) is the headline bench, not kernel microbenches.
 
+## SPEC SCOREBOARD (2026-07-04, 9B, exact greedy)
+plain 47.1 → K=4 ungated 1.03x → **p-min 0.3 gated 1.11x (51.95 tok/s), accept 91%, K=1..8 all exact.**
+Landed chain: batched linear verify → GPU-argmax draft → persistent snapshots → FR-Spec consumer (BW24_MTP_DRAFT + d2t) → p-min gate (BW24_SPEC_PMIN).
+27B: 0.85x best (pmin 0.4) — acceptance-bound (45% native, 31% with the Q4_K draft file whose NextN block loses 15pts). 27B needs a target-quality trimmed draft (NVFP4 block + trimmed head) — the agent's HEAD_ONLY probe failed exactness on shared_head_norm mismatch; producer work.
+**NEXT quantified spec levers:** (1) bonus-token fold — every round pays a full T=1 weight read for the bonus (decode_step_h); llama folds it into the next verify batch. (2) 9B FR-Spec trimmed head (draft lm_head=750MB Q6_K, c≈0.13/token → 87% cut; user's gguf-py producer recipe in his llama issue 25187). Both together should push toward the accept-rate-implied ~1.5-2x.
+
 **Ranked levers (updated post-decode-session):**
 1. **FA decode port** (llama fattn-vec structure: q8_1 Q + dp4a on raw K bytes, no smem staging) — agent running in background; bw24 FA ~1.3ms/tok vs llama ~0.6ms.
 2. **MTP K=4 exactness fix** — debug agent running (worktree); K=1/2 PASS, K=4 diverges on ALL kernel paths (garbage special tokens ~idx 25 => indexing/state bug, not numerics). MTP is the profit lever: K=1 already 0.85x of plain at 81% acceptance.
