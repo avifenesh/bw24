@@ -528,8 +528,17 @@ impl HybridModel {
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
         let mut snap = cache.snapshot(e)?;
+        // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
+        // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as
+        // column 0 of the NEXT round's verify batch; the next draft chain seeds from the MTP
+        // block's pseudo-hidden at the bonus position (one extra MTP-block pass, ~1/33 of a trunk
+        // read). Verify still checks every emitted token against the target -> exactness holds by
+        // construction; only DRAFT QUALITY can shift (pseudo-hidden seed), which the acceptance
+        // numbers arbitrate. Partial accepts keep the batched replay (commits the bonus with a
+        // TRUE trunk hidden) — so pseudo-seeding never compounds past a rejection.
+        let mut pending: Option<u32> = None;   // bonus emitted but not yet committed to cache
         while out.len() < max_new {
-            let pos = cache.pos;            // #tokens already committed in the cache
+            let pos = cache.pos;            // #tokens committed (EXCLUDES a pending bonus)
             cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
 
             // --- 1. DRAFT k tokens with the NextN head (autoregressive, T=1 each) ---
@@ -551,7 +560,8 @@ impl HybridModel {
                 // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token read
                 // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
                 // smallest-index tie-break as host argmax (argmax_gate-validated) -> same tokens.
-                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, pos + j)?;
+                let mtp_pos = pos + if pending.is_some() { 1 } else { 0 } + j;
+                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos)?;
                 let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
                 let idx = e.dtoh_u32_one(&tok_d)?;
                 // trimmed draft vocab -> target token id (identity when no d2t map)
@@ -571,17 +581,22 @@ impl HybridModel {
             }
             let k_round = draft.len();
 
-            // --- 2. VERIFY: one batched target forward over draft[0..k] at positions pos..pos+k-1
-            //         (T=k). Column j follows draft[j], predicting slot pos+1+j. ---
-            let tlogits = self.decode_step_t(e, &draft, pos, &mut cache)?;
+            // --- 2. VERIFY: one batched target forward. With a pending bonus, it rides as col 0
+            //         (committing its KV/recur inside the SAME weight read); drafts follow. ---
+            let verify_tokens: Vec<u32> = match pending {
+                Some(b) => { let mut v = Vec::with_capacity(k_round + 1); v.push(b); v.extend_from_slice(&draft); v }
+                None => draft.clone(),
+            };
+            let base = if pending.is_some() { 1 } else { 0 };
+            let (tlogits, vh_seed) = self.decode_step_t_h(e, &verify_tokens, pos, &mut cache)?;
 
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
-            // t_pred[j] = target's greedy prediction for slot pos+j:
-            //   t_pred[0] = argmax(last_logits)           (predicts the token after last_token)
-            //   t_pred[j] = argmax(tlogits col j-1)        (predicts the token after draft[j-1])
+            // t_pred[j] = target's greedy prediction for the slot after draft[j-1] (j>=1) or after
+            // last_token (j==0). With a pending bonus, col 0 IS the prediction after last_token
+            // (== the bonus), so every index shifts by `base` and last_logits is unused.
             let t_pred = |j: usize| -> u32 {
-                if j == 0 { argmax(&last_logits) as u32 }
-                else { argmax(&tlogits[(j - 1) * n_vocab..j * n_vocab]) as u32 }
+                if j == 0 && base == 0 { argmax(&last_logits) as u32 }
+                else { argmax(&tlogits[(base + j - 1) * n_vocab..(base + j) * n_vocab]) as u32 }
             };
             let mut n_acc = 0usize;
             for j in 0..k_round {
@@ -606,14 +621,18 @@ impl HybridModel {
             if bonus_emitted { out.push(bonus); }
             last_token = bonus;
 
-            // --- 5. ROLLBACK + advance to exactly pos + n_acc + 1 committed tokens (§C) ---
+            // --- 5. ROLLBACK + advance (§C) ---
             if n_acc == k_round {
-                // FULL ACCEPT: all k draft columns are committed; KV+recur already correct.
-                // cache.pos == pos + k. Feed `bonus` (T=1) to commit its KV/recur and obtain the
-                // next-round last_logits + h_seed. (No rollback — Reader-3 full-accept path.)
-                let (l, h) = self.decode_step_h(e, bonus, &mut cache)?;
-                last_logits = l; h_seed = h;
-                if debug_spec { eprintln!("  -> FULL ACCEPT, next_pred={}", argmax(&last_logits)); }
+                // FULL ACCEPT, BONUS FOLD: all verify columns (pending? + drafts) are committed in
+                // cache; the NEW bonus stays PENDING for the next round's verify batch — NO extra
+                // T=1 trunk pass. The next draft chain seeds from the MTP block's h_nextn at the
+                // bonus position: one MTP-block pass (~1/33 trunk cost) replaces the trunk read.
+                // last_logits is dead in the pending path (t_pred reads verify col 0).
+                let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
+                    e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round)?;
+                pending = Some(bonus);
+                h_seed = h_bonus_pseudo;
+                if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending)"); }
             } else {
                 // PARTIAL ACCEPT: verify appended k draft columns but only n_acc are committed.
                 // Restore EVERYTHING to the pre-round snapshot (KV truncate to pos + recur restore),
@@ -624,7 +643,12 @@ impl HybridModel {
                 // the old per-token loop (decode is bandwidth-bound at batch=1). KV+recur rebuilt.
                 let _ = n_embd;
                 cache.rollback(e, &snap, 0)?;   // accept_len=0: KV len = pos, recur = snapshot
-                let mut replay: Vec<u32> = draft[0..n_acc].to_vec();
+                // Replay = pending bonus (if any) ++ accepted drafts ++ new bonus: commits the
+                // pending token with a TRUE trunk hidden, so pseudo-seeding never survives a
+                // rejection round.
+                let mut replay: Vec<u32> = Vec::with_capacity(base + n_acc + 1);
+                if let Some(b) = pending.take() { replay.push(b); }
+                replay.extend_from_slice(&draft[0..n_acc]);
                 replay.push(bonus);
                 let (rl, rh) = self.decode_step_t_h(e, &replay, pos, &mut cache)?;
                 // last_logits = last column's logits (predicts the token after `bonus`).
