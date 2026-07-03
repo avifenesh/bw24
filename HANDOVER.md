@@ -79,6 +79,28 @@ Next prefill levers in order: (a) port stream-K to the q45k MMQ (llama's mul_mat
 
 **FA-decode grid starvation (27B ncu, 2026-07-03):** register-dequant kernel at short ctx runs grid (n_head_kv=4, n_splits=2) x (32,6) = 8 CTAs on 82 SMs; long-scoreboard stall 77%, warps_active 12.5%, DRAM 0.08%. It's LATENCY-bound (serial dependent K loads per warp), not BW. Split=32 helps 27B +3.4% but BREAKS 9B spec exactness (even with same-kernel per-row verify — combine order still shifts) so default stays 64. Structural fixes evaluated: (a) 2-key ILP — BUILT AND MEASURED NEGATIVE (63.6 vs 96.8 @8k direct A/B: doubling in-flight K/V registers at dpl=8 collapsed occupancy; the 77% stall wants MORE WARPS, not more per-warp work). (c) dp4a int8 K-dot: BUILT AND MEASURED NEGATIVE — no perf gain (81.2 vs 82.2 @8k, latency-bound on K loads either way; dp4a cut ALU not loads) AND K=1/2 spec exactness broke (FP-order lesson #5 REFINED: same-kernel is necessary but NOT sufficient — int8-Q accuracy change flips tight-margin argmax in the DRAFT chain). **FA-decode dot direction now empirically CLOSED with measured proof on all four variants: smem-broadcast (126us, slow), register-dequant f32 (winner, shipped), 2-key ILP (occupancy collapse 0.66x), dp4a (no gain + exactness break).** Untried: (b) combine-fold into last CTA, (d) 2-kv-heads/CTA packing — both only reshuffle the same latency-bound loop; expected value low after (a)/(c) results.
 
+## EMPIRICAL WALL LEDGER (per the goal's proof standard — every direction measured, 2026-07-03)
+
+**CLOSED with measured proof (do not retry without new information):**
+| direction | proof |
+|---|---|
+| FA-decode dot variants | 4 variants A/B'd: smem-broadcast 126us (slowest), register-dequant f32 (WINNER, shipped, +48% @8k), 2-key ILP 0.66x (occupancy collapse), dp4a K-dot 0.99x + K=1/2 exactness break |
+| stream-K on q45k MMQ | 1.11x per-GEMM but argmax 82→68 deterministic (1e-6 reorder amplifies over 33 layers); gated BW24_MMQ_STREAMK=1 |
+| q45k MMQ_X=64 smem diet | -2% pp512 (tile efficiency > 2-CTA/SM occupancy at T=512); seam BW24_MMQ_X_Q45K kept |
+| adaptive FA split | +1.2% decode but breaks spec exactness; BW24_FA_SPLIT seam kept (27B non-spec +3.4% at 32) |
+| q4_K multi-row (27B) | ±0% (measured again this session) |
+| matvec DRAM% | at exact llama parity (42% both, same kernel shape) — SOL-bound |
+| decode elementwise | all coalesced+fused now; graph 1.04x ABOVE llama interleaved |
+
+**FP-ORDER RULES (5 instances, now law):** (1) any reduce-order change flips tight-margin greedy argmax; (2) same-kernel between decode and verify is NECESSARY; (3) …but NOT SUFFICIENT — accuracy changes (int8 Q) flip the draft chain too. Full gate battery = kernel-check + argmax + run-spec K=1..4.
+
+**OPEN directions (not walls — unmeasured or needs infra):**
+- MTP >1.0x: now 0.97x, all-K exact, GPU-argmax draft + persistent snapshots landed. Residual = sequential per-column linear-attn verify (24 layers × K+1 T=1 steps). Structural fix = chunked GDN scan (T>1 recurrent verify kernel) — real kernel work, next big item.
+- 27B decode 0.92x: NVFP4 matvec 81% of its decode; needs the same interleaved-protocol tuning pass 9B got, plus FA split=32 for non-spec serving.
+- Prefill FA (1.9ms vs llama 0.66ms) — fa_prefill tile config port; FA-PREFILL-OVERLAP-DESIGN.md has the design.
+- MoE caching/spill, KV reuse/eviction, striped-vocab MTP, safetensors loaders for gemma4/minimax/deepseek: ROADMAP items 6-9/11-15 — feature work, untouched this session by priority (arm 1 = perf on daily 9B/27B first).
+- L40S benches: blocked on hardware (box terminated). All commits compile-mirrored to sm89.
+
 **Ranked levers (updated post-decode-session):**
 1. **FA decode port** (llama fattn-vec structure: q8_1 Q + dp4a on raw K bytes, no smem staging) — agent running in background; bw24 FA ~1.3ms/tok vs llama ~0.6ms.
 2. **MTP K=4 exactness fix** — debug agent running (worktree); K=1/2 PASS, K=4 diverges on ALL kernel paths (garbage special tokens ~idx 25 => indexing/state bug, not numerics). MTP is the profit lever: K=1 already 0.85x of plain at 81% acceptance.
