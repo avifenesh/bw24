@@ -369,22 +369,26 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
 
 // Quantize an [m, in] f32 activation matrix to q8_1: out_q (int8 [m, in]) + out_d (f32 [m, in/32]).
 // One block per (token, block-of-32). amax over 32, d=amax/127, qs=round(x/d).
+// WARP-PER-BLOCK (decode elementwise-soup fix, ncu 2026-07-03): lane j owns element j of one
+// 32-block -> coalesced 128B read + 32B write, vs the old thread-owns-block 32-way strided form.
+// __shfl_xor max reduce is order-independent -> d and q8 values BIT-IDENTICAL to the old kernel.
 extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed char* __restrict__ out_q,
                                          float* __restrict__ out_d, int in_f, int m) {
-    int blk = blockIdx.x * blockDim.x + threadIdx.x;   // global block-of-32 index
+    int blk = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;   // global block-of-32 index
+    int lane = threadIdx.x & 31;
     int nblk_row = in_f / 32;
     if (blk >= m * nblk_row) return;
     int t = blk / nblk_row;
     int b = blk % nblk_row;
-    if (t >= m) return;
-    const float* xr = x + (size_t)t * in_f + b * 32;
-    float amax = 0.0f;
-    for (int j = 0; j < 32; j++) amax = fmaxf(amax, fabsf(xr[j]));
+    size_t off = (size_t)t * in_f + b * 32 + lane;
+    float v = x[off];
+    float amax = fabsf(v);
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
     float d = amax / 127.0f;
     float id = d > 0.0f ? 1.0f / d : 0.0f;
-    signed char* oq = out_q + (size_t)t * in_f + b * 32;
-    for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(xr[j] * id);
-    out_d[(size_t)t * nblk_row + b] = d;
+    out_q[off] = (signed char)__float2int_rn(v * id);
+    if (lane == 0) out_d[(size_t)t * nblk_row + b] = d;
 }
 
 // ================= Stage-C: FP4 (e2m1) activation quantize for the mxf4 block-scale GEMM =========

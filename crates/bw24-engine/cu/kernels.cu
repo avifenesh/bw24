@@ -218,26 +218,22 @@ extern "C" __global__ void rms_norm_q8_1(const float* __restrict__ x, const floa
     }
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
-    // pass 2: thread tid owns 32-block `blk` (strided). Recompute z=(x*scale)*w for its 32 elems,
-    // amax over them, write q8_1. Same per-block math as quantize_q8_1 -> bit-identical.
+    // pass 2, WARP-PER-BLOCK (ncu 2026-07-03): warp handles 32-block `blk`, lane j owns element j
+    // -> coalesced 128B x/w reads + 32B q8 writes (old form: thread-owns-block, 32-way strided).
+    // shfl-max amax is order-independent -> q8_1 output BIT-IDENTICAL to quantize_q8_1.
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
-    for (int blk = tid; blk < nblk; blk += blockDim.x) {
-        int off = blk * 32;
-        float z[32];
-        float amax = 0.0f;
+    int lane = tid & 31;
+    for (int blk = tid >> 5; blk < nblk; blk += blockDim.x >> 5) {
+        int i = blk * 32 + lane;
+        float v = (xr[i] * scale) * w[i];
+        float amax = fabsf(v);
         #pragma unroll
-        for (int j = 0; j < 32; j++) {
-            float v = (xr[off + j] * scale) * w[off + j];
-            z[j] = v;
-            amax = fmaxf(amax, fabsf(v));
-        }
+        for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
         float d = amax / 127.0f;
         float id = d > 0.0f ? 1.0f / d : 0.0f;
-        signed char* oq = base_q + off;
-        #pragma unroll
-        for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(z[j] * id);
-        base_d[blk] = d;
+        base_q[i] = (signed char)__float2int_rn(v * id);
+        if (lane == 0) base_d[blk] = d;
     }
 }
 
@@ -269,24 +265,21 @@ extern "C" __global__ void add_rms_norm_q8_1(const float* __restrict__ a, const 
     }
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
+    // pass 2, WARP-PER-BLOCK: same coalesced form as rms_norm_q8_1 (see comment there). Reads the
+    // just-written `res` row (rr) — still bit-identical (same IEEE values back from cache/HBM).
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
-    for (int blk = tid; blk < nblk; blk += blockDim.x) {
-        int off = blk * 32;
-        float z[32];
-        float amax = 0.0f;
+    int lane = tid & 31;
+    for (int blk = tid >> 5; blk < nblk; blk += blockDim.x >> 5) {
+        int i = blk * 32 + lane;
+        float v = (rr[i] * scale) * w[i];
+        float amax = fabsf(v);
         #pragma unroll
-        for (int j = 0; j < 32; j++) {
-            float v = (rr[off + j] * scale) * w[off + j];
-            z[j] = v;
-            amax = fmaxf(amax, fabsf(v));
-        }
+        for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
         float d = amax / 127.0f;
         float id = d > 0.0f ? 1.0f / d : 0.0f;
-        signed char* oq = base_q + off;
-        #pragma unroll
-        for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(z[j] * id);
-        base_d[blk] = d;
+        base_q[i] = (signed char)__float2int_rn(v * id);
+        if (lane == 0) base_d[blk] = d;
     }
 }
 
@@ -362,28 +355,28 @@ extern "C" __global__ void silu_mul_scaled_f32(const float* __restrict__ gate, c
 // its 32 silu*mul values, finds amax over the block, and writes q8_1 (aq int8 + ad f32 scale).
 // BIT-IDENTICAL q8_1 to scale->silu_mul->quantize_q8_1: same float silu*mul (g*gs, up*us), same
 // d=amax/127, same id=1/d, same __float2int_rn rounding. n must be a multiple of 32 (n_ff always is).
+// WARP-PER-BLOCK (decode elementwise-soup fix, ncu 2026-07-03): lane j of a warp owns element j of
+// one 32-block -> fully coalesced 128B gate/up reads + 32B q8 writes. The old thread-owns-block form
+// read 32 SEQUENTIAL floats per thread (32-way uncoalesced) on a nblk-thread grid (384 threads for
+// n_ff=12288) and measured 22.7us vs ~0.15us of actual DRAM traffic. amax via __shfl_xor max is
+// order-independent (max is associative+commutative) -> d and every q8 value stay BIT-IDENTICAL.
 extern "C" __global__ void silu_mul_scaled_q8_1(
         const float* __restrict__ gate, const float* __restrict__ up, float gs, float us,
         signed char* __restrict__ out_q, float* __restrict__ out_d, int n) {
-    int blk = blockIdx.x * blockDim.x + threadIdx.x;   // global 32-block index
+    int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;   // global 32-block index
+    int lane = threadIdx.x & 31;
     int nblk = n / 32;
-    if (blk >= nblk) return;
-    int base = blk * 32;
-    float v[32];
-    float amax = 0.0f;
+    if (warp >= nblk) return;
+    int i = warp * 32 + lane;
+    float g = gate[i] * gs;
+    float r = (g / (1.0f + expf(-g))) * (up[i] * us);   // silu(g)*up, bit-identical
+    float amax = fabsf(r);
     #pragma unroll
-    for (int j = 0; j < 32; j++) {
-        float g = gate[base + j] * gs;
-        float r = (g / (1.0f + expf(-g))) * (up[base + j] * us);   // silu(g)*up, bit-identical
-        v[j] = r;
-        amax = fmaxf(amax, fabsf(r));
-    }
+    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
     float d = amax / 127.0f;
     float id = d > 0.0f ? 1.0f / d : 0.0f;
-    signed char* oq = out_q + base;
-    #pragma unroll
-    for (int j = 0; j < 32; j++) oq[j] = (signed char)__float2int_rn(v[j] * id);
-    out_d[blk] = d;
+    out_q[i] = (signed char)__float2int_rn(r * id);
+    if (lane == 0) out_d[warp] = d;
 }
 
 extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __restrict__ b,

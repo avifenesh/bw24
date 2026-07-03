@@ -389,7 +389,8 @@ impl Engine {
         let nblk = in_f / 32;
         let mut q = self.alloc_uninit::<i8>(m * in_f)?;  // full-overwrite output: skip memset
         let mut d = self.alloc_uninit::<f32>(m * nblk)?;  // full-overwrite output: skip memset
-        let cfg = LaunchConfig::for_num_elems((m * nblk) as u32);
+        // WARP-PER-BLOCK kernel: one warp per 32-block -> m*in_f threads total.
+        let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
@@ -819,7 +820,8 @@ impl Engine {
         let nblk = n / 32;
         let mut aq = self.alloc_uninit::<i8>(n)?;       // full-overwrite output
         let mut ad = self.alloc_uninit::<f32>(nblk)?;   // full-overwrite output
-        let cfg = LaunchConfig::for_num_elems(nblk as u32);
+        // WARP-PER-BLOCK kernel: one warp (32 lanes) per 32-block -> n threads total.
+        let cfg = LaunchConfig::for_num_elems(n as u32);
         let (gsf, usf, ni) = (gs, us, n as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(gate).arg(up).arg(&gsf).arg(&usf).arg(&mut aq).arg(&mut ad).arg(&ni);
