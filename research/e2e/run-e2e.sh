@@ -12,12 +12,12 @@ if [ "$MODE" = 27b ]; then
   DRAFT=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M.gguf
   TRIM=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M-frspec32768.gguf
   BW_ENV="BW24_FRSPEC_TRIM=$TRIM BW24_SPEC_PMIN=0.2"
-  BK=3
+  BK=3   # 27B optimum (post replay-free sweep)
 else
   MODEL=/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
   DRAFT=""
-  BW_ENV="BW24_SPEC_PMIN=0.2"
-  BK=3
+  BW_ENV="BW24_SPEC_PMIN=0.3"
+  BK=2   # 9B optimum moved after the replay-free fix (config-sweep JSONL record)
 fi
 if [ "$ENGINE" = bw24 ]; then
   for P in p1-code-short p2-code-medium p3-agentic-long; do
