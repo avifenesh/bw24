@@ -678,9 +678,16 @@ impl HybridModel {
         let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
         let mut last_logits = Vec::new();
         // prime: feed each prompt token (decode_step builds KV + state incrementally)
+        let t_prime = std::time::Instant::now();
         for &tok in prompt {
             last_logits = self.decode_step(e, tok, &mut cache)?;
         }
+        e.stream().synchronize()?;
+        // Harness timing contract: prime wall time published for gen-only throughput math
+        // (bench binaries read this right after the call; subtraction-from-total breaks down
+        // when prime >> gen — measured ±80% error at 6k-token prompts).
+        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
+                                 std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(max_new);
         for _ in 0..max_new {
             let next = argmax(&last_logits) as u32;

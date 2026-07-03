@@ -123,6 +123,11 @@ pub struct Engine {
 /// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
 pub const ARGMAX_NB: usize = 256;
 
+/// Harness timing contract: wall nanos of the LAST generate/generate_spec prompt prime on this
+/// process. Bench binaries read it right after the call to print gen-only throughput without the
+/// prime-subtraction hack (which amplifies prime jitter into the gen number at long prompts).
+pub static PRIME_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Engine {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let gpu = bw24_runtime::Gpu::new(ordinal)?;

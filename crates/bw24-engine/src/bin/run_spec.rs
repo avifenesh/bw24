@@ -55,26 +55,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // printed number is GEN-ONLY throughput, comparable to llama-bench tg / serve-script numbers.
     let _ = model.generate(&e, &prompt, 1)?;   // cold-start warmup (weights/L2/allocator)
     e.stream().synchronize()?;
-    let tp = std::time::Instant::now();
-    let _ = model.generate(&e, &prompt, 1)?;
-    e.stream().synchronize()?;
-    let prime_dt = tp.elapsed().as_secs_f64();
-    e.stream().synchronize()?;
     let t0 = std::time::Instant::now();
     let gold = model.generate(&e, &prompt, n_new)?;
     e.stream().synchronize()?;
+    // Gen-only via the in-API prime timer (crate::PRIME_NANOS): the old subtract-a-separate-
+    // prime-run approach amplified prime jitter into the gen number (±80% at 6k-token prompts).
+    let prime_dt = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
     let gen_dt = (t0.elapsed().as_secs_f64() - prime_dt).max(1e-9);
     let gen_tps = (n_new - 1) as f64 / gen_dt;
-    println!("\n[generate]   {} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s (gen-only, prime {prime_dt:.3}s subtracted)", n_new - 1);
+    println!("\n[generate]   {} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s (gen-only; this run's prime {prime_dt:.3}s)", n_new - 1);
     println!("  tokens: {gold:?}");
 
     let mut all_pass = true;
-    for &k in &[1usize, 2, 3, 4, 6, 8] {
+    // BW24_SPEC_K=<k>: run ONLY one K (e2e bench mode — the full sweep is the gate battery).
+    let ks: Vec<usize> = match std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()) {
+        Some(k) => vec![k],
+        None => vec![1, 2, 3, 4, 6, 8],
+    };
+    for &k in &ks {
         e.stream().synchronize()?;
         let t1 = std::time::Instant::now();
         let (spec, drafted, accepted) = model.generate_spec(&e, &prompt, n_new, k)?;
         e.stream().synchronize()?;
-        let spec_dt = (t1.elapsed().as_secs_f64() - prime_dt).max(1e-9);
+        let spec_prime = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let spec_dt = (t1.elapsed().as_secs_f64() - spec_prime).max(1e-9);
         let spec_tps = (n_new - 1) as f64 / spec_dt;
         let acc_rate = if drafted > 0 { accepted as f64 / drafted as f64 } else { 0.0 };
 

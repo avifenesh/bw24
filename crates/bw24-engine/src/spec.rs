@@ -798,11 +798,17 @@ impl HybridModel {
         assert!(!prompt.is_empty(), "prompt must be non-empty");
         let mut prime_logits = Vec::new();
         let mut prompt_h = if kv_local { None } else { Some(e.uninit(prompt.len() * n_embd)?) };
+        let t_prime = std::time::Instant::now();
         for (i, &tok) in prompt.iter().enumerate() {
             let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
             if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
             prime_logits = l;
         }
+        e.stream().synchronize()?;
+        // Harness timing contract (see crate::PRIME_NANOS): gen-only throughput without the
+        // prime-subtraction hack.
+        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
+                                 std::sync::atomic::Ordering::Relaxed);
 
         // Resident embed table (model-lifetime, lazy first-use upload; kills the per-draft-token
         // and per-verify host-dequant+htod that nsys measured at 84% of spec API time).
