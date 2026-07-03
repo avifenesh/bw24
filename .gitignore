@@ -11,6 +11,8 @@ probe/arch_probe
 probe/bw_bench
 probe/tc_peak
 probe/lowbit_peak
+probe/epilogue_hoist_equiv
+probe/int8_swizzle_aload
 probe/*.o
 tools/llama_logits
 tools/ggml_dequant_ref
