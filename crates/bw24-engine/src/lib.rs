@@ -617,6 +617,29 @@ impl Engine {
         Ok(p)
     }
 
+    /// Like `prob_of_token_device` but writes into a PERSISTENT `p_out` buffer (stable pointer).
+    /// Required for CUDA-graph capture of the draft chain: the captured prob kernels must write
+    /// where the host reads the p-min confidence between replays. Same kernels, same math.
+    pub fn prob_of_token_device_into(&self, logits: &CudaSlice<f32>, tok: &CudaSlice<u32>,
+                                     p_out: &mut CudaSlice<f32>, n_vocab: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        let nb = ARGMAX_NB;
+        let mut part = self.alloc_uninit::<f32>(nb)?;
+        let f1 = self.func("prob_of_token_partial_f32");
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(logits).arg(tok).arg(&mut part).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let f2 = self.func("prob_of_token_final_f32");
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nbi = nb as i32;
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&part).arg(p_out).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     pub fn argmax_token_device(&self, logits: &CudaSlice<f32>, n_vocab: usize)
                                -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
         let mut tok = unsafe { self.gpu.stream.alloc::<u32>(1)? };

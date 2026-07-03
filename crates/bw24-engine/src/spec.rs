@@ -16,6 +16,9 @@ use crate::forward::argmax;
 /// Tiny scratch KV for the MTP block (one full-attn layer). Reset each draft round (§D.6).
 struct MtpScratch {
     kv: KvLayer,
+    /// Row capacity (k+1). Doubles as the fa_decode_dc bucket_max for the GRAPH draft path:
+    /// cap < 96 keeps the scalar-kernel/n_splits=1 geometry for every in-round t_kv.
+    cap: usize,
 }
 impl MtpScratch {
     fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize)
@@ -33,9 +36,15 @@ impl MtpScratch {
             k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
             kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
             len_d: e.htod_i32(&[0])?,
-        } })
+        }, cap })
     }
     fn reset(&mut self) { self.kv.len = 0; }
+    /// GRAPH-DRAFT reset: host len AND the device len_d counter the captured append/fa read
+    /// (a 4-byte in-place htod — the counter pointer is baked into the graph, never realloc'd).
+    fn reset_dc(&mut self, e: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+        self.kv.len = 0;
+        e.set_i32_one(&mut self.kv.len_d, 0)
+    }
 }
 
 impl HybridModel {
@@ -176,6 +185,136 @@ impl HybridModel {
         let mut attn_g = e.zeros(n_head * head_dim)?;
         e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
+    }
+
+    /// Device-counter twin of `mtp_full_attn` (GRAPH DRAFT): the scratch write slot and the
+    /// attention bound come from `scratch.kv.len_d` (device i32[1]) so the launch args are FIXED
+    /// across draft steps — ONE captured graph serves the whole chain. Geometry contract: scratch
+    /// t_kv <= cap < 96, so eager fa_decode picks the SCALAR kernel with n_splits=1 for every
+    /// draft index, and fa_decode_dc with bucket_max=cap reproduces exactly that (fa_vec=false,
+    /// n_splits=1, per-split bound read from the DEVICE t_kv) -> bit-identical draft tokens.
+    fn mtp_full_attn_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let n_embd = cfg.n_embd as usize;
+        let bucket_max = scratch.cap;   // < 96 guaranteed by the graph_draft eligibility gate
+
+        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
+        } else {
+            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
+        };
+        let mut q = e.zeros(n_head * head_dim)?;
+        let mut gate = e.zeros(n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+
+        let mut qn = e.zeros(n_head * head_dim)?;
+        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
+        q = qn;
+        let mut kn = e.zeros(n_head_kv * head_dim)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
+        k = kn;
+        let rope_dims = cfg.rope_dim_count as usize;
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
+
+        let kv = &mut scratch.kv;
+        // append at the DEVICE slot (kv.len_d == old len), then advance the counter in-graph.
+        e.append_kv_quantized_dc(&k, &v, &mut kv.k, &mut kv.v, &kv.len_d,
+                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+        e.inc_seqlen(&mut kv.len_d)?;
+        // full-buffer views (any in-round t_kv stays in range on replay); the kernel bounds the
+        // key range from the device counter.
+        let k_view = e.view_u8(&kv.k, kv.k.len());
+        let v_view = e.view_u8(&kv.v, kv.v.len());
+        let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
+        let mut attn = e.zeros(n_head * head_dim)?;
+        e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                       &kv.len_d, bucket_max, scale, ktb, vtb)?;
+
+        let mut gsig = e.zeros(n_head * head_dim)?;
+        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
+        let mut attn_g = e.zeros(n_head * head_dim)?;
+        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        Ok(e.matmul(&fa.wo, &attn_g, 1)?)
+    }
+
+    /// CAPTURE body for the GRAPH DRAFT (stage 2 of graph-grade spec): ONE MTP head forward with
+    /// every varying input device-resident —
+    ///   - token id from the persistent `tok_d` (the previous replay's in-graph argmax wrote it,
+    ///     so the chain feeds itself; the host reads the same 4 bytes for the draft list),
+    ///   - h_seed from the persistent `h_seed_d` (h_nextn is copied BACK into it at the end),
+    ///   - rope pos from the persistent `pos_d` counter (inc'd in-graph),
+    ///   - scratch KV slot/bound from `scratch.kv.len_d` (see mtp_full_attn_dc).
+    /// The p-min confidence lands in the persistent `p_d` iff `with_prob` (env is fixed per run).
+    /// Same kernels, same dispatch as the eager mtp_head_forward_dev chain -> same draft tokens
+    /// (exactness never depends on drafts — the verify arbitrates — but acceptance parity does).
+    #[allow(clippy::too_many_arguments)]
+    fn mtp_head_forward_cap(&self, e: &Engine, mtp: &MtpHead,
+                            tok_d: &mut CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
+                            h_seed_d: &mut CudaSlice<f32>, p_d: &mut CudaSlice<f32>,
+                            scratch: &mut MtpScratch, with_prob: bool,
+                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let e_emb = e.embed_gather_device(embd_gpu, tok_d, n_embd, embd_qt, embd_rb)?;
+        let mut e_norm = e.zeros(n_embd)?;
+        e.rms_norm(&e_emb, mtp.enorm.float_data(), &mut e_norm, n_embd, 1, eps)?;
+        let mut h_norm = e.zeros(n_embd)?;
+        e.rms_norm(&*h_seed_d, mtp.hnorm.float_data(), &mut h_norm, n_embd, 1, eps)?;
+        let mut concat = e.zeros(2 * n_embd)?;
+        e.copy_into(&mut concat, 0, &e_norm, n_embd)?;
+        e.copy_into(&mut concat, n_embd, &h_norm, n_embd)?;
+        let inp_sa = e.matmul(&mtp.eh_proj, &concat, 1)?;
+        let mut a_norm = e.zeros(n_embd)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
+        let attn_out = match &mtp.mixer {
+            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch)?,
+            Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
+        };
+        let mut x1 = e.zeros(n_embd)?;
+        e.add(&inp_sa, &attn_out, &mut x1, n_embd)?;
+        let mut z = e.zeros(n_embd)?;
+        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+        let ffn_out = match &mtp.ffn {
+            crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                let n_ff = ffn_gate.out_features();
+                let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+                    let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                    (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
+                } else {
+                    (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
+                };
+                let mut act = e.zeros(n_ff)?;
+                e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                e.matmul(ffn_down, &act, 1)?
+            }
+            crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense MTP FFN".into()),
+        };
+        let mut h_nextn = e.zeros(n_embd)?;
+        e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
+        let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
+        let mut final_h = e.zeros(n_embd)?;
+        e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
+        let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
+        let logits = e.matmul(head, &final_h, 1)?;
+        // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
+        e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
+        if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+        // h_nextn becomes the next draft step's h_seed — copy into the persistent seed buffer.
+        e.copy_into(h_seed_d, 0, &h_nextn, n_embd)?;
+        // advance the draft rope position in-graph.
+        e.inc_seqlen(pos_d)?;
+        Ok(())
     }
 
     /// Batched target verify forward over `tokens` at positions `pos0..pos0+T` (§D.3, T=K+1).
@@ -563,7 +702,34 @@ impl HybridModel {
     /// the NextN head to draft K tokens then verifies them in one batched target forward.
     /// Returns (generated tokens, total_drafted, total_accepted) so the caller can report
     /// acceptance rate. `k` = draft length per round.
+    ///
+    /// GRAPH DRAFT (stage 2 of graph-grade spec): when the model is all-Dense and the MTP head is
+    /// Dense (no MoE host readbacks), the fixed-shape T=1 MTP forward is CUDA-graph-captured ONCE
+    /// and replayed per draft step — the ~40 eager launches per drafted token collapse into one
+    /// graph dispatch; only the 4-byte token id (and 4-byte p-min confidence) round-trip per step.
+    /// Event tracking is disabled for the whole call (generate_graph pattern) so every buffer the
+    /// captured graph references is event-free; the spec loop is strictly single-stream.
+    /// BW24_SPEC_NOGRAPH=1 forces the eager draft chain.
     pub fn generate_spec(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize)
+                         -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        let mtp_dense = self.mtp.as_ref()
+            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
+        let trunk_dense = self.layers.iter()
+            .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
+        let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
+            && mtp_dense && trunk_dense && k + 2 < 96;
+        if !graph_draft {
+            return self.generate_spec_inner(e, prompt, max_new, k, false);
+        }
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        let r = self.generate_spec_inner(e, prompt, max_new, k, true);
+        if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        r
+    }
+
+    fn generate_spec_inner(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
+                           graph_draft: bool)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
@@ -605,12 +771,47 @@ impl HybridModel {
         // `h_seed` = last_token's pre-output_norm hidden. Establish it by feeding last_token once
         // (mirrors plain greedy). DEVICE-ARGMAX lever: the accept walk only ever consumes the
         // argmax of those logits — never the full vector — so a host u32 replaces the Vec<f32>.
-        let (init_logits, mut h_seed) = self.decode_step_h(e, last_token, &mut cache)?;
+        let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut cache)?;
         let mut last_pred = argmax(&init_logits) as u32;
+        // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
+        // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
+        // stable pointer for the graph-draft round-start copy.
+        let mut h_seed_buf = e.clone_dtod(&h_seed0)?;
         // Persistent device prediction slots for the accept walk (max k+1 verify columns).
         let mut preds_d = e.alloc_u32_zeroed(k + 2)?;
 
         let debug_spec = std::env::var("BW24_DEBUG_SPEC").is_ok();
+        // P-MIN CONFIDENCE GATE (BW24_SPEC_PMIN, the serve script's --spec-draft-p-min mechanism):
+        // stop the draft chain early when the head's softmax confidence in its own pick drops
+        // below p_min. Hoisted above the loop: the graph capture bakes the prob kernels iff on.
+        static PMIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let p_min = *PMIN.get_or_init(|| {
+            std::env::var("BW24_SPEC_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
+        });
+
+        // --- GRAPH DRAFT setup: persistent I/O buffers + ONE capture (2 warmups inside). The
+        // warmups mutate scratch len_d / pos / tok / seed — all reset at every round start, so the
+        // only restore needed is the scratch counter. Capture failure (e.g. a non-capturable
+        // cuBLAS path in an exotic head) falls back to the eager draft chain.
+        let mut g_tok = e.alloc_u32_zeroed(1)?;
+        let mut g_pos = e.htod_i32(&[0])?;
+        let mut g_seed = e.zeros(n_embd)?;
+        let mut g_p = e.zeros(1)?;
+        let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
+        if graph_draft {
+            let cap_res = e.capture_graph(|e| {
+                self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
+                                          &mut scratch, p_min > 0.0, embd_gpu, embd_qt, embd_rb,
+                                          d_vocab)
+            });
+            match cap_res {
+                Ok(g) => { scratch.reset_dc(e)?; draft_graph = Some(g); }
+                Err(err) => {
+                    scratch.reset_dc(e)?;
+                    if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
+                }
+            }
+        }
         let mut round = 0usize;
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
@@ -629,42 +830,56 @@ impl HybridModel {
             cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
 
             // --- 1. DRAFT k tokens with the NextN head (autoregressive, T=1 each) ---
-            scratch.reset();
+            // p-min semantics (both paths): stop the chain early when the head's confidence in
+            // its own pick drops below p_min — the just-drafted token is DISCARDED, but its
+            // scratch append stands (identical to the eager chain's ordering). j==0 always drafts.
+            let base0 = if pending.is_some() { 1usize } else { 0usize };
             let mut draft: Vec<u32> = Vec::with_capacity(k);
-            let mut e_tok = last_token;
-            let mut d_seed = e.clone_dtod(&h_seed)?;
-            // P-MIN CONFIDENCE GATE (BW24_SPEC_PMIN, the serve script's --spec-draft-p-min
-            // mechanism): stop the draft chain early when the head's softmax confidence in its
-            // own pick drops below p_min — low-confidence tail tokens are the ones the verify
-            // rejects, and every drafted-but-rejected token costs a full verify column. Exactness
-            // is untouched (verify still checks whatever WAS drafted; a shorter draft is just a
-            // smaller K this round). p=0.0/unset = always draft K (the prior behavior).
-            static PMIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-            let p_min = *PMIN.get_or_init(|| {
-                std::env::var("BW24_SPEC_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
-            });
-            for j in 0..k {
-                // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token read
-                // instead of the ~600KB full-vocab dtoh + host argmax per draft token. Same
-                // smallest-index tie-break as host argmax (argmax_gate-validated) -> same tokens.
-                let mtp_pos = pos + if pending.is_some() { 1 } else { 0 } + j;
-                let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos, &embd_gpu, embd_qt, embd_rb)?;
-                let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
-                let idx = e.dtoh_u32_one(&tok_d)?;
-                // trimmed draft vocab -> target token id (identity when no d2t map)
-                let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
-                if p_min > 0.0 {
-                    let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
-                    let p = e.dtoh(&p_d)?[0];
-                    if p < p_min && j > 0 {
-                        // keep at least 1 draft token (j==0 always drafts — a 0-draft round would
-                        // degenerate to plain decode plus overhead).
-                        break;
+            if let Some(gr) = &draft_graph {
+                // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
+                // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
+                // inc'd in-graph); the host only reads 4B token (+4B p) and decides the break.
+                scratch.reset_dc(e)?;
+                e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
+                e.set_u32_one(&mut g_tok, last_token)?;
+                e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
+                for j in 0..k {
+                    gr.launch()?;
+                    scratch.kv.len += 1;   // host mirror (len_d advanced in-graph)
+                    let idx = e.dtoh_u32_one(&g_tok)?;
+                    // trimmed draft vocab -> target token id (identity when no d2t map)
+                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    if p_min > 0.0 {
+                        let p = e.dtoh(&g_p)?[0];
+                        if p < p_min && j > 0 { break; }
                     }
+                    draft.push(d);
+                    // with a trimmed head the NEXT embed must read the TARGET id, not the draft
+                    // index the argmax wrote — patch the persistent token buffer (4B htod).
+                    if d != idx { e.set_u32_one(&mut g_tok, d)?; }
                 }
-                draft.push(d);
-                e_tok = d;
-                d_seed = h_nextn;
+            } else {
+                // EAGER DRAFT (fallback: MoE head/trunk, huge k, BW24_SPEC_NOGRAPH, capture fail).
+                scratch.reset();
+                let mut e_tok = last_token;
+                let mut d_seed = e.clone_dtod(&h_seed_buf)?;
+                for j in 0..k {
+                    // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token
+                    // read instead of the ~600KB full-vocab dtoh + host argmax per draft token.
+                    let mtp_pos = pos + base0 + j;
+                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
+                    let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
+                    let idx = e.dtoh_u32_one(&tok_d)?;
+                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    if p_min > 0.0 {
+                        let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
+                        let p = e.dtoh(&p_d)?[0];
+                        if p < p_min && j > 0 { break; }
+                    }
+                    draft.push(d);
+                    e_tok = d;
+                    d_seed = h_nextn;
+                }
             }
             let k_round = draft.len();
 
@@ -723,11 +938,24 @@ impl HybridModel {
                 // T=1 trunk pass. The next draft chain seeds from the MTP block's h_nextn at the
                 // bonus position: one MTP-block pass (~1/33 trunk cost) replaces the trunk read.
                 // last_pred is dead in the pending path (t_pred reads verify col 0).
-                let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                    e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round,
-                    &embd_gpu, embd_qt, embd_rb)?;
+                if let Some(gr) = &draft_graph {
+                    // pseudo-hidden seed via ONE graph replay (same MTP forward, inputs re-set).
+                    // vh_seed is copied into the baked seed buffer BEFORE the replay, so its own
+                    // (pool-transient) storage is dead by the time the graph writes scratch.
+                    e.set_u32_one(&mut g_tok, bonus)?;
+                    e.copy_into(&mut g_seed, 0, &vh_seed, n_embd)?;
+                    e.set_i32_one(&mut g_pos, (pos + base + k_round) as i32)?;
+                    gr.launch()?;
+                    scratch.kv.len += 1;
+                    // next round's seed = the pseudo hidden the replay left in g_seed.
+                    e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
+                } else {
+                    let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
+                        e, mtp, bonus, &vh_seed, &mut scratch, pos + base + k_round,
+                        embd_gpu, embd_qt, embd_rb)?;
+                    e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
+                }
                 pending = Some(bonus);
-                h_seed = h_bonus_pseudo;
                 if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending)"); }
             } else {
                 // PARTIAL ACCEPT: verify appended k draft columns but only n_acc are committed.
@@ -752,7 +980,7 @@ impl HybridModel {
                 // — device argmax + one 4-byte read instead of the full-vocab column dtoh.
                 e.argmax_token_device_col(&rl_d, replay.len() - 1, n_vocab, &mut preds_d, 0)?;
                 last_pred = e.dtoh_u32(&preds_d)?[0];
-                h_seed = rh;
+                e.copy_into(&mut h_seed_buf, 0, &rh, n_embd)?;
                 if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
             }
             round += 1;
