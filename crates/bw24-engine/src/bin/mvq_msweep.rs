@@ -74,10 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for m in [1usize, 2, 4, 8] {
             let x: Vec<f32> = (0..m * in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();
             let xd = e.htod(&x)?;
-            for _ in 0..50 { let _ = e.qmatvec_mmvq_raw(&wds[0], &xd, m, in_f, out_f, qtype, row_bytes)?; }
+            for _ in 0..50 { let _ = e.qmatvec_mmvq_raw(&wds[0], &xd, m, in_f, out_f, qtype, row_bytes, false)?; }
             e.stream().synchronize()?;
             let t0 = Instant::now();
-            for i in 0..iters { let _ = e.qmatvec_mmvq_raw(&wds[i % copies], &xd, m, in_f, out_f, qtype, row_bytes)?; }
+            for i in 0..iters { let _ = e.qmatvec_mmvq_raw(&wds[i % copies], &xd, m, in_f, out_f, qtype, row_bytes, false)?; }
             e.stream().synchronize()?;
             let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
             println!("  m={m}: {us:.2} us/call  ({:.2} us/token)", us / m as f64);
@@ -93,14 +93,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let xd = e.htod(&x)?;
         // bit-identity vs grid.y=m reference (original layout when the sweep buffers are repacked)
         let wref = wd_orig.as_ref().unwrap_or(&wds[0]);
-        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(wref, &xd, m, in_f, out_f, qtype, row_bytes)?)?;
-        let r_bat = e.dtoh(&e.qmatvec_nvfp4_batched_raw(&wds[0], &xd, m, in_f, out_f, row_bytes, mcols)?)?;
+        let r_ref = e.dtoh(&e.qmatvec_mmvq_raw(wref, &xd, m, in_f, out_f, qtype, row_bytes, false)?)?;
+        let r_bat = e.dtoh(&e.qmatvec_nvfp4_batched_raw(&wds[0], &xd, m, in_f, out_f, row_bytes, mcols, rp)?)?;
         let bad = r_ref.iter().zip(&r_bat).filter(|(a, b)| (*a - *b).abs() > 1e-3).count();
         let bit = r_ref.iter().zip(&r_bat).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-        for _ in 0..50 { let _ = e.qmatvec_nvfp4_batched_raw(&wds[0], &xd, m, in_f, out_f, row_bytes, mcols)?; }
+        for _ in 0..50 { let _ = e.qmatvec_nvfp4_batched_raw(&wds[0], &xd, m, in_f, out_f, row_bytes, mcols, rp)?; }
         e.stream().synchronize()?;
         let t0 = Instant::now();
-        for i in 0..iters { let _ = e.qmatvec_nvfp4_batched_raw(&wds[i % copies], &xd, m, in_f, out_f, row_bytes, mcols)?; }
+        for i in 0..iters { let _ = e.qmatvec_nvfp4_batched_raw(&wds[i % copies], &xd, m, in_f, out_f, row_bytes, mcols, rp)?; }
         e.stream().synchronize()?;
         let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
         println!("  m={m} (b{mcols}): {us:.2} us/call  ({:.2} us/token)  bit-bad={bad} bit-exact-bad={bit}", us / m as f64);

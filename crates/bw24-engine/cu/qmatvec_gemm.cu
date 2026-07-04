@@ -817,6 +817,26 @@ __device__ __forceinline__ void decode_nvfp4_2(const unsigned char* wrow, int g,
     *su0 = gue4m3_to_f32(d_bytes[s0]);
     *su1 = gue4m3_to_f32(d_bytes[s1]);
 }
+// SPLIT-PLANE (A6 rp) smem-source NVFP4 decode: `qs` = the resident 32B qs bytes of the block in
+// smem (quant plane copy, phase always 0), `scw` = the block's 4-byte scale word (from the dense
+// scale plane). Byte-for-byte the same nibbles/scale bytes as decode_nvfp4_2_s -> bit-identical.
+__device__ __forceinline__ void decode_nvfp4_2_rp(const unsigned char* qs, int scw, int whichHalf,
+                                                  int8_t* out, float* su0, float* su1) {
+    int s0 = whichHalf * 2, s1 = s0 + 1;
+    int* o32 = (int*)out;
+    #pragma unroll
+    for (int sl = 0; sl < 2; sl++) {
+        const unsigned char* qss = qs + (s0 + sl) * 8;
+        int q4a = (int)qss[0] | ((int)qss[1] << 8) | ((int)qss[2] << 16) | ((int)qss[3] << 24);
+        int q4b = (int)qss[4] | ((int)qss[5] << 8) | ((int)qss[6] << 16) | ((int)qss[7] << 24);
+        int2 va = gtable16(q4a, gkvalues_mxfp4);
+        int2 vb = gtable16(q4b, gkvalues_mxfp4);
+        int base = sl * 4;
+        o32[base + 0] = va.x; o32[base + 1] = vb.x; o32[base + 2] = va.y; o32[base + 3] = vb.y;
+    }
+    *su0 = gue4m3_to_f32((unsigned char)((scw >> (8 * s0)) & 0xFF));
+    *su1 = gue4m3_to_f32((unsigned char)((scw >> (8 * s1)) & 0xFF));
+}
 // FIX A smem-source NVFP4 decode: `b` = the resident 36B nvfp4 block base in smem (== sWraw_row+phase),
 // `whichHalf` = g&1. Body copied verbatim from decode_nvfp4_2 with sblk already absorbed into `b`.
 __device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whichHalf, int8_t* out,
@@ -856,12 +876,17 @@ __device__ __forceinline__ void decode_nvfp4_2_s(const unsigned char* b, int whi
 // m-frags (AND across the lo/hi two-scale mma) = 4 mma per B-load. Q6_K: MF=1, NTX_K=1 (bit-identical).
 // SWZ: apply the proven A-load XOR-swizzle (probe 81e513e) on the sW store + ld_A_s8_sw load to
 // halve the A-load bank conflicts. NVFP4 path only (SWZ=true); Q6_K SWZ=false (untouched, bit-id).
-template<int QT, int NW, int NTX_K, int MF, bool SWZ = false>
+template<int QT, int NW, int NTX_K, int MF, bool SWZ = false, bool RP = false>
 __device__ void qmatvec_gemm_kernel2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes)
 {
+    // SPLIT-PLANE repacked NVFP4 (A6): W = [quant plane out_f x in_f/64 x 32B][scale plane x 4B].
+    // The raw ring fetches the 32B qs (two aligned 16B chunks, NO phase); the 4B scale word is a
+    // dense-plane global read inside decode (off the mma chain). Same bytes -> bit-identical.
+    const int rp_nsb64 = in_f >> 6;
+    const unsigned char* rp_splane = W + (size_t)out_f * rp_nsb64 * 32;
     const int rowtile = blockIdx.x * BM;
     const int toktile = blockIdx.y * BN;
     const int warp = threadIdx.y;
@@ -887,8 +912,11 @@ __device__ void qmatvec_gemm_kernel2(
     __shared__ float  sAd[NSTAGE][BN];
     // raw superblock ring (FIX A). NVFP4 (PREDEC=1, GPSB=2) pre-decodes from a resident 36B-block window;
     // Q6_K (PREDEC=0) keeps the inline-global decode (210B 2-aligned window busts the 48KB smem cap).
-    enum { GPSB = StageMeta<QT>::GPSB, USE_PREDECODE = StageMeta<QT>::PREDEC,
-           RAW_W = USE_PREDECODE ? (int)StageMeta<QT>::RAW_W : 1, NSTAGE_RAW = 2 };
+    // RP (A6 split-plane): ALWAYS pre-decode — the staged window is two clean 16B-aligned chunks
+    // (the 36B phase straggle that made PREDEC regress -3% on GGUF-layout NVFP4 is gone), and the
+    // inline-global decode measured +5% prime on rp (scale plane = a second distant stream/block).
+    enum { GPSB = StageMeta<QT>::GPSB, USE_PREDECODE = RP ? 1 : (int)StageMeta<QT>::PREDEC,
+           RAW_W = USE_PREDECODE ? (RP ? 32 : (int)StageMeta<QT>::RAW_W) : 1, NSTAGE_RAW = 2 };
     __shared__ __align__(16) unsigned char sWraw[NSTAGE_RAW][BM][RAW_W];
 
     constexpr int NT_W = WARP_N_K / 8;           // n-tiles per warp
@@ -906,11 +934,18 @@ __device__ void qmatvec_gemm_kernel2(
         for (int r = tid; r < BM; r += cta_threads) {
             int o = rowtile + r;
             if (o < out_f) {
-                long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
-                long aoff = off & ~(long)15;
-                int  phase = (int)(off - aoff);
-                int  nchunk = (phase + (int)StageMeta<QT>::SB_BYTES + 15) >> 4;
-                cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+                if (RP) {
+                    // quant plane: block's 32 qs bytes, 32B-aligned -> two clean 16B chunks.
+                    const unsigned char* src = W + ((size_t)o * rp_nsb64 + sb) * 32;
+                    cp_async16(&sWraw[rs][r][0],  src);
+                    cp_async16(&sWraw[rs][r][16], src + 16);
+                } else {
+                    long off = (long)o * row_bytes + (long)sb * (long)StageMeta<QT>::SB_BYTES;
+                    long aoff = off & ~(long)15;
+                    int  phase = (int)(off - aoff);
+                    int  nchunk = (phase + (int)StageMeta<QT>::SB_BYTES + 15) >> 4;
+                    cp_async_window(&sWraw[rs][r][0], W + aoff, nchunk);
+                }
             }
         }
     };
@@ -938,11 +973,18 @@ __device__ void qmatvec_gemm_kernel2(
             int8_t wq[32];
             float s0 = 0.0f, s1 = 0.0f;
             if (o < out_f) {
-                long off = (long)o * row_bytes + (long)(g / GPSB) * (long)StageMeta<QT>::SB_BYTES;
-                int  phase = (int)(off & 15);
-                const unsigned char* b = &sWraw[rs][r][phase];
-                // PREDEC=1 in kernel2 is NVFP4 only (Q6_K is inline); decode the resident 36B block.
-                float su0, su1; decode_nvfp4_2_s(b, g & 1, wq, &su0, &su1);
+                float su0, su1;
+                if (RP) {
+                    // qs bytes staged phase-0; scale word from the dense plane (L1/L2-hot, tiny).
+                    int scw = *(const int*)(rp_splane + ((size_t)o * rp_nsb64 + g / GPSB) * 4);
+                    decode_nvfp4_2_rp(&sWraw[rs][r][0], scw, g & 1, wq, &su0, &su1);
+                } else {
+                    long off = (long)o * row_bytes + (long)(g / GPSB) * (long)StageMeta<QT>::SB_BYTES;
+                    int  phase = (int)(off & 15);
+                    const unsigned char* b = &sWraw[rs][r][phase];
+                    // PREDEC=1 in kernel2 is NVFP4 only (Q6_K is inline); decode the resident 36B block.
+                    decode_nvfp4_2_s(b, g & 1, wq, &su0, &su1);
+                }
                 s0 = su0; s1 = su1;
             } else {
                 #pragma unroll
@@ -969,6 +1011,11 @@ __device__ void qmatvec_gemm_kernel2(
                 if (QT == GQT_Q6_K) {
                     int sc0, sc1; float d = decode_q6_k_2(wrow, g, wq, &sc0, &sc1);
                     s0 = d * (float)sc0; s1 = d * (float)sc1;
+                } else if (RP) { // NVFP4 split-plane (A6): qs + scale word from the two planes.
+                    const unsigned char* qs = W + ((size_t)o * rp_nsb64 + g / GPSB) * 32;
+                    int scw = *(const int*)(rp_splane + ((size_t)o * rp_nsb64 + g / GPSB) * 4);
+                    float su0, su1; decode_nvfp4_2_rp(qs, scw, g & 1, wq, &su0, &su1);
+                    s0 = su0; s1 = su1;
                 } else { // NVFP4
                     float su0, su1; decode_nvfp4_2(wrow, g, wq, &su0, &su1);
                     s0 = su0; s1 = su1;
@@ -1094,6 +1141,14 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel2<GQT_NVFP4, 8, 4, 2, true>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+}
+// SPLIT-PLANE repacked twin (A6): W = quant plane + scale plane. Bit-identical to the above on
+// the un-repacked bytes (same nibble words, same scale bytes, same mma order).
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int T, long row_bytes) {
+    qmatvec_gemm_kernel2<GQT_NVFP4, 8, 4, 2, true, true>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 
 // ===================================================================== //

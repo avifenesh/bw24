@@ -71,6 +71,10 @@ impl Engine {
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
         match w {
+            // A6 split-plane repacked NVFP4: the vendored MMQ tile loader (mmq_fp4.cu
+            // load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks and has NO rp port yet — BW24_MMQ
+            // (opt-in, not in the daily env law) falls through to the rp-ported int8 GEMM instead.
+            GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp => false,
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 => w.in_features() % 64 == 0,
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
                 w.in_features() % 256 == 0,

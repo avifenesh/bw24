@@ -15,6 +15,14 @@ use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_I
 pub enum GpuTensor {
     Quant {
         bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64>, scale: f32,
+        /// SPLIT-PLANE walk-order repack (A6, 2026-07-04): NVFP4 matmul weights are repacked at
+        /// load into [quant plane out_f x in_f/64 x 32B][scale plane out_f x in_f/64 x 4B] — same
+        /// bytes, same total size, but a lane's per-group weight read becomes ONE 16B-aligned
+        /// LDG.128 + a dense 4B scale word instead of 5 scattered 4B LDGs at 36B stride (the "18B
+        /// straggle"). Every consumer kernel has an `_rp` twin (bit-identical: pure byte
+        /// permutation, same dot order). `rp=false` = original GGUF block layout (all other
+        /// dtypes, MoE-staged expert bytes, BW24_RP=0 escape).
+        rp: bool,
         /// CUTLASS NVFP4 prefill operand (repacked B + swizzled SFB), built ALONGSIDE `bytes` at load
         /// when BW24_FP4_CUTLASS is set. `bytes` stays raw GGUF so decode (MMVQ/dp4a) is untouched;
         /// prefill (m>=128) reads this. Only ever Some for NVFP4 weights under cfg(bw24_cutlass).
@@ -22,6 +30,49 @@ pub enum GpuTensor {
         cutlass: Option<CutlassWeight>,
     },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
+}
+
+/// Host-side split-plane repack of NVFP4 GGUF block bytes (A6). Input: out_f rows of in_f/64
+/// 36-byte blocks ([4B UE4M3 scales][32B packed e2m1]). Output (same length): quant plane
+/// (out_f x nsb64 x 32B) followed by scale plane (out_f x nsb64 x 4B). Pure byte permutation.
+pub fn repack_nvfp4_split(bytes: &[u8], out_f: usize) -> Vec<u8> {
+    let row_bytes = bytes.len() / out_f;
+    let nsb64 = row_bytes / 36;
+    debug_assert_eq!(row_bytes % 36, 0, "NVFP4 row_bytes must be a multiple of 36");
+    let qplane = out_f * nsb64 * 32;
+    let mut rp = vec![0u8; bytes.len()];
+    for o in 0..out_f {
+        for s in 0..nsb64 {
+            let src = &bytes[o * row_bytes + s * 36..o * row_bytes + s * 36 + 36];
+            rp[qplane + (o * nsb64 + s) * 4..qplane + (o * nsb64 + s) * 4 + 4]
+                .copy_from_slice(&src[0..4]);
+            rp[(o * nsb64 + s) * 32..(o * nsb64 + s) * 32 + 32].copy_from_slice(&src[4..36]);
+        }
+    }
+    rp
+}
+
+/// Inverse of `repack_nvfp4_split` (the roundtrip gate).
+pub fn unpack_nvfp4_split(rp: &[u8], out_f: usize) -> Vec<u8> {
+    let row_bytes = rp.len() / out_f;
+    let nsb64 = row_bytes / 36;
+    let qplane = out_f * nsb64 * 32;
+    let mut back = vec![0u8; rp.len()];
+    for o in 0..out_f {
+        for s in 0..nsb64 {
+            back[o * row_bytes + s * 36..o * row_bytes + s * 36 + 4]
+                .copy_from_slice(&rp[qplane + (o * nsb64 + s) * 4..qplane + (o * nsb64 + s) * 4 + 4]);
+            back[o * row_bytes + s * 36 + 4..o * row_bytes + s * 36 + 36]
+                .copy_from_slice(&rp[(o * nsb64 + s) * 32..(o * nsb64 + s) * 32 + 32]);
+        }
+    }
+    back
+}
+
+/// A6 repack seam: default ON, `BW24_RP=0` restores the GGUF block layout everywhere (rollback/A-B).
+pub fn rp_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_RP").map(|v| v != "0").unwrap_or(true))
 }
 
 /// CUTLASS-layout NVFP4 weight (B operand) for the prefill FP4 GEMM. Built once at load from the raw
@@ -79,10 +130,21 @@ impl GpuTensor {
                         None => 1.0,
                     }
                 } else { 1.0 };
-                let bytes = e.htod_bytes(&v.bytes)?;
-                // CUTLASS NVFP4 prefill operand, built ALONGSIDE the raw bytes (decode still reads
-                // bytes). Gated: only NVFP4 weights, only when BW24_FP4_CUTLASS is set, only under
-                // cfg(bw24_cutlass). in_f%64==0 is the NVFP4 K-block constraint (same as the dispatch).
+                // A6 SPLIT-PLANE repack: NVFP4 2-D matmul weights upload in walk-order layout
+                // (host-side permutation before htod — zero VRAM spike, layer-streamed by
+                // construction). Every consumer kernel dispatches its `_rp` twin off the flag.
+                let rp = qt == QT_NVFP4 && v.ne.len() == 2 && (v.ne[0] as usize) % 64 == 0
+                    && v.bytes.len() % out_f == 0 && (v.bytes.len() / out_f) % 36 == 0
+                    && rp_enabled();
+                let bytes = if rp {
+                    e.htod_bytes(&repack_nvfp4_split(&v.bytes, out_f))?
+                } else {
+                    e.htod_bytes(&v.bytes)?
+                };
+                // CUTLASS NVFP4 prefill operand, built from the RAW GGUF bytes (a temp raw upload
+                // when the resident `bytes` are repacked). Gated: only NVFP4 weights, only when
+                // BW24_FP4_CUTLASS is set, only under cfg(bw24_cutlass). in_f%64==0 is the NVFP4
+                // K-block constraint (same as the dispatch).
                 #[cfg(bw24_cutlass)]
                 let cutlass = {
                     let in_f = v.ne[0] as usize;
@@ -92,13 +154,16 @@ impl GpuTensor {
                         && std::env::var("BW24_FP4_CUTLASS").is_ok()
                         && std::env::var("BW24_FP4_CUTLASS_OTF").is_err()
                     {
+                        let raw_dev;
+                        let src_dev = if rp { raw_dev = e.htod_bytes(&v.bytes)?; &raw_dev }
+                                      else { &bytes };
                         let (b_packed, sfb_swizzled) =
-                            e.build_cutlass_weight(&bytes, out_f, in_f, row_bytes)?;
+                            e.build_cutlass_weight(src_dev, out_f, in_f, row_bytes)?;
                         Some(CutlassWeight { b_packed, sfb_swizzled })
                     } else { None }
                 };
                 Ok(GpuTensor::Quant {
-                    bytes, qtype: qt, row_bytes, ne: v.ne.clone(), scale,
+                    bytes, qtype: qt, row_bytes, ne: v.ne.clone(), scale, rp,
                     #[cfg(bw24_cutlass)]
                     cutlass,
                 })
@@ -124,8 +189,13 @@ impl GpuTensor {
             other => panic!("from_quant_bytes: unsupported dtype {other:?}"),
         };
         let row_bytes = bytes.len() / ne1 as usize;
+        // Same A6 repack as load_from_source: callers pass GGUF-layout host bytes (the FR-Spec
+        // self-trim row-gathers from the source file bytes, which are always original layout).
+        let rp = qt == QT_NVFP4 && ne0 % 64 == 0 && row_bytes % 36 == 0 && rp_enabled();
+        let dev = if rp { e.htod_bytes(&repack_nvfp4_split(bytes, ne1 as usize))? }
+                  else { e.htod_bytes(bytes)? };
         Ok(GpuTensor::Quant {
-            bytes: e.htod_bytes(bytes)?, qtype: qt, row_bytes, ne: vec![ne0, ne1], scale,
+            bytes: dev, qtype: qt, row_bytes, ne: vec![ne0, ne1], scale, rp,
             #[cfg(bw24_cutlass)]
             cutlass: None,
         })

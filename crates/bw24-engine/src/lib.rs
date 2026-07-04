@@ -92,6 +92,9 @@ pub const QT_Q3_K: i32 = 4;
 pub const QT_IQ4_XS: i32 = 5;
 pub const QT_IQ3_S: i32 = 6;
 pub const QT_NVFP4: i32 = 7;
+/// Device-side tag for the A6 SPLIT-PLANE repacked NVFP4 layout (Stage-A generic kernel only;
+/// GpuTensor keeps qtype=QT_NVFP4 + an `rp` flag — this tag never lives in a GpuTensor).
+pub const QT_NVFP4_RP: i32 = 9;
 /// Unquantized f32 weight (safetensors MoE Path A: experts dequantized to f32 host-resident).
 pub const QT_F32: i32 = 8;
 
@@ -575,6 +578,12 @@ impl Engine {
     pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_dp4a_named("qmatvec_q3_K_dp4a", w, x, m, in_f, out_f, row_bytes)
+    }
+    /// A6 split-plane twin of `qmatvec_nvfp4_fast` (weights repacked; used by the rp gates).
+    pub fn qmatvec_nvfp4_fast_rp(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                                 out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 64 == 0, "NVFP4 dp4a requires in_f % 64 == 0, got {in_f}");
+        self.qmatvec_dp4a_named("qmatvec_nvfp4_dp4a_rp", w, x, m, in_f, out_f, row_bytes)
     }
     /// Stage-B: NVFP4 weight x q8_1 activation int8 dp4a (decode, symmetric, codebook lookup).
     pub fn qmatvec_nvfp4_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
@@ -1114,9 +1123,9 @@ impl Engine {
         // matmul_pre siblings. qmatvec_mmvq_raw quantizes the activation internally (q8_1) like the
         // _fast paths; the NVFP4 macro-scale is applied by the `scale != 1.0` block below.
         if m == 1 && fast {
-            if let GpuTensor::Quant { bytes, qtype, row_bytes, .. } = w {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
                 if self.mmvq_supports(*qtype) {
-                    let mut y = self.qmatvec_mmvq_raw(bytes, x, m, in_f, out_f, *qtype, *row_bytes)?;
+                    let mut y = self.qmatvec_mmvq_raw(bytes, x, m, in_f, out_f, *qtype, *row_bytes, *rp)?;
                     if let GpuTensor::Quant { scale, .. } = w {
                         if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
                     }
@@ -1130,11 +1139,11 @@ impl Engine {
         // the activation once here (q8_1) like the _fast paths; macro-scale applied via the scale!=1.0
         // block below. BIT-IDENTICAL per (token,row) to the _dp4a path. BW24_NO_BATCHED -> per-m path.
         if (2..=4).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err() {
-            if let GpuTensor::Quant { bytes, qtype, row_bytes, .. } = w {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
                 if self.batched_supports(*qtype) {
                     let mcols = if m == 2 { 2 } else { 4 };
                     let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-                    let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0)?;
+                    let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0, *rp)?;
                     if let GpuTensor::Quant { scale, .. } = w {
                         if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
                     }
@@ -1153,8 +1162,10 @@ impl Engine {
                 self.qmatvec_q5_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q3_K =>
                 self.qmatvec_q3_K_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
-            GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_NVFP4 =>
-                self.qmatvec_nvfp4_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
+            GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } if fast && *qtype == QT_NVFP4 =>
+                self.qmatvec_dp4a_named(
+                    if *rp { "qmatvec_nvfp4_dp4a_rp" } else { "qmatvec_nvfp4_dp4a" },
+                    bytes, x, m, in_f, out_f, *row_bytes)?,
             // IQ4_XS optional fast path (gate behind a second env var; Stage-A is the default).
             GpuTensor::Quant { bytes, qtype, row_bytes, .. }
                 if fast && *qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok() =>
@@ -1163,8 +1174,12 @@ impl Engine {
             // NO qmatvec_iq3_s_dp4a / (default) iq4_XS fast kernel — do NOT add a `*qtype == QT_IQ3_S`
             // (or unconditional QT_IQ4_XS) fast guard here without first writing the matching kernel,
             // or func() will panic "kernel ... not in any fatbin".
-            GpuTensor::Quant { bytes, qtype, row_bytes, .. } =>
-                self.qmatvec(bytes, x, m, in_f, out_f, *qtype, *row_bytes)?,
+            GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } =>
+                // Stage-A generic: repacked NVFP4 uses the device-side split-plane tag (the
+                // deq(row,j) form cannot address the planes; same value/product order).
+                self.qmatvec(bytes, x, m, in_f, out_f,
+                             if *rp && *qtype == QT_NVFP4 { QT_NVFP4_RP } else { *qtype },
+                             *row_bytes)?,
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f)?,
         };
         // NVFP4 per-tensor macro-scale (post-matmul). scale==1.0 for all other quants/float -> no-op.
@@ -1216,15 +1231,15 @@ impl Engine {
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x_fallback, m); }
         let in_f = w.in_features();
         let out_f = w.out_features();
-        let (bytes, qtype, row_bytes, scale) = match w {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => unreachable!("uses_q8_1_fast guaranteed Quant"),
         };
         // PERF-3 decode-GEMV: warp-per-row MMVQ for the m=1 decode arm, gated behind BW24_MMVQ.
         // Only the 4 daily-hot dtypes have an _mmvq kernel (Q8_0/Q4_K/Q6_K/NVFP4); Q5_K/Q3_K/IQ4_XS
         // keep _dp4a (the oracle/fallback). Bit-equivalent to _dp4a up to f32 reduction order.
         if m == 1 && self.mmvq_supports(qtype) {
-            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale);
+            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
         }
         // BATCHED weight-resident matvec for the m=2-4 band (the MTP/verify forward: full_attn_verify
         // and decode_step_t run their projections at m=T=k=2..4). The plain _dp4a path below launches
@@ -1236,12 +1251,13 @@ impl Engine {
         if (2..=4).contains(&m) && self.batched_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err() {
             let mcols = if m == 2 { 2 } else { 4 };
-            return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale);
+            return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
             QT_Q6_K => "qmatvec_q6_K_dp4a", QT_Q5_K => "qmatvec_q5_K_dp4a",
-            QT_Q3_K => "qmatvec_q3_K_dp4a", QT_NVFP4 => "qmatvec_nvfp4_dp4a",
+            QT_Q3_K => "qmatvec_q3_K_dp4a",
+            QT_NVFP4 => if rp { "qmatvec_nvfp4_dp4a_rp" } else { "qmatvec_nvfp4_dp4a" },
             QT_IQ4_XS => "qmatvec_iq4_XS_dp4a",
             _ => unreachable!(),
         };
@@ -1269,8 +1285,8 @@ impl Engine {
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
         let in_f = w.in_features();
         let out_f = w.out_features();
-        let (bytes, qtype, row_bytes, scale) = match w {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return self.matmul(w, x, m),
         };
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
@@ -1281,12 +1297,12 @@ impl Engine {
         if (2..=4).contains(&m) && self.batched_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err() {
             let mcols = if m == 2 { 2 } else { 4 };
-            return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale);
+            return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
         if self.mmvq_supports(qtype) {
             // MMVQ at grid.y=m: each row is processed by its own warp independently — same 32-thread
             // accumulation + warp_reduce_sum as m=1 decode. Bit-identical per row.
-            return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, scale);
+            return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
         }
         // Fallback for non-MMVQ quant types (Q5_K, Q3_K): use dp4a (the only available kernel).
         // These types are not used in the 27B's linear-attn NVFP4+Q4_K layers.
@@ -1311,19 +1327,19 @@ impl Engine {
         if m != 1 || !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
         let (in_f, out_f) = (w0.in_features(), w0.out_features());
         if w1.in_features() != in_f || w1.out_features() != out_f { return Ok(None); }
-        let (b0, q0, rb0, s0) = match w0 {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (b0, q0, rb0, s0, rp0) = match w0 {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return Ok(None),
         };
-        let (b1, q1, rb1, s1) = match w1 {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (b1, q1, rb1, s1, rp1) = match w1 {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return Ok(None),
         };
-        if q0 != QT_NVFP4 || q1 != QT_NVFP4 || rb0 != rb1 { return Ok(None); }
+        if q0 != QT_NVFP4 || q1 != QT_NVFP4 || rb0 != rb1 || rp0 != rp1 { return Ok(None); }
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
         const RPW: u32 = 2;
         let rows_per_block = ROWS_PER_BLOCK * RPW;
-        let f = self.func("qmatvec_nvfp4_mmvq_dual_mr2");
+        let f = self.func(if rp0 { "qmatvec_nvfp4_mmvq_dual_mr2_rp" } else { "qmatvec_nvfp4_mmvq_dual_mr2" });
         let mut y0 = self.alloc_uninit::<f32>(out_f)?;
         let mut y1 = self.alloc_uninit::<f32>(out_f)?;
         let cfg = LaunchConfig {
@@ -1345,20 +1361,21 @@ impl Engine {
         if m != 1 || !self.uses_q8_1_fast(w) { return Ok(None); }
         let in_f = w.in_features();
         let out_f = w.out_features();
-        let (bytes, qtype, row_bytes, scale) = match w {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return Ok(None),
         };
         // MMVQ warp-per-row (scale==1.0 passed -> kernel skips its internal scale; we return scale).
         if self.mmvq_supports(qtype) {
-            let y = self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, /*scale*/ 1.0)?;
+            let y = self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, /*scale*/ 1.0, rp)?;
             return Ok(Some((y, scale)));
         }
         // dp4a fallback: same launch as matmul_pre but WITHOUT the post scale_inplace.
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
             QT_Q6_K => "qmatvec_q6_K_dp4a", QT_Q5_K => "qmatvec_q5_K_dp4a",
-            QT_Q3_K => "qmatvec_q3_K_dp4a", QT_NVFP4 => "qmatvec_nvfp4_dp4a",
+            QT_Q3_K => "qmatvec_q3_K_dp4a",
+            QT_NVFP4 => if rp { "qmatvec_nvfp4_dp4a_rp" } else { "qmatvec_nvfp4_dp4a" },
             QT_IQ4_XS => "qmatvec_iq4_XS_dp4a",
             _ => return Ok(None),
         };
@@ -1384,7 +1401,8 @@ impl Engine {
     /// to qmatvec_*_dp4a up to f32 reduction order. Pre-quantized q8_1 activation (aq,ad). NVFP4
     /// per-tensor macro-scale applied post (scale==1.0 for other dtypes -> no-op).
     pub fn qmatvec_mmvq(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
-                        m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32)
+                        m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32,
+                        rp: bool)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
         // MLP LEVER (BW24_MMVQ_MR=2|4): NVFP4 m=1 multi-row-per-warp variant. Each warp computes RPW
@@ -1399,18 +1417,22 @@ impl Engine {
         // helps the k-quant load pattern) — within noise, not worth the default. BW24_MMVQ_MR forces it
         // (=2 enables multi-row for both NVFP4 and Q4_K; =1 single-row reference everywhere).
         let mr_env = std::env::var("BW24_MMVQ_MR").ok().and_then(|s| s.parse::<u32>().ok());
-        let mr: u32 = if m == 1 && qtype == QT_NVFP4 {
+        let mut mr: u32 = if m == 1 && qtype == QT_NVFP4 {
             mr_env.unwrap_or(2)
         } else if m == 1 && qtype == QT_Q4_K {
             mr_env.unwrap_or(1)   // q4_K multi-row off by default (+0.7% only)
         } else { 1 };
-        let name = match (qtype, mr) {
-            (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_mr2",
-            (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_mr4",
-            (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_mr2",
-            (QT_Q8_0, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _) => "qmatvec_q4_K_mmvq",
-            (QT_Q5_K, _) => "qmatvec_q5_K_mmvq",
-            (QT_Q6_K, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _) => "qmatvec_nvfp4_mmvq",
+        // A6 rp layout: mr4 has no rp twin (mr4 crashes pre-existing, non-default) -> mr2.
+        if rp && qtype == QT_NVFP4 && mr == 4 { mr = 2; }
+        let name = match (qtype, mr, rp) {
+            (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
+            (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
+            (QT_NVFP4, 4, false) => "qmatvec_nvfp4_mmvq_mr4",
+            (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
+            (QT_Q4_K, 2, _) => "qmatvec_q4_K_mmvq_mr2",
+            (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q5_K, _, _) => "qmatvec_q5_K_mmvq",
+            (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
@@ -1434,10 +1456,10 @@ impl Engine {
     /// from raw weight bytes (quantize the f32 activation `x` to q8_1 internally). NVFP4 per-tensor
     /// macro-scale is NOT applied (caller compares bare, like qmatvec_*_fast). Mirrors qmatvec_gemm_raw.
     pub fn qmatvec_mmvq_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
-                            out_f: usize, qtype: i32, row_bytes: usize)
+                            out_f: usize, qtype: i32, row_bytes: usize, rp: bool)
                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-        self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0)
+        self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, 1.0, rp)
     }
 
     /// True if `qtype` has a batched weight-resident (`_b2`/`_b4`) matvec kernel. These mirror the
@@ -1485,9 +1507,12 @@ impl Engine {
     /// BW24_MMVQ_BV=base|pf|r2|pfr2 forces one variant everywhere (A/B + rollback seam).
     /// All variants BIT-IDENTICAL per (token,row): same dp4a order, scales, adg factor, reduce —
     /// only load issue time and the row->warp mapping change (kernel-check gates all of them).
+    /// `rp` = the weight buffer is the A6 SPLIT-PLANE repacked layout (NVFP4 only): the same
+    /// wave-aware auto rule applies, mapped onto the `_rp` twins (rp/rpr2/rpr2w8 mirror
+    /// pf/r2/r2w8 — regs 44/67/64 land in the same residency classes).
     pub fn qmatvec_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                 m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize,
-                                mcols: usize, scale: f32)
+                                mcols: usize, scale: f32, rp: bool)
                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -1515,14 +1540,24 @@ impl Engine {
         } else if bv != "auto" {
             // r2w8 only exists for b4 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
             // ca/car2 need the alignment gate; unsupported shapes fall back to pf/r2.
-            if bv == "r2w8" && mcols == 2 { "r2" }
-            else if bv == "ca" && !ca_ok { "pf" }
-            else if bv == "car2" && !ca_ok { "r2" }
-            else if (bv == "rpr2w8" || bv == "rpr2") && mcols == 2 { "rpr2" }
-            else { bv }
+            // On rp buffers, forced legacy names map to their rp twins (layout law).
+            let v = if bv == "r2w8" && mcols == 2 { "r2" }
+                else if bv == "ca" && !ca_ok { "pf" }
+                else if bv == "car2" && !ca_ok { "r2" }
+                else if (bv == "rpr2w8" || bv == "rpr2") && mcols == 2 { "rpr2" }
+                else { bv };
+            if rp {
+                match v {
+                    "base" | "pf" | "ca" | "rp" => "rp",
+                    "r2" | "pfr2" | "car2" | "rpr2" => "rpr2",
+                    "r2w8" | "rpr2w8" => if mcols == 2 { "rpr2" } else { "rpr2w8" },
+                    other => other,
+                }
+            } else { v }
         } else if mcols == 4 {
             // r2 runs 7 resident blocks/SM (67 regs); its __launch_bounds__(128,8) twin `r2w8`
-            // (64 regs) runs 8. grid = ceil(out_f/8) for both.
+            // (64 regs) runs 8. grid = ceil(out_f/8) for both. rp twins land in the same
+            // residency classes (rp 44 regs ~ pf-class occupancy, rpr2 67, rpr2w8 64).
             let blocks = (out_f + 7) / 8;
             let r7 = 7 * sms as usize;
             let r8 = 8 * sms as usize;
@@ -1532,17 +1567,19 @@ impl Engine {
                 // the extra residency drops the INTEGER wave count -> the straggler wave a
                 // latency-bound kernel pays in full disappears (ffn_down 1.11 -> 0.98 waves:
                 // 112.5 -> 81.6us, beats pf 90.1; qkv 2.23 -> 1.95: 58.1 -> 51.1).
-                "r2w8"
+                if rp { "rpr2w8" } else { "r2w8" }
             } else if waves >= 2.0 || (waves <= 1.0 && filled) {
                 // tail amortized (>=2 waves) or single wave: unbounded r2 (no reg-squeeze tax —
                 // gate/up 81.1 vs 83.9 bounded, attn_q 61.0 vs 63.4).
-                "r2"
+                if rp { "rpr2" } else { "r2" }
             } else {
                 // fractional straggler-wave window with no crossing, or grid too small to fill
-                // the SMs (tiny out_f<=1024 shapes want max row-parallelism): prefetch variant.
-                "pf"
+                // the SMs (tiny out_f<=1024 shapes want max row-parallelism): prefetch variant
+                // (rp = the r1 split-plane twin — measured the attn_gate winner, 35.4 vs pf 36.4).
+                if rp { "rp" } else { "pf" }
             }
-        } else if in_f >= 6144 { "r2" } else { "base" };
+        } else if in_f >= 6144 { if rp { "rpr2" } else { "r2" } }
+        else if rp { "rp" } else { "base" };
         let (name, rows_per_warp): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), 1),
             "pf" => (format!("{base_name}_pf").into(), 1),
@@ -1550,6 +1587,7 @@ impl Engine {
             "rp" => (format!("{base_name}_rp").into(), 1),
             v => (format!("{base_name}_{v}").into(), 2),
         };
+        debug_assert!(!rp || name.contains("_rp"), "rp weight dispatched to a GGUF-layout kernel");
         let f = self.func(&name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
         let rows_per_block = ROWS_PER_BLOCK * rows_per_warp;
@@ -1568,17 +1606,19 @@ impl Engine {
     /// q8_1 internally; macro-scale NOT applied — caller compares bare, like qmatvec_*_fast). For the
     /// kernel_check bit-equivalence gate. `mcols` ∈ {2,4}. Works for Q8_0/Q4_K/Q5_K/Q6_K/NVFP4.
     pub fn qmatvec_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                               in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, mcols: usize)
+                               in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, mcols: usize,
+                               rp: bool)
                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-        self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, 1.0)
+        self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, 1.0, rp)
     }
 
     /// Back-compat NVFP4-only batched raw launcher (used by older gates). Delegates to the generic one.
     pub fn qmatvec_nvfp4_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                     in_f: usize, out_f: usize, row_bytes: usize, mcols: usize)
+                                     in_f: usize, out_f: usize, row_bytes: usize, mcols: usize,
+                                     rp: bool)
                                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.qmatvec_batched_raw(bytes, x, m, in_f, out_f, QT_NVFP4, row_bytes, mcols)
+        self.qmatvec_batched_raw(bytes, x, m, in_f, out_f, QT_NVFP4, row_bytes, mcols, rp)
     }
 
     /// Stage-C FP4 gate (BW24_FP4): if `w` is an NVFP4 weight with in_f%64==0, run the native mxf4
@@ -1618,8 +1658,10 @@ impl Engine {
                 }
             }
         }
-        if let GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } = w {
-            if *qtype == QT_NVFP4 && in_f % 64 == 0 {
+        if let GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } = w {
+            // A6: the hand-rolled W4A4 mxf4 GEMM reads 36B GGUF blocks — no rp port (BW24_FP4 is
+            // an opt-in accuracy tradeoff); repacked tensors fall through to the int8 GEMM.
+            if *qtype == QT_NVFP4 && in_f % 64 == 0 && !*rp {
                 let y = self.qmatvec_gemm_nvfp4_fp4(bytes, x, m, in_f, out_f, *row_bytes, *scale)?;
                 return Ok(Some(y));
             }
@@ -1657,14 +1699,15 @@ impl Engine {
         use crate::model::GpuTensor;
         let in_f = w.in_features();
         let out_f = w.out_features();
-        let (bytes, qtype, row_bytes, scale) = match w {
-            GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } => (bytes, *qtype, *row_bytes, *scale),
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => unreachable!("gemm_supports guaranteed Quant"),
         };
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
             QT_Q5_K => "qmatvec_gemm_q5_K",
-            QT_Q6_K => "qmatvec_gemm_q6_K", QT_NVFP4 => "qmatvec_gemm_nvfp4",
+            QT_Q6_K => "qmatvec_gemm_q6_K",
+            QT_NVFP4 => if rp { "qmatvec_gemm_nvfp4_rp" } else { "qmatvec_gemm_nvfp4" },
             _ => unreachable!(),
         };
         let f = self.func(name);
@@ -1704,6 +1747,7 @@ impl Engine {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
             QT_Q5_K => "qmatvec_gemm_q5_K",
             QT_Q6_K => "qmatvec_gemm_q6_K", QT_NVFP4 => "qmatvec_gemm_nvfp4",
+            QT_NVFP4_RP => "qmatvec_gemm_nvfp4_rp",
             _ => panic!("qmatvec_gemm_raw: qtype {qtype} has no GEMM kernel"),
         };
         let f = self.func(name);
@@ -1715,7 +1759,7 @@ impl Engine {
         let k1_tile = if is_k1 { k1_launch_override().unwrap_or((128, 128, 8)) } else { (128, 128, 8) };
         let (bm, bn): (u32, u32) = if is_k1 { (k1_tile.0, k1_tile.1) } else { (64, 256) };
         let warps: u32 = if is_k1 { k1_tile.2 } else {
-            match qtype { QT_NVFP4 => 8, _ => 4 }
+            match qtype { QT_NVFP4 | QT_NVFP4_RP => 8, _ => 4 }
         };
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + bm - 1) / bm, (m as u32 + bn - 1) / bn, 1),

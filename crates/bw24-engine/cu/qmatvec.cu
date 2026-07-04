@@ -315,7 +315,12 @@ __device__ __forceinline__ float deq_nvfp4(const uint8_t* row, int j) {
 
 enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7,
-             QT_F32 = 8 };
+             QT_F32 = 8,
+             // SPLIT-PLANE repacked NVFP4 (A6 walk-order repack): quant plane
+             // [out_f x in_f/64 x 32B] followed by scale plane [out_f x in_f/64 x 4B].
+             // Host-side tag only for the Stage-A generic kernel (GpuTensor keeps QT_NVFP4 +
+             // an rp flag); deq() cannot express it (needs tensor base + out_f, not a row ptr).
+             QT_NVFP4_RP = 9 };
 
 __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     switch (qtype) {
@@ -1705,6 +1710,182 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b4_rpr2w
     nvfp4_mmvq_batched_rp<4, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ============ SPLIT-PLANE rp twins of the m=1 NVFP4 decode family (A6 integration) ============
+// Each is the matching kernel's body with the weight-group loads swapped to the split-plane
+// addresses (ONE 16B quant load + one 4B scale word) — identical decode word order (qw.x..qw.w ==
+// q4a/q4b of sl=0,1), identical scale-byte extraction, identical dp4a/reduce order per (token,row).
+
+// m>=1 warp-per-row (grid.y = t). Twin of qmatvec_nvfp4_mmvq; also serves decode-exact grid.y=m.
+extern "C" __global__ void qmatvec_nvfp4_mmvq_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsb64 = in_f >> 6;
+    const unsigned char* rowq = W + (size_t)o * nsb64 * 32;
+    const unsigned char* rows = W + (size_t)out_f * nsb64 * 32 + (size_t)o * nsb64 * 4;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int s0 = (g & 1) * 2;
+        int4 qw = *(const int4*)(rowq + (size_t)g * 16);
+        int cscw = *(const int*)(rows + (size_t)sblk * 4);
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float partial = 0.0f;
+        #pragma unroll
+        for (int sl = 0; sl < 2; sl++) {
+            int q4a = (sl == 0) ? qw.x : qw.z;
+            int q4b = (sl == 0) ? qw.y : qw.w;
+            int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+            int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+            int base = sl * 4;
+            int sumi = 0;
+            sumi = dp4a(va.x, aq4[base + 0], sumi);
+            sumi = dp4a(vb.x, aq4[base + 1], sumi);
+            sumi = dp4a(va.y, aq4[base + 2], sumi);
+            sumi = dp4a(vb.y, aq4[base + 3], sumi);
+            partial += ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + sl))) & 0xFF)) * (float)sumi;
+        }
+        acc += adrow[g] * partial;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// multirow rp body (t from blockIdx.y unless pinned): twin of nvfp4_mmvq_multirow.
+template<int RPW, bool PIN_T0>
+__device__ __forceinline__ void nvfp4_mmvq_multirow_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
+    int t = PIN_T0 ? 0 : blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsb64 = in_f >> 6;
+    const unsigned char* qplane = W;
+    const unsigned char* splane = W + (size_t)out_f * nsb64 * 32;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 1;
+        int s0 = (g & 1) * 2;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float adg = adrow[g];
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            int4 qw = *(const int4*)(qplane + ((size_t)o * nsb64 + sblk) * 32 + (size_t)(g & 1) * 16);
+            int cscw = *(const int*)(splane + ((size_t)o * nsb64 + sblk) * 4);
+            float partial = 0.0f;
+            #pragma unroll
+            for (int sl = 0; sl < 2; sl++) {
+                int q4a = (sl == 0) ? qw.x : qw.z;
+                int q4b = (sl == 0) ? qw.y : qw.w;
+                int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+                int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+                int base = sl * 4;
+                int sumi = 0;
+                sumi = dp4a(va.x, aq4[base + 0], sumi);
+                sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                sumi = dp4a(va.y, aq4[base + 2], sumi);
+                sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                partial += ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + sl))) & 0xFF)) * (float)sumi;
+            }
+            acc[r] += adg * partial;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[(size_t)t * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_mr2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_multirow_rp<2, false>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// DUAL gate+up rp twin (blockIdx.y selects tensor; m==1 asserted host-side like the original).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_mr2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out_f, int m, long row_bytes) {
+    const unsigned char* W = (blockIdx.y == 0) ? W0 : W1;
+    float* y = (blockIdx.y == 0) ? y0 : y1;
+    nvfp4_mmvq_multirow_rp<2, true>(W, aq, ad, y, in_f, out_f, 1, row_bytes);
+}
+
+// dp4a rp twin (128-thread two-level reduce, grid (out_f, m)). Twin of qmatvec_nvfp4_dp4a.
+extern "C" __global__ void qmatvec_nvfp4_dp4a_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x, t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int tid = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsb64 = in_f >> 6;
+    const unsigned char* rowq = W + (size_t)o * nsb64 * 32;
+    const unsigned char* rows = W + (size_t)out_f * nsb64 * 32 + (size_t)o * nsb64 * 4;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = tid; g < nsb; g += blockDim.x) {
+        int sblk = g >> 1;
+        int s0 = (g & 1) * 2;
+        int4 qw = *(const int4*)(rowq + (size_t)g * 16);
+        int cscw = *(const int*)(rows + (size_t)sblk * 4);
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float partial = 0.0f;
+        #pragma unroll
+        for (int sl = 0; sl < 2; sl++) {
+            int q4a = (sl == 0) ? qw.x : qw.z;
+            int q4b = (sl == 0) ? qw.y : qw.w;
+            int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+            int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+            int base = sl * 4;
+            int sumi = 0;
+            sumi = dp4a(va.x, aq4[base + 0], sumi);
+            sumi = dp4a(vb.x, aq4[base + 1], sumi);
+            sumi = dp4a(va.y, aq4[base + 2], sumi);
+            sumi = dp4a(vb.y, aq4[base + 3], sumi);
+            partial += ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + sl))) & 0xFF)) * (float)sumi;
+        }
+        acc += adrow[g] * partial;
+    }
+    __shared__ float s[32];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) y[(size_t)t * out_f + o] = v;
+    }
+}
+
 // ============================ k-quant BATCHED weight-resident matvec ============================
 // Same structure as nvfp4_mmvq_batched: ONE warp owns ONE output row and walks the weight ONCE,
 // decoding each weight group's quant bytes a SINGLE time and dp4a-ing the decoded weight against
@@ -2405,6 +2586,19 @@ extern "C" __global__ void qmatvec_f32(
     const uint8_t* wrow = W + (long)o * row_bytes;
     const float* xrow = x + (long)t * in_f;
     float acc = 0.0f;
+    if (qtype == QT_NVFP4_RP) {
+        // split-plane NVFP4: same per-element value/product order as deq_nvfp4 -> bit-identical.
+        int nsb64 = in_f >> 6;
+        const uint8_t* qrow = W + (size_t)o * nsb64 * 32;
+        const uint8_t* srow = W + (size_t)out_f * nsb64 * 32 + (size_t)o * nsb64 * 4;
+        for (int i = tid; i < in_f; i += blockDim.x) {
+            int blk = i >> 6, jj = i & 63;
+            int s = jj >> 4, within = jj & 15;
+            int byte = qrow[blk * 32 + s * 8 + (within & 7)];
+            int code = (within < 8) ? (byte & 0xF) : (byte >> 4);
+            acc += (float)kvalues_mxfp4_d[code] * ue4m3_to_f32_d(srow[blk * 4 + s]) * xrow[i];
+        }
+    } else
     for (int i = tid; i < in_f; i += blockDim.x) acc += deq(qtype, wrow, i) * xrow[i];
     // block reduce
     __shared__ float s[32];

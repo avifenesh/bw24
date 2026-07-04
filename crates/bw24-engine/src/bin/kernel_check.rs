@@ -764,7 +764,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => unreachable!(),
                 };
                 let ya = e.dtoh(&ydp)?;
-                let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes)?)?;
+                let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, false)?)?;
                 let d = maxdiff(&ya, &yb);
                 let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
                 let rel = d / scale;
@@ -788,7 +788,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 111) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let ya = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?)?;
-                    let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let yb = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
                     let d = maxdiff(&ya, &yb);
                     let scale = ya.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
                     let rel = d / scale;
@@ -824,8 +824,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 131) * 0.1).collect();
                 let xd = e.htod(&x)?;
                 // reference: per-m _mmvq (warp-per-row, grid.y=m). batched: _b{mcols} weight-resident.
-                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes)?)?;
-                let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, mcols)?)?;
+                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, false)?)?;
+                let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, gt, row_bytes, mcols, false)?)?;
                 let d = maxdiff(&yref, &ybat);
                 let scale = yref.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
                 let rel = d / scale;
@@ -848,13 +848,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 141) * 0.1).collect();
                     let xd = e.htod(&x)?;
-                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
-                    let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols)?)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
+                    let ybat = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols, false)?)?;
                     let d = maxdiff(&yref, &ybat);
                     let scale = yref.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
                     let rel = d / scale;
                     println!("BATCHED blk.0.ffn_gate.weight [NVFP4] m={mm} mcols={mcols}: rel={rel:.2e} {}",
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+            }
+        }
+    }
+
+    // --- A6 SPLIT-PLANE REPACK gates: roundtrip + byte-identity of EVERY rp consumer kernel vs
+    // the original-layout reference. The repack is a pure byte permutation; each rp twin keeps the
+    // exact per-(token,row) value/product order -> outputs must be BIT-identical (bit-bad == 0). ---
+    {
+        use bw24_gguf::{GgufFile, GgmlType};
+        use bw24_engine::model::{repack_nvfp4_split, unpack_nvfp4_split};
+        const GGUF_9B: &str =
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
+        let path9 = if std::path::Path::new(GGUF_9B).exists() { Some(GGUF_9B.to_string()) } else { None };
+        // prefer the model under test if it has NVFP4 tensors; else the 9B.
+        let srcs: Vec<String> = std::env::args().nth(1).into_iter().chain(path9).collect();
+        let mut done = false;
+        for path in srcs {
+            if done { break; }
+            let g = match GgufFile::open(&path) { Ok(g) => g, Err(_) => continue };
+            // two shapes: a wide-out FFN gate (rpr2-class) and a narrow-out down/out (rpr2w8/rp-class).
+            let picks: Vec<_> = g.tensors.iter()
+                .filter(|t| t.ggml_type == GgmlType::NVFP4 && t.ne.len() == 2 && t.ne[0] % 64 == 0)
+                .take(2).collect();
+            for t in picks {
+                done = true;
+                let tname = t.name.clone();
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
+                let rpb = repack_nvfp4_split(raw, out_f);
+                let rt_bad = unpack_nvfp4_split(&rpb, out_f).iter().zip(raw.iter())
+                    .filter(|(a, b)| a != b).count();
+                println!("RP roundtrip {tname}: {} mismatched bytes {}", rt_bad,
+                         if rt_bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                let wd  = e.htod_bytes(raw)?;
+                let wrp = e.htod_bytes(&rpb)?;
+                let bit_bad = |a: &[f32], b: &[f32]| a.iter().zip(b)
+                    .filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                // m=1/2 MMVQ family (m=1 exercises mr2_rp via the default MR=2; m=2 the r1 rp twin).
+                for mm in [1usize, 2] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd,  &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
+                    let yrp  = e.dtoh(&e.qmatvec_mmvq_raw(&wrp, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, true)?)?;
+                    let bad = bit_bad(&yref, &yrp);
+                    println!("RP MMVQ {tname} m={mm}: bit-bad={bad} {}",
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+                // batched rp (auto wave-rule picks rp/rpr2/rpr2w8 per shape) vs original per-m mmvq.
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
+                    let yrp = e.dtoh(&e.qmatvec_batched_raw(&wrp, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols, true)?)?;
+                    let bad = bit_bad(&yref, &yrp);
+                    println!("RP BATCHED {tname} m={mm} mcols={mcols}: bit-bad={bad} {}",
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+                // dp4a rp twin (grid (out,m), 128-thread two-level reduce) vs original dp4a.
+                for mm in [1usize, 5] {
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 171) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_nvfp4_fast(&wd, &xd, mm, in_f, out_f, row_bytes)?)?;
+                    let yrp  = e.dtoh(&e.qmatvec_nvfp4_fast_rp(&wrp, &xd, mm, in_f, out_f, row_bytes)?)?;
+                    let bad = bit_bad(&yref, &yrp);
+                    println!("RP DP4A {tname} m={mm}: bit-bad={bad} {}",
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+                // prefill int8 GEMM kernel2 rp twin (the daily BW24_GEMM path) at a real T.
+                {
+                    let mm = 128usize;
+                    let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 181) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec_gemm_raw(&wd,  &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let yrp  = e.dtoh(&e.qmatvec_gemm_raw(&wrp, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4_RP, row_bytes)?)?;
+                    let bad = bit_bad(&yref, &yrp);
+                    println!("RP GEMM {tname} T={mm}: bit-bad={bad} {}",
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                }
+                // Stage-A generic (f32 dequant-in-kernel) rp tag vs original.
+                {
+                    let x: Vec<f32> = (0..in_f).map(|i| pr(i + 191) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let yref = e.dtoh(&e.qmatvec(&wd,  &xd, 1, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes)?)?;
+                    let yrp  = e.dtoh(&e.qmatvec(&wrp, &xd, 1, in_f, out_f, bw24_engine::QT_NVFP4_RP, row_bytes)?)?;
+                    let bad = bit_bad(&yref, &yrp);
+                    println!("RP STAGE-A {tname}: bit-bad={bad} {}",
+                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
         }
