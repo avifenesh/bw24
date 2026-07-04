@@ -23,6 +23,18 @@ pub struct TensorView<'a> {
     pub ne: Vec<u64>, // inner-fastest (ne[0] = in_features for a [in,out] weight)
 }
 
+/// Raw NVFP4-native (modelopt/Reza) weight view: the packed e2m1 codes + per-16 UE4M3 scales
+/// exactly as they sit in the file, for the engine's DIRECT split-plane repack (A1 direct import).
+/// Only returned for a PLAIN (untransformed) quantized Linear; anything needing a V-reorder
+/// transform keeps the GGUF-block path. The per-tensor macro-scale still rides the `<stem>.scale`
+/// sibling via `find` (identical to the GGUF NVFP4 path).
+pub struct Nvfp4Native<'a> {
+    pub wbytes: &'a [u8], // packed e2m1, [out_f, in_f/2] row-major, 2 codes/byte
+    pub wscale: &'a [u8], // UE4M3 per-16 scales, [out_f, in_f/16] row-major
+    pub out_f: usize,
+    pub in_f: usize,
+}
+
 /// A weight source the engine can load from. GGUF and safetensors both implement it.
 pub trait TensorSource {
     /// The model configuration (from GGUF metadata or config.json).
@@ -36,6 +48,11 @@ pub trait TensorSource {
     /// The backing GGUF file, if this source IS a GGUF (None for safetensors). Used by the
     /// disk-spill tier, which needs the on-disk file mmap (`g.path()` / per-expert byte ranges).
     fn gguf(&self) -> Option<&GgufFile> { None }
+    /// NVFP4-native access (A1 direct import): the raw modelopt/Reza packed codes + scales for a
+    /// plain (untransformed) NVFP4 weight, so the engine can repack straight into its split-plane
+    /// resident layout without materializing GGUF 36B blocks. None for GGUF sources (already the
+    /// import layout), for transformed weights, and for non-NVFP4 tensors.
+    fn find_nvfp4_native(&self, _ggml_name: &str) -> Option<Nvfp4Native<'_>> { None }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -191,6 +208,24 @@ impl SafetensorsSource {
 impl TensorSource for SafetensorsSource {
     fn config(&self) -> ModelConfig {
         self.cfg.clone()
+    }
+    /// Presence check without the repack: `find` on a plain NVFP4 weight materializes the whole
+    /// repacked buffer just to answer `has` (then `load_opt_from_source` repacks AGAIN to load).
+    /// The native lookup is header-only, so answer from it first.
+    fn has(&self, ggml_name: &str) -> bool {
+        self.find_nvfp4_native(ggml_name).is_some() || self.find(ggml_name).is_some()
+    }
+    /// A1 direct import: plain (untransformed) modelopt/Reza NVFP4 weights expose their raw file
+    /// bytes so the engine repacks modelopt -> split-plane in ONE pass. Transform targets (the
+    /// hybrid V-reorders) return None and keep the GGUF-block hop (`kind.apply_nvfp4`).
+    fn find_nvfp4_native(&self, ggml_name: &str) -> Option<Nvfp4Native<'_>> {
+        use crate::hf_mapping::{HfTarget, resolve_ggml};
+        let hf = match resolve_ggml(ggml_name, &self.cfg)? {
+            HfTarget::Plain(hf) => hf,
+            HfTarget::Transform { .. } => return None,
+        };
+        let (out_f, in_f, wbytes, wscale, _macro) = self.nvfp4_quant(&hf)?;
+        Some(Nvfp4Native { wbytes, wscale, out_f, in_f })
     }
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         use crate::hf_mapping::{HfTarget, resolve_ggml};

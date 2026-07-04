@@ -102,6 +102,35 @@ impl GpuTensor {
     /// Source-agnostic load: works from any `TensorSource` (GGUF or safetensors). The engine's
     /// forward graph only ever asks for ggml-style names; the source maps them to its own layout.
     pub fn load_from_source(e: &Engine, src: &dyn TensorSource, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        // A1 DIRECT NVFP4 IMPORT (2026-07-04): a PLAIN modelopt/Reza NVFP4 weight from a
+        // safetensors source repacks straight into the A6 split-plane resident layout in ONE host
+        // pass (nvfp4_repack::repack_modelopt_to_split — the scale plane is the file's
+        // weight_scale bytes verbatim), never materializing the GGUF 36B-block intermediate.
+        // The GGUF hop remains only for BW24_ST_DIRECT=0 (rollback/A-B seam — byte-identical
+        // resident weights either way), BW24_RP=0, the hybrid V-reorder transforms, and the
+        // opt-in CUTLASS resident operand (which is built from raw GGUF-layout bytes).
+        let cutlass_wants_raw = cfg!(bw24_cutlass) && std::env::var("BW24_FP4_CUTLASS").is_ok();
+        let st_direct = std::env::var("BW24_ST_DIRECT").map(|v| v != "0").unwrap_or(true);
+        if rp_enabled() && st_direct && !cutlass_wants_raw {
+            if let Some(nv) = src.find_nvfp4_native(name) {
+                if nv.in_f % 64 == 0 && nv.out_f > 0 {
+                    // Same post-matmul macro-scale sibling lookup as the GGUF-layout arm below.
+                    let stem = name.strip_suffix(".weight").unwrap_or(name);
+                    let scale = match src.find(&format!("{stem}.scale")) {
+                        Some(sv) => f32::from_le_bytes(sv.bytes[..4].try_into().unwrap()),
+                        None => 1.0,
+                    };
+                    let bytes = e.htod_bytes(&bw24_gguf::nvfp4_repack::repack_modelopt_to_split(
+                        nv.wbytes, nv.wscale, nv.out_f, nv.in_f))?;
+                    return Ok(GpuTensor::Quant {
+                        bytes, qtype: QT_NVFP4, row_bytes: nv.in_f / 64 * 36,
+                        ne: vec![nv.in_f as u64, nv.out_f as u64], scale, rp: true,
+                        #[cfg(bw24_cutlass)]
+                        cutlass: None,
+                    });
+                }
+            }
+        }
         let v = src.find(name).unwrap_or_else(|| panic!("missing tensor {name}"));
         let qtype = match v.ggml_type {
             GgmlType::Q8_0 => Some(QT_Q8_0),
@@ -611,6 +640,31 @@ impl HostExps {
         match &self.tiers {
             Some(tiers) => tiers[e].as_bytes(),
             None => &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{repack_nvfp4_split, unpack_nvfp4_split};
+    use bw24_gguf::nvfp4_repack::{repack_modelopt_to_gguf, repack_modelopt_to_split};
+
+    /// A1 direct-import gate (engine side): the fused modelopt->split repack must be byte-for-byte
+    /// the composition of the two passes it replaces (modelopt->GGUF blocks, then the A6
+    /// split-plane repack). Also pins the split roundtrip on the same buffers.
+    #[test]
+    fn direct_split_equals_chained() {
+        for (out_f, in_f) in [(1usize, 64usize), (3, 128), (5, 320), (8, 1024)] {
+            let mut w = vec![0u8; out_f * in_f / 2];
+            let mut s = vec![0u8; out_f * in_f / 16];
+            for (i, b) in w.iter_mut().enumerate() { *b = ((i * 41 + 7) & 0xFF) as u8; }
+            for (i, b) in s.iter_mut().enumerate() { *b = (0x20 + ((i * 11 + 5) % 0x50)) as u8; }
+            let gguf = repack_modelopt_to_gguf(&w, &s, out_f, in_f);
+            let chained = repack_nvfp4_split(&gguf, out_f);
+            let direct = repack_modelopt_to_split(&w, &s, out_f, in_f);
+            assert_eq!(direct, chained, "fused != chained at out_f={out_f} in_f={in_f}");
+            assert_eq!(unpack_nvfp4_split(&direct, out_f), gguf,
+                       "split roundtrip broken at out_f={out_f} in_f={in_f}");
         }
     }
 }

@@ -97,6 +97,47 @@ fn nib(w_row: &[u8], e_local: usize, b: usize) -> u8 {
     if g & 1 == 0 { byte & 0x0F } else { byte >> 4 }
 }
 
+/// Repack ONE modelopt/Reza NVFP4 weight tensor DIRECTLY into bw24's A6 split-plane resident
+/// layout — [quant plane out_f x in_f/64 x 32B][scale plane out_f x in_f/64 x 4B], the layout
+/// `repack_nvfp4_split` (bw24-engine model.rs) produces from GGUF blocks — in ONE host pass,
+/// never materializing the intermediate GGUF 36B-block buffer (A1 direct import, 2026-07-04).
+///
+/// Two facts make this a pure fusion, not a new layout:
+///   * scale plane == the modelopt `.weight_scale` bytes VERBATIM: the plane is row-major per-16
+///     UE4M3 scales in element order — exactly the on-disk modelopt tensor. One memcpy.
+///   * quant plane keeps the GGUF within-block sub-block nibble interleave (the A6 rp kernels'
+///     walk order; bit-identity law forbids changing it), i.e. the same nibble shuffle
+///     `repack_modelopt_to_gguf` does — just written at plane offsets.
+///
+/// Byte-for-byte equal to `repack_nvfp4_split(&repack_modelopt_to_gguf(w, s, o, i), o)`; pinned by
+/// `split_plane_matches_gguf_blocks` below and the composition test in bw24-engine model.rs.
+pub fn repack_modelopt_to_split(weight: &[u8], wscale: &[u8], out_f: usize, in_f: usize) -> Vec<u8> {
+    assert_eq!(in_f % 64, 0, "NVFP4 repack requires in_f % 64 == 0, got in_f={in_f}");
+    let in_bytes = in_f / 2; // modelopt packed bytes per row (2 codes/byte)
+    let scl_bytes = in_f / 16; // modelopt scale bytes per row (1 UE4M3 / 16 elems)
+    assert_eq!(weight.len(), out_f * in_bytes, "weight byte count != out_f*in_f/2");
+    assert_eq!(wscale.len(), out_f * scl_bytes, "weight_scale byte count != out_f*in_f/16");
+
+    let nblk = in_f / 64; // 64-elem blocks per row
+    let qplane = out_f * nblk * 32; // scale plane starts here
+    let mut out = vec![0u8; out_f * nblk * 36];
+    // Scale plane: verbatim copy (see header).
+    out[qplane..].copy_from_slice(wscale);
+    // Quant plane: GGUF sub-block nibble interleave per 64-elem block, blocks contiguous at 32B.
+    for o in 0..out_f {
+        let w_row = &weight[o * in_bytes..(o + 1) * in_bytes];
+        for b in 0..nblk {
+            let q = &mut out[(o * nblk + b) * 32..(o * nblk + b) * 32 + 32];
+            for s in 0..4 {
+                for j in 0..8 {
+                    q[s * 8 + j] = nib(w_row, s * 16 + j, b) | (nib(w_row, s * 16 + j + 8, b) << 4);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Reference dequant of a modelopt NVFP4 row -> f32 [in_f] (modelopt convention, sans scale_2).
 /// `val = std_e2m1_code * raw_ue4m3(scale[elem/16])`. Equals bw24's internal dequant of the same
 /// element (the doubled-code/halved-scale conventions cancel) — the CPU validation cross-checks both.
@@ -306,6 +347,38 @@ mod tests {
                     assert!((a - b).abs() / denom < 1e-6, "col dst {dst}<-src {src} d {d}: {a} != {b}");
                 }
             }
+        }
+    }
+
+    /// A1 direct-import gate (bw24-gguf side): the fused modelopt->split repack must equal the
+    /// per-block redistribution of `repack_modelopt_to_gguf`'s output — quant plane block (o,b)
+    /// == GGUF block qs[4..36], scale plane 4B == GGUF block d[0..4]. (The engine-side test in
+    /// model.rs additionally pins the composition through the real `repack_nvfp4_split`.)
+    #[test]
+    fn split_plane_matches_gguf_blocks() {
+        for (out_f, in_f) in [(1usize, 64usize), (3, 128), (5, 320), (8, 1024)] {
+            let in_bytes = in_f / 2;
+            let scl_bytes = in_f / 16;
+            let mut weight = vec![0u8; out_f * in_bytes];
+            let mut wscale = vec![0u8; out_f * scl_bytes];
+            for (i, b) in weight.iter_mut().enumerate() { *b = ((i * 37 + 11) & 0xFF) as u8; }
+            for (i, b) in wscale.iter_mut().enumerate() { *b = (0x20 + ((i * 13 + 3) % 0x50)) as u8; }
+            let gguf = repack_modelopt_to_gguf(&weight, &wscale, out_f, in_f);
+            let split = repack_modelopt_to_split(&weight, &wscale, out_f, in_f);
+            assert_eq!(split.len(), gguf.len());
+            let nblk = in_f / 64;
+            let qp = out_f * nblk * 32;
+            for o in 0..out_f {
+                for b in 0..nblk {
+                    let blk = &gguf[(o * nblk + b) * 36..(o * nblk + b) * 36 + 36];
+                    assert_eq!(&split[(o * nblk + b) * 32..(o * nblk + b) * 32 + 32], &blk[4..36],
+                               "quant plane o={o} b={b} out_f={out_f} in_f={in_f}");
+                    assert_eq!(&split[qp + (o * nblk + b) * 4..qp + (o * nblk + b) * 4 + 4], &blk[0..4],
+                               "scale plane o={o} b={b} out_f={out_f} in_f={in_f}");
+                }
+            }
+            // Scale plane must be the modelopt weight_scale VERBATIM (the memcpy claim).
+            assert_eq!(&split[qp..], &wscale[..], "scale plane != weight_scale verbatim");
         }
     }
 
