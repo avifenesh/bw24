@@ -59,17 +59,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // prefill forwards and exit. Skips the decode gate + generation so the profile is PURE prefill.
     if std::env::var("BW24_PP_ONLY").is_ok() {
         let reps: usize = std::env::var("BW24_PP_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
-        let _ = model.forward_last(&e, &prompt)?;   // warmup (cache fill when BW24_MOE_CACHE)
+        // Warmup count knob: the MoE SLRU ghost filter admits on the SECOND miss, so a capped
+        // (spill-regime) cache needs >=2 warmup forwards to reach steady residency before timing.
+        let warmups: usize = std::env::var("BW24_PP_WARMUP").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        for _ in 0..warmups { let _ = model.forward_last(&e, &prompt)?; }
         e.stream().synchronize()?;
-        let tp = std::time::Instant::now();
-        for _ in 0..reps { let _ = model.forward_last(&e, &prompt)?; }
-        e.stream().synchronize()?;
-        let dtp = tp.elapsed().as_secs_f64() / reps as f64;
-        println!("pp-only: {} tok in {:.4}s = {:.1} tok/s (pp{}, {} reps)",
-                 prompt.len(), dtp, prompt.len() as f64 / dtp, prompt.len(), reps);
         if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {
-            println!("pp-only MoE cache: {n_slots} slots hits={hits} misses={misses} staged_bytes={staged}");
+            println!("pp-only MoE cache after {warmups} warmup(s): {n_slots} slots hits={hits} misses={misses} staged_bytes={staged}");
         }
+        // Per-rep timing (median-friendly: one process load, N samples) + per-rep H2D bytes.
+        let mut times = Vec::with_capacity(reps);
+        for r in 0..reps {
+            e.moe_cache_reset_counters();
+            let tp = std::time::Instant::now();
+            let _ = model.forward_last(&e, &prompt)?;
+            e.stream().synchronize()?;
+            let dt = tp.elapsed().as_secs_f64();
+            times.push(dt);
+            match e.moe_cache_stats() {
+                Some((h, m, s, _)) => println!(
+                    "pp-only rep {r}: {:.4}s = {:.1} tok/s | hits={h} misses={m} staged_bytes={s} ({:.2} GB H2D)",
+                    dt, prompt.len() as f64 / dt, s as f64 / 1e9),
+                None => println!("pp-only rep {r}: {:.4}s = {:.1} tok/s", dt, prompt.len() as f64 / dt),
+            }
+        }
+        let mut ts = times.clone();
+        ts.sort_by(|a, b| a.total_cmp(b));
+        let med = ts[ts.len() / 2];
+        println!("pp-only MEDIAN: {} tok in {:.4}s = {:.1} tok/s (pp{}, {} reps)",
+                 prompt.len(), med, prompt.len() as f64 / med, prompt.len(), reps);
         return Ok(());
     }
 

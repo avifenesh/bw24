@@ -791,11 +791,23 @@ impl HybridModel {
         };
 
         // 4. PER ACTIVE EXPERT: gather, compute, scatter.
+        // Processing ORDER: default = ascending expert id. BW24_MOE_ORDER=desc processes active
+        // experts by DESCENDING m_e (biggest token batches first) — the spill/capped-cache
+        // experiment: serve the big batches while eviction pressure is lowest so their blocks have
+        // the best retention odds across forwards. Order is FREE to change without breaking the
+        // byte-identity gate: the slot scheme pins each token's accumulation order regardless of
+        // expert processing order (that is the whole point of the slots).
+        let desc = std::env::var("BW24_MOE_ORDER").map(|v| v == "desc").unwrap_or(false);
+        let mut order: Vec<usize> =
+            (0..n_expert).filter(|&ex| !groups[ex].tok_indices.is_empty()).collect();
+        if desc {
+            order.sort_by(|&a, &b| groups[b].tok_indices.len()
+                .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
+        }
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
-        for ex in 0..n_expert {
+        for ex in order {
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
-            if m_e == 0 { continue; }
             m_dist.push(m_e);
 
             // Upload index/weight arrays to device.
