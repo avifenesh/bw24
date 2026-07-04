@@ -1583,8 +1583,51 @@ impl Engine {
         });
         let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
-        let variant: &str = if qtype != QT_NVFP4 {
+        // k-quant r2 port (2026-07-04): q4_K/q5_K/q6_K have _r2/_r2w8 twins. ncu on the DRAM-cold
+        // 9B msweep showed q4_K/q5_K b4 memory-latency bound like NVFP4 pre-fix (long_scoreboard
+        // 19.6/16.4 per issue, DRAM 47.7/38.2%, L2 weight hit ~13%); q6_K lm_head is the exception
+        // at DRAM 90-91% = wall-bound (yet r2 still wins -8%: deeper MLP raises achieved DRAM).
+        // No _pf port (a k-quant group stages 10+ words vs NVFP4's 5 — register cost outweighs;
+        // r2 covers the same MLP) and no rp (GGUF layout only). Q8_0 stays base: its only real
+        // batched shapes are the tiny out_f=32 ssm_alpha/beta (8-block grids never fill one SM).
+        // AUTO RULE = the measured winners table (differs from NVFP4's!):
+        //   r2w8 NEVER in auto — the reg squeeze (72 -> 64 regs = stack spill) loses to unbounded
+        //     r2 on every measured k-quant cell, incl. the wave-crossing lm_heads (q6_K 1316 vs
+        //     r2 1258us) — kernels kept behind the force seam for the corpus;
+        //   q4_K: r2 whenever the halved grid fills the SMs (blocks >= 4*SMs), INCLUDING the
+        //     1.05-2.0 straggler window where NVFP4's r2 lost (qkv 1.78 waves: r2 -15% here; the
+        //     k-quant base kernel leaves more latency on the table than a straggler wave costs);
+        //   q5_K/q6_K: r2 only at waves >= 2 (the 248320-row lm_heads, 48+ waves: q6_K -8%, q5_K
+        //     -2%); mid shapes measured base-or-flat (q5_K qkv 49.1 base vs 49.7 r2, attn_gate
+        //     flat, attn_k base) — the 5/6-bit two-stream unpack makes r2's staging pricier.
+        //   b2 same table with 8-row blocks: q4_K r2 when filled (-3..-22% all measured shapes),
+        //     q5_K/q6_K r2 at waves >= 2 (27B lm_head -2.9%; 9B q6_K flat, harmless).
+        let kq_r2 = matches!(qtype, QT_Q4_K | QT_Q5_K | QT_Q6_K);
+        // BW24_KQ_BV=base|r2|r2w8 forces the k-quant variant WITHOUT touching the NVFP4 dispatch
+        // (BW24_MMVQ_BV is global — an interleaved k-quant-only e2e A/B needs this narrower seam).
+        static KQBV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        let kq_bv = *KQBV.get_or_init(|| match std::env::var("BW24_KQ_BV").as_deref() {
+            Ok("base") => "base", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
+            _ => "auto",
+        });
+        let variant: &str = if qtype != QT_NVFP4 && !kq_r2 {
             "base"
+        } else if kq_r2 {
+            if kq_bv != "auto" {
+                if kq_bv == "r2w8" && mcols == 2 { "r2" } else { kq_bv }
+            } else if bv != "auto" {
+                match bv {
+                    "r2" | "pfr2" | "rpr2" | "car2" => "r2",
+                    "r2w8" | "rpr2w8" => if mcols == 2 { "r2" } else { "r2w8" },
+                    _ => "base",   // base/pf/ca/rp forced -> base (no such k-quant kernels)
+                }
+            } else {
+                let blocks = (out_f + 7) / 8;
+                let waves = blocks as f64 / (7 * sms as usize) as f64;
+                let filled = blocks >= 4 * sms as usize;
+                let use_r2 = if qtype == QT_Q4_K { filled } else { waves >= 2.0 };
+                if use_r2 { "r2" } else { "base" }
+            }
         } else if bv != "auto" {
             // r2w8 only exists for b4 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
             // ca/car2 need the alignment gate; unsupported shapes fall back to pf/r2.
