@@ -55,6 +55,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompt = if prompt.is_empty() { vec![55u32] } else { prompt };
     println!("prompt tokens: {prompt:?}");
 
+    // BW24_PP_ONLY: prefill-anatomy profiling mode (nsys) — run warmup + BW24_PP_REPS timed
+    // prefill forwards and exit. Skips the decode gate + generation so the profile is PURE prefill.
+    if std::env::var("BW24_PP_ONLY").is_ok() {
+        let reps: usize = std::env::var("BW24_PP_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        let _ = model.forward_last(&e, &prompt)?;   // warmup (cache fill when BW24_MOE_CACHE)
+        e.stream().synchronize()?;
+        let tp = std::time::Instant::now();
+        for _ in 0..reps { let _ = model.forward_last(&e, &prompt)?; }
+        e.stream().synchronize()?;
+        let dtp = tp.elapsed().as_secs_f64() / reps as f64;
+        println!("pp-only: {} tok in {:.4}s = {:.1} tok/s (pp{}, {} reps)",
+                 prompt.len(), dtp, prompt.len() as f64 / dtp, prompt.len(), reps);
+        if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {
+            println!("pp-only MoE cache: {n_slots} slots hits={hits} misses={misses} staged_bytes={staged}");
+        }
+        return Ok(());
+    }
+
     // --- correctness gate: decode-step prefix logits MUST match the prefill forward ---
     let prefill = model.forward_last(&e, &prompt)?;
     // decode the prompt step by step, capture last logits

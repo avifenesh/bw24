@@ -481,6 +481,20 @@ impl HybridModel {
         // Per-token (sel[8], w[8]) — either fused-router (device top-k) or host softmax+sort.
         let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
 
+        // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
+        // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
+        if t > 1 && std::env::var("BW24_MOE_STATS").is_ok() {
+            let mut cnt = vec![0u32; n_expert];
+            for &s in sel_all.iter() { cnt[s as usize] += 1; }
+            let total = sel_all.len() as f64;
+            let mut h = 0.0f64;
+            let mut active = 0usize;
+            for &c in &cnt { if c > 0 { active += 1; let p = c as f64 / total; h -= p * p.log2(); } }
+            let maxc = cnt.iter().copied().max().unwrap_or(0);
+            println!("moe-stats il={} t={} assignments={} active={}/{} entropy={:.3}b (max {:.3}b) mean_tok_per_active={:.2} max_tok_per_expert={}",
+                     il, t, sel_all.len(), active, n_expert, h, (n_expert as f64).log2(), total / active.max(1) as f64, maxc);
+        }
+
         let mut moe_out = e.zeros(t * n_embd)?;
 
         // GPU scratch: one slot per proj, big enough for ONE expert (default stage-every-token path).
