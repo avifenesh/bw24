@@ -11,6 +11,8 @@ pub enum Arch {
     Qwen35,       // hybrid: gated-deltanet linear-attn + periodic full-attn + MTP
     Qwen35Moe,
     Olmoe,        // dense full-attention + MoE FFN (no shared expert, no SSM, no MTP)
+    MinimaxM3,    // dense full-attention (MSA later) + MoE FFN: sigmoid router + shared expert,
+                  // gemma-norm, swigluoai, GQA 64/4 hd128 partial-RoPE, QK-norm
     Llama,
     Other(String),
 }
@@ -23,6 +25,7 @@ impl Arch {
             "qwen35" => Arch::Qwen35,
             "qwen35moe" => Arch::Qwen35Moe,
             "olmoe" => Arch::Olmoe,
+            "minimax-m3" => Arch::MinimaxM3,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -37,6 +40,8 @@ impl Arch {
             "qwen3_5" | "qwen3_5_text" | "qwen3_next" => "qwen35",
             "qwen3_5_moe" | "qwen3_next_moe" => "qwen35moe",
             "olmoe" => "olmoe",
+            // MiniMax-M3 (incl the VL wrapper model_type; text_config flattening handles the rest)
+            "minimax_m3" | "minimax_m3_vl" | "minimax_m3_text" => "minimax-m3",
             "llama" => "llama",
             other => other,
         };
@@ -48,8 +53,12 @@ impl Arch {
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
-        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe)
+        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3)
     }
+    /// MiniMax-M3: sigmoid router (+e_score_correction_bias), gemma-norm, swigluoai clamp,
+    /// Mixtral-style expert tensor names. Full attention v0 (MSA is bit-exact-degenerate <=2048
+    /// ctx — the sparse indexer selects everything; the MSA kernel is a later arc).
+    pub fn is_minimax(&self) -> bool { matches!(self, Arch::MinimaxM3) }
 }
 
 /// What kind of token-mixing a given layer performs.
@@ -289,6 +298,19 @@ pub struct HfConfig {
     pub linear_value_head_dim: Option<u32>,
     pub linear_num_key_heads: Option<u32>,
     pub linear_num_value_heads: Option<u32>,
+    // ---- MiniMax-M3 (minimax_m3_vl text_config) ----
+    pub num_local_experts: Option<u32>,        // M3 name for expert_count
+    pub dense_intermediate_size: Option<u32>,  // layers 0..2 dense FFN (12288)
+    pub shared_intermediate_size: Option<u32>, // shared expert FF (3072)
+    pub n_shared_experts: Option<u32>,
+    pub rotary_dim: Option<u32>,               // partial RoPE (64 of head_dim 128)
+    pub use_gemma_norm: Option<bool>,
+    pub scoring_func: Option<String>,          // "sigmoid"
+    pub routed_scaling_factor: Option<f32>,    // 2.0
+    pub use_routing_bias: Option<bool>,
+    pub swiglu_alpha: Option<f32>,             // swigluoai clamp params
+    pub swiglu_limit: Option<f32>,
+    pub moe_layer_freq: Option<Vec<u32>>,      // per-layer 0=dense 1=moe
 }
 
 impl Default for HfConfig {
@@ -317,6 +339,18 @@ impl Default for HfConfig {
             linear_value_head_dim: None,
             linear_num_key_heads: None,
             linear_num_value_heads: None,
+            num_local_experts: None,
+            dense_intermediate_size: None,
+            shared_intermediate_size: None,
+            n_shared_experts: None,
+            rotary_dim: None,
+            use_gemma_norm: None,
+            scoring_func: None,
+            routed_scaling_factor: None,
+            use_routing_bias: None,
+            swiglu_alpha: None,
+            swiglu_limit: None,
+            moe_layer_freq: None,
         }
     }
 }
@@ -367,6 +401,19 @@ impl HfConfig {
         if let Some(v) = o.u32("linear_value_head_dim") { self.linear_value_head_dim = Some(v); }
         if let Some(v) = o.u32("linear_num_key_heads") { self.linear_num_key_heads = Some(v); }
         if let Some(v) = o.u32("linear_num_value_heads") { self.linear_num_value_heads = Some(v); }
+        // ---- MiniMax-M3 keys ----
+        if let Some(v) = o.u32("num_local_experts") { self.num_local_experts = Some(v); }
+        if let Some(v) = o.u32("dense_intermediate_size") { self.dense_intermediate_size = Some(v); }
+        if let Some(v) = o.u32("shared_intermediate_size") { self.shared_intermediate_size = Some(v); }
+        if let Some(v) = o.u32("n_shared_experts") { self.n_shared_experts = Some(v); }
+        if let Some(v) = o.u32("rotary_dim") { self.rotary_dim = Some(v); }
+        if let Some(v) = o.boolean("use_gemma_norm") { self.use_gemma_norm = Some(v); }
+        if let Some(v) = o.string("scoring_func") { self.scoring_func = Some(v); }
+        if let Some(v) = o.f32("routed_scaling_factor") { self.routed_scaling_factor = Some(v); }
+        if let Some(v) = o.boolean("use_routing_bias") { self.use_routing_bias = Some(v); }
+        if let Some(v) = o.f32("swiglu_alpha") { self.swiglu_alpha = Some(v); }
+        if let Some(v) = o.f32("swiglu_limit") { self.swiglu_limit = Some(v); }
+        if let Some(v) = o.u32_array("moe_layer_freq") { self.moe_layer_freq = Some(v); }
     }
 }
 
@@ -437,6 +484,18 @@ impl JsonObj {
         let v = self.raw(key)?.trim();
         if v == "null" { return None; }
         v.parse::<f32>().ok()
+    }
+
+    fn boolean(&self, key: &str) -> Option<bool> {
+        match self.raw(key)?.trim() { "true" => Some(true), "false" => Some(false), _ => None }
+    }
+
+    /// Integer array field (e.g. moe_layer_freq: [0,0,0,1,...]).
+    fn u32_array(&self, key: &str) -> Option<Vec<u32>> {
+        let v = self.raw(key)?.trim();
+        if !v.starts_with('[') || !v.ends_with(']') { return None; }
+        Some(v[1..v.len()-1].split(',')
+            .filter_map(|x| x.trim().parse::<u32>().ok()).collect())
     }
 
     fn object(&self, key: &str) -> Option<JsonObj> {
@@ -644,5 +703,30 @@ mod hf_tests {
         assert_eq!(moe.expert_count, 128);
         assert_eq!(moe.expert_used_count, 8);
         assert_eq!(moe.expert_ff_length, 768);
+    }
+}
+
+#[cfg(test)]
+mod minimax_tests {
+    use super::*;
+    #[test]
+    fn parse_minimax_m3_vl() {
+        let cfg = HfConfig::parse(&std::fs::read_to_string(
+            "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/config.json").unwrap());
+        assert_eq!(Arch::from_hf_model_type(&cfg.model_type), Arch::MinimaxM3);
+        assert_eq!(cfg.num_hidden_layers, 60);
+        assert_eq!(cfg.num_local_experts, Some(64));   // REAP50 artifact
+        assert_eq!(cfg.num_experts_per_tok, Some(4));
+        assert_eq!(cfg.hidden_size, 6144);
+        assert_eq!(cfg.dense_intermediate_size, Some(12288));
+        assert_eq!(cfg.shared_intermediate_size, Some(3072));
+        assert_eq!(cfg.rotary_dim, Some(64));
+        assert_eq!(cfg.use_gemma_norm, Some(true));
+        assert_eq!(cfg.scoring_func.as_deref(), Some("sigmoid"));
+        assert_eq!(cfg.routed_scaling_factor, Some(2.0));
+        assert_eq!(cfg.moe_layer_freq.as_ref().map(|v| (v.len(), v[0], v[3])), Some((60, 0, 1)));
+        let mc = ModelConfig::from_hf(&cfg);
+        assert!(mc.arch.is_moe() && mc.arch.is_minimax());
+        assert_eq!(mc.moe.as_ref().unwrap().expert_count, 64);
     }
 }
