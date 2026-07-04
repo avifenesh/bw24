@@ -100,7 +100,7 @@ impl HybridModel {
                     let gate = e.matmul(ffn_gate, &z, t)?;
                     let up = e.matmul(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -147,7 +147,7 @@ impl HybridModel {
                     let gate = e.matmul(ffn_gate, &z, t)?;
                     let up = e.matmul(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -256,7 +256,7 @@ impl HybridModel {
                     let gate = e.matmul(ffn_gate, &z, t)?;
                     let up = e.matmul(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -793,7 +793,10 @@ impl HybridModel {
             // BIT-IDENTITY: each in-kernel dot reproduces qmatvec_f32's exact reduction; SiLU is
             // silu_mul_f32's exact expression; the down accumulation is a slot-ordered
             // __fmaf_rn chain == the sequential axpy_f32 chain (BW24_MOE_GDEC_GATE compares).
-            if gdec_may_fire && moe_q8 {
+            // cfg.m3: the grouped kernels' fused epilogues are plain SiLU — M3's swigluoai must
+            // NOT take them until the kernels grow the clamped variant; M3 falls through to the
+            // sequential loop (which routes through ffn_act).
+            if gdec_may_fire && moe_q8 && cfg.m3.is_none() {
                 if tok_q8.is_none() {
                     tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
                 }
@@ -802,7 +805,7 @@ impl HybridModel {
                                            &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                     continue;
                 }
-            } else if gdec_may_fire
+            } else if gdec_may_fire && cfg.m3.is_none()
                 && Self::moe_gdec_token(e, m, il, max_block, &zt, sel, w,
                                         &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                 continue;
@@ -841,8 +844,8 @@ impl HybridModel {
                     // only difference between HIT and MISS is whether the memcpy_htod ran.
                     let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
                     let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
-                    let mut act = e.uninit(n_ff_exp)?;  // silu_mul fully overwrites
-                    e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
+                    let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
+                    Self::ffn_act(e, cfg, &gate, &up, &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
                     let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
@@ -866,8 +869,8 @@ impl HybridModel {
                     let up = e.qmatvec_view(su, 0..u_len, &zt, 1,
                         m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
 
-                    let mut act = e.uninit(n_ff_exp)?;  // silu_mul fully overwrites
-                    e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
+                    let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
+                    Self::ffn_act(e, cfg, &gate, &up, &mut act, n_ff_exp)?;
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
@@ -891,7 +894,8 @@ impl HybridModel {
             // Bit-identical per (tensor,row); falls back to the two matmul calls when ineligible.
             // Small-t (spec verify 2..15) rides matmul_decode_exact so shexp FP chains match the
             // t==1 decode chain per column (cuBLASLt n-dependence + dp4a-vs-mmvq class); real
-            // prefill keeps the batched matmul.
+            // prefill keeps the batched matmul. Activation routes through ffn_act (SiLU for
+            // softmax archs, clamped swigluoai for M3 — identical to silu_mul when cfg.m3 is None).
             let verify_t = t > 1 && t < PRIME_MIN_T;
             let (sg_gate, sg_up) = if t == 1 {
                 match e.matmul_q8_fused2_x(gate_shexp, up_shexp, z)? {
@@ -903,8 +907,8 @@ impl HybridModel {
             } else {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)   // [T, 512] each
             };
-            let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
-            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            let mut sa = e.uninit(t * n_ff_sh)?;  // activation fully overwrites
+            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
@@ -956,6 +960,17 @@ impl HybridModel {
         for l in self.layers.iter() { scan(&l.ffn); }
         if let Some(mtp) = self.mtp.as_ref() { scan(&mtp.ffn); }
         mx
+    }
+
+    /// FFN activation dispatch: swigluoai (clamped, alpha/limit) when cfg.m3 says so, else the
+    /// standard SiLU*up. One seam so every FFN site (dense, routed expert, shared expert) follows
+    /// the model's activation exactly.
+    pub(crate) fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+               act: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(m3) = cfg.m3.as_ref() {
+            return e.swigluoai_mul_scaled(gate, up, 1.0, 1.0, m3.swiglu_alpha, m3.swiglu_limit, act, n);
+        }
+        e.silu_mul(gate, up, act, n)
     }
 
     /// Routing for the whole batch: returns (sel [T*n_used] expert ids, w [T*n_used] renorm weights),
@@ -1588,7 +1603,7 @@ impl HybridModel {
                 })?;
                 // SiLU-MUL activation.
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                e.silu_mul(&gate, &up, &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act(e, cfg, &gate, &up, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
@@ -1611,7 +1626,7 @@ impl HybridModel {
                     m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
                 // SiLU-MUL activation.
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                e.silu_mul(&gate, &up, &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act(e, cfg, &gate, &up, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.qmatvec_view(sd, 0..d_len, &actv, m_e,
                     m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
@@ -1648,7 +1663,7 @@ impl HybridModel {
             let sg_gate = e.matmul(gate_shexp, z, t)?;
             let sg_up = e.matmul(up_shexp, z, t)?;
             let mut sa = e.zeros(t * n_ff_sh)?;
-            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
             let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
             let mut g = e.zeros(t)?;
