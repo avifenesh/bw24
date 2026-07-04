@@ -462,6 +462,35 @@ impl HybridModel {
     pub(crate) fn moe_ffn(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // A2: Expert-grouped dispatch for prefill (T>1). BW24_MOE_GROUPED=1 routes here.
+        if t > 1 && std::env::var("BW24_MOE_GROUPED").is_ok() {
+            let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
+            // BW24_MOE_GATE: byte-identity comparison vs sequential path.
+            if std::env::var("BW24_MOE_GATE").is_ok() {
+                let seq_out = Self::moe_ffn_sequential(e, m, z, t, cfg, il, max_block)?;
+                let g_host = e.dtoh(&grouped_out)?;
+                let s_host = e.dtoh(&seq_out)?;
+                let g_bytes: &[u8] = unsafe { std::slice::from_raw_parts(g_host.as_ptr() as *const u8, g_host.len() * 4) };
+                let s_bytes: &[u8] = unsafe { std::slice::from_raw_parts(s_host.as_ptr() as *const u8, s_host.len() * 4) };
+                if g_bytes == s_bytes {
+                    if il == 0 { println!("moe-gate il={il} t={t} BYTE-IDENTICAL (first layer only printed)"); }
+                } else {
+                    let diffs = g_host.iter().zip(s_host.iter()).enumerate()
+                        .filter(|(_, (a, b))| a != b).count();
+                    let maxdiff = g_host.iter().zip(s_host.iter())
+                        .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    panic!("moe-gate il={il} t={t} MISMATCH: {diffs}/{} elems differ, maxdiff={maxdiff:.6e}", g_host.len());
+                }
+            }
+            return Ok(grouped_out);
+        }
+        Self::moe_ffn_sequential(e, m, z, t, cfg, il, max_block)
+    }
+
+    /// Sequential (per-token) MoE FFN -- the original path. Factored out for the gate comparison.
+    pub(crate) fn moe_ffn_sequential(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
+                                     cfg: &ModelConfig, il: u16, max_block: usize)
+                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{PROJ_GATE, PROJ_UP, PROJ_DOWN};
         let moe = cfg.moe.as_ref().unwrap();
         let n_embd = cfg.n_embd as usize;          // 2048 (gate/up in_f, down out_f)
@@ -685,5 +714,188 @@ impl HybridModel {
             let buf = match slot { DispatchSlot::Resident(s) => c.slot(s), DispatchSlot::Staging(s) => c.buf(DispatchSlot::Staging(s)) };
             eng.qmatvec_view(buf, 0..len, x, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
         })
+    }
+}
+
+// ================================================================================================
+// A2: EXPERT-GROUPED MoE PREFILL (BW24_MOE_GROUPED=1). Resident-case prototype.
+//
+// Instead of the per-token loop (T * 8 experts * 3 projections = 12024 individual m=1 matvecs),
+// this groups tokens by expert and runs ONE matmul per active expert per projection at m=m_e.
+// On a 501-token prefill with ~170 active experts, that's ~510 matmuls (vs 12024).
+//
+// EXACTNESS: per-token accumulation across its 8 experts is reordered (grouped processes experts
+// in expert-id order, not the router's top-k order). To preserve bit-identity with the sequential
+// loop, we use an 8-SLOT scheme: expert outputs are scattered into slots keyed by the token's
+// top-k position (0..7), then reduced in that fixed order. This makes the f32 addition order
+// identical to the per-token loop regardless of expert processing order.
+//
+// Memory: T * 8 * n_embd * 4 = 501 * 8 * 2048 * 4 = ~32 MB (slot buffer). Fine on 96GB.
+// ================================================================================================
+
+impl HybridModel {
+    /// A2 expert-grouped MoE FFN (prefill path, BW24_MOE_GROUPED=1). Same semantics as moe_ffn:
+    /// z [T, n_embd] -> moe_out [T, n_embd]. BIT-IDENTICAL to moe_ffn when using the slot scheme.
+    pub(crate) fn moe_ffn_grouped(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
+                                  cfg: &ModelConfig, il: u16, _max_block: usize)
+                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+
+        // 1. ROUTER (identical to moe_ffn).
+        let logits = e.matmul(&m.gate_inp, z, t)?;
+        let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
+
+        // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
+        // For each expert e, we need: which tokens use it, their positions in z, their top-k
+        // slot index (for bit-identical accumulation), and their weights.
+        struct ExpertGroup {
+            tok_indices: Vec<i32>,   // indices into z rows (0..T-1)
+            slot_indices: Vec<i32>,  // top-k slot (0..n_used-1) for that token-expert pair
+            weights: Vec<f32>,       // renormalized weight for that token-expert pair
+        }
+        let mut groups: Vec<ExpertGroup> = (0..n_expert).map(|_| ExpertGroup {
+            tok_indices: Vec::new(), slot_indices: Vec::new(), weights: Vec::new(),
+        }).collect();
+
+        for tok in 0..t {
+            for j in 0..n_used {
+                let ex = sel_all[tok * n_used + j] as usize;
+                let w = w_all[tok * n_used + j];
+                groups[ex].tok_indices.push(tok as i32);
+                groups[ex].slot_indices.push(j as i32);
+                groups[ex].weights.push(w);
+            }
+        }
+
+        // 3. ALLOCATE SLOT BUFFER: [T, n_used, n_embd] f32, zero-initialized.
+        // Each token's 8 expert contributions land in their respective slots.
+        let mut slot_buf = e.zeros(t * n_used * n_embd)?;
+        let mut wbuf = e.zeros(t * n_used)?;  // [T, n_used] weight buffer for FMA reduce
+
+        // Expert weight dimensions (used in both cache and staging paths).
+        let g_len = m.gate_exps.expert_stride;
+        let u_len = m.up_exps.expert_stride;
+        let d_len = m.down_exps.expert_stride;
+        let use_cache = Engine::moe_cache_enabled();
+        let max_block = _max_block;
+
+        // GPU scratch for staging (only allocated when NOT using cache).
+        let (mut scratch_g, mut scratch_u, mut scratch_d) = if !use_cache {
+            (Some(e.alloc_u8(g_len)?), Some(e.alloc_u8(u_len)?), Some(e.alloc_u8(d_len)?))
+        } else {
+            (None, None, None)
+        };
+
+        // 4. PER ACTIVE EXPERT: gather, compute, scatter.
+        let mut m_dist: Vec<usize> = Vec::new();  // for stats
+        for ex in 0..n_expert {
+            let grp = &groups[ex];
+            let m_e = grp.tok_indices.len();
+            if m_e == 0 { continue; }
+            m_dist.push(m_e);
+
+            // Upload index/weight arrays to device.
+            let tok_idx_d = e.htod_i32(&grp.tok_indices)?;
+            let slot_idx_d = e.htod_i32(&grp.slot_indices)?;
+            let weight_d = e.htod(&grp.weights)?;
+
+            // GATHER: collect m_e activation rows from z into a contiguous buffer.
+            let mut gathered = e.zeros(m_e * n_embd)?;
+            e.gather_rows(z, &tok_idx_d, &mut gathered, n_embd, m_e)?;
+            let gv = gathered.slice(0..m_e * n_embd);
+
+            // Compute gate/up/down matmuls -- two paths: cache-resident or host-staged.
+            let y = if use_cache {
+                use crate::moe_cache::{BlockId, PROJ_GATE, PROJ_UP, PROJ_DOWN};
+                // CACHE PATH: dispatch through MOE cache, get device-resident buffer, GEMM at m=m_e.
+                let gate = e.with_moe_cache(max_block, |c, eng| {
+                    let id = BlockId::new(il, PROJ_GATE, ex as u16);
+                    let slot = c.dispatch(id, m.gate_exps.expert_bytes(ex), eng)?;
+                    let buf = c.buf(slot);
+                    eng.qmatvec_view(buf, 0..g_len, &gv, m_e,
+                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)
+                })?;
+                let up = e.with_moe_cache(max_block, |c, eng| {
+                    let id = BlockId::new(il, PROJ_UP, ex as u16);
+                    let slot = c.dispatch(id, m.up_exps.expert_bytes(ex), eng)?;
+                    let buf = c.buf(slot);
+                    eng.qmatvec_view(buf, 0..u_len, &gv, m_e,
+                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)
+                })?;
+                // SiLU-MUL activation.
+                let mut act = e.zeros(m_e * n_ff_exp)?;
+                e.silu_mul(&gate, &up, &mut act, m_e * n_ff_exp)?;
+                let actv = act.slice(0..m_e * n_ff_exp);
+                e.with_moe_cache(max_block, |c, eng| {
+                    let id = BlockId::new(il, PROJ_DOWN, ex as u16);
+                    let slot = c.dispatch(id, m.down_exps.expert_bytes(ex), eng)?;
+                    let buf = c.buf(slot);
+                    eng.qmatvec_view(buf, 0..d_len, &actv, m_e,
+                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)
+                })?
+            } else {
+                // STAGING PATH: H2D the expert blocks into scratch buffers, then GEMM.
+                let sg = scratch_g.as_mut().unwrap();
+                let su = scratch_u.as_mut().unwrap();
+                let sd = scratch_d.as_mut().unwrap();
+                e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
+                e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
+                e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
+                let gate = e.qmatvec_view(sg, 0..g_len, &gv, m_e,
+                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                let up = e.qmatvec_view(su, 0..u_len, &gv, m_e,
+                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                // SiLU-MUL activation.
+                let mut act = e.zeros(m_e * n_ff_exp)?;
+                e.silu_mul(&gate, &up, &mut act, m_e * n_ff_exp)?;
+                let actv = act.slice(0..m_e * n_ff_exp);
+                e.qmatvec_view(sd, 0..d_len, &actv, m_e,
+                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
+            };
+
+            // SCATTER into slot buffer: each row goes to slot_buf[tok, slot, :].
+            e.scatter_slot(&y, &tok_idx_d, &slot_idx_d, &weight_d,
+                           &mut slot_buf, &mut wbuf, n_embd, n_used, m_e)?;
+        }
+
+        // 5. REDUCE SLOTS: sum the 8 slots per token into the final moe_out.
+        let mut moe_out = e.zeros(t * n_embd)?;
+        e.reduce_slots(&slot_buf, &wbuf, &mut moe_out, n_embd, n_used, t)?;
+
+        // STATS: print m-distribution when BW24_MOE_STATS is set.
+        if std::env::var("BW24_MOE_STATS").is_ok() && !m_dist.is_empty() {
+            m_dist.sort_unstable();
+            let active = m_dist.len();
+            let mean = m_dist.iter().sum::<usize>() as f64 / active as f64;
+            let median = m_dist[active / 2];
+            let max_m = *m_dist.last().unwrap();
+            let min_m = m_dist[0];
+            let above16 = m_dist.iter().filter(|&&x| x >= 16).count();
+            println!("moe-grouped il={il} t={t} active={active}/{n_expert} \
+                      m_e: min={min_m} median={median} mean={mean:.1} max={max_m} \
+                      above_gemm_threshold(>=16)={above16}/{active}");
+        }
+
+        // 6. SHARED EXPERT (same as moe_ffn — untouched).
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();
+            let sg_gate = e.matmul(gate_shexp, z, t)?;
+            let sg_up = e.matmul(up_shexp, z, t)?;
+            let mut sa = e.zeros(t * n_ff_sh)?;
+            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            let sh = e.matmul(down_shexp, &sa, t)?;
+            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+            let mut g = e.zeros(t)?;
+            e.sigmoid(&gs, &mut g, t)?;
+            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+        }
+
+        Ok(moe_out)
     }
 }

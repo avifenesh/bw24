@@ -1052,3 +1052,78 @@ extern "C" __global__ void ssm_conv1d_fused_decode_f32(
     #pragma unroll
     for (int j = 0; j < 8; j++) if (j < pad) st[j] = win[1 + j];
 }
+// MoE grouped-prefill gather/scatter kernels (A2 prototype — RESIDENT case).
+// These are appended to hybrid.cu (same fatbin).
+
+// gather_rows_f32: gather m_e rows from src[T, ncols] into dst[m_e, ncols],
+// using an index array idx[m_e] (each in 0..T-1).
+// Grid: (ceil(ncols*m_e / 256), 1, 1), block: (256, 1, 1).
+extern "C" __global__ void gather_rows_f32(
+    const float* __restrict__ src,  // [T, ncols]
+    const int*   __restrict__ idx,  // [m_e] indices into src rows
+    float*       __restrict__ dst,  // [m_e, ncols]
+    int ncols, int m_e)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = m_e * ncols;
+    if (i < total) {
+        int row = i / ncols;
+        int col = i % ncols;
+        dst[i] = src[(size_t)idx[row] * ncols + col];
+    }
+}
+
+
+// scatter_slot_f32: copy each of m_e rows in src[m_e, ncols] into the slot buffer
+// dst[tok_idx[row], slot_idx[row], col] = src[row, col] (RAW, no weight multiply).
+// Weight is stored into wbuf[tok_idx[row] * n_used + slot_idx[row]] by the col==0 thread.
+// This separation allows the reduce step to use FMA for bit-identity with the axpy path.
+// Grid: (ceil(ncols*m_e / 256), 1, 1), block: (256, 1, 1).
+extern "C" __global__ void scatter_add_slot_f32(
+    const float* __restrict__ src,       // [m_e, ncols] expert output
+    const int*   __restrict__ tok_idx,   // [m_e] original token indices (0..T-1)
+    const int*   __restrict__ slot_idx,  // [m_e] top-k slot (0..n_used-1)
+    const float* __restrict__ weight,    // [m_e] expert weights
+    float*       __restrict__ dst,       // [T, n_used, ncols] slot buffer
+    float*       __restrict__ wbuf,      // [T, n_used] weight buffer
+    int ncols, int n_used, int m_e)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = m_e * ncols;
+    if (i < total) {
+        int row = i / ncols;
+        int col = i % ncols;
+        int t = tok_idx[row];
+        int s = slot_idx[row];
+        // Copy raw expert output (weight applied in reduce via FMA for bit-identity).
+        dst[(size_t)t * n_used * ncols + (size_t)s * ncols + col] = src[i];
+        // Store weight once per row (col==0 avoids redundant stores).
+        if (col == 0) {
+            wbuf[t * n_used + s] = weight[row];
+        }
+    }
+}
+
+// reduce_slots_fma_f32: weighted sum of n_used slots per token using FMA.
+// dst[t, col] = sum_{s=0}^{n_used-1} FMA(wbuf[t,s], slots[t,s,col], acc).
+// The FMA matches axpy_f32 semantics (dst[i] += alpha * src[i] compiles to FMA).
+// Grid: (ceil(T * ncols / 256), 1, 1), block: (256, 1, 1).
+extern "C" __global__ void reduce_slots_f32(
+    const float* __restrict__ slots,  // [T, n_used, ncols]
+    const float* __restrict__ wbuf,   // [T, n_used] weights per slot
+    float*       __restrict__ dst,    // [T, ncols]
+    int ncols, int n_used, int T)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = T * ncols;
+    if (i < total) {
+        int t = i / ncols;
+        int col = i % ncols;
+        float acc = 0.0f;
+        const float* base = slots + (size_t)t * n_used * ncols + col;
+        for (int s = 0; s < n_used; s++) {
+            acc = __fmaf_rn(wbuf[t * n_used + s], base[(size_t)s * ncols], acc);
+        }
+        dst[i] = acc;
+    }
+}

@@ -448,6 +448,54 @@ impl Engine {
         Ok(())
     }
 
+    // ======== A2 GROUPED MoE PREFILL KERNELS ========
+
+    /// Gather m_e rows from src[T, ncols] into dst[m_e, ncols] using index array idx[m_e].
+    pub fn gather_rows(&self, src: &CudaSlice<f32>, idx: &CudaSlice<i32>,
+                       dst: &mut CudaSlice<f32>, ncols: usize, m_e: usize)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gather_rows_f32");
+        let cfg = LaunchConfig::for_num_elems((m_e * ncols) as u32);
+        let (nc, me) = (ncols as i32, m_e as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(idx).arg(dst).arg(&nc).arg(&me);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Scatter expert outputs into per-token slots: dst[tok_idx[r], slot_idx[r], :] = src[r, :] * weight[r].
+    /// dst is [T, n_used, ncols], zero-initialized. Each (expert, token) pair maps to a unique slot.
+    /// Scatter expert outputs into per-token slots (raw copy, no weight multiply).
+    /// Weight stored into wbuf[tok*n_used + slot] for FMA in reduce step.
+    pub fn scatter_slot(&self, src: &CudaSlice<f32>, tok_idx: &CudaSlice<i32>,
+                        slot_idx: &CudaSlice<i32>, weight: &CudaSlice<f32>,
+                        dst: &mut CudaSlice<f32>, wbuf: &mut CudaSlice<f32>,
+                        ncols: usize, n_used: usize, m_e: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("scatter_add_slot_f32");
+        let cfg = LaunchConfig::for_num_elems((m_e * ncols) as u32);
+        let (nc, nu, me) = (ncols as i32, n_used as i32, m_e as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(tok_idx).arg(slot_idx).arg(weight).arg(dst).arg(wbuf).arg(&nc).arg(&nu).arg(&me);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Reduce n_used slots per token: dst[t, col] = sum_s slots[t, s, col].
+    /// Reduce n_used slots per token: dst[t, col] = sum_s FMA(wbuf[t,s], slots[t,s,col], acc).
+    /// Uses FMA for bit-identity with the sequential axpy path.
+    pub fn reduce_slots(&self, slots: &CudaSlice<f32>, wbuf: &CudaSlice<f32>,
+                        dst: &mut CudaSlice<f32>, ncols: usize, n_used: usize, t: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("reduce_slots_f32");
+        let cfg = LaunchConfig::for_num_elems((t * ncols) as u32);
+        let (nc, nu, ti) = (ncols as i32, n_used as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(slots).arg(wbuf).arg(dst).arg(&nc).arg(&nu).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Stage-B: quantize activation [m,in] f32 -> q8_1 (int8 qs + per-block f32 scale).
     /// Quantize an activation [m, in_f] to q8_1 (int8 qs + per-32 f32 scale). Public so the
     /// forward can quantize a SHARED activation ONCE and feed it to several matmuls (gate+up
