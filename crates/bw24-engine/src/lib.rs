@@ -2167,8 +2167,21 @@ impl Engine {
         let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let gqa = (n_head / n_head_kv).max(1) as u32;
-        let f = self.func("fa_decode_vec_q_rows");
-        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+        // SHARED-K path (2026-07-05): T=2..4 rows fold into one CTA per (kv_head, split) — key
+        // bytes read once instead of T times (bit-identical per row; kernel-check sk-vs-rows gate).
+        // BW24_FA_SK=0 forces the plain rows kernel.
+        // MEASURED NEGATIVE 2026-07-05 (default OFF, kept as seam): folding T rows registers
+        // (q_reg+acc x T per lane) collapses occupancy — p3 spec 108.0 -> 51.9 tok/s. Same class
+        // as the wall-ledgered 2-key ILP. The FA byte-reuse win cannot pay for Tx register state
+        // in this kernel shape; a smem-staged variant would reintroduce the smem-broadcast loss.
+        let sk = t >= 2 && t <= 4 && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
+        let fname = if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
+                                       3 => "fa_decode_vec_q_rows_sk3",
+                                       _ => "fa_decode_vec_q_rows_sk4" } }
+                    else { "fa_decode_vec_q_rows" };
+        let f = self.func(fname);
+        let zdim = if sk { 1 } else { t as u32 };
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, zdim),
             block_dim: (32, gqa, 1), shared_mem_bytes: 0 };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
