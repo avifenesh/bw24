@@ -71,6 +71,13 @@ pub struct MoeSlotCache {
     pub staged_bytes: u64,    // total H2D bytes the cache caused (admit + first-miss transient)
 }
 
+/// FREE-SLOT FAST-ADMIT gate (BW24_MOE_FAST_ADMIT, default ON; `=0` restores the strict
+/// second-miss ghost filter even while free slots remain). See `dispatch`.
+fn fast_admit_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_FAST_ADMIT").map(|v| v != "0").unwrap_or(true))
+}
+
 impl MoeSlotCache {
     /// Build the cache sizing N from free VRAM (MOE-SLRU-PLAN §B.4): probe free VRAM AFTER residents
     /// are loaded; N is shared across ALL layers so it must hold the WHOLE-MODEL hot set, not one
@@ -127,7 +134,17 @@ impl MoeSlotCache {
     pub fn resident(&self, id: BlockId) -> Option<usize> { self.table.get(&id).copied() }
 
     /// HIT promotion (SLRU): on a probation hit promote to protected; on a protected hit bump to MRU.
+    ///
+    /// O(1) EARLY-OUT (STAGING-ELISION stage, 2026-07-04): while FREE slots remain, `admit` pops
+    /// `free` and `evict_one` is unreachable — recency order is dead state until the cache fills.
+    /// The promotion below is a linear scan of two VecDeques (O(n_slots) PER HIT; at ~46k slots x
+    /// ~850 hits/token that was ~40M host ops/token — measured as the fast-admit A/B regression
+    /// 48.5 -> 46.0 tok/s on the 35B g7e decode). Skip it until eviction is possible. On 96GB
+    /// (slots >= whole-model block count) every HIT stays an O(1) table lookup forever; on spill
+    /// rigs this only defers SLRU ordering to when eviction pressure actually exists.
+    /// Bookkeeping-only: the dispatched bytes are identical either way (the D.2 gate pins it).
     fn on_hit(&mut self, slot: usize) {
+        if !self.free.is_empty() { return; }
         if let Some(pos) = self.probation.iter().position(|&x| x == slot) {
             self.probation.remove(pos);
             self.push_protected(slot);
@@ -215,6 +232,20 @@ impl MoeSlotCache {
             return Ok(DispatchSlot::Resident(s));
         }
         self.misses += 1;
+        // FREE-SLOT FAST-ADMIT (STAGING-ELISION stage, 2026-07-04): the ghost second-miss filter
+        // exists to stop a one-off cold expert from EVICTING a genuinely hot one. While FREE slots
+        // remain, admission evicts nothing — the filter only delays residency, so every block pays
+        // a SECOND H2D copy before it can ever hit. On 96GB the auto-sized cache exceeds the
+        // whole-model block count (46k slots vs 31.5k blocks on the 35B), so the ghost path was
+        // pure staging overhead: steady-state hit-rate 83.7% instead of ~100% (74 MB/token of
+        // avoidable PCIe). Admit on first miss while free slots exist; fall back to the ghost
+        // filter once the cache is FULL (eviction now has a victim — the original SLRU-protection
+        // argument applies). BW24_MOE_FAST_ADMIT=0 restores the strict filter. Bit-identity
+        // unchanged: the slot holds byte-for-byte the same GGUF block either way (D.2 gate).
+        if !self.free.is_empty() && fast_admit_enabled() {
+            let s = self.admit(id, host_bytes, e)?;
+            return Ok(DispatchSlot::Resident(s));
+        }
         if self.ghost.contains(&id) {
             self.ghost.remove(&id);
             let s = self.admit(id, host_bytes, e)?;

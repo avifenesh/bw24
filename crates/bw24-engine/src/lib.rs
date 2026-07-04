@@ -147,6 +147,20 @@ impl Engine {
         let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;
+        // DECODE EVENT-TRACKING ELISION (BW24_NO_EVT=1, default off). cudarc is in multi-stream
+        // mode (main stream + copy_stream are both created streams), so by default EVERY launch
+        // arg records a read/write CudaEvent and inserts cuStreamWaitEvent on prior events. On the
+        // 35B MoE decode that is ~19k cuStreamWaitEvent + ~9k cuEventRecord + ~6k event
+        // create/destroy per token (~7 ms/tok host time, measured nsys 2026-07-04 g7e) protecting
+        // NOTHING: every hot-path kernel/memcpy runs on the ONE gpu.stream (copy_stream is only
+        // used by stage_expert_async — unwired — and the store-before-evict barrier — dormant
+        // until disk-tier prefetch). Same safety argument generate_graph already relies on when it
+        // disables tracking for the whole graph session. Env-gated for rollback; flip default
+        // after soak. SAFETY: single-stream ordering is total; the runtime mem-pool is configured
+        // with internal-dependency reuse (bw24-runtime), so alloc reuse is stream-ordered too.
+        if std::env::var("BW24_NO_EVT").is_ok() {
+            unsafe { gpu.ctx.disable_event_tracking(); }
+        }
         Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
                   moe_cache: Mutex::new(None), copy_stream,
                   argmax_partials: Mutex::new(None),
