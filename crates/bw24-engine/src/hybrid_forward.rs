@@ -719,7 +719,12 @@ impl HybridModel {
         }
 
         // Per-token (sel[8], w[8]) — either fused-router (device top-k) or host softmax+sort.
-        let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
+        let (sel_all, w_all) = if let Some(m3) = cfg.m3.as_ref().filter(|m| m.sigmoid_routing) {
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                m.exp_probs_b.as_deref(), Some(m3.routed_scaling_factor))?
+        } else {
+            Self::moe_route(e, &logits, t, n_expert, n_used)?
+        };
 
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
@@ -960,15 +965,45 @@ impl HybridModel {
     /// indexes HostExps.bytes on the CPU to choose the DMA source (§A.2 output staging).
     fn moe_route(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
+        Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None)
+    }
+
+    /// MiniMax-M3 (DeepSeek-V3-style) sigmoid routing, host oracle. Reference:
+    /// M3 modeling code — scores = sigmoid(logits); selection over scores + e_score_correction_bias;
+    /// weights = un-biased scores of the selected experts, sum-normalized, x routed_scaling_factor.
+    /// `m3` = (bias, routed_scaling_factor). Softmax arch passes None -> the qwen35moe/OLMoE path.
+    fn moe_route_cfg(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize,
+                     bias: Option<&[f32]>, scale: Option<f32>)
+                 -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
+        if let Some(sf) = scale {
+            // sigmoid routing (M3). Host path only for now (fused-router kernel is softmax-top-k).
+            let lg = e.dtoh(logits)?;
+            let mut sel = vec![0u32; t * n_used];
+            let mut w_out = vec![0f32; t * n_used];
+            for tok in 0..t {
+                let row = &lg[tok * n_expert..(tok + 1) * n_expert];
+                let scores: Vec<f32> = row.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
+                // selection score = sigmoid + bias; weight = plain sigmoid.
+                let selsc: Vec<f32> = match bias {
+                    Some(b) => scores.iter().zip(b).map(|(s, bb)| s + bb).collect(),
+                    None => scores.clone(),
+                };
+                let mut idx: Vec<usize> = (0..n_expert).collect();
+                idx.sort_by(|&a, &b| selsc[b].total_cmp(&selsc[a]).then(a.cmp(&b)));
+                let sl = &idx[..n_used];
+                let mut wv: Vec<f32> = sl.iter().map(|&i| scores[i]).collect();
+                let ws: f32 = wv.iter().sum::<f32>().max(1e-20);
+                for x in wv.iter_mut() { *x = *x / ws * sf; }
+                for j in 0..n_used {
+                    sel[tok * n_used + j] = sl[j] as u32;
+                    w_out[tok * n_used + j] = wv[j];
+                }
+            }
+            return Ok((sel, w_out));
+        }
         // LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router DEFAULT ON (BW24_FUSED_ROUTER=0
-        // rollback) via the single-sync pinned readback (moe_router_topk_host): t*64B DtoH
-        // instead of t*1KB logits + host softmax/sort, ONE stream sync instead of the old two
-        // (the two-sync dtoh pair is why the old BW24_FUSED_ROUTER=1 arm measured 2% WORSE).
-        // Kernel selection is EXACT vs the host oracle (kernel-check gate: idx-match incl ties);
-        // weights differ only by host-libm-exp vs device-expf last-ULP noise (rel<1e-5) —
-        // argmax-1178 verified on this tree. Default is ALL t, not just decode: the spec verify
-        // routes at t=K+1 and the exactness contract (FP-order lesson #8) requires decode and
-        // verify to route with IDENTICAL numerics — one routing source for every path.
+        // rollback) via the single-sync pinned readback — softmax arch only; the M3 sigmoid arm
+        // above returns before this (host path until a sigmoid fused-router kernel exists).
         if !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
             return e.moe_router_topk_host(logits, t, n_expert, n_used);
         }
@@ -1452,7 +1487,12 @@ impl HybridModel {
 
         // 1. ROUTER (identical to moe_ffn).
         let logits = e.matmul(&m.gate_inp, z, t)?;
-        let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
+        let (sel_all, w_all) = if let Some(m3) = cfg.m3.as_ref().filter(|m| m.sigmoid_routing) {
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                m.exp_probs_b.as_deref(), Some(m3.routed_scaling_factor))?
+        } else {
+            Self::moe_route(e, &logits, t, n_expert, n_used)?
+        };
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
         // For each expert e, we need: which tokens use it, their positions in z, their top-k
