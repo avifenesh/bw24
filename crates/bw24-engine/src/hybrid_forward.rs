@@ -794,9 +794,11 @@ impl HybridModel {
             // silu_mul_f32's exact expression; the down accumulation is a slot-ordered
             // __fmaf_rn chain == the sequential axpy_f32 chain (BW24_MOE_GDEC_GATE compares).
             // cfg.m3: the grouped kernels' fused epilogues are plain SiLU — M3's swigluoai must
-            // NOT take them until the kernels grow the clamped variant; M3 falls through to the
-            // sequential loop (which routes through ffn_act).
-            if gdec_may_fire && moe_q8 && cfg.m3.is_none() {
+            // NOT take them until the kernels grow the clamped variant. NVFP4 experts carry
+            // per-expert macro-scales the fused kernels don't fold — those fall through too.
+            let no_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
+                && m.down_exps.macros.is_none();
+            if gdec_may_fire && moe_q8 && cfg.m3.is_none() && no_macros {
                 if tok_q8.is_none() {
                     tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
                 }
@@ -805,7 +807,7 @@ impl HybridModel {
                                            &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                     continue;
                 }
-            } else if gdec_may_fire && cfg.m3.is_none()
+            } else if gdec_may_fire && cfg.m3.is_none() && no_macros
                 && Self::moe_gdec_token(e, m, il, max_block, &zt, sel, w,
                                         &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                 continue;
@@ -845,11 +847,13 @@ impl HybridModel {
                     let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
                     let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act(e, cfg, &gate, &up, &mut act, n_ff_exp)?;
+                    Self::ffn_act_scaled(e, cfg, &gate, &up,
+                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
                     let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
-                    e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+                    // down-proj macro folds into the accumulate weight (post-matmul linear scale).
+                    e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
                 } else {
                     // Stage-1: stage gate/up/down for expert `ex` into the scratch slots, then GEMM.
                     // Lazy scratch: first no-cache expert allocates the 3 slots (uninit — stage_expert
@@ -870,7 +874,8 @@ impl HybridModel {
                         m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
 
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act(e, cfg, &gate, &up, &mut act, n_ff_exp)?;
+                    Self::ffn_act_scaled(e, cfg, &gate, &up,
+                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
@@ -878,7 +883,7 @@ impl HybridModel {
                         m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
 
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
-                    e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+                    e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
                 }
             }
         }
@@ -967,10 +972,21 @@ impl HybridModel {
     /// the model's activation exactly.
     pub(crate) fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                act: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        Self::ffn_act_scaled(e, cfg, gate, up, 1.0, 1.0, act, n)
+    }
+
+    /// ffn_act with per-tensor post-matmul macro-scales folded in (gs/us == 1.0 -> identical
+    /// float ops to ffn_act; used by the ModelOpt NVFP4 expert path where each expert tensor
+    /// carries a `weight_scale_2`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ffn_act_scaled(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+               gs: f32, us: f32, act: &mut CudaSlice<f32>, n: usize)
+               -> Result<(), Box<dyn std::error::Error>> {
         if let Some(m3) = cfg.m3.as_ref() {
-            return e.swigluoai_mul_scaled(gate, up, 1.0, 1.0, m3.swiglu_alpha, m3.swiglu_limit, act, n);
+            return e.swigluoai_mul_scaled(gate, up, gs, us, m3.swiglu_alpha, m3.swiglu_limit, act, n);
         }
-        e.silu_mul(gate, up, act, n)
+        if gs == 1.0 && us == 1.0 { return e.silu_mul(gate, up, act, n); }
+        e.silu_mul_scaled(gate, up, gs, us, act, n)
     }
 
     /// Routing for the whole batch: returns (sel [T*n_used] expert ids, w [T*n_used] renorm weights),
@@ -1573,10 +1589,16 @@ impl HybridModel {
             let m_e = grp.tok_indices.len();
             m_dist.push(m_e);
 
-            // Upload index/weight arrays to device.
+            // Upload index/weight arrays to device. The down-proj per-expert macro-scale
+            // (ModelOpt weight_scale_2) folds into the scatter weights — post-matmul linear,
+            // same fold as the sequential loop's `w[j] * macro_scale(ex)`. 1.0 for GGUF experts.
             let tok_idx_d = e.htod_i32(&grp.tok_indices)?;
             let slot_idx_d = e.htod_i32(&grp.slot_indices)?;
-            let weight_d = e.htod(&grp.weights)?;
+            let dmac = m.down_exps.macro_scale(ex);
+            let weight_d = if dmac == 1.0 { e.htod(&grp.weights)? } else {
+                let scaled: Vec<f32> = grp.weights.iter().map(|&w| w * dmac).collect();
+                e.htod(&scaled)?
+            };
 
             // GATHER: collect m_e activation rows from z into a contiguous buffer.
             let mut gathered = e.zeros(m_e * n_embd)?;
@@ -1601,9 +1623,10 @@ impl HybridModel {
                     eng.qmatvec_view(buf, 0..u_len, &gv, m_e,
                         m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)
                 })?;
-                // SiLU-MUL activation.
+                // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act(e, cfg, &gate, &up, &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_scaled(e, cfg, &gate, &up,
+                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
@@ -1624,9 +1647,10 @@ impl HybridModel {
                     m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
                 let up = e.qmatvec_view(su, 0..u_len, &gv, m_e,
                     m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
-                // SiLU-MUL activation.
+                // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act(e, cfg, &gate, &up, &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_scaled(e, cfg, &gate, &up,
+                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.qmatvec_view(sd, 0..d_len, &actv, m_e,
                     m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
