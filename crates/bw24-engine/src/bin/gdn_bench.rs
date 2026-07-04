@@ -79,22 +79,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let d = maxdiff(&cpu_o, &gpu_o);
     println!("gdn_scan correctness maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { "FAIL" });
 
-    // warmup
-    for _ in 0..3 {
-        e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale)?;
+    // A4 chunked WY correctness vs the same CPU oracle (rel-err gate — chunked FP order differs)
+    for c in [32usize, 64, 128] {
+        e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)?;
+        let chunk_o = e.dtoh(&od)?;
+        let rel = cpu_o.iter().zip(&chunk_o)
+            .map(|(x, y)| (x - y).abs() / x.abs().max(y.abs()).max(1e-3))
+            .fold(0.0f32, f32::max);
+        println!("gdn_chunked C={c:3} correctness max_rel={rel:.2e} {}",
+                 if rel < 1e-4 { "OK" } else { "FAIL" });
     }
-    e.ctx().synchronize()?;
 
-    let mut times = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let st = Instant::now();
-        e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale)?;
+    let mut bench = |name: &str, f: &mut dyn FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>|
+                    -> Result<f64, Box<dyn std::error::Error>> {
+        for _ in 0..3 { f(&e)?; }
         e.ctx().synchronize()?;
-        times.push(st.elapsed().as_secs_f64() * 1e3);
+        let mut times = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let st = Instant::now();
+            f(&e)?;
+            e.ctx().synchronize()?;
+            times.push(st.elapsed().as_secs_f64() * 1e3);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = times[times.len() / 2];
+        println!("{name} time: median={med:.3} ms  min={:.3} ms", times[0]);
+        Ok(med)
+    };
+    let seq_med = bench("gdn_scan             ", &mut |e: &Engine| {
+        e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale)
+    })?;
+    for c in [32usize, 64, 128] {
+        let m = bench(&format!("gdn_chunked C={c:3}    "), &mut |e: &Engine| {
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)
+        })?;
+        println!("  -> chunked C={c} speedup vs sequential: {:.2}x", seq_med / m);
     }
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let med = times[times.len() / 2];
-    let min = times[0];
-    println!("gdn_scan time: median={med:.3} ms  min={min:.3} ms");
     Ok(())
 }

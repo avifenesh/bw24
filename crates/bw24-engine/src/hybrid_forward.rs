@@ -296,11 +296,13 @@ impl HybridModel {
 
         // ONE gdn_scan over T from the cache's CURRENT state (zero at fresh prime); the final
         // state lands in the spare buffer and ping-pongs back (stable resident pointers, the
-        // decode-determinism discipline from linear_attn_decode_inner).
+        // decode-determinism discipline from linear_attn_decode_inner). A4: `gdn_scan_prefill`
+        // dispatches the chunked WY form under BW24_GDN_CHUNKED (prefill-only seam; decode +
+        // verify keep the sequential kernel).
         let mut o = e.zeros(d_state * num_v * t)?;
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
-            e.gdn_scan_s128(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+            e.gdn_scan_prefill(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
@@ -413,11 +415,11 @@ impl HybridModel {
         let mut g_log = e.zeros(t * num_v)?;
         e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
 
-        // GDN scan
+        // GDN scan (A4: gdn_scan_prefill dispatches chunked WY under BW24_GDN_CHUNKED)
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
         let mut state_out = e.zeros(d_state * d_state * num_v)?;
         let mut o = e.zeros(d_state * num_v * t)?;
-        e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
+        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
 
         // gated RMSNorm: dst = RMSNorm(o, ssm_norm[head_v]) * silu(z). o is [d_state, num_v, T];
         // rows of head_v=d_state, nrows = num_v*T. z must match row layout: z is [T, value_dim] token-major

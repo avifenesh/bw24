@@ -2314,6 +2314,169 @@ impl Engine {
         Ok(())
     }
 
+    /// A4 seam: chunked WY GDN prefill enabled? `BW24_GDN_CHUNKED=1` -> chunked, `=0`/unset ->
+    /// sequential scan (default OFF until the full gate battery is green; the flip-to-ON
+    /// commit must carry the battery evidence). PREFILL-ONLY: decode + spec verify never
+    /// route here (decode==verify dispatch identity law).
+    pub fn gdn_chunked_enabled() -> bool {
+        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *E.get_or_init(|| std::env::var("BW24_GDN_CHUNKED").map(|v| v != "0").unwrap_or(false))
+    }
+
+    /// A4 chunk size (BW24_GDN_CHUNK, default 32 — the sweep winner: the O(T*C) chunk
+    /// matrices grow with C while the sequential state pass is C-flat, so smaller chunks
+    /// win; C=32/64 also get the register-history solve template). Clamped to multiples
+    /// of 32 in [32, 128] (kernel row mappings require it).
+    pub fn gdn_chunk_size() -> usize {
+        static C: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *C.get_or_init(|| {
+            let c: usize = std::env::var("BW24_GDN_CHUNK").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(32);
+            c.clamp(32, 128) / 32 * 32
+        })
+    }
+
+    /// A4: chunked WY / blockwise-inverse GDN prefill (see cu/hybrid.cu K1-K5 header for the
+    /// math). Same contract as `gdn_scan_s128` (layouts, state ping-pong) but chunk-parallel:
+    /// NOT bit-identical to the sequential scan (chunked FP accumulation order); run-gen
+    /// argmax + run-spec batteries are the accuracy authority. PREFILL callers only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_scan_chunked(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                            n_head: usize, t: usize, scale: f32, c: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        const D: usize = 128;
+        const NSPLIT: u32 = 4;
+        assert!(c >= 1 && c <= 128, "gdn_scan_chunked: C must be in 1..=128");
+        let h = n_head;
+        let nc = (t + c - 1) / c;
+        let (hi, ti, ci) = (h as i32, t as i32, c as i32);
+        // scratch (stream-ordered allocs; pool-reused across layers)
+        let mut gcum = self.uninit(t * h)?;
+        let mut a = self.uninit(nc * h * c * c)?;
+        let mut p = self.uninit(nc * h * c * c)?;
+        let mut u = self.uninit(nc * h * c * D)?;
+        let mut w = self.uninit(nc * h * c * D)?;
+        let mut y = self.uninit(nc * h * c * D)?;
+        let mut ssnap = self.uninit(nc * h * D * D)?;   // chunk-start state snapshots (K5 phase 1)
+        {   // K1
+            let f = self.func("gdn_chunk_cumgate_f32");
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
+            unsafe { b.launch(cfg)?; }
+        }
+        if c <= 64 {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+            let f = self.func("gdn_chunk_attn_f32");
+            let jt = ((c + 31) / 32) as u32;
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
+            unsafe { b.launch(cfg)?; }
+        } else {       // K2 generic (C = 128)
+            let f = self.func("gdn_chunk_attn_g_f32");
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
+            unsafe { b.launch(cfg)?; }
+        }
+        {   // K3 (register-history templates for C=32/64; local-memory generic otherwise)
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            match c {
+                32 | 64 => {
+                    let f = self.func(if c == 32 { "gdn_chunk_solve32_f32" } else { "gdn_chunk_solve64_f32" });
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti);
+                    unsafe { b.launch(cfg)?; }
+                }
+                _ => {
+                    let f = self.func("gdn_chunk_solve_f32");
+                    let mut b = self.gpu.stream.launch_builder(&f);
+                    b.arg(v).arg(k).arg(&a).arg(&gcum).arg(&mut u).arg(&mut w).arg(&hi).arg(&ti).arg(&ci);
+                    unsafe { b.launch(cfg)?; }
+                }
+            }
+        }
+        {   // K4 (sequential over chunks inside; blocks col-partition the state)
+            let f = self.func("gdn_chunk_state_f32");
+            let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(k).arg(&gcum).arg(beta).arg(&u).arg(&w).arg(&mut y).arg(&mut ssnap)
+             .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
+            unsafe { b.launch(cfg)?; }
+        }
+        {   // K5 (j-blocked: grid.z = 32-row output blocks per chunk; writes o fully)
+            let f = self.func("gdn_chunk_output_f32");
+            let jt = ((c + 31) / 32) as u32;
+            let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(&gcum).arg(&p).arg(&y).arg(&ssnap).arg(o).arg(&hi).arg(&ti).arg(&ci).arg(&scale);
+            unsafe { b.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// PREFILL GDN scan dispatch (the A4 seam): chunked WY form when enabled and T is in the
+    /// batched-prefill regime, else the sequential scan. Callers: hybrid_forward::linear_attn
+    /// (forward/forward_last) + linear_attn_prime (prime_cache). Decode (T=1) and the spec
+    /// verify call `gdn_scan_s128` DIRECTLY — the decode==verify dispatch identity is untouched.
+    ///
+    /// BW24_GDN_DIFF=1: numerical-oracle mode — runs BOTH forms on the same inputs, prints the
+    /// per-call (== per-layer, in call order) output/state error distribution, and keeps the
+    /// SEQUENTIAL results so the run stays on the shipped path (stage-1 prototype evidence).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_scan_prefill(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                            n_head: usize, t: usize, scale: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        if std::env::var("BW24_GDN_DIFF").is_ok() && t >= 16 {
+            return self.gdn_scan_diff(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale);
+        }
+        if Self::gdn_chunked_enabled() && t >= 16 {
+            self.gdn_scan_chunked(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale,
+                                  Self::gdn_chunk_size())
+        } else {
+            self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)
+        }
+    }
+
+    /// Stage-1 oracle: run sequential AND chunked, report per-call error stats, keep sequential.
+    #[allow(clippy::too_many_arguments)]
+    fn gdn_scan_diff(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                     g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                     state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                     n_head: usize, t: usize, scale: f32)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        static CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut o_c = self.uninit(o.len())?;
+        let mut st_c = self.uninit(state_out.len())?;
+        self.gdn_scan_chunked(q, k, v, g, beta, state_in, &mut st_c, &mut o_c,
+                              n_head, t, scale, Self::gdn_chunk_size())?;
+        self.gdn_scan_s128(q, k, v, g, beta, state_in, state_out, o, n_head, t, scale)?;
+        let (oh_s, oh_c) = (self.dtoh(o)?, self.dtoh(&o_c)?);
+        let (sh_s, sh_c) = (self.dtoh(state_out)?, self.dtoh(&st_c)?);
+        let stats = |a: &[f32], b: &[f32]| -> (f32, f32, f64) {
+            let mut max_abs = 0f32; let mut max_rel = 0f32; let mut sum_rel = 0f64;
+            for (x, y) in a.iter().zip(b) {
+                let ad = (x - y).abs();
+                let rel = ad / x.abs().max(y.abs()).max(1e-3);
+                if ad > max_abs { max_abs = ad; }
+                if rel > max_rel { max_rel = rel; }
+                sum_rel += rel as f64;
+            }
+            (max_abs, max_rel, sum_rel / a.len() as f64)
+        };
+        let (o_ma, o_mr, o_mean) = stats(&oh_s, &oh_c);
+        let (s_ma, s_mr, s_mean) = stats(&sh_s, &sh_c);
+        println!("[gdn-diff call {call:3} T={t} C={}] out: max_abs={o_ma:.3e} max_rel={o_mr:.3e} mean_rel={o_mean:.3e} | \
+                  state: max_abs={s_ma:.3e} max_rel={s_mr:.3e} mean_rel={s_mean:.3e}",
+                 Self::gdn_chunk_size());
+        Ok(())
+    }
+
     /// softplus-based g_log: g_log[h,t] = a[h] * softplus(alpha[h,t] + dt_bias[h]). a pre-negated.
     pub fn gdn_glog(&self, alpha: &CudaSlice<f32>, dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
                     g_log: &mut CudaSlice<f32>, n_head: usize, t: usize)

@@ -324,6 +324,510 @@ extern "C" __global__ void gdn_scan_s128(
     gdn_scan_kernel<128, 32>(q, k, v, g, beta, state_in, state_out, o, H, T, scale);
 }
 
+// =====================================================================================
+// A4 (SOTA-ADOPTION rank 6.0): CHUNKED WY / BLOCKWISE-INVERSE GDN PREFILL.
+// Chunk-parallel matmul form of the gated delta rule (the flashinfer/fla chunked
+// formulation), PREFILL-ONLY — decode and the spec verify keep gdn_scan_s128 (the
+// decode==verify dispatch-identity law). Same input/output/state layouts as gdn_scan_s128.
+//
+// MATH (exact in infinite precision; f32 accumulation ORDER differs from the sequential
+// scan, so outputs/states are ~1e-6-rel, NOT bit-identical — argmax battery is the gate).
+// Sequential recurrence per head (S is [d_k x d_v], memory M[col][i] = S[i][col]):
+//   a_t = exp(g_t);  S_t = a_t (I - b_t k_t k_t^T) S_{t-1} + b_t k_t v_t^T;  o_t = scale S_t^T q_t
+// Per chunk of C tokens with inclusive log-gate cumsum G_j = sum_{i<=j} g_i, b_j = exp(G_j),
+// and rows y_j solving the unit-lower-triangular system (WY representation):
+//   (I + A) Y = V - diag(b) K S_0,   A[j,i] = beta_i exp(G_j - G_i) (k_j . k_i)  (i < j)
+// then
+//   o_j   = scale [ b_j q_j^T S_0 + sum_{i<=j} beta_i exp(G_j - G_i) (q_j . k_i) y_i^T ]
+//   S_C   = b_C S_0 + sum_i beta_i exp(G_C - G_i) k_i y_i^T
+// All exponent arguments are gate-log DIFFERENCES with j >= i; g_t < 0 always (a*softplus,
+// a = -exp(A_log)) so every exp() is in (0,1] — no overflow paths. Verified vs the
+// sequential scan at C=1 symbolically and by the kernel_check/gdn_bench oracles.
+//
+// Kernel split (5 launches per layer; K1-K3+K5 chunk-parallel, K4 sequential over chunks):
+//   K1 gdn_chunk_cumgate: per-chunk inclusive cumsum of log gates (serial per (chunk,head)).
+//   K2 gdn_chunk_attn:    A (strictly-lower) and P[j,i] = beta_i exp(G_j-G_i)(q_j.k_i) (incl).
+//   K3 gdn_chunk_solve:   forward substitution of (I+A)^{-1} on BOTH right-hand sides at once:
+//                         U = (I+A)^{-1} V, W = (I+A)^{-1} diag(b) K  -> the state-dependent
+//                         solve becomes Y_c = U_c - W_c S_c (a GEMM), removing the triangular
+//                         solve from the sequential inter-chunk path.
+//   K4 gdn_chunk_state:   inter-chunk state pass, S in smem (col-split blocks): per chunk
+//                         writes o_inter = b_j q_j^T S_c and Y_c = U_c - W_c S_c, then
+//                         S <- b_C S + sum_j (beta_j exp(G_C-G_j) k_j) y_j^T.
+//   K5 gdn_chunk_output:  o_j = scale (o_inter_j + sum_{i<=j} P[j,i] y_i)  (chunk-parallel).
+// Layouts: q,k,v,o as gdn_scan_s128 ([T,H,128], (t*H+h)*128+i); g,beta,gcum [T,H] (t*H+h);
+// A,P [NC,H,C,C] (((c*H+h)*C+j)*C+i); U,W,Y [NC,H,C,128]. C <= 128 (runtime, default 64).
+// =====================================================================================
+
+#define GDN_D 128
+#define GDN_NSPLIT 4   // K4 state col-split (blocks per head); 128/4 = 32 cols/block
+
+// K1: inclusive per-chunk cumsum of log gates. grid (NC, H), block 32 (lane-0 serial scan
+// in ascending t order — deterministic, matches the derivation's G_j definition exactly).
+extern "C" __global__ void gdn_chunk_cumgate_f32(
+        const float* __restrict__ g, float* __restrict__ gcum, int H, int T, int C) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    if (threadIdx.x == 0) {
+        float acc = 0.0f;
+        for (int j = 0; j < Cc; j++) {
+            acc += g[(size_t)(t0 + j) * H + h];
+            gcum[(size_t)(t0 + j) * H + h] = acc;
+        }
+    }
+}
+
+// K2 (C <= 64): chunk gate/attention matrices, register-tiled — each thread owns a 2x2
+// (j,i) output tile of BOTH A and P and runs a scalar-smem dot over d (no shuffles; the
+// warp-per-pair butterfly version was issue-bound at ~10 shfl/pair). Whole-chunk k rows +
+// the block's 32 q/k j-rows live in smem (+1 row pad -> even-row reads land on distinct
+// banks). P is written FULL-width: zeros above the diagonal — K5's rectangular inner loop
+// relies on P[j][i>j] == 0. grid (NC, H, ceil(C/32)), block 256.
+extern "C" __global__ void gdn_chunk_attn_f32(
+        const float* __restrict__ q, const float* __restrict__ k,
+        const float* __restrict__ gcum, const float* __restrict__ beta,
+        float* __restrict__ A, float* __restrict__ P, int H, int T, int C) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    const int jb = blockIdx.z * 32;
+    if (jb >= Cc) return;                      // uniform per block (tail chunk)
+    __shared__ float kt[64][GDN_D + 1];        // all i-rows of the chunk (C <= 64)
+    __shared__ float qt[32][GDN_D + 1];        // this j-block's q rows
+    __shared__ float kjt[32][GDN_D + 1];       // this j-block's k rows
+    __shared__ float gct[128], bt[128];
+    const int tid = threadIdx.x;
+    if (tid < Cc) {
+        gct[tid] = gcum[(size_t)(t0 + tid) * H + h];
+        bt[tid]  = beta[(size_t)(t0 + tid) * H + h];
+    }
+    for (int idx = tid; idx < Cc * GDN_D; idx += 256) {
+        int r = idx / GDN_D, d = idx % GDN_D;
+        kt[r][d] = k[((size_t)(t0 + r) * H + h) * GDN_D + d];
+    }
+    const int jn = min(32, Cc - jb);
+    for (int idx = tid; idx < jn * GDN_D; idx += 256) {
+        int r = idx / GDN_D, d = idx % GDN_D;
+        qt[r][d]  = q[((size_t)(t0 + jb + r) * H + h) * GDN_D + d];
+        kjt[r][d] = k[((size_t)(t0 + jb + r) * H + h) * GDN_D + d];
+    }
+    __syncthreads();
+    const int jg = tid / 16, ig = tid % 16;    // 16x2 j-rows x 16x2 i-cols
+    const int j0 = jg * 2, i0 = ig * 2;
+    for (int ib = 0; ib <= jb; ib += 32) {     // triangular i-blocks (i <= j)
+        const int ie = min(ib + 32, Cc);
+        float a00 = 0, a01 = 0, a10 = 0, a11 = 0;
+        float p00 = 0, p01 = 0, p10 = 0, p11 = 0;
+        #pragma unroll 4
+        for (int d = 0; d < GDN_D; d++) {
+            const float ki0 = kt[ib + i0][d], ki1 = kt[ib + i0 + 1][d];
+            const float kj0 = kjt[j0][d], kj1 = kjt[j0 + 1][d];
+            const float qj0 = qt[j0][d], qj1 = qt[j0 + 1][d];
+            a00 += kj0 * ki0; a01 += kj0 * ki1; a10 += kj1 * ki0; a11 += kj1 * ki1;
+            p00 += qj0 * ki0; p01 += qj0 * ki1; p10 += qj1 * ki0; p11 += qj1 * ki1;
+        }
+        #pragma unroll
+        for (int jj = 0; jj < 2; jj++) {
+            const int j = jb + j0 + jj;
+            if (j >= Cc) continue;
+            float* Arow = A + (((size_t)c * H + h) * C + j) * C;
+            float* Prow = P + (((size_t)c * H + h) * C + j) * C;
+            const float gj = gct[j];
+            #pragma unroll
+            for (int ii = 0; ii < 2; ii++) {
+                const int i = ib + i0 + ii;
+                if (i >= ie) continue;
+                const float av = jj == 0 ? (ii == 0 ? a00 : a01) : (ii == 0 ? a10 : a11);
+                const float pv = jj == 0 ? (ii == 0 ? p00 : p01) : (ii == 0 ? p10 : p11);
+                const float sc = bt[i] * expf(gj - gct[i]);
+                if (i < j) Arow[i] = sc * av;
+                Prow[i] = (i <= j) ? sc * pv : 0.0f;
+            }
+        }
+    }
+    // zero-fill the remaining upper columns of this block's P rows (i in (j, Cc))
+    for (int jj = tid / 32; jj < jn; jj += 8) {
+        const int j = jb + jj;
+        float* Prow = P + (((size_t)c * H + h) * C + j) * C;
+        for (int i = j + 1 + (tid % 32); i < Cc; i += 32) Prow[i] = 0.0f;
+    }
+}
+
+// K2 GENERIC (any C, used for C = 128): warp-per-pair butterfly dots with a 64-row smem
+// k sub-tile. Slower than the tiled variant — kept for the chunk-size sweep's C=128 leg.
+// Also zero-fills P's upper triangle (the K5 contract).
+extern "C" __global__ void gdn_chunk_attn_g_f32(
+        const float* __restrict__ q, const float* __restrict__ k,
+        const float* __restrict__ gcum, const float* __restrict__ beta,
+        float* __restrict__ A, float* __restrict__ P, int H, int T, int C) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    const int lane = threadIdx.x, w = threadIdx.y;
+    const int tid = w * 32 + lane;
+    __shared__ float kt[64][GDN_D];        // 32KB i-row sub-tile
+    __shared__ float gct[128], bt[128];    // chunk gate-cumsum + beta (Cc <= 128)
+    if (tid < Cc) {
+        gct[tid] = gcum[(size_t)(t0 + tid) * H + h];
+        bt[tid]  = beta[(size_t)(t0 + tid) * H + h];
+    }
+    for (int it0 = 0; it0 < Cc; it0 += 64) {
+        const int itn = min(64, Cc - it0);
+        __syncthreads();
+        for (int idx = tid; idx < itn * GDN_D; idx += 256) {
+            int r = idx / GDN_D, d = idx % GDN_D;
+            kt[r][d] = k[((size_t)(t0 + it0 + r) * H + h) * GDN_D + d];
+        }
+        __syncthreads();
+        for (int j = w; j < Cc; j += 8) {
+            if (j < it0) continue;                    // pairs need i <= j
+            const float* kj = k + ((size_t)(t0 + j) * H + h) * GDN_D;
+            const float* qj = q + ((size_t)(t0 + j) * H + h) * GDN_D;
+            float kjr[4], qjr[4];
+            #pragma unroll
+            for (int r = 0; r < 4; r++) { kjr[r] = kj[r * 32 + lane]; qjr[r] = qj[r * 32 + lane]; }
+            const float gj = gct[j];
+            float* Arow = A + (((size_t)c * H + h) * C + j) * C;
+            float* Prow = P + (((size_t)c * H + h) * C + j) * C;
+            const int iend = min(itn, j - it0 + 1);   // i in [it0, min(j, it0+itn-1)]
+            for (int ii = 0; ii < iend; ii++) {
+                float dk = 0.0f, dq = 0.0f;
+                #pragma unroll
+                for (int r = 0; r < 4; r++) {
+                    float kv = kt[ii][r * 32 + lane];
+                    dk += kjr[r] * kv; dq += qjr[r] * kv;
+                }
+                #pragma unroll
+                for (int o2 = 16; o2 > 0; o2 >>= 1) {
+                    dk += __shfl_xor_sync(0xffffffff, dk, o2);
+                    dq += __shfl_xor_sync(0xffffffff, dq, o2);
+                }
+                if (lane == 0) {
+                    const int i = it0 + ii;
+                    float sc = bt[i] * expf(gj - gct[i]);
+                    if (i < j) Arow[i] = sc * dk;
+                    Prow[i] = sc * dq;
+                }
+            }
+        }
+    }
+    __syncthreads();
+    // zero-fill P upper triangle (K5 contract)
+    for (int j = w; j < Cc; j += 8) {
+        float* Prow = P + (((size_t)c * H + h) * C + j) * C;
+        for (int i = j + 1 + lane; i < Cc; i += 32) Prow[i] = 0.0f;
+    }
+}
+
+// K3: forward substitution R_j = RHS_j - sum_{i<j} A[j,i] R_i for both RHS at once.
+// grid (NC, H), block 256: threads 0..127 solve U (RHS = V), 128..255 solve W
+// (RHS = diag(b) K). KEY STRUCTURE: column col of the solve only ever reads ITS OWN
+// history rows R_i[col] — the whole substitution is thread-private with NO __syncthreads.
+// Templated compile-time C keeps the history in REGISTERS (full unroll) with the A tile
+// staged to smem — 3.6x over the local-memory generic (which remains for C = 128).
+// Sequential depth C per chunk, chunk-PARALLEL grid.
+template <int CT>
+__device__ void gdn_chunk_solve_kernel(
+        const float* __restrict__ v, const float* __restrict__ k,
+        const float* __restrict__ A, const float* __restrict__ gcum,
+        float* __restrict__ U, float* __restrict__ W, int H, int T) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * CT;
+    const int Cc = min(CT, T - t0);
+    const int tid = threadIdx.x;
+    const int col = tid & (GDN_D - 1);
+    const bool is_w = tid >= GDN_D;
+    float* R = is_w ? W : U;
+    __shared__ float As[CT][CT];
+    for (int idx = tid; idx < Cc * CT; idx += 256) {
+        int j = idx / CT, i = idx % CT;
+        if (i < j) As[j][i] = A[(((size_t)c * H + h) * CT + j) * CT + i];
+    }
+    __syncthreads();
+    const size_t rbase = ((size_t)c * H + h) * (size_t)CT * GDN_D;
+    float hist[CT];
+    if (Cc == CT) {
+        #pragma unroll
+        for (int j = 0; j < CT; j++) {
+            float acc;
+            if (is_w) {
+                acc = expf(gcum[(size_t)(t0 + j) * H + h])
+                    * k[((size_t)(t0 + j) * H + h) * GDN_D + col];
+            } else {
+                acc = v[((size_t)(t0 + j) * H + h) * GDN_D + col];
+            }
+            #pragma unroll
+            for (int i = 0; i < j; i++) acc -= As[j][i] * hist[i];
+            hist[j] = acc;
+            R[rbase + (size_t)j * GDN_D + col] = acc;
+        }
+    } else {
+        for (int j = 0; j < Cc; j++) {          // tail chunk: dynamic bound
+            float acc;
+            if (is_w) {
+                acc = expf(gcum[(size_t)(t0 + j) * H + h])
+                    * k[((size_t)(t0 + j) * H + h) * GDN_D + col];
+            } else {
+                acc = v[((size_t)(t0 + j) * H + h) * GDN_D + col];
+            }
+            for (int i = 0; i < j; i++) acc -= As[j][i] * hist[i];
+            hist[j] = acc;
+            R[rbase + (size_t)j * GDN_D + col] = acc;
+        }
+    }
+}
+extern "C" __global__ void gdn_chunk_solve32_f32(
+        const float* v, const float* k, const float* A, const float* gcum,
+        float* U, float* W, int H, int T) {
+    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T);
+}
+extern "C" __global__ void gdn_chunk_solve64_f32(
+        const float* v, const float* k, const float* A, const float* gcum,
+        float* U, float* W, int H, int T) {
+    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T);
+}
+// Generic (any C <= 128): thread-private history in local memory (L1, lane-interleaved).
+extern "C" __global__ void gdn_chunk_solve_f32(
+        const float* __restrict__ v, const float* __restrict__ k,
+        const float* __restrict__ A, const float* __restrict__ gcum,
+        float* __restrict__ U, float* __restrict__ W, int H, int T, int C) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    const int tid = threadIdx.x;
+    const int col = tid & (GDN_D - 1);
+    const bool is_w = tid >= GDN_D;
+    float* R = is_w ? W : U;
+    const float* Abase = A + ((size_t)c * H + h) * C * C;
+    const size_t rbase = ((size_t)c * H + h) * (size_t)C * GDN_D;
+    float hist[128];                       // C <= 128; thread-private column history
+    for (int j = 0; j < Cc; j++) {
+        float acc;
+        if (is_w) {
+            acc = expf(gcum[(size_t)(t0 + j) * H + h])
+                * k[((size_t)(t0 + j) * H + h) * GDN_D + col];
+        } else {
+            acc = v[((size_t)(t0 + j) * H + h) * GDN_D + col];
+        }
+        const float* Aj = Abase + (size_t)j * C;
+        for (int i = 0; i < j; i++) acc -= Aj[i] * hist[i];
+        hist[j] = acc;
+        R[rbase + (size_t)j * GDN_D + col] = acc;
+    }
+}
+
+// K4: sequential inter-chunk state pass. grid (H, GDN_NSPLIT), block 256; each block owns a
+// 32-col slice of the head's state in smem (+1 pad kills bank conflicts) and loops chunks:
+//   step A: o_inter[j,col] = b_j sum_i q_j[i] M[col][i]  (written into o, K5 adds intra part)
+//           Y[j,col]       = U[j,col] - sum_i W[j,i] M[col][i]
+//   step B: M[col][i] = b_C M[col][i] + sum_j (beta_j exp(G_C-G_j) k_j[i]) Y[j,col]
+// Blocks are fully independent (col-partitioned); no cross-block traffic. All accumulations
+// are ascending serial per thread — deterministic run-to-run.
+extern "C" __global__ void gdn_chunk_state_f32(
+        const float* __restrict__ k, const float* __restrict__ gcum,
+        const float* __restrict__ beta,
+        const float* __restrict__ U, const float* __restrict__ W,
+        float* __restrict__ Y, float* __restrict__ Ssnap,
+        const float* __restrict__ state_in, float* __restrict__ state_out,
+        int H, int T, int C) {
+    constexpr int COLS = GDN_D / GDN_NSPLIT;   // 32
+    const int h = blockIdx.x;
+    const int col0 = blockIdx.y * COLS;
+    __shared__ float Ms[COLS][GDN_D + 4];      // +4 pad: float4-aligned, bank-spread rows
+    __shared__ float wt[32][GDN_D];            // W sub-tile; step B reuses it for k
+    __shared__ float ys[32][COLS + 1];         // step-A Y slice (step B reads smem, not L2)
+    __shared__ float gk[128];
+    const int tid = threadIdx.x;
+    for (int idx = tid; idx < COLS * GDN_D; idx += 256) {
+        int cl2 = idx / GDN_D, i = idx % GDN_D;
+        Ms[cl2][i] = state_in[((size_t)h * GDN_D + col0 + cl2) * GDN_D + i];
+    }
+    __syncthreads();
+    const int NC = (T + C - 1) / C;
+    const int cl = tid % COLS, jr = tid / COLS;   // 8 row-groups (A) / 8 i-groups (B) per col
+    for (int c = 0; c < NC; c++) {
+        const int t0 = c * C;
+        const int Cc = min(C, T - t0);
+        if (tid < Cc) {
+            float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
+            gk[tid] = expf(gC - gcum[(size_t)(t0 + tid) * H + h])
+                    * beta[(size_t)(t0 + tid) * H + h];
+        }
+        // snapshot the chunk-START state for K5's inter-chunk output term (col-fast writes,
+        // TRANSPOSED to St[i][col] so K5 reads coalesce). Moves the o_inter dot OFF the
+        // sequential path into the fully chunk-parallel output kernel.
+        float* sc_out = Ssnap + ((size_t)c * H + h) * GDN_D * GDN_D;
+        for (int idx = tid; idx < COLS * GDN_D; idx += 256) {
+            int i = idx / COLS, cl2 = idx % COLS;
+            sc_out[(size_t)i * GDN_D + col0 + cl2] = Ms[cl2][i];
+        }
+        float acc[GDN_D / 8];   // step-B accumulators (16 i's/thread), built across sub-tiles
+        #pragma unroll
+        for (int r = 0; r < GDN_D / 8; r++) acc[r] = 0.0f;
+        // Per 32-row sub-tile: step A (Y = U - W S_c, 4 rows/thread, float4 smem dots,
+        // U loads HOISTED above the dot chains) then step B (rank update from the smem
+        // Y slice + re-staged k rows). The naive global-broadcast form was L2-bound.
+        for (int jt = 0; jt < Cc; jt += 32) {
+            const int jn = min(32, Cc - jt);
+            __syncthreads();
+            for (int idx = tid; idx < 32 * (GDN_D / 4); idx += 256) {
+                int r = idx / (GDN_D / 4), d4 = idx % (GDN_D / 4);
+                *reinterpret_cast<float4*>(&wt[r][d4 * 4]) = (r < jn)
+                    ? *reinterpret_cast<const float4*>(
+                        &W[(((size_t)c * H + h) * C + jt + r) * GDN_D + d4 * 4])
+                    : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            __syncthreads();
+            {
+                const size_t yb = (((size_t)c * H + h) * C + jt) * GDN_D + col0 + cl;
+                const float u0 = (jr      < jn) ? U[yb + (size_t)jr * GDN_D] : 0.0f;
+                const float u1 = (jr + 8  < jn) ? U[yb + (size_t)(jr + 8) * GDN_D] : 0.0f;
+                const float u2 = (jr + 16 < jn) ? U[yb + (size_t)(jr + 16) * GDN_D] : 0.0f;
+                const float u3 = (jr + 24 < jn) ? U[yb + (size_t)(jr + 24) * GDN_D] : 0.0f;
+                float pw0 = 0.0f, pw1 = 0.0f, pw2 = 0.0f, pw3 = 0.0f;
+                #pragma unroll 4
+                for (int i = 0; i < GDN_D; i += 4) {
+                    const float4 m = *reinterpret_cast<const float4*>(&Ms[cl][i]);
+                    const float4 w0 = *reinterpret_cast<const float4*>(&wt[jr][i]);
+                    const float4 w1 = *reinterpret_cast<const float4*>(&wt[jr + 8][i]);
+                    const float4 w2 = *reinterpret_cast<const float4*>(&wt[jr + 16][i]);
+                    const float4 w3 = *reinterpret_cast<const float4*>(&wt[jr + 24][i]);
+                    pw0 += w0.x * m.x + w0.y * m.y + w0.z * m.z + w0.w * m.w;
+                    pw1 += w1.x * m.x + w1.y * m.y + w1.z * m.z + w1.w * m.w;
+                    pw2 += w2.x * m.x + w2.y * m.y + w2.z * m.z + w2.w * m.w;
+                    pw3 += w3.x * m.x + w3.y * m.y + w3.z * m.z + w3.w * m.w;
+                }
+                const float y0 = u0 - pw0, y1 = u1 - pw1, y2 = u2 - pw2, y3 = u3 - pw3;
+                if (jr      < jn) { Y[yb + (size_t)jr * GDN_D] = y0;        ys[jr][cl] = y0; }
+                if (jr + 8  < jn) { Y[yb + (size_t)(jr + 8) * GDN_D] = y1;  ys[jr + 8][cl] = y1; }
+                if (jr + 16 < jn) { Y[yb + (size_t)(jr + 16) * GDN_D] = y2; ys[jr + 16][cl] = y2; }
+                if (jr + 24 < jn) { Y[yb + (size_t)(jr + 24) * GDN_D] = y3; ys[jr + 24][cl] = y3; }
+            }
+            __syncthreads();
+            for (int idx = tid; idx < 32 * (GDN_D / 4); idx += 256) {
+                int r = idx / (GDN_D / 4), d4 = idx % (GDN_D / 4);
+                *reinterpret_cast<float4*>(&wt[r][d4 * 4]) = (r < jn)
+                    ? *reinterpret_cast<const float4*>(
+                        &k[((size_t)(t0 + jt + r) * H + h) * GDN_D + d4 * 4])
+                    : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            __syncthreads();
+            for (int jj = 0; jj < jn; jj++) {
+                float yv = ys[jj][cl] * gk[jt + jj];
+                #pragma unroll
+                for (int r = 0; r < GDN_D / 8; r++)
+                    acc[r] += wt[jj][jr * (GDN_D / 8) + r] * yv;
+            }
+        }
+        const float bC = expf(gcum[(size_t)(t0 + Cc - 1) * H + h]);
+        #pragma unroll
+        for (int r = 0; r < GDN_D / 8; r++) {
+            int i = jr * (GDN_D / 8) + r;
+            Ms[cl][i] = bC * Ms[cl][i] + acc[r];
+        }
+        __syncthreads();   // Ms/gk stable before the next chunk rewrites them
+    }
+    for (int idx = tid; idx < COLS * GDN_D; idx += 256) {
+        int cl2 = idx / GDN_D, i = idx % GDN_D;
+        state_out[((size_t)h * GDN_D + col0 + cl2) * GDN_D + i] = Ms[cl2][i];
+    }
+}
+
+// K5: full output assembly, chunk-parallel:
+//   o[j,col] = scale ( b_j sum_i q_j[i] S_c[i][col]  +  sum_{i<=j} P[j,i] Y[i,col] )
+// grid (NC, H, ceil(C/32)): each block owns 32 output rows x 128 cols. Phase 1 streams the
+// chunk-start state snapshot (St[i][col], coalesced) through 32-row smem sub-tiles; phase 2
+// streams Y the same way. q rows staged once. Accumulators live in registers across phases.
+extern "C" __global__ void gdn_chunk_output_f32(
+        const float* __restrict__ q, const float* __restrict__ gcum,
+        const float* __restrict__ P, const float* __restrict__ Y,
+        const float* __restrict__ Ssnap, float* __restrict__ o,
+        int H, int T, int C, float scale) {
+    const int c = blockIdx.x, h = blockIdx.y;
+    const int t0 = c * C;
+    const int Cc = min(C, T - t0);
+    const int j0 = blockIdx.z * 32;
+    if (j0 >= Cc) return;                      // uniform per block (tail chunk)
+    __shared__ float ts[32][GDN_D];            // phase 1: St sub-tile; phase 2: Y sub-tile
+    __shared__ float qs[32][GDN_D];            // the block's q rows (zero-padded tail)
+    const int tid = threadIdx.x;
+    const int cg = tid % 32, rg = tid / 32;    // 4x4 register tile: cols c0=4cg, rows r0=4rg
+    const int c0 = cg * 4, r0 = rg * 4;
+    const int jend = min(j0 + 32, Cc);
+    const int jn = jend - j0;
+    for (int idx = tid; idx < 32 * GDN_D; idx += 256) {
+        int r = idx / GDN_D, d = idx % GDN_D;
+        qs[r][d] = (r < jn) ? q[((size_t)(t0 + j0 + r) * H + h) * GDN_D + d] : 0.0f;
+    }
+    float acc[4][4];
+    #pragma unroll
+    for (int rr = 0; rr < 4; rr++)
+        #pragma unroll
+        for (int cc = 0; cc < 4; cc++) acc[rr][cc] = 0.0f;
+    // phase 1: inter-chunk term q_j . S_c[:,col] (4 rows x 4 cols per thread; one float4
+    // ts read + 4 qs broadcasts feed 16 FMAs — the m-outer form was smem-issue-bound)
+    const float* st = Ssnap + ((size_t)c * H + h) * GDN_D * GDN_D;
+    for (int it0 = 0; it0 < GDN_D; it0 += 32) {
+        __syncthreads();
+        for (int idx = tid; idx < 32 * GDN_D; idx += 256) {
+            int r = idx / GDN_D, d = idx % GDN_D;
+            ts[r][d] = st[(size_t)(it0 + r) * GDN_D + d];
+        }
+        __syncthreads();
+        #pragma unroll 4
+        for (int ii = 0; ii < 32; ii++) {
+            const float4 tv = *reinterpret_cast<const float4*>(&ts[ii][c0]);
+            #pragma unroll
+            for (int rr = 0; rr < 4; rr++) {
+                const float qv = qs[r0 + rr][it0 + ii];
+                acc[rr][0] += qv * tv.x; acc[rr][1] += qv * tv.y;
+                acc[rr][2] += qv * tv.z; acc[rr][3] += qv * tv.w;
+            }
+        }
+    }
+    // gate the inter-chunk term by b_j before the intra-chunk add
+    #pragma unroll
+    for (int rr = 0; rr < 4; rr++) {
+        const int jj = r0 + rr;
+        if (jj < jn) {
+            const float b = expf(gcum[(size_t)(t0 + j0 + jj) * H + h]);
+            #pragma unroll
+            for (int cc = 0; cc < 4; cc++) acc[rr][cc] *= b;
+        }
+    }
+    // phase 2: intra-chunk term P @ Y (rectangular: P upper triangle is ZERO by the K2
+    // contract, so no per-row bounds in the inner loop)
+    for (int it0 = 0; it0 < jend; it0 += 32) {
+        const int itn = min(32, jend - it0);
+        __syncthreads();
+        for (int idx = tid; idx < 32 * GDN_D; idx += 256) {
+            int r = idx / GDN_D, d = idx % GDN_D;
+            ts[r][d] = (r < itn) ? Y[(((size_t)c * H + h) * C + it0 + r) * GDN_D + d] : 0.0f;
+        }
+        __syncthreads();
+        const float* P0 = P + (((size_t)c * H + h) * C + j0 + r0) * C + it0;
+        for (int ii = 0; ii < itn; ii++) {
+            const float4 tv = *reinterpret_cast<const float4*>(&ts[ii][c0]);
+            #pragma unroll
+            for (int rr = 0; rr < 4; rr++) {
+                const float pv = (r0 + rr < jn) ? P0[(size_t)rr * C + ii] : 0.0f;
+                acc[rr][0] += pv * tv.x; acc[rr][1] += pv * tv.y;
+                acc[rr][2] += pv * tv.z; acc[rr][3] += pv * tv.w;
+            }
+        }
+    }
+    #pragma unroll
+    for (int rr = 0; rr < 4; rr++) {
+        const int j = j0 + r0 + rr;
+        if (j < jend) {
+            const float4 ov = make_float4(scale * acc[rr][0], scale * acc[rr][1],
+                                          scale * acc[rr][2], scale * acc[rr][3]);
+            *reinterpret_cast<float4*>(&o[((size_t)(t0 + j) * H + h) * GDN_D + c0]) = ov;
+        }
+    }
+}
+
 // ---- helpers for the linear-attn glue ----
 // sigmoid(x) elementwise
 extern "C" __global__ void sigmoid_f32(const float* x, float* y, int n) {

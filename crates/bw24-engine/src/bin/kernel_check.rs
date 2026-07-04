@@ -333,6 +333,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("gdn_scan     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- A4 gdn chunked WY prefill: BOTH kernels vs an f64 CPU oracle of the exact recurrence.
+    //     Chunked is NOT bit-identical to the sequential scan by design (different FP
+    //     accumulation order) — the fair truth is f64. MEASURED noise classes (2026-07-04,
+    //     adversarial synthetic: random unit-norm k rows, betas 0.3-0.9, dense random state):
+    //     sequential ~4e-6 out / ~1e-5 state; chunked ~2-4e-5 out / 1.4e-5..1.1e-4 state,
+    //     growing with C — the (I+A)^{-1} substitution's condition-number amplification, NOT
+    //     a formulation bug (a wrong index/sign/gate produces O(1) errors). Gates:
+    //     (a) chunked out rel <= 1e-4 vs truth (the SOTA-ADOPTION stop-gate), (b) state rel
+    //     <= 2.5e-4 (2x headroom over the measured worst), (c) within 32x of the sequential
+    //     noise (formulation-bug tripwire). run-gen argmax + e2e token agreement + run-spec
+    //     remain the shipping authority.
+    //     Covers: NONZERO initial state, a tail chunk (T % C != 0), T < C, and every C in
+    //     {32, 64, 128}. H=4 heads, realistic magnitudes (L2-normed q/k rows, strong betas). ---
+    {
+        let s_v = 128usize; let h = 4usize;
+        let relerr = |a: &[f64], b: &[f32]| -> f32 {
+            a.iter().zip(b)
+                .map(|(x, y)| ((*x - *y as f64).abs() / x.abs().max(*y as f64).max(1e-3)) as f32)
+                .fold(0.0f32, f32::max)
+        };
+        for &(t, c) in &[(200usize, 32usize), (200, 64), (200, 128), (17, 64), (512, 64)] {
+            // q/k rows ~unit-normalized like the real inputs (L2-normed), v O(1).
+            let mut q = vec![0f32; s_v * h * t];
+            let mut k = vec![0f32; s_v * h * t];
+            for row in 0..h * t {
+                let (mut nq, mut nk) = (0f32, 0f32);
+                for i in 0..s_v {
+                    let a = pr(row * s_v + i + 11); let b = pr(row * s_v + i + 17);
+                    q[row * s_v + i] = a; k[row * s_v + i] = b;
+                    nq += a * a; nk += b * b;
+                }
+                for i in 0..s_v {
+                    q[row * s_v + i] /= nq.sqrt(); k[row * s_v + i] /= nk.sqrt();
+                }
+            }
+            let v: Vec<f32> = (0..s_v * h * t).map(|i| pr(i + 23)).collect();
+            let g: Vec<f32> = (0..h * t).map(|i| -0.02 - pr(i + 29).abs() * 0.5).collect();
+            let beta: Vec<f32> = (0..h * t).map(|i| 0.3 + pr(i + 31).abs() * 0.6).collect();
+            let st0: Vec<f32> = (0..s_v * s_v * h).map(|i| pr(i + 37) * 0.5).collect(); // NONZERO
+            let scale = 1.0 / (s_v as f32).sqrt();
+            // f64 truth (exact recurrence, per head)
+            let mut o64 = vec![0f64; s_v * h * t];
+            let mut s64 = vec![0f64; s_v * s_v * h];
+            for hh in 0..h {
+                let s = &mut s64[hh * s_v * s_v..(hh + 1) * s_v * s_v]; // s[col*s_v+i]=S[i][col]
+                for (i, sv) in s.iter_mut().enumerate() { *sv = st0[hh * s_v * s_v + i] as f64; }
+                for tt in 0..t {
+                    let base = (tt * h + hh) * s_v;
+                    let gv = (g[tt * h + hh] as f64).exp();
+                    let bv = beta[tt * h + hh] as f64;
+                    for col in 0..s_v {
+                        let mut kv = 0f64;
+                        for i in 0..s_v { kv += s[col * s_v + i] * k[base + i] as f64; }
+                        let delta = (v[base + col] as f64 - gv * kv) * bv;
+                        let mut attn = 0f64;
+                        for i in 0..s_v {
+                            let ns = gv * s[col * s_v + i] + k[base + i] as f64 * delta;
+                            s[col * s_v + i] = ns;
+                            attn += ns * q[base + i] as f64;
+                        }
+                        o64[base + col] = attn * scale as f64;
+                    }
+                }
+            }
+            let qd = e.htod(&q)?; let kd = e.htod(&k)?; let vd = e.htod(&v)?;
+            let gd = e.htod(&g)?; let bd = e.htod(&beta)?; let sid = e.htod(&st0)?;
+            let mut so_s = e.zeros(s_v * s_v * h)?; let mut o_s = e.zeros(s_v * h * t)?;
+            e.gdn_scan_s128(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_s, &mut o_s, h, t, scale)?;
+            let mut so_c = e.zeros(s_v * s_v * h)?; let mut o_c = e.zeros(s_v * h * t)?;
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_c, &mut o_c, h, t, scale, c)?;
+            let (ro_s, rs_s) = (relerr(&o64, &e.dtoh(&o_s)?), relerr(&s64, &e.dtoh(&so_s)?));
+            let (ro_c, rs_c) = (relerr(&o64, &e.dtoh(&o_c)?), relerr(&s64, &e.dtoh(&so_c)?));
+            let ok = ro_c < 1e-4 && rs_c < 2.5e-4
+                  && ro_c <= (ro_s * 32.0).max(1e-6) && rs_c <= (rs_s * 32.0).max(1e-6);
+            println!("gdn_chunked  T={t:3} C={c:3} vs f64-truth: out seq={ro_s:.2e}/chunk={ro_c:.2e} \
+                      state seq={rs_s:.2e}/chunk={rs_c:.2e} {}",
+                     if ok { "OK" } else { fails += 1; "FAIL" });
+        }
+    }
+
     // --- qmatvec (resident-quant GEMM) vs cpu_linear(dequant(W)) on real GGUF weights ---
     if let Some(path) = std::env::args().nth(1) {
         use bw24_gguf::{GgufFile, GgmlType, dequant};
