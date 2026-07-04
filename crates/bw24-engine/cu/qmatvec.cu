@@ -2923,3 +2923,95 @@ extern "C" __global__ void qmatvec_f32(
         if (tid == 0) y[(long)t * out_f + o] = v;
     }
 }
+
+// ================================================================================================
+// STAGE-2 GROUPED DECODE (2026-07-04): single-launch 8-expert MoE matvecs for m=1.
+//
+// The sequential decode path launches 8 experts x (gate,up,silu,down,axpy) = 40 kernels per MoE
+// layer per token, each a tiny m=1 matvec (~5 us) — 2533 launches/token total on the 35B, host
+// launch time ~7.9 ms/tok vs 11.7 ms/tok GPU time (nsys 2026-07-04). These two kernels fold one
+// layer's routed-expert FFN into TWO launches via expert-pointer indirection (the SLRU cache slots
+// are fixed-address, so the 8 weight pointers are stable for the whole launch).
+//
+// BIT-IDENTITY CONTRACT (vs the sequential qmatvec_f32 + silu_mul_f32 + axpy_f32 chain):
+//  - each dot reproduces qmatvec_f32's EXACT reduction: same 256-thread striding over in_f, same
+//    warp shuffle tree, same s[32] two-level reduce. Identical partial-sum order => identical f32.
+//  - the SiLU epilogue is silu_mul_f32's expression on the SAME dot values (f32 store/load of the
+//    intermediates is exact, so register-passing them is bit-identical).
+//  - the down epilogue reproduces the 8 sequential axpy_f32 accumulations: acc starts 0.0 (the
+//    e.zeros moe_out) and chains __fmaf_rn(w[j], y_j, acc) in slot order j=0..7 — the same FMA
+//    axpy_f32 compiles to (the A2 slot-scheme argument, byte-identity-gated there).
+// ================================================================================================
+
+typedef struct { const unsigned char* p[8]; } wptr8_t;
+typedef struct { float v[8]; } f32x8_t;
+
+// One MoE layer's gate+up+SiLU for all 8 routed experts of ONE token in ONE launch.
+// act[j*n_ff + o] = silu(gate_j[o] . x) * (up_j[o] . x). grid: (n_ff, n_used); block: 256.
+extern "C" __global__ void moe_gate_up_silu8_f32(
+        wptr8_t gp, wptr8_t up, const float* __restrict__ x, float* __restrict__ act,
+        int in_f, int n_ff, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;              // expert-FFN row 0..n_ff-1
+    int j = blockIdx.y;              // routed-expert slot 0..n_used-1
+    int tid = threadIdx.x;
+    __shared__ float s[32];
+    __shared__ float g_final;
+    // ---- gate dot: EXACT qmatvec_f32 structure ----
+    const unsigned char* grow = gp.p[j] + (long)o * rb_g;
+    float acc = 0.0f;
+    for (int i = tid; i < in_f; i += blockDim.x) acc += deq(qt_g, grow, i) * x[i];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) g_final = v;
+    }
+    __syncthreads();                 // s + g_final ready; s reused below
+    // ---- up dot: same structure ----
+    const unsigned char* urow = up.p[j] + (long)o * rb_u;
+    float acc2 = 0.0f;
+    for (int i = tid; i < in_f; i += blockDim.x) acc2 += deq(qt_u, urow, i) * x[i];
+    for (int off = 16; off > 0; off >>= 1) acc2 += __shfl_down_sync(0xffffffff, acc2, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc2;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) {
+            float g = g_final;
+            // silu_mul_f32's exact expression on the exact dot values.
+            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * v;
+        }
+    }
+}
+
+// One MoE layer's down-proj + weighted accumulation for all 8 routed experts in ONE launch.
+// dst[o] = fma(w[7], y_7[o], ... fma(w[0], y_0[o], 0.0f)) where y_j = W_down_j @ act_j.
+// Reproduces zeros(moe_out) + 8 sequential axpy_f32 in slot order. grid: (out_f); block: 256.
+extern "C" __global__ void moe_down8_fma_f32(
+        wptr8_t dp, f32x8_t w, const float* __restrict__ act, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int qt, long rb) {
+    int o = blockIdx.x;
+    int tid = threadIdx.x;
+    __shared__ float s[32];
+    float chain = 0.0f;              // tid 0's slot-ordered accumulator (other threads' unused)
+    for (int j = 0; j < n_used; j++) {
+        const unsigned char* wrow = dp.p[j] + (long)o * rb;
+        const float* xrow = act + (size_t)j * in_f;
+        float acc = 0.0f;
+        for (int i = tid; i < in_f; i += blockDim.x) acc += deq(qt, wrow, i) * xrow[i];
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+        if ((tid & 31) == 0) s[tid >> 5] = acc;
+        __syncthreads();
+        if (tid < 32) {
+            float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+            for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+            // slot-ordered FMA chain == the sequential axpy_f32 accumulation (see header).
+            if (tid == 0) chain = __fmaf_rn(w.v[j], v, chain);
+        }
+        __syncthreads();             // s[] reused next iteration
+    }
+    if (tid == 0) dst[o] = chain;
+}

@@ -8,6 +8,13 @@ use crate::Engine;
 use crate::cache::Cache;
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
 
+/// STAGE-2 GROUPED DECODE gate (BW24_MOE_GDEC, default ON; `=0` restores the sequential
+/// per-expert launch chain). See `moe_gdec_token`.
+fn gdec_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
+}
+
 /// Minimum prompt length for the BATCHED cache prime (`prime_cache`). Below this the tokenwise
 /// decode loop wins anyway (the batched path's GEMM dispatch needs m>=16, and the stateful conv
 /// kernel needs T >= d_conv-1). Callers: generate / generate_spec.
@@ -556,6 +563,22 @@ impl HybridModel {
             let w = &w_all[tok * n_used..(tok + 1) * n_used];
             let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);  // CudaView<f32>
 
+            // STAGE-2 GROUPED DECODE (2026-07-04, BW24_MOE_GDEC default ON, =0 rollback): fold
+            // this token's whole routed-expert FFN (8x gate/up/silu + 8x down/axpy = 40 launches)
+            // into TWO launches via expert-pointer indirection over the fixed-address cache slots.
+            // Fires only when ALL 3*n_used blocks are ALREADY cache-resident (pure-HIT: zero
+            // memcpy, zero admission, so no slot can move under the collected pointers) — any
+            // miss falls through to the sequential loop below, which admits as before. In steady
+            // state on a fully-resident rig every token-layer takes the grouped path.
+            // BIT-IDENTITY: each in-kernel dot reproduces qmatvec_f32's exact reduction; SiLU is
+            // silu_mul_f32's exact expression; the down accumulation is a slot-ordered
+            // __fmaf_rn chain == the sequential axpy_f32 chain (BW24_MOE_GDEC_GATE compares).
+            if use_cache && n_used <= 8 && gdec_enabled()
+                && Self::moe_gdec_token(e, m, il, max_block, &zt, sel, w,
+                                        &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
+                continue;
+            }
+
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
                 if use_cache {
@@ -693,6 +716,57 @@ impl HybridModel {
             }
         }
         Ok((sel, w_out))
+    }
+
+    /// STAGE-2 GROUPED DECODE (2026-07-04): run ONE token's whole routed-expert FFN in TWO
+    /// launches when every one of its 3*n_used blocks is ALREADY cache-resident. Returns
+    /// Ok(true) if the grouped path ran (caller skips the sequential loop for this token);
+    /// Ok(false) on ANY miss (caller falls through — the sequential loop stages/admits as
+    /// before, so the NEXT occurrence takes the grouped path). Pointer safety: cache slots are
+    /// fixed-address for the engine's lifetime and the pure-HIT path performs no admission, so
+    /// the collected raw pointers cannot move between collection and launch (single-threaded
+    /// decode; the lock is held only for collection, launches are stream-ordered after any
+    /// prior same-stream staging writes).
+    #[allow(clippy::too_many_arguments)]
+    fn moe_gdec_token(e: &Engine, m: &MoeWeights, il: u16, max_block: usize,
+                      zt: &cudarc::driver::CudaView<f32>, sel: &[u32], w: &[f32],
+                      moe_out: &mut CudaSlice<f32>, tok: usize,
+                      n_embd: usize, n_ff_exp: usize, n_used: usize)
+                      -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_GATE, PROJ_UP, PROJ_DOWN};
+        use cudarc::driver::DevicePtr;
+        // One lock hold: residency-check all 3*n_used blocks, collect raw slot pointers.
+        let ptrs = e.with_moe_cache(max_block, |c, eng| {
+            let mut g = [0u64; 8];
+            let mut u = [0u64; 8];
+            let mut d = [0u64; 8];
+            for (j, &ex) in sel.iter().enumerate() {
+                let ex = ex as u16;
+                let (Some(sg), Some(su), Some(sd)) = (c.resident(BlockId::new(il, PROJ_GATE, ex)),
+                                                      c.resident(BlockId::new(il, PROJ_UP,   ex)),
+                                                      c.resident(BlockId::new(il, PROJ_DOWN, ex)))
+                else { return Ok(None); };
+                let (pg, _e0) = c.slot(sg).device_ptr(eng.stream());
+                let (pu, _e1) = c.slot(su).device_ptr(eng.stream());
+                let (pd, _e2) = c.slot(sd).device_ptr(eng.stream());
+                g[j] = pg as u64; u[j] = pu as u64; d[j] = pd as u64;
+            }
+            c.hits += (3 * n_used) as u64;   // instrumentation parity with dispatch()
+            Ok(Some((g, u, d)))
+        })?;
+        let Some((g, u, d)) = ptrs else { return Ok(false) };
+        let mut wv = [0f32; 8];
+        wv[..n_used].copy_from_slice(w);
+        // 2 launches: (gate+up+silu) x8, then (down + slot-ordered FMA accumulate) x8.
+        let act = e.moe_gate_up_silu8(crate::WPtr8(g), crate::WPtr8(u), zt,
+                                      n_embd, n_ff_exp, n_used,
+                                      m.gate_exps.qtype, m.up_exps.qtype,
+                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+        let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+        e.moe_down8_fma_into(crate::WPtr8(d), crate::F32x8(wv), &act, &mut dst,
+                             n_ff_exp, n_embd, n_used,
+                             m.down_exps.qtype, m.down_exps.row_bytes)?;
+        Ok(true)
     }
 
     /// EDGE-1 §B.3: dispatch one expert projection through the SLRU cache, then run the SAME

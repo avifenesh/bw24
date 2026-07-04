@@ -132,6 +132,21 @@ pub struct Engine {
 /// x 256 threads = 65536 threads covering the 248K-vocab scan in ~4 strided loads/thread.
 pub const ARGMAX_NB: usize = 256;
 
+/// STAGE-2 GROUPED DECODE: 8 expert weight-block device pointers passed BY VALUE as one kernel
+/// param (matches the CUDA `wptr8_t` struct: 8x 64-bit pointers, `#[repr(C)]` => identical
+/// layout). The pointers are SLRU cache-slot base addresses — fixed for the engine's lifetime
+/// (slots are never re-allocated), so passing raw values is stable across the launch.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WPtr8(pub [u64; 8]);
+unsafe impl cudarc::driver::DeviceRepr for WPtr8 {}
+
+/// STAGE-2 GROUPED DECODE: the 8 routed-expert weights by value (CUDA `f32x8_t`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct F32x8(pub [f32; 8]);
+unsafe impl cudarc::driver::DeviceRepr for F32x8 {}
+
 /// Harness timing contract: wall nanos of the LAST generate/generate_spec prompt prime on this
 /// process. Bench binaries read it right after the call to print gen-only throughput without the
 /// prime-subtraction hack (which amplifies prime jitter into the gen number at long prompts).
@@ -434,6 +449,49 @@ impl Engine {
         b.arg(&wv).arg(x).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qt).arg(&rb);
         unsafe { b.launch(cfg)?; }
         Ok(y)
+    }
+
+    /// STAGE-2 GROUPED DECODE (2026-07-04): one MoE layer's gate+up+SiLU for all `n_used` routed
+    /// experts of ONE token in ONE launch (replaces 8x qmatvec(gate) + 8x qmatvec(up) + 8x
+    /// silu_mul = 24 launches). `gp`/`up` are the 8 expert weight-block device pointers (SLRU
+    /// cache slots — fixed-address, stable for the launch). Returns act [n_used, n_ff].
+    /// BIT-IDENTICAL to the sequential chain: each dot reproduces qmatvec_f32's exact 256-thread
+    /// reduction; the SiLU epilogue is silu_mul_f32's exact expression (see kernel header).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8(&self, gp: WPtr8, up: WPtr8, x: &cudarc::driver::CudaView<f32>,
+                             in_f: usize, n_ff: usize, n_used: usize, qt_g: i32, qt_u: i32,
+                             rb_g: usize, rb_u: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_f32");
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;  // fully overwritten
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, rbg, rbu) = (in_f as i32, n_ff as i32, rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&gp).arg(&up).arg(x).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    /// STAGE-2 GROUPED DECODE: one MoE layer's down-proj + weighted accumulation for all `n_used`
+    /// routed experts in ONE launch (replaces 8x qmatvec(down) + 8x axpy = 16 launches), writing
+    /// the token's moe_out row DIRECTLY (`dst` is the zeroed row; the in-kernel slot-ordered
+    /// __fmaf_rn chain starting at 0.0f reproduces the sequential axpy_f32 accumulation into the
+    /// zeroed row bit-for-bit — the A2 byte-identity scheme at m=1).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_into(&self, dp: WPtr8, w: F32x8, act: &CudaSlice<f32>,
+                              dst: &mut cudarc::driver::CudaViewMut<f32>,
+                              in_f: usize, out_f: usize, n_used: usize, qt: i32, rb: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_down8_fma_f32");
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, nu, rbv) = (in_f as i32, out_f as i32, n_used as i32, rb as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&dp).arg(&w).arg(act).arg(dst).arg(&inf).arg(&outf).arg(&nu).arg(&qt).arg(&rbv);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// dst[i] += alpha * src[i], i in 0..n. dst is a CudaViewMut (a row of moe_out).
