@@ -75,12 +75,12 @@ fn fa_split_keys(_t_kv: usize, n_head_kv: usize) -> usize {
         std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
             .filter(|&s: &usize| s >= 8 && s % 8 == 0)
     }) { return forced; }
-    // Default FIXED 64. A per-model n_head_kv discriminator was tried 2026-07-03 and REVERTED:
-    // both 9B and 27B have n_head_kv=4, and split=32 breaks 9B run-spec exactness while PASSING
-    // on the 27B (K=1..8) — the difference is model-margin luck, not geometry, so it cannot be a
-    // default. BW24_FA_SPLIT=32 stays the documented 27B serving opt-in (+3.4% decode there).
+    // Default 32 (2026-07-05 re-sweep on G7e 27B p3: 102.2 -> 107.6 tok/s, +5.3%, and the
+    // HISTORIC 9B exactness breaker at 32 no longer reproduces — K=1..8 PASS on both models
+    // post multi-row-rows + decode-exact-dispatch rework; the old failure was the per-row
+    // combine order, which the rows kernel replaced). BW24_FA_SPLIT env still overrides.
     let _ = n_head_kv;
-    64
+    32
 }
 
 /// Quant type codes matching qmatvec.cu QType enum.
