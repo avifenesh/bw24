@@ -148,6 +148,23 @@ conservative bounds.
 - **Local GPU (kernel agent owns it)**: nothing until free; then bw24 loader-arc bringup +
   spill-serving validation of the final GGUF.
 
+## 3b. Verified tensor inventory (structure dry-run, 2026-07-04, from remote index — no weights needed)
+
+REAP50 (`sparkarena/Minimax-M3-v0-NVFP4-REAP50`, 46906 tensors, index total_size = 128.87GB):
+- **64 experts/layer uniformly across all 57 MoE layers (l3..l59)** — flat REAP, no per-layer
+  budget. (Our Phase-17/19 evidence says edge layers tolerate pruning worst; a per-layer-budget
+  REAP is a concrete way Path B can beat this baseline.)
+- NVFP4 = ModelOpt layout: `weight` (packed e2m1) + `weight_scale` (per-16 block) +
+  `weight_scale_2` (per-tensor) + `input_scale`, on every linear incl. index_q/k_proj.
+  Excluded from quant: lm_head, embed, vision*, projector*, router gates.
+- Names carry the `language_model.` prefix; experts are Mixtral-style `w1/w2/w3` ModuleList;
+  `e_score_correction_bias` + shared_experts confirmed per MoE layer. Vision tower present
+  (515 tensors) — strip on conversion.
+- bw24 NVFP4 note: bw24's GGUF NVFP4 block is `[4B scale][32B e2m1]` interleaved per 64 elems
+  (2 hw groups); ModelOpt stores planes separately with group_size 16. Conversion =
+  re-group scales + interleave; the w1/w3 scale-normalization quirk from sparkarena's card must
+  be resolved at this step (renormalize into weight_scale_2 so GGUF sees standard semantics).
+
 ## 4. Immediate next actions
 1. [running] MXFP8 download (~444GB, ~75MB/s ≈ 100+ min remaining) — `minimax-m3-mxfp8-dl.log`
 2. [running] REAP50 download (~129GB) — `minimax-m3-nvfp4-reap50-dl.log`
