@@ -2314,13 +2314,17 @@ impl Engine {
         Ok(())
     }
 
-    /// A4 seam: chunked WY GDN prefill enabled? `BW24_GDN_CHUNKED=1` -> chunked, `=0`/unset ->
-    /// sequential scan (default OFF until the full gate battery is green; the flip-to-ON
-    /// commit must carry the battery evidence). PREFILL-ONLY: decode + spec verify never
-    /// route here (decode==verify dispatch identity law).
+    /// A4 seam: chunked WY GDN prefill. DEFAULT ON (`BW24_GDN_CHUNKED=0` = rollback to the
+    /// sequential scan). Flipped 2026-07-04 with the full battery green: kernel-check ALL
+    /// GREEN x {9B, 27B} incl the f64-truth chunk gates; run-gen argmax 82==82 both models
+    /// on AND off (24/24 sweep runs); run-spec K={1,2,3,4,6,8} PASS x {9B synth, 9B text,
+    /// 27B p2, 27B p3}; e2e first-16-token agreement 6/6 (full-256 drifts at index 47-125
+    /// on 5/6 prompts — accepted cache-state-FP class, batched-prime precedent).
+    /// PREFILL-ONLY: decode + spec verify never route here (decode==verify dispatch
+    /// identity law); prime_cache/forward/forward_last are the only callers.
     pub fn gdn_chunked_enabled() -> bool {
         static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *E.get_or_init(|| std::env::var("BW24_GDN_CHUNKED").map(|v| v != "0").unwrap_or(false))
+        *E.get_or_init(|| std::env::var("BW24_GDN_CHUNKED").map(|v| v != "0").unwrap_or(true))
     }
 
     /// A4 chunk size (BW24_GDN_CHUNK, default 32 — the sweep winner: the O(T*C) chunk
