@@ -28,7 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .position(|a| a == "--prompt")
         .and_then(|i| args.get(i + 1).cloned());
-    let prompt_text: Option<String> = arg_prompt.or_else(|| std::env::var("BW24_PROMPT").ok());
+    let prompt_text: Option<String> = arg_prompt
+        .or_else(|| std::env::var("BW24_PROMPT_FILE").ok()
+            .map(|f| std::fs::read_to_string(&f).expect("BW24_PROMPT_FILE unreadable")))
+        .or_else(|| std::env::var("BW24_PROMPT").ok());
 
     // Lazily build the tokenizer only when we need text I/O (it parses the 248K vocab).
     let mut tokenizer: Option<Tokenizer> = None;

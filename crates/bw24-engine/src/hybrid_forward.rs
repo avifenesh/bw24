@@ -140,14 +140,55 @@ impl HybridModel {
     /// forward_last itself stays untouched (kernel-check / run-gen gate on it).
     pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        assert!(cache.pos == 0, "prime_cache is a fresh-prompt prime (cache.pos must be 0)");
+        assert!(t >= PRIME_MIN_T, "prime_cache needs T >= {PRIME_MIN_T} (caller gates)");
+        assert!(t <= cache.max_ctx, "prime_cache: prompt exceeds cache max_ctx");
+
+        // CHUNKED PRIME (2026-07-05, the long-ctx OOM fix): the monolithic prime allocates
+        // per-layer transients proportional to T (gate/up/act = T*n_ff*4B EACH — 1.5GB apiece at
+        // 16k on the 27B), which OOMs a 24GB card around 16k prompt tokens. Chunk the prompt:
+        // each chunk runs the full layer stack with transients sized to the chunk, appending its
+        // K/V to the resident quantized cache and carrying the GDN conv-ring + recurrent state
+        // through `cache.recur` (linear_attn_prime is already stateful — a chunk boundary is
+        // exactly the state carry it was built for). Full-attn chunks after the first attend to
+        // the QUANTIZED past KV via fa_prefill_view (the spec-verify pattern) — same numeric
+        // class as decode reading the cache. Prompts <= one chunk take the ORIGINAL monolithic
+        // body byte-for-byte (chunk 0 short-circuits to the f32 fa_prefill path).
+        // BW24_PRIME_CHUNK sets the chunk size (tokens); 0 disables chunking (monolithic).
+        let chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(4096);
+        if chunk == 0 || t <= chunk {
+            return self.prime_chunk(e, tokens, cache);
+        }
+        let mut hiddens = e.uninit(t * n_embd)?;
+        let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
+        let mut start = 0usize;
+        while start < t {
+            // keep the tail chunk >= PRIME_MIN_T (the stateful conv needs T >= d_conv-1).
+            let mut end = (start + chunk).min(t);
+            if t - end > 0 && t - end < PRIME_MIN_T { end = t; }
+            let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache)?;
+            e.copy_into(&mut hiddens, start * n_embd, &x, (end - start) * n_embd)?;
+            last = Some((l, hs));
+            start = end;
+        }
+        let (logits, h_seed) = last.unwrap();
+        Ok((logits, h_seed, hiddens))
+    }
+
+    /// One prime chunk: the full layer stack over `tokens`, continuing from the cache's current
+    /// state (`cache.pos` = tokens already primed; 0 = fresh). Positions/RoPE are absolute
+    /// (cache.pos + i). Returns (last-row logits, h_seed, this chunk's hidden stack [T, n_embd]).
+    fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+                       -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let t = tokens.len();
         let eps = cfg.rms_eps;
-        assert!(cache.pos == 0, "prime_cache is a fresh-prompt prime (cache.pos must be 0)");
-        assert!(t >= PRIME_MIN_T, "prime_cache needs T >= {PRIME_MIN_T} (caller gates)");
-        assert!(t <= cache.max_ctx, "prime_cache: prompt exceeds cache max_ctx");
-        let pos: Vec<i32> = (0..t as i32).collect();
+        let base = cache.pos;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
 
         let mut x = self.embed(e, tokens)?;   // [T, n_embd]
@@ -237,12 +278,30 @@ impl HybridModel {
             e.set_i32_one(&mut kvl.len_d, new_len)?;
         }
 
-        // batched prefill attention (unchanged forward_last math).
+        // batched prefill attention. FRESH prime (no past KV): unchanged forward_last math over
+        // the f32 K/V of this batch. CONTINUATION chunk (past KV present): the chunk's queries
+        // must attend to [0 .. base+t) — run fa_prefill_view over the resident QUANTIZED cache
+        // (the spec-verify pattern; kernel's causal mask offsets by T_kv-T). Numerically this
+        // reads q8_0/q5_1-dequantized K/V for the past AND the current chunk — the same class as
+        // decode reading the cache; the run-gen/first-16 battery is the accuracy authority.
+        let base_len = {
+            let kvl = cache.kv[il].as_ref().unwrap();
+            kvl.len - t   // KV rows present BEFORE this chunk's append above
+        };
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        if std::env::var("BW24_NOFA").is_ok() {
-            e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+        if base_len == 0 {
+            if std::env::var("BW24_NOFA").is_ok() {
+                e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            } else {
+                e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            }
         } else {
-            e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            let kvl = cache.kv[il].as_ref().unwrap();
+            let t_kv = base_len + t;
+            let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+            let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+            e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                              t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         }
 
         let mut gsig = e.zeros(t * n_head * head_dim)?;

@@ -1,0 +1,2402 @@
+
+
+=== FILE: crates/bw24-engine/src/cache.rs ===
+//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):
+//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
+//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
+//! No host round-trips per step. Single sequence.
+
+use cudarc::driver::CudaSlice;
+use bw24_gguf::config::{ModelConfig, LayerKind};
+use crate::Engine;
+
+/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
+/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
+/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
+/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
+pub struct KvLayer {
+    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
+    pub len: usize,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
+    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_d: CudaSlice<i32>,
+}
+
+/// Per-linear-attn-layer fixed recurrent state.
+/// conv_state and ssm_state are BOTH kept RESIDENT on GPU — the conv ring assemble + roll runs
+/// on-device (conv_assemble_and_roll), so there is no per-step dtoh/htod for either.
+pub struct RecurLayer {
+    pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
+    pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
+    /// PERSISTENT second SSM-state buffer for the gdn-scan double buffer (DECODE DETERMINISM FIX).
+    /// gdn_scan needs DISTINCT in/out state buffers. The old eager path allocated a fresh
+    /// `state_scratch` via `e.uninit` every step and swapped its pointer into `ssm_state`; that
+    /// per-step alloc/free churned the stream-ordered async pool, and the freed prior `ssm_state`
+    /// block was recycled by the next step's scratch while a kernel referencing the swapped-in state
+    /// was still in flight — a use-after-reuse that produced RUN-TO-RUN nondeterministic decode
+    /// (two identical prompt primes diverged). We instead PING-PONG between two STABLE resident
+    /// buffers (no per-step alloc/free, no pool churn): step writes into the spare, then swaps the
+    /// two owned buffers in place. Stable pointers, identical math. Sized like `ssm_state`.
+    pub ssm_state_alt: CudaSlice<f32>,
+}
+
+pub struct Cache {
+    pub kv: Vec<Option<KvLayer>>,
+    pub recur: Vec<Option<RecurLayer>>,
+    pub pos: usize,
+    pub max_ctx: usize,
+}
+
+/// Snapshot of the dual cache taken BEFORE a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+/// - Full-attn KV: only the per-layer `len` is recorded; rollback truncates (append-only,
+///   position-addressed — no copy). C.1.
+/// - Linear-attn conv/ssm: real device-to-device COPIES of the recurrent state, because those
+///   buffers are mutated IN PLACE by the verify pass and have no position index to truncate. C.2.
+///   (CudaSlice::clone is an Arc refcount, NOT a buffer copy — so we alloc fresh + memcpy_dtod.)
+pub struct CacheSnapshot {
+    pub kv_len: Vec<Option<usize>>,            // per layer (Some for full-attn layers)
+    pub conv: Vec<Option<CudaSlice<f32>>>,     // per layer (Some for linear-attn layers, D2D copy)
+    pub ssm: Vec<Option<CudaSlice<f32>>>,
+    pub pos: usize,
+}
+
+impl Cache {
+    /// Allocate GPU-resident caches sized by arch + max context.
+    pub fn new(e: &Engine, cfg: &ModelConfig, max_ctx: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let n = cfg.n_layer as usize;
+        let mut kv = Vec::with_capacity(n);
+        let mut recur = Vec::with_capacity(n);
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim_k = cfg.head_dim_k as usize;
+        let head_dim_v = cfg.head_dim_v as usize;
+        assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
+                "KVQUANT requires head_dim_k%32==0 && head_dim_v%32==0 (got k={head_dim_k} v={head_dim_v})");
+        let kv_dim_k = head_dim_k * n_head_kv;
+        let kv_dim_v = head_dim_v * n_head_kv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;   // q8_0
+        let v_tok_bytes = (kv_dim_v / 32) * 24;   // q5_1
+        let (conv_dim, d_state, num_v, d_conv) = if let Some(s) = &cfg.ssm {
+            let num_k = s.group_count as usize;
+            let num_v = s.time_step_rank as usize;
+            let ds = s.state_size as usize;
+            (ds * num_k * 2 + ds * num_v, ds, num_v, s.conv_kernel as usize)
+        } else { (0, 0, 0, 0) };
+        for il in 0..cfg.n_layer {
+            match cfg.layer_kind(il) {
+                LayerKind::FullAttention => {
+                    kv.push(Some(KvLayer {
+                        k: e.alloc_u8(max_ctx * k_tok_bytes)?,
+                        v: e.alloc_u8(max_ctx * v_tok_bytes)?,
+                        kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+                        len_d: e.htod_i32(&[0])?,
+                    }));
+                    recur.push(None);
+                }
+                LayerKind::LinearAttention => {
+                    kv.push(None);
+                    recur.push(Some(RecurLayer {
+                        conv_state: e.zeros(conv_dim * (d_conv - 1))?,
+                        ssm_state: e.zeros(d_state * d_state * num_v)?,
+                        ssm_state_alt: e.zeros(d_state * d_state * num_v)?,
+                    }));
+                }
+            }
+        }
+        Ok(Cache { kv, recur, pos: 0, max_ctx })
+    }
+
+    /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+    /// Records each full-attn `len` (cheap) and makes a REAL device copy of each linear-attn
+    /// conv_state/ssm_state (a fresh alloc + memcpy_dtod — NOT an Arc clone).
+    pub fn snapshot(&self, e: &Engine) -> Result<CacheSnapshot, Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        let mut kv_len = Vec::with_capacity(n);
+        let mut conv = Vec::with_capacity(n);
+        let mut ssm = Vec::with_capacity(n);
+        for il in 0..n {
+            match &self.kv[il] {
+                Some(kvl) => kv_len.push(Some(kvl.len)),
+                None => kv_len.push(None),
+            }
+            match &self.recur[il] {
+                Some(rl) => {
+                    conv.push(Some(e.clone_dtod(&rl.conv_state)?));
+                    ssm.push(Some(e.clone_dtod(&rl.ssm_state)?));
+                }
+                None => { conv.push(None); ssm.push(None); }
+            }
+        }
+        Ok(CacheSnapshot { kv_len, conv, ssm, pos: self.pos })
+    }
+
+    /// PERSISTENT-BUFFER snapshot (spec-decode hot loop): refresh `snap` IN PLACE — same values as
+    /// `snapshot()` but the conv/ssm device buffers are reused across rounds (D2D copy-into, ZERO
+    /// allocations vs 2 fresh clones per linear layer per round). `snap` must come from a prior
+    /// `snapshot()` of THIS cache (same layer shapes).
+    pub fn snapshot_into(&self, e: &Engine, snap: &mut CacheSnapshot)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        for il in 0..n {
+            snap.kv_len[il] = self.kv[il].as_ref().map(|kvl| kvl.len);
+            if let Some(rl) = &self.recur[il] {
+                let dc = snap.conv[il].as_mut().expect("snapshot_into: shape mismatch (conv)");
+                let ds = snap.ssm[il].as_mut().expect("snapshot_into: shape mismatch (ssm)");
+                let (cn, sn) = (rl.conv_state.len(), rl.ssm_state.len());
+                e.copy_into(dc, 0, &rl.conv_state, cn)?;
+                e.copy_into(ds, 0, &rl.ssm_state, sn)?;
+            }
+        }
+        snap.pos = self.pos;
+        Ok(())
+    }
+
+    /// Roll the cache back to exactly `snap.pos + accept_len` committed tokens (MTP-PLAN §C).
+    /// - Full-attn KV (C.1): set len = snapshot_len + accept_len (truncate, no copy).
+    /// - Linear-attn (C.2): RESTORE the snapshot conv/ssm (real D2D copy back into the resident
+    ///   buffers). The caller must then REPLAY the `accept_len` committed tokens through the full
+    ///   T=1 decode path to rebuild the recurrent state for those positions. We restore (not
+    ///   replay here) because replay needs the model; this only resets state to the pre-round value.
+    /// `cache.pos` is set to `snap.pos` so the caller's replay advances it back to the commit point.
+    pub fn rollback(&mut self, e: &Engine, snap: &CacheSnapshot, accept_len: usize)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        for il in 0..self.kv.len() {
+            if let (Some(kvl), Some(saved)) = (self.kv[il].as_mut(), snap.kv_len[il]) {
+                kvl.len = saved + accept_len;
+                // keep the device mirror in lock-step (CUDA-GRAPH-PLAN Phase 2). Set IN PLACE
+                // (stable pointer): a fresh htod_i32 would reallocate len_d, but its old pointer is
+                // baked into the captured decode graph's append/inc/fa_decode kernels — replacing it
+                // strands the graph on a freed buffer (stale-pointer hazard). memcpy_htod in place.
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            if let Some(rl) = self.recur[il].as_mut() {
+                if let Some(c) = &snap.conv[il] { e.copy_into(&mut rl.conv_state, 0, c, c.len())?; }
+                if let Some(s) = &snap.ssm[il]  { e.copy_into(&mut rl.ssm_state,  0, s, s.len())?; }
+            }
+        }
+        self.pos = snap.pos;
+        Ok(())
+    }
+}
+
+
+=== FILE: crates/bw24-engine/src/cutlass_ffi.rs ===
+//! CUTLASS sm_120a NVFP4 GEMM FFI (Phase 0).
+//!
+//! Bridges cudarc (driver API) to the CUTLASS host adapter (runtime API). They share device state via
+//! the CUDA **primary context** — cudarc retains it (cuDevicePrimaryCtxRetain), so runtime-API calls
+//! inside CUTLASS bind to the same context and pointers are interchangeable. Verified by the Phase-0
+//! smoke test (`bin/cutlass_smoke.rs`): a real GEMM launches, cudaGetLastError()==0, result correct.
+//!
+//! All of this is compiled only under `cfg(bw24_cutlass)` (set by build.rs when BW24_CUTLASS is on),
+//! so the default build links no CUTLASS and is unaffected.
+
+#![cfg(bw24_cutlass)]
+
+use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
+
+/// Resident scratch for the CUTLASS NVFP4 prefill GEMM, allocated ONCE and grown to the largest
+/// prefill GEMM shape seen, then reused for every call (no per-call cudaMalloc / alpha htod).
+///
+/// The per-call path used to allocate 6 buffers + an htod of a single f32 EVERY matmul (~200/prefill):
+/// a_packed [m,k/2], sfa_linear [m,k/16], sfa_sw [sfa_size], workspace [ws_bytes], y [m,n], alpha [1].
+/// All six are now resident here. Each buffer is sized for the MAX shape encountered and the GEMM /
+/// quant kernels touch only the leading `m*..` / `n*..` prefix (row-major, contiguous from offset 0,
+/// bounded by the m,n,k passed to the FFI), so passing the full resident buffer is bit-identical to a
+/// freshly-allocated exact-size buffer. `y` and `a_packed`/`sfa*` are fully overwritten each call.
+///
+/// SINGLE-STREAM SAFETY: bw24 runs ONE GPU worker thread / one compute stream (`Engine::gpu.stream`);
+/// the HTTP server serializes all GPU work on that worker, so no two CUTLASS GEMMs touch this scratch
+/// concurrently. The `Mutex<Option<>>` on the Engine guards only the lazy build/grow (matches moe_cache);
+/// the GEMM itself runs on `gpu.stream` under that lock for the call's duration (one worker => no contention).
+pub struct CutlassScratch {
+    pub workspace: CudaSlice<u8>,   // >= max over shapes of cutlass_fp4_workspace_size(m,n,k)
+    pub a_packed: CudaSlice<u8>,    // >= max m*k/2
+    pub sfa_linear: CudaSlice<u8>,  // >= max m*k/16
+    pub sfa_sw: CudaSlice<u8>,      // >= max cutlass_sfa_size(m,k)
+    pub y: CudaSlice<f32>,          // >= max m*n
+    pub alpha: CudaSlice<f32>,      // resident [1], written in-place via memcpy_htod each call
+    // Current capacities (in elements/bytes) so we only grow when a bigger shape appears.
+    cap_ws: usize,
+    cap_a: usize,
+    cap_sfa_lin: usize,
+    cap_sfa_sw: usize,
+    cap_y: usize,
+}
+
+#[allow(dead_code)]
+unsafe extern "C" {
+    /// Host-only workspace size for an (m,n,k) GEMM. No launch.
+    pub fn bw24_cutlass_fp4_workspace(m: i32, n: i32, k: i32) -> usize;
+    /// Swizzled SFA byte count for an (m,k) activation operand.
+    pub fn bw24_cutlass_sfa_size(m: i32, k: i32) -> usize;
+    /// Swizzled SFB byte count for an (n,k) weight operand.
+    pub fn bw24_cutlass_sfb_size(n: i32, k: i32) -> usize;
+    /// Run one NVFP4 W4A4 GEMM. Returns 0 on success, else a CUTLASS-status-derived code.
+    /// alpha_dev: device float* == 1/scale (epilogue LinearCombination scalar). d: f32 [m,n] RowMajor.
+    pub fn bw24_cutlass_fp4_gemm(
+        a_e2m1: *const core::ffi::c_void,
+        b_e2m1: *const core::ffi::c_void,
+        sfa: *const core::ffi::c_void,
+        sfb: *const core::ffi::c_void,
+        alpha_dev: *const f32,
+        d: *mut core::ffi::c_void,
+        m: i32, n: i32, k: i32,
+        workspace: *mut core::ffi::c_void,
+        workspace_bytes: usize,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// Scatter linear [n, k/16] ue4m3 weight scales -> swizzled SFB layout. Returns cudaError as int.
+    pub fn bw24_cutlass_repack_sfb(
+        sfb_linear: *const core::ffi::c_void, sfb_swizzled: *mut core::ffi::c_void,
+        n: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+    /// De-interleave a GGUF NVFP4 weight tensor (raw [n] rows of `row_bytes`) into the CUTLASS B
+    /// operand: b_packed [n, k/2] plain K-contiguous packed e2m1, sfb_linear [n, k/16] ue4m3 scales
+    /// (linear, then feed to bw24_cutlass_repack_sfb). Returns cudaError as int. One-time, at load.
+    pub fn bw24_gguf_nvfp4_deinterleave(
+        src: *const core::ffi::c_void, row_bytes: i64,
+        b_packed: *mut core::ffi::c_void, sfb_linear: *mut core::ffi::c_void,
+        n: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+    /// Scatter linear [m, k/16] ue4m3 activation scales -> swizzled SFA layout. Returns cudaError as int.
+    pub fn bw24_cutlass_repack_sfa(
+        sfa_linear: *const core::ffi::c_void, sfa_swizzled: *mut core::ffi::c_void,
+        m: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+    /// TEST oracle: quantize [rows,k] f32 -> packed e2m1 (rows*k/2 B) + linear ue4m3 scales (rows*k/16 B).
+    pub fn bw24_nvfp4_quant_ref(
+        src_f32: *const core::ffi::c_void, packed_e2m1: *mut core::ffi::c_void,
+        scales_linear: *mut core::ffi::c_void, rows: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+    /// TEST oracle: dequantize packed e2m1 + linear ue4m3 scales -> f32 [rows,k].
+    pub fn bw24_nvfp4_dequant_ref(
+        packed_e2m1: *const core::ffi::c_void, scales_linear: *const core::ffi::c_void,
+        dst_f32: *mut core::ffi::c_void, rows: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+}
+
+impl crate::Engine {
+    /// Workspace size (bytes) CUTLASS needs for the largest (m,n,k) prefill GEMM. Host-only.
+    pub fn cutlass_fp4_workspace_size(&self, m: usize, n: usize, k: usize) -> usize {
+        unsafe { bw24_cutlass_fp4_workspace(m as i32, n as i32, k as i32) }
+    }
+
+    /// Swizzled scale-factor buffer sizes for activation (m,k) and weight (n,k) operands.
+    pub fn cutlass_sfa_size(&self, m: usize, k: usize) -> usize {
+        unsafe { bw24_cutlass_sfa_size(m as i32, k as i32) }
+    }
+    pub fn cutlass_sfb_size(&self, n: usize, k: usize) -> usize {
+        unsafe { bw24_cutlass_sfb_size(n as i32, k as i32) }
+    }
+
+    /// Scatter linear ue4m3 weight scales into CUTLASS's swizzled SFB layout (one-time, at load).
+    pub fn cutlass_repack_sfb(&self, sfb_linear: &CudaSlice<u8>, sfb_swizzled: &mut CudaSlice<u8>,
+                              n: usize, k: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let (src, _g1) = sfb_linear.device_ptr(stream);
+        let (dst, _g2) = sfb_swizzled.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_cutlass_repack_sfb(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
+                                    n as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+        };
+        if rc != 0 { return Err(format!("bw24_cutlass_repack_sfb cudaError={rc}").into()); }
+        Ok(())
+    }
+
+    /// Scatter linear ue4m3 activation scales into CUTLASS's swizzled SFA layout (per-prefill).
+    pub fn cutlass_repack_sfa(&self, sfa_linear: &CudaSlice<u8>, sfa_swizzled: &mut CudaSlice<u8>,
+                              m: usize, k: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let (src, _g1) = sfa_linear.device_ptr(stream);
+        let (dst, _g2) = sfa_swizzled.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_cutlass_repack_sfa(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
+                                    m as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+        };
+        if rc != 0 { return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into()); }
+        Ok(())
+    }
+
+    /// De-interleave a GGUF NVFP4 weight tensor into the CUTLASS B operand layout (one-time, at load).
+    /// `src` = raw GGUF rows (n rows of row_bytes); produces b_packed [n,k/2] plain packed e2m1 and
+    /// sfb_linear [n,k/16] ue4m3 scales (caller then scatters via cutlass_repack_sfb).
+    pub fn cutlass_gguf_nvfp4_deinterleave(&self, src: &CudaSlice<u8>, row_bytes: usize,
+                                           b_packed: &mut CudaSlice<u8>, sfb_linear: &mut CudaSlice<u8>,
+                                           n: usize, k: usize)
+                                           -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let (s, _g0) = src.device_ptr(stream);
+        let (p, _g1) = b_packed.device_ptr_mut(stream);
+        let (sc, _g2) = sfb_linear.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_gguf_nvfp4_deinterleave(s as *const core::ffi::c_void, row_bytes as i64,
+                                         p as *mut core::ffi::c_void, sc as *mut core::ffi::c_void,
+                                         n as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+        };
+        if rc != 0 { return Err(format!("bw24_gguf_nvfp4_deinterleave cudaError={rc}").into()); }
+        Ok(())
+    }
+
+    /// Build a CUTLASS-ready NVFP4 weight (B operand) from raw GGUF bytes: de-interleave to plain
+    /// packed e2m1 + scatter the per-16 ue4m3 scales into CUTLASS's swizzled SFB. One-time, at load.
+    /// Returns (b_packed [n,k/2], sfb_swizzled [bw24_cutlass_sfb_size]).
+    pub fn build_cutlass_weight(&self, raw: &CudaSlice<u8>, n: usize, k: usize, row_bytes: usize)
+                                -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
+        let mut b_packed = self.alloc_u8(n * k / 2)?;
+        let mut sfb_linear = self.alloc_u8(n * (k / 16))?;
+        self.cutlass_gguf_nvfp4_deinterleave(raw, row_bytes, &mut b_packed, &mut sfb_linear, n, k)?;
+        let sfb_bytes = self.cutlass_sfb_size(n, k);
+        let mut sfb_sw = self.alloc_u8(sfb_bytes)?;
+        self.cutlass_repack_sfb(&sfb_linear, &mut sfb_sw, n, k)?;
+        Ok((b_packed, sfb_sw))
+    }
+
+    /// Quantize an activation [m,k] f32 to the CUTLASS A operand: plain packed e2m1 [m,k/2] + swizzled
+    /// SFA. Uses the same NVFP4 quantizer the smoke test proved correct (CUTLASS dtype ctors), so the
+    /// bytes are exactly what the GEMM decodes. Per-prefill (per-token amax). Returns (a_packed, sfa_sw).
+    pub fn quantize_fp4_act_cutlass(&self, x: &CudaSlice<f32>, m: usize, k: usize)
+                                    -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
+        let mut a_packed = self.alloc_u8(m * k / 2)?;
+        let mut sfa_linear = self.alloc_u8(m * (k / 16))?;
+        self.cutlass_nvfp4_quant_ref(x, &mut a_packed, &mut sfa_linear, m, k)?;
+        let sfa_bytes = self.cutlass_sfa_size(m, k);
+        let mut sfa_sw = self.alloc_u8(sfa_bytes)?;
+        self.cutlass_repack_sfa(&sfa_linear, &mut sfa_sw, m, k)?;
+        Ok((a_packed, sfa_sw))
+    }
+
+    /// High-level CUTLASS NVFP4 GEMM for the dispatch seam: given the repacked weight (b_packed,
+    /// sfb_swizzled), quantize the activation to CUTLASS layout, run the GEMM with alpha=scale folded
+    /// into the epilogue (replaces the post-matmul scale_inplace), and return y [m,n] f32 RowMajor.
+    ///
+    /// All scratch (a_packed, sfa_linear, sfa_sw, workspace, y, alpha) is RESIDENT: allocated once and
+    /// grown to the largest prefill GEMM shape, then reused. No per-call cudaMalloc / alpha htod. The
+    /// kernels touch only the leading m*../n*.. prefix of each (row-major contiguous from offset 0,
+    /// bounded by m,n,k), and y/a_packed/sfa are fully overwritten — bit-identical to a per-call alloc.
+    /// Returns an owned y copy (caller expects an owned CudaSlice); the resident y is the work buffer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cutlass_fp4_gemm(&self, b_packed: &CudaSlice<u8>, sfb_swizzled: &CudaSlice<u8>,
+                            x: &CudaSlice<f32>, alpha: f32, m: usize, n: usize, k: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // Size the scratch for THIS shape (grows if a bigger shape appears; no-op once at max).
+        self.ensure_cutlass_scratch(m, n, k)?;
+        let mut guard = self.cutlass_scratch.lock().unwrap();
+        let s = guard.as_mut().unwrap();
+
+        // 1) Quantize activation x[m,k] -> a_packed[m,k/2] + sfa_linear[m,k/16], then swizzle SFA.
+        //    Full-overwrite of the leading prefix; resident buffers reused.
+        self.cutlass_nvfp4_quant_ref(x, &mut s.a_packed, &mut s.sfa_linear, m, k)?;
+        {
+            let stream = &self.gpu.stream;
+            let (src, _g1) = s.sfa_linear.device_ptr(stream);
+            let (dst, _g2) = s.sfa_sw.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_cutlass_repack_sfa(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
+                                        m as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into()); }
+        }
+
+        // 2) Write alpha IN PLACE into the resident [1] f32 (no fresh htod alloc per call).
+        self.gpu.stream.memcpy_htod(&[alpha], &mut s.alpha)?;
+
+        // 3) Run the GEMM into the resident y[m,n] (full overwrite), reusing the resident workspace.
+        //    The raw FFI reads workspace.len() as the byte count; the resident workspace is sized to
+        //    the max shape's query and CUTLASS accepts a workspace >= its requirement, so a larger
+        //    resident workspace is safe for any smaller shape.
+        {
+            let stream = &self.gpu.stream;
+            let ws_bytes = s.workspace.len();
+            let (a_p, _ga) = s.a_packed.device_ptr(stream);
+            let (b_p, _gb) = b_packed.device_ptr(stream);
+            let (sfa_p, _gsa) = s.sfa_sw.device_ptr(stream);
+            let (sfb_p, _gsb) = sfb_swizzled.device_ptr(stream);
+            let (al_p, _gal) = s.alpha.device_ptr(stream);
+            let (d_p, _gd) = s.y.device_ptr_mut(stream);
+            let (ws_p, _gw) = s.workspace.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_cutlass_fp4_gemm(
+                    a_p as *const core::ffi::c_void,
+                    b_p as *const core::ffi::c_void,
+                    sfa_p as *const core::ffi::c_void,
+                    sfb_p as *const core::ffi::c_void,
+                    al_p as *const f32,
+                    d_p as *mut core::ffi::c_void,
+                    m as i32, n as i32, k as i32,
+                    ws_p as *mut core::ffi::c_void, ws_bytes,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 { return Err(format!("bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)").into()); }
+        }
+
+        // 4) Copy the [m,n] result out of the resident work buffer into an owned slice (D2D, on-stream).
+        //    The caller's downstream consumes an owned CudaSlice; the resident y stays for the next call.
+        let mut out = self.alloc_uninit::<f32>(m * n)?;
+        self.gpu.stream.memcpy_dtod(&s.y.slice(0..m * n), &mut out)?;
+        Ok(out)
+    }
+
+    /// Lazily build / grow the resident CutlassScratch so every buffer covers the (m,n,k) shape.
+    /// Each buffer is sized to the MAX shape seen; the workspace takes the max over per-shape queries
+    /// (CUTLASS accepts a workspace >= its requirement). Only reallocates a buffer when a bigger shape
+    /// appears — in steady prefill this fires a handful of times then never again (zero per-call alloc).
+    fn ensure_cutlass_scratch(&self, m: usize, n: usize, k: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let need_ws = self.cutlass_fp4_workspace_size(m, n, k).max(1);
+        let need_a = m * k / 2;
+        let need_sfa_lin = m * (k / 16);
+        let need_sfa_sw = self.cutlass_sfa_size(m, k).max(1);
+        let need_y = m * n;
+
+        let mut guard = self.cutlass_scratch.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(CutlassScratch {
+                workspace: self.alloc_u8(need_ws)?,
+                a_packed: self.alloc_u8(need_a)?,
+                sfa_linear: self.alloc_u8(need_sfa_lin)?,
+                sfa_sw: self.alloc_u8(need_sfa_sw)?,
+                y: self.alloc_uninit::<f32>(need_y)?,
+                alpha: self.alloc_uninit::<f32>(1)?,
+                cap_ws: need_ws, cap_a: need_a, cap_sfa_lin: need_sfa_lin,
+                cap_sfa_sw: need_sfa_sw, cap_y: need_y,
+            });
+            return Ok(());
+        }
+        let s = guard.as_mut().unwrap();
+        if need_ws > s.cap_ws { s.workspace = self.alloc_u8(need_ws)?; s.cap_ws = need_ws; }
+        if need_a > s.cap_a { s.a_packed = self.alloc_u8(need_a)?; s.cap_a = need_a; }
+        if need_sfa_lin > s.cap_sfa_lin { s.sfa_linear = self.alloc_u8(need_sfa_lin)?; s.cap_sfa_lin = need_sfa_lin; }
+        if need_sfa_sw > s.cap_sfa_sw { s.sfa_sw = self.alloc_u8(need_sfa_sw)?; s.cap_sfa_sw = need_sfa_sw; }
+        if need_y > s.cap_y { s.y = self.alloc_uninit::<f32>(need_y)?; s.cap_y = need_y; }
+        Ok(())
+    }
+
+    /// TEST oracle: quantize a [rows,k] f32 device matrix to packed e2m1 + linear ue4m3 scales using
+    /// CUTLASS's own dtype constructors (so bytes match what the GEMM decodes). Phase-0 smoke test only.
+    pub fn cutlass_nvfp4_quant_ref(&self, src: &CudaSlice<f32>, packed: &mut CudaSlice<u8>,
+                                   scales_linear: &mut CudaSlice<u8>, rows: usize, k: usize)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let (s, _g0) = src.device_ptr(stream);
+        let (p, _g1) = packed.device_ptr_mut(stream);
+        let (sc, _g2) = scales_linear.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_nvfp4_quant_ref(s as *const core::ffi::c_void, p as *mut core::ffi::c_void,
+                                 sc as *mut core::ffi::c_void, rows as i32, k as i32,
+                                 stream.cu_stream() as *mut core::ffi::c_void)
+        };
+        if rc != 0 { return Err(format!("bw24_nvfp4_quant_ref cudaError={rc}").into()); }
+        Ok(())
+    }
+
+    /// TEST oracle: dequantize packed e2m1 + linear ue4m3 scales back to f32 [rows,k] (Phase-0 only).
+    pub fn cutlass_nvfp4_dequant_ref(&self, packed: &CudaSlice<u8>, scales_linear: &CudaSlice<u8>,
+                                     dst: &mut CudaSlice<f32>, rows: usize, k: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let (p, _g0) = packed.device_ptr(stream);
+        let (sc, _g1) = scales_linear.device_ptr(stream);
+        let (d, _g2) = dst.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_nvfp4_dequant_ref(p as *const core::ffi::c_void, sc as *const core::ffi::c_void,
+                                   d as *mut core::ffi::c_void, rows as i32, k as i32,
+                                   stream.cu_stream() as *mut core::ffi::c_void)
+        };
+        if rc != 0 { return Err(format!("bw24_nvfp4_dequant_ref cudaError={rc}").into()); }
+        Ok(())
+    }
+
+    /// Run one NVFP4 W4A4 GEMM through CUTLASS. Operands must already be in CUTLASS layout:
+    ///   a_e2m1 [m,k/2] RowMajor packed e2m1; b_e2m1 [n,k/2] K-major packed e2m1;
+    ///   sfa/sfb swizzled (see cutlass_repack_sf{a,b}); alpha_dev a device float* == 1/scale.
+    /// Output is f32 [m,n] RowMajor. The SyncOnDrop guards are held across the whole FFI call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn cutlass_fp4_gemm_raw(
+        &self,
+        a_e2m1: &CudaSlice<u8>, b_e2m1: &CudaSlice<u8>,
+        sfa: &CudaSlice<u8>, sfb: &CudaSlice<u8>,
+        alpha_dev: &CudaSlice<f32>,
+        d: &mut CudaSlice<f32>,
+        m: usize, n: usize, k: usize,
+        workspace: &mut CudaSlice<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let stream = &self.gpu.stream;
+        let ws_bytes = workspace.len();
+        // Hold every SyncOnDrop guard for the lifetime of the FFI call (cudarc's sync-on-drop token).
+        let (a_p, _ga) = a_e2m1.device_ptr(stream);
+        let (b_p, _gb) = b_e2m1.device_ptr(stream);
+        let (sfa_p, _gsa) = sfa.device_ptr(stream);
+        let (sfb_p, _gsb) = sfb.device_ptr(stream);
+        let (al_p, _gal) = alpha_dev.device_ptr(stream);
+        let (d_p, _gd) = d.device_ptr_mut(stream);
+        let (ws_p, _gw) = workspace.device_ptr_mut(stream);
+        let rc = unsafe {
+            bw24_cutlass_fp4_gemm(
+                a_p as *const core::ffi::c_void,
+                b_p as *const core::ffi::c_void,
+                sfa_p as *const core::ffi::c_void,
+                sfb_p as *const core::ffi::c_void,
+                al_p as *const f32,
+                d_p as *mut core::ffi::c_void,
+                m as i32, n as i32, k as i32,
+                ws_p as *mut core::ffi::c_void, ws_bytes,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
+        };
+        if rc != 0 { return Err(format!("bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)").into()); }
+        Ok(())
+    }
+}
+
+
+=== FILE: crates/bw24-engine/src/decode.rs ===
+//! Incremental decode (T=1) with the dual cache + greedy generation loop. Serves end-to-end.
+//! Reuses the validated kernels; threads KV (full-attn) and conv/SSM state (linear-attn) across steps.
+
+use cudarc::driver::CudaSlice;
+use std::collections::HashMap;
+use crate::Engine;
+use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer};
+use crate::cache::{Cache, RecurLayer};
+use crate::forward::argmax;
+
+/// Persistent CUDA-graph decode state (CUDA-GRAPH-PLAN Phase 3). Holds the device-resident counters
+/// the captured graph reads/writes (`token_d` = current/next token id, `pos_d` = rope position) — both
+/// at FIXED addresses baked into every captured graph — plus the per-`t_kv`-bucket graph cache. The
+/// bucket key is the eager `(fa_vec, n_splits)` pair (see `Engine::fa_bucket_key`): every t_kv that
+/// maps to the same key reproduces eager's split geometry, so one captured graph replays bit-identically
+/// for the whole bucket. A new key triggers a re-capture (n_splits changes ~every 64 tokens).
+pub struct GraphDecodeState {
+    pub token_d: CudaSlice<u32>,        // [1] resident next-token id (argmax writes, embed reads)
+    pub pos_d: CudaSlice<i32>,          // [1] resident rope position counter
+    pub graphs: HashMap<(bool, usize), cudarc::driver::CudaGraph>,
+    pub bucket_max: HashMap<(bool, usize), usize>,  // bucket key -> bucket_max fed to the capture
+    pub captures: usize,                // count of (re)captures, for reporting
+}
+
+impl GraphDecodeState {
+    pub fn new(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(GraphDecodeState {
+            token_d: e.stream().clone_htod(&[0u32])?,
+            pos_d: e.htod_i32(&[0])?,
+            graphs: HashMap::new(),
+            bucket_max: HashMap::new(),
+            captures: 0,
+        })
+    }
+}
+
+/// Generation parameters for the reusable serving API (`generate_with`).
+#[derive(Clone, Debug)]
+pub struct GenParams {
+    pub max_new: usize,            // hard cap on generated tokens
+    pub max_ctx: Option<usize>,    // context-length guard; None => prompt+max_new+8
+    pub eos: Vec<u32>,             // stop on any of these token ids (eos/eog + specials)
+}
+impl Default for GenParams {
+    fn default() -> Self { GenParams { max_new: 128, max_ctx: None, eos: Vec::new() } }
+}
+
+/// Why generation stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason { Eos, MaxNew, ContextFull, Callback }
+
+/// Result of `generate_with`: the generated token ids + why it stopped.
+pub struct GenOutput {
+    pub tokens: Vec<u32>,
+    pub stop_reason: StopReason,
+}
+
+impl HybridModel {
+    /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
+    pub fn decode_step(&self, e: &Engine, token: u32, cache: &mut Cache) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        Ok(self.decode_step_h(e, token, cache)?.0)
+    }
+
+    /// Dense-FFN SwiGLU (T=1 decode): `down @ (silu(gate@z) * (up@z))`. Two fused levers stack here:
+    ///  - RANK3 LEVER 2: gate+up NVFP4 macro-scales fold into ONE `silu_mul_scaled*` launch (via
+    ///    `matmul_pre_noscale`), saving the two separate `scale_inplace` launches.
+    ///  - RANK2 LEVER (q8_1 quant-fold): when ffn_down is ALSO on the q8_1 fast path, the SwiGLU
+    ///    epilogue EMITS the q8_1 quantization of `act` directly (`silu_mul_scaled_q8_1`) and feeds
+    ///    ffn_down via `matmul_pre`, removing ffn_down's standalone `quantize_q8_1` launch (the
+    ///    down-proj activation has one consumer, so the quant folds into its producer for free).
+    /// BIT-IDENTICAL to matmul_pre(gate)+matmul_pre(up)+silu_mul+quantize_q8_1+matmul(down): same
+    /// float silu*mul, same amax/127 q8_1 rounding, same dp4a/mmvq dot. Falls back to the f32 `act`
+    /// + plain matmul(down) path whenever any of the three is off the fast path.
+    fn ffn_swiglu_decode(&self, e: &Engine, ffn_gate: &crate::model::GpuTensor,
+                         ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
+                         z: &CudaSlice<f32>, n_embd: usize, n_ff: usize)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
+            let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
+            // DUAL mm-fusion first (NVFP4 gate+up in ONE launch), else two noscale launches.
+            let pair = match e.matmul_pre_dual_noscale(ffn_gate, ffn_up, &zq, &zd, 1)? {
+                Some((g, u)) => (Some(g), Some(u)),
+                None => (e.matmul_pre_noscale(ffn_gate, &zq, &zd, 1)?, e.matmul_pre_noscale(ffn_up, &zq, &zd, 1)?),
+            };
+            match pair {
+                (Some((gate, gs)), Some((up, us))) => {
+                    // RANK2 fold: if ffn_down is q8_1-fast, emit act PRE-QUANTIZED and skip the
+                    // standalone quantize_q8_1 before ffn_down.
+                    if e.uses_q8_1_fast(ffn_down) {
+                        let (aq, ad) = e.silu_mul_scaled_q8_1(&gate, &up, gs, us, n_ff)?;
+                        return Ok(e.matmul_pre(ffn_down, &aq, &ad, /*x_fallback unused on fast path*/ &gate, 1)?);
+                    }
+                    let mut act = e.uninit(n_ff)?;
+                    e.silu_mul_scaled(&gate, &up, gs, us, &mut act, n_ff)?;
+                    return Ok(e.matmul(ffn_down, &act, 1)?);
+                }
+                _ => {
+                    // one (or both) not on the separable-scale fast path: scaled matmul + plain silu_mul.
+                    let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
+                    let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
+                    let mut act = e.uninit(n_ff)?;
+                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    return Ok(e.matmul(ffn_down, &act, 1)?);
+                }
+            }
+        }
+        let gate = e.matmul(ffn_gate, z, 1)?;
+        let up = e.matmul(ffn_up, z, 1)?;
+        let mut act = e.uninit(n_ff)?;
+        e.silu_mul(&gate, &up, &mut act, n_ff)?;
+        Ok(e.matmul(ffn_down, &act, 1)?)
+    }
+
+    /// Like `ffn_swiglu_decode` but the input is ALREADY q8_1-quantized `(zq, zd)` — used by the
+    /// DECODE NORM-FUSION lever where `add_rms_norm_q8_1` emits the post-attn-normed activation
+    /// pre-quantized (no f32 `z` materialized, no standalone quantize_q8_1 launch). Caller GUARANTEES
+    /// ffn_gate and ffn_up are q8_1-fast (so `matmul_pre_noscale` returns Some at m=1). BIT-IDENTICAL
+    /// to ffn_swiglu_decode(z) when (zq,zd) == quantize_q8_1(z): same matmul_pre_noscale, same
+    /// silu_mul_scaled_q8_1 / silu_mul_scaled, same ffn_down dot.
+    fn ffn_swiglu_decode_pre(&self, e: &Engine, ffn_gate: &crate::model::GpuTensor,
+                             ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
+                             zq: &CudaSlice<i8>, zd: &CudaSlice<f32>, n_ff: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let pair = match e.matmul_pre_dual_noscale(ffn_gate, ffn_up, zq, zd, 1)? {
+            Some((g, u)) => (Some(g), Some(u)),
+            None => (e.matmul_pre_noscale(ffn_gate, zq, zd, 1)?, e.matmul_pre_noscale(ffn_up, zq, zd, 1)?),
+        };
+        match pair {
+            (Some((gate, gs)), Some((up, us))) => {
+                if e.uses_q8_1_fast(ffn_down) {
+                    let (aq, ad) = e.silu_mul_scaled_q8_1(&gate, &up, gs, us, n_ff)?;
+                    Ok(e.matmul_pre(ffn_down, &aq, &ad, &gate, 1)?)
+                } else {
+                    let mut act = e.uninit(n_ff)?;
+                    e.silu_mul_scaled(&gate, &up, gs, us, &mut act, n_ff)?;
+                    Ok(e.matmul(ffn_down, &act, 1)?)
+                }
+            }
+            // Unreachable when the caller's q8_1-fast guarantee holds (m==1 + fast => Some). Guard
+            // anyway: re-quant from the dequantized pair would need f32; surface a clear error.
+            _ => Err("ffn_swiglu_decode_pre: gate/up not separable-scale at m=1 (caller must guarantee q8_1-fast)".into()),
+        }
+    }
+
+    /// Shared post-attention residual + post-attn-norm + FFN for ONE decode layer, routed by ALL
+    /// decode loops (eager + dc + dc_cap) so they stay bit-identical by construction. DECODE
+    /// NORM-FUSION LEVER: when the layer is Dense AND ffn_gate/ffn_up are q8_1-fast (the daily NVFP4
+    /// case), fuses residual-add + post_attn_norm + q8_1-quantize into ONE `add_rms_norm_q8_1` launch
+    /// and feeds the FFN the pre-quantized activation (skipping its internal quantize_q8_1) — removing
+    /// 1-2 launches + the f32 `z` HBM round-trip per layer. BIT-IDENTICAL to the unfused
+    /// add_rms_norm(or add+rms_norm) + quantize_q8_1 + ffn (all proven bit-identical in kernel_check).
+    /// BW24_NO_FUSE_NORMQ forces the unfused f32 path. Returns (x1 residual f32, ffn_out f32).
+    /// True when ALL of a mixer's input projections are on the q8_1 fast path (so the attn-input
+    /// rms_norm can emit q8_1 directly and the mixer skips its internal quantize_q8_1).
+    pub(crate) fn mixer_in_q8_1_fast(&self, e: &Engine, mixer: &Mixer) -> bool {
+        match mixer {
+            Mixer::Full(fa) => e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv),
+            Mixer::Linear(la) => e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
+                && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha),
+        }
+    }
+
+    /// attn_norm + mixer for the EAGER loop, with the attn-input NORM-FUSION. BW24_NO_FUSE_NORMQ
+    /// forces the unfused (separate rms_norm + mixer-internal quantize) path.
+    fn attn_in_norm_mixer(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                          pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize,
+                          n_embd: usize, eps: f32)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            // h is unused on the fast path (matmul_pre x_fallback only used at m>=16); pass a zero-len.
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_pre(e, fa, &h0, Some((&hq, &hd)), pos_d, pos, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode(e, fa, &h, pos_d, pos, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+            }
+        }
+    }
+
+    /// attn_norm + mixer for the DEVICE-COUNTER loop (decode_step_dc). Full-attn uses the dc path;
+    /// linear uses the eager-state path (persistent=false), same as decode_step_dc. NORM-FUSED.
+    fn attn_in_norm_mixer_dc(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                             pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, n_embd: usize, eps: f32)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_pre(e, fa, &h0, &hq, &hd, pos_d, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc(e, fa, &h, pos_d, cache, il),
+                Mixer::Linear(la) => self.linear_attn_decode(e, la, &h, cache, il),
+            }
+        }
+    }
+
+    /// attn_norm + mixer for the CAPTURE loop (decode_step_dc_cap). Full-attn uses the dc_cap path
+    /// (fixed bucket_max); linear uses the persistent-state path. NORM-FUSED; capture-safe (rms_norm_q8_1
+    /// + the *_pre mixers enqueue the same kernels every replay, stable buffers).
+    fn attn_in_norm_mixer_dc_cap(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                                 pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize,
+                                 n_embd: usize, eps: f32)
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let anorm = layer.attn_norm.float_data();
+        let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && self.mixer_in_q8_1_fast(e, &layer.mixer);
+        if fuse {
+            let (hq, hd) = e.rms_norm_q8_1(x, anorm, n_embd, 1, eps)?;
+            let h0 = e.zeros(0)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_cap_pre(e, fa, &h0, &hq, &hd, pos_d, cache, il, bucket_max),
+                Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, true),
+            }
+        } else {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(x, anorm, &mut h, n_embd, 1, eps)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => self.full_attn_decode_dc_cap(e, fa, &h, pos_d, cache, il, bucket_max),
+                Mixer::Linear(la) => self.linear_attn_decode_cap(e, la, &h, cache, il),
+            }
+        }
+    }
+
+    fn residual_norm_ffn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer, x: &CudaSlice<f32>,
+                         mixed: &CudaSlice<f32>, n_embd: usize, il: usize, eps: f32)
+                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let pnorm = layer.post_attn_norm.float_data();
+        match &layer.ffn {
+            crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                let n_ff = ffn_gate.out_features();
+                let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                    && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up);
+                if fuse {
+                    let mut x1 = e.uninit(n_embd)?;
+                    let (zq, zd) = e.add_rms_norm_q8_1(x, mixed, pnorm, &mut x1, n_embd, 1, eps)?;
+                    let ffn_out = self.ffn_swiglu_decode_pre(e, ffn_gate, ffn_up, ffn_down, &zq, &zd, n_ff)?;
+                    Ok((x1, ffn_out))
+                } else {
+                    let mut x1 = e.uninit(n_embd)?;
+                    let mut z = e.uninit(n_embd)?;
+                    e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
+                    let ffn_out = self.ffn_swiglu_decode(e, ffn_gate, ffn_up, ffn_down, &z, n_embd, n_ff)?;
+                    Ok((x1, ffn_out))
+                }
+            }
+            crate::hybrid::Ffn::Moe(m) => {
+                let mut x1 = e.uninit(n_embd)?;
+                let mut z = e.uninit(n_embd)?;
+                e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
+                let ffn_out = self.moe_ffn_il(e, m, &z, 1, il as u16)?;
+                Ok((x1, ffn_out))
+            }
+        }
+    }
+
+    /// EAGLE3 aux-hidden capture (EAGLE-PLAN N1): one decode step that ALSO returns the trunk
+    /// residual-stream `x` taken AFTER each of the blocks in `aux_layers` (the EAGLE3 encoder feeds
+    /// these 3 layer hiddens through `fc`). Returns (logits[n_vocab] host, aux: Vec<[n_embd] dev>),
+    /// one device buffer per requested aux layer, in `aux_layers` order. The captured tensor is the
+    /// residual `x` produced by that block (`x2` at the loop tail), cloned before the next block
+    /// overwrites it — cheap (one clone_dtod of [n_embd] per aux layer). T=1 decode regime.
+    pub fn decode_step_aux(&self, e: &Engine, token: u32, cache: &mut Cache, aux_layers: &[usize])
+                           -> Result<(Vec<f32>, Vec<CudaSlice<f32>>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+
+        let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        let mut aux: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            // attn-input NORM-FUSION (eager); shared with decode_step_h.
+            let mixed = self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?;
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): residual add + post_attn RMSNorm +
+            // q8_1-quantize fused into ONE add_rms_norm_q8_1 launch on the Dense q8_1-fast path, then
+            // the FFN consumes the pre-quantized activation. Bit-identical to the unfused path.
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            let mut x2 = e.uninit(n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            // EAGLE3 N1: capture this block's residual output if it is an aux layer.
+            if aux_layers.contains(&il) { aux.push(e.clone_dtod(&x2)?); }
+            x = x2;
+        }
+        // re-order aux to match aux_layers order (contains() pushes in il order; aux_layers is the
+        // canonical order the encoder concats in — they coincide since aux_layers is ascending).
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += 1;
+        Ok((host, aux))
+    }
+
+    /// Like `decode_step`, but ALSO returns the trunk's hidden state `x` taken BEFORE the final
+    /// `output_norm` (MTP-PLAN §A: this is `h_seed` for the NextN head). Device buffer [n_embd].
+    pub fn decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
+                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let pos = cache.pos;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+
+        // embed the single token -> [1, n_embd]
+        let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            // DECODE attn-input NORM-FUSION: when the mixer's projections are q8_1-fast, emit the
+            // attn_norm output PRE-QUANTIZED (rms_norm_q8_1) and feed the *_pre mixer (skips its
+            // internal quantize_q8_1 + the f32 `h` HBM round-trip). h only materialized on the
+            // non-fast fallback. Bit-identical (rms_norm_q8_1 == rms_norm then quantize_q8_1).
+            let mixed = self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?;
+
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): add+post_attn_norm+q8_1 fused on the Dense
+            // fast path. Bit-identical to add + rms_norm + ffn (add_rms_norm == add then rms_norm,
+            // proven in kernel_check; add_rms_norm_q8_1 == add_rms_norm then quantize_q8_1).
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            let mut x2 = e.uninit(n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            x = x2;
+        }
+
+        // h_seed = trunk hidden BEFORE output_norm (the NextN head's `h` input, §A).
+        let h_seed = e.clone_dtod(&x)?;
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        cache.pos += 1;
+        Ok((host, h_seed))
+    }
+
+    /// DEVICE-COUNTER decode step (CUDA-GRAPH-PLAN Phase 2). A clone of `decode_step_h` that removes
+    /// the two per-step VARYING host kernel-args by reading them from device counters:
+    ///   1. the KV-append write slot  -> per-layer `kvl.len_d` (device i32[1])
+    ///   2. the fa_decode t_kv bound   -> the same `kvl.len_d` after `inc_seqlen`
+    /// plus it keeps the token id + rope pos DEVICE-RESIDENT (embed_gather_device, device rope pos,
+    /// argmax_token_device). NO graph capture yet — runs the kernels eagerly through the counter
+    /// path. Must be BIT-IDENTICAL to `decode_step_h`'s token stream (the gate).
+    ///
+    /// Args: `token_d` = resident device token id [1] (this step's input token); `pos_d` = resident
+    /// device rope pos i32[1] (== cache.pos at entry; INCREMENTED in-path); `embd_gpu` = resident embed
+    /// table; (qt,row_bytes) from EmbedHost::qt_and_row_bytes. Returns the NEXT token id device buffer.
+    /// `cache.pos` and each `kvl.len`/`kvl.len_d` are advanced to match `decode_step_h`.
+    pub fn decode_step_dc(&self, e: &Engine, token_d: &CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
+                          embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_row_bytes: usize,
+                          cache: &mut Cache, n_vocab: usize)
+                          -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+
+        // embed the single (DEVICE-resident) token -> [1, n_embd], no host round-trip of the id.
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_row_bytes)?;
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            // attn-input NORM-FUSION (dc path); bit-identical to decode_step_h (Phase-2 gate).
+            let mixed = self.attn_in_norm_mixer_dc(e, layer, &x, pos_d, cache, il, n_embd, eps)?;
+
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_h. Shared helper -> dc
+            // path stays bit-identical to decode_step_h's token stream (the Phase-2 gate).
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            let mut x2 = e.uninit(n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            x = x2;
+        }
+
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        // device argmax -> next token id stays resident (no logits dtoh).
+        let next_tok = e.argmax_token_device(&logits, n_vocab)?;
+        // advance rope pos counter on-device (replaces the per-step htod_i32(&[pos])).
+        e.inc_seqlen(pos_d)?;
+        cache.pos += 1;
+        Ok(next_tok)
+    }
+
+    /// CAPTURE body for CUDA-graph replay (CUDA-GRAPH-PLAN Phase 3). One full decode step enqueued
+    /// entirely on `e.stream()` with ZERO host sync and ZERO per-step varying host kernel-args:
+    ///   - embed reads the PERSISTENT device `token_d` (last step's argmax), writes scratch `x`.
+    ///   - full-attn layers size n_splits from `bucket_max` (fixed for this capture); the kernel reads
+    ///     the ACTUAL t_kv from the device counter `kvl.len_d`. KV append + device-counter inc happen
+    ///     in-graph. The host `kvl.len`/`cache.pos` are NOT advanced here (the driver advances the host
+    ///     mirrors once per replay; only the DEVICE counters advance inside the graph).
+    ///   - linear-attn layers use the persistent-state variant (copy-back, stable pointers).
+    ///   - lm_head -> parallel 2-pass argmax (`argmax_partial_f32`+`argmax_final_f32`) writes the
+    ///     next id into the PERSISTENT `token_d`.
+    ///   - `inc_seqlen(pos_d)` advances the rope-pos device counter in-graph.
+    /// Captured ONCE per `bucket_max`; replayed for every t_kv in that bucket. Bit-identical to eager
+    /// when `bucket_max` reproduces eager's n_splits for the replayed t_kv (the bucket-key contract).
+    pub fn decode_step_dc_cap(&self, e: &Engine, token_d: &mut CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
+                          embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_row_bytes: usize,
+                          cache: &mut Cache, n_vocab: usize, bucket_max: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_row_bytes)?;
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            // attn-input NORM-FUSION (capture path); capture-safe + bit-identical to eager.
+            let mixed = self.attn_in_norm_mixer_dc_cap(e, layer, &x, pos_d, cache, il, bucket_max, n_embd, eps)?;
+            // DECODE NORM-FUSION LEVER (residual_norm_ffn): see decode_step_aux. Shared helper keeps
+            // the capture path bit-identical to eager by construction.
+            let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            let mut x2 = e.uninit(n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            x = x2;
+        }
+
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        // argmax into the PERSISTENT token_d (next step's embed reads it) — same buffer pointer baked
+        // at capture, written each replay, so the token id never round-trips to host in steady state.
+        e.argmax_token_device_into(&logits, token_d, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        Ok(())
+    }
+
+    /// CUDA-GRAPH decode driver (CUDA-GRAPH-PLAN Phase 3). Primes the prompt EAGERLY (device-counter
+    /// `decode_step_dc`, advancing host + device counters together), then generates `max_new` tokens by
+    /// CUDA-graph REPLAY: per step it picks the t_kv bucket key, captures a graph on first sight of that
+    /// key (re-using the SAME persistent counters/cache so replays continue the sequence), and replays.
+    /// The argmax-written next token stays device-resident in `gs.token_d`; we read back only the [1]
+    /// u32 after each launch (the gate compares it; a real server can defer this). Returns the generated
+    /// token ids. Greedy. Bit-identical to eager `decode_step` (the gate).
+    ///
+    /// CAPTURE STATE HYGIENE: `capture_graph` runs the step body 3x (2 warmup + 1 capture), each of
+    /// which mutates the device KV/conv/ssm/counter state. We SNAPSHOT the cache + device counters +
+    /// token id before capturing and RESTORE them after, so the 3 throwaway runs leave zero residue and
+    /// replay resumes from the true pre-capture state.
+    pub fn generate_graph(&self, e: &Engine, gs: &mut GraphDecodeState, prompt: &[u32], max_new: usize)
+                          -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let head_dim = self.cfg.head_dim_k as usize;
+        let (qt, row_bytes) = self.embd.qt_and_row_bytes(n_embd);
+
+        // EVENT TRACKING OFF for the WHOLE graph-decode session. cudarc records a per-CudaSlice event
+        // (the Engine is in multi-stream mode via copy_stream) and inserts `stream.wait(event)` on every
+        // kernel arg whose buffer was touched — those waits are illegal inside a capture region. The
+        // captured decode step is strictly single-stream, so this tracking is unnecessary. Disable it
+        // BEFORE allocating ANY buffer the captured graph will reference (cache, embd, counters,
+        // scratch) so none of them carry events. SAFETY: decode-dc touches only gpu.stream.
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        let r = self.generate_graph_inner(e, gs, prompt, max_new, n_embd, head_dim, qt, row_bytes);
+        if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        r
+    }
+
+    fn generate_graph_inner(&self, e: &Engine, gs: &mut GraphDecodeState, prompt: &[u32],
+                            max_new: usize, n_embd: usize, head_dim: usize, qt: i32, row_bytes: usize)
+                            -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let _ = n_embd;
+        let embd_gpu = e.upload_u8(&self.embd.raw)?;
+        let max_ctx = prompt.len() + max_new + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+
+        // (Re)create the persistent counters tracking-OFF so they carry no events (the caller's
+        // GraphDecodeState::new may have allocated them with tracking on).
+        gs.pos_d = e.htod_i32(&[0])?;
+        gs.token_d = e.stream().clone_htod(&[0u32])?;
+        // PRIME eagerly: feed each prompt token; advance host + device counters together.
+        let mut next_in = 0u32;
+        for &tok in prompt {
+            e.set_u32_one(&mut gs.token_d, tok)?;
+            let nt = self.decode_step_dc(e, &gs.token_d, &mut gs.pos_d, &embd_gpu, qt, row_bytes, &mut cache, /*n_vocab*/ self.output.out_features())?;
+            next_in = e.dtoh_u32_one(&nt)?;
+        }
+        // gs.token_d now must hold the first generated INPUT token (= argmax of the last prime step).
+        e.set_u32_one(&mut gs.token_d, next_in)?;
+
+        let n_vocab = self.output.out_features();
+        let mut out = Vec::with_capacity(max_new);
+        for _ in 0..max_new {
+            // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
+            let t_kv = cache.pos + 1;
+            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize);
+            if !gs.graphs.contains_key(&key) {
+                // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
+                let bucket_max = t_kv;
+                // --- snapshot device + host state so the 3 capture-warmup runs leave no residue ---
+                let snap = cache.snapshot(e)?;
+                let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+                let len_save: Vec<Option<i32>> = cache.kv.iter()
+                    .map(|k| k.as_ref().map(|kvl| { e.dtoh_i32_one(&kvl.len_d).unwrap() })).collect();
+                let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+
+                // capture (runs the body 3x on the REAL cache + counters).
+                let graph = {
+                    // split borrows: pull the fields out so the closure can take &mut of each.
+                    let GraphDecodeState { token_d, pos_d, .. } = gs;
+                    let token_d: &mut CudaSlice<u32> = token_d;
+                    let pos_d: &mut CudaSlice<i32> = pos_d;
+                    let cache_ref = &mut cache;
+                    let embd_ref = &embd_gpu;
+                    e.capture_graph(|e| {
+                        self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
+                                                cache_ref, n_vocab, bucket_max)
+                    })?
+                };
+
+                // --- restore the true pre-capture state (undo the 3 throwaway runs) ---
+                cache.rollback(e, &snap, 0)?;   // restores conv/ssm + sets len = snapshot len
+                e.set_i32_one(&mut gs.pos_d, pos_save)?;
+                for (il, ls) in len_save.iter().enumerate() {
+                    if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                        e.set_i32_one(&mut kvl.len_d, *v)?;
+                    }
+                }
+                e.set_u32_one(&mut gs.token_d, tok_save)?;
+
+                gs.graphs.insert(key, graph);
+                gs.bucket_max.insert(key, bucket_max);
+                gs.captures += 1;
+            }
+            // REPLAY: one dispatch runs the whole step; argmax wrote gs.token_d, counters advanced.
+            gs.graphs.get(&key).unwrap().launch()?;
+            // advance the HOST mirrors to match the in-graph DEVICE advance (host len/pos used only for
+            // bucket selection next step; device counters are the source of truth for the kernels).
+            cache.pos += 1;
+            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
+            // read back the [1] u32 next token (the only D2H in steady state).
+            let tok = e.dtoh_u32_one(&gs.token_d)?;
+            out.push(tok);
+        }
+        Ok(out)
+    }
+
+    /// Device-counter full-attention decode (CUDA-GRAPH-PLAN Phase 2): clone of `full_attn_decode`
+    /// using the `_dc` KV-append (write slot from `kvl.len_d`) + `_dc` fa_decode (t_kv from `kvl.len_d`
+    /// after inc), and the resident device rope `pos_d`. Bit-identical to `full_attn_decode` (the
+    /// `_dc` kernels reproduce the same math; fa_decode_dc with bucket_max==t_kv reproduces the same
+    /// n_splits/per/combine). Advances `kvl.len`/`kvl.len_d`.
+    pub(crate) fn full_attn_decode_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // eager-mirror path: advance host counters and size n_splits from the live t_kv (bit-identical
+        // to fa_decode). The capture path uses full_attn_decode_dc_cap (fixed bucket_max, no host
+        // advance, full-buffer K/V view).
+        self.full_attn_decode_dc_inner(e, fa, h, None, pos_d, cache, il, None)
+    }
+
+    /// PRE-QUANTIZED-INPUT dc full-attn (device-counter path). See full_attn_decode_pre. BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_dc_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            hq: &CudaSlice<i8>, hd: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_dc_inner(e, fa, h, Some((hq, hd)), pos_d, cache, il, None)
+    }
+
+    /// PRE-QUANTIZED-INPUT CAPTURE dc full-attn (graph path, fixed bucket_max). BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_dc_cap_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            hq: &CudaSlice<i8>, hd: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_dc_inner(e, fa, h, Some((hq, hd)), pos_d, cache, il, Some(bucket_max))
+    }
+
+    /// CAPTURE variant of `full_attn_decode_dc` (CUDA-GRAPH-PLAN Phase 3). `bucket_max` sizes the
+    /// fa_decode_dc grid (n_splits) at capture time; the kernel reads the ACTUAL t_kv from the device
+    /// counter `kvl.len_d`. Does NOT advance the host `kvl.len` (only the DEVICE counter via inc_seqlen,
+    /// which is captured and replays each launch). Views the FULL K/V cache buffer so the kernel may
+    /// safely read up to any t_kv within the bucket on replay. Bit-identical to eager when
+    /// `bucket_max` yields the same n_splits as eager for the replayed t_kv (the bucket-key contract).
+    pub(crate) fn full_attn_decode_dc_cap(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize, bucket_max: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_dc_inner(e, fa, h, None, pos_d, cache, il, Some(bucket_max))
+    }
+
+    fn full_attn_decode_dc_inner(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                            pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                            pos_d: &CudaSlice<i32>, cache: &mut Cache, il: usize,
+                            cap_bucket_max: Option<usize>)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        let n_embd = cfg.n_embd as usize;
+        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+            }
+        } else {
+            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
+        };
+        let mut q = e.uninit(n_head * head_dim)?;
+        let mut gate = e.uninit(n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+
+        let mut qn = e.uninit(n_head * head_dim)?;
+        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
+        q = qn;
+        let mut kn = e.uninit(n_head_kv * head_dim)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
+        k = kn;
+        let rope_dims = cfg.rope_dim_count as usize;
+        // rope pos from the resident device counter (no per-step host upload).
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
+
+        let kvl = cache.kv[il].as_mut().unwrap();
+        // (1) append at the device write slot kvl.len_d (== old len).
+        e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        // (2) advance the device counter: kvl.len_d now holds new len == t_kv.
+        e.inc_seqlen(&mut kvl.len_d)?;
+        // n_splits sizing + K/V view extent:
+        //  - eager path (cap_bucket_max==None): advance host len; size from live t_kv == bit-identical
+        //    to fa_decode; view exactly t_kv*tok_bytes.
+        //  - capture path (Some(bucket_max)): DO NOT touch host len (replay advances only the device
+        //    counter); size n_splits from bucket_max; view the FULL cache buffer so any in-bucket t_kv
+        //    is in range on replay.
+        let (bucket_max, k_view, v_view) = match cap_bucket_max {
+            None => {
+                kvl.len += 1;
+                let t_kv = kvl.len;
+                (t_kv,
+                 e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes),
+                 e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes))
+            }
+            Some(bm) => {
+                (bm,
+                 e.view_u8(&kvl.k, kvl.k.len()),
+                 e.view_u8(&kvl.v, kvl.v.len()))
+            }
+        };
+        let (ktb, vtb) = (kvl.k_tok_bytes, kvl.v_tok_bytes);
+        let mut attn = e.uninit(n_head * head_dim)?;
+        if std::env::var("BW24_NOFA").is_ok() {
+            return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
+                        unset BW24_NOFA to use fa_decode_dc".into());
+        }
+        // (3) fa_decode reads t_kv from kvl.len_d; bucket_max yields the eager n_splits -> bit-identical.
+        e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                       &kvl.len_d, bucket_max, scale, ktb, vtb)?;
+
+        let mut gsig = e.uninit(n_head * head_dim)?;
+        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
+        let mut attn_g = e.uninit(n_head * head_dim)?;
+        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        Ok(e.matmul(&fa.wo, &attn_g, 1)?)
+    }
+
+    /// Greedy generation: prime with prompt tokens (decode them in sequence to build state),
+    /// then generate `max_new` tokens. Returns the generated token ids. (Back-compat: greedy,
+    /// no EOS/stop — used by the decode==prefill validation gate. New code uses `generate_with`.)
+    pub fn generate(&self, e: &Engine, prompt: &[u32], max_new: usize)
+                    -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let max_ctx = prompt.len() + max_new + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+        let mut last_logits = Vec::new();
+        // prime: BATCHED cache prime (prime_cache — the prefill-throughput path, the measured #1
+        // e2e gap: tokenwise primed at ~102/38 tok/s vs ~2000-5900 tok/s batched). Prompts below
+        // PRIME_MIN_T, and BW24_PRIME_TOKENWISE=1 (the escape seam), take the tokenwise loop.
+        let t_prime = std::time::Instant::now();
+        let batched_prime = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
+            && std::env::var("BW24_PRIME_TOKENWISE").is_err();
+        if batched_prime {
+            let (l, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+            last_logits = l;
+        } else {
+            for &tok in prompt {
+                last_logits = self.decode_step(e, tok, &mut cache)?;
+            }
+        }
+        e.stream().synchronize()?;
+        // Harness timing contract: prime wall time published for gen-only throughput math
+        // (bench binaries read this right after the call; subtraction-from-total breaks down
+        // when prime >> gen — measured ±80% error at 6k-token prompts).
+        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
+                                 std::sync::atomic::Ordering::Relaxed);
+        let mut out = Vec::with_capacity(max_new);
+        for _ in 0..max_new {
+            let next = argmax(&last_logits) as u32;
+            out.push(next);
+            last_logits = self.decode_step(e, next, &mut cache)?;
+        }
+        Ok(out)
+    }
+
+    /// The reusable serving generation API (BASE-3). Primes the prompt, then samples up to
+    /// `params.max_new` tokens, stopping on EOS, any stop-token, or the context-length guard.
+    /// Calls `on_token(id)` after each emitted token (for streaming; return `false` to stop early).
+    /// Returns `GenOutput { tokens, stop_reason }`. Does NOT detokenize — the caller (which owns
+    /// the tokenizer) handles text + stop-STRING matching on the detokenized tail.
+    pub fn generate_with<F: FnMut(u32) -> bool>(
+        &self, e: &Engine, prompt: &[u32], params: &GenParams,
+        sampler: &mut crate::sampler::Sampler, mut on_token: F,
+    ) -> Result<GenOutput, Box<dyn std::error::Error>> {
+        // Context guard: prompt + generated must fit max_ctx (caller-supplied or model default).
+        let ctx_cap = params.max_ctx.unwrap_or(prompt.len() + params.max_new + 8);
+        if prompt.len() >= ctx_cap {
+            return Ok(GenOutput { tokens: Vec::new(), stop_reason: StopReason::ContextFull });
+        }
+        let room = ctx_cap - prompt.len();
+        let budget = params.max_new.min(room);
+
+        let mut cache = Cache::new(e, &self.cfg, ctx_cap)?;
+        let mut last_logits = Vec::new();
+        for &tok in prompt {
+            last_logits = self.decode_step(e, tok, &mut cache)?;
+            sampler.accept(tok);
+        }
+        let mut out = Vec::with_capacity(budget);
+        let mut reason = StopReason::MaxNew;
+        for _ in 0..budget {
+            let next = sampler.sample(&last_logits);
+            sampler.accept(next);
+            out.push(next);
+            if params.eos.contains(&next) { reason = StopReason::Eos; break; }
+            if !on_token(next) { reason = StopReason::Callback; break; }
+            if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+            last_logits = self.decode_step(e, next, &mut cache)?;
+        }
+        Ok(GenOutput { tokens: out, stop_reason: reason })
+    }
+
+    /// Full-attention decode: project q/gate/k/v for the new token, QK-norm, RoPE at pos,
+    /// append k,v to the layer KV cache, attend over the full [0..=pos] context.
+    pub(crate) fn full_attn_decode(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                        pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.full_attn_decode_pre(e, fa, h, None, pos_d, pos, cache, il)
+    }
+
+    /// PRE-QUANTIZED-INPUT eager full-attn (attn-input NORM-FUSION lever): caller passes the
+    /// attn-normed activation already q8_1 `(hq,hd)` (rms_norm_q8_1) -> skips internal quantize_q8_1.
+    /// `None` = quantize h here (the spec / non-fused path). BIT-IDENTICAL.
+    pub(crate) fn full_attn_decode_pre(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                        pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                        pos_d: &CudaSlice<i32>, pos: usize, cache: &mut Cache, il: usize)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        // wq|wk|wv all take the same input `h` (in_f = n_embd) — quantize q8_1 ONCE, feed all three.
+        let n_embd = cfg.n_embd as usize;
+        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+            }
+        } else {
+            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
+        };
+        // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
+        let mut q = e.uninit(n_head * head_dim)?;
+        let mut gate = e.uninit(n_head * head_dim)?;
+        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+
+        // QK-norm + RoPE at position `pos`
+        let mut qn = e.uninit(n_head * head_dim)?;
+        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
+        q = qn;
+        let mut kn = e.uninit(n_head_kv * head_dim)?;
+        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
+        k = kn;
+        let rope_dims = cfg.rope_dim_count as usize;
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
+
+        // append k,v into the RESIDENT GPU QUANTIZED KV cache at the current position (q8_0 K /
+        // q5_1 V, on-device append-quantize kernel; no host round-trip). KVQUANT-PLAN §C/E2.
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        kvl.len += 1;
+        let t_kv = kvl.len;
+
+        // attend: q[hd,nh,1] over the resident byte K/V (view first t_kv*tok_bytes BYTES).
+        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+        let (ktb, vtb) = (kvl.k_tok_bytes, kvl.v_tok_bytes);
+        let mut attn = e.uninit(n_head * head_dim)?;
+        if std::env::var("BW24_NOFA").is_ok() {
+            return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
+                        unset BW24_NOFA to use fa_decode".into());
+        }
+        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
+        let _ = pos;
+
+        // output gate: attn * sigmoid(gate), then o-proj
+        let mut gsig = e.uninit(n_head * head_dim)?;
+        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
+        let mut attn_g = e.uninit(n_head * head_dim)?;
+        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        Ok(e.matmul(&fa.wo, &attn_g, 1)?)
+    }
+
+    /// Linear-attention decode: conv with ring-buffer state, GDN scan carrying SSM state.
+    pub fn linear_attn_decode(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          cache: &mut Cache, il: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.linear_attn_decode_inner(e, la, h, None, cache, il, false)
+    }
+
+    /// PRE-QUANTIZED-INPUT variant (DECODE attn-input NORM-FUSION lever): the caller passes the
+    /// post-attn-norm activation ALREADY q8_1-quantized `(hq,hd)` (produced by rms_norm_q8_1, fusing
+    /// the attn_norm + the mixer's internal quantize_q8_1). Skips the internal quantize. Caller
+    /// GUARANTEES the projections are q8_1-fast. `persistent` selects the capture-safe state plumbing.
+    /// BIT-IDENTICAL to linear_attn_decode(h) when (hq,hd)==quantize_q8_1(rms_norm(x)*w).
+    pub fn linear_attn_decode_pre(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          hq: &CudaSlice<i8>, hd: &CudaSlice<f32>, cache: &mut Cache, il: usize,
+                          persistent: bool)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.linear_attn_decode_inner(e, la, h, Some((hq, hd)), cache, il, persistent)
+    }
+
+    /// CAPTURE variant of `linear_attn_decode` (CUDA-GRAPH-PLAN Phase 3). The GDN scan needs distinct
+    /// in/out SSM-state buffers; the eager path SWAPS a fresh scratch into `rl.ssm_state` (new pointer
+    /// each step), which is a CAPTURE HAZARD — the graph bakes capture-time pointers and never re-runs
+    /// the host swap, so replay would read a stale state buffer. Here we instead COPY the scratch back
+    /// into the STABLE `rl.ssm_state` buffer (memcpy_dtod, captured, same pointers every replay). Math
+    /// is identical; only the buffer plumbing differs. `conv_state` is already mutated in place (no
+    /// pointer change) so it is capture-safe as-is.
+    pub(crate) fn linear_attn_decode_cap(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          cache: &mut Cache, il: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.linear_attn_decode_inner(e, la, h, None, cache, il, true)
+    }
+
+    fn linear_attn_decode_inner(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>,
+                          pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                          cache: &mut Cache, il: usize, persistent_state: bool)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let d_conv = ssm.conv_kernel as usize;
+        let head_k = d_state;
+        let key_dim = head_k * num_k;
+        let value_dim = d_state * num_v;
+        let conv_dim = key_dim * 2 + value_dim;
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (d_state as f32).sqrt();
+
+        // projections (T=1): wqkv, wqkv_gate, ssm_beta, ssm_alpha ALL take input `h` (in_f = n_embd)
+        // -> quantize q8_1 ONCE, feed all four (was 4x redundant quantize_q8_1 of the same row).
+        let n_embd = cfg.n_embd as usize;
+        let all_fast = e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
+            && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha);
+        let (qkv_mixed, z, beta_raw, alpha) = if all_fast {
+            // attn-input NORM-FUSION: use the caller's pre-quantized (hq,hd) when provided (the
+            // attn_norm already emitted q8_1 via rms_norm_q8_1), else quantize h here. Bit-identical.
+            match pre_q {
+                Some((hq, hd)) => (e.matmul_pre(&la.wqkv, hq, hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?,
+                                   e.matmul_pre(&la.ssm_beta, hq, hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, hq, hd, h, 1)?),
+                None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                    (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?,
+                     e.matmul_pre(&la.ssm_beta, &hq, &hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, &hq, &hd, h, 1)?) }
+            }
+        } else {
+            (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?,
+             e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
+        };
+
+        // RANK3 LEVER (conv fuse): assemble [conv_state | new col], depthwise causal conv + SiLU, and
+        // roll the ring — ALL in ONE kernel (`ssm_conv1d_fused_decode`), never materializing conv_in
+        // to HBM. Replaces conv_assemble_and_roll + ssm_conv1d. Bit-identical (same accumulation order).
+        let rl = cache.recur[il].as_mut().unwrap();
+        let mut conv_out = e.uninit(conv_dim)?;  // [conv_dim, 1] channel-major, SiLU
+        e.ssm_conv1d_fused_decode(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
+                                  &mut conv_out, conv_dim, d_conv)?;
+
+        // GDN PREP, FUSED (2026-07-03): repack + q/k L2-norm + beta sigmoid + g_log in ONE
+        // gdn_prep_decode launch (was 5 tiny serialized kernels: qkv_to_gdn_repack, 2x l2_norm,
+        // sigmoid, gdn_glog). Same math; the L2 reduce runs a 32-lane warp tree instead of the
+        // 256-thread two-level tree (different FP sum order) — gates: argmax + run-spec exactness.
+        let _ = head_k;  // head_k == d_state; the kernel uses head_k = d_state internally.
+        let mut q_l2 = e.uninit(d_state * num_v)?;
+        let mut k_l2 = e.uninit(d_state * num_v)?;
+        let mut v_gd = e.uninit(d_state * num_v)?;
+        let mut beta = e.uninit(num_v)?;
+        let mut g_log = e.uninit(num_v)?;
+        e.gdn_prep_decode(&conv_out, &beta_raw, &alpha,
+                          la.ssm_dt.float_data(), la.ssm_a.float_data(),
+                          &mut q_l2, &mut k_l2, &mut v_gd, &mut beta, &mut g_log,
+                          d_state, num_v, num_k, key_dim, eps)?;
+        let v_gd = v_gd;
+
+        // GDN scan: SSM state stays RESIDENT on GPU. gdn needs DISTINCT in/out state buffers.
+        // DECODE DETERMINISM FIX: write the new state into the PERSISTENT spare buffer
+        // (`ssm_state_alt`) and PING-PONG the two owned buffers in place — instead of allocating a
+        // fresh `state_scratch` via `e.uninit` each step and swapping its pointer in. The old
+        // per-step alloc/free churned the stream-ordered async pool; the freed prior state block was
+        // recycled by a later step's scratch while a kernel still referenced the swapped-in state,
+        // a use-after-reuse that made decode RUN-TO-RUN nondeterministic (two identical primes
+        // diverged). With two stable resident buffers there is no per-step alloc/free and no pool
+        // churn; the math is byte-identical. `o` is a true per-step output (consumed immediately by
+        // gated_rmsnorm below) so it stays a normal scratch.
+        let mut o = e.uninit(d_state * num_v)?;
+        let n_state = d_state * d_state * num_v;
+        // gdn reads ssm_state, writes the spare ssm_state_alt (disjoint resident fields).
+        {
+            let RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
+            e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, 1, scale)?;
+        }
+        if persistent_state {
+            // CAPTURE-safe (graph replay): the canonical state every replay reads must stay at a
+            // FIXED pointer (baked into the captured graph). Copy the freshly-written spare BACK
+            // into ssm_state (captured, replays each launch). No host pointer swap.
+            let alt = std::mem::replace(&mut rl.ssm_state_alt, e.zeros(0)?);
+            e.copy_into(&mut rl.ssm_state, 0, &alt, n_state)?;
+            rl.ssm_state_alt = alt;
+        } else {
+            // EAGER: swap the two OWNED resident buffers in place (stable pointers, no alloc/free).
+            std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
+        }
+
+        // gated RMSNorm + ssm_out
+        let mut gn = e.uninit(d_state * num_v)?;
+        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v, eps)?;
+        Ok(e.matmul(&la.ssm_out, &gn, 1)?)
+    }
+}
+
+
+=== FILE: crates/bw24-engine/src/eagle.rs ===
+//! EAGLE3.1 greedy-chain speculative decode (research/basics/EAGLE-PLAN.md, N1-N7).
+//!
+//! Greedy spec decode is MATHEMATICALLY EXACT: the accepted+bonus token stream is token-for-token
+//! identical to plain greedy `generate` (decode.rs). EAGLE differs from MTP (spec.rs) ONLY in the
+//! DRAFT step: instead of the trunk-coupled NextN head, EAGLE drafts with a SEPARATE 1-layer model
+//! (own vocab, own RoPE, untied lm_head) fed the trunk's hidden states from 3 aux layers [1,15,28]
+//! fused through an encoder `fc`. The verify / accept-prefix / snapshot / rollback are REUSED
+//! VERBATIM from spec.rs (decode_step_t, the greedy accept walk, cache.snapshot/rollback).
+//!
+//! On-disk draft (`eagle3-qwen35-9b/model.safetensors`, bf16, ground-truthed at impl time):
+//!   fc.weight                            [4096, 12288]  (3*n_embd -> n_embd encoder)
+//!   midlayer.input_layernorm.weight      [4096]         (RMSNorm of the prev-token EMBED)
+//!   midlayer.hidden_norm.weight          [4096]         (RMSNorm of the recurrent hidden g)
+//!   midlayer.self_attn.{q,k,v}_proj      q[4096,8192] k/v[1024,8192]  (in = 2*n_embd!)
+//!   midlayer.self_attn.o_proj            [4096, 4096]
+//!   midlayer.post_attention_layernorm    [4096]
+//!   midlayer.mlp.{gate,up}_proj          [12288,4096]   down [4096,12288]
+//!   norm.weight                          [4096]         (final RMSNorm before lm_head)
+//!   lm_head.weight                       [32000, 4096]  (DRAFT vocab)
+//!   d2t                                  [32000] i64    target_id = draft_id + d2t[draft_id]
+//!   t2d                                  [248320] bool  (unused on the chain-greedy decode path)
+//!
+//! Op-sequence (authoritative: vLLM `llama_eagle3.py` LlamaDecoderLayer layer_idx==0, this ckpt's
+//! flags norm_before_residual=false, norm_before_fc=false, fc_norm=false, norm_output=false):
+//!   ENCODE (once/round): g = fc @ concat(aux[1], aux[15], aux[28])                 -> [n_embd]
+//!   DRAFT step (T=1):
+//!     e   = embed(prev_tok)                          (TARGET embedding; EAGLE3 shares it)
+//!     eN  = RMSNorm(e,  input_layernorm)
+//!     res = g                                         (_norm_after_residual: residual is PRE-norm g)
+//!     gN  = RMSNorm(g,  hidden_norm)
+//!     cat = [eN ; gN]                                 -> [2*n_embd]
+//!     attn= o_proj @ SDPA( q,k,v = {q,k,v}_proj @ cat ; partial RoPE 64/256 @ theta 1e7 ; GQA16:4 )
+//!     x1  = attn + res
+//!     z   = RMSNorm(x1, post_attention_layernorm)
+//!     mlp = down @ silu(gate @ z) * (up @ z)
+//!     gsum= mlp + x1                                  (the model's final fused-add residual)
+//!     dl  = lm_head @ RMSNorm(gsum, norm)             -> draft_logits[32000]
+//!     g_next = gsum                                   (EAGLE recurrence: pre-norm residual)
+
+use cudarc::driver::CudaSlice;
+use std::path::Path;
+use bw24_gguf::dequant;
+use bw24_gguf::safetensors::StModel;
+use crate::Engine;
+use crate::model::GpuTensor;
+use crate::hybrid::HybridModel;
+use crate::cache::{Cache, KvLayer};
+use crate::forward::argmax;
+
+/// The EAGLE3 draft model: encoder `fc` + ONE Llama-style decoder layer + untied lm_head + d2t.
+/// All weights are bf16 -> dequant to f32 GpuTensor::Float (the draft is ~0.8 GB; the matmuls go
+/// through cuBLASLt `linear`). The draft attention is PLAIN Llama (no QK-norm, no output gate),
+/// distinct from the trunk's gated/QK-normed full-attn.
+pub struct Eagle3Draft {
+    pub fc: GpuTensor,                 // [3*n_embd, n_embd]  encoder
+    pub input_layernorm: GpuTensor,    // [n_embd]  norm of prev-token embedding
+    pub hidden_norm: GpuTensor,        // [n_embd]  norm of recurrent g
+    pub q_proj: GpuTensor,             // [2*n_embd, n_head*head_dim]
+    pub k_proj: GpuTensor,             // [2*n_embd, n_head_kv*head_dim]
+    pub v_proj: GpuTensor,             // [2*n_embd, n_head_kv*head_dim]
+    pub o_proj: GpuTensor,             // [n_head*head_dim, n_embd]
+    pub post_attention_layernorm: GpuTensor,
+    pub gate_proj: GpuTensor,
+    pub up_proj: GpuTensor,
+    pub down_proj: GpuTensor,
+    pub norm: GpuTensor,               // [n_embd]  final RMSNorm before lm_head
+    pub lm_head: GpuTensor,            // [n_embd, draft_vocab]
+    pub d2t: Vec<i64>,                 // [draft_vocab]  target_id = draft_id + d2t[draft_id]
+
+    // shape / rope params (from the draft config.json, NOT the trunk cfg)
+    pub n_embd: usize,
+    pub n_head: usize,
+    pub n_head_kv: usize,
+    pub head_dim: usize,
+    pub n_ff: usize,
+    pub draft_vocab: usize,
+    pub rope_dim_count: usize,         // partial_rotary_factor * head_dim  (0.25 * 256 = 64)
+    pub rope_theta: f32,               // 1e7
+    pub eps: f32,
+    pub aux_layers: Vec<usize>,        // [1, 15, 28]
+}
+
+/// Load a single bf16 (or f32) tensor from the draft safetensors into a GpuTensor::Float.
+/// `name` is the raw HF/EAGLE name in the file (e.g. "fc.weight", "midlayer.self_attn.q_proj.weight").
+fn load_float(e: &Engine, m: &StModel, name: &str) -> Result<GpuTensor, Box<dyn std::error::Error>> {
+    let (info, bytes) = m.raw(name).ok_or_else(|| format!("EAGLE3 draft missing tensor {name}"))?;
+    let ne = info.ne();                              // inner-fastest (ne[0]=in_features for a weight)
+    let n: u64 = ne.iter().product();
+    let f32v = dequant::dequantize(info.ggml_type(), bytes, n as usize);
+    Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne })
+}
+
+impl Eagle3Draft {
+    /// Load the EAGLE3 draft from a checkpoint directory (config.json + model.safetensors) or a
+    /// direct path to the .safetensors. Reads the geometry/rope params from the sibling config.json.
+    /// `aux_layers` is the trunk layer-id list from `eagle_config.eagle_aux_hidden_state_layer_ids`.
+    pub fn load(e: &Engine, path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let dir = if path.is_file() { path.parent().unwrap_or(Path::new(".")) } else { path };
+        let cfg = EagleConfig::from_json(&dir.join("config.json"))?;
+        let m = StModel::open(path)?;
+
+        let d2t = read_i64(&m, "d2t")?;
+        assert_eq!(d2t.len(), cfg.draft_vocab, "d2t len != draft_vocab_size");
+
+        let draft = Eagle3Draft {
+            fc: load_float(e, &m, "fc.weight")?,
+            input_layernorm: load_float(e, &m, "midlayer.input_layernorm.weight")?,
+            hidden_norm: load_float(e, &m, "midlayer.hidden_norm.weight")?,
+            q_proj: load_float(e, &m, "midlayer.self_attn.q_proj.weight")?,
+            k_proj: load_float(e, &m, "midlayer.self_attn.k_proj.weight")?,
+            v_proj: load_float(e, &m, "midlayer.self_attn.v_proj.weight")?,
+            o_proj: load_float(e, &m, "midlayer.self_attn.o_proj.weight")?,
+            post_attention_layernorm: load_float(e, &m, "midlayer.post_attention_layernorm.weight")?,
+            gate_proj: load_float(e, &m, "midlayer.mlp.gate_proj.weight")?,
+            up_proj: load_float(e, &m, "midlayer.mlp.up_proj.weight")?,
+            down_proj: load_float(e, &m, "midlayer.mlp.down_proj.weight")?,
+            norm: load_float(e, &m, "norm.weight")?,
+            lm_head: load_float(e, &m, "lm_head.weight")?,
+            d2t,
+            n_embd: cfg.hidden_size,
+            n_head: cfg.n_head,
+            n_head_kv: cfg.n_head_kv,
+            head_dim: cfg.head_dim,
+            n_ff: cfg.intermediate_size,
+            draft_vocab: cfg.draft_vocab,
+            rope_dim_count: ((cfg.partial_rotary_factor * cfg.head_dim as f32).round() as usize).max(2),
+            rope_theta: cfg.rope_theta,
+            eps: cfg.rms_eps,
+            aux_layers: cfg.aux_layers,
+        };
+        // shape sanity (catches a wrong checkpoint / mapping):
+        assert_eq!(draft.fc.in_features(), 3 * draft.n_embd, "fc in != 3*n_embd");
+        assert_eq!(draft.fc.out_features(), draft.n_embd, "fc out != n_embd");
+        assert_eq!(draft.q_proj.in_features(), 2 * draft.n_embd, "q_proj in != 2*n_embd");
+        assert_eq!(draft.q_proj.out_features(), draft.n_head * draft.head_dim, "q_proj out");
+        assert_eq!(draft.lm_head.out_features(), draft.draft_vocab, "lm_head out != draft_vocab");
+        Ok(draft)
+    }
+
+    /// Map a DRAFT-vocab id to a TARGET-vocab id (d2t is a DELTA: target = draft + d2t[draft]).
+    #[inline]
+    pub fn d2t_map(&self, draft_id: u32) -> u32 {
+        (draft_id as i64 + self.d2t[draft_id as usize]) as u32
+    }
+
+    /// ENCODE (once per round, EAGLE-PLAN N3): g = fc @ concat(aux0, aux1, aux2). `aux` are the 3
+    /// trunk residual hiddens of the just-committed token (decode_step_aux / decode_step_t_aux),
+    /// in ascending-layer order. Returns the recurrent draft hidden `g` [n_embd].
+    pub fn encode(&self, e: &Engine, aux: &[CudaSlice<f32>]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert_eq!(aux.len(), self.aux_layers.len(), "aux count != #aux layers");
+        let n = self.n_embd;
+        let mut cat = e.zeros(self.aux_layers.len() * n)?;
+        for (i, a) in aux.iter().enumerate() {
+            e.copy_into(&mut cat, i * n, a, n)?;
+        }
+        e.matmul(&self.fc, &cat, 1)               // [3*n_embd] @ fc[3n_embd,n_embd] -> [n_embd]
+    }
+
+    /// One DRAFT-token forward (EAGLE-PLAN N4, T=1). `prev_tok` = the TARGET token id to predict
+    /// from (last committed or previous draft). `g` = the recurrent draft hidden (encode() output
+    /// on round entry, then the previous step's g_next). Returns (draft_logits[draft_vocab] host,
+    /// g_next dev). Mirrors the vLLM op-sequence documented at the top of this file.
+    pub fn draft_token(&self, e: &Engine, target: &HybridModel, prev_tok: u32, g: &CudaSlice<f32>,
+                       scratch: &mut Eagle3Scratch, pos: usize)
+                       -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n = self.n_embd;
+        let eps = self.eps;
+        let pos_d = e.htod_i32(&[pos as i32])?;
+
+        // e = TARGET embedding of prev_tok (EAGLE3 shares the target's token embedding).
+        // eN = input_layernorm(e); gN = hidden_norm(g); residual = PRE-norm g (norm_after_residual).
+        let e_emb = e.htod(&target.embd.gather(n, &[prev_tok]))?;
+        let mut e_norm = e.zeros(n)?;
+        e.rms_norm(&e_emb, self.input_layernorm.float_data(), &mut e_norm, n, 1, eps)?;
+        let res = e.clone_dtod(g)?;
+        let mut g_norm = e.zeros(n)?;
+        e.rms_norm(g, self.hidden_norm.float_data(), &mut g_norm, n, 1, eps)?;
+        // cat = [eN ; gN] -> [2*n_embd]  (vLLM llama_eagle3: torch.cat([embeds, hidden_states])).
+        let mut cat = e.zeros(2 * n)?;
+        e.copy_into(&mut cat, 0, &e_norm, n)?;
+        e.copy_into(&mut cat, n, &g_norm, n)?;
+
+        // attention from the 2*n_embd concat (plain Llama: no QK-norm, no output gate).
+        let attn = self.attn(e, &cat, &pos_d, scratch)?;
+        // x1 = attn + residual(g)
+        let mut x1 = e.zeros(n)?;
+        e.add(&attn, &res, &mut x1, n)?;
+        // z = post_attention_layernorm(x1)
+        let mut z = e.zeros(n)?;
+        e.rms_norm(&x1, self.post_attention_layernorm.float_data(), &mut z, n, 1, eps)?;
+        // mlp = down @ (silu(gate@z) * (up@z))
+        let gate = e.matmul(&self.gate_proj, &z, 1)?;
+        let up = e.matmul(&self.up_proj, &z, 1)?;
+        let mut act = e.zeros(self.n_ff)?;
+        e.silu_mul(&gate, &up, &mut act, self.n_ff)?;
+        let mlp = e.matmul(&self.down_proj, &act, 1)?;
+        // g_next = mlp + x1  (final fused-add residual; this is the aux_output recurrence)
+        let mut g_next = e.zeros(n)?;
+        e.add(&mlp, &x1, &mut g_next, n)?;
+        // dl = lm_head @ norm(g_next)
+        let mut hn = e.zeros(n)?;
+        e.rms_norm(&g_next, self.norm.float_data(), &mut hn, n, 1, eps)?;
+        let logits = e.matmul(&self.lm_head, &hn, 1)?;
+        let host = e.dtoh(&logits)?;
+        Ok((host, g_next))
+    }
+
+    /// Plain Llama attention over the [2*n_embd] concat input, T=1, on the draft's own scratch KV.
+    /// q/k/v project from 2*n_embd; partial RoPE (rope_dim_count of head_dim) at the draft theta;
+    /// GQA broadcast in fa_decode; o_proj back to n_embd. No QK-norm, no output gate.
+    fn attn(&self, e: &Engine, cat: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, scratch: &mut Eagle3Scratch)
+            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (nh, nhkv, hd) = (self.n_head, self.n_head_kv, self.head_dim);
+        let scale = 1.0 / (hd as f32).sqrt();
+        let mut q = e.matmul(&self.q_proj, cat, 1)?;    // [nh*hd]
+        let mut k = e.matmul(&self.k_proj, cat, 1)?;    // [nhkv*hd]
+        let v = e.matmul(&self.v_proj, cat, 1)?;        // [nhkv*hd]
+
+        // partial RoPE: rope_dim_count = partial_rotary_factor * head_dim (= 64 of 256), draft theta.
+        e.rope_neox(&mut q, pos_d, hd, self.rope_dim_count, nh, 1, self.rope_theta, 1.0)?;
+        e.rope_neox(&mut k, pos_d, hd, self.rope_dim_count, nhkv, 1, self.rope_theta, 1.0)?;
+
+        let kv = &mut scratch.kv;
+        e.append_kv_quantized(&k, &v, &mut kv.k, &mut kv.v, kv.len,
+                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+        kv.len += 1;
+        let t_kv = kv.len;
+        let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
+        let k_view = e.view_u8(&kv.k, t_kv * ktb);
+        let v_view = e.view_u8(&kv.v, t_kv * vtb);
+        let mut attn = e.zeros(nh * hd)?;
+        e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nhkv, t_kv, scale, ktb, vtb)?;
+        e.matmul(&self.o_proj, &attn, 1)
+    }
+}
+
+/// Tiny scratch KV for the EAGLE3 draft layer (one full-attn layer). Reset each draft round. Uses
+/// the SAME q8_0-K / q5_1-V quantized layout as the trunk KV (head_dim%32==0 holds: 256).
+pub struct Eagle3Scratch {
+    pub kv: KvLayer,
+}
+impl Eagle3Scratch {
+    pub fn new(e: &Engine, draft: &Eagle3Draft, cap: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let (nhkv, hd) = (draft.n_head_kv, draft.head_dim);
+        assert!(hd % 32 == 0, "KVQUANT requires head_dim%32==0 (EAGLE3 scratch)");
+        let kv_dim_k = hd * nhkv;
+        let kv_dim_v = hd * nhkv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;
+        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        Ok(Eagle3Scratch { kv: KvLayer {
+            k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
+            kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+            len_d: e.htod_i32(&[0])?,
+        } })
+    }
+    pub fn reset(&mut self) { self.kv.len = 0; }
+}
+
+impl HybridModel {
+    /// Greedy EAGLE3 speculative decode (EAGLE-PLAN N6). Token-identical to `generate(prompt,n)`
+    /// but drafts K tokens with the separate EAGLE3 draft, then verifies them in ONE batched target
+    /// forward. Verify/accept/snapshot/rollback are REUSED from the MTP path (decode_step_t,
+    /// cache.snapshot/rollback). Returns (tokens, total_drafted, total_accepted).
+    pub fn generate_spec_eagle(&self, e: &Engine, draft: &Eagle3Draft, prompt: &[u32],
+                               max_new: usize, k: usize)
+                               -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        assert!(k >= 1, "k must be >= 1");
+        assert!(!prompt.is_empty(), "prompt must be non-empty");
+        let n_vocab = self.output.out_features();
+        let n_embd = self.cfg.n_embd as usize;
+        assert_eq!(n_embd, draft.n_embd, "draft n_embd != target n_embd");
+        let aux = &draft.aux_layers;
+        let max_ctx = prompt.len() + max_new + k + 8;
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+
+        // prime: feed the prompt; capture the LAST token's aux hiddens (seed for round-1 encode).
+        let mut prime_logits = Vec::new();
+        let mut prime_aux: Vec<CudaSlice<f32>> = Vec::new();
+        for &tok in prompt {
+            let (l, a) = self.decode_step_aux(e, tok, &mut cache, aux)?;
+            prime_logits = l; prime_aux = a;
+        }
+
+        let mut scratch = Eagle3Scratch::new(e, draft, k + 1)?;
+        let mut out: Vec<u32> = Vec::with_capacity(max_new);
+        let mut total_drafted = 0usize;
+        let mut total_accepted = 0usize;
+
+        // EAGLE3 token/hidden alignment (vLLM `llama_eagle3.py`/`cnets.py`): the draft pairs the
+        // aux hidden of position p with the EMBEDDING of the token at position p+1 (input_ids are the
+        // target tokens shifted left by one). So drafting the token after `last_token` (at pos p)
+        // uses g = encode(aux of the token BEFORE last_token, at pos p-1) and embed(last_token).
+        // BW24_EAGLE_ALIGN=0 forces the un-shifted MTP-style pairing (aux & embed both = last_token)
+        // for A/B comparison; default (1) is the EAGLE shift. The prime loop already gave us the
+        // aux of the prompt's last token (= the predecessor of `last_token`), so we keep it as
+        // `prev_aux` and roll it forward by one each round.
+        let shift = std::env::var("BW24_EAGLE_ALIGN").ok().map(|s| s != "0").unwrap_or(true);
+        let mut last_token = argmax(&prime_logits) as u32;
+        out.push(last_token);
+        // prev_aux = aux of the token at the position whose forward predicted `last_token`
+        // (= the prompt's last token for round 1). g_aux = aux of `last_token` itself.
+        let mut prev_aux = prime_aux;
+        let (mut last_logits, mut g_aux) = self.decode_step_aux(e, last_token, &mut cache, aux)?;
+
+        while out.len() < max_new {
+            let pos = cache.pos;
+            let snap = cache.snapshot(e)?;
+
+            // --- 1. ENCODE once: g0 = fc @ concat(aux). With the EAGLE shift, the seed aux is the
+            //        PREDECESSOR token's (paired with embed(last_token)); else last_token's own. ---
+            let seed_aux = if shift { &prev_aux } else { &g_aux };
+            let g0 = draft.encode(e, seed_aux)?;
+
+            // --- 2. DRAFT k tokens with the EAGLE3 draft (autoregressive, T=1 each) ---
+            scratch.reset();
+            let mut draft_toks: Vec<u32> = Vec::with_capacity(k);
+            let mut prev = last_token;
+            let mut g = g0;
+            for j in 0..k {
+                let (dl, g_next) = draft.draft_token(e, self, prev, &g, &mut scratch, pos + j)?;
+                let d_draft = argmax(&dl) as u32;
+                let d_target = draft.d2t_map(d_draft);   // map draft-vocab id -> target-vocab id
+                draft_toks.push(d_target);
+                prev = d_target;
+                g = g_next;
+            }
+
+            // --- 3. VERIFY: one batched target forward over draft_toks (T=k). REUSED from MTP. ---
+            let tlogits = self.decode_step_t(e, &draft_toks, pos, &mut cache)?;
+
+            // --- 4. GREEDY ACCEPT (walk prefix, stop at first mismatch). REUSED logic. ---
+            let t_pred = |j: usize| -> u32 {
+                if j == 0 { argmax(&last_logits) as u32 }
+                else { argmax(&tlogits[(j - 1) * n_vocab..j * n_vocab]) as u32 }
+            };
+            let mut n_acc = 0usize;
+            for j in 0..k {
+                if t_pred(j) == draft_toks[j] { n_acc += 1; } else { break; }
+            }
+            let bonus = t_pred(n_acc);
+            total_drafted += k;
+            total_accepted += n_acc;
+
+            // --- 5. COMMIT draft[0..n_acc] then bonus ---
+            for j in 0..n_acc {
+                if out.len() >= max_new { break; }
+                out.push(draft_toks[j]);
+            }
+            let bonus_emitted = out.len() < max_new;
+            if bonus_emitted { out.push(bonus); }
+            last_token = bonus;
+
+            // --- 6. ROLLBACK + advance to pos + n_acc + 1 committed tokens (REUSED from MTP). The
+            //        next round's EAGLE seed needs TWO auxs: g_aux = aux(bonus) and prev_aux =
+            //        aux(bonus's predecessor). bonus's predecessor is the last committed token BEFORE
+            //        bonus = draft[n_acc-1] if n_acc>=1, else this round's `last_token` (its aux is
+            //        the CURRENT g_aux). We always replay [committed-tail.. , bonus] aux-capturing so
+            //        the predecessor's aux is the second-to-last column; this keeps both exact.
+            let pred_is_prev_round = n_acc == 0;       // bonus's predecessor = old last_token
+            let old_g_aux = std::mem::take(&mut g_aux); // = aux(old last_token)
+            // Unified exact path (also covers full-accept n_acc==k): restore the pre-round snapshot
+            // then replay the committed prefix draft[0..n_acc] ++ [bonus] as ONE T=(n_acc+1) aux-
+            // capturing forward — single weight read, bit-identical to greedy (verify-all-columns
+            // math). Captures aux at the last column (bonus) and, when the predecessor of bonus is a
+            // replayed token (n_acc>=1), the second-to-last column.
+            cache.rollback(e, &snap, 0)?;
+            let mut replay: Vec<u32> = draft_toks[0..n_acc].to_vec();
+            replay.push(bonus);
+            let pred_col = if pred_is_prev_round { None } else { Some(replay.len() - 2) };
+            let (rl, mut a_last, a_pred) =
+                self.decode_step_t_aux2(e, &replay, pos, &mut cache, aux, pred_col)?;
+            last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
+            prev_aux = if pred_is_prev_round { old_g_aux } else { a_pred.unwrap() };
+            g_aux = std::mem::take(&mut a_last);
+        }
+        out.truncate(max_new);
+        Ok((out, total_drafted, total_accepted))
+    }
+}
+
+// ============================ draft config.json (geometry + rope) ============================
+
+struct EagleConfig {
+    hidden_size: usize,
+    n_head: usize,
+    n_head_kv: usize,
+    head_dim: usize,
+    intermediate_size: usize,
+    draft_vocab: usize,
+    partial_rotary_factor: f32,
+    rope_theta: f32,
+    rms_eps: f32,
+    aux_layers: Vec<usize>,
+}
+
+impl EagleConfig {
+    fn from_json(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let txt = std::fs::read_to_string(path)?;
+        // Minimal field extraction (avoid a serde dep here; the draft config.json is flat-ish).
+        let num = |key: &str| -> Option<f64> {
+            let pat = format!("\"{key}\"");
+            let i = txt.find(&pat)? + pat.len();
+            let rest = &txt[i..];
+            let c = rest.find(':')? + 1;
+            let tail = rest[c..].trim_start();
+            let end = tail.find(|ch: char| ch == ',' || ch == '}' || ch == '\n').unwrap_or(tail.len());
+            tail[..end].trim().parse::<f64>().ok()
+        };
+        let aux_layers: Vec<usize> = {
+            // eagle_aux_hidden_state_layer_ids: [1, 15, 28]
+            let pat = "\"eagle_aux_hidden_state_layer_ids\"";
+            match txt.find(pat) {
+                Some(i) => {
+                    let rest = &txt[i + pat.len()..];
+                    let lb = rest.find('[').ok_or("no [ after aux ids")?;
+                    let rb = rest.find(']').ok_or("no ] after aux ids")?;
+                    rest[lb + 1..rb].split(',').filter_map(|s| s.trim().parse::<usize>().ok()).collect()
+                }
+                None => vec![1, 15, 28],   // fall back to the known EAGLE3-qwen35-9b layers
+            }
+        };
+        Ok(EagleConfig {
+            hidden_size: num("hidden_size").ok_or("hidden_size")? as usize,
+            n_head: num("num_attention_heads").ok_or("num_attention_heads")? as usize,
+            n_head_kv: num("num_key_value_heads").ok_or("num_key_value_heads")? as u
+
+You are a coding agent working in a Rust repository. File tree:
+
+crates/bw24-engine/src/lib.rs
+crates/bw24-engine/src/spec.rs
+crates/bw24-engine/src/decode.rs
+crates/bw24-engine/src/cache.rs
+crates/bw24-server/src/worker.rs
+
+You ran the test suite and got this failure:
+
+[worker] Engine ready (BW24_FAST=true)
+[worker] kv-reuse: 1842 of 1897 prompt tokens resumed (model qwen)
+thread 'worker' panicked at crates/bw24-server/src/worker.rs:301: detok prefix mismatch
+note: run with RUST_BACKTRACE=1
+
+Here is cache.rs in full:
+
+```rust
+//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):
+//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
+//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
+//! No host round-trips per step. Single sequence.
+
+use cudarc::driver::CudaSlice;
+use bw24_gguf::config::{ModelConfig, LayerKind};
+use crate::Engine;
+
+/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
+/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
+/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
+/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
+pub struct KvLayer {
+    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
+    pub len: usize,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
+    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_d: CudaSlice<i32>,
+}
+
+/// Per-linear-attn-layer fixed recurrent state.
+/// conv_state and ssm_state are BOTH kept RESIDENT on GPU — the conv ring assemble + roll runs
+/// on-device (conv_assemble_and_roll), so there is no per-step dtoh/htod for either.
+pub struct RecurLayer {
+    pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
+    pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
+    /// PERSISTENT second SSM-state buffer for the gdn-scan double buffer (DECODE DETERMINISM FIX).
+    /// gdn_scan needs DISTINCT in/out state buffers. The old eager path allocated a fresh
+    /// `state_scratch` via `e.uninit` every step and swapped its pointer into `ssm_state`; that
+    /// per-step alloc/free churned the stream-ordered async pool, and the freed prior `ssm_state`
+    /// block was recycled by the next step's scratch while a kernel referencing the swapped-in state
+    /// was still in flight — a use-after-reuse that produced RUN-TO-RUN nondeterministic decode
+    /// (two identical prompt primes diverged). We instead PING-PONG between two STABLE resident
+    /// buffers (no per-step alloc/free, no pool churn): step writes into the spare, then swaps the
+    /// two owned buffers in place. Stable pointers, identical math. Sized like `ssm_state`.
+    pub ssm_state_alt: CudaSlice<f32>,
+}
+
+pub struct Cache {
+    pub kv: Vec<Option<KvLayer>>,
+    pub recur: Vec<Option<RecurLayer>>,
+    pub pos: usize,
+    pub max_ctx: usize,
+}
+
+/// Snapshot of the dual cache taken BEFORE a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+/// - Full-attn KV: only the per-layer `len` is recorded; rollback truncates (append-only,
+///   position-addressed — no copy). C.1.
+/// - Linear-attn conv/ssm: real device-to-device COPIES of the recurrent state, because those
+///   buffers are mutated IN PLACE by the verify pass and have no position index to truncate. C.2.
+///   (CudaSlice::clone is an Arc refcount, NOT a buffer copy — so we alloc fresh + memcpy_dtod.)
+pub struct CacheSnapshot {
+    pub kv_len: Vec<Option<usize>>,            // per layer (Some for full-attn layers)
+    pub conv: Vec<Option<CudaSlice<f32>>>,     // per layer (Some for linear-attn layers, D2D copy)
+    pub ssm: Vec<Option<CudaSlice<f32>>>,
+    pub pos: usize,
+}
+
+impl Cache {
+    /// Allocate GPU-resident caches sized by arch + max context.
+    pub fn new(e: &Engine, cfg: &ModelConfig, max_ctx: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let n = cfg.n_layer as usize;
+        let mut kv = Vec::with_capacity(n);
+        let mut recur = Vec::with_capacity(n);
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim_k = cfg.head_dim_k as usize;
+        let head_dim_v = cfg.head_dim_v as usize;
+        assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
+                "KVQUANT requires head_dim_k%32==0 && head_dim_v%32==0 (got k={head_dim_k} v={head_dim_v})");
+        let kv_dim_k = head_dim_k * n_head_kv;
+        let kv_dim_v = head_dim_v * n_head_kv;
+        let k_tok_bytes = (kv_dim_k / 32) * 34;   // q8_0
+        let v_tok_bytes = (kv_dim_v / 32) * 24;   // q5_1
+        let (conv_dim, d_state, num_v, d_conv) = if let Some(s) = &cfg.ssm {
+            let num_k = s.group_count as usize;
+            let num_v = s.time_step_rank as usize;
+            let ds = s.state_size as usize;
+            (ds * num_k * 2 + ds * num_v, ds, num_v, s.conv_kernel as usize)
+        } else { (0, 0, 0, 0) };
+        for il in 0..cfg.n_layer {
+            match cfg.layer_kind(il) {
+                LayerKind::FullAttention => {
+                    kv.push(Some(KvLayer {
+                        k: e.alloc_u8(max_ctx * k_tok_bytes)?,
+                        v: e.alloc_u8(max_ctx * v_tok_bytes)?,
+                        kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+                        len_d: e.htod_i32(&[0])?,
+                    }));
+                    recur.push(None);
+                }
+                LayerKind::LinearAttention => {
+                    kv.push(None);
+                    recur.push(Some(RecurLayer {
+                        conv_state: e.zeros(conv_dim * (d_conv - 1))?,
+                        ssm_state: e.zeros(d_state * d_state * num_v)?,
+                        ssm_state_alt: e.zeros(d_state * d_state * num_v)?,
+                    }));
+                }
+            }
+        }
+        Ok(Cache { kv, recur, pos: 0, max_ctx })
+    }
+
+    /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
+    /// Records each full-attn `len` (cheap) and makes a REAL device copy of each linear-attn
+    /// conv_state/ssm_state (a fresh alloc + memcpy_dtod — NOT an Arc clone).
+    pub fn snapshot(&self, e: &Engine) -> Result<CacheSnapshot, Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        let mut kv_len = Vec::with_capacity(n);
+        let mut conv = Vec::with_capacity(n);
+        let mut ssm = Vec::with_capacity(n);
+        for il in 0..n {
+            match &self.kv[il] {
+                Some(kvl) => kv_len.push(Some(kvl.len)),
+                None => kv_len.push(None),
+            }
+            match &self.recur[il] {
+                Some(rl) => {
+                    conv.push(Some(e.clone_dtod(&rl.conv_state)?));
+                    ssm.push(Some(e.clone_dtod(&rl.ssm_state)?));
+                }
+                None => { conv.push(None); ssm.push(None); }
+            }
+        }
+        Ok(CacheSnapshot { kv_len, conv, ssm, pos: self.pos })
+    }
+
+    /// PERSISTENT-BUFFER snapshot (spec-decode hot loop): refresh `snap` IN PLACE — same values as
+    /// `snapshot()` but the conv/ssm device buffers are reused across rounds (D2D copy-into, ZERO
+    /// allocations vs 2 fresh clones per linear layer per round). `snap` must come from a prior
+    /// `snapshot()` of THIS cache (same layer shapes).
+    pub fn snapshot_into(&self, e: &Engine, snap: &mut CacheSnapshot)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let n = self.kv.len();
+        for il in 0..n {
+            snap.kv_len[il] = self.kv[il].as_ref().map(|kvl| kvl.len);
+            if let Some(rl) = &self.recur[il] {
+                let dc = snap.conv[il].as_mut().expect("snapshot_into: shape mismatch (conv)");
+                let ds = snap.ssm[il].as_mut().expect("snapshot_into: shape mismatch (ssm)");
+                let (cn, sn) = (rl.conv_state.len(), rl.ssm_state.len());
+                e.copy_into(dc, 0, &rl.conv_state, cn)?;
+                e.copy_into(ds, 0, &rl.ssm_state, sn)?;
+            }
+        }
+        snap.pos = self.pos;
+        Ok(())
+    }
+
+    /// Roll the cache back to exactly `snap.pos + accept_len` committed tokens (MTP-PLAN §C).
+    /// - Full-attn KV (C.1): set len = snapshot_len + accept_len (truncate, no copy).
+    /// - Linear-attn (C.2): RESTORE the snapshot conv/ssm (real D2D copy back into the resident
+    ///   buffers). The caller must then REPLAY the `accept_len` committed tokens through the full
+    ///   T=1 decode path to rebuild the recurrent state for those positions. We restore (not
+    ///   replay here) because replay needs the model; this only resets state to the pre-round value.
+    /// `cache.pos` is set to `snap.pos` so the caller's replay advances it back to the commit point.
+    pub fn rollback(&mut self, e: &Engine, snap: &CacheSnapshot, accept_len: usize)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        for il in 0..self.kv.len() {
+            if let (Some(kvl), Some(saved)) = (self.kv[il].as_mut(), snap.kv_len[il]) {
+                kvl.len = saved + accept_len;
+                // keep the device mirror in lock-step (CUDA-GRAPH-PLAN Phase 2). Set IN PLACE
+                // (stable pointer): a fresh htod_i32 would reallocate len_d, but its old pointer is
+                // baked into the captured decode graph's append/inc/fa_decode kernels — replacing it
+                // strands the graph on a freed buffer (stale-pointer hazard). memcpy_htod in place.
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            if let Some(rl) = self.recur[il].as_mut() {
+                if let Some(c) = &snap.conv[il] { e.copy_into(&mut rl.conv_state, 0, c, c.len())?; }
+                if let Some(s) = &snap.ssm[il]  { e.copy_into(&mut rl.ssm_state,  0, s, s.len())?; }
+            }
+        }
+        self.pos = snap.pos;
+        Ok(())
+    }
+}
+
+```
+
+And the relevant part of worker.rs:
+
+```rust
+//! The single GPU worker thread + step-interleave scheduler (BASE-4, BW24-BUILD-MAP §4e).
+//!
+//! WHY a dedicated thread: the CUDA context is THREAD-AFFINE. `Engine` (and every `CudaStream` /
+//! `CudaSlice` it owns) must only ever be touched from the one thread that created the context.
+//! So we spawn ONE OS thread, build `Engine::new(0)` on it, load every `HybridModel` on it, and
+//! never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run on a
+//! separate tokio runtime and submit work over an `mpsc` channel; each request carries a `tokio`
+//! mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one request.
+//!
+//! SCHEDULER LOOP: the worker holds a `Vec<Session>` of active generations. Each iteration it
+//! round-robin steps EVERY active session by exactly ONE `decode_step` (one token of prefill OR
+//! one decode token), samples, checks stop, streams the token text back on that session's channel,
+//! and retires finished sessions. Queued admits fill empty slots up to `MAX_ACTIVE`. This is the
+//! interleave: a long generation and a freshly-admitted one make forward progress in the same loop,
+//! so the second produces tokens before the first finishes (not serialized end-to-end).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
+
+use bw24_engine::Engine;
+use bw24_engine::cache::Cache;
+use bw24_engine::decode::{GenParams, StopReason};
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::sampler::{Sampler, SamplerConfig};
+use bw24_gguf::GgufFile;
+use bw24_tokenizer::Tokenizer;
+
+/// Max concurrently-active sessions the scheduler interleaves. Admits beyond this queue (FIFO).
+pub const MAX_ACTIVE: usize = 4;
+
+/// A model loaded resident on the worker thread: weights + its own tokenizer + config snapshot.
+struct LoadedModel {
+    model: HybridModel,
+    tok: Tokenizer,
+    eos_id: u32,
+}
+
+/// What the worker streams back to one request, over its per-request tokio mpsc channel.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// One decoded token: the raw id + the incremental text delta (detokenized tail minus prefix).
+    Token { id: u32, text: String },
+    /// Terminal event: why we stopped + final token count + timing.
+    Done { stop_reason: String, n_tokens: usize, elapsed_s: f64 },
+    /// The request could not start (bad model name, ctx full at admit, etc).
+    Error(String),
+}
+
+/// A generation request submitted by an HTTP handler to the worker.
+pub struct Request {
+    pub model: String,
+    pub prompt_ids: Vec<u32>,   // already tokenized? no — worker tokenizes (it owns the Tokenizer)
+    pub prompt_text: String,
+    pub chat: bool,
+    pub params: GenParams,
+    pub sampler_cfg: SamplerConfig,
+    pub stop_strings: Vec<String>,
+    /// per-request stream back to the handler. tokio mpsc so the async side can await it.
+    pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
+}
+
+/// Control messages into the worker. Currently just generation requests; /models and /health are
+/// served from the cached model-name list captured at spawn (no need to round-trip the worker).
+pub enum Cmd {
+    Generate(Box<Request>),
+}
+
+/// Live per-session state on the worker thread. One `Session` per in-flight generation.
+/// Holds the per-session `Cache` (model-specific dims — NO sharing between sessions, which is what
+/// makes the concurrent streams byte-identical to isolated runs) and per-session `Sampler`.
+/// KV PREFIX REUSE (append-only continuation): retired sessions park (fed tokens, Cache,
+/// last_logits) here; a new request whose prompt EXACTLY EXTENDS a parked `fed` sequence takes
+/// the Cache and primes only the suffix. Correct by construction for hybrid models: the
+/// recurrent (conv/ssm) state in the Cache is the state AFTER the last fed token — the exact
+/// resume point for an append-only continuation. NO arbitrary-prefix truncation is attempted
+/// (GDN state cannot roll back without checkpoints); a non-extending prompt takes the cold path.
+/// NOTE chat-template callers: templates that rewrite history (e.g. stripping think blocks from
+/// prior assistant turns) break exact-extension and simply miss the pool — raw `prompt_ids`
+/// callers (agent loops) always hit. Pool: at most REUSE_POOL_PER_MODEL entries per model, LRU.
+struct ReuseEntry {
+    fed: Vec<u32>,
+    cache: Cache,
+    last_logits: Vec<f32>,
+    cap: usize,
+}
+const REUSE_POOL_PER_MODEL: usize = 2;
+/// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
+const REUSE_MIN_PREFIX: usize = 16;
+
+struct Session {
+    model: String,
+    cache: Cache,
+    sampler: Sampler,
+    last_logits: Vec<f32>,
+    /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
+    /// This is exactly the sequence whose KV + recurrent state live in `cache` — the resume
+    /// point for KV PREFIX REUSE on retire (see ReusePool).
+    fed: Vec<u32>,
+    /// prompt tokens still to be primed (consumed one per scheduler tick during prefill).
+    prefill_queue: std::collections::VecDeque<u32>,
+    prefill_done: bool,
+    generated: Vec<u32>,
+    params: GenParams,
+    stop_strings: Vec<String>,
+    /// detokenized text already emitted (to compute incremental deltas + stop-string matching).
+    emitted_text: String,
+    budget: usize,        // max tokens we may still generate
+    tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    t0: Instant,
+}
+
+/// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
+/// THIS thread (CUDA-context affinity), then runs the scheduler loop until the command channel
+/// closes. `models` = (name, gguf_path) pairs. Sends `ready_tx` once load completes (or the error).
+pub fn run(
+    models: Vec<(String, String)>,
+    rx: Receiver<Cmd>,
+    ready_tx: Sender<Result<Vec<String>, String>>,
+) {
+    // ---- one-time init on the worker thread: Engine + all models resident ----
+    let engine = match Engine::new(0) {
+        Ok(e) => e,
+        Err(err) => { let _ = ready_tx.send(Err(format!("Engine::new failed: {err}"))); return; }
+    };
+    // BW24_FAST is read ONCE here (same handling as run_gen): the matmul path consults the env var
+    // per-call, but logging it once keeps the worker's behavior explicit and stable for the run.
+    let fast = std::env::var("BW24_FAST").is_ok();
+    eprintln!("[worker] Engine ready (BW24_FAST={})", fast);
+
+    let mut loaded: HashMap<String, LoadedModel> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for (name, path) in &models {
+        eprintln!("[worker] loading model {name:?} <- {path}");
+        let g = match GgufFile::open(path) {
+            Ok(g) => g,
+            Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+        };
+        let model = match HybridModel::load(&engine, &g) {
+            Ok(m) => m,
+            Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
+        };
+        let tok = match Tokenizer::from_gguf(&g) {
+            Ok(t) => t,
+            Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
+        };
+        let eos_id = tok.eos_id();
+        eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
+        loaded.insert(name.clone(), LoadedModel { model, tok, eos_id });
+        order.push(name.clone());
+    }
+    let _ = ready_tx.send(Ok(order.clone()));
+
+    // ---- scheduler loop ----
+    let mut active: Vec<Session> = Vec::new();
+    let mut queue: std::collections::VecDeque<Box<Request>> = std::collections::VecDeque::new();
+    // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
+    let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
+
+    loop {
+        // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
+        //    otherwise poll non-blocking so the decode loop keeps interleaving.
+        if active.is_empty() && queue.is_empty() {
+            match rx.recv() {
+                Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
+                Err(_) => break, // all senders dropped -> shutdown
+            }
+        }
+        loop {
+            match rx.try_recv() {
+                Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if active.is_empty() { return; } else { break; }
+                }
+            }
+        }
+
+        // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
+        while active.len() < MAX_ACTIVE {
+            let Some(req) = queue.pop_front() else { break };
+            match admit(&engine, &loaded, &mut reuse, *req) {
+                Ok(s) => active.push(s),
+                Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
+            }
+        }
+
+        // 3. One round-robin pass: step every active session by exactly ONE decode_step.
+        let mut finished: Vec<usize> = Vec::new();
+        for i in 0..active.len() {
+            match step_session(&engine, &loaded, &mut active[i]) {
+                Ok(true) => {}                 // still running
+                Ok(false) => finished.push(i), // retired this tick
+                Err(err) => {
+                    let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                    finished.push(i);
+                }
+            }
+        }
+        // retire finished sessions (reverse order so indices stay valid). Long-enough sessions
+        // park their (fed, cache, last_logits) in the reuse pool instead of dropping the cache.
+        for &i in finished.iter().rev() {
+            let s = active.remove(i);
+            if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
+                let pool = reuse.entry(s.model.clone()).or_default();
+                if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
+                let cap = s.cache.max_ctx;
+                pool.push(ReuseEntry {
+                    fed: s.fed, cache: s.cache, last_logits: s.last_logits, cap,
+                });
+            }
+        }
+    }
+}
+
+fn handle_cmd(
+    cmd: Cmd,
+    loaded: &HashMap<String, LoadedModel>,
+    order: &[String],
+    queue: &mut std::collections::VecDeque<Box<Request>>,
+) {
+    match cmd {
+        Cmd::Generate(req) => {
+            if !loaded.contains_key(&req.model) {
+                let _ = req.tx.send(Event::Error(format!(
+                    "unknown model {:?}; loaded: {:?}", req.model, order)));
+                return;
+            }
+            queue.push_back(req);
+        }
+    }
+}
+
+/// Build a Session: tokenize the prompt (worker owns the Tokenizer), allocate the per-session Cache,
+/// build the per-session Sampler. The prompt is NOT primed here — it's fed one token per scheduler
+/// tick so prefill of a new session interleaves with other sessions' decode (the BASE-4 interleave).
+fn admit(
+    engine: &Engine,
+    loaded: &HashMap<String, LoadedModel>,
+    reuse: &mut HashMap<String, Vec<ReuseEntry>>,
+    req: Request,
+) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
+    let lm = &loaded[&req.model];
+
+    // Tokenize: prefer explicit prompt_ids (raw-id path, for the exact-token validation gate); else
+    // tokenize the text, optionally wrapping in the chat template.
+    let prompt: Vec<u32> = if !req.prompt_ids.is_empty() {
+        req.prompt_ids.clone()
+    } else if req.chat {
+        let rendered = lm.tok.apply_chat_template(&[("user", req.prompt_text.as_str())], true);
+        lm.tok.encode(&rendered, true)
+    } else {
+        lm.tok.encode(&req.prompt_text, true)
+    };
+    if prompt.is_empty() {
+        return Err((req.tx, "empty prompt after tokenization".into()));
+    }
+
+    // Context guard mirrors generate_with: prompt + gen
+```
+
+Diagnose the panic. Walk through the likely cause given the kv-reuse log line right before it, then propose a concrete fix with code. Then list two regression tests you would add.

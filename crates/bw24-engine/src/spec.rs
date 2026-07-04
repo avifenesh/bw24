@@ -1104,18 +1104,38 @@ impl HybridModel {
         // fill: the first chain step processes it and appends its entry at slot prompt.len().
         if let Some(ph) = &prompt_h {
             scratch.set_len(e, 0)?;
-            if h_prev_pairing {
-                // PREDECESSOR pairing: row i gets h[i-1]; row 0 a zeros row (the reference
-                // engine's initial pending-h is zeroed too). One contiguous dtod shift.
-                let t = prompt.len();
-                let mut phs = e.zeros(t * n_embd)?;
-                if t > 1 {
-                    e.copy_view_into(&mut phs, n_embd, &ph.slice(0..(t - 1) * n_embd),
-                                     (t - 1) * n_embd)?;
+            // CHUNKED FILL (long-ctx OOM fix, 2026-07-05): mtp_kv_fill's transients scale with its
+            // T (concat = T*2*n_embd*4B — 1.5GB at 40k) and its concat loop is 2*T launches. The
+            // fill is a pure sequential append, so chunking is exact: each chunk appends its rows
+            // at pos0=start with the identical per-row math. Same knob as the trunk prime.
+            let fill_chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(4096);
+            let tp = prompt.len();
+            let fill_chunk = if fill_chunk == 0 { tp } else { fill_chunk };
+            let mut start = 0usize;
+            while start < tp {
+                let end = (start + fill_chunk).min(tp);
+                let tc = end - start;
+                if h_prev_pairing {
+                    // PREDECESSOR pairing: row i gets h[i-1]; row 0 (global) a zeros row (the
+                    // reference engine's initial pending-h is zeroed too). Per chunk: rows
+                    // start..end read h[start-1..end-1] — one dtod into a chunk-sized buffer.
+                    let mut phs = e.zeros(tc * n_embd)?;
+                    let (src_lo, dst_off) = if start == 0 { (0, n_embd) } else { ((start - 1) * n_embd, 0) };
+                    let n_copy = if start == 0 { (tc - 1) * n_embd } else { tc * n_embd };
+                    if n_copy > 0 {
+                        e.copy_view_into(&mut phs, dst_off, &ph.slice(src_lo..src_lo + n_copy), n_copy)?;
+                    }
+                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phs, start, &mut scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                } else {
+                    let mut phc = e.zeros(tc * n_embd)?;
+                    e.copy_view_into(&mut phc, 0, &ph.slice(start * n_embd..end * n_embd),
+                                     tc * n_embd)?;
+                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phc, start, &mut scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
                 }
-                self.mtp_kv_fill(e, mtp, prompt, &phs, 0, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
-            } else {
-                self.mtp_kv_fill(e, mtp, prompt, ph, 0, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
+                start = end;
             }
         }
         let mut round = 0usize;

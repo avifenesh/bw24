@@ -35,7 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TEXT prompt path (BW24_PROMPT env): tokenize with the model's own tokenizer — REAL prompts
     // give the true acceptance rate (synthetic numeric sequences under-state it badly: the 27B
     // measured 45% on seq-101..228 vs ~75% on real code in the llama serve config).
-    let prompt: Vec<u32> = if let Ok(text) = std::env::var("BW24_PROMPT") {
+    let prompt: Vec<u32> = if let Ok(text) = std::env::var("BW24_PROMPT_FILE")
+            .map(|f| std::fs::read_to_string(&f).expect("BW24_PROMPT_FILE unreadable"))
+            .or_else(|_| std::env::var("BW24_PROMPT")) {
         let tok = bw24_tokenizer::Tokenizer::from_gguf(&g)?;
         let ids = tok.encode(&text, true);
         println!("text prompt ({} chars) -> {} tokens", text.len(), ids.len());
