@@ -856,7 +856,11 @@ impl HybridModel {
         // per-row loop (whose fa_decode picks scalar/vec per row exactly like eager decode).
         let mut attn = e.zeros(t * n_head * head_dim)?;
         let base_len = kvl.len - t;   // KV len BEFORE this round's T tokens were appended
-        if t > 1 && e.fa_rows_eligible(base_len, head_dim) {
+        // T=1 INCLUDED (2026-07-05): p-min cuts the draft to 1 in ~75% of rounds on hard
+        // (agentic) content — the old t>1 gate sent those rounds to the per-row loop (262us/row
+        // + q-row copy + per-row allocs vs 93us/row through the fused kernel at grid.z=1, same
+        // program). nsys accounting: 1088 of 1456 verify FA launches were T=1 escapees.
+        if e.fa_rows_eligible(base_len, head_dim) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
