@@ -130,6 +130,15 @@ impl SafetensorsSource {
             let alt = format!("model.{rest}");
             if let Some(r) = self.model.raw(&alt) { return Some(r); }
         }
+        // MiniMax-M3-VL nests the OTHER way round: `language_model.model.layers.*` /
+        // `language_model.lm_head.weight` (whole text model under a `language_model.` root).
+        if hf_name.starts_with("model.") || hf_name == "lm_head.weight" {
+            let alt = format!("language_model.{hf_name}");
+            if let Some(r) = self.model.raw(&alt) { return Some(r); }
+        }
+        if let Some(rest) = hf_name.strip_prefix("language_model.") {
+            if let Some(r) = self.model.raw(rest) { return Some(r); }
+        }
         None
     }
 

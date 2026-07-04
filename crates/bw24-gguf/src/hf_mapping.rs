@@ -21,7 +21,7 @@ use crate::config::{Arch, ModelConfig};
 /// Translate a requested ggml tensor name into the HF safetensors name (DENSE tensors only —
 /// a plain rename with no value transform). Returns `None` if the ggml name has no known HF
 /// equivalent for this arch (e.g. SSM tensors, which go through `resolve_ggml`).
-pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
+pub fn ggml_to_hf(ggml: &str, arch: &Arch) -> Option<String> {
     // Top-level tensors (arch-independent across Llama/Qwen dense).
     match ggml {
         "token_embd.weight" => return Some("model.embed_tokens.weight".into()),
@@ -33,6 +33,25 @@ pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
     // Per-layer: "blk.{il}.{suffix}".
     let rest = ggml.strip_prefix("blk.")?;
     let (il, suffix) = rest.split_once('.')?;
+
+    // MiniMax-M3 MoE-side names live under `block_sparse_moe.` (Mixtral-style), with DeepSeek-V3
+    // routing extras (e_score_correction_bias) and `shared_experts.{p}_proj` (plural, no gate_inp).
+    // Dense FFN layers (moe_layer_freq==0) keep the standard `mlp.{p}_proj` names below.
+    if arch.is_minimax() {
+        let m3_suffix: Option<&str> = match suffix {
+            "ffn_gate_inp.weight" => Some("block_sparse_moe.gate.weight"),
+            // llama.cpp ggml name for the DeepSeek-V3 selection bias is `exp_probs_b.bias`.
+            "exp_probs_b.bias" => Some("block_sparse_moe.e_score_correction_bias"),
+            "ffn_gate_shexp.weight" => Some("block_sparse_moe.shared_experts.gate_proj.weight"),
+            "ffn_up_shexp.weight" => Some("block_sparse_moe.shared_experts.up_proj.weight"),
+            "ffn_down_shexp.weight" => Some("block_sparse_moe.shared_experts.down_proj.weight"),
+            _ => None,
+        };
+        if let Some(s) = m3_suffix {
+            return Some(format!("model.layers.{il}.{s}"));
+        }
+    }
+
     let hf_suffix: &str = match suffix {
         // attention block
         "attn_norm.weight" => "input_layernorm.weight",
@@ -64,9 +83,20 @@ pub fn ggml_to_hf(ggml: &str, _arch: &Arch) -> Option<String> {
 
 /// HF name for a single expert's projection weight (for the MoE gather+concat path).
 /// ggml stacks all experts into one 3D tensor; HF stores them separately. `proj` is one of
-/// "gate", "up", "down". This is the qwen3moe / olmoe layout (`mlp.experts.{e}.{p}_proj.weight`);
-/// a future arch using `block_sparse_moe.experts.*` (Mixtral) would need a branch here.
-pub fn hf_expert_name(il: u32, e: u32, proj: &str) -> String {
+/// "gate", "up", "down". Two layouts:
+///   * qwen3moe / olmoe: `mlp.experts.{e}.{gate,up,down}_proj.weight`
+///   * MiniMax-M3 (Mixtral-style): `block_sparse_moe.experts.{e}.{w1,w2,w3}.weight`
+///     (w1=gate, w2=down, w3=up — the Mixtral convention)
+pub fn hf_expert_name(il: u32, e: u32, proj: &str, arch: &Arch) -> String {
+    if arch.is_minimax() {
+        let w = match proj {
+            "gate" => "w1",
+            "down" => "w2",
+            "up" => "w3",
+            other => panic!("unknown expert proj {other}"),
+        };
+        return format!("model.layers.{il}.block_sparse_moe.experts.{e}.{w}.weight");
+    }
     let p = match proj {
         "gate" => "gate_proj",
         "up" => "up_proj",
@@ -309,7 +339,7 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
                     if let Some(e) = e_part.strip_suffix(".weight") {
                         if let Ok(eid) = e.parse::<u32>() {
                             if let Ok(ilid) = il.parse::<u32>() {
-                                return Some(HfTarget::Plain(hf_expert_name(ilid, eid, proj)));
+                                return Some(HfTarget::Plain(hf_expert_name(ilid, eid, proj, &cfg.arch)));
                             }
                         }
                     }
@@ -331,7 +361,17 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
         }
     }
 
-    // 3. Dense plain rename (zero-copy).
+    // 3. MiniMax-M3 gemma-norm: out = normed*(1+w) — fold the +1 into the weight at load so the
+    //    engine's plain RMSNorm runs unchanged (exact; same fold the qwen35 converter applies).
+    //    Applies to EVERY norm in the text model (input/post_attention layernorm, q/k_norm,
+    //    model.norm — and index_q/k_norm when the MSA arc lands).
+    if cfg.m3.as_ref().is_some_and(|m| m.use_gemma_norm) && is_plusone_norm(ggml) {
+        if let Some(hf) = ggml_to_hf(ggml, &cfg.arch) {
+            return Some(HfTarget::Transform { hf, kind: TransformKind::NormPlusOne });
+        }
+    }
+
+    // 4. Dense plain rename (zero-copy).
     ggml_to_hf(ggml, &cfg.arch).map(HfTarget::Plain)
 }
 
@@ -410,8 +450,17 @@ mod tests {
 
     #[test]
     fn expert_names() {
-        assert_eq!(hf_expert_name(2, 13, "gate"), "model.layers.2.mlp.experts.13.gate_proj.weight");
-        assert_eq!(hf_expert_name(0, 0, "down"), "model.layers.0.mlp.experts.0.down_proj.weight");
+        assert_eq!(hf_expert_name(2, 13, "gate", &Arch::Qwen3Moe),
+                   "model.layers.2.mlp.experts.13.gate_proj.weight");
+        assert_eq!(hf_expert_name(0, 0, "down", &Arch::Qwen3Moe),
+                   "model.layers.0.mlp.experts.0.down_proj.weight");
+        // MiniMax-M3 Mixtral-style layout: w1=gate, w2=down, w3=up.
+        assert_eq!(hf_expert_name(5, 63, "gate", &Arch::MinimaxM3),
+                   "model.layers.5.block_sparse_moe.experts.63.w1.weight");
+        assert_eq!(hf_expert_name(5, 63, "down", &Arch::MinimaxM3),
+                   "model.layers.5.block_sparse_moe.experts.63.w2.weight");
+        assert_eq!(hf_expert_name(5, 63, "up", &Arch::MinimaxM3),
+                   "model.layers.5.block_sparse_moe.experts.63.w3.weight");
     }
 
     /// The V-head reorder permutation: HF grouped [0,1, 2,3, ...] -> ggml tiled [0,2,...,1,3,...].

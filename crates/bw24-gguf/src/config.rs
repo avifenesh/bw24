@@ -85,6 +85,21 @@ pub struct MoeConfig {
     pub expert_shared_ff_length: u32,   // NEW: qwen35moe.expert_shared_feed_forward_length = 512
 }
 
+/// MiniMax-M3-specific forward-pass knobs (config.json, minimax_m3_vl text_config).
+#[derive(Debug, Clone)]
+pub struct M3Config {
+    pub use_gemma_norm: bool,           // (1+w) RMSNorm — folded into weights at load
+    pub sigmoid_routing: bool,          // scoring_func == "sigmoid" (DeepSeek-V3 style)
+    pub use_routing_bias: bool,         // e_score_correction_bias on SELECTION only
+    pub routed_scaling_factor: f32,     // 2.0 — multiplies the normalized routing weights
+    pub n_shared_experts: u32,          // 1
+    pub swiglu_alpha: f32,              // swigluoai: gate*sigmoid(alpha*gate), clamp at limit
+    pub swiglu_limit: f32,              // 7.0
+    pub rotary_dim: u32,                // partial RoPE (64 of head_dim 128)
+    pub dense_intermediate_size: u32,   // dense-FFN layers' n_ff (12288)
+    pub moe_layer_freq: Vec<u32>,       // per-layer 0=dense 1=moe (len == n_layer)
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub arch: Arch,
@@ -107,6 +122,8 @@ pub struct ModelConfig {
     pub ssm: Option<SsmConfig>,
     // moe
     pub moe: Option<MoeConfig>,
+    // MiniMax-M3 extras (None for every other arch)
+    pub m3: Option<M3Config>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -175,6 +192,7 @@ impl ModelConfig {
             full_attention_interval: u("full_attention_interval").unwrap_or(0),
             ssm,
             moe,
+            m3: None,   // GGUF M3 metadata keys are a later arc (ST import first)
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -191,17 +209,34 @@ impl ModelConfig {
         let head_dim_v = head_dim_k;
         let n_head_kv = c.num_key_value_heads.unwrap_or(n_head);
 
-        let moe = if c.num_experts.is_some() || arch.is_moe() {
+        let moe = if c.num_experts.is_some() || c.num_local_experts.is_some() || arch.is_moe() {
             Some(MoeConfig {
-                expert_count: c.num_experts.unwrap_or(0),
+                // M3 names the count `num_local_experts`, the shared FF `shared_intermediate_size`.
+                expert_count: c.num_experts.or(c.num_local_experts).unwrap_or(0),
                 expert_used_count: c.num_experts_per_tok.unwrap_or(0),
                 // OLMoE has no separate `moe_intermediate_size`; its experts use `intermediate_size`.
                 expert_ff_length: c.moe_intermediate_size.unwrap_or(c.intermediate_size),
-                expert_shared_ff_length: c.shared_expert_intermediate_size.unwrap_or(0),
+                expert_shared_ff_length: c.shared_expert_intermediate_size
+                    .or(c.shared_intermediate_size).unwrap_or(0),
             })
         } else {
             None
         };
+
+        let m3 = if arch.is_minimax() {
+            Some(M3Config {
+                use_gemma_norm: c.use_gemma_norm.unwrap_or(false),
+                sigmoid_routing: c.scoring_func.as_deref() == Some("sigmoid"),
+                use_routing_bias: c.use_routing_bias.unwrap_or(false),
+                routed_scaling_factor: c.routed_scaling_factor.unwrap_or(1.0),
+                n_shared_experts: c.n_shared_experts.unwrap_or(0),
+                swiglu_alpha: c.swiglu_alpha.unwrap_or(1.702),
+                swiglu_limit: c.swiglu_limit.unwrap_or(7.0),
+                rotary_dim: c.rotary_dim.unwrap_or(0),
+                dense_intermediate_size: c.dense_intermediate_size.unwrap_or(c.intermediate_size),
+                moe_layer_freq: c.moe_layer_freq.clone().unwrap_or_default(),
+            })
+        } else { None };
 
         let ssm = if arch.is_hybrid() {
             // qwen3_5 linear-attn config keys (text_config). Mirror the GGUF ssm.* fields the hybrid
@@ -232,11 +267,13 @@ impl ModelConfig {
             context_length: c.max_position_embeddings,
             rms_eps: c.rms_norm_eps,
             rope_freq_base: c.rope_theta,
-            rope_dim_count: head_dim_k,
+            // partial RoPE: M3 rotates only rotary_dim (64) of head_dim (128).
+            rope_dim_count: c.rotary_dim.unwrap_or(head_dim_k),
             rope_sections: Vec::new(),
             full_attention_interval: c.full_attention_interval.unwrap_or(0),
             ssm,
             moe,
+            m3,
             nextn_predict_layers: c.num_nextn_predict_layers.unwrap_or(0),
             n_layer_total: c.num_hidden_layers + c.num_nextn_predict_layers.unwrap_or(0),
         }
@@ -728,5 +765,59 @@ mod minimax_tests {
         let mc = ModelConfig::from_hf(&cfg);
         assert!(mc.arch.is_moe() && mc.arch.is_minimax());
         assert_eq!(mc.moe.as_ref().unwrap().expert_count, 64);
+        assert_eq!(mc.moe.as_ref().unwrap().expert_shared_ff_length, 3072);
+        assert_eq!(mc.rope_dim_count, 64);   // partial RoPE from rotary_dim
+        let m3 = mc.m3.as_ref().unwrap();
+        assert!(m3.use_gemma_norm && m3.sigmoid_routing && m3.use_routing_bias);
+        assert_eq!(m3.routed_scaling_factor, 2.0);
+        assert_eq!(m3.n_shared_experts, 1);
+        assert_eq!((m3.swiglu_alpha, m3.swiglu_limit), (1.702, 7.0));
+        assert_eq!(m3.dense_intermediate_size, 12288);
+        assert_eq!(m3.moe_layer_freq.iter().filter(|&&x| x == 0).count(), 3); // 3 dense layers
+    }
+
+    /// Name-mapping against the REAL REAP50 shard index: every text-model tensor pattern the
+    /// loader will request must resolve to a name present in the safetensors index.
+    #[test]
+    fn minimax_name_mapping_against_index() {
+        use crate::hf_mapping::{ggml_to_hf, hf_expert_name, resolve_ggml, HfTarget};
+        let cfg = ModelConfig::from_hf(&HfConfig::parse(&std::fs::read_to_string(
+            "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/config.json").unwrap()));
+        let idx: std::collections::HashSet<String> = {
+            let txt = std::fs::read_to_string(
+                "/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50/model.safetensors.index.json").unwrap();
+            // crude but sufficient: harvest every JSON key that looks like a tensor name
+            txt.split('"').filter(|s| s.contains('.') && !s.contains(' '))
+                .map(|s| s.to_string()).collect()
+        };
+        // the VL wrapper prefixes the text model with `language_model.` — the source's lookup()
+        // fallback strips/adds it; here emulate that for the assertion.
+        let has = |hf: &str| idx.contains(hf) || idx.contains(&format!("language_model.{hf}"));
+
+        // top-level + dense attention/norm names (layer 0 = dense-FFN layer, layer 3 = MoE)
+        for g in ["token_embd.weight", "output_norm.weight", "output.weight"] {
+            let hf = ggml_to_hf(g, &cfg.arch).unwrap();
+            assert!(has(&hf), "{g} -> {hf} not in index");
+        }
+        for g in ["blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.0.attn_v.weight",
+                  "blk.0.attn_output.weight", "blk.0.attn_q_norm.weight", "blk.0.attn_k_norm.weight",
+                  "blk.0.attn_norm.weight", "blk.0.ffn_norm.weight",
+                  "blk.0.ffn_gate.weight", "blk.0.ffn_up.weight", "blk.0.ffn_down.weight",
+                  "blk.3.ffn_gate_inp.weight", "blk.3.exp_probs_b.bias",
+                  "blk.3.ffn_gate_shexp.weight", "blk.3.ffn_up_shexp.weight",
+                  "blk.3.ffn_down_shexp.weight"] {
+            let hf = ggml_to_hf(g, &cfg.arch).unwrap_or_else(|| panic!("{g} unmapped"));
+            assert!(has(&hf), "{g} -> {hf} not in index");
+        }
+        // Mixtral-style per-expert names (w1=gate, w2=down, w3=up)
+        for proj in ["gate", "down", "up"] {
+            let hf = hf_expert_name(3, 63, proj, &cfg.arch);
+            assert!(has(&hf), "expert {proj} -> {hf} not in index");
+        }
+        // gemma-norm fold: norms must resolve through the Transform(NormPlusOne) arm
+        match resolve_ggml("blk.0.attn_norm.weight", &cfg) {
+            Some(HfTarget::Transform { kind: crate::hf_mapping::TransformKind::NormPlusOne, .. }) => {}
+            _ => panic!("gemma-norm fold not applied to attn_norm"),
+        }
     }
 }
