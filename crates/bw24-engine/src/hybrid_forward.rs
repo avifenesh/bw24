@@ -791,13 +791,16 @@ impl HybridModel {
         };
 
         // 4. PER ACTIVE EXPERT: gather, compute, scatter.
-        // Processing ORDER: default = ascending expert id. BW24_MOE_ORDER=desc processes active
-        // experts by DESCENDING m_e (biggest token batches first) — the spill/capped-cache
-        // experiment: serve the big batches while eviction pressure is lowest so their blocks have
-        // the best retention odds across forwards. Order is FREE to change without breaking the
-        // byte-identity gate: the slot scheme pins each token's accumulation order regardless of
-        // expert processing order (that is the whole point of the slots).
-        let desc = std::env::var("BW24_MOE_ORDER").map(|v| v == "desc").unwrap_or(false);
+        // Processing ORDER: DEFAULT = DESCENDING m_e (biggest token batches first);
+        // BW24_MOE_ORDER=id restores ascending expert id. Measured (rig5090, 2026-07-04): desc is
+        // a first-forward win at partial cache capacity — the hot (big-m_e) experts are admitted
+        // to the SLRU before the small-m_e tail can pollute it, so residency converges in ONE
+        // forward instead of several: auto-cache T=501 126.9 -> 169.9 tok/s (1.34x), cap512
+        // 119.6 -> 160.8 (and kills the rep-to-rep bimodal); wash (<2%) at cap64 pure-spill and
+        // at long prompts where every expert stages regardless. Order is FREE to change without
+        // breaking the byte-identity gate: the slot scheme pins each token's accumulation order
+        // regardless of expert processing order (the whole point of the slots).
+        let desc = std::env::var("BW24_MOE_ORDER").map(|v| v != "id").unwrap_or(true);
         let mut order: Vec<usize> =
             (0..n_expert).filter(|&ex| !groups[ex].tok_indices.is_empty()).collect();
         if desc {
