@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 from collections import Counter
@@ -40,9 +41,23 @@ from typing import Iterator, Optional
 # Paths
 # ---------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CORPUS = os.path.normpath(
-    os.path.join(HERE, "..", "tune-data", "rig5090.jsonl")
-)
+# The corpus is the WHOLE tune-data directory: every per-rig file
+# (rig5090.jsonl, g7e-rtx6000.jsonl, l40s-sm89.jsonl, ...) is globbed and
+# concatenated so `rig` is a real multi-value conditioning variable rather than
+# a constant. DEFAULT_CORPUS is that directory; load() resolves it to all
+# *.jsonl inside. A single file or a glob pattern is still accepted.
+DEFAULT_CORPUS_DIR = os.path.normpath(os.path.join(HERE, "..", "tune-data"))
+DEFAULT_CORPUS = DEFAULT_CORPUS_DIR
+# The primary rig's file — the oracle's "append your latest result here" target
+# (see ORACLE.md). Named separately so appends still know exactly one file.
+PRIMARY_RIG_FILE = os.path.join(DEFAULT_CORPUS_DIR, "rig5090.jsonl")
+# Model-quality tracking rows (rig="corpus-meta") are written here by
+# train_gbm.py --append-meta so the corpus tracks how the stage-b head scores as
+# it grows. These are NOT training data: corpus_files() EXCLUDES this file from
+# the default glob so meta rows never enter the LOO folds. Load it explicitly
+# (--file model-meta.jsonl) to inspect the history.
+META_RIG = "corpus-meta"
+MODEL_META_FILE = os.path.join(DEFAULT_CORPUS_DIR, "model-meta.jsonl")
 
 REQUIRED_FIELDS = (
     "ts", "rig", "commit", "change", "kernel",
@@ -122,6 +137,7 @@ class Record:
     idx: int
     raw: dict
     issues: list = field(default_factory=list)
+    source: str = ""  # basename of the rig file this record came from
 
     # convenience accessors -------------------------------------------------
     @property
@@ -266,25 +282,46 @@ def validate_record(rec: Record) -> list:
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+def corpus_files(path: str = DEFAULT_CORPUS) -> list:
+    """Resolve `path` to a sorted list of JSONL files. `path` may be a directory
+    (loads every *.jsonl inside — the default, all rig files), a glob pattern,
+    or a single file."""
+    if os.path.isdir(path):
+        meta = os.path.basename(MODEL_META_FILE)
+        return sorted(p for p in glob.glob(os.path.join(path, "*.jsonl"))
+                      if os.path.basename(p) != meta)
+    hits = sorted(glob.glob(path))
+    return hits if hits else [path]
+
+
 def load(path: str = DEFAULT_CORPUS, validate: bool = True) -> list:
-    """Load a JSONL corpus into a list[Record]. Raises on malformed JSON lines
-    (that IS fatal); schema issues are attached to record.issues when
-    validate=True."""
+    """Load a JSONL corpus into a list[Record], concatenating every rig file
+    under `path` (see corpus_files). Raises on malformed JSON lines (that IS
+    fatal); schema issues are attached to record.issues when validate=True.
+    record.source records which rig file each row came from."""
     records = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"{path}:{lineno}: bad JSON: {e}") from e
-            rec = Record(idx=len(records), raw=obj)
-            if validate:
-                rec.issues = validate_record(rec)
-            records.append(rec)
+    for fp in corpus_files(path):
+        src = os.path.basename(fp)
+        with open(fp, "r", encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"{fp}:{lineno}: bad JSON: {e}") from e
+                rec = Record(idx=len(records), raw=obj, source=src)
+                if validate:
+                    rec.issues = validate_record(rec)
+                records.append(rec)
     return records
+
+
+def labeled(records: list) -> list:
+    """Records whose label is a valid class — the only ones scorable by the LOO
+    eval. Guards the loader against future non-conforming rows."""
+    return [r for r in records if r.label in VALID_LABELS]
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +347,9 @@ def summarize(records: list) -> dict:
     labels = Counter(r.label for r in records)
     comps = Counter(r.component for r in records)
     signs = Counter(r.speedup_sign for r in records)
+    rigs = Counter(r.rig for r in records)
+    per_rig = {rig: dict(Counter(r.label for r in records if r.rig == rig))
+               for rig in rigs}
     with_ratio = sum(1 for r in records if r.signed_speedup is not None)
     n_issues = sum(1 for r in records if r.issues)
     return {
@@ -317,6 +357,8 @@ def summarize(records: list) -> dict:
         "labels": dict(labels),
         "components": dict(comps),
         "speedup_signs": dict(signs),
+        "rigs": dict(rigs),
+        "per_rig_labels": per_rig,
         "with_headline_ratio": with_ratio,
         "records_with_issues": n_issues,
     }
@@ -330,8 +372,12 @@ def _main() -> None:
     records = load(args.file, validate=True)
     s = summarize(records)
     print(f"corpus: {args.file}")
+    print(f"files: {[os.path.basename(f) for f in corpus_files(args.file)]}")
     print(f"records: {s['n']}")
     print(f"labels: {s['labels']}")
+    print(f"per-rig: {s['rigs']}")
+    for rig, lab in s["per_rig_labels"].items():
+        print(f"    {rig}: {lab}")
     print(f"components: {s['components']}")
     print(f"speedup signs: {s['speedup_signs']}  (headline ratio present in {s['with_headline_ratio']}/{s['n']})")
     print(f"records with validation issues: {s['records_with_issues']}")

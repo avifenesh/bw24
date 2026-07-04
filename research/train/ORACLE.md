@@ -48,8 +48,38 @@ Both are **CPU-only** — the GPU is left alone for the kernel work
 
 ## After you run the experiment
 
-Append the result — win, loss, or measurement — as one JSONL line to
-`research/tune-data/rig5090.jsonl` (schema + measurement rules in that dir's
-`README.md`). Reverts and gate-breaks are the most valuable rows; record them
-with `label: negative` and the mechanism. The oracle gets better the moment the
-file grows — no rebuild step, `baseline.py` reads the corpus live.
+Append the result — win, loss, or measurement — as one JSONL line to your rig's
+file (`research/tune-data/rig5090.jsonl` on this box; each rig has its own file,
+schema + measurement rules in that dir's `README.md`). Reverts and gate-breaks
+are the most valuable rows; record them with `label: negative` and the
+mechanism. The oracle gets better the moment the file grows — no rebuild step,
+`baseline.py` reads every rig file live.
+
+## Cadence — re-score the arm after every ~10 new records
+
+The corpus is also the training set for the stage-b head. After roughly every 10
+new records, re-run the whole scoreboard with one command:
+
+```bash
+research/train/eval.sh
+```
+
+It (1) validates all rig files + prints a per-rig summary, (2) runs the
+retrieval LOO baseline, and (3) runs the stage-b head (GBM + LogReg) on the
+**same** frozen leave-one-out folds and prints one table vs
+(majority, retrieval-BGE, retrieval-TF-IDF) with Wilson 95% CIs. It is CPU-only,
+offline, and finishes in under a minute at N~65 (it auto-uses the colbert-2 venv
+for BGE when present, else TF-IDF only).
+
+To snapshot the current model quality into the corpus's own history:
+
+```bash
+research/train/train_gbm.py --append-meta   # writes one row to model-meta.jsonl
+```
+
+Those `corpus-meta` rows track how the head scores as the corpus grows and are
+excluded from the training folds. Honest status at N=65: the stage-b head does
+**not** yet beat retrieval as a point predictor — its label edge is the
+structured row-type signal, and the decision-relevant speedup-sign is still at
+or below the majority bar. See `TRAIN-DESIGN.md` §(b) for the measured table and
+the graduation criterion.
