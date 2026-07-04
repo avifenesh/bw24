@@ -204,6 +204,29 @@ Landed chain: batched linear verify → GPU-argmax draft → persistent snapshot
 
 ---
 
+## 27B PREFILL/TTFT ARC — LOCAL LANE (Fable, main branch, 2026-07-05)
+
+North-star: close the 27B prefill/TTFT gap (vLLM prefills the same 27B NVFP4 5.6-6.8x faster; local vLLM 27B prefill 4.9k tok/s vs bw24 ~0.8k). Goal 27B TTFT p3 <1s, e2e >100 tok/s.
+
+**STAGE 0 — baseline re-measured (commit 1e5bfab, N=3, free clocks, JSONL `1e5bfab (baseline re-measure...)`):** 27B prime .289/2.419/7.864s p1/p2/p3 (matches HANDOVER ref within 1.1%, no thermal sag). pp-only tok/s FLAT vs T: 810/773/804 @ T=512/1845/6257. nsys p3: qmatvec_gemm_nvfp4_rp (int8 W4A8) = **79.6% of prefill**, fa_prefill 4%, gdn cluster 4.9%, quantize 4.5%. Peak VRAM 9.5GB. First-16 reference tokens captured for all 6 (model,prompt) cells (the arc's agreement gate).
+- **CHUNKED-PREFILL SCHEDULING = NO-GO (measured, cheap-stage-first per the plan):** pp tok/s is already flat in T with no long-T degradation, and bw24 prefills one request in one batched pass with no inter-request scheduler. vLLM's chunked-prefill is a *multi-request* scheduling win, not a single-request kernel win. The 6x gap is in the GEMM. Zero-accuracy-risk stage yielded zero — do not build it for single-request TTFT.
+
+**STAGE 1 — vendored NVFP4 W4A4 MMQ A/B = NEGATIVE (accuracy gate), commit 1e5bfab, JSONL `A/B ... vendored llama NVFP4 W4A4 MMQ`:** BW24_MMQ=1 (needs BW24_RP=0; the A6 repack silently bypasses it). 3-arm interleaved, N=3. **Perf is real: 27B pp 2.7-3.0x (810→2414/2295/2202 tok/s), p3 prime 7.86→2.93s; 9B 2.2-2.4x. mul_mat_q_nvfp4 = 43.6% of ARM_B p3 prefill (engaged).** BUT the W4A4 activation quant is the gate-breaker: 27B argmax 82==82 MATCH yet **p3 first-16 FORKS AT INDEX 0** (emits think-token prefix 248046/248045); 9B **argmax FAILS 78!=82** + p1 forks at index 8. kernel-check ALL GREEN + run-spec K=1..8 self-consistent (internally exact) — so it's the historical W4A4 accuracy class (maxdiff ~1.0) reproduced at e2e, NOT a bug. **CUTLASS W4A4 (cu/cutlass_fp4_sm120.cu, the OFF seams) inherits this exact class — do NOT build resident/OTF CUTLASS until the ACTIVATION side changes.** Keep BW24_MMQ W4A4 as an opt-in speed/accuracy tradeoff.
+
+**STAGE 2 — THE ACCURACY-SAFE RUNG (identified, NOT yet built — next resume, GPU-in-hand):** W4A8 on the SAME fast MMQ tile. llama's NON-Blackwell NVFP4 MMQ path is exactly this and vendors 1:1:
+  - `mmq.cuh:1069 load_tiles_nvfp4` (the `#else`/non-BLACKWELL branch) LUT-dequants FP4→int8 via `get_int_from_table_16(src_qs, kvalues_mxfp4)` into the int8 x_qs tile + `x_df` = `ggml_cuda_ue4m3_to_fp32(bxi->d[sub])` per-16 scale (NVFP4 is symmetric — no min-offset, simpler than k-quants).
+  - vec_dot = `mmq.cuh:1495 vec_dot_q8_0_16_q8_1_mma` (int8 m16n8k32 mma, W4A8), traits at `mmq.cuh:3337` `#else` arm; tile size `MMQ_DP4A_TXS_Q8_0_16` / `MMQ_MMA_TILE_X_K_NVFP4` (`:221`, `%8==4` padded).
+  - Activation quant = `quantize_mmq_q8_1` DS4 — ALREADY vendored in `cu/mmq_q45k.cu` (`quantize_mmq_q8_1_ds4_kernel`); reuse it. The whole q45k MMA/writeback/xy-tiling scaffold (`mul_mat_q_q45k`, `mmq_write_back_q45k`) is reusable — add a `load_tiles_nvfp4_w4a8` + a `bw24_mmq_nvfp4_w4a8` C-ABI launcher alongside the existing bw24_mmq_nvfp4 (W4A4) in `cu/mmq_fp4.cu` or a sibling TU.
+  - EXPECTED: keeps bw24's current int8-W4A8 accuracy class (which passes ALL gates — it IS the default GEMM's math) at ~Q4_K-MMQ throughput (llama's k-quant MMQ pp is in the 4500-5000 band). This is the honest path to a fast AND argmax-exact prefill.
+  - GATE IT: kernel-check MMQ-vs-oracle rel in the int8 band (~1e-3, NOT the 0.1 W4A4 band); run-gen 82==82; first-16 vs the Stage-0 reference lists MUST match on all 6 cells; run-spec K=1..8 PASS. Only then wire into matmul/matmul_pre and A6-repack (needs an rp tile loader OR keep rp-off for the MMQ path like today).
+  - THEN reconsider CUTLASS: only worth it if W4A8-MMQ leaves a large-m gap CUTLASS's native-FP4 tensor cores close AND an FP8-activation variant (sm_120 block-FP8 mma, 381 TFLOP) can hold the gate — W4A4 is closed.
+
+**NO_EVT DEFAULT-FLIP — SHIPPED in this arc (lib.rs):** event tracking now DEFAULT OFF, `BW24_EVT=1` = escape hatch (legacy BW24_NO_EVT is a no-op alias). Cross-stream hazard audit (in the code comment): copy_stream touched by only stage_expert_async (ZERO callers) + the moe_cache admit barrier (gated on `prefetch_active`, setter never called); graph-capture sites use live-state `was_tracking` guards → degrade to no-ops. +4.6% measured 27B decode. Full gate battery running to confirm flip-safe before commit.
+
+**DECAY-STUDY STAMPS (research/e2e/g7e-decay-study-stamps.jsonl):** independent second opinion on lane/g7e 6bcf8e1/438db11 from raw artifacts (/tmp/g7e-decay). (a) acceptance content-driven not ctx-driven = **CONFIRMED** (prose control -0.5pp over 4400 ctx vs code -12pp; decomposition arithmetic re-derived 41.8/58.2 vs claimed 41.1/58.9). (b) FA-verify-cost = **CONFIRMED** (independent sqlite: p1 54us vs p3 373.5us/instance, +2.56ms/round == claim). Main thread landed its own stamp in g7e-rtx6000.jsonl (aggregates FA as 4.64ms/16.9%-of-round total vs my growth-only 2.56ms — same direction, complementary framing). Ranked lever (fa rows shared-K reuse) is a G7e-lane priority.
+
+---
+
 ## CURRENT TASK — DONE (2026-07-03). vendor Q4_K/Q5_K MMQ ✅
 
 Landed as `cu/llama_mmq_q45k.cu` (new TU, self-contained), unified `qmatvec_mmq` dispatch in
