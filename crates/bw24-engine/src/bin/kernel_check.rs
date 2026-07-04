@@ -615,9 +615,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // NVFP4 GEMM vs dp4a on the 9B model (separate path: per-tensor macro-scale + in_f%64).
     {
         use bw24_gguf::{GgufFile, GgmlType};
-        const GGUF_9B: &str =
-            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
-        if std::path::Path::new(GGUF_9B).exists() {
+        // Resolve the first existing NVFP4 model (box paths differ from the dev rig). The gates
+        // below filter by tensor name+type, so a model that lacks a given tensor just skips it.
+        let gguf_9b_owned = [
+            "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+            "/home/ubuntu/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf",
+            "/home/ubuntu/bw24-bench/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+        ].into_iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string());
+        if let Some(GGUF_9B) = gguf_9b_owned.as_deref() {
             let g = GgufFile::open(GGUF_9B)?;
             // Q5_K GEMM vs dp4a (attn_gate is Q5_K in 9B).
             if let Some(t) = g.find("blk.0.attn_gate.weight").filter(|t| t.ggml_type == GgmlType::Q5_K) {
@@ -702,6 +707,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let rel = d / scale;
                     println!("MMQ-GEMM blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (informational; \
                               authoritative gate = argmax) {}", if rel < 2e-1 { "OK" } else { "HIGH" });
+                }
+            }
+            // --- STAGE 2: VENDORED llama NVFP4 W4A8 MMQ GEMM vs the f32 dequant oracle. ---
+            // The accuracy-safe rung: weight FP4 is LUT-dequantized to int8 (bit-exact) and the
+            // activation stays q8_1 int8 -> rel MUST sit in the int8-activation band (~1e-3..1e-2),
+            // NOT the 0.1 W4A4 band. This is a HARD gate (2e-2) — the whole point of the rung is that
+            // it holds the int8 accuracy class the default GEMM passes all e2e gates with.
+            if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
+                use bw24_gguf::dequant;
+                use bw24_runtime::cpu_linear;
+                let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                let raw = g.tensor_data(t);
+                let w_f32 = dequant::dequantize(GgmlType::NVFP4, raw, in_f * out_f);
+                let wd = e.htod_bytes(raw)?;
+                for tt in [16usize, 64, 128, 512] {
+                    let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
+                    let xd = e.htod(&x)?;
+                    let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                    let yb = e.dtoh(&e.qmatvec_mmq_nvfp4_w4a8_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                    let d = maxdiff(&cpu, &yb);
+                    let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                    let rel = d / scale;
+                    println!("MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (int8 band ~1e-3) {}",
+                             if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
             // --- VENDORED llama Q4_K/Q5_K MMQ GEMM vs the f32 dequant oracle. ---

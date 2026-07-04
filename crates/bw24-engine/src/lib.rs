@@ -1231,7 +1231,7 @@ impl Engine {
         // default below. Feeds raw f32 activation `x` + raw NVFP4 weight bytes (the launcher quantizes
         // the activation internally). out_f>=MMQ_Y/2 guard keeps the tile grid from starving the SMs.
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F
-            && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
+            && (std::env::var("BW24_MMQ").is_ok() || std::env::var("BW24_MMQ_W4A8").is_ok()) && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.gemm_supports(w) {
@@ -1341,7 +1341,7 @@ impl Engine {
         // VENDORED llama MMQ prefill GEMMs (BW24_MMQ=1) — use the RAW f32 activation (their own
         // internal quant: FP8/UE4M3 for NVFP4, q8_1 DS4 for Q4_K/Q5_K), so read x_fallback not aq/ad.
         if m >= 16 && w.out_features() >= 128
-            && std::env::var("BW24_MMQ").is_ok() && self.mmq_supports(w) {
+            && (std::env::var("BW24_MMQ").is_ok() || std::env::var("BW24_MMQ_W4A8").is_ok()) && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs

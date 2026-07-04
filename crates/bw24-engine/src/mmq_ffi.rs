@@ -33,6 +33,21 @@ unsafe extern "C" {
         stream: *mut core::ffi::c_void,
         out_scale: f32,
     ) -> i32;
+    /// Bytes needed for the block_q8_1_mmq activation scratch for the NVFP4 W4A8 path.
+    pub fn bw24_mmq_nvfp4_w4a8_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Run the NVFP4 W4A8 MMQ prefill GEMM (STAGE 2 accuracy-safe rung). Same fast MMQ tile as
+    /// bw24_mmq_nvfp4 (W4A4) but the non-Blackwell int8 pair: weight FP4 LUT-dequantized to int8 at
+    /// tile-load, activation stays q8_1 int8 (D4, the same quant class as the default int8 GEMM).
+    /// Same contract as bw24_mmq_nvfp4. Returns 0 or (1000 + cudaError).
+    pub fn bw24_mmq_nvfp4_w4a8(
+        w_nvfp4_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32, out_f: i32, n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Bytes needed for the stream-K fixup scratch (partial-tile f32 sums, one dense 128x128 tile
@@ -92,6 +107,10 @@ impl Engine {
             return Err("qmatvec_mmq: not a Quant tensor".into());
         };
         match *qtype {
+            // STAGE 2: BW24_MMQ_W4A8=1 routes NVFP4 to the accuracy-safe int8 W4A8 MMQ tile
+            // (weight FP4->int8 dequant + q8_1 activation) instead of the W4A4 mxf4nvf4 mma.
+            q if q == crate::QT_NVFP4 && std::env::var("BW24_MMQ_W4A8").is_ok() =>
+                self.qmatvec_mmq_nvfp4_w4a8(bytes, x, m, in_f, out_f, *scale),
             q if q == crate::QT_NVFP4 => self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale),
             q if q == crate::QT_Q4_K || q == crate::QT_Q5_K => {
                 let mut y = self.qmatvec_mmq_q45k_raw(bytes, x, m, in_f, out_f, q)?;
@@ -190,6 +209,51 @@ impl Engine {
                 )
             };
             if rc != 0 { return Err(format!("bw24_mmq_nvfp4 rc={rc}").into()); }
+        }
+        Ok(y)
+    }
+
+    /// STAGE 2 W4A8 MMQ NVFP4: same tile as the W4A4 path, but weight FP4 is LUT-dequantized to
+    /// int8 at tile-load and the activation stays q8_1 int8 — the accuracy-safe rung. Macro-scale
+    /// folded into the write-back epilogue (bit-identical to a post-matmul scale_inplace).
+    pub fn qmatvec_mmq_nvfp4_w4a8(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                  in_f: usize, out_f: usize, scale: f32)
+                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, scale)
+    }
+
+    /// Bare W4A8 MMQ launch (no macro-scale) — for the kernel_check accuracy gate.
+    pub fn qmatvec_mmq_nvfp4_w4a8_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                      in_f: usize, out_f: usize)
+                                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0)
+    }
+
+    fn qmatvec_mmq_nvfp4_w4a8_scaled(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                     in_f: usize, out_f: usize, scale: f32)
+                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 64 == 0, "MMQ NVFP4 W4A8 requires in_f % 64 == 0, got {in_f}");
+        let act_bytes = unsafe { bw24_mmq_nvfp4_w4a8_act_bytes(in_f as i32, m as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        {
+            let stream = &self.gpu.stream;
+            let (w_p, _gw) = bytes.device_ptr(stream);
+            let (x_p, _gx) = x.device_ptr(stream);
+            let (y_p, _gy) = y.device_ptr_mut(stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_mmq_nvfp4_w4a8(
+                    w_p as *const core::ffi::c_void,
+                    x_p as *const f32,
+                    y_p as *mut f32,
+                    in_f as i32, out_f as i32, m as i32,
+                    s_p as *mut core::ffi::c_void,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                    scale,
+                )
+            };
+            if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8 rc={rc}").into()); }
         }
         Ok(y)
     }
