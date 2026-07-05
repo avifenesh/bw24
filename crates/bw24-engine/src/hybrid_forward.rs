@@ -576,6 +576,11 @@ impl HybridModel {
         if t > 1 && std::env::var("BW24_MOE_GROUPED").is_ok() {
             let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
             // BW24_MOE_GATE: byte-identity comparison vs sequential path.
+            // KNOWN t>1 MISMATCH maxdiff ~3.4e-4 (deterministic, 5x bit-identical 2026-07-05): the
+            // sequential arm routes resident experts through the dev_q8 dp4a path (q8_1-quantized z
+            // and act rows) while grouped stays f32-dequant qmatvec — a quantize-path difference,
+            // not a bug (per-stage: act q8-vs-f32 ~4-9e-3 abs on |act|<=3, down-only ~1-3e-4; the
+            // q8_1 activation-quantize error class). BW24_MOE_Q8=0 restores BYTE-IDENTICAL.
             if std::env::var("BW24_MOE_GATE").is_ok() {
                 let seq_out = Self::moe_ffn_sequential(e, m, z, t, cfg, il, max_block)?;
                 let g_host = e.dtoh(&grouped_out)?;
