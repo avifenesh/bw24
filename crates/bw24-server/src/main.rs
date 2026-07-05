@@ -86,6 +86,32 @@ struct CompletionResp {
     elapsed_s: f64,
 }
 
+/// OpenAI-compat mapping (2026-07-05, serve-parity arc): the pi daily client speaks
+/// `openai-completions` — POST /v1/completions with the OpenAI body, expecting
+/// `{choices:[{text, finish_reason, index}], usage:{...}}` and, when streaming, OpenAI SSE
+/// chunks (`data: {choices:[{text}]}` ... `data: [DONE]`). pi renders the chat template
+/// CLIENT-side (thinkingFormat qwen-chat-template), so raw-prompt completions is the whole
+/// contract. BW24_COMPAT=openai (default when BW24_API_KEY is set — the pi setup) switches the
+/// response shape; the native bw24 shape stays default otherwise (validation harnesses use it).
+fn openai_compat() -> bool {
+    static C: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        match std::env::var("BW24_COMPAT").as_deref() {
+            Ok("openai") => true,
+            Ok(_) => false,
+            Err(_) => std::env::var("BW24_API_KEY").is_ok(),
+        }
+    })
+}
+
+fn stop_reason_to_finish(r: &str) -> &'static str {
+    match r {
+        "Eos" | "Callback" => "stop",
+        "MaxNew" | "ContextFull" => "length",
+        _ => "stop",
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let models = parse_models_config();
@@ -168,7 +194,16 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
     }
 }
 
-async fn completions(State(st): State<AppState>, Json(req): Json<CompletionReq>) -> Response {
+async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
+                     Json(req): Json<CompletionReq>) -> Response {
+    // API key (BW24_API_KEY): OpenAI-style `Authorization: Bearer <key>`. Absent env = open.
+    if let Ok(key) = std::env::var("BW24_API_KEY") {
+        let ok = headers.get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.strip_prefix("Bearer ").map(|k| k == key).unwrap_or(false))
+            .unwrap_or(false);
+        if !ok { return (StatusCode::UNAUTHORIZED, "invalid api key").into_response(); }
+    }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
@@ -192,14 +227,31 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
         while let Some(ev) = rx.recv().await {
             match ev {
                 Event::Token { id, text } => {
-                    let payload = json!({ "model": model, "id": id, "text": text }).to_string();
+                    let payload = if openai_compat() {
+                        json!({ "object": "text_completion", "model": model,
+                                "choices": [{ "index": 0, "text": text, "finish_reason": null }] })
+                            .to_string()
+                    } else {
+                        json!({ "model": model, "id": id, "text": text }).to_string()
+                    };
                     yield Ok(SseEvent::default().data(payload));
                 }
                 Event::Done { stop_reason, n_tokens, elapsed_s } => {
-                    let payload = json!({
-                        "stop_reason": stop_reason, "n_tokens": n_tokens, "elapsed_s": elapsed_s
-                    }).to_string();
-                    yield Ok(SseEvent::default().event("done").data(payload));
+                    if openai_compat() {
+                        let fin = json!({ "object": "text_completion", "model": model,
+                            "choices": [{ "index": 0, "text": "",
+                                          "finish_reason": stop_reason_to_finish(&stop_reason) }],
+                            "usage": { "completion_tokens": n_tokens,
+                                       "total_tokens": n_tokens,
+                                       "elapsed_s": elapsed_s } }).to_string();
+                        yield Ok(SseEvent::default().data(fin));
+                        yield Ok(SseEvent::default().data("[DONE]".to_string()));
+                    } else {
+                        let payload = json!({
+                            "stop_reason": stop_reason, "n_tokens": n_tokens, "elapsed_s": elapsed_s
+                        }).to_string();
+                        yield Ok(SseEvent::default().event("done").data(payload));
+                    }
                     break;
                 }
                 Event::Error(msg) => {
@@ -221,6 +273,15 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
         match ev {
             Event::Token { id, text: delta } => { tokens.push(id); text.push_str(&delta); }
             Event::Done { stop_reason, n_tokens, elapsed_s } => {
+                if openai_compat() {
+                    return Json(json!({
+                        "object": "text_completion", "model": model,
+                        "choices": [{ "index": 0, "text": text,
+                                      "finish_reason": stop_reason_to_finish(&stop_reason) }],
+                        "usage": { "completion_tokens": n_tokens, "total_tokens": n_tokens,
+                                   "elapsed_s": elapsed_s }
+                    })).into_response();
+                }
                 return Json(CompletionResp {
                     model, text, tokens, stop_reason, n_tokens, elapsed_s,
                 }).into_response();
