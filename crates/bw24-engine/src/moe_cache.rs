@@ -65,6 +65,22 @@ pub struct MoeSlotCache {
     /// H2D is in flight, so reusing a slot cannot race one). The disk-tier prefetch sets this on.
     prefetch_active: bool,
 
+    // --- LAUNCH-STRUCTURE STAGE 3 (2026-07-05): device-side expert-pointer indirection ---
+    /// Resident-block count per LAYER (all 3 projections summed). When a layer reaches
+    /// 3*n_expert every routed block of that layer is cache-resident at a fixed address, so the
+    /// whole layer can dispatch via the DEVICE pointer table with ZERO host routing (no router
+    /// DtoH, no per-layer stream sync — the round-trip stall the decode profile measured at
+    /// ~36us x 40 layers/token). Maintained by admit/evict.
+    per_layer: HashMap<u16, u32>,
+    /// Per-layer device pointer row [3, n_expert] of slot base addresses (u64), uploaded lazily
+    /// when the layer first reads as fully resident. Slots are fixed-address for the cache's
+    /// lifetime, so a row stays valid until an eviction touches that layer (which drops the row
+    /// -> re-upload on next full residency).
+    dev_rows: HashMap<u16, CudaSlice<u64>>,
+    /// Layers whose one-shot prewarm was already attempted (success or not) — spill rigs whose
+    /// free slots can't hold a full layer must not re-scan 3*n_expert blocks every token.
+    prewarm_tried: HashSet<u16>,
+
     // --- §D.4 instrumentation ---
     pub hits: u64,
     pub misses: u64,
@@ -115,6 +131,7 @@ impl MoeSlotCache {
             ghost: HashSet::new(), staging, staging_next: 0,
             n, protected_cap, max_block_bytes,
             prefetch_active: false,
+            per_layer: HashMap::new(), dev_rows: HashMap::new(), prewarm_tried: HashSet::new(),
             hits: 0, misses: 0, staged_bytes: 0,
         })
     }
@@ -171,14 +188,30 @@ impl MoeSlotCache {
     /// LRU front; if probation empty, demote protected LRU -> probation then evict. Returns the slot.
     fn evict_one(&mut self) -> usize {
         if let Some(s) = self.probation.pop_front() {
-            if let Some(old) = self.occupant[s].take() { self.table.remove(&old); }
+            if let Some(old) = self.occupant[s].take() {
+                self.table.remove(&old);
+                self.on_block_evicted(old.layer);
+            }
             return s;
         }
         if let Some(s) = self.protected.pop_front() {
-            if let Some(old) = self.occupant[s].take() { self.table.remove(&old); }
+            if let Some(old) = self.occupant[s].take() {
+                self.table.remove(&old);
+                self.on_block_evicted(old.layer);
+            }
             return s;
         }
         unreachable!("evict_one called with no resident slots (n>=8 guarantees occupancy)");
+    }
+
+    /// STAGE 3 bookkeeping: a resident block of `layer` was evicted — the layer is no longer fully
+    /// resident, so its device pointer row (if uploaded) must be invalidated. NOTE: the row's device
+    /// buffer is dropped here, which is safe because the fully-resident fast path is only taken when
+    /// `dev_rows` contains the layer at DISPATCH time and all launches consuming the row were
+    /// enqueued BEFORE this eviction's staging memcpy on the same stream (single-stream ordering).
+    fn on_block_evicted(&mut self, layer: u16) {
+        if let Some(c) = self.per_layer.get_mut(&layer) { *c -= 1; }
+        self.dev_rows.remove(&layer);
     }
 
     /// Stage `host_bytes` into a NON-retained transient staging slot (first miss, ghost-only). The
@@ -213,6 +246,7 @@ impl MoeSlotCache {
         self.occupant[slot] = Some(id);
         self.table.insert(id, slot);
         self.probation.push_back(slot);
+        *self.per_layer.entry(id.layer).or_insert(0) += 1;  // STAGE 3 residency count
         Ok(slot)
     }
 
@@ -263,6 +297,58 @@ impl MoeSlotCache {
                        -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(s) = self.table.get(&id).copied() { return Ok(s); }
         self.admit(id, host_bytes, e)
+    }
+
+    /// STAGE 3 one-shot PREWARM: force-admit every block of `layer` while FREE slots can hold it
+    /// (never evicts — a spill rig whose cache can't fit the layer just skips; organic residency
+    /// still applies). Runs at most once per layer (success or not). The H2D copies are the SAME
+    /// stage_expert bytes the miss path would issue — bit-identity unchanged; this only front-loads
+    /// them so the device-dispatch fast path fires from token 0 instead of after the SLRU fill.
+    pub fn prewarm_layer(&mut self, layer: u16, m: &crate::hybrid::MoeWeights, e: &Engine)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        if !self.prewarm_tried.insert(layer) { return Ok(()); }
+        let n_expert = m.gate_exps.n_expert;
+        let resident = self.per_layer.get(&layer).copied().unwrap_or(0) as usize;
+        let missing = 3 * n_expert - resident;
+        if self.free.len() < missing { return Ok(()); }  // won't evict for a prewarm
+        for ex in 0..n_expert {
+            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+                                 (PROJ_DOWN, &m.down_exps)] {
+                let id = BlockId::new(layer, proj, ex as u16);
+                if self.table.contains_key(&id) { continue; }
+                self.admit(id, exps.expert_bytes(ex), e)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// STAGE 3: device pointer row for a FULLY-RESIDENT layer. Returns the [3, n_expert] u64 slot
+    /// base-address table (proj-major: gate row, up row, down row) if EVERY block of `layer` is
+    /// cache-resident, else None (caller falls back to host routing). The row is built+uploaded on
+    /// first full residency and reused until an eviction touches the layer. `n_expert` is the
+    /// layer's expert count (the full-residency threshold is 3*n_expert blocks).
+    pub fn layer_dev_row(&mut self, layer: u16, n_expert: usize, e: &Engine)
+                         -> Result<Option<&CudaSlice<u64>>, Box<dyn std::error::Error>> {
+        if self.per_layer.get(&layer).copied().unwrap_or(0) as usize != 3 * n_expert {
+            return Ok(None);
+        }
+        if !self.dev_rows.contains_key(&layer) {
+            use cudarc::driver::DevicePtr;
+            let mut host = vec![0u64; 3 * n_expert];
+            for proj in 0..3u8 {
+                for ex in 0..n_expert {
+                    let Some(&s) = self.table.get(&BlockId::new(layer, proj, ex as u16)) else {
+                        // count said fully resident but a block is missing — inconsistent; bail safe.
+                        return Ok(None);
+                    };
+                    let (p, _ev) = self.slots[s].device_ptr(e.stream());
+                    host[proj as usize * n_expert + ex] = p as u64;
+                }
+            }
+            let row = e.stream().clone_htod(&host)?;
+            self.dev_rows.insert(layer, row);
+        }
+        Ok(self.dev_rows.get(&layer))
     }
 
     /// Resolve a `DispatchSlot` to the device buffer to feed `qmatvec_view`.

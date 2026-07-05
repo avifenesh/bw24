@@ -3180,3 +3180,90 @@ extern "C" __global__ void moe_down8_fma_f32(
     }
     if (tid == 0) dst[o] = chain;
 }
+
+// ================================================================================================
+// LAUNCH-STRUCTURE STAGE 3 (2026-07-05): DEVICE-SIDE ROUTED DISPATCH for fully-resident layers.
+//
+// The stage-1 router still pays ONE DtoH + stream sync per MoE layer per token (~36us of host
+// stall x 40 layers = the largest non-kernel slice of the 35B decode wall after stage 2). When
+// EVERY block of a layer is SLRU-resident (prewarmed or organically), the host does not need
+// sel/w at all: these twins read the router's device sel/w output directly and fetch the 8
+// expert weight pointers from a per-layer device table [3, n_expert] of slot base addresses
+// (gate row, up row, down row — fixed addresses for the cache's lifetime).
+//
+// BIT-IDENTITY vs moe_gate_up_silu8_f32/moe_down8_fma_f32: the ONLY change is where the weight
+// pointer and the w scalar come from (device loads instead of kernel params). Same grid/block,
+// same dot reduction order, same SiLU expression, same slot-ordered __fmaf_rn chain. The sel/w
+// VALUES are the same bits either way (both paths consume moe_router_topk_f32's output).
+// ================================================================================================
+extern "C" __global__ void moe_gate_up_silu8_dev(
+        const unsigned long long* __restrict__ table,  // [3, n_expert] slot base addresses
+        const int* __restrict__ sel,                   // [n_used] this token's expert ids (device)
+        const float* __restrict__ x, float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;              // expert-FFN row 0..n_ff-1
+    int j = blockIdx.y;              // routed-expert slot 0..n_used-1
+    int tid = threadIdx.x;
+    __shared__ float s[32];
+    __shared__ float g_final;
+    const int ex = sel[j];           // broadcast load
+    // ---- gate dot: EXACT qmatvec_f32 structure ----
+    const unsigned char* grow = (const unsigned char*)(uintptr_t)table[ex] + (long)o * rb_g;
+    float acc = 0.0f;
+    for (int i = tid; i < in_f; i += blockDim.x) acc += deq(qt_g, grow, i) * x[i];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) g_final = v;
+    }
+    __syncthreads();                 // s + g_final ready; s reused below
+    // ---- up dot: same structure ----
+    const unsigned char* urow = (const unsigned char*)(uintptr_t)table[n_expert + ex] + (long)o * rb_u;
+    float acc2 = 0.0f;
+    for (int i = tid; i < in_f; i += blockDim.x) acc2 += deq(qt_u, urow, i) * x[i];
+    for (int off = 16; off > 0; off >>= 1) acc2 += __shfl_down_sync(0xffffffff, acc2, off);
+    if ((tid & 31) == 0) s[tid >> 5] = acc2;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+        if (tid == 0) {
+            float g = g_final;
+            // silu_mul_f32's exact expression on the exact dot values.
+            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * v;
+        }
+    }
+}
+
+extern "C" __global__ void moe_down8_fma_dev(
+        const unsigned long long* __restrict__ table,  // [3, n_expert]; down row at 2*n_expert
+        const int* __restrict__ sel,                   // [n_used] (device)
+        const float* __restrict__ w,                   // [n_used] renormalized weights (device)
+        const float* __restrict__ act, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o = blockIdx.x;
+    int tid = threadIdx.x;
+    __shared__ float s[32];
+    float chain = 0.0f;              // tid 0's slot-ordered accumulator (other threads' unused)
+    for (int j = 0; j < n_used; j++) {
+        const unsigned char* wrow =
+            (const unsigned char*)(uintptr_t)table[2 * n_expert + sel[j]] + (long)o * rb;
+        const float* xrow = act + (size_t)j * in_f;
+        float acc = 0.0f;
+        for (int i = tid; i < in_f; i += blockDim.x) acc += deq(qt, wrow, i) * xrow[i];
+        for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffff, acc, off);
+        if ((tid & 31) == 0) s[tid >> 5] = acc;
+        __syncthreads();
+        if (tid < 32) {
+            float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+            for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
+            // slot-ordered FMA chain == the sequential axpy_f32 accumulation (see header).
+            if (tid == 0) chain = __fmaf_rn(w[j], v, chain);
+        }
+        __syncthreads();             // s[] reused next iteration
+    }
+    if (tid == 0) dst[o] = chain;
+}

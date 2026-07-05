@@ -15,6 +15,23 @@ fn gdec_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
+/// zero-DtoH device-dispatch path for fully-resident layers: router top-k output stays on device,
+/// expert weight pointers come from the per-layer device table. Requires the fused router (the
+/// dev path consumes the device sel/w directly), so BW24_FUSED_ROUTER=0 also disables it.
+fn moe_dev_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_DEV").map(|v| v != "0").unwrap_or(true)
+        && !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")))
+}
+
+/// STAGE 3 prewarm gate (BW24_MOE_PREWARM, default ON; `=0` leaves residency organic). One-shot
+/// per layer: force-admit every block while FREE slots cover the whole layer (never evicts).
+fn moe_prewarm_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_PREWARM").map(|v| v != "0").unwrap_or(true))
+}
+
 /// Minimum prompt length for the BATCHED cache prime (`prime_cache`). Below this the tokenwise
 /// decode loop wins anyway (the batched path's GEMM dispatch needs m>=16, and the stateful conv
 /// kernel needs T >= d_conv-1). Callers: generate / generate_spec.
@@ -586,8 +603,34 @@ impl HybridModel {
         debug_assert_eq!(m.down_exps.out_f, n_embd);   //                     out=2048
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
+        let use_cache = Engine::moe_cache_enabled();
+
         // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> e.linear.
         let logits = e.matmul(&m.gate_inp, z, t)?;
+
+        // LAUNCH-STRUCTURE STAGE 3 (2026-07-05, BW24_MOE_DEV default ON, =0 rollback): ZERO-DtoH
+        // device-dispatch when this layer's expert blocks are ALL cache-resident. The fused
+        // router's sel/w stay ON DEVICE; the expert weight pointers come from the per-layer
+        // device table of fixed slot addresses; gate/up/silu + down/fma run as the same TWO
+        // launches per token as gdec. Removes the per-layer router DtoH + stream sync — the
+        // per-token host stall that dominated the 35B decode wall after stages 1+2.
+        // BIT-IDENTITY: the router kernel is selection-exact vs the host oracle (kernel-check
+        // tie gate) and the _dev matvec twins reproduce the gdec kernels' exact FP chains; the
+        // only difference is where sel/w/pointers are READ from (device instead of params).
+        // Residency: one-shot PREWARM force-admits the layer while free slots cover it
+        // (BW24_MOE_PREWARM=0 -> organic residency, dev path fires when the SLRU fills).
+        // Any non-resident layer falls through to host routing + the gdec/sequential path.
+        if use_cache && n_used <= 8 && moe_dev_enabled()
+            && std::env::var("BW24_MOE_STATS").is_err() {
+            let row_ok = e.with_moe_cache(max_block, |c, eng| {
+                if moe_prewarm_enabled() { c.prewarm_layer(il, m, eng)?; }
+                Ok(c.layer_dev_row(il, n_expert, eng)?.is_some())
+            })?;
+            if row_ok {
+                return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
+            }
+        }
+
         // Per-token (sel[8], w[8]) — either fused-router (device top-k) or host softmax+sort.
         let (sel_all, w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
 
@@ -605,17 +648,15 @@ impl HybridModel {
                      il, t, sel_all.len(), active, n_expert, h, (n_expert as f64).log2(), total / active.max(1) as f64, maxc);
         }
 
-        let use_cache = Engine::moe_cache_enabled();
-
-        // LAUNCH-STRUCTURE STAGE 2 (2026-07-05): moe_out memset elision on the gdec decode path.
+        // LAUNCH-STRUCTURE STAGE 2 (2026-07-05): moe_out memset elision on the gdec path.
         // moe_down8_fma_f32 FULLY overwrites its token row (dst[o] = the in-kernel FMA chain that
         // starts at 0.0f — numerically the axpy-into-zeroed-row chain), so when the grouped-decode
         // path fires the upfront `e.zeros(t*n_embd)` memset is pure launch churn. Allocate uninit
-        // when gdec CAN fire (t==1 decode, cache on) and lazily zero ONLY the row of a token that
-        // falls through to the sequential axpy loop. Prefill (t>1, gdec off) keeps the single
-        // upfront zeros. BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
+        // when gdec CAN fire (any t — decode t=1 AND the spec verify t=K+1 route here per token)
+        // and lazily zero ONLY the row of a token that falls through to the sequential axpy loop.
+        // BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
         // zeroed-then-accumulated exactly as before (fallback).
-        let gdec_may_fire = t == 1 && use_cache && n_used <= 8 && gdec_enabled();
+        let gdec_may_fire = use_cache && n_used <= 8 && gdec_enabled();
         let mut moe_out = if gdec_may_fire { e.uninit(t * n_embd)? } else { e.zeros(t * n_embd)? };
 
         // GPU scratch: one slot per proj, big enough for ONE expert (default stage-every-token path).
@@ -824,6 +865,69 @@ impl HybridModel {
             }
         }
         Ok((sel, w_out))
+    }
+
+    /// LAUNCH-STRUCTURE STAGE 3: the ZERO-DtoH fully-resident MoE FFN. Caller guarantees the
+    /// layer's device pointer row exists (checked under the cache lock). Router top-k runs on
+    /// device; sel/w are consumed by the `_dev` matvec twins directly; NOTHING crosses PCIe.
+    /// Same numerics as the fused-router + gdec chain (kernel-level bit-identity, see the
+    /// kernel headers); the shared-expert epilogue is byte-identical to moe_ffn_sequential's.
+    #[allow(clippy::too_many_arguments)]
+    fn moe_ffn_dev(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, logits: &CudaSlice<f32>,
+                   t: usize, cfg: &ModelConfig, il: u16, max_block: usize)
+                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+
+        // device top-k: sel [t, n_used] i32, w [t, n_used] f32 — stays on device.
+        let (sel_d, w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
+
+        // moe_out rows are FULLY overwritten by moe_down8_fma_dev — uninit (stage-2 rule).
+        let mut moe_out = e.uninit(t * n_embd)?;
+
+        // Launch under the cache lock: the row borrow lives as long as the closure, and the
+        // lock covers only launch ISSUE (µs), same policy as moe_cached_gemm.
+        e.with_moe_cache(max_block, |c, eng| {
+            let row = c.layer_dev_row(il, n_expert, eng)?
+                .ok_or("moe_ffn_dev: layer row vanished under the lock")?;
+            for tok in 0..t {
+                let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);
+                let selt = sel_d.slice(tok * n_used..(tok + 1) * n_used);
+                let wt = w_d.slice(tok * n_used..(tok + 1) * n_used);
+                let act = eng.moe_gate_up_silu8_dev(row, &selt, &zt, n_embd, n_ff_exp,
+                                                    n_used, n_expert,
+                                                    m.gate_exps.qtype, m.up_exps.qtype,
+                                                    m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                eng.moe_down8_fma_dev(row, &selt, &wt, &act, &mut dst,
+                                      n_ff_exp, n_embd, n_used, n_expert,
+                                      m.down_exps.qtype, m.down_exps.row_bytes)?;
+            }
+            // instrumentation parity with the host paths (3 blocks/expert-slot, all hits).
+            c.hits += (t * 3 * n_used) as u64;
+            Ok(())
+        })?;
+
+        // SHARED EXPERT epilogue — byte-identical to moe_ffn_sequential step 3.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();
+            let sg_gate = e.matmul(gate_shexp, z, t)?;
+            let sg_up = e.matmul(up_shexp, z, t)?;
+            let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
+            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            let sh = e.matmul(down_shexp, &sa, t)?;
+            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+            let mut g = e.uninit(t)?;  // sigmoid fully overwrites
+            e.sigmoid(&gs, &mut g, t)?;
+            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+        }
+
+        Ok(moe_out)
     }
 
     /// STAGE-2 GROUPED DECODE (2026-07-04): run ONE token's whole routed-expert FFN in TWO

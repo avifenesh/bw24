@@ -588,6 +588,50 @@ impl Engine {
         Ok(())
     }
 
+    /// LAUNCH-STRUCTURE STAGE 3: device-dispatch twin of `moe_gate_up_silu8` for FULLY-RESIDENT
+    /// layers. The expert ids come from the router kernel's DEVICE `sel` output (no DtoH) and the
+    /// weight pointers from the per-layer device table `[3, n_expert]` of slot base addresses.
+    /// BIT-IDENTICAL math (same grid/block/reduction; only the pointer/id source differs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8_dev(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
+                                 x: &cudarc::driver::CudaView<f32>,
+                                 in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                 qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_dev");
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;  // fully overwritten
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                        rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(x).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    /// LAUNCH-STRUCTURE STAGE 3: device-dispatch twin of `moe_down8_fma_into` — expert ids AND
+    /// renormalized weights read from the router kernel's device output. BIT-IDENTICAL chain.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_dev(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
+                             w: &cudarc::driver::CudaView<f32>, act: &CudaSlice<f32>,
+                             dst: &mut cudarc::driver::CudaViewMut<f32>,
+                             in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
+                             qt: i32, rb: usize)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_down8_fma_dev");
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, nu, ne, rbv) = (in_f as i32, out_f as i32, n_used as i32,
+                                        n_expert as i32, rb as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(w).arg(act).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbv);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// dst[i] += alpha * src[i], i in 0..n. dst is a CudaViewMut (a row of moe_out).
     pub fn axpy_into(&self, src: &CudaSlice<f32>, alpha: f32,
                      dst: &mut cudarc::driver::CudaViewMut<f32>, n: usize)
