@@ -21,3 +21,9 @@ tools/ggml_list_tensors
 probe/int8_swizzle_aload
 probe/q4k_transient_decode
 probe/*.o
+lane/
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+probe/mxf4_transient_repack
+probe/kv_align_probe
