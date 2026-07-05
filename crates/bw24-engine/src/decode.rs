@@ -337,10 +337,11 @@ impl HybridModel {
             x = x2;
         }
 
-        // h_seed = trunk hidden BEFORE output_norm (the NextN head's `h` input, §A).
-        let h_seed = e.clone_dtod(&x)?;
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        // h_seed = trunk hidden BEFORE output_norm (default, §A) or AFTER it (BW24_SPEC_HPOST,
+        // the reference engines' convention — see spec::spec_hpost).
+        let h_seed = if crate::spec::spec_hpost() { e.clone_dtod(&hn)? } else { e.clone_dtod(&x)? };
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
         cache.pos += 1;

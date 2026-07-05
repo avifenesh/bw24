@@ -250,19 +250,28 @@ impl HybridModel {
             x = x2;
         }
 
-        // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A seed convention).
+        // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A default) or AFTER it
+        // (BW24_SPEC_HPOST — reference convention; hn is computed just below either way, so
+        // the post-norm copy happens after hn exists).
         let mut h_seed = e.zeros(n_embd)?;
-        e.copy_view_into(&mut h_seed, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        if !crate::spec::spec_hpost() {
+            e.copy_view_into(&mut h_seed, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        }
         // last-row logits, exactly like forward_last (norm all T — per-row op — then lm_head on 1 row).
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        if crate::spec::spec_hpost() {
+            e.copy_view_into(&mut h_seed, 0, &hn.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
+        }
         let last = e.view(&hn, t * n_embd);
         let last_row = last.slice((t - 1) * n_embd..t * n_embd);
         let mut hlast = e.zeros(n_embd)?;
         e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
         let logits = e.matmul(&self.output, &hlast, 1)?;
         cache.pos += t;
-        Ok((e.dtoh(&logits)?, h_seed, x))
+        // Hidden stack handed to generate_spec as prompt_h: pre-norm x (default) or the full
+        // post-norm stack hn (BW24_SPEC_HPOST).
+        Ok((e.dtoh(&logits)?, h_seed, if crate::spec::spec_hpost() { hn } else { x }))
     }
 
     /// `full_attn` (batched prefill mixer) + the cache side-effect: append the T post-RoPE K/V

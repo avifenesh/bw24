@@ -15,6 +15,18 @@ use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MtpHead}
 use crate::cache::{Cache, KvLayer};
 use crate::forward::argmax;
 
+/// H-SEED CONVENTION (BW24_SPEC_HPOST=1): feed the MTP head the POST-norm hidden — trunk rows
+/// hand over `output_norm(x)` and the draft chain recurrence hands over `shared_head_norm(h_nextn)`
+/// (= final_h) — matching the reference engines: llama.cpp #24025 ("qwen35: use post-norm hidden
+/// state for MTP", t_h_nextn is taken AFTER the final norm in both trunk and MTP graphs) and
+/// SGLang's qwen3_5_mtp (spec_info.hidden_states = the target model's post-norm output). bw24's
+/// historical convention (default, MTP-PLAN §A) is PRE-norm x. Draft-quality-only: exactness is
+/// the verify's job either way; acceptance arbitrates. OnceLock: read once, hot-loop safe.
+pub(crate) fn spec_hpost() -> bool {
+    static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *H.get_or_init(|| std::env::var("BW24_SPEC_HPOST").map(|v| v != "0").unwrap_or(false))
+}
+
 /// Scratch KV for the MTP block (one full-attn layer).
 ///
 /// PERSISTENT MODE (default, 2026-07-03 — the acceptance lever): sized cap = max_ctx and kept in
@@ -213,7 +225,9 @@ impl HybridModel {
         // op 12: draft_logits = (shared_head_head OR output) @ final — stays ON DEVICE.
         let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
         let logits = e.matmul(head, &final_h, 1)?;
-        Ok((logits, h_nextn))
+        // Chain recurrence hand-over: pre-norm h_nextn (default) or post-norm final_h
+        // (BW24_SPEC_HPOST — llama.cpp #24025's t_h_nextn is taken AFTER the head norm).
+        Ok((logits, if spec_hpost() { final_h } else { h_nextn }))
     }
 
     /// MTP-block full attention, T=1, on the scratch KV (BOTH draft paths — eager and graph):
@@ -408,18 +422,26 @@ impl HybridModel {
         };
         let mut h_nextn = e.zeros(n_embd)?;
         e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
-        if with_head {
+        // BW24_SPEC_HPOST needs final_h even head-less (it IS the next seed under that convention).
+        let final_h = if with_head || spec_hpost() {
             let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
-            let mut final_h = e.zeros(n_embd)?;
-            e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
+            let mut fh = e.zeros(n_embd)?;
+            e.rms_norm(&h_nextn, final_norm.float_data(), &mut fh, n_embd, 1, eps)?;
+            Some(fh)
+        } else { None };
+        if with_head {
             let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
-            let logits = e.matmul(head, &final_h, 1)?;
+            let logits = e.matmul(head, final_h.as_ref().unwrap(), 1)?;
             // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
             e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
             if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
         }
-        // h_nextn becomes the next draft step's h_seed — copy into the persistent seed buffer.
-        e.copy_into(h_seed_d, 0, &h_nextn, n_embd)?;
+        // Next draft step's h_seed: pre-norm h_nextn (default) or post-norm final_h (HPOST).
+        if spec_hpost() {
+            e.copy_into(h_seed_d, 0, final_h.as_ref().unwrap(), n_embd)?;
+        } else {
+            e.copy_into(h_seed_d, 0, &h_nextn, n_embd)?;
+        }
         // advance the draft rope position in-graph.
         e.inc_seqlen(pos_d)?;
         Ok(())
@@ -597,7 +619,8 @@ impl HybridModel {
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         cache.pos += t;
-        Ok((logits, x))
+        // Hidden stack for seeds/refresh-fills: pre-norm x (default) or post-norm hn (HPOST).
+        Ok((logits, if spec_hpost() { hn } else { x }))
     }
 
     /// BATCHED linear-attn verify (T=K+1): the whole layer in ~10 launches instead of T x the
