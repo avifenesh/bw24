@@ -1284,6 +1284,12 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_pf(
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_pf<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_pf(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_pf<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ---- NVFP4 batched matvec, TWO ROWS PER WARP (same long_scoreboard fix by the mr2 route: 2
 // independent weight-row streams per warp = 12 weight LDGs in flight instead of 6, and the m
@@ -1391,6 +1397,20 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b4_r2w8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// mcols=8 twins (K=4..7 spec verify T=5..8). acc[2][8] costs ~+8 regs over b4_r2 — the r2w8
+// residency squeeze may spill at MCOLS=8; measured per shape before defaulting (msweep m=5..8).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_r2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b8_r2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_r2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ---- NVFP4 batched matvec, PREFETCH x TWO-ROWS combined (4 weight wavefronts in flight/warp:
@@ -1793,6 +1813,25 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b4_rpr2w
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched_rp<4, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// mcols=8 rp twins (K=4..7 spec verify T=5..8 on the default split-plane layout).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<8, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rpr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<8, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_nvfp4_mmvq_b8_rpr2w8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp<8, 2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ============ SPLIT-PLANE rp twins of the m=1 NVFP4 decode family (A6 integration) ============
 // Each is the matching kernel's body with the weight-group loads swapped to the split-plane
@@ -2033,6 +2072,12 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_b4(
         int in_f, int out_f, int m, long row_bytes) {
     q8_0_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_q8_0_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q8_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a
 // (incl. the per-column sumi_sum = dp4a(0x01010101, a) min-offset term, which depends on activation). -----
@@ -2106,6 +2151,12 @@ extern "C" __global__ void qmatvec_q4_K_mmvq_b4(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q4k_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_K_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ----- Q5_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded 5-bit wpack. -----
@@ -2181,6 +2232,12 @@ extern "C" __global__ void qmatvec_q5_K_mmvq_b4(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q5k_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q5_K_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ----- Q6_K batched. Per-group reusable: d, scales, 8 decoded signed wpack. Symmetric (no min). -----
@@ -2261,6 +2318,12 @@ extern "C" __global__ void qmatvec_q6_K_mmvq_b4(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q6k_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ============ k-quant batched TWO-ROWS-PER-WARP variants (2026-07-04, NVFP4 _r2 recipe port) ============
@@ -2375,6 +2438,12 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_q4_K_mmvq_b4_r2w8(
         int in_f, int out_f, int m, long row_bytes) {
     q4k_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_q4_K_mmvq_b8_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4k_mmvq_batched_r2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ----- Q5_K batched r2 -----
 template<int MCOLS>
@@ -2473,6 +2542,12 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_q5_K_mmvq_b4_r2w8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q5k_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q5_K_mmvq_b8_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_batched_r2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // ----- Q6_K batched r2 (built to MEASURE; the 9B lm_head shape is DRAM-wall-bound, see header) -----
@@ -2573,6 +2648,12 @@ extern "C" __global__ void __launch_bounds__(128, 8) qmatvec_q6_K_mmvq_b4_r2w8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q6k_mmvq_batched_r2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_b8_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_batched_r2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
 // Q8_0 weight x q8_1 activation, int8 dp4a. y[m,out] = sum_blocks d_w*d_a*dp4a(w_qs, a_qs).

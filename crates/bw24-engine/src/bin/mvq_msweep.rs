@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- BATCHED weight-tile-resident (1 weight read serves m tokens) ---");
     // MSWEEP_M1=1 adds an m=1 row through the batched launcher (the A6 m=1-consumer probe:
     // compares the repacked kernel at m=1 vs the m=1 mmvq reference path).
-    let mut cells = vec![(2usize, 2usize), (3, 4), (4, 4)];
+    let mut cells = vec![(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)];
     if std::env::var("MSWEEP_M1").is_ok() { cells.insert(0, (1, 2)); }
     for (m, mcols) in cells {
         let x: Vec<f32> = (0..m * in_f).map(|i| ((i % 17) as f32 - 8.0) * 0.1).collect();

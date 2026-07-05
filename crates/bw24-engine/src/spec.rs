@@ -48,6 +48,10 @@ pub struct SpecSession {
     /// first, feeds it, and the round loop resumes without any prime. None before the first turn.
     pub next_pred: Option<u32>,
 }
+impl SpecSession {
+    /// Context capacity of the session's caches (the server's ContextFull guard).
+    pub fn cache_max_ctx(&self) -> usize { self.cache.max_ctx }
+}
 
 pub(crate) struct MtpScratch {
     kv: KvLayer,

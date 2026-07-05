@@ -1274,10 +1274,11 @@ impl Engine {
         // activation columns -> 1 weight read for m tokens (vs grid.y=m re-reading m times below). Quant
         // the activation once here (q8_1) like the _fast paths; macro-scale applied via the scale!=1.0
         // block below. BIT-IDENTICAL per (token,row) to the _dp4a path. BW24_NO_BATCHED -> per-m path.
-        if (2..=4).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err() {
+        if (2..=8).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err()
+            && (m <= 4 || Self::b8_enabled()) {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
                 if self.batched_supports(*qtype) {
-                    let mcols = if m == 2 { 2 } else { 4 };
+                    let mcols = Self::batched_mcols(m);
                     let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
                     let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0, *rp)?;
                     if let GpuTensor::Quant { scale, .. } = w {
@@ -1382,11 +1383,13 @@ impl Engine {
         // grid.y=m INDEPENDENT blocks per output row -> the weight row is re-read m times from HBM/L2.
         // The _b2/_b4 kernels walk the weight ONCE and dp4a vs all m activation columns, so m tokens
         // cost ~1 weight read instead of m (decode is weight-BW-bound). BIT-IDENTICAL per (token,row)
-        // to the _dp4a/_mmvq path. m=2 -> mcols=2; m∈{3,4} -> mcols=4 (kernel guards c>=m). Default-on;
-        // BW24_NO_BATCHED forces the per-m grid.y=m path (the A/B reference).
-        if (2..=4).contains(&m) && self.batched_supports(qtype)
-            && std::env::var("BW24_NO_BATCHED").is_err() {
-            let mcols = if m == 2 { 2 } else { 4 };
+        // to the _dp4a/_mmvq path. m=2 -> mcols=2; m∈{3,4} -> mcols=4; m∈{5..8} -> mcols=8 (kernel
+        // guards c>=m). Default-on; BW24_NO_BATCHED forces the per-m grid.y=m path (the A/B
+        // reference); BW24_B8=0 keeps m=5..8 on the old per-m path (b8-tier-only seam).
+        if (2..=8).contains(&m) && self.batched_supports(qtype)
+            && std::env::var("BW24_NO_BATCHED").is_err()
+            && (m <= 4 || Self::b8_enabled()) {
+            let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
         let name = match qtype {
@@ -1426,13 +1429,15 @@ impl Engine {
             _ => return self.matmul(w, x, m),
         };
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-        // Batched weight-resident matvec for m=2-4: BIT-IDENTICAL per (token,row) to MMVQ (exact
+        // Batched weight-resident matvec for m=2-8: BIT-IDENTICAL per (token,row) to MMVQ (exact
         // integer dp4a, same warp reduce — kernel-check gate rel=0.00e0), one weight read for m
         // tokens. The dispatch the divergence fix must avoid is dp4a's 128-thread two-level
-        // reduce, NOT this.
-        if (2..=4).contains(&m) && self.batched_supports(qtype)
-            && std::env::var("BW24_NO_BATCHED").is_err() {
-            let mcols = if m == 2 { 2 } else { 4 };
+        // reduce, NOT this. m=5..8 is the K=4..7 spec-verify tier (b8): pre-b8 T=5 fell to the
+        // grid.y=m per-row MMVQ below = 5 full weight reads/launch — the measured 27B K=4 cliff.
+        if (2..=8).contains(&m) && self.batched_supports(qtype)
+            && std::env::var("BW24_NO_BATCHED").is_err()
+            && (m <= 4 || Self::b8_enabled()) {
+            let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
         if self.mmvq_supports(qtype) {
@@ -1611,22 +1616,43 @@ impl Engine {
         matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
     }
 
-    /// Kernel name for the batched matvec of `(qtype, mcols)`. mcols ∈ {2,4}.
+    /// b8 tier seam: BW24_B8=0 keeps m=5..8 on the per-m grid.y=m path (m=2..4 batched dispatch
+    /// unaffected). Default ON — the K=4..7 spec-verify weight-read-once fix.
+    pub fn b8_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_B8").map(|v| v != "0").unwrap_or(true))
+    }
+
+    /// Compile-time column batch for a runtime m: 2 -> b2, 3..4 -> b4, 5..8 -> b8.
+    pub fn batched_mcols(m: usize) -> usize {
+        if m == 2 { 2 } else if m <= 4 { 4 } else { 8 }
+    }
+
+    /// Kernel name for the batched matvec of `(qtype, mcols)`. mcols ∈ {2,4,8}. The b8 tier is the
+    /// K=4..7 spec-verify fix (T=5..8): pre-b8 those T fell to grid.y=m per-row MMVQ = m full
+    /// weight reads/launch — the measured 27B K=4 cliff (101 -> 73 tok/s at p3 despite acceptance
+    /// holding 54%). One b8 launch reads the weight ONCE for up to 8 columns (c >= m masked).
     fn batched_kernel_name(qtype: i32, mcols: usize) -> Option<&'static str> {
         Some(match (qtype, mcols) {
             (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
+            (QT_Q8_0, 8) => "qmatvec_q8_0_mmvq_b8",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
+            (QT_Q4_K, 8) => "qmatvec_q4_K_mmvq_b8",
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
+            (QT_Q5_K, 8) => "qmatvec_q5_K_mmvq_b8",
             (QT_Q6_K, 2) => "qmatvec_q6_K_mmvq_b2", (QT_Q6_K, 4) => "qmatvec_q6_K_mmvq_b4",
+            (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
+            (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
             _ => return None,
         })
     }
 
-    /// BATCHED weight-tile-resident matvec from a PRE-QUANTIZED q8_1 activation (the m=2-4 verify/MTP
+    /// BATCHED weight-tile-resident matvec from a PRE-QUANTIZED q8_1 activation (the m=2-8 verify/MTP
     /// win). One warp walks the weight row ONCE, dp4a vs all m activation columns -> weight HBM/L2
-    /// traffic 1x for m tokens (vs grid.y=m re-reading it m times). `mcols` ∈ {2,4} is the compile-time
-    /// batch; m must be <= mcols. y is [m, out_f] token-major. NVFP4 per-tensor macro-scale applied post
+    /// traffic 1x for m tokens (vs grid.y=m re-reading it m times). `mcols` ∈ {2,4,8} is the
+    /// compile-time batch; m must be <= mcols (the c >= m columns are masked in-kernel). y is
+    /// [m, out_f] token-major. NVFP4 per-tensor macro-scale applied post
     /// (scale==1.0 for other dtypes -> no-op). BIT-IDENTICAL per (token,row) to qmatvec_*_mmvq.
     ///
     /// NVFP4 VARIANT DISPATCH: the batched NVFP4 kernel measured memory-LATENCY bound on the real
@@ -1707,12 +1733,14 @@ impl Engine {
         let variant: &str = if qtype != QT_NVFP4 && !kq_r2 {
             "base"
         } else if kq_r2 {
+            // k-quant r2w8 only exists at b4 (b2_r2 already 8-resident; b8 has no w8 twin) ->
+            // mcols != 4 forced r2w8 falls to unbounded r2.
             if kq_bv != "auto" {
-                if kq_bv == "r2w8" && mcols == 2 { "r2" } else { kq_bv }
+                if kq_bv == "r2w8" && mcols != 4 { "r2" } else { kq_bv }
             } else if bv != "auto" {
                 match bv {
                     "r2" | "pfr2" | "rpr2" | "car2" => "r2",
-                    "r2w8" | "rpr2w8" => if mcols == 2 { "r2" } else { "r2w8" },
+                    "r2w8" | "rpr2w8" => if mcols != 4 { "r2" } else { "r2w8" },
                     _ => "base",   // base/pf/ca/rp forced -> base (no such k-quant kernels)
                 }
             } else {
@@ -1723,12 +1751,14 @@ impl Engine {
                 if use_r2 { "r2" } else { "base" }
             }
         } else if bv != "auto" {
-            // r2w8 only exists for b4 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
-            // ca/car2 need the alignment gate; unsupported shapes fall back to pf/r2.
+            // r2w8 only exists for b4/b8 (the b2_r2 kernel is already 8-blocks-resident at 60 regs).
+            // ca/car2 need the alignment gate AND have no b8 twins; pfr2 has no b8 twin either —
+            // unsupported (shape, mcols) combos fall back to pf/r2.
             // On rp buffers, forced legacy names map to their rp twins (layout law).
             let v = if bv == "r2w8" && mcols == 2 { "r2" }
-                else if bv == "ca" && !ca_ok { "pf" }
-                else if bv == "car2" && !ca_ok { "r2" }
+                else if bv == "ca" && (!ca_ok || mcols == 8) { "pf" }
+                else if bv == "car2" && (!ca_ok || mcols == 8) { "r2" }
+                else if bv == "pfr2" && mcols == 8 { "r2" }
                 else if (bv == "rpr2w8" || bv == "rpr2") && mcols == 2 { "rpr2" }
                 else { bv };
             if rp {
@@ -1739,7 +1769,15 @@ impl Engine {
                     other => other,
                 }
             } else { v }
-        } else if mcols == 4 {
+        } else if mcols == 8 {
+            // b8 AUTO = the w8 twin everywhere (2026-07-05, g7e DRAM-cold rp msweep m=5/6/8 on all
+            // five 27B shapes): rpr2w8 wins or ties every cell (qkv 39.0->28.4us vs rp, ffn_down
+            // 61.4->58.2, ssm_out/attn_gate win) except wide-out ffn_gate m=5/6 where rpr2 edges
+            // ~1-3% — net e2e 27B p3 K=4: forced rpr2w8 97.9 vs b4-rule auto 93.3 vs rpr2 91.4
+            // tok/s. The b4 wave-crossing rule below mispicks rp for b8 (its thresholds were tuned
+            // on b4 register classes); do NOT reuse it. BW24_MMVQ_BV still forces (handled above).
+            if rp { "rpr2w8" } else { "r2w8" }
+        } else if mcols >= 4 {
             // r2 runs 7 resident blocks/SM (67 regs); its __launch_bounds__(128,8) twin `r2w8`
             // (64 regs) runs 8. grid = ceil(out_f/8) for both. rp twins land in the same
             // residency classes (rp 44 regs ~ pf-class occupancy, rpr2 67, rpr2w8 64).
@@ -1789,7 +1827,7 @@ impl Engine {
 
     /// BATCHED weight-tile-resident matvec from raw weight bytes (quantizes the f32 activation `x` to
     /// q8_1 internally; macro-scale NOT applied — caller compares bare, like qmatvec_*_fast). For the
-    /// kernel_check bit-equivalence gate. `mcols` ∈ {2,4}. Works for Q8_0/Q4_K/Q5_K/Q6_K/NVFP4.
+    /// kernel_check bit-equivalence gate. `mcols` ∈ {2,4,8}. Works for Q8_0/Q4_K/Q5_K/Q6_K/NVFP4.
     pub fn qmatvec_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
                                in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, mcols: usize,
                                rp: bool)

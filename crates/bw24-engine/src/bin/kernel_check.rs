@@ -919,10 +919,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // --- BATCHED weight-resident matvec (_b2/_b4) vs the per-m _mmvq reference (the MTP/verify path).
-    // Both quantize the same f32 activation to q8_1; the batched kernel only changes the loop nest
-    // (weight loaded once, reused across m token columns) so per-(token,row) it MUST be bit-identical
-    // to qmatvec_mmvq_raw (grid.y=m). m∈{2,3,4}; mcols=2 for m=2, mcols=4 for m∈{3,4}. rel<1e-3. ---
+    // --- BATCHED weight-resident matvec (_b2/_b4/_b8) vs the per-m _mmvq reference (the MTP/verify
+    // path). Both quantize the same f32 activation to q8_1; the batched kernel only changes the loop
+    // nest (weight loaded once, reused across m token columns) so per-(token,row) it MUST be
+    // bit-identical to qmatvec_mmvq_raw (grid.y=m). m∈{2..8}; mcols=2/4/8 tiers (b8 = the K=4..7
+    // spec verify T=5..8 fix; masked columns c>=m must not perturb c<m). rel<1e-3 + bit-exact. ---
     if let Some(path) = std::env::args().nth(1) {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
@@ -940,7 +941,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
             let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
             let wd = e.htod_bytes(raw)?;
-            for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+            for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
                 let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 131) * 0.1).collect();
                 let xd = e.htod(&x)?;
                 // reference: per-m _mmvq (warp-per-row, grid.y=m). batched: _b{mcols} weight-resident.
@@ -965,7 +966,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
                 let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
                 let wd = e.htod_bytes(raw)?;
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 141) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
@@ -1024,7 +1025,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if bad == 0 { "OK" } else { fails += 1; "FAIL" });
                 }
                 // batched rp (auto wave-rule picks rp/rpr2/rpr2w8 per shape) vs original per-m mmvq.
-                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4)] {
+                for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;

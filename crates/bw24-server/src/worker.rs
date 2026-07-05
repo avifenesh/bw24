@@ -316,10 +316,23 @@ fn admit(
     for &t in &seed_fed { sampler.accept(t); }
     let suffix: Vec<u32> = prompt[seed_fed.len()..].to_vec();
     let prefill_done_at_admit = suffix.is_empty();
+    // SPEC-DECODE serve path (2026-07-05): greedy + MTP head + not a KV-reuse resume (the spec
+    // session owns its own caches; folding the reuse pool into SpecSession is a follow-up) +
+    // BW24_SERVE_SPEC!=0. The whole prompt goes to the spec session as turn 1's suffix; the
+    // legacy prefill/decode path is bypassed entirely in step_session.
+    let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+    let spec = if serve_spec && sampler.is_greedy() && lm.model.mtp.is_some()
+        && seed_fed.is_empty() {
+        match lm.model.new_session(engine, ctx_cap) {
+            Ok(sess) => Some(sess),
+            Err(err) => { eprintln!("[worker] spec session alloc failed ({err}); tokenwise path"); None }
+        }
+    } else { None };
     Ok(Session {
         model: req.model,
         cache,
         sampler,
+        spec,
         last_logits: seed_logits,
         fed: seed_fed,
         prefill_queue: suffix.into_iter().collect(),
@@ -345,6 +358,52 @@ fn step_session(
     s: &mut Session,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let lm = &loaded[&s.model];
+
+    // ---- SPEC-BURST arm (2026-07-05): greedy MTP sessions decode in generate_spec_session
+    // bursts — turn 1 primes the prompt (suffix = the whole prefill queue), later ticks are
+    // ZERO-prime continuation bursts (SpecSession.next_pred). Each burst emits up to
+    // SPEC_BURST_T tokens; between bursts the scheduler round-robins other sessions. Exactness:
+    // the session-gate oracle (4 turns incl empty-suffix) pins burst output == fresh greedy.
+    if let Some(spec) = s.spec.as_mut() {
+        const SPEC_BURST_T: usize = 32;
+        let k: usize = std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+        let room = s.budget.saturating_sub(s.generated.len()).min(SPEC_BURST_T);
+        if room == 0 { finish(s, StopReason::MaxNew); return Ok(false); }
+        let suffix: Vec<u32> = s.prefill_queue.drain(..).collect();
+        s.prefill_done = true;
+        if suffix.is_empty() && spec.next_pred.is_none() {
+            // nothing primed and nothing to prime — shouldn't happen (admit rejects empty prompts)
+            finish(s, StopReason::MaxNew); return Ok(false);
+        }
+        let (burst, _d, _a) = lm.model.generate_spec_session(engine, spec, &suffix, room, k)?;
+        for &tok in &suffix { s.fed.push(tok); s.sampler.accept(tok); }
+        let mut stop: Option<StopReason> = None;
+        for &tok in &burst {
+            s.sampler.accept(tok);
+            s.generated.push(tok);
+            s.fed.push(tok);
+            if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
+        }
+        // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
+        let full = lm.tok.decode(&s.generated);
+        let delta = if full.len() >= s.emitted_text.len() && full.starts_with(&s.emitted_text) {
+            full[s.emitted_text.len()..].to_string()
+        } else { String::new() };
+        s.emitted_text = full.clone();
+        if !delta.is_empty() {
+            let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
+        }
+        if stop.is_none() && !s.stop_strings.is_empty()
+            && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
+            stop = Some(StopReason::Callback);
+        }
+        if stop.is_none() && s.generated.len() >= s.budget { stop = Some(StopReason::MaxNew); }
+        if stop.is_none() && spec.committed.len() + k + 2 >= spec.cache_max_ctx() {
+            stop = Some(StopReason::ContextFull);
+        }
+        if let Some(r) = stop { finish(s, r); return Ok(false); }
+        return Ok(true);
+    }
 
     // ---- prefill phase: BATCHED chunk prime (2026-07-05). prime_cache now supports
     // continuation (cache.pos > 0 attends to the quantized past), so the worker primes up to
