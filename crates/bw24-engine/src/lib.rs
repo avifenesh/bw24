@@ -134,6 +134,31 @@ pub struct Engine {
     /// (t_kv, kv_dim) seen, REUSED across layers/chunks/calls (contents rewritten per launch —
     /// safe because all compute serializes on the one gpu.stream). ~82MB at 40k ctx on the 27B.
     prime_deqw_ws: Mutex<Option<(CudaSlice<u8>, CudaSlice<u8>)>>,
+    /// LAUNCH-STRUCTURE STAGE 1: persistent PINNED (cacheable, flags=0) host staging buffer for the
+    /// fused-router sel/w readback — one async DtoH pair + ONE sync instead of two synced dtohs.
+    /// Grown lazily; reused every MoE layer (single-threaded decode serializes on the sync).
+    router_stage: Mutex<Option<PinnedStage>>,
+}
+
+/// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
+/// DtoH staging. cudarc's `alloc_pinned` uses CU_MEMHOSTALLOC_WRITECOMBINED, which is right for
+/// HtoD streams but pathologically slow for host READS — the router readback is host-read-heavy,
+/// so we allocate through `result::malloc_host` with flags=0 directly.
+struct PinnedStage {
+    ptr: *mut u8,
+    cap: usize,
+}
+unsafe impl Send for PinnedStage {}
+impl PinnedStage {
+    fn new(cap: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let ptr = unsafe { cudarc::driver::result::malloc_host(cap, 0)? } as *mut u8;
+        Ok(PinnedStage { ptr, cap })
+    }
+}
+impl Drop for PinnedStage {
+    fn drop(&mut self) {
+        let _ = unsafe { cudarc::driver::result::free_host(self.ptr as _) };
+    }
 }
 
 /// Number of pass-1 blocks for the parallel argmax (fan-out across SMs to saturate HBM). 256 blocks
@@ -196,6 +221,7 @@ impl Engine {
                   moe_cache: Mutex::new(None), copy_stream,
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
+                  router_stage: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -402,6 +428,21 @@ impl Engine {
         Ok(self.gpu.stream.alloc_zeros::<u8>(n)?)
     }
 
+    /// Uninitialized u8 scratch — skips alloc_zeros' memset. ONLY for staging buffers whose read
+    /// range is fully overwritten by a stage_expert H2D before any kernel reads it (LAUNCH-STRUCTURE
+    /// STAGE 2: the per-layer MoE scratch trio was 3 dead ~1MB memsets per layer per decode token).
+    pub fn alloc_u8_uninit(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        Ok(unsafe { self.gpu.stream.alloc::<u8>(n)? })
+    }
+
+    /// Zero a SUB-RANGE of an f32 buffer (CudaViewMut) — the row-sized memset the moe_out
+    /// memset-elision uses for tokens that fall off the gdec fast path (LAUNCH-STRUCTURE STAGE 2).
+    pub fn memset_zeros_view(&self, dst: &mut cudarc::driver::CudaViewMut<f32>)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memset_zeros(dst)?;
+        Ok(())
+    }
+
     /// EDGE-1 staging: copy `host_bytes` (a sub-slice of a HostExps buffer) into `scratch`
     /// at byte offset `off` (async H2D on the default stream). Length is host_bytes.len().
     /// The qmatvec_view that reads `scratch[off..]` is enqueued on the SAME stream after this,
@@ -422,8 +463,8 @@ impl Engine {
     pub fn moe_router_topk(&self, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                            -> Result<(CudaSlice<i32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let f = self.func("moe_router_topk_f32");
-        let mut sel_idx = self.gpu.stream.alloc_zeros::<i32>(t * n_used)?;
-        let mut sel_w = self.gpu.stream.alloc_zeros::<f32>(t * n_used)?;
+        let mut sel_idx = self.alloc_uninit::<i32>(t * n_used)?;  // kernel fully overwrites
+        let mut sel_w = self.alloc_uninit::<f32>(t * n_used)?;    // kernel fully overwrites
         let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
                                  shared_mem_bytes: 0 };
         let (ne, nu) = (n_expert as i32, n_used as i32);
@@ -431,6 +472,42 @@ impl Engine {
         b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu);
         unsafe { b.launch(cfg)?; }
         Ok((sel_idx, sel_w))
+    }
+
+    /// LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router + SINGLE-SYNC host readback. The old
+    /// BW24_FUSED_ROUTER path lost 2% at t=1 because it paid TWO full stream syncs (dtoh_i32 then
+    /// dtoh, each = clone_dtoh + synchronize) + two alloc_zeros memsets per MoE layer, where the
+    /// host route pays ONE sync on the 1KB logits dtoh. This variant: uninit outputs (kernel fully
+    /// overwrites), both DtoH copies issued ASYNC into a persistent PINNED host staging buffer
+    /// (flags=0 — cacheable, NOT cudarc's WRITECOMBINED default, so the host-side reads of sel/w
+    /// stay cached), then ONE synchronize. Numerics identical to `moe_router_topk` (same kernel).
+    pub fn moe_router_topk_host(&self, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
+                                -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("moe_router_topk_f32");
+        let n = t * n_used;
+        let mut sel_idx = self.alloc_uninit::<i32>(n)?;
+        let mut sel_w = self.alloc_uninit::<f32>(n)?;
+        let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (ne, nu) = (n_expert as i32, n_used as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu);
+        unsafe { b.launch(cfg)?; }
+        // single-sync readback: sel (i32) at offset 0, w (f32) at offset n*4 of the pinned stage.
+        let bytes = n * 8;
+        let mut guard = self.router_stage.lock().unwrap();
+        if guard.as_ref().map(|p| p.cap < bytes).unwrap_or(true) {
+            *guard = Some(PinnedStage::new(bytes.max(4096))?);
+        }
+        let stage = guard.as_mut().unwrap();
+        let (si, sw) = unsafe {
+            (std::slice::from_raw_parts_mut(stage.ptr as *mut i32, n),
+             std::slice::from_raw_parts_mut(stage.ptr.add(n * 4) as *mut f32, n))
+        };
+        self.gpu.stream.memcpy_dtoh(&sel_idx, si)?;   // async (pinned dst)
+        self.gpu.stream.memcpy_dtoh(&sel_w, sw)?;     // async (pinned dst)
+        self.gpu.stream.synchronize()?;               // ONE sync for both
+        Ok((si.iter().map(|&i| i as u32).collect(), sw.to_vec()))
     }
 
     /// EDGE-1 §C.2: async H2D of `host_bytes` into `scratch[off..]` on the COPY stream, returning a

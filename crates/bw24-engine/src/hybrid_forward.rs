@@ -605,19 +605,31 @@ impl HybridModel {
                      il, t, sel_all.len(), active, n_expert, h, (n_expert as f64).log2(), total / active.max(1) as f64, maxc);
         }
 
-        let mut moe_out = e.zeros(t * n_embd)?;
+        let use_cache = Engine::moe_cache_enabled();
+
+        // LAUNCH-STRUCTURE STAGE 2 (2026-07-05): moe_out memset elision on the gdec decode path.
+        // moe_down8_fma_f32 FULLY overwrites its token row (dst[o] = the in-kernel FMA chain that
+        // starts at 0.0f — numerically the axpy-into-zeroed-row chain), so when the grouped-decode
+        // path fires the upfront `e.zeros(t*n_embd)` memset is pure launch churn. Allocate uninit
+        // when gdec CAN fire (t==1 decode, cache on) and lazily zero ONLY the row of a token that
+        // falls through to the sequential axpy loop. Prefill (t>1, gdec off) keeps the single
+        // upfront zeros. BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
+        // zeroed-then-accumulated exactly as before (fallback).
+        let gdec_may_fire = t == 1 && use_cache && n_used <= 8 && gdec_enabled();
+        let mut moe_out = if gdec_may_fire { e.uninit(t * n_embd)? } else { e.zeros(t * n_embd)? };
 
         // GPU scratch: one slot per proj, big enough for ONE expert (default stage-every-token path).
+        // STAGE 2: LAZY — allocated only if the no-cache staging path actually runs (under
+        // BW24_MOE_CACHE they were 3 dead ~1MB alloc_zeros + memset + free per layer per token,
+        // measured ~123 memsets/token of the decode wall).
         let g_len = m.gate_exps.expert_stride;  // 860160
         let u_len = m.up_exps.expert_stride;    // 860160
         let d_len = m.down_exps.expert_stride;  // 1114112
-        let mut scratch_g = e.alloc_u8(g_len)?;
-        let mut scratch_u = e.alloc_u8(u_len)?;
-        let mut scratch_d = e.alloc_u8(d_len)?;
+        let mut scratch_g: Option<CudaSlice<u8>> = None;
+        let mut scratch_u: Option<CudaSlice<u8>> = None;
+        let mut scratch_d: Option<CudaSlice<u8>> = None;
         // `max_block` (the GLOBAL max expert stride across all layers) is passed in — the cache slots
         // are FIXED-ADDRESS and must fit any layer's block (UD/dynamic GGUFs vary quant per layer).
-
-        let use_cache = Engine::moe_cache_enabled();
 
         // EDGE-1 §C.2/C.3 (async H2D prefetch) — TODO, deliberately NOT wired into the hot loop.
         // The infrastructure is in place and validated: `HostExps` bytes are pinned under
@@ -647,10 +659,18 @@ impl HybridModel {
             // BIT-IDENTITY: each in-kernel dot reproduces qmatvec_f32's exact reduction; SiLU is
             // silu_mul_f32's exact expression; the down accumulation is a slot-ordered
             // __fmaf_rn chain == the sequential axpy_f32 chain (BW24_MOE_GDEC_GATE compares).
-            if use_cache && n_used <= 8 && gdec_enabled()
+            if gdec_may_fire
                 && Self::moe_gdec_token(e, m, il, max_block, &zt, sel, w,
                                         &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                 continue;
+            }
+
+            // STAGE 2 memset-elision invariant: moe_out was allocated UNINIT when gdec could fire.
+            // This token fell through to the sequential axpy loop, which ACCUMULATES — zero its row
+            // first (row-sized memset, replaces the old full-buffer zeros; other rows are gdec-owned).
+            if gdec_may_fire {
+                let mut row = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                e.memset_zeros_view(&mut row)?;
             }
 
             for (j, &ex) in sel.iter().enumerate() {
@@ -662,7 +682,7 @@ impl HybridModel {
                     // only difference between HIT and MISS is whether the memcpy_htod ran.
                     let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
                     let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
-                    let mut act = e.zeros(n_ff_exp)?;
+                    let mut act = e.uninit(n_ff_exp)?;  // silu_mul fully overwrites
                     e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
                     let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
@@ -670,20 +690,29 @@ impl HybridModel {
                     e.axpy_into(&y, w[j], &mut dst, n_embd)?;
                 } else {
                     // Stage-1: stage gate/up/down for expert `ex` into the scratch slots, then GEMM.
-                    e.stage_expert(m.gate_exps.expert_bytes(ex), &mut scratch_g, 0)?;
-                    let gate = e.qmatvec_view(&scratch_g, 0..g_len, &zt, 1,
+                    // Lazy scratch: first no-cache expert allocates the 3 slots (uninit — stage_expert
+                    // fully overwrites the byte range the GEMM reads).
+                    if scratch_g.is_none() {
+                        scratch_g = Some(e.alloc_u8_uninit(g_len)?);
+                        scratch_u = Some(e.alloc_u8_uninit(u_len)?);
+                        scratch_d = Some(e.alloc_u8_uninit(d_len)?);
+                    }
+                    let (sg, su, sd) = (scratch_g.as_mut().unwrap(), scratch_u.as_mut().unwrap(),
+                                        scratch_d.as_mut().unwrap());
+                    e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
+                    let gate = e.qmatvec_view(sg, 0..g_len, &zt, 1,
                         m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
 
-                    e.stage_expert(m.up_exps.expert_bytes(ex), &mut scratch_u, 0)?;
-                    let up = e.qmatvec_view(&scratch_u, 0..u_len, &zt, 1,
+                    e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
+                    let up = e.qmatvec_view(su, 0..u_len, &zt, 1,
                         m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
 
-                    let mut act = e.zeros(n_ff_exp)?;
+                    let mut act = e.uninit(n_ff_exp)?;  // silu_mul fully overwrites
                     e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
 
-                    e.stage_expert(m.down_exps.expert_bytes(ex), &mut scratch_d, 0)?;
+                    e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
-                    let y = e.qmatvec_view(&scratch_d, 0..d_len, &actv, 1,
+                    let y = e.qmatvec_view(sd, 0..d_len, &actv, 1,
                         m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
 
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
@@ -700,14 +729,14 @@ impl HybridModel {
             let n_ff_sh = gate_shexp.out_features();  // 512
             let sg_gate = e.matmul(gate_shexp, z, t)?;  // [T, 512]
             let sg_up = e.matmul(up_shexp, z, t)?;      // [T, 512]
-            let mut sa = e.zeros(t * n_ff_sh)?;
+            let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;     // [T, n_embd]
 
             // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
             // NOT matmul/out_features (which would index ne[1] out of bounds).
             let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;  // [T, 1]
-            let mut g = e.zeros(t)?;
+            let mut g = e.uninit(t)?;  // sigmoid fully overwrites
             e.sigmoid(&gs, &mut g, t)?;
 
             // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate)
@@ -757,12 +786,17 @@ impl HybridModel {
     /// indexes HostExps.bytes on the CPU to choose the DMA source (§A.2 output staging).
     fn moe_route(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
-        if std::env::var("BW24_FUSED_ROUTER").is_ok() {
-            let (sel_d, w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
-            let sel_i = e.dtoh_i32(&sel_d)?;
-            let w = e.dtoh(&w_d)?;
-            let sel: Vec<u32> = sel_i.iter().map(|&i| i as u32).collect();
-            return Ok((sel, w));
+        // LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router DEFAULT ON (BW24_FUSED_ROUTER=0
+        // rollback) via the single-sync pinned readback (moe_router_topk_host): t*64B DtoH
+        // instead of t*1KB logits + host softmax/sort, ONE stream sync instead of the old two
+        // (the two-sync dtoh pair is why the old BW24_FUSED_ROUTER=1 arm measured 2% WORSE).
+        // Kernel selection is EXACT vs the host oracle (kernel-check gate: idx-match incl ties);
+        // weights differ only by host-libm-exp vs device-expf last-ULP noise (rel<1e-5) —
+        // argmax-1178 verified on this tree. Default is ALL t, not just decode: the spec verify
+        // routes at t=K+1 and the exactness contract (FP-order lesson #8) requires decode and
+        // verify to route with IDENTICAL numerics — one routing source for every path.
+        if !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
+            return e.moe_router_topk_host(logits, t, n_expert, n_used);
         }
         // Host oracle (the §D bit-identity reference).
         let lg = e.dtoh(logits)?;   // [T*n_expert] host
