@@ -85,6 +85,13 @@ struct ReuseEntry {
     last_logits: Vec<f32>,
     cap: usize,
 }
+/// SPEC-session reuse (2026-07-05): a retired spec session parks WHOLE (trunk cache + draft
+/// scratch + committed + next_pred). A new greedy request whose prompt exactly extends
+/// `committed` resumes it — turn N+1 primes only the suffix (or nothing, the continuation
+/// burst). Same exact-extension rule as ReuseEntry; the session-gate oracle covers this path.
+struct SpecReuseEntry {
+    sess: bw24_engine::spec::SpecSession,
+}
 const REUSE_POOL_PER_MODEL: usize = 2;
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
 const REUSE_MIN_PREFIX: usize = 16;
@@ -165,6 +172,7 @@ pub fn run(
     let mut queue: std::collections::VecDeque<Box<Request>> = std::collections::VecDeque::new();
     // KV prefix-reuse pool (append-only continuation; see ReuseEntry doc).
     let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
+    let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
@@ -188,7 +196,7 @@ pub fn run(
         // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
         while active.len() < MAX_ACTIVE {
             let Some(req) = queue.pop_front() else { break };
-            match admit(&engine, &loaded, &mut reuse, *req) {
+            match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
                 Ok(s) => active.push(s),
                 Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
             }
@@ -210,7 +218,13 @@ pub fn run(
         // park their (fed, cache, last_logits) in the reuse pool instead of dropping the cache.
         for &i in finished.iter().rev() {
             let s = active.remove(i);
-            if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
+            if let Some(sess) = s.spec {
+                if sess.committed.len() >= REUSE_MIN_PREFIX && sess.next_pred.is_some() {
+                    let pool = spec_reuse.entry(s.model.clone()).or_default();
+                    if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); }
+                    pool.push(SpecReuseEntry { sess });
+                }
+            } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 let pool = reuse.entry(s.model.clone()).or_default();
                 if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
                 let cap = s.cache.max_ctx;
@@ -247,6 +261,7 @@ fn admit(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
     reuse: &mut HashMap<String, Vec<ReuseEntry>>,
+    spec_reuse: &mut HashMap<String, Vec<SpecReuseEntry>>,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
     let lm = &loaded[&req.model];
@@ -321,13 +336,35 @@ fn admit(
     // BW24_SERVE_SPEC!=0. The whole prompt goes to the spec session as turn 1's suffix; the
     // legacy prefill/decode path is bypassed entirely in step_session.
     let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+    let mut spec_resumed = 0usize;
     let spec = if serve_spec && sampler.is_greedy() && lm.model.mtp.is_some()
         && seed_fed.is_empty() {
-        match lm.model.new_session(engine, ctx_cap) {
-            Ok(sess) => Some(sess),
-            Err(err) => { eprintln!("[worker] spec session alloc failed ({err}); tokenwise path"); None }
+        // POOL RESUME: a parked spec session whose committed sequence exactly prefixes this
+        // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
+        let resumed = spec_reuse.get_mut(&req.model).and_then(|pool| {
+            pool.iter().rposition(|e|
+                e.sess.cache_max_ctx() >= ctx_cap
+                    && prompt.len() >= e.sess.committed.len()
+                    && prompt.starts_with(&e.sess.committed))
+                .map(|idx| pool.remove(idx).sess)
+        });
+        match resumed {
+            Some(sess) => {
+                spec_resumed = sess.committed.len();
+                eprintln!("[worker] spec-reuse: {} of {} prompt tokens resumed (model {})",
+                          spec_resumed, prompt.len(), req.model);
+                Some(sess)
+            }
+            None => match lm.model.new_session(engine, ctx_cap) {
+                Ok(sess) => Some(sess),
+                Err(err) => { eprintln!("[worker] spec session alloc failed ({err}); tokenwise path"); None }
+            }
         }
     } else { None };
+    // spec-resume: replay sampler penalty history over the resumed prefix; queue only the suffix.
+    if spec_resumed > 0 {
+        for &t in &prompt[..spec_resumed] { sampler.accept(t); }
+    }
     Ok(Session {
         model: req.model,
         cache,
@@ -335,7 +372,8 @@ fn admit(
         spec,
         last_logits: seed_logits,
         fed: seed_fed,
-        prefill_queue: suffix.into_iter().collect(),
+        prefill_queue: if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
+                       else { suffix.into_iter().collect() },
         prefill_done: prefill_done_at_admit,
         generated: Vec::new(),
         params,
