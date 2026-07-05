@@ -874,15 +874,32 @@ impl HybridModel {
         let n_embd = cfg.n_embd as usize;
         let all_fast = e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate)
             && e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha);
+        // beta+alpha DUAL fuse (2026-07-05): ssm_beta and ssm_alpha are the same tiny shape
+        // ([n_embd -> num_v=32]) — out_f=32 launches are pure launch latency (15-16us each,
+        // HANDOVER b4-headroom note). The existing dual mr2 kernel (FFN gate+up) folds them into
+        // ONE launch. Bit-identical per row: same MMVQ warp-per-row body, blockIdx.y picks the
+        // weight; the separable macro-scale multiply is the same single f32 mul as matmul_pre's
+        // in-kernel scale. Falls back to two matmul_pre when ineligible (Float layers 1/2/4 etc).
+        let beta_alpha = |e: &Engine, hq: &CudaSlice<i8>, hd: &CudaSlice<f32>|
+            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+            if let Some(((mut b, bs), (mut a, as_))) =
+                e.matmul_pre_dual_noscale(&la.ssm_beta, &la.ssm_alpha, hq, hd, 1)? {
+                if bs != 1.0 { e.scale_inplace(&mut b, bs, la.ssm_beta.out_features())?; }
+                if as_ != 1.0 { e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?; }
+                return Ok((b, a));
+            }
+            Ok((e.matmul_pre(&la.ssm_beta, hq, hd, h, 1)?,
+                e.matmul_pre(&la.ssm_alpha, hq, hd, h, 1)?))
+        };
         let (qkv_mixed, z, beta_raw, alpha) = if all_fast {
             // attn-input NORM-FUSION: use the caller's pre-quantized (hq,hd) when provided (the
             // attn_norm already emitted q8_1 via rms_norm_q8_1), else quantize h here. Bit-identical.
             match pre_q {
-                Some((hq, hd)) => (e.matmul_pre(&la.wqkv, hq, hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?,
-                                   e.matmul_pre(&la.ssm_beta, hq, hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, hq, hd, h, 1)?),
+                Some((hq, hd)) => { let (b, a) = beta_alpha(e, hq, hd)?;
+                    (e.matmul_pre(&la.wqkv, hq, hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?, b, a) }
                 None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-                    (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?,
-                     e.matmul_pre(&la.ssm_beta, &hq, &hd, h, 1)?, e.matmul_pre(&la.ssm_alpha, &hq, &hd, h, 1)?) }
+                    let (b, a) = beta_alpha(e, &hq, &hd)?;
+                    (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?, b, a) }
             }
         } else {
             (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?,
