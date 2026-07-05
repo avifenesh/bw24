@@ -69,18 +69,21 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
 /// between eager decode and the verify (the spec-exactness law).
 pub const FA_VEC_MIN_TKV: usize = 96;
 
-fn fa_split_keys(_t_kv: usize, n_head_kv: usize) -> usize {
+fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     if let Some(forced) = *S.get_or_init(|| {
         std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
             .filter(|&s: &usize| s >= 8 && s % 8 == 0)
     }) { return forced; }
-    // Default 32 (2026-07-05 re-sweep on G7e 27B p3: 102.2 -> 107.6 tok/s, +5.3%, and the
-    // HISTORIC 9B exactness breaker at 32 no longer reproduces — K=1..8 PASS on both models
-    // post multi-row-rows + decode-exact-dispatch rework; the old failure was the per-row
-    // combine order, which the rows kernel replaced). BW24_FA_SPLIT env still overrides.
+    // CTX-ADAPTIVE default (2026-07-05 40k sweep: sp32 24.5 vs sp128 26.0 tok/s = +5.8% — at
+    // deep ctx the n_splits count explodes (40k/32 = 1265 splits x 8 kv-heads) and the combine
+    // + partial-buffer cost dominates; at short ctx small splits fill the 82 SMs). Ladder: 32
+    // up to 8k (the validated short/mid optimum), then grow with t_kv so n_splits stays ~256
+    // per kv-head, capped 128 (the measured 40k optimum). Exactness: split size only changes
+    // the PARTITION of keys; the rows/combine order per split is fixed and the gate battery
+    // (kernel-check + run-spec K=1..8) arbitrates every default change.
     let _ = n_head_kv;
-    32
+    if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
 }
 
 /// Quant type codes matching qmatvec.cu QType enum.
@@ -2105,12 +2108,33 @@ impl Engine {
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
         let (f, cfg) = if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            // REGISTER-DEQUANT kernel (2026-07-03): no smem KV tile anymore — per-warp direct
-            // q8_0/q5_1 register dequant, zero dynamic shared memory.
-            let fv = self.func("fa_decode_vec_q");
-            (fv,
-             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
-                 block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
+            // DEEP-CTX smem twin (2026-07-05): the register-dequant path's GQA reuse rides L2,
+            // which holds to ~8k ctx but dies at 40k (layer KV ~37MB) — the 4 GQA warps then
+            // re-read every KV byte from DRAM (4x traffic). Above BW24_FA_SMEM_TKV (default
+            // 16384; 0=never) dispatch the smem-broadcast twin: dequant each tile ONCE per block.
+            // Bit-identical per (token,split): same bf16 round-trip, same accumulation order,
+            // same partial layout -> same combine. Short/mid ctx keeps the register path (it won
+            // there by 12x — latency, not bandwidth, rules small KV).
+            static SMEM_TKV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            let smem_tkv = *SMEM_TKV.get_or_init(|| {
+                std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+            });
+            if smem_tkv > 0 && t_kv >= smem_tkv {
+                let fv = self.func("fa_decode_vec_q_smem");
+                let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
+                use cudarc::driver::sys::CUfunction_attribute_enum as A;
+                fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+                (fv,
+                 LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                     block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+            } else {
+                // REGISTER-DEQUANT kernel (2026-07-03): per-warp direct q8_0/q5_1 register
+                // dequant, zero dynamic shared memory.
+                let fv = self.func("fa_decode_vec_q");
+                (fv,
+                 LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                     block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
+            }
         } else {
             (self.func("fa_decode_f32"),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
