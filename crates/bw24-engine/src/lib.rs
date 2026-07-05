@@ -2120,11 +2120,20 @@ impl Engine {
             b.arg(k).arg(v).arg(&mut *kw).arg(&mut *vw).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
             unsafe { b.launch(cfg)?; }
         }
-        // pass 2: the bf16-workspace prefill twin (same tile sizes/loop structure as fa_prefill_q)
+        // pass 2: the bf16-workspace prefill twin (same tile sizes/loop structure as fa_prefill_q).
+        // BW24_PRIME_DEQW_DB=1 -> cp.async double-buffered staging twin (fa_prefill_qw_db,
+        // +32KB smem for the second K/V tile pair, 1 CTA/SM): overlaps tile n+1's L2->smem copy
+        // with tile n's MMA. Bit-identical output (staging is a pure byte copy); A/B arbitrates.
+        let db = std::env::var("BW24_PRIME_DEQW_DB").map(|v| v == "1").unwrap_or(false);
         {
-            let f = self.func("fa_prefill_qw");
-            let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
-                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+            let f = self.func(if db { "fa_prefill_qw_db" } else { "fa_prefill_qw" });
+            let shmem = if db {
+                // 4x KV tile buffers (bf16) + sP (bf16) + sL (f32)
+                (2 * (4 * BK * head_dim + BLOCK_Q * BK) + 4 * BLOCK_Q) as u32
+            } else {
+                (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32
+            };
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             let cfg = LaunchConfig {
@@ -2270,14 +2279,29 @@ impl Engine {
         // as the wall-ledgered 2-key ILP. The FA byte-reuse win cannot pay for Tx register state
         // in this kernel shape; a smem-staged variant would reintroduce the smem-broadcast loss.
         let sk = t >= 2 && t <= 4 && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
+        // Deep-ctx smem twin for the VERIFY rows (2026-07-05): same threshold + rationale as
+        // fa_decode's dispatch — at 40k the register path's GQA L2-reuse premise is dead and the
+        // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
+        static SMEM_TKV_R: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
+            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+        });
+        let smem_rows = !sk && smem_tkv > 0 && t_kv_max >= smem_tkv;
         let fname = if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
                                        3 => "fa_decode_vec_q_rows_sk3",
                                        _ => "fa_decode_vec_q_rows_sk4" } }
+                    else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = self.func(fname);
+        let shmem = if smem_rows {
+            let sh = (2 * 32 * head_dim * 2) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            sh
+        } else { 0 };
         let zdim = if sk { 1 } else { t as u32 };
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, zdim),
-            block_dim: (32, gqa, 1), shared_mem_bytes: 0 };
+            block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
