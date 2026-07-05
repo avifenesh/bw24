@@ -357,9 +357,28 @@ fn admit(
                           spec_resumed, prompt.len(), req.model);
                 Some(sess)
             }
-            None => match lm.model.new_session(engine, ctx_cap) {
-                Ok(sess) => Some(sess),
-                Err(err) => { eprintln!("[worker] spec session alloc failed ({err}); tokenwise path"); None }
+            None => {
+                // POOL MISS: a parked session's caches (~4GB at 128k: 17-layer trunk KV + draft
+                // scratch) can starve the NEW allocation — 2 x 128k sessions + weights don't fit
+                // 24GB. Misses happen when the text->token roundtrip diverges at a turn boundary
+                // (detok+retok isn't prefix-stable), so the parked session is DEAD WEIGHT for
+                // this conversation: evict the pool, then allocate. (Session-id affinity API is
+                // the structural fix — follow-up.)
+                match lm.model.new_session(engine, ctx_cap) {
+                    Ok(sess) => Some(sess),
+                    Err(first_err) => {
+                        let evicted = spec_reuse.get_mut(&req.model).map(|p| { let n = p.len(); p.clear(); n }).unwrap_or(0);
+                        if evicted > 0 {
+                            eprintln!("[worker] spec pool evicted ({evicted}) after alloc failure; retrying");
+                            match lm.model.new_session(engine, ctx_cap) {
+                                Ok(sess) => Some(sess),
+                                Err(err) => { eprintln!("[worker] spec session alloc failed after evict ({err}); tokenwise path"); None }
+                            }
+                        } else {
+                            eprintln!("[worker] spec session alloc failed ({first_err}); tokenwise path"); None
+                        }
+                    }
+                }
             }
         }
     } else { None };
