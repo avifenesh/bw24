@@ -91,6 +91,13 @@ struct ReuseEntry {
 /// burst). Same exact-extension rule as ReuseEntry; the session-gate oracle covers this path.
 struct SpecReuseEntry {
     sess: bw24_engine::spec::SpecSession,
+    /// detok(committed) — TEXT-level prefix matching (2026-07-06). Token-level starts_with
+    /// missed ~50% of chat turn boundaries (detok->retok BPE merges differ at the seam). Text
+    /// matching resumes whenever the new prompt string literally extends the parked
+    /// conversation; only the remainder is tokenized (no BOS). Same acceptable-divergence class
+    /// as llama serve's cache_prompt: the suffix's boundary tokenization may differ from a cold
+    /// full-retok — committed tokens stay authoritative, spec==greedy exactness is untouched.
+    committed_text: String,
 }
 const REUSE_POOL_PER_MODEL: usize = 2;
 /// Minimum parked prefix worth reusing (below this, cold prime is cheaper than bookkeeping).
@@ -222,9 +229,15 @@ pub fn run(
             let s = active.remove(i);
             if let Some(sess) = s.spec {
                 if sess.committed.len() >= REUSE_MIN_PREFIX && sess.next_pred.is_some() {
+                    // skip the leading BOS when rendering: the client's prompt STRING never
+                    // contains it (encode() adds it), so it would poison the text-prefix match.
+                    let toks = &sess.committed;
+                    let skip = loaded[&s.model].tok.bos_id()
+                        .map(|b| toks.first() == Some(&b)).unwrap_or(false) as usize;
+                    let committed_text = loaded[&s.model].tok.decode_special(&toks[skip..], true);
                     let pool = spec_reuse.entry(s.model.clone()).or_default();
                     if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); }
-                    pool.push(SpecReuseEntry { sess });
+                    pool.push(SpecReuseEntry { sess, committed_text });
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
                 if let Some(cache) = s.cache {
@@ -339,22 +352,39 @@ fn admit(
     // legacy prefill/decode path is bypassed entirely in step_session.
     let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut spec_resumed = 0usize;
+    let mut text_suffix: Option<Vec<u32>> = None;
     let spec = if serve_spec && sampler.is_greedy() && lm.model.mtp.is_some()
         && seed_fed.is_empty() {
         // POOL RESUME: a parked spec session whose committed sequence exactly prefixes this
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
+        // Match order: exact token prefix (bit-clean), else TEXT prefix (survives BPE boundary
+        // divergence — the ~50% chat-turn miss class). Text hits re-tokenize only the remainder.
         let resumed = spec_reuse.get_mut(&req.model).and_then(|pool| {
-            pool.iter().rposition(|e|
+            if let Some(idx) = pool.iter().rposition(|e|
                 e.sess.cache_max_ctx() >= ctx_cap
                     && prompt.len() >= e.sess.committed.len()
-                    && prompt.starts_with(&e.sess.committed))
-                .map(|idx| pool.remove(idx).sess)
+                    && prompt.starts_with(&e.sess.committed)) {
+                return Some(pool.remove(idx).sess);
+            }
+            if !req.prompt_text.is_empty() {
+                if let Some(idx) = pool.iter().rposition(|e|
+                    e.sess.cache_max_ctx() >= ctx_cap
+                        && req.prompt_text.len() >= e.committed_text.len()
+                        && req.prompt_text.starts_with(e.committed_text.as_str())) {
+                    let e = pool.remove(idx);
+                    let rem = &req.prompt_text[e.committed_text.len()..];
+                    text_suffix = Some(lm.tok.encode(rem, false));
+                    return Some(e.sess);
+                }
+            }
+            None
         });
         match resumed {
             Some(sess) => {
                 spec_resumed = sess.committed.len();
-                eprintln!("[worker] spec-reuse: {} of {} prompt tokens resumed (model {})",
-                          spec_resumed, prompt.len(), req.model);
+                eprintln!("[worker] spec-reuse: {} committed tokens resumed{} (model {})",
+                          spec_resumed,
+                          if text_suffix.is_some() { " [text-prefix]" } else { "" }, req.model);
                 Some(sess)
             }
             None => {
@@ -383,8 +413,13 @@ fn admit(
         }
     } else { None };
     // spec-resume: replay sampler penalty history over the resumed prefix; queue only the suffix.
+    // (text-prefix hit: replay the SESSION's committed ids — the prompt's own ids diverge at the
+    // boundary; greedy sessions ignore penalties anyway, this keeps sampled-future-proofing sane.)
     if spec_resumed > 0 {
-        for &t in &prompt[..spec_resumed] { sampler.accept(t); }
+        match (&spec, &text_suffix) {
+            (Some(sess), Some(_)) => { for &t in &sess.committed { sampler.accept(t); } }
+            _ => { for &t in &prompt[..spec_resumed] { sampler.accept(t); } }
+        }
     }
     // legacy tokenwise cache only when the spec path did NOT take the session (spec owns its own).
     let cache = match (&spec, cache) {
@@ -402,7 +437,8 @@ fn admit(
         spec,
         last_logits: seed_logits,
         fed: seed_fed,
-        prefill_queue: if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
+        prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
+                       else if spec_resumed > 0 { prompt[spec_resumed..].to_vec().into_iter().collect() }
                        else { suffix.into_iter().collect() },
         prefill_done: prefill_done_at_admit,
         generated: Vec::new(),
