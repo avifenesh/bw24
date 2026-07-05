@@ -620,8 +620,25 @@ impl HybridModel {
         // sum order — ULP differences propagate through gdn_scan and flip argmax on the 27B.
         let qkv_mixed = e.matmul_decode_exact(&la.wqkv, h, t)?;
         let z = e.matmul_decode_exact(&la.wqkv_gate, h, t)?;
-        let beta_raw = e.matmul_decode_exact(&la.ssm_beta, h, t)?;
-        let alpha = e.matmul_decode_exact(&la.ssm_alpha, h, t)?;
+        // beta+alpha DUAL at T=1 (75% of p3 rounds run T=1 verify — p-min chain cuts): the dual
+        // mr2 kernel is bit-identical per element to the m=1 MMVQ matmul_decode_exact dispatches
+        // (same warp-per-row body, blockIdx.y picks the weight), so the decode-exact contract
+        // holds; the run-spec battery is the arbiter. T>1 keeps the per-tensor decode-exact path.
+        let (beta_raw, alpha) = if t == 1 {
+            let (hq, hd) = e.quantize_q8_1(h, 1, cfg.n_embd as usize)?;
+            match e.matmul_pre_dual_noscale(&la.ssm_beta, &la.ssm_alpha, &hq, &hd, 1)? {
+                Some(((mut b, bs), (mut a, as_))) => {
+                    if bs != 1.0 { e.scale_inplace(&mut b, bs, la.ssm_beta.out_features())?; }
+                    if as_ != 1.0 { e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?; }
+                    (b, a)
+                }
+                None => (e.matmul_decode_exact(&la.ssm_beta, h, 1)?,
+                         e.matmul_decode_exact(&la.ssm_alpha, h, 1)?),
+            }
+        } else {
+            (e.matmul_decode_exact(&la.ssm_beta, h, t)?,
+             e.matmul_decode_exact(&la.ssm_alpha, h, t)?)
+        };
 
         // conv with CARRIED state + ring roll (T >= pad guaranteed by caller).
         let rl = cache.recur[il].as_mut().unwrap();
