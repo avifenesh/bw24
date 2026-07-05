@@ -155,3 +155,14 @@ Movement since image 4: p3 0.87x -> 0.97x (gap 12.9 -> 1.9 tok/s), p1 now WINS +
 bw24-only capabilities now: session KV reuse (turn-start 42.6x at 40k history; llama has prompt-cache but not cross-request continuation in our serve config), exactness self-consistency contract, 278k-token 9B on 24GB.
 llama still ahead: pp throughput 1.6x (their stream-K + fixup tail), p2/p3 gen by 1-5%.
 OPEN to flip p2/p3: ARC A aligned-KV probe (in flight G7e), k-quant b4 tranche, draft-head cost.
+
+### 9B (same image, K=2 pmin0.3 vs llama MTP draft config)
+
+| cell | bw24 gen (spec) | llama gen (spec) | bw24/llama |
+|---|---|---|---|
+| p1 | **174.6** | 122.3 | **1.43x** |
+| p2 | **149.8** | 121.5 | **1.23x** |
+| p3 | **141.5** | 117.7 | **1.20x** |
+
+9B WINS EVERY CELL — the "9B edge, higher than all other inferences" requirement holds vs llama
+at its best serve config. (Earlier images: 9B was 130.8/100.9/80.2 = below llama at p2/p3.)
