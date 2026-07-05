@@ -995,6 +995,7 @@ impl HybridModel {
         let exi = e.htod_i32(&ex_ids)?;
         let exo = e.htod_i32(&ex_off)?;
         let exp_d = e.htod_i32(&ex_pairs)?;
+        let _ = &px;   // pair-major twin keeps it; em path uses CSR
 
         let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
         let gate = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
