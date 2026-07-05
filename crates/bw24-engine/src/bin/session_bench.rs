@@ -1,0 +1,51 @@
+//! SESSION TURN-COST BENCH: the daily-driver number — turn N+1 cost on a session with a long
+//! history, session (suffix prime) vs fresh (full re-prime). usage: session-bench <model.gguf>
+//! env: BW24_HIST_FILE (history text), BW24_TURN_TOKENS (suffix len, default 512), BW24_NGEN.
+use bw24_engine::Engine;
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::bw24_gguf::GgufFile;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: session-bench <model.gguf>");
+    let e = Engine::new(0)?;
+    let g = GgufFile::open(&path)?;
+    let model = HybridModel::load(&e, &g)?;
+    let k: usize = std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    let turn_t: usize = std::env::var("BW24_TURN_TOKENS").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
+
+    // history from file (real content) tokenized with the model's tokenizer
+    let hist_file = std::env::var("BW24_HIST_FILE").expect("BW24_HIST_FILE required");
+    let text = std::fs::read_to_string(&hist_file)?;
+    let tok = bw24_tokenizer::Tokenizer::from_gguf(&g)?;
+    let hist = tok.encode(&text, true);
+    println!("history: {} tokens; turn suffix: {turn_t}; gen: {n_new}", hist.len());
+
+    // SESSION: prime history as turn 1 (gen 1 token to establish state), then time turn 2.
+    let mut sess = model.new_session(&e, hist.len() + turn_t + n_new + 64)?;
+    let t0 = std::time::Instant::now();
+    let _ = model.generate_spec_session(&e, &mut sess, &hist, 1, k)?;
+    e.stream().synchronize()?;
+    println!("turn1 (history prime + 1 tok): {:.2}s", t0.elapsed().as_secs_f64());
+
+    let suffix: Vec<u32> = hist[..turn_t].to_vec();  // realistic content for the new turn
+    let t1 = std::time::Instant::now();
+    let (out, d, a) = model.generate_spec_session(&e, &mut sess, &suffix, n_new, k)?;
+    e.stream().synchronize()?;
+    let turn2 = t1.elapsed().as_secs_f64();
+    let prime_s = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+    println!("SESSION turn2: {:.2}s total ({} tok, prime {:.2}s, gen {:.1} tok/s, accept {}/{})",
+             turn2, out.len(), prime_s, out.len() as f64 / (turn2 - prime_s), a, d);
+
+    // FRESH baseline: same total context primed from scratch.
+    let mut full: Vec<u32> = sess.committed[..sess.committed.len() - out.len()].to_vec();
+    full.truncate(hist.len() + 1 + turn_t);
+    let t2 = std::time::Instant::now();
+    let (out_f, _df, _af) = model.generate_spec(&e, &full, n_new, k)?;
+    e.stream().synchronize()?;
+    let fresh = t2.elapsed().as_secs_f64();
+    let prime_f = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+    println!("FRESH  turn2: {:.2}s total ({} tok, prime {:.2}s) -> session turn-start speedup {:.1}x",
+             fresh, out_f.len(), prime_f, prime_f / prime_s.max(1e-9));
+    Ok(())
+}

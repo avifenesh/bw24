@@ -29,7 +29,23 @@ use crate::forward::argmax;
 /// Rejected drafts / p-min extras / pseudo-seed appends are all discarded by the round-start
 /// `set_len` truncation (the KvLayer len mechanism — §C rollback for the draft side).
 /// BW24_SPEC_KVLOCAL=1 restores the legacy round-local scratch (reset to empty each round, cap=k+1).
-struct MtpScratch {
+/// Multi-turn spec-decode session (2026-07-05): trunk Cache + persistent MTP draft scratch +
+/// the committed token list, alive across generate_spec_session calls. Turn N+1 primes ONLY its
+/// suffix (chunked continuation prime over the quantized past) and mtp_kv_fill's its suffix rows,
+/// then the round loop runs unchanged. `last_h` carries the pre-output_norm hidden of the last
+/// committed row across turns (the predecessor-pairing seed + fill anchor).
+pub struct SpecSession {
+    pub(crate) cache: Cache,
+    pub(crate) scratch: MtpScratch,
+    /// Every token whose state the caches hold, in order (prompt turns + generated), INCLUDING
+    /// overshoot: spec commits accepted drafts past max_new; those rows are in the caches, so the
+    /// session must count them. Callers render output from this, not from their own echo.
+    pub committed: Vec<u32>,
+    /// Pre-output_norm hidden of the LAST committed row (device). None before the first turn.
+    pub(crate) last_h: Option<CudaSlice<f32>>,
+}
+
+pub(crate) struct MtpScratch {
     kv: KvLayer,
     /// Row capacity. Doubles as the fa_decode_dc bucket_max for BOTH draft paths (graph + eager):
     /// n_splits is sized from it ONCE, so the graph captured at round 0 stays valid for every
@@ -901,6 +917,42 @@ impl HybridModel {
     /// Event tracking is disabled for the whole call (generate_graph pattern) so every buffer the
     /// captured graph references is event-free; the spec loop is strictly single-stream.
     /// BW24_SPEC_NOGRAPH=1 forces the eager draft chain.
+    /// Multi-turn session: trunk cache + MTP draft scratch persist across generate calls, so
+    /// turn N+1 primes ONLY its new suffix (the 124k-conversation daily pattern — re-priming a
+    /// 32k history costs ~54s; a suffix prime costs seconds). APPEND-ONLY by construction: the
+    /// hybrid linear-attn states are in-place (no position index), so a session can extend but
+    /// never rewind — `committed` is the exact token list whose state the caches hold (includes
+    /// any overshoot tokens past max_new; the caller renders from `committed`, not its own echo).
+    pub fn new_session(&self, e: &Engine, max_ctx: usize)
+                       -> Result<SpecSession, Box<dyn std::error::Error>> {
+        Ok(SpecSession {
+            cache: Cache::new(e, &self.cfg, max_ctx)?,
+            scratch: MtpScratch::new(e, &self.cfg, max_ctx)?,
+            committed: Vec::new(),
+            last_h: None,
+        })
+    }
+
+    /// One spec-decode turn on a live session. `suffix` = the NEW tokens only (turn N+1's user
+    /// message rendered through the chat template continuation). Returns (new tokens emitted,
+    /// drafted, accepted); session.committed grows by suffix + emitted.
+    pub fn generate_spec_session(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
+                                 max_new: usize, k: usize)
+                                 -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        let mtp_dense = self.mtp.as_ref()
+            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
+        let trunk_dense = self.layers.iter()
+            .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
+        let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
+            && mtp_dense && trunk_dense && k + 2 < 96;
+        let was_tracking = e.ctx().is_event_tracking();
+        if graph_draft && was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess));
+        if graph_draft && was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        let (out, d, a) = r?;
+        Ok((out, d, a))
+    }
+
     pub fn generate_spec(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         let mtp_dense = self.mtp.as_ref()
@@ -910,17 +962,17 @@ impl HybridModel {
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
             && mtp_dense && trunk_dense && k + 2 < 96;
         if !graph_draft {
-            return self.generate_spec_inner(e, prompt, max_new, k, false);
+            return self.generate_spec_inner2(e, prompt, max_new, k, false, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
         if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
-        let r = self.generate_spec_inner(e, prompt, max_new, k, true);
+        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None);
         if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
         r
     }
 
-    fn generate_spec_inner(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
-                           graph_draft: bool)
+    fn generate_spec_inner2(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
+                           graph_draft: bool, mut sess: Option<&mut SpecSession>)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
@@ -930,12 +982,38 @@ impl HybridModel {
         // Everything downstream (verify/accept/commit) sees target ids only — exactness unchanged.
         let d_vocab = mtp.shared_head_head.as_ref().unwrap_or(&self.output).out_features();
         let n_embd = self.cfg.n_embd as usize;
-        let max_ctx = prompt.len() + max_new + k + 8;
-        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+        // SESSION MODE: reuse the live cache/scratch, prime only the suffix. `base` = tokens
+        // already committed (their state is in the caches); 0 = fresh single-shot call.
+        // kv_local (round-local scratch) is incompatible with sessions (the persistent draft KV
+        // IS the session's draft state) — asserted below.
+        let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
+        let session_mode = sess.is_some();
+        assert!(!(session_mode && kv_local), "BW24_SPEC_KVLOCAL unsupported in session mode");
+        let max_ctx = match sess.as_ref() {
+            Some(s) => s.cache.max_ctx,
+            None => prompt.len() + max_new + k + 8,
+        };
+        let mut own_cache;
+        let mut own_scratch;
+        let (cache, scratch, mut sess_tail): (&mut Cache, &mut MtpScratch,
+                                              Option<(&mut Vec<u32>, &mut Option<CudaSlice<f32>>)>) =
+            match sess.take() {
+                Some(sr) => {
+                    let SpecSession { cache, scratch, committed, last_h } = sr;
+                    (cache, scratch, Some((committed, last_h)))
+                }
+                None => {
+                    own_cache = Cache::new(e, &self.cfg, max_ctx)?;
+                    // Persistent scratch = max_ctx rows (~2KB/token quantized); legacy = k+1.
+                    own_scratch = MtpScratch::new(e, &self.cfg,
+                                                  if kv_local { k + 1 } else { max_ctx })?;
+                    (&mut own_cache, &mut own_scratch, None)
+                }
+            };
+        let base = cache.pos;
         // PERSISTENT DRAFT KV (default): the scratch mirrors the committed sequence so the draft
         // chain attends over full history. BW24_SPEC_KVLOCAL=1 = legacy round-local scratch (A/B
         // + fallback seam; acceptance-only — exactness is verify's job either way).
-        let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
         // HIDDEN-PAIRING CONVENTION (DEFAULT = predecessor-row, 2026-07-04 — the 27B acceptance
         // unlock, +16pts): the MTP head is TRAINED on rows pairing token x_p with the trunk
         // hidden of its PREDECESSOR h_{p-1} (the reference engine's mtp_update shifts the target
@@ -973,14 +1051,14 @@ impl HybridModel {
         let batched_prime = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
             && std::env::var("BW24_PRIME_TOKENWISE").is_err();
         if batched_prime {
-            let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+            let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut *cache)?;
             prime_logits = l;
             if !kv_local { prompt_h = Some(hiddens); }
         } else {
             prime_logits = Vec::new();
             if !kv_local { prompt_h = Some(e.uninit(prompt.len() * n_embd)?); }
             for (i, &tok) in prompt.iter().enumerate() {
-                let (l, h) = self.decode_step_h(e, tok, &mut cache)?;
+                let (l, h) = self.decode_step_h(e, tok, &mut *cache)?;
                 if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
                 prime_logits = l;
             }
@@ -997,8 +1075,6 @@ impl HybridModel {
             e.upload_u8(&self.embd.raw).expect("embed table upload")
         });
         let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
-        // Persistent scratch = max_ctx rows (~2KB/token quantized — trivial); legacy = k+1.
-        let mut scratch = MtpScratch::new(e, &self.cfg, if kv_local { k + 1 } else { max_ctx })?;
         let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let mut total_drafted = 0usize;
         let mut total_accepted = 0usize;
@@ -1013,7 +1089,7 @@ impl HybridModel {
         // `h_seed` = last_token's pre-output_norm hidden. Establish it by feeding last_token once
         // (mirrors plain greedy). DEVICE-ARGMAX lever: the accept walk only ever consumes the
         // argmax of those logits — never the full vector — so a host u32 replaces the Vec<f32>.
-        let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut cache)?;
+        let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut *cache)?;
         let mut last_pred = argmax(&init_logits) as u32;
         // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
         // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
@@ -1067,7 +1143,7 @@ impl HybridModel {
         if graph_draft {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                          &mut scratch, p_min > 0.0, true, embd_gpu, embd_qt,
+                                          &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
                                           embd_rb, d_vocab)
             });
             match cap_res {
@@ -1086,7 +1162,7 @@ impl HybridModel {
             if draft_graph.is_some() && !h_prev_pairing {
                 let cap_res = e.capture_graph(|e| {
                     self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                              &mut scratch, false, false, embd_gpu, embd_qt,
+                                              &mut *scratch, false, false, embd_gpu, embd_qt,
                                               embd_rb, d_vocab)
                 });
                 match cap_res {
@@ -1103,11 +1179,14 @@ impl HybridModel {
         // capture-warmup garbage; capture left len at 0). last_token (the init feed) needs no
         // fill: the first chain step processes it and appends its entry at slot prompt.len().
         if let Some(ph) = &prompt_h {
-            scratch.set_len(e, 0)?;
+            // SESSION: rows [0..base) are the previous turns' exact fills (refresh overwrote them
+            // with true verify hiddens) — truncate any draft overhang, fill ONLY the suffix at
+            // global positions [base..base+tp). Fresh call: base==0, identical to before.
+            scratch.set_len(e, base)?;
             // CHUNKED FILL (long-ctx OOM fix, 2026-07-05): mtp_kv_fill's transients scale with its
             // T (concat = T*2*n_embd*4B — 1.5GB at 40k) and its concat loop is 2*T launches. The
             // fill is a pure sequential append, so chunking is exact: each chunk appends its rows
-            // at pos0=start with the identical per-row math. Same knob as the trunk prime.
+            // at pos0=base+start with the identical per-row math. Same knob as the trunk prime.
             let fill_chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
                 .and_then(|v| v.parse().ok()).unwrap_or(4096);
             let tp = prompt.len();
@@ -1117,22 +1196,30 @@ impl HybridModel {
                 let end = (start + fill_chunk).min(tp);
                 let tc = end - start;
                 if h_prev_pairing {
-                    // PREDECESSOR pairing: row i gets h[i-1]; row 0 (global) a zeros row (the
-                    // reference engine's initial pending-h is zeroed too). Per chunk: rows
-                    // start..end read h[start-1..end-1] — one dtod into a chunk-sized buffer.
+                    // PREDECESSOR pairing: row i gets h[i-1]; global row 0 a zeros row (the
+                    // reference engine's initial pending-h is zeroed too); a session turn's row 0
+                    // gets the PREVIOUS turn's last committed hidden (sess.last_h). Per chunk:
+                    // rows start..end read h[start-1..end-1] — one dtod into a chunk buffer.
                     let mut phs = e.zeros(tc * n_embd)?;
                     let (src_lo, dst_off) = if start == 0 { (0, n_embd) } else { ((start - 1) * n_embd, 0) };
                     let n_copy = if start == 0 { (tc - 1) * n_embd } else { tc * n_embd };
+                    if start == 0 {
+                        if let Some((_, lh)) = sess_tail.as_ref() {
+                            if let Some(lh) = lh.as_ref() {
+                                e.copy_into(&mut phs, 0, lh, n_embd)?;
+                            }
+                        }
+                    }
                     if n_copy > 0 {
                         e.copy_view_into(&mut phs, dst_off, &ph.slice(src_lo..src_lo + n_copy), n_copy)?;
                     }
-                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phs, start, &mut scratch,
+                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phs, base + start, &mut *scratch,
                                      embd_gpu, embd_qt, embd_rb)?;
                 } else {
                     let mut phc = e.zeros(tc * n_embd)?;
                     e.copy_view_into(&mut phc, 0, &ph.slice(start * n_embd..end * n_embd),
                                      tc * n_embd)?;
-                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phc, start, &mut scratch,
+                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phc, base + start, &mut *scratch,
                                      embd_gpu, embd_qt, embd_rb)?;
                 }
                 start = end;
@@ -1197,7 +1284,7 @@ impl HybridModel {
                     // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token
                     // read instead of the ~600KB full-vocab dtoh + host argmax per draft token.
                     let mtp_pos = pos + base0 + j;
-                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
+                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut *scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
                     let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
                     let idx = e.dtoh_u32_one(&tok_d)?;
                     let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
@@ -1223,7 +1310,7 @@ impl HybridModel {
             // ckpt (REPLAY-FREE partial accept): retain per-layer state-rebuild inputs alongside
             // the verify. Pure buffer keep-alives + dtod clones — kernel work is unchanged.
             let mut ckpt = if spec_replay { None } else { Some(VerifyCkpt::new(self.layers.len())) };
-            let (tlogits_d, vx) = self.decode_step_t_core(e, &verify_tokens, pos, &mut cache,
+            let (tlogits_d, vx) = self.decode_step_t_core(e, &verify_tokens, pos, &mut *cache,
                                                           Some((embd_gpu, embd_qt, embd_rb)),
                                                           ckpt.as_mut())?;
 
@@ -1304,10 +1391,10 @@ impl HybridModel {
                             e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(t_v - 1) * n_embd),
                                              (t_v - 1) * n_embd)?;
                         }
-                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut scratch,
+                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     } else {
-                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vx, pos, &mut scratch,
+                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vx, pos, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     }
                 } else if !kv_local {
@@ -1323,11 +1410,11 @@ impl HybridModel {
                             e.copy_into(&mut hp, 0, &fill_prev, n_embd)?;
                         }
                         self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &hp,
-                                         pos + base + k_round - 1, &mut scratch,
+                                         pos + base + k_round - 1, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     } else {
                         self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &vh_seed,
-                                         pos + base + k_round - 1, &mut scratch,
+                                         pos + base + k_round - 1, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     }
                 }
@@ -1359,7 +1446,7 @@ impl HybridModel {
                     e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
                 } else {
                     let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                        e, mtp, bonus, &vh_seed, &mut scratch, pseudo_pos,
+                        e, mtp, bonus, &vh_seed, &mut *scratch, pseudo_pos,
                         embd_gpu, embd_qt, embd_rb)?;
                     e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
                 }
@@ -1377,7 +1464,7 @@ impl HybridModel {
                 // accept (never compounds: the next verify recomputes true hiddens for all
                 // committed columns).
                 let j = base + n_acc;
-                self.commit_verified_prefix(e, &mut cache, &snap, ckpt.as_ref().unwrap(), j)?;
+                self.commit_verified_prefix(e, &mut *cache, &snap, ckpt.as_ref().unwrap(), j)?;
                 let mut seed = e.zeros(n_embd)?;
                 e.copy_view_into(&mut seed, 0, &vx.slice((j - 1) * n_embd..j * n_embd), n_embd)?;
                 // Draft scratch: TRUE-HIDDEN REFRESH of the committed prefix (see the full-accept
@@ -1393,10 +1480,10 @@ impl HybridModel {
                             e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(j - 1) * n_embd),
                                              (j - 1) * n_embd)?;
                         }
-                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vxs, pos, &mut scratch,
+                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vxs, pos, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     } else {
-                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vx, pos, &mut scratch,
+                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vx, pos, &mut *scratch,
                                          embd_gpu, embd_qt, embd_rb)?;
                     }
                 } else if !kv_local {
@@ -1422,7 +1509,7 @@ impl HybridModel {
                     e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
                 } else {
                     let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                        e, mtp, bonus, &seed, &mut scratch, pseudo_pos,
+                        e, mtp, bonus, &seed, &mut *scratch, pseudo_pos,
                         embd_gpu, embd_qt, embd_rb)?;
                     e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
                 }
@@ -1444,7 +1531,7 @@ impl HybridModel {
                 // Full-stack forward (decode_step_t_core = decode_step_t_h_emb_dev's body):
                 // Predecessor pairing seeds from the PREDECESSOR row (col len-2) — the same-row path takes the
                 // last col exactly as before (byte-identical to the old _h_emb_dev call).
-                let (rl_d, rx) = self.decode_step_t_core(e, &replay, pos, &mut cache,
+                let (rl_d, rx) = self.decode_step_t_core(e, &replay, pos, &mut *cache,
                                                          Some((embd_gpu, embd_qt, embd_rb)), None)?;
                 // last_pred = argmax of the LAST column's logits (predicts the token after `bonus`)
                 // — device argmax + one 4-byte read instead of the full-vocab column dtoh.
@@ -1486,6 +1573,34 @@ impl HybridModel {
                        tok_per_round={:.3}",
                       per_slot.join(" "),
                       (total_accepted + round) as f64 / round.max(1) as f64);
+        }
+        // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
+        // expects — every row in `committed` has trunk KV/recur state AND an exact draft-KV row.
+        if let Some((committed, last_h)) = sess_tail.take() {
+            if let Some(b) = pending.take() {
+                // pending bonus: in `out` but NOT in the caches — commit it (one T=1 pass) and
+                // fill its draft-KV row (pairing: its row carries the predecessor's hidden,
+                // which is exactly the carried fill_prev).
+                let pos_b = cache.pos;
+                scratch.set_len(e, pos_b)?;
+                let (_lg, hb) = self.decode_step_h(e, b, &mut *cache)?;
+                if h_prev_pairing {
+                    self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                } else {
+                    self.mtp_kv_fill(e, mtp, &[b], &hb, pos_b, &mut *scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                }
+                *last_h = Some(hb);
+            } else {
+                // fill_prev tracks the hidden of the last COMMITTED row throughout the loop.
+                *last_h = Some(e.clone_dtod(&fill_prev)?);
+            }
+            committed.extend_from_slice(prompt);
+            committed.extend_from_slice(&out);   // FULL out incl. overshoot — it's all committed
+            debug_assert_eq!(cache.pos, committed.len(),
+                "session invariant: cache rows == committed tokens");
+            return Ok((out, total_drafted, total_accepted));
         }
         out.truncate(max_new);
         Ok((out, total_drafted, total_accepted))

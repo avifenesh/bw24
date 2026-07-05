@@ -78,3 +78,11 @@ path = "src/bin/gdn_bench.rs"
 [[bin]]
 name = "verify-probe"
 path = "src/bin/verify_probe.rs"
+
+[[bin]]
+name = "session-gate"
+path = "src/bin/session_gate.rs"
+
+[[bin]]
+name = "session-bench"
+path = "src/bin/session_bench.rs"

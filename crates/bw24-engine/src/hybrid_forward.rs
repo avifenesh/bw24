@@ -142,9 +142,11 @@ impl HybridModel {
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
-        assert!(cache.pos == 0, "prime_cache is a fresh-prompt prime (cache.pos must be 0)");
+        // SESSION CONTINUATION (2026-07-05): cache.pos > 0 = priming a NEW SUFFIX onto a live
+        // session cache — every chunk (including the first) takes the continuation arm
+        // (fa_prefill_view over the quantized past + this chunk). Fresh prime (pos==0) unchanged.
         assert!(t >= PRIME_MIN_T, "prime_cache needs T >= {PRIME_MIN_T} (caller gates)");
-        assert!(t <= cache.max_ctx, "prime_cache: prompt exceeds cache max_ctx");
+        assert!(cache.pos + t <= cache.max_ctx, "prime_cache: prompt exceeds cache max_ctx");
 
         // CHUNKED PRIME (2026-07-05, the long-ctx OOM fix): the monolithic prime allocates
         // per-layer transients proportional to T (gate/up/act = T*n_ff*4B EACH — 1.5GB apiece at
