@@ -89,6 +89,14 @@ pub struct MoeSlotCache {
 
 /// FREE-SLOT FAST-ADMIT gate (BW24_MOE_FAST_ADMIT, default ON; `=0` restores the strict
 /// second-miss ghost filter even while free slots remain). See `dispatch`.
+fn ghost_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // DEFAULT OFF (2026-07-06 A/B): local 35B spill 24.2 -> 25.0 (+3.4%, N=3 tight); on 96GB the
+    // free-slot fast-admit already bypasses the filter, so this only changes the FULL-cache
+    // regime where the double-copy cost measured above the eviction-protection benefit.
+    // BW24_MOE_GHOST=1 restores the strict second-miss filter.
+    *E.get_or_init(|| std::env::var("BW24_MOE_GHOST").map(|v| v == "1").unwrap_or(false))
+}
 fn fast_admit_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| std::env::var("BW24_MOE_FAST_ADMIT").map(|v| v != "0").unwrap_or(true))
@@ -280,7 +288,13 @@ impl MoeSlotCache {
             let s = self.admit(id, host_bytes, e)?;
             return Ok(DispatchSlot::Resident(s));
         }
-        if self.ghost.contains(&id) {
+        // SPILL FIRST-MISS ADMIT (BW24_MOE_GHOST=0, 2026-07-06): in the SPILL regime (cache
+        // permanently full — 10.4k slots vs 31.5k blocks on the local 35B) the ghost filter makes
+        // every cold block pay TWO H2D copies (transient now, retained on second miss) — ~6% of
+        // steady-state token PCIe. Disabling it admits on first miss (evicting an SLRU victim).
+        // Risk profile: one-off cold experts can evict warm ones — the SLRU probation segment
+        // still protects the protected set; A/B arbitrates per rig. Default KEEPS the filter.
+        if self.ghost.contains(&id) || !ghost_enabled() {
             self.ghost.remove(&id);
             let s = self.admit(id, host_bytes, e)?;
             Ok(DispatchSlot::Resident(s))
