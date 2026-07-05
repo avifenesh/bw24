@@ -194,10 +194,18 @@ static constexpr __device__ int mmq_get_granularity_device(const int mmq_x) {
 
 // ======================= load_tiles_nvfp4 (mmq.cuh:1069, NON-Blackwell arm) =======================
 // FP4->int8 dequant via the kvalues LUT + per-16 UE4M3 float scale. NVFP4 is symmetric (no min-offset).
-template <int mmq_y, bool need_check>
+//
+// TWO weight layouts behind ONE loader (is_rp template arm — pure ADDRESS remap, the dequant math,
+// smem write order, and FP ops are token-for-token IDENTICAL, so the kernel result is bit-identical):
+//   is_rp=false: GGUF 36B blocks ([4B UE4M3 d][32B qs] interleaved per 64 values), base = x.
+//   is_rp=true : A6 split planes (model.rs repack_nvfp4_split): quant plane out_f x nsb64 x 32B at x,
+//                scale plane out_f x nsb64 x 4B at x_sc (= x + out_f*nsb64*32). The repack copies the
+//                same 32 qs bytes / 4 d bytes verbatim, and the flat block index ib = row*stride + kbx
+//                indexes BOTH planes directly (quant at ib*32, scale at ib*4).
+template <int mmq_y, bool need_check, bool is_rp>
 static __device__ __forceinline__ void load_tiles_nvfp4_w4a8(
-        const char * __restrict__ x, int * __restrict__ x_tile, const int kb0, const int i_max,
-        const int stride) {
+        const char * __restrict__ x, const char * __restrict__ x_sc, int * __restrict__ x_tile,
+        const int kb0, const int i_max, const int stride) {
     constexpr int nwarps = MMQ_NWARPS;
     constexpr int warp_size = MMQ_WARP_SIZE;
 
@@ -214,8 +222,17 @@ static __device__ __forceinline__ void load_tiles_nvfp4_w4a8(
         int i = i0 + threadIdx.y * rows_per_warp + row_in_warp;
         if constexpr (need_check) { i = min(i, i_max); }
 
-        const block_nvfp4 * bxi = (const block_nvfp4 *) x + kb0 + i * stride + kbx;
-        const uint32_t * __restrict__ src_qs = reinterpret_cast<const uint32_t *>(bxi->qs);
+        const int ib = kb0 + i * stride + kbx; // flat NVFP4 block index (row-major, both layouts)
+        const uint32_t * __restrict__ src_qs;
+        const uint8_t  * __restrict__ src_d;
+        if constexpr (is_rp) {
+            src_qs = reinterpret_cast<const uint32_t *>(x    + (size_t) ib * 32);
+            src_d  = reinterpret_cast<const uint8_t  *>(x_sc + (size_t) ib * 4);
+        } else {
+            const block_nvfp4 * bxi = (const block_nvfp4 *) x + ib;
+            src_qs = reinterpret_cast<const uint32_t *>(bxi->qs);
+            src_d  = bxi->d;
+        }
         const int kqs = 16 * kbx;
         const int ksc = 4 * kbx;
 
@@ -227,7 +244,7 @@ static __device__ __forceinline__ void load_tiles_nvfp4_w4a8(
             x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 1] = q1.x;
             x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 2] = q0.y;
             x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 3] = q1.y;
-            x_df[i * MMQ_MMA_TILE_X_K_NVFP4 + ksc + sub] = ggml_cuda_ue4m3_to_fp32(bxi->d[sub]);
+            x_df[i * MMQ_MMA_TILE_X_K_NVFP4 + ksc + sub] = ggml_cuda_ue4m3_to_fp32(src_d[sub]);
         }
     }
 }
@@ -340,9 +357,10 @@ static __device__ __forceinline__ void mmq_write_back_nvfp4_w4a8(
 }
 
 // ======================= mul_mat_q_process_tile (NVFP4 W4A8) =======================
-template <int mmq_x, bool need_check>
+template <int mmq_x, bool need_check, bool is_rp>
 static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_w4a8(
-        const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
+        const char * __restrict__ x, const char * __restrict__ x_sc, const int offset_x,
+        const int * __restrict__ y,
         const int * __restrict__ ids_dst, float * __restrict__ dst,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
@@ -365,7 +383,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_w4a8(
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int); // == MMQ_TILE_Y_K (36)
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
-        load_tiles_nvfp4_w4a8<mmq_y, need_check>(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+        load_tiles_nvfp4_w4a8<mmq_y, need_check, is_rp>(x, x_sc, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
 #pragma unroll
@@ -395,10 +413,11 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_w4a8(
 }
 
 // ======================= mul_mat_q (conventional xy-tiling, NVFP4 W4A8) =======================
-template <int mmq_x, bool need_check>
+template <int mmq_x, bool need_check, bool is_rp>
 __launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
 static __global__ void mul_mat_q_nvfp4_w4a8(
-        const char * __restrict__ x, const int * __restrict__ y, float * __restrict__ dst,
+        const char * __restrict__ x, const char * __restrict__ x_sc,
+        const int * __restrict__ y, float * __restrict__ dst,
         const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y,
         const int stride_col_dst, const int blocks_per_ne00, const float out_scale) {
     constexpr int nwarps = MMQ_NWARPS;
@@ -426,8 +445,8 @@ static __global__ void mul_mat_q_nvfp4_w4a8(
 
     const int offset_x = it * mmq_y * stride_row_x;
 
-    mul_mat_q_process_tile_nvfp4_w4a8<mmq_x, need_check>(
-        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
+    mul_mat_q_process_tile_nvfp4_w4a8<mmq_x, need_check, is_rp>(
+        x, x_sc, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
         stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
 }
 
@@ -497,7 +516,10 @@ static size_t mmq_nvfp4_w4a8_nbytes_shared() {
 }
 
 // Run the NVFP4 W4A8 MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
-//   W_nvfp4_blocks : raw bw24 NVFP4 weight rows (block_nvfp4 36B blocks, in_f/64 per row).
+//   W_nvfp4_blocks : NVFP4 weight bytes. rp=0: GGUF block_nvfp4 36B blocks, in_f/64 per row.
+//                    rp=1: A6 split-plane repack ([quant plane out_f x in_f/64 x 32B]
+//                    [scale plane out_f x in_f/64 x 4B]) — the resident decode layout; the rp tile
+//                    loader is a pure address remap of the GGUF loader (bit-identical output).
 //   act_f32        : f32 activation [n_tokens, in_f].
 //   y              : f32 output [n_tokens, out_f].
 //   act_scratch    : pre-alloc'd quant buffer >= bw24_mmq_nvfp4_w4a8_act_bytes(in_f, n_tokens).
@@ -505,7 +527,7 @@ static size_t mmq_nvfp4_w4a8_nbytes_shared() {
 // Requires in_f % 64 == 0. Returns 0 on success, else (1000 + cudaError).
 int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, float * y,
                         int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
-                        float out_scale) {
+                        float out_scale, int rp) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
 
     // ---- 1) quantize activation f32 -> block_q8_1_mmq (D4) ----
@@ -537,15 +559,29 @@ int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, floa
     const bool need_check = (out_f % MMQ_Y) != 0;
     const int * y_q = (const int *) act_scratch;
     const char * W  = (const char *) W_nvfp4_blocks;
+    // rp: scale plane sits after the quant plane (out_f rows x in_f/64 groups x 32B). Unused for rp=0.
+    const char * W_sc = W + (size_t) out_f * (in_f / QK_NVFP4) * 32;
 
-    if (need_check) {
-        cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mul_mat_q_nvfp4_w4a8<MMQ_X, true><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+    if (rp) {
+        if (need_check) {
+            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, true, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+            mul_mat_q_nvfp4_w4a8<MMQ_X, true, true><<<grid, block, smem, st>>>(
+                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        } else {
+            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+            mul_mat_q_nvfp4_w4a8<MMQ_X, false, true><<<grid, block, smem, st>>>(
+                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        }
     } else {
-        cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mul_mat_q_nvfp4_w4a8<MMQ_X, false><<<grid, block, smem, st>>>(
-            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        if (need_check) {
+            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, true, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+            mul_mat_q_nvfp4_w4a8<MMQ_X, true, false><<<grid, block, smem, st>>>(
+                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        } else {
+            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+            mul_mat_q_nvfp4_w4a8<MMQ_X, false, false><<<grid, block, smem, st>>>(
+                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        }
     }
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { return 1000 + (int) e; }

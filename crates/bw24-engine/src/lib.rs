@@ -1225,13 +1225,12 @@ impl Engine {
         // worst offender). The dp4a path grids (out_f, m) = far more CTAs, filling the GPU. So route
         // out_f < 2*BM to dp4a (skip the tiling GEMM which structurally can't fill the SMs here).
         const GEMM_MIN_OUT_F: usize = 128;   // 2*BM; below this the GEMM grid.x starves the 82 SMs
-        // VENDORED llama NVFP4 MMQ prefill GEMM (BW24_MMQ=1). The 5150-pp512 kernel from llama.cpp,
-        // ggml-decoupled: native mxf4nvf4 block-scale mma + llama's 2-level FP8/UE4M3 activation quant
-        // (the accurate W4A8-via-FP8 path that fixes bw24's W4A4 maxdiff 1.46). A/B vs the int8 W4A8
-        // default below. Feeds raw f32 activation `x` + raw NVFP4 weight bytes (the launcher quantizes
-        // the activation internally). out_f>=MMQ_Y/2 guard keeps the tile grid from starving the SMs.
-        if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F
-            && (std::env::var("BW24_MMQ").is_ok() || std::env::var("BW24_MMQ_W4A8").is_ok()) && self.mmq_supports(w) {
+        // VENDORED llama MMQ prefill GEMMs. NVFP4 W4A8 is DEFAULT-ON (2026-07-05 flip: same int8
+        // accuracy class as the int8 GEMM below at ~1.9x pp512, rp-loader coexists with the A6
+        // repack; BW24_MMQ_W4A8=0 = escape hatch). W4A4 mxf4nvf4 + Q4_K/Q5_K stay behind BW24_MMQ=1.
+        // The env policy lives in mmq_supports/qmatvec_mmq. Feeds raw f32 activation `x` (the
+        // launcher quantizes internally). out_f>=MMQ_Y/2 keeps the tile grid from starving the SMs.
+        if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.gemm_supports(w) {
@@ -1338,10 +1337,10 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
-        // VENDORED llama MMQ prefill GEMMs (BW24_MMQ=1) — use the RAW f32 activation (their own
-        // internal quant: FP8/UE4M3 for NVFP4, q8_1 DS4 for Q4_K/Q5_K), so read x_fallback not aq/ad.
-        if m >= 16 && w.out_features() >= 128
-            && (std::env::var("BW24_MMQ").is_ok() || std::env::var("BW24_MMQ_W4A8").is_ok()) && self.mmq_supports(w) {
+        // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
+        // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
+        // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not aq/ad.
+        if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs

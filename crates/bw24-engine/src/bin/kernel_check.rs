@@ -716,11 +716,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // it holds the int8 accuracy class the default GEMM passes all e2e gates with.
             if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::NVFP4) {
                 use bw24_gguf::dequant;
+                use bw24_engine::model::repack_nvfp4_split;
                 use bw24_runtime::cpu_linear;
                 let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
                 let raw = g.tensor_data(t);
                 let w_f32 = dequant::dequantize(GgmlType::NVFP4, raw, in_f * out_f);
                 let wd = e.htod_bytes(raw)?;
+                // A6 split-plane copy of the SAME weight — the rp tile loader must be BIT-identical.
+                let wd_rp = e.htod_bytes(&repack_nvfp4_split(raw, out_f))?;
                 for tt in [16usize, 64, 128, 512] {
                     let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 83) * 0.1).collect();
                     let xd = e.htod(&x)?;
@@ -731,6 +734,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let rel = d / scale;
                     println!("MMQ-W4A8 blk.0.ffn_gate.weight [NVFP4] T={tt}: rel={rel:.2e} (int8 band ~1e-3) {}",
                              if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                    // rp-loader BIT-IDENTITY gate: split-plane loader vs GGUF loader on the same
+                    // weight+activation must agree on every f32 bit (pure address remap, same FP
+                    // ops in the same order). ANY nonzero diff = layout bug = HARD FAIL.
+                    let yr = e.dtoh(&e.qmatvec_mmq_nvfp4_w4a8_raw_rp(&wd_rp, &xd, tt, in_f, out_f)?)?;
+                    let nbad = yb.iter().zip(yr.iter())
+                        .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                    println!("MMQ-W4A8-RP blk.0.ffn_gate.weight [NVFP4] T={tt}: bit-mismatch {nbad}/{} {}",
+                             yb.len(), if nbad == 0 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
             // --- VENDORED llama Q4_K/Q5_K MMQ GEMM vs the f32 dequant oracle. ---

@@ -38,7 +38,10 @@ unsafe extern "C" {
     /// Run the NVFP4 W4A8 MMQ prefill GEMM (STAGE 2 accuracy-safe rung). Same fast MMQ tile as
     /// bw24_mmq_nvfp4 (W4A4) but the non-Blackwell int8 pair: weight FP4 LUT-dequantized to int8 at
     /// tile-load, activation stays q8_1 int8 (D4, the same quant class as the default int8 GEMM).
-    /// Same contract as bw24_mmq_nvfp4. Returns 0 or (1000 + cudaError).
+    /// `rp`: 0 = GGUF 36B-block weight layout, 1 = A6 split-plane repack (the resident decode
+    /// layout). The rp tile loader is a pure address remap of the GGUF loader (same dequant math,
+    /// same FP op order) — output is bit-identical either way.
+    /// Same contract as bw24_mmq_nvfp4 otherwise. Returns 0 or (1000 + cudaError).
     pub fn bw24_mmq_nvfp4_w4a8(
         w_nvfp4_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
@@ -47,6 +50,7 @@ unsafe extern "C" {
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
         out_scale: f32,
+        rp: i32,
     ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -80,19 +84,37 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+/// W4A8-MMQ DEFAULT-FLIP seam (2026-07-05): the vendored MMQ prefill suite is DEFAULT-ON — NVFP4
+/// takes the W4A8 MMQ tile (same int8 accuracy class as the int8 GEMM it replaces, all exactness
+/// gates hold, ~1.9x pp512; the rp tile-loader arm coexists with the A6 split-plane repack) and
+/// Q4_K/Q5_K take the vendored k-quant int8-MMA MMQ (also int8-class; gated with W4A8 in the same
+/// battery — the predecessor's `BW24_MMQ_W4A8=1` arm engaged BOTH, this flip preserves exactly
+/// that measured config). `BW24_MMQ_W4A8=0` = escape hatch back to the int8 GEMM prefill
+/// everywhere. `BW24_MMQ=1` additionally switches GGUF-layout NVFP4 to the W4A4 mxf4nvf4 tile
+/// (speed/accuracy tradeoff opt-in, unchanged).
+pub fn mmq_w4a8_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(true))
+}
+
 impl Engine {
-    /// True if `w` is eligible for a vendored MMQ GEMM: NVFP4 (in_f % 64 == 0) or
-    /// Q4_K/Q5_K (in_f % 256 == 0 — integral 256-value superblocks per row).
+    /// True if `w` should take a vendored MMQ GEMM under the current env policy (see
+    /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
+        let mmq_opt_in = std::env::var("BW24_MMQ").is_ok();
         match w {
-            // A6 split-plane repacked NVFP4: the vendored MMQ tile loader (mmq_fp4.cu
-            // load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks and has NO rp port yet — BW24_MMQ
-            // (opt-in, not in the daily env law) falls through to the rp-ported int8 GEMM instead.
-            GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp => false,
-            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 => w.in_features() % 64 == 0,
+            // A6 split-plane repacked NVFP4: ONLY the W4A8 loader has an rp arm (pure address
+            // remap, bit-identical output — mmq_nvfp4_w4a8.cu load_tiles_nvfp4_w4a8<is_rp>).
+            // The W4A4 loader (mmq_fp4.cu load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks only,
+            // so an rp weight with W4A8 disabled falls through to the rp-ported int8 GEMM.
+            GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp =>
+                mmq_w4a8_enabled() && w.in_features() % 64 == 0,
+            // GGUF-layout NVFP4 (BW24_RP=0): W4A8 (default-on) or the explicit W4A4 opt-in.
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 =>
+                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0,
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
-                w.in_features() % 256 == 0,
+                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0,
             _ => false,
         }
     }
@@ -103,14 +125,21 @@ impl Engine {
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         let (in_f, out_f) = (w.in_features(), w.out_features());
-        let GpuTensor::Quant { bytes, scale, qtype, .. } = w else {
+        let GpuTensor::Quant { bytes, scale, qtype, rp, .. } = w else {
             return Err("qmatvec_mmq: not a Quant tensor".into());
         };
+        // NVFP4 tile choice: W4A8 (accuracy-safe int8 pair, DEFAULT since the flip) vs W4A4
+        // (mxf4nvf4 mma, explicit BW24_MMQ=1 speed/accuracy tradeoff). An rp weight ALWAYS takes
+        // W4A8 — only its loader has the split-plane arm (pure address remap, bit-identical).
+        // Explicit BW24_MMQ_W4A8=1 still overrides a simultaneous BW24_MMQ=1 (predecessor rule).
+        let w4a8_explicit = std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(false);
+        let use_w4a8 = *rp || w4a8_explicit
+            || (mmq_w4a8_enabled() && std::env::var("BW24_MMQ").is_err());
         match *qtype {
-            // STAGE 2: BW24_MMQ_W4A8=1 routes NVFP4 to the accuracy-safe int8 W4A8 MMQ tile
-            // (weight FP4->int8 dequant + q8_1 activation) instead of the W4A4 mxf4nvf4 mma.
-            q if q == crate::QT_NVFP4 && std::env::var("BW24_MMQ_W4A8").is_ok() =>
-                self.qmatvec_mmq_nvfp4_w4a8(bytes, x, m, in_f, out_f, *scale),
+            // STAGE 2: the accuracy-safe int8 W4A8 MMQ tile (weight FP4->int8 dequant + q8_1
+            // activation) — handles BOTH weight layouts (rp = A6 split-plane vs GGUF blocks).
+            q if q == crate::QT_NVFP4 && use_w4a8 =>
+                self.qmatvec_mmq_nvfp4_w4a8(bytes, x, m, in_f, out_f, *scale, *rp),
             q if q == crate::QT_NVFP4 => self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale),
             q if q == crate::QT_Q4_K || q == crate::QT_Q5_K => {
                 let mut y = self.qmatvec_mmq_q45k_raw(bytes, x, m, in_f, out_f, q)?;
@@ -216,21 +245,30 @@ impl Engine {
     /// STAGE 2 W4A8 MMQ NVFP4: same tile as the W4A4 path, but weight FP4 is LUT-dequantized to
     /// int8 at tile-load and the activation stays q8_1 int8 — the accuracy-safe rung. Macro-scale
     /// folded into the write-back epilogue (bit-identical to a post-matmul scale_inplace).
+    /// `rp` selects the weight layout (A6 split-plane vs GGUF blocks) — bit-identical output.
     pub fn qmatvec_mmq_nvfp4_w4a8(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                  in_f: usize, out_f: usize, scale: f32)
+                                  in_f: usize, out_f: usize, scale: f32, rp: bool)
                                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, scale)
+        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, scale, rp)
     }
 
-    /// Bare W4A8 MMQ launch (no macro-scale) — for the kernel_check accuracy gate.
+    /// Bare W4A8 MMQ launch (no macro-scale, GGUF layout) — for the kernel_check accuracy gate.
     pub fn qmatvec_mmq_nvfp4_w4a8_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
                                       in_f: usize, out_f: usize)
                                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0)
+        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0, false)
+    }
+
+    /// Bare W4A8 MMQ launch on an A6 split-plane repacked weight — the rp-loader bit-identity gate
+    /// compares this against `qmatvec_mmq_nvfp4_w4a8_raw` on the same weight.
+    pub fn qmatvec_mmq_nvfp4_w4a8_raw_rp(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                                         in_f: usize, out_f: usize)
+                                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0, true)
     }
 
     fn qmatvec_mmq_nvfp4_w4a8_scaled(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                     in_f: usize, out_f: usize, scale: f32)
+                                     in_f: usize, out_f: usize, scale: f32, rp: bool)
                                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert!(in_f % 64 == 0, "MMQ NVFP4 W4A8 requires in_f % 64 == 0, got {in_f}");
         let act_bytes = unsafe { bw24_mmq_nvfp4_w4a8_act_bytes(in_f as i32, m as i32) };
@@ -251,6 +289,7 @@ impl Engine {
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                     scale,
+                    rp as i32,
                 )
             };
             if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8 rc={rc}").into()); }
