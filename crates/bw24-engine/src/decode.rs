@@ -737,10 +737,24 @@ impl HybridModel {
 
         let mut cache = Cache::new(e, &self.cfg, ctx_cap)?;
         let mut last_logits = Vec::new();
-        for &tok in prompt {
-            last_logits = self.decode_step(e, tok, &mut cache)?;
-            sampler.accept(tok);
+        // BATCHED PRIME (2026-07-06 fix — generate_with was still tokenwise! run-gen's "decode"
+        // numbers folded a ~40-100 tok/s tokenwise prime into the rate) + PRIME_NANOS contract.
+        let t_prime = std::time::Instant::now();
+        let batched = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
+            && std::env::var("BW24_PRIME_TOKENWISE").is_err();
+        if batched {
+            let (l, _h, _x) = self.prime_cache(e, prompt, &mut cache)?;
+            last_logits = l;
+            for &tok in prompt { sampler.accept(tok); }
+        } else {
+            for &tok in prompt {
+                last_logits = self.decode_step(e, tok, &mut cache)?;
+                sampler.accept(tok);
+            }
         }
+        e.stream().synchronize()?;
+        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
+                                 std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(budget);
         let mut reason = StopReason::MaxNew;
         for _ in 0..budget {

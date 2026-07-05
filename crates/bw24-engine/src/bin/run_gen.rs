@@ -161,12 +161,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         true
     })?;
     e.stream().synchronize()?;
-    let dt = t0.elapsed().as_secs_f64();
+    let dt_total = t0.elapsed().as_secs_f64();
+    // GEN-ONLY timing (2026-07-06 fix): generate_with primes INSIDE the timed span — at long
+    // prompts the old number was prime-inclusive (35B @256-tok prime read 33.7 when decode was
+    // ~51). PRIME_NANOS is the engine's published prime wall (same contract as run-spec).
+    let prime_s = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+    let dt = (dt_total - prime_s).max(1e-9);
     let out = gen_out.tokens;
     let emitted = out.len();
     let path = if std::env::var("BW24_FAST").is_ok() { "Stage-B int8 dp4a" } else { "Stage-A f32-dequant" };
-    println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode) [stop: {:?}]",
-             emitted, dt, emitted as f64 / dt, gen_out.stop_reason);
+    println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode, gen-only; prime {:.3}s) [stop: {:?}]",
+             emitted, dt, emitted as f64 / dt, prime_s, gen_out.stop_reason);
     println!("tokens: {out:?}");
 
     // --- EDGE-1 §D.4: MoE residency-cache PCIe report. The Stage-1 (no-cache) baseline re-stages

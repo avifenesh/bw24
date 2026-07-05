@@ -641,7 +641,11 @@ impl HybridModel {
         // (it measured 169.55 vs the cache path's 28.5 on the local 35B — the residency-gate
         // all-or-nothing fallback was the 6x). BIT-IDENTITY: same _dev kernels, same math; only
         // the pointer table's provenance differs (slab base+stride vs SLRU slot addresses).
-        if m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
+        // t==1 ONLY: moe_ffn_dev loops tokens serially (1 launch-pair per token) — correct for
+        // decode, catastrophic for prefill (a 257-token prime = 257x41 sequential launch-pairs;
+        // measured: prime-inclusive tok/s halved). Prefill keeps the batched sequential/grouped
+        // paths, which read the SAME resident slabs through the host expert_bytes (unchanged).
+        if t == 1 && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
         }
