@@ -3344,11 +3344,11 @@ extern "C" __global__ void moe_pairs_matvec_q8_dec(
     int nsb = in_f >> 5;
     const unsigned char* wrow = (const unsigned char*)table[(size_t)proj * n_expert + ex]
                                 + (long)o * row_bytes;
-    for (int base = lo; base < hi; base += 16) {
-        int cnt = min(16, hi - base);
-        float acc[16];
+    for (int base = lo; base < hi; base += 32) {
+        int cnt = min(32, hi - base);
+        float acc[32];
         #pragma unroll
-        for (int i = 0; i < 16; i++) acc[i] = 0.0f;
+        for (int i = 0; i < 32; i++) acc[i] = 0.0f;
         for (int g = lane; g < nsb; g += 32) {
             int wq[8]; int iscale; float fscale;
             expert_decode_g(qtype, wrow, g, wq, &iscale, &fscale);  // ONCE per (row, group)
