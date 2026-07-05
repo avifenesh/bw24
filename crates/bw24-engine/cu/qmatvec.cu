@@ -668,6 +668,81 @@ extern "C" __global__ void qmatvec_q5_K_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ----- Q5_K MULTI-ROW-PER-WARP MMVQ (the FR-Spec trimmed draft head is Q5_K 32768 rows — 8% of
+// the 27B p3 spec wall at 1.02ms/draft launch, memory-latency bound like the other k-quants). Same
+// multirow recipe as q4k_mmvq_multirow: activation int8 loaded ONCE (2x int4), reused across RPW
+// rows; RPW weight rows in flight hide the load latency. BIT-IDENTICAL per row to qmatvec_q5_K_mmvq
+// (same scale/min unpack, same qh bit extraction, same dp4a order, same warp_reduce_sum). -----
+template<int RPW>
+__device__ __forceinline__ void q5k_mmvq_multirow(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
+    int t = blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3, grp = g & 7;
+        int g64 = grp >> 1; bool hi = (grp & 1); int hbit = 2 * g64 + (hi ? 1 : 0);
+        // activation loaded ONCE, reused across RPW rows (+ the min-sum, row-independent).
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sumi_sum = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi_sum = dp4a(0x01010101, aq4[k], sumi_sum);
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            const unsigned char* b = W + (long)o * row_bytes + (long)sblk * 176;
+            float d_sb    = half_to_float(*(const unsigned short*)b);
+            float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+            const unsigned char* scales = b + 4;
+            const unsigned char* qh = b + 16;
+            const unsigned char* qs = b + 48;
+            unsigned char sc, mn;
+            if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+            else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+                   mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+            const unsigned char* q = qs + g64 * 32;
+            int sumi_d = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                int q4  = get_int_b2(q  + k * 4);
+                int qh4 = get_int_b2(qh + k * 4);
+                int low = hi ? ((q4 >> 4) & 0x0F0F0F0F) : (q4 & 0x0F0F0F0F);
+                int h   = (qh4 >> hbit) & 0x01010101;
+                int wpack = low | (h << 4);
+                sumi_d = dp4a(wpack, aq4[k], sumi_d);
+            }
+            acc[r] += d_sb * (float)((int)sc * sumi_d) * d8
+                    - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[(size_t)t * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_q5_K_mmvq_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ----- Q4_K MULTI-ROW-PER-WARP MMVQ (MLP lever for the 27B daily, whose weights are Q4_K_M). Each
 // warp computes RPW output rows in one activation pass: the activation int8 (loaded once as 2x int4)
 // is reused across all RPW rows; RPW weight rows + RPW acc chains -> RPW x loads-in-flight, hiding

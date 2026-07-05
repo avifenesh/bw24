@@ -1557,6 +1557,11 @@ impl Engine {
             mr_env.unwrap_or(2)
         } else if m == 1 && qtype == QT_Q4_K {
             mr_env.unwrap_or(1)   // q4_K multi-row off by default (+0.7% only)
+        } else if m == 1 && qtype == QT_Q5_K {
+            // Q5_K mr2 default ON (2026-07-05): the FR-Spec trimmed draft head is Q5_K 32768
+            // rows = 8% of the 27B p3 spec wall (1.02ms/draft launch, latency-bound like the
+            // other k-quants pre-fix). Bit-identical per row to the single-row kernel.
+            mr_env.unwrap_or(2)
         } else { 1 };
         // A6 rp layout: mr4 has no rp twin (mr4 crashes pre-existing, non-default) -> mr2.
         if rp && qtype == QT_NVFP4 && mr == 4 { mr = 2; }
@@ -1566,6 +1571,7 @@ impl Engine {
             (QT_NVFP4, 4, false) => "qmatvec_nvfp4_mmvq_mr4",
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
             (QT_Q4_K, 2, _) => "qmatvec_q4_K_mmvq_mr2",
+            (QT_Q5_K, 2, _) => "qmatvec_q5_K_mmvq_mr2",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q5_K, _, _) => "qmatvec_q5_K_mmvq",
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
