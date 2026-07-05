@@ -98,7 +98,9 @@ const REUSE_MIN_PREFIX: usize = 16;
 
 struct Session {
     model: String,
-    cache: Cache,
+    /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
+    /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
+    cache: Option<Cache>,
     /// SPEC-DECODE serving (2026-07-05): greedy sessions on MTP models decode in
     /// generate_spec_session BURSTS (K-token draft chains + batched verify) instead of one
     /// decode_step per tick — the CLI-measured spec win (27B p3: 79 vs 40 tok/s) brought to the
@@ -225,12 +227,14 @@ pub fn run(
                     pool.push(SpecReuseEntry { sess });
                 }
             } else if s.fed.len() >= REUSE_MIN_PREFIX && s.prefill_done {
-                let pool = reuse.entry(s.model.clone()).or_default();
-                if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
-                let cap = s.cache.max_ctx;
-                pool.push(ReuseEntry {
-                    fed: s.fed, cache: s.cache, last_logits: s.last_logits, cap,
-                });
+                if let Some(cache) = s.cache {
+                    let pool = reuse.entry(s.model.clone()).or_default();
+                    if pool.len() >= REUSE_POOL_PER_MODEL { pool.remove(0); } // LRU: oldest first
+                    let cap = cache.max_ctx;
+                    pool.push(ReuseEntry {
+                        fed: s.fed, cache, last_logits: s.last_logits, cap,
+                    });
+                }
             }
         }
     }
@@ -314,12 +318,10 @@ fn admit(
         Some(e) => {
             eprintln!("[worker] kv-reuse: {} of {} prompt tokens resumed (model {})",
                       e.fed.len(), prompt.len(), req.model);
-            (e.cache, e.fed, e.last_logits)
+            (Some(e.cache), e.fed, e.last_logits)
         }
-        None => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
-            Ok(c) => (c, Vec::new(), Vec::new()),
-            Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
-        },
+        // legacy cache deferred: allocated below ONLY if the spec path doesn't take the session.
+        None => (None, Vec::new(), Vec::new()),
     };
 
     // EOS: union of caller-supplied eos + the model's own eos id.
@@ -365,6 +367,15 @@ fn admit(
     if spec_resumed > 0 {
         for &t in &prompt[..spec_resumed] { sampler.accept(t); }
     }
+    // legacy tokenwise cache only when the spec path did NOT take the session (spec owns its own).
+    let cache = match (&spec, cache) {
+        (Some(_), c) => c,        // reuse hit carried a cache? keep it parked as-is (rare; None normally)
+        (None, Some(c)) => Some(c),
+        (None, None) => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+            Ok(c) => Some(c),
+            Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+        },
+    };
     Ok(Session {
         model: req.model,
         cache,
@@ -457,11 +468,11 @@ fn step_session(
             let mut take = q.min(PREFILL_TICK_T);
             if q - take > 0 && q - take < bw24_engine::hybrid_forward::PRIME_MIN_T { take = q; }
             let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
-            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, &mut s.cache)?;
+            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
             s.last_logits = l;
             for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         } else if let Some(tok) = s.prefill_queue.pop_front() {
-            s.last_logits = lm.model.decode_step(engine, tok, &mut s.cache)?;
+            s.last_logits = lm.model.decode_step(engine, tok, s.cache.as_mut().unwrap())?;
             s.fed.push(tok);
             s.sampler.accept(tok);
         }
@@ -505,13 +516,13 @@ fn step_session(
     }
 
     // context guard.
-    if s.cache.pos >= s.cache.max_ctx {
+    if s.cache.as_ref().map(|c| c.pos >= c.max_ctx).unwrap_or(false) {
         finish(s, StopReason::ContextFull);
         return Ok(false);
     }
 
     // produce next logits (the ONE decode_step that advances this session).
-    s.last_logits = lm.model.decode_step(engine, next, &mut s.cache)?;
+    s.last_logits = lm.model.decode_step(engine, next, s.cache.as_mut().unwrap())?;
     s.fed.push(next);
     Ok(true)
 }
