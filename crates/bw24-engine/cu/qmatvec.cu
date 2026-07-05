@@ -3004,6 +3004,95 @@ extern "C" __global__ void qmatvec_nvfp4_dp4a(
 
 // ===== IQ4_XS decode MMVQ (OPTIONAL perf path; codebook->int8 dp4a, symmetric, no min). =====
 // nibble->position split: low nibbles qs[0..15] -> elems 0..15, high -> elems 16..31.
+// ---- MoE EXPERT dp4a DOT BODIES (2026-07-06 dp4a arc; HANDOVER "MoE expert dp4a upgrade") ----
+// Per-32-elem-group int dots vs a q8_1 activation, separable block scales OUTSIDE the int dot —
+// the q4k/q5k mmvq structure. IQ3_S sign trick ported from llama vec_dot_iq3_s_q8_1
+// (vecdotq.cuh:1148): signs expand via __vcmpne4 mask -> XOR-sub negation on the packed grid
+// bytes. Layout matches bw24 deq_iq3_s (block 110B: d@0 qs@2 qh@66 signs@74 scales@106).
+// Group g = 32 elems; IQ3_S block = 256 elems = 8 groups; IQ4_XS block = 256 elems = 8 groups.
+__device__ __forceinline__ float expert_dot_iq3s_g(const unsigned char* wrow, int g,
+                                                   const signed char* aqb, float d8) {
+    int sblk = g >> 3, ib32 = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 110;
+    float d = half_to_float(*(const unsigned short*)b);
+    const unsigned char* qs    = b + 2  + ib32 * 8;
+    unsigned char qh           = b[66 + ib32];
+    const unsigned char* signs = b + 74 + ib32 * 4;
+    const unsigned char* scales= b + 106;
+    int sc_nib = (ib32 & 1) ? (scales[ib32 / 2] >> 4) : (scales[ib32 / 2] & 0xf);
+    float db = d * (1.0f + 2.0f * (float)sc_nib);
+    const int* aq4 = (const int*)aqb;
+    int sumi = 0;
+    #pragma unroll
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        int gl = iq3s_grid_d(qs[l0 + 0] | (((int)qh << (8 - l0)) & 0x100));
+        int gh = iq3s_grid_d(qs[l0 + 1] | (((int)qh << (7 - l0)) & 0x100));
+        unsigned char sb = signs[l0 / 2];
+        int signs0 = __vcmpne4(((sb & 0x03) << 7) | ((sb & 0x0C) << 21), 0);
+        int signs1 = __vcmpne4(((sb & 0x30) << 3) | ((sb & 0xC0) << 17), 0);
+        int grid_l = __vsub4(gl ^ signs0, signs0);
+        int grid_h = __vsub4(gh ^ signs1, signs1);
+        sumi = dp4a(grid_l, aq4[l0 + 0], sumi);
+        sumi = dp4a(grid_h, aq4[l0 + 1], sumi);
+    }
+    return db * (float)sumi * d8;
+}
+__device__ __forceinline__ float expert_dot_iq4xs_g(const unsigned char* wrow, int g,
+                                                    const signed char* aqb, float d8) {
+    int sblk = g >> 3, ib = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 136;
+    float d_sb = half_to_float(*(const unsigned short*)b);
+    unsigned short sh = *(const unsigned short*)(b + 2);
+    const unsigned char* sl = b + 4;
+    const unsigned char* qs = b + 8 + ib * 16;
+    int ls = ((sl[ib >> 1] >> (4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
+    int scale = ls - 32;
+    const int* aLo = (const int*)(aqb);
+    const int* aHi = (const int*)(aqb + 16);
+    int sumi = 0;
+    #pragma unroll
+    for (int k = 0; k < 4; k++) {
+        int wlo = (kvalues_iq4nl_d[qs[k*4+0]&0xf]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]&0xf]&0xff)<<8)
+                | ((kvalues_iq4nl_d[qs[k*4+2]&0xf]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]&0xf]&0xff)<<24);
+        int whi = (kvalues_iq4nl_d[qs[k*4+0]>>4]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]>>4]&0xff)<<8)
+                | ((kvalues_iq4nl_d[qs[k*4+2]>>4]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]>>4]&0xff)<<24);
+        sumi = dp4a(wlo, aLo[k], sumi);
+        sumi = dp4a(whi, aHi[k], sumi);
+    }
+    return d_sb * (float)(scale * sumi) * d8;
+}
+// group-dispatching wrapper: qtype -> dot body (compile-time-hot switch, both bodies inlined)
+__device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wrow, int g,
+                                              const signed char* aqb, float d8) {
+    if (qtype == QT_IQ3_S)  return expert_dot_iq3s_g(wrow, g, aqb, d8);
+    if (qtype == QT_IQ4_XS) return expert_dot_iq4xs_g(wrow, g, aqb, d8);
+    return 0.0f; // caller gates on supported qtypes
+}
+
+// q8_1-activation MoE expert matvec (warp-per-row like mmvq): the staged/sequential expert path
+// upgrade — replaces the 256-thread f32-dequant qmatvec_f32 (Stage-A) for IQ3_S/IQ4_XS experts.
+// FP-ORDER NOTE: different reduction than qmatvec_f32 (int dp4a + per-group f32 accumulate,
+// 32-lane warp tree) — logits SHIFT; argmax/run-gen/stream-identity gates arbitrate, and the
+// fused _q8 twins below MUST ship in the same commit (BW24_MOE_GATE byte-identity pair contract).
+extern "C" __global__ void qmatvec_expert_q8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, int qtype, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32)
+        acc += expert_dot_g(qtype, wrow, g, arow + (size_t)g * 32, adrow[g]);
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 extern "C" __global__ void qmatvec_iq4_XS_dp4a(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -3150,6 +3239,54 @@ extern "C" __global__ void moe_gate_up_silu8_f32(
             act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * v;
         }
     }
+}
+
+// ---- dp4a _q8 TWINS of the fused MoE kernels (matched pair with qmatvec_expert_q8) ----
+// Same grid/block/slot-order/silu expression as the _f32 versions; ONLY the dot changes:
+// warp-per-row int dp4a vs the q8_1 activation (aq/ad), block=(32, ROWS) covering n_ff rows
+// like the f32 version's grid. Reduction = 32-lane warp tree per row (matches expert_q8).
+extern "C" __global__ void moe_gate_up_silu8_q8(
+        wptr8_t gp, wptr8_t up, const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act, int in_f, int n_ff, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;              // expert-FFN row
+    int j = blockIdx.y;              // routed slot
+    int lane = threadIdx.x;          // 32 lanes, one warp per (o,j)
+    int nsb = in_f >> 5;
+    const unsigned char* grow = gp.p[j] + (long)o * rb_g;
+    const unsigned char* urow = up.p[j] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+// act is quantized per-slot by the caller (aq2/ad2 hold n_used rows of q8_1).
+extern "C" __global__ void moe_down8_fma_q8(
+        wptr8_t dp, f32x8_t w, const signed char* __restrict__ aq2, const float* __restrict__ ad2,
+        float* __restrict__ dst, int in_f, int out_f, int n_used, int qt, long rb) {
+    int o = blockIdx.x;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    float chain = 0.0f;
+    for (int j = 0; j < n_used; j++) {
+        const unsigned char* wrow = dp.p[j] + (long)o * rb;
+        const signed char* arow = aq2 + (size_t)j * in_f;
+        const float* adrow = ad2 + (size_t)j * nsb;
+        float acc = 0.0f;
+        for (int g = lane; g < nsb; g += 32)
+            acc += expert_dot_g(qt, wrow, g, arow + (size_t)g * 32, adrow[g]);
+        acc = warp_reduce_sum(acc);
+        if (lane == 0) chain = __fmaf_rn(w.v[j], acc, chain);
+    }
+    if (lane == 0) dst[o] = chain;
 }
 
 // One MoE layer's down-proj + weighted accumulation for all 8 routed experts in ONE launch.

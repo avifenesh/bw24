@@ -552,6 +552,61 @@ impl Engine {
     /// BIT-IDENTICAL to the sequential chain: each dot reproduces qmatvec_f32's exact 256-thread
     /// reduction; the SiLU epilogue is silu_mul_f32's exact expression (see kernel header).
     #[allow(clippy::too_many_arguments)]
+    /// dp4a q8 twins (MoE expert dp4a arc, 2026-07-06): same contract as the _f32 versions but
+    /// consume a PRE-QUANTIZED q8_1 activation. FP-order differs from _f32 (int dot + warp tree)
+    /// — the argmax/stream-identity battery arbitrates; BW24_MOE_Q8=0 restores f32.
+    pub fn moe_gate_up_silu8_q8(&self, gp: WPtr8, up: WPtr8,
+                                aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                in_f: usize, n_ff: usize, n_used: usize, qt_g: i32, qt_u: i32,
+                                rb_g: usize, rb_u: usize)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_q8");
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, rbg, rbu) = (in_f as i32, n_ff as i32, rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&gp).arg(&up).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_q8(&self, dp: WPtr8, w: F32x8,
+                            aq2: &CudaSlice<i8>, ad2: &CudaSlice<f32>,
+                            dst: &mut cudarc::driver::CudaViewMut<f32>,
+                            in_f: usize, out_f: usize, n_used: usize, qt: i32, rb: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_down8_fma_q8");
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, nu, rbi) = (in_f as i32, out_f as i32, n_used as i32, rb as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&dp).arg(&w).arg(aq2).arg(ad2).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&qt).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// q8 sequential expert matvec (staged path twin of qmatvec_view for IQ3_S/IQ4_XS).
+    pub fn qmatvec_expert_q8(&self, w: &CudaSlice<u8>, range: std::ops::Range<usize>,
+                             aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize,
+                             in_f: usize, out_f: usize, qtype: i32, row_bytes: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("qmatvec_expert_q8");
+        let wv = w.slice(range);
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        const ROWS: u32 = 4;   // BW24_MMVQ_ROWS
+        let cfg = LaunchConfig { grid_dim: ((out_f as u32 + ROWS - 1) / ROWS, m as u32, 1),
+                                 block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi, rbi) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&wv).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&qtype).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
     pub fn moe_gate_up_silu8(&self, gp: WPtr8, up: WPtr8, x: &cudarc::driver::CudaView<f32>,
                              in_f: usize, n_ff: usize, n_used: usize, qt_g: i32, qt_u: i32,
                              rb_g: usize, rb_u: usize)
@@ -711,6 +766,21 @@ impl Engine {
     /// forward can quantize a SHARED activation ONCE and feed it to several matmuls (gate+up
     /// share `z`; q/k/v and wqkv/gate/beta/alpha share `h`) — quantize_q8_1 was 13.5% of decode
     /// GPU time, ~half of it redundant re-quantization of the same row.
+    /// quantize_q8_1 over a CudaView (a sliced z-row) — same kernel, offset-honoring arg.
+    pub fn quantize_q8_1_view(&self, x: &cudarc::driver::CudaView<f32>, m: usize, in_f: usize)
+                     -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("quantize_q8_1");
+        let nblk = in_f / 32;
+        let mut q = self.alloc_uninit::<i8>(m * in_f)?;
+        let mut d = self.alloc_uninit::<f32>(m * nblk)?;
+        let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
+        let (inf, mi) = (in_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
+        unsafe { b.launch(cfg)?; }
+        Ok((q, d))
+    }
+
     pub fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
                      -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let f = self.func("quantize_q8_1");

@@ -25,6 +25,18 @@ fn moe_dev_enabled() -> bool {
         && !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")))
 }
 
+/// MoE EXPERT dp4a gate (BW24_MOE_Q8, default ON; `=0` restores the Stage-A f32-dequant expert
+/// kernels). Applies when gate/up/down expert qtypes are all in the dp4a body set (IQ3_S/IQ4_XS).
+/// FP-order differs from Stage-A (int dp4a + warp tree) — argmax/run-gen/stream-identity gates
+/// arbitrate; the sequential and fused q8 paths ship as a matched pair (BW24_MOE_GATE contract).
+fn moe_q8_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_Q8").map(|v| v != "0").unwrap_or(true))
+}
+fn q8_expert_supported(qt: i32) -> bool {
+    qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
+}
+
 /// STAGE 3 prewarm gate (BW24_MOE_PREWARM, default ON; `=0` leaves residency organic). One-shot
 /// per layer: force-admit every block while FREE slots cover the whole layer (never evicts).
 fn moe_prewarm_enabled() -> bool {
@@ -604,6 +616,9 @@ impl HybridModel {
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
         let use_cache = Engine::moe_cache_enabled();
+        let moe_q8 = moe_q8_enabled()
+            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
+            && q8_expert_supported(m.down_exps.qtype);
 
         // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> e.linear.
         let logits = e.matmul(&m.gate_inp, z, t)?;
@@ -689,6 +704,7 @@ impl HybridModel {
             let sel = &sel_all[tok * n_used..(tok + 1) * n_used];
             let w = &w_all[tok * n_used..(tok + 1) * n_used];
             let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);  // CudaView<f32>
+            let mut tok_q8: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
 
             // STAGE-2 GROUPED DECODE (2026-07-04, BW24_MOE_GDEC default ON, =0 rollback): fold
             // this token's whole routed-expert FFN (8x gate/up/silu + 8x down/axpy = 40 launches)
@@ -700,7 +716,16 @@ impl HybridModel {
             // BIT-IDENTITY: each in-kernel dot reproduces qmatvec_f32's exact reduction; SiLU is
             // silu_mul_f32's exact expression; the down accumulation is a slot-ordered
             // __fmaf_rn chain == the sequential axpy_f32 chain (BW24_MOE_GDEC_GATE compares).
-            if gdec_may_fire
+            if gdec_may_fire && moe_q8 {
+                if tok_q8.is_none() {
+                    tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
+                }
+                let (zq, zd) = tok_q8.as_ref().unwrap();
+                if Self::moe_gdec_token_q8(e, m, il, max_block, zq, zd, sel, w,
+                                           &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
+                    continue;
+                }
+            } else if gdec_may_fire
                 && Self::moe_gdec_token(e, m, il, max_block, &zt, sel, w,
                                         &mut moe_out, tok, n_embd, n_ff_exp, n_used)? {
                 continue;
@@ -716,7 +741,23 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
-                if use_cache {
+                if use_cache && moe_q8 {
+                    // dp4a EXPERT PATH (BW24_MOE_Q8): quantize z-row once per token (hoisted
+                    // below via zq/zd lazies), int-dot the three projections. Same dispatch/
+                    // residency mechanics as the f32 arm; only the matvec kernel differs.
+                    if tok_q8.is_none() {
+                        tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
+                    }
+                    let (zq, zd) = tok_q8.as_ref().unwrap();
+                    let gate = Self::moe_cached_gemm_q8(e, il, PROJ_GATE, ex, m, max_block, zq, zd)?;
+                    let up   = Self::moe_cached_gemm_q8(e, il, PROJ_UP,   ex, m, max_block, zq, zd)?;
+                    let mut act = e.uninit(n_ff_exp)?;
+                    e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
+                    let (aq2, ad2) = e.quantize_q8_1(&act, 1, n_ff_exp)?;
+                    let y = Self::moe_cached_gemm_q8(e, il, PROJ_DOWN, ex, m, max_block, &aq2, &ad2)?;
+                    let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                    e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+                } else if use_cache {
                     // SLRU residency cache: per-projection, dispatch the block (HIT => resident slot,
                     // MISS => staged slot) then run the SAME unchanged qmatvec_view from that slot.
                     // The bytes the kernel reads are byte-for-byte the same GGUF block (§B.3); the
@@ -940,6 +981,50 @@ impl HybridModel {
     /// decode; the lock is held only for collection, launches are stream-ordered after any
     /// prior same-stream staging writes).
     #[allow(clippy::too_many_arguments)]
+    /// q8 twin of moe_gdec_token (dp4a arc): same residency check + 2-launch shape; the fused
+    /// kernels consume the pre-quantized z-row and re-quantize act per slot batch.
+    #[allow(clippy::too_many_arguments)]
+    fn moe_gdec_token_q8(e: &Engine, m: &MoeWeights, il: u16, max_block: usize,
+                      zq: &CudaSlice<i8>, zd: &CudaSlice<f32>, sel: &[u32], w: &[f32],
+                      moe_out: &mut CudaSlice<f32>, tok: usize,
+                      n_embd: usize, n_ff_exp: usize, n_used: usize)
+                      -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_GATE, PROJ_UP, PROJ_DOWN};
+        use cudarc::driver::DevicePtr;
+        let ptrs = e.with_moe_cache(max_block, |c, eng| {
+            let mut g = [0u64; 8];
+            let mut u = [0u64; 8];
+            let mut d = [0u64; 8];
+            for (j, &ex) in sel.iter().enumerate() {
+                let ex = ex as u16;
+                let (Some(sg), Some(su), Some(sd)) = (c.resident(BlockId::new(il, PROJ_GATE, ex)),
+                                                      c.resident(BlockId::new(il, PROJ_UP,   ex)),
+                                                      c.resident(BlockId::new(il, PROJ_DOWN, ex)))
+                else { return Ok(None); };
+                let (pg, _e0) = c.slot(sg).device_ptr(eng.stream());
+                let (pu, _e1) = c.slot(su).device_ptr(eng.stream());
+                let (pd, _e2) = c.slot(sd).device_ptr(eng.stream());
+                g[j] = pg as u64; u[j] = pu as u64; d[j] = pd as u64;
+            }
+            c.hits += (3 * n_used) as u64;
+            Ok(Some((g, u, d)))
+        })?;
+        let Some((g, u, d)) = ptrs else { return Ok(false) };
+        let mut wv = [0f32; 8];
+        wv[..n_used].copy_from_slice(w);
+        let act = e.moe_gate_up_silu8_q8(crate::WPtr8(g), crate::WPtr8(u), zq, zd,
+                                         n_embd, n_ff_exp, n_used,
+                                         m.gate_exps.qtype, m.up_exps.qtype,
+                                         m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+        // per-slot act quantize: [n_used, n_ff] rows in one quantize launch.
+        let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+        let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+        e.moe_down8_fma_q8(crate::WPtr8(d), crate::F32x8(wv), &aq2, &ad2, &mut dst,
+                           n_ff_exp, n_embd, n_used,
+                           m.down_exps.qtype, m.down_exps.row_bytes)?;
+        Ok(true)
+    }
+
     fn moe_gdec_token(e: &Engine, m: &MoeWeights, il: u16, max_block: usize,
                       zt: &cudarc::driver::CudaView<f32>, sel: &[u32], w: &[f32],
                       moe_out: &mut CudaSlice<f32>, tok: usize,
@@ -984,6 +1069,22 @@ impl HybridModel {
     /// EDGE-1 §B.3: dispatch one expert projection through the SLRU cache, then run the SAME
     /// `qmatvec_view` from whichever slot it landed in (resident HIT or staged MISS). `x` is the
     /// sliced activation row. `proj` selects the gate/up/down HostExps tensor. Returns y = W_expert @ x.
+    /// q8 twin of moe_cached_gemm: same dispatch/slot mechanics, dp4a expert kernel.
+    fn moe_cached_gemm_q8(e: &Engine, il: u16, proj: u8, ex: usize, m: &MoeWeights,
+                          max_block: usize, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
+        let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
+        let len = exps.expert_stride;
+        let id = BlockId::new(il, proj, ex as u16);
+        let host_bytes = exps.expert_bytes(ex);
+        e.with_moe_cache(max_block, |c, eng| {
+            let slot = c.dispatch(id, host_bytes, eng)?;
+            let buf = match slot { DispatchSlot::Resident(s) => c.slot(s), DispatchSlot::Staging(s) => c.buf(DispatchSlot::Staging(s)) };
+            eng.qmatvec_expert_q8(buf, 0..len, aq, ad, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
+        })
+    }
+
     fn moe_cached_gemm(e: &Engine, il: u16, proj: u8, ex: usize, m: &MoeWeights,
                        max_block: usize, x: &cudarc::driver::CudaView<f32>)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
