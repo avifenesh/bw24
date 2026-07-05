@@ -92,6 +92,14 @@ const REUSE_MIN_PREFIX: usize = 16;
 struct Session {
     model: String,
     cache: Cache,
+    /// SPEC-DECODE serving (2026-07-05): greedy sessions on MTP models decode in
+    /// generate_spec_session BURSTS (K-token draft chains + batched verify) instead of one
+    /// decode_step per tick — the CLI-measured spec win (27B p3: 79 vs 40 tok/s) brought to the
+    /// serve path. `Some` only when: sampler greedy + model has an MTP head + BW24_SERVE_SPEC!=0.
+    /// The SpecSession owns its OWN cache/scratch; `cache` above stays as the (unused) admit
+    /// allocation on this path (kept to avoid restructuring admit; ~small VRAM overhead until
+    /// a follow-up drops it). committed == every token whose state the spec caches hold.
+    spec: Option<bw24_engine::spec::SpecSession>,
     sampler: Sampler,
     last_logits: Vec<f32>,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).

@@ -1175,6 +1175,15 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b4(
         int in_f, int out_f, int m, long row_bytes) {
     nvfp4_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// mcols=8 (K=4..7 spec verify, T=5..8). Same template; columns c >= m break out, so m=5 does the
+// b4+b1 split's total dp4a work with ONE weight read/decode instead of five (the pre-b8 T=5 path
+// was grid.y=m per-row MMVQ — 5 full weight reads — measured as the 27B K=4 cliff).
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 
 // ---- NVFP4 batched matvec, WEIGHT-PREFETCH double-buffer (b4 long_scoreboard fix, 2026-07-03).
 // ncu --set full on the REAL 27B verify (12 steady launches): the batched kernel is memory-LATENCY

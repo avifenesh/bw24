@@ -43,6 +43,10 @@ pub struct SpecSession {
     pub committed: Vec<u32>,
     /// Pre-output_norm hidden of the LAST committed row (device). None before the first turn.
     pub(crate) last_h: Option<CudaSlice<f32>>,
+    /// Greedy argmax predicting the token AFTER committed.last() (from the last turn's final
+    /// logits). Fuels empty-suffix continuation bursts (serve): the next turn emits this token
+    /// first, feeds it, and the round loop resumes without any prime. None before the first turn.
+    pub next_pred: Option<u32>,
 }
 
 pub(crate) struct MtpScratch {
@@ -947,6 +951,7 @@ impl HybridModel {
             scratch: MtpScratch::new(e, &self.cfg, max_ctx)?,
             committed: Vec::new(),
             last_h: None,
+            next_pred: None,
         })
     }
 
@@ -1013,11 +1018,12 @@ impl HybridModel {
         let mut own_cache;
         let mut own_scratch;
         let (cache, scratch, mut sess_tail): (&mut Cache, &mut MtpScratch,
-                                              Option<(&mut Vec<u32>, &mut Option<CudaSlice<f32>>)>) =
+                                              Option<(&mut Vec<u32>, &mut Option<CudaSlice<f32>>,
+                                                      &mut Option<u32>)>) =
             match sess.take() {
                 Some(sr) => {
-                    let SpecSession { cache, scratch, committed, last_h } = sr;
-                    (cache, scratch, Some((committed, last_h)))
+                    let SpecSession { cache, scratch, committed, last_h, next_pred } = sr;
+                    (cache, scratch, Some((committed, last_h, next_pred)))
                 }
                 None => {
                     own_cache = Cache::new(e, &self.cfg, max_ctx)?;
@@ -1061,13 +1067,27 @@ impl HybridModel {
         // full pre-output_norm hidden stack [T, n_embd], which IS prompt_h (the persistent-draft-KV
         // mtp_kv_fill input) — no per-token collection needed. Prompts below PRIME_MIN_T, and
         // BW24_PRIME_TOKENWISE=1 (the escape seam), take the tokenwise decode_step_h loop.
-        assert!(!prompt.is_empty(), "prompt must be non-empty");
+        // EMPTY-SUFFIX CONTINUATION (serve bursts): a session turn with NO new tokens resumes
+        // generation exactly where the last turn stopped — no prime at all. The stashed
+        // `next_pred` plays prime_logits' argmax role (it IS the argmax of the logits after
+        // committed.last()); `last_h` seeds the predecessor pairing below. Fresh calls and
+        // non-empty suffixes take the normal path.
+        let continuation = prompt.is_empty();
+        if continuation {
+            assert!(session_mode, "empty prompt requires a session");
+            assert!(sess_tail.as_ref().map_or(false, |(c, lh, np)|
+                !c.is_empty() && lh.is_some() && np.is_some()),
+                "empty-suffix continuation needs a primed session (committed + last_h + next_pred)");
+        }
         let mut prime_logits;
         let mut prompt_h: Option<CudaSlice<f32>> = None;
         let t_prime = std::time::Instant::now();
-        let batched_prime = prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
+        let batched_prime = !continuation
+            && prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
             && std::env::var("BW24_PRIME_TOKENWISE").is_err();
-        if batched_prime {
+        if continuation {
+            prime_logits = Vec::new();
+        } else if batched_prime {
             let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut *cache)?;
             prime_logits = l;
             if !kv_local { prompt_h = Some(hiddens); }
@@ -1098,8 +1118,15 @@ impl HybridModel {
 
         // First generated token = argmax of the prompt's last logits (== greedy's first token).
         // Emit it, then FEED it to establish the loop invariant below.
-        let mut last_token = argmax(&prime_logits) as u32;
+        let mut last_token = if continuation {
+            sess_tail.as_ref().unwrap().2.unwrap()
+        } else { argmax(&prime_logits) as u32 };
         out.push(last_token);
+        if continuation {
+            // draft-KV invariant: entries [0..base) are the session's exact fills; truncate any
+            // overhang so the chain's first append lands at slot base (== committed.len()).
+            scratch.set_len(e, base)?;
+        }
         // INVARIANT at loop top: `last_token` is the most-recently-committed/emitted token, its
         // KV+recur state IS in `cache` (cache.pos = position right AFTER last_token), `last_pred`
         // is the greedy ARGMAX of the logits that predict the token FOLLOWING last_token, and
@@ -1124,6 +1151,10 @@ impl HybridModel {
                 let np = prompt.len();
                 e.copy_view_into(&mut h_seed_buf, 0, &ph.slice((np - 1) * n_embd..np * n_embd),
                                  n_embd)?;
+            } else if continuation {
+                if let Some((_, lh, _)) = sess_tail.as_ref() {
+                    if let Some(lh) = lh.as_ref() { e.copy_into(&mut h_seed_buf, 0, lh, n_embd)?; }
+                }
             }
         }
         // Persistent device prediction slots for the accept walk (max k+1 verify columns).
@@ -1221,7 +1252,7 @@ impl HybridModel {
                     let (src_lo, dst_off) = if start == 0 { (0, n_embd) } else { ((start - 1) * n_embd, 0) };
                     let n_copy = if start == 0 { (tc - 1) * n_embd } else { tc * n_embd };
                     if start == 0 {
-                        if let Some((_, lh)) = sess_tail.as_ref() {
+                        if let Some((_, lh, _)) = sess_tail.as_ref() {
                             if let Some(lh) = lh.as_ref() {
                                 e.copy_into(&mut phs, 0, lh, n_embd)?;
                             }
@@ -1367,11 +1398,15 @@ impl HybridModel {
             }
 
             // --- 4. COMMIT: draft[0..n_acc] then bonus (n_acc + 1 tokens) ---
+            // SESSION MODE: every accepted column is already in the CACHE — `out` must carry all
+            // of them (overshoot past max_new included) or `committed` under-counts the cache rows
+            // and the next turn's continuation seeds one token off (gate-caught 2026-07-05). The
+            // single-shot path keeps the cap (its caller truncates + drops the cache anyway).
             for j in 0..n_acc {
-                if out.len() >= max_new { break; }
+                if !session_mode && out.len() >= max_new { break; }
                 out.push(draft[j]);
             }
-            let bonus_emitted = out.len() < max_new;
+            let bonus_emitted = session_mode || out.len() < max_new;
             if bonus_emitted { out.push(bonus); }
             last_token = bonus;
 
@@ -1593,14 +1628,19 @@ impl HybridModel {
         }
         // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
         // expects — every row in `committed` has trunk KV/recur state AND an exact draft-KV row.
-        if let Some((committed, last_h)) = sess_tail.take() {
+        if let Some((committed, last_h, next_pred_slot)) = sess_tail.take() {
+            *next_pred_slot = Some(last_pred);
             if let Some(b) = pending.take() {
                 // pending bonus: in `out` but NOT in the caches — commit it (one T=1 pass) and
                 // fill its draft-KV row (pairing: its row carries the predecessor's hidden,
                 // which is exactly the carried fill_prev).
                 let pos_b = cache.pos;
                 scratch.set_len(e, pos_b)?;
-                let (_lg, hb) = self.decode_step_h(e, b, &mut *cache)?;
+                let (lg_b, hb) = self.decode_step_h(e, b, &mut *cache)?;
+                // after a FULL-accept exit `last_pred` is STALE (it predicted the bonus itself —
+                // the prediction AFTER the bonus never materialized; it would have been the next
+                // round's verify col 0). The bonus commit's own logits ARE that prediction.
+                *next_pred_slot = Some(argmax(&lg_b) as u32);
                 if h_prev_pairing {
                     self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch,
                                      embd_gpu, embd_qt, embd_rb)?;

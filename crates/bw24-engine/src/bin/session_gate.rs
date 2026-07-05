@@ -24,7 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sess = model.new_session(&e, 4096)?;
     let mut ok = true;
-    for (i, suffix) in [turn1, turn2, turn3].iter().enumerate() {
+    // turn 4 = EMPTY suffix (pure continuation burst — the serve pattern): must equal greedy
+    // over the full committed history, same oracle as the other turns.
+    let turn4: Vec<u32> = Vec::new();
+    for (i, suffix) in [turn1, turn2, turn3, turn4].iter().enumerate() {
         let (out, _d, _a) = model.generate_spec_session(&e, &mut sess, suffix, n_new, k)?;
         // reference: plain greedy over the FULL committed prefix (history includes this turn's
         // suffix + generated). generate() re-primes from scratch — the independent oracle.
