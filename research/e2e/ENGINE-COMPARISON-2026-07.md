@@ -139,3 +139,19 @@ bw24's local prefill ~6x — the prefill conclusion holds on both boxes.
   m=1-slow, matching the same underlying kernel-maturity story.
 
 Raw data: `engine-comparison-2026-07.jsonl` (one record per cell).
+
+## IMAGE 5 — 2026-07-05 (post base-path day: chunked prime, W4A8 default, deep-ctx FA pair, session KV, dual fuse)
+
+Same exact prompts, N=3 medians, bw24 K=3 pmin0.15+frspec vs llama serve config (n-max 3, p-min 0.1, KV q8/q5, fa, graphs).
+
+| cell | bw24 gen (spec) | llama gen (spec) | bw24/llama | bw24 pp | llama pp |
+|---|---|---|---|---|---|
+| 27B p1 (28 tok) | **95.8** | 87.2 | **1.10x** | — | 163 |
+| 27B p2 (1845) | 87.3 | 92.4 | 0.94x | 1267 | 1958 |
+| 27B p3 (6257) | **73.9** | 75.8 | 0.97x | 1259 | 2113 |
+| 27B 32k (40488) | 33.9 | (untested llama ctx 16k script cap) | — | ~1030 | — |
+
+Movement since image 4: p3 0.87x -> 0.97x (gap 12.9 -> 1.9 tok/s), p1 now WINS +10%. pp gap narrowed 2.6x -> 1.6x (W4A8-MMQ default + ARC B).
+bw24-only capabilities now: session KV reuse (turn-start 42.6x at 40k history; llama has prompt-cache but not cross-request continuation in our serve config), exactness self-consistency contract, 278k-token 9B on 24GB.
+llama still ahead: pp throughput 1.6x (their stream-K + fixup tail), p2/p3 gen by 1-5%.
+OPEN to flip p2/p3: ARC A aligned-KV probe (in flight G7e), k-quant b4 tranche, draft-head cost.
