@@ -34,6 +34,28 @@ _Written 2026-07-03. Read this cold, then continue. bw24 = from-scratch Rust+CUD
 
 ---
 
+## NEXT KERNEL ARCS (2026-07-05, measured on the 40k trace — the 27B >100 base-path levers)
+
+**ARC A — fa_decode_vec_q long-ctx (decode decay 43->25 tok/s over 1.8k->40k):** wall math says
+646MB KV/token (17 layers x 40k x 928B) = 0.76ms at 847GB/s; measured decay +18ms/tok = ~24x off
+wall. Kernel facts (cu/flash_attn.cu KERNEL 2b): register-dequant rewrite deliberately dropped the
+smem broadcast because "L2 serves the reuse (KV@2048 = 2.2MB << L2)" — at 40k a LAYER's KV is
+~37MB, L2 can't hold it, so the 4 GQA warps' re-read = 4x DRAM traffic. Candidates, in order:
+(1) re-introduce the smem KV tile broadcast ABOVE a t_kv threshold (dispatch seam, keep the
+register path short-ctx — it won at 2k by 12x); (2) the 34B/24B block stride breaks 32B-transaction
+alignment — pack-on-append into a 32B-aligned layout (needs an append+decode pair change, gate
+battery arbitrates); (3) split sizing at 40k (n_splits already retuned; check tail effects).
+
+**ARC B — fa_prefill_q chunk-prime redundant dequant (30.5% of the 32k prime wall, 153ms/launch):**
+each of the T/64 BLOCK_Q groups re-dequants the SAME up-to-40k KV tile stream (64x redundant at
+chunk=4096). Candidates: (1) dequant-once per (layer, chunk) into a bf16 workspace (40k x 512 x 2B
+x 2 = 82MB transient — fits), then plain bf16 fa_prefill over it; (2) cp.async double-buffer the
+tile staging (currently sync loads, no overlap); (3) raise BK to widen the MMA per stage.
+
+**Session/serve wiring (engine API done, server pending):** SpecSession + generate_spec_session
+landed with the session-gate oracle (3-turn MATCH both models; 42.6x turn-start at 40k). bw24-server
+still creates a fresh cache per request — wire sessions into worker.rs next serve slot.
+
 ## WHERE THINGS STAND (measured, 9B-NVFP4) — UPDATED 2026-07-03 after Q4_K/Q5_K MMQ landed
 
 | metric | bw24 | llama.cpp | ratio |
