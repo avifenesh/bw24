@@ -82,6 +82,24 @@ unsafe extern "C" {
         fixup_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+
+    // ---- IQ3_S / IQ4_XS expert-segmented int8-MMA MMQ (cu/mmq_iq_experts.cu, BW24_MOE_MMA) ----
+    /// Bytes for the token-major block_q8_1_mmq activation scratch (in_f, n_tokens).
+    pub fn bw24_mmq_iq_experts_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Quantize token-major f32 activation [n_tokens, in_f] -> block_q8_1_mmq (D4). Returns 0 or 1000+err.
+    pub fn bw24_mmq_iq_quantize_act(act_f32: *const f32, act_scratch: *mut core::ffi::c_void,
+                                    in_f: i32, n_tokens: i32, stream: *mut core::ffi::c_void) -> i32;
+    /// Expert-segmented IQ MMA MMQ. Same CSR shape as moe_pairs_matvec_q8_dec: `table` = [3,n_expert]
+    /// device slab ptrs, CSR ex_ids/ex_off/ex_pairs group pairs by expert, pair_tok gathers the
+    /// activation row. y = [n_pairs, out_f] pair-major. `act_scratch` pre-quantized over n_tokens.
+    /// qtype: 5=IQ4_XS, 6=IQ3_S. Returns 0 or 1000+cudaError.
+    pub fn bw24_mmq_iq_experts(
+        table: *const u64, proj: i32, n_expert: i32,
+        ex_ids: *const i32, ex_off: *const i32, ex_pairs: *const i32, pair_tok: *const i32,
+        act_scratch: *const core::ffi::c_void, y: *mut f32,
+        in_f: i32, out_f: i32, n_active: i32, n_tokens: i32, qtype: i32, row_bytes: i64,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 /// W4A8-MMQ DEFAULT-FLIP seam (2026-07-05): the vendored MMQ prefill suite is DEFAULT-ON — NVFP4
@@ -293,6 +311,60 @@ impl Engine {
                 )
             };
             if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8 rc={rc}").into()); }
+        }
+        Ok(y)
+    }
+
+    /// Quantize token-major f32 activation [n_tokens, in_f] to the block_q8_1_mmq (D4) scratch the
+    /// IQ expert-MMA kernel consumes. Returns the scratch buffer (one per proj input per layer).
+    pub fn mmq_iq_quantize_act(&self, x: &CudaSlice<f32>, in_f: usize, n_tokens: usize)
+                               -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let act_bytes = unsafe { bw24_mmq_iq_experts_act_bytes(in_f as i32, n_tokens as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        {
+            let stream = &self.gpu.stream;
+            let (x_p, _gx) = x.device_ptr(stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_mmq_iq_quantize_act(x_p as *const f32, s_p as *mut core::ffi::c_void,
+                                         in_f as i32, n_tokens as i32,
+                                         stream.cu_stream() as *mut core::ffi::c_void)
+            };
+            if rc != 0 { return Err(format!("bw24_mmq_iq_quantize_act rc={rc}").into()); }
+        }
+        Ok(scratch)
+    }
+
+    /// Expert-segmented IQ3_S/IQ4_XS int8-MMA MMQ (the m16n8k16.s8 analog of moe_pairs_matvec_q8_dec).
+    /// Same CSR inputs (table/ex_ids/ex_off/ex_pairs/pair_tok) + a pre-quantized q8_1_mmq activation
+    /// scratch (from `mmq_iq_quantize_act` over n_tokens). y = [n_pairs, out_f] pair-major.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mmq_iq_experts(&self, table: &CudaSlice<u64>, proj: i32, n_expert: usize,
+                          ex_ids: &CudaSlice<i32>, ex_off: &CudaSlice<i32>, ex_pairs: &CudaSlice<i32>,
+                          pair_tok: &CudaSlice<i32>, act_scratch: &CudaSlice<u8>,
+                          in_f: usize, out_f: usize, n_active: usize, n_pairs: usize, n_tokens: usize,
+                          qtype: i32, row_bytes: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        {
+            let stream = &self.gpu.stream;
+            let (tab_p, _g0) = table.device_ptr(stream);
+            let (ei_p, _g1) = ex_ids.device_ptr(stream);
+            let (eo_p, _g2) = ex_off.device_ptr(stream);
+            let (ep_p, _g3) = ex_pairs.device_ptr(stream);
+            let (pt_p, _g4) = pair_tok.device_ptr(stream);
+            let (as_p, _g5) = act_scratch.device_ptr(stream);
+            let (y_p, _g6) = y.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_mmq_iq_experts(
+                    tab_p as *const u64, proj, n_expert as i32,
+                    ei_p as *const i32, eo_p as *const i32, ep_p as *const i32, pt_p as *const i32,
+                    as_p as *const core::ffi::c_void, y_p as *mut f32,
+                    in_f as i32, out_f as i32, n_active as i32, n_tokens as i32, qtype, row_bytes as i64,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 { return Err(format!("bw24_mmq_iq_experts rc={rc}").into()); }
         }
         Ok(y)
     }

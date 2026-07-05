@@ -38,7 +38,7 @@ fn main() {
         // (47KB smem -> 2 CTA/SM vs 57KB/1; the q45k occupancy ceiling found by ncu).
         println!("cargo:rerun-if-env-changed=BW24_MMQ_X_Q45K");
         let q45k_x = std::env::var("BW24_MMQ_X_Q45K").ok();
-        for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu"] {
+        for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));

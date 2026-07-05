@@ -1002,6 +1002,52 @@ impl HybridModel {
         let exp_d = e.htod_i32(&ex_pairs)?;
         let _ = &px;   // pair-major twin keeps it; em path uses CSR
 
+        // INT8-MMA EXPERT MMQ (BW24_MOE_MMA=1, opt-in): the m16n8k16.s8 tensor-core analog of the
+        // _dec dp4a kernel (cu/mmq_iq_experts.cu). Same CSR grouping; per-expert matvec runs as a
+        // 128x128-tile int8 MMA GEMM over the expert's token group. Weight IQ nibbles decode to int8
+        // at tile-load + per-32 float scale; activation is q8_1_mmq (D4, same quant class as dp4a).
+        // FP-ORDER differs from dp4a (MMA reduction) — logits SHIFT, gated on argmax/spec/closeness,
+        // NOT byte-identity (like the W4A8 path). Requires IQ3_S/IQ4_XS + in_f % 256 == 0.
+        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(false)
+            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
+            && q8_expert_supported(m.down_exps.qtype)
+            && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
+        if use_mma {
+            // gate/up: activation = z, token-major over t tokens; pair_tok gathers the routed row.
+            let z_scr = e.mmq_iq_quantize_act(z, n_embd, t)?;
+            let gate = e.mmq_iq_experts(&dev.ptr_row, 0, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
+                                        n_embd, n_ff_exp, n_active, n_pairs, t,
+                                        m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+            let up = e.mmq_iq_experts(&dev.ptr_row, 1, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
+                                      n_embd, n_ff_exp, n_active, n_pairs, t,
+                                      m.up_exps.qtype, m.up_exps.row_bytes)?;
+            let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
+            // down: activation = act, pair-major [n_pairs, n_ff_exp]; pair_tok = identity.
+            let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
+            let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
+            let pself = e.htod_i32(&pair_self)?;
+            let y_down = e.mmq_iq_experts(&dev.ptr_row, 2, n_expert, &exi, &exo, &exp_d, &pself, &a_scr,
+                                          n_ff_exp, n_embd, n_active, n_pairs, n_pairs,
+                                          m.down_exps.qtype, m.down_exps.row_bytes)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
+            if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
+                (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+            {
+                let n_ff_sh = gate_shexp.out_features();
+                let sg_gate = e.matmul(gate_shexp, z, t)?;
+                let sg_up = e.matmul(up_shexp, z, t)?;
+                let mut sa = e.uninit(t * n_ff_sh)?;
+                e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+                let sh = e.matmul(down_shexp, &sa, t)?;
+                let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                let mut g = e.zeros(t)?;
+                e.sigmoid(&gs, &mut g, t)?;
+                e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+            }
+            return Ok(moe_out);
+        }
+
         // DECODE-ONCE MMQ (rung 3, BW24_MOE_DEC=1 default-on): dequant each weight group once per
         // (row,group) then dp4a across the expert's tokens. _em re-decoded per token (NEUTRAL).
         let dec = std::env::var("BW24_MOE_DEC").map(|v| v != "0").unwrap_or(true);
