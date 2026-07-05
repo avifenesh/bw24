@@ -129,6 +129,11 @@ pub struct Engine {
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
     /// before capture under the generate_graph tracking-off window so it carries no events).
     argmax_partials: Mutex<Option<(CudaSlice<f32>, CudaSlice<i32>)>>,
+    /// ARC B (chunk-prime dequant-once): resident bf16 K/V workspace for `fa_prefill_view_ws`
+    /// ((K bytes, V bytes) u8 buffers holding [t_kv, kv_dim] bf16). Grown lazily to the largest
+    /// (t_kv, kv_dim) seen, REUSED across layers/chunks/calls (contents rewritten per launch —
+    /// safe because all compute serializes on the one gpu.stream). ~82MB at 40k ctx on the 27B.
+    prime_deqw_ws: Mutex<Option<(CudaSlice<u8>, CudaSlice<u8>)>>,
 }
 
 /// Number of pass-1 blocks for the parallel argmax (fan-out across SMs to saturate HBM). 256 blocks
@@ -190,6 +195,7 @@ impl Engine {
         Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
                   moe_cache: Mutex::new(None), copy_stream,
                   argmax_partials: Mutex::new(None),
+                  prime_deqw_ws: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -2066,6 +2072,72 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// ARC B (2026-07-05): dequant-once chunk-prime FA. Same contract as `fa_prefill_view`, but
+    /// instead of every (q-block, head) CTA re-dequanting the whole quantized KV stream inline
+    /// (T/64 x n_head redundant at chunk prime — 30.5% of the 32k prime wall), dequant the full
+    /// [t_kv, kv_dim] K and V ONCE into a resident bf16 workspace (fa_dequant_kv_ws_bf16), then
+    /// run `fa_prefill_qw` (the bf16-workspace twin) over it. EXACT: the workspace holds the same
+    /// __float2bfloat16(dq_*_elem(...)) values fa_prefill_q stages to smem, and the twin's MMA/
+    /// softmax/PV code is byte-identical -> bit-identical O (kernel_check pins bitdiff=0).
+    /// The workspace allocation is REUSED across layers/chunks (grown to the largest shape);
+    /// contents are rewritten per call. BW24_PRIME_DEQW=0 falls back to fa_prefill_view (callers gate).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_view_ws(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                              v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                              head_dim: usize, n_head: usize, n_head_kv: usize,
+                              t: usize, t_kv: usize, scale: f32, causal: bool,
+                              k_tok_bytes: usize, v_tok_bytes: usize)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        let kv_dim_k = n_head_kv * head_dim;
+        let kv_dim_v = n_head_kv * head_dim;
+        let k_ws_bytes = t_kv * kv_dim_k * 2;   // bf16
+        let v_ws_bytes = t_kv * kv_dim_v * 2;
+        // Lock held across BOTH launches: enqueue-only (µs), all compute serializes on gpu.stream.
+        let mut guard = self.prime_deqw_ws.lock().unwrap();
+        let need_grow = match guard.as_ref() {
+            Some((kw, vw)) => kw.len() < k_ws_bytes || vw.len() < v_ws_bytes,
+            None => true,
+        };
+        if need_grow {
+            let grow = |cur: usize, need: usize| if cur >= need { cur } else { need };
+            let (ck, cv) = guard.as_ref().map(|(a, b)| (a.len(), b.len())).unwrap_or((0, 0));
+            *guard = Some((self.alloc_u8(grow(ck, k_ws_bytes))?, self.alloc_u8(grow(cv, v_ws_bytes))?));
+        }
+        let (kw, vw) = guard.as_mut().unwrap();
+        // pass 1: dequant K+V once into the bf16 workspace (grid-stride, 1 thread/elem)
+        {
+            let f = self.func("fa_dequant_kv_ws_bf16");
+            let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
+            let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+            let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(k).arg(v).arg(&mut *kw).arg(&mut *vw).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        }
+        // pass 2: the bf16-workspace prefill twin (same tile sizes/loop structure as fa_prefill_q)
+        {
+            let f = self.func("fa_prefill_qw");
+            let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+            let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(&*kw).arg(&*vw).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
+             .arg(&kdk).arg(&kdv);
+            unsafe { b.launch(cfg)?; }
+        }
         Ok(())
     }
 

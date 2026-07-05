@@ -1200,6 +1200,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
                      if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
         }
+
+        // --- ARC B: fa_prefill_view_ws (dequant-once bf16 workspace) vs fa_prefill_view: BYTE
+        // identity. The workspace stores __float2bfloat16(dq_*_elem(...)) — the identical value
+        // fa_prefill_q stages to smem — and fa_prefill_qw's MMA/softmax/PV code is byte-identical,
+        // so O must match BIT-FOR-BIT (this is the chunk-prime token-identity contract). Cases
+        // cover a continuation chunk (T < T_kv, the chunk-prime shape) and a BK-unaligned tail.
+        for (t, tkv) in [(64usize, 192usize), (100, 100), (37, 297)] {
+            let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i+5)*0.2).collect();
+            let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
+            let v: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+11)*0.2).collect();
+            let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+            let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
+            let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
+            for tok in 0..tkv {
+                let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
+                let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
+                e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+            }
+            let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
+            let mut o_inl = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view(&qd,&kview,&vview,&mut o_inl,hd,nh,nhkv,t,tkv,scale,true,
+                              k_tok_bytes,v_tok_bytes)?;
+            let mut o_ws = e.zeros(hd*nh*t)?;
+            e.fa_prefill_view_ws(&qd,&kview,&vview,&mut o_ws,hd,nh,nhkv,t,tkv,scale,true,
+                                 k_tok_bytes,v_tok_bytes)?;
+            let a = e.dtoh(&o_inl)?; let b = e.dtoh(&o_ws)?;
+            let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+            println!("fa_prefill_view_ws vs inline-dequant T={t} Tkv={tkv}: bitdiff={bitdiff} {}",
+                     if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
+        }
     }
 
     // --- KV-cache quantization round-trip: append-quantize then dequant (matches §A formulas) ---

@@ -302,8 +302,21 @@ impl HybridModel {
             let t_kv = base_len + t;
             let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
-            e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                              t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            // ARC B (2026-07-05): dequant-once workspace, DEFAULT ON. fa_prefill_q's inline
+            // dequant re-reads+re-dequants the whole quantized KV stream from every one of the
+            // T/64 x n_head CTAs (64x+ redundant at chunk=4096; 30.5% of the 32k prime wall).
+            // fa_prefill_view_ws dequants K/V ONCE into a resident bf16 workspace then runs the
+            // bit-identical bf16 twin (fa_prefill_qw) — same staged values, same FP order, token-
+            // identical output (gate: BW24_PRIME_CHUNK=4096 ws-on vs ws-off vs monolithic).
+            // BW24_PRIME_DEQW=0 reverts to the inline-dequant kernel.
+            let deqw = std::env::var("BW24_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
+            if deqw {
+                e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            } else {
+                e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            }
         }
 
         let mut gsig = e.zeros(t * n_head * head_dim)?;

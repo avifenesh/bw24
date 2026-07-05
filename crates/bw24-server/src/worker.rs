@@ -275,7 +275,11 @@ fn admit(
     // prompt (and whose cache has room) resumes — only the suffix gets primed. The sampler's
     // penalty history is replayed on host (cheap) so sampling matches a cold run exactly.
     let mut reused: Option<ReuseEntry> = None;
-    let reuse_on = std::env::var("BW24_KV_REUSE").is_ok();  // opt-in until the identity gate runs
+    // DEFAULT-ON (2026-07-05): the identity gate now exists at the engine level — session-gate
+    // (bins) pins 3-turn continuation-prime output == fresh-greedy oracle on both models, and the
+    // continuation path the reuse pool takes (prime_cache with cache.pos>0 / decode_step) is
+    // exactly what it validates. BW24_KV_REUSE=0 disables.
+    let reuse_on = std::env::var("BW24_KV_REUSE").map(|v| v != "0").unwrap_or(true);
     if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&req.model)) {
         if let Some(idx) = pool.iter().rposition(|e|
             e.fed.len() >= REUSE_MIN_PREFIX && e.cap >= ctx_cap
@@ -334,14 +338,29 @@ fn step_session(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let lm = &loaded[&s.model];
 
-    // ---- prefill phase: prime exactly ONE prompt token this tick ----
+    // ---- prefill phase: BATCHED chunk prime (2026-07-05). prime_cache now supports
+    // continuation (cache.pos > 0 attends to the quantized past), so the worker primes up to
+    // PREFILL_TICK_T prompt tokens per tick at prefill throughput (~2000-5900 tok/s) instead of
+    // one decode_step (~38-100 tok/s) — a 32k prompt drops from ~15min of ticks to ~a minute,
+    // while the per-tick cap keeps round-robin latency for concurrent sessions bounded.
+    // Tails below PRIME_MIN_T keep the tokenwise decode_step path (prime_cache floor).
     if !s.prefill_done {
-        if let Some(tok) = s.prefill_queue.pop_front() {
+        const PREFILL_TICK_T: usize = 1024;
+        let q = s.prefill_queue.len();
+        if q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
+            // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
+            let mut take = q.min(PREFILL_TICK_T);
+            if q - take > 0 && q - take < bw24_engine::hybrid_forward::PRIME_MIN_T { take = q; }
+            let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
+            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, &mut s.cache)?;
+            s.last_logits = l;
+            for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
+        } else if let Some(tok) = s.prefill_queue.pop_front() {
             s.last_logits = lm.model.decode_step(engine, tok, &mut s.cache)?;
             s.fed.push(tok);
             s.sampler.accept(tok);
-            if s.prefill_queue.is_empty() { s.prefill_done = true; }
         }
+        if s.prefill_queue.is_empty() { s.prefill_done = true; }
         // If after this the prompt is fully primed AND budget==0, we still fall through to decode
         // (which will immediately hit MaxNew). Keep prefill and decode as distinct ticks otherwise.
         return Ok(true);

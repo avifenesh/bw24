@@ -991,6 +991,236 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q(
 }
 
 // ===================================================================== //
+//  KERNEL 1b-ws : dequant-once chunk-prime workspace (ARC B, 2026-07-05)//
+//  fa_prefill_q's inline dequant is 64x-redundant at chunk prime: each  //
+//  of the T/BLOCK_Q q-block CTAs (x n_head/n_head_kv GQA CTAs) re-      //
+//  dequants the SAME up-to-40k-token quantized KV stream (30.5% of the  //
+//  32k prime wall). Fix: dequant the full [T_kv, kv_dim] K and V ONCE   //
+//  per (layer, chunk-prime call) into a bf16 workspace, then run        //
+//  fa_prefill_qw (below) over it. EXACTNESS: the workspace stores       //
+//  __float2bfloat16(dq_*_elem(...)) — the IDENTICAL value fa_prefill_q  //
+//  writes to smem — so the MMA sees bit-identical inputs and the output //
+//  is bit-identical (kernel_check pins ws-vs-inline bitdiff=0).         //
+//  One thread per element, grid-stride over K elems then V elems.      //
+// ===================================================================== //
+extern "C" __global__ void fa_dequant_kv_ws_bf16(
+        const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        __nv_bfloat16* __restrict__ Kw, __nv_bfloat16* __restrict__ Vw,
+        int kv_dim_k, int kv_dim_v, int t_kv,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const long nk = (long)t_kv * kv_dim_k;
+    const long nv = (long)t_kv * kv_dim_v;
+    const long total = nk + nv;
+    for (long idx = (long)blockIdx.x * blockDim.x + threadIdx.x; idx < total;
+         idx += (long)gridDim.x * blockDim.x) {
+        if (idx < nk) {
+            const long t = idx / kv_dim_k; const int e = (int)(idx % kv_dim_k);
+            Kw[idx] = __float2bfloat16(dq_q8_0_elem(K, t, k_tok_bytes, e));
+        } else {
+            const long j = idx - nk;
+            const long t = j / kv_dim_v; const int e = (int)(j % kv_dim_v);
+            Vw[j] = __float2bfloat16(dq_q5_1_elem(V, t, v_tok_bytes, e));
+        }
+    }
+}
+
+// ===================================================================== //
+//  KERNEL 1b-qw : fa_prefill_qw  (bf16-workspace prefill twin)          //
+//  VERBATIM copy of fa_prefill_q except the stage-to-smem loop reads    //
+//  the pre-dequanted bf16 workspace (plain copy, no dequant ALU, no     //
+//  scattered 34B/24B block reads). Workspace element (t, kv_head, d) at //
+//  t*kv_dim + kv_head*head_dim + d — same element order as the cache.   //
+//  All MMA / softmax / PV code is byte-identical to fa_prefill_q, and   //
+//  the staged bf16 values are bit-identical (see fa_dequant_kv_ws_bf16) //
+//  -> bit-identical O. Keep the two kernels in lockstep on any edit.    //
+// ===================================================================== //
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v)
+{
+    const int warp = threadIdx.y;
+    const int lane = threadIdx.x;
+    const int head    = blockIdx.y;           // grid.y = n_head (full SM subscription)
+    const int kv_head = head / (n_head / n_head_kv);
+    const int q_base  = blockIdx.x * BLOCK_Q;
+    const int qrow_base = q_base + warp*M_ROWS;
+    if (head >= n_head || q_base >= T) return;
+    const int nqw = min(M_ROWS, T - qrow_base);
+
+    extern __shared__ char smem_raw[];
+    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;
+    __nv_bfloat16* sV = sK + BK*HEAD_DIM;
+    __nv_bfloat16* sP = sV + BK*HEAD_DIM;
+    float* sS = (float*)(sP + BLOCK_Q*BK);
+    float* sM = sS + BLOCK_Q*BK;
+    float* sL = sM + BLOCK_Q;
+    __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
+    float* sSw = sS + warp*M_ROWS*BK;
+    float* sMw = sM + warp*M_ROWS;
+    float* sLw = sL + warp*M_ROWS;
+    __nv_bfloat16* sQstage = sK + warp*M_ROWS*HEAD_DIM;
+    (void)sSw; (void)sMw;
+
+    const int causal_i = causal;
+    {
+        const int q_pos0w = (T_kv - T) + qrow_base;
+
+        ATile Qf[HD_KTILES];
+        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        __syncthreads();
+
+        CTile O_acc[O_NBLK];
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=O_acc[c].x[1]=O_acc[c].x[2]=O_acc[c].x[3]=0.0f; }
+        // Edge 5a: register-resident online-softmax state (no sSw round-trip).
+        float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+        const int r_lo = lane / 4;          // CTile get_i(l=0,1)
+        const int r_hi = r_lo + 8;          // CTile get_i(l=2,3)
+        const int c0   = (lane % 4) * 2;    // CTile get_j base for this lane
+
+        const size_t kv_off = (size_t)kv_head * head_dim;
+        const __nv_bfloat16 zb = __float2bfloat16(0.0f);
+
+        for (int k0 = 0; k0 < T_kv; k0 += BK) {
+            const int nk = min(BK, T_kv - k0);
+            const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
+            if (causal_i && k0 > q_pos_max) break;
+
+            // ---- stage K,V tile to smem: PLAIN bf16 COPY from the workspace ----
+            const int bt = warp*WARP_SZ + lane;
+            for (int i = bt; i < BK*HEAD_DIM; i += N_WARPS*WARP_SZ) {
+                int kk = i / HEAD_DIM, d = i % HEAD_DIM;
+                sK[i] = (kk < nk) ? Kw[(size_t)(k0 + kk) * kv_dim_k + kv_off + d] : zb;
+                sV[i] = (kk < nk) ? Vw[(size_t)(k0 + kk) * kv_dim_v + kv_off + d] : zb;
+            }
+            __syncthreads();
+
+            // ---- GEMM0: QK^T -> 4 score CTiles HELD IN REGISTERS (no sSw write) ----
+            CTile Sc[BK/N_KEYS];
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+            for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+                CTile C0, C1;
+                C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+                C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+                #pragma unroll
+                for (int kt = 0; kt < HD_KTILES; ++kt) {
+                    ATile Kt;
+                    ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                    BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                    BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                    mma_bf16(C0, Qf[kt], Blo);
+                    mma_bf16(C1, Qf[kt], Bhi);
+                }
+                Sc[kg/N_KEYS + 0] = C0;
+                Sc[kg/N_KEYS + 1] = C1;
+            }
+
+            // ---- SOFTMAX on registers (scale + causal mask + 4-lane reduce) ----
+            float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    int col = g*N_KEYS + c0 + (l & 1);
+                    int row = (l < 2) ? r_lo : r_hi;
+                    int q_pos = q_pos0w + row;
+                    float s = Sc[g].x[l] * scale;
+                    if (col >= nk) s = NEG_INF;
+                    if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                    Sc[g].x[l] = s;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
+                }
+            }
+            s_tile_max_lo = row_max4(s_tile_max_lo);
+            s_tile_max_hi = row_max4(s_tile_max_hi);
+
+            float m_prev_lo = m_lo, m_prev_hi = m_hi;
+            float m_new_lo = fmaxf(m_prev_lo, s_tile_max_lo);
+            float m_new_hi = fmaxf(m_prev_hi, s_tile_max_hi);
+            float alpha_lo = (m_prev_lo == NEG_INF) ? 0.0f : exp2f((m_prev_lo - m_new_lo) * LOG2E);
+            float alpha_hi = (m_prev_hi == NEG_INF) ? 0.0f : exp2f((m_prev_hi - m_new_hi) * LOG2E);
+
+            float l_part_lo = 0.0f, l_part_hi = 0.0f;
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float mn = (l < 2) ? m_new_lo : m_new_hi;
+                    float s  = Sc[g].x[l];
+                    float p  = (s == NEG_INF) ? 0.0f : exp2f((s - mn) * LOG2E);
+                    Sc[g].x[l] = p;
+                    if (l < 2) l_part_lo += p; else l_part_hi += p;
+                }
+            }
+            l_part_lo = row_sum4(l_part_lo);
+            l_part_hi = row_sum4(l_part_hi);
+            l_lo = l_lo * alpha_lo + l_part_lo;
+            l_hi = l_hi * alpha_hi + l_part_hi;
+            m_lo = m_new_lo; m_hi = m_new_hi;
+
+            // ---- write P to sPw (MANDATORY for PV's A-operand ldmatrix layout) ----
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sPw[r_lo*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[0]);
+                sPw[r_lo*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[1]);
+                sPw[r_hi*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[2]);
+                sPw[r_hi*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[3]);
+            }
+            __syncwarp();
+
+            #pragma unroll
+            for (int c = 0; c < O_NBLK; ++c) {
+                O_acc[c].x[0] *= alpha_lo; O_acc[c].x[1] *= alpha_lo;
+                O_acc[c].x[2] *= alpha_hi; O_acc[c].x[3] *= alpha_hi;
+            }
+
+            for (int d0 = 0; d0 < HEAD_DIM; d0 += 2*N_KEYS) {
+                CTile Clo, Chi;
+                Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
+                Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
+                #pragma unroll
+                for (int kk = 0; kk < BK; kk += K_STEP) {
+                    ATile A; ATile Bt;
+                    ld_A(A, sPw + kk, BK/2);
+                    ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                    BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                    BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                    mma_bf16(Clo, A, Blo);
+                    mma_bf16(Chi, A, Bhi);
+                }
+                O_acc[(d0/N_KEYS) + 0].x[0] += Clo.x[0]; O_acc[(d0/N_KEYS) + 0].x[1] += Clo.x[1];
+                O_acc[(d0/N_KEYS) + 0].x[2] += Clo.x[2]; O_acc[(d0/N_KEYS) + 0].x[3] += Clo.x[3];
+                O_acc[(d0/N_KEYS) + 1].x[0] += Chi.x[0]; O_acc[(d0/N_KEYS) + 1].x[1] += Chi.x[1];
+                O_acc[(d0/N_KEYS) + 1].x[2] += Chi.x[2]; O_acc[(d0/N_KEYS) + 1].x[3] += Chi.x[3];
+            }
+            __syncthreads();
+        }
+
+        if (c0 == 0) { sLw[r_lo] = l_lo; sLw[r_hi] = l_hi; }
+        __syncwarp();
+
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int r = CTile::get_i(l);
+                int d = c*N_KEYS + CTile::get_j(l);
+                if (r < nqw) {
+                    float linv = (sLw[r] > 0.0f) ? (1.0f / sLw[r]) : 0.0f;
+                    O[((size_t)(qrow_base + r) * n_head + head) * head_dim + d] = O_acc[c].x[l] * linv;
+                }
+            }
+        }
+        __syncthreads();
+    }
+}
+
+// ===================================================================== //
 //  KERNEL 2 : fa_decode_f32                                             //
 //  T == 1 vector decode with flash-decoding split-K over the KV axis.   //
 //  grid = (n_head, n_splits, 1) ; block = (HEAD_DIM/?, 1, 1) -> use 256  //
