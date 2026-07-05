@@ -649,6 +649,19 @@ impl Engine {
     /// BIT-IDENTICAL math (same grid/block/reduction; only the pointer/id source differs).
     #[allow(clippy::too_many_arguments)]
     /// dp4a q8 twin of the _dev pair (resident-experts arc).
+    ///
+    /// GEOMETRY VARIANTS (multirow/occupancy arc 2026-07-05): all outputs are BIT-IDENTICAL to
+    /// the base one-warp-per-(row,slot) kernel (same expert_dot_g g-order + warp tree per row;
+    /// down's FMA chain stays slot-ordered serial). Seams:
+    ///   BW24_MOE_DEVQ8_GU   = 0(base) | 1 | 2 | 4 -> _r{1,2,4} multirow twin (RPW rows/warp)
+    ///                       | s2 (gate/up warp split) | s2z (s2 + WPB rows packed per block)
+    ///                       | gs4 (gate/up x low/high-group 4-warp split, nsb==64 only)
+    ///                       | u64 (nsb==64 unrolled ILP twin, geometry unchanged)
+    ///   BW24_MOE_DEVQ8_WPB  = warps per block for _r twins / z-rows for s2z (default 4)
+    ///   BW24_MOE_DEVQ8_DOWN = auto(default: w8h2 when in_f==512 & n_used<=8 — measured +3.8%
+    ///                       decode on 35B/G7e) | 0 (base one-warp serial-slot) | 1 | 2 | 4 ->
+    ///                       _w8r{1,2,4} slot-parallel twin | h2 (half-warp dual-row, nsb==16
+    ///                       only) | w8h2 (h2 x slot-parallel)
     #[allow(clippy::too_many_arguments)]
     /// MoE PREFILL pair-batch matvec: one launch covers all (token,expert) pairs for one proj.
     #[allow(clippy::too_many_arguments)]
@@ -728,12 +741,50 @@ impl Engine {
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
                                     qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let f = self.func("moe_gate_up_silu8_dev_q8");
+        static GU: std::sync::OnceLock<(String, u32)> = std::sync::OnceLock::new();
+        let (mode, wpb) = GU.get_or_init(|| {
+            let mode = std::env::var("BW24_MOE_DEVQ8_GU").unwrap_or_default();
+            let wpb = std::env::var("BW24_MOE_DEVQ8_WPB").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(4u32).clamp(1, 16);
+            (mode, wpb)
+        });
+        let (mode, wpb) = (mode.as_str(), *wpb);
         let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
-        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
-                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
                                         rb_g as i64, rb_u as i64);
+        let (f, cfg) = match mode {
+            "1" | "2" | "4" => {
+                let rpw: u32 = mode.parse().unwrap();
+                let f = self.func(match rpw { 1 => "moe_gate_up_silu8_dev_q8_r1",
+                                              2 => "moe_gate_up_silu8_dev_q8_r2",
+                                              _ => "moe_gate_up_silu8_dev_q8_r4" });
+                let rows_per_block = (rpw * wpb) as usize;
+                let gx = n_ff.div_ceil(rows_per_block) as u32;
+                (f, LaunchConfig { grid_dim: (gx, n_used as u32, 1),
+                                   block_dim: (32, wpb, 1), shared_mem_bytes: 0 })
+            }
+            "j8" if n_used <= 32 => (self.func("moe_gate_up_silu8_dev_q8_j8"),
+                     LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
+                                    block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            "u64" if in_f == 2048 => (self.func("moe_gate_up_silu8_dev_q8_u64"),
+                     LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                    block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+            "gs4" if in_f == 2048 => (self.func("moe_gate_up_silu8_dev_q8_gs4"),
+                     LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                    block_dim: (32, 4, 1), shared_mem_bytes: 0 }),
+            "s2" => (self.func("moe_gate_up_silu8_dev_q8_s2"),
+                     LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                    block_dim: (32, 2, 1), shared_mem_bytes: 0 }),
+            "s2z" => {
+                let rz = wpb.min(16);        // s2z smem tile is [16][2]
+                (self.func("moe_gate_up_silu8_dev_q8_s2z"),
+                 LaunchConfig { grid_dim: (n_ff.div_ceil(rz as usize) as u32, n_used as u32, 1),
+                                block_dim: (32, 2, rz), shared_mem_bytes: 0 })
+            }
+            _ => (self.func("moe_gate_up_silu8_dev_q8"),
+                  LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+        };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
          .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
@@ -749,11 +800,38 @@ impl Engine {
                                 in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
                                 qt: i32, rb: usize)
                                 -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("moe_down8_fma_dev_q8");
-        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
-                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        static DOWN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let mode = DOWN.get_or_init(|| std::env::var("BW24_MOE_DEVQ8_DOWN").unwrap_or_default());
         let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
                                         n_expert as i32, rb as i64);
+        // the w8 twins' smem tile is [RPW][8] — n_used must fit the 8-slot tile;
+        // the h2 twins are nsb==16 (in_f==512) shape-gated.
+        let (f, cfg) = match mode.as_str() {
+            m @ ("1" | "2" | "4") if n_used <= 8 => {
+                let rpw: usize = m.parse().unwrap();
+                let f = self.func(match rpw { 1 => "moe_down8_fma_dev_q8_w8r1",
+                                              2 => "moe_down8_fma_dev_q8_w8r2",
+                                              _ => "moe_down8_fma_dev_q8_w8r4" });
+                (f, LaunchConfig { grid_dim: (out_f.div_ceil(rpw) as u32, 1, 1),
+                                   block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 })
+            }
+            "h2" if in_f == 512 => (self.func("moe_down8_fma_dev_q8_h2"),
+                LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
+                               block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+            // "" = AUTO: the measured winner for the 35B expert shape (arc 2026-07-05, +3.8%);
+            // any shape the h2 kernels can't take (nsb!=16 / n_used>8) falls to base via `_`.
+            "w8h2r2" if in_f == 512 && n_used <= 8 =>
+                (self.func("moe_down8_fma_dev_q8_w8h2r2"),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(4) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            "w8h2" | "" if in_f == 512 && n_used <= 8 =>
+                (self.func("moe_down8_fma_dev_q8_w8h2"),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            _ => (self.func("moe_down8_fma_dev_q8"),
+                  LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+        };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);

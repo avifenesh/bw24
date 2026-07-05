@@ -3566,6 +3566,438 @@ extern "C" __global__ void moe_down8_fma_dev_q8(
     if (lane == 0) dst[o] = chain;
 }
 
+// ---- dev_q8 LAUNCH-GEOMETRY VARIANTS (multirow/occupancy arc 2026-07-05, g7e lane) ----
+// Baseline geometry is warp-starved on 188 SMs: gate_up = 4096 one-warp blocks (n_ff x n_used),
+// down = 2048 one-warp blocks with an n_used=8 SERIAL slot loop AND nsb=16 (in_f=512) leaving
+// lanes 16..31 idle in every dot. These variants change ONLY launch geometry; the per-(row,slot)
+// accumulation is expert_dot_g in the SAME g order + the SAME warp_reduce_sum tree, and the down
+// FMA chain stays slot-ordered serial -> outputs BIT-IDENTICAL to the base pair.
+//
+//   gu_geom<RPW>: each warp computes RPW consecutive rows of ONE slot; the activation group
+//   (aqb/d8) is read once per g and reused across the RPW gate+up dots (RPW weight streams in
+//   flight hide load latency — the q4k/q5k mmvq multirow recipe). blockDim.y packs several
+//   row-tiles per block for scheduler occupancy; grid = (ceil(n_ff/(RPW*wpb)), n_used).
+//
+//   down_w8<RPW>: block = (32, n_used) — warp j computes slot j's dot for RPW consecutive rows
+//   (identical 32-lane tree per (row,slot)), partials land in smem, then warp 0 lane 0 replays
+//   the slot-ordered __fmaf_rn chain per row (8 sequential FMAs — cheap). The n_used loop
+//   parallelizes; ONLY the chain stays serial (bit-identity contract).
+template<int RPW>
+__device__ __forceinline__ void moe_gu_dev_q8_geom(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o0 = ((int)blockIdx.x * (int)blockDim.y + (int)threadIdx.y) * RPW;
+    int j = blockIdx.y;
+    if (o0 >= n_ff) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* gbase = (const unsigned char*)table[ex];
+    const unsigned char* ubase = (const unsigned char*)table[n_expert + ex];
+    float accg[RPW], accu[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) { accg[r] = 0.0f; accu[r] = 0.0f; }
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= n_ff) break;
+            accg[r] += expert_dot_g(qt_g, gbase + (long)o * rb_g, g, aqb, d8);
+            accu[r] += expert_dot_g(qt_u, ubase + (long)o * rb_u, g, aqb, d8);
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= n_ff) break;
+        float ag = warp_reduce_sum(accg[r]);
+        float au = warp_reduce_sum(accu[r]);
+        if (lane == 0) act[(size_t)j * n_ff + o] = (ag / (1.0f + expf(-ag))) * au;
+    }
+}
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_r1(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    moe_gu_dev_q8_geom<1>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+}
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_r2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    moe_gu_dev_q8_geom<2>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+}
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_r4(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    moe_gu_dev_q8_geom<4>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+}
+template<int RPW>
+__device__ __forceinline__ void moe_down8_dev_q8_w8_geom(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w,
+        const signed char* __restrict__ aq2, const float* __restrict__ ad2,
+        float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o0 = (int)blockIdx.x * RPW;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    int j = threadIdx.y;                 // slot; blockDim.y == n_used (max 8)
+    int nsb = in_f >> 5;
+    __shared__ float s[RPW][8];
+    if (j < n_used) {
+        int ex = sel[j];
+        const unsigned char* wbase = (const unsigned char*)table[2 * n_expert + ex];
+        const signed char* arow = aq2 + (size_t)j * in_f;
+        const float* adrow = ad2 + (size_t)j * nsb;
+        float acc[RPW];
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+        for (int g = lane; g < nsb; g += 32) {
+            const signed char* aqb = arow + (size_t)g * 32;
+            float d8 = adrow[g];
+            #pragma unroll
+            for (int r = 0; r < RPW; r++) {
+                int o = o0 + r;
+                if (o >= out_f) break;
+                acc[r] += expert_dot_g(qt, wbase + (long)o * rb, g, aqb, d8);
+            }
+        }
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            float a = warp_reduce_sum(acc[r]);
+            if (lane == 0 && o0 + r < out_f) s[r][j] = a;
+        }
+    }
+    __syncthreads();
+    if (j == 0 && lane == 0) {
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            float chain = 0.0f;          // slot-ordered serial chain == base kernel's exact FP order
+            for (int jj = 0; jj < n_used; jj++) chain = __fmaf_rn(w[jj], s[r][jj], chain);
+            dst[o] = chain;
+        }
+    }
+}
+extern "C" __global__ void moe_down8_fma_dev_q8_w8r1(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    moe_down8_dev_q8_w8_geom<1>(table, sel, w, aq2, ad2, dst, in_f, out_f, n_used, n_expert, qt, rb);
+}
+extern "C" __global__ void moe_down8_fma_dev_q8_w8r2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    moe_down8_dev_q8_w8_geom<2>(table, sel, w, aq2, ad2, dst, in_f, out_f, n_used, n_expert, qt, rb);
+}
+extern "C" __global__ void moe_down8_fma_dev_q8_w8r4(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    moe_down8_dev_q8_w8_geom<4>(table, sel, w, aq2, ad2, dst, in_f, out_f, n_used, n_expert, qt, rb);
+}
+
+// ---- ROUND 2 geometry variants (same arc): idle-lane fix + warp-split ----
+//
+// down HALF-WARP DUAL-ROW (nsb==16 ONLY, i.e. in_f==512 — the 35B expert down shape): the base
+// dot loop `for (g = lane; g < nsb; g += 32)` leaves lanes 16..31 IDLE when nsb=16. Here lanes
+// 0..15 compute row o0 and lanes 16..31 compute row o0+1 (same g = lane&15 per half — exactly
+// the base kernel's per-lane group assignment, single iteration so no accumulation-order change).
+// BIT-IDENTITY of the reduce: the base 32-lane tree runs with lanes 16..31 holding 0.0f; row A
+// reproduces that exactly by masking the upper half to 0.0f; row B's partials are shifted down
+// 16 lanes first (so group g sits at lane g, like base) then upper half masked — SAME tree, SAME
+// bits. The FMA chain stays slot-ordered serial on warp 0.
+//   _h2:   block (32,1)  grid (out_f/2)      — serial n_used loop, 2 rows/warp
+//   _w8h2: block (32,8)  grid (out_f/2)      — warp j = slot j, 2 rows/warp, smem chain replay
+__device__ __forceinline__ float2 down_h2_dot(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq2, const float* __restrict__ ad2,
+        int j, int o0, int in_f, int n_expert, int qt, long rb, int lane) {
+    int nsb = in_f >> 5;                       // == 16 (dispatch-gated)
+    int half = lane >> 4, l16 = lane & 15;
+    int ex = sel[j];
+    const unsigned char* wrow = (const unsigned char*)table[2 * n_expert + ex]
+                              + (long)(o0 + half) * rb;
+    const signed char* arow = aq2 + (size_t)j * in_f;
+    const float* adrow = ad2 + (size_t)j * nsb;
+    // one group per lane (nsb==16): identical expert_dot_g call to the base kernel's lane l16.
+    float acc = expert_dot_g(qt, wrow, l16, arow + (size_t)l16 * 32, adrow[l16]);
+    // row A (o0): lanes 0..15 partials, upper half 0 — the base tree layout verbatim.
+    float accA = (half == 0) ? acc : 0.0f;
+    float a0 = warp_reduce_sum(accA);
+    // row B (o0+1): shift partials down 16 so group g sits at lane g, mask upper half.
+    float shifted = __shfl_down_sync(0xffffffffu, acc, 16);
+    float accB = (lane < 16) ? shifted : 0.0f;
+    float a1 = warp_reduce_sum(accB);
+    return make_float2(a0, a1);
+}
+extern "C" __global__ void moe_down8_fma_dev_q8_h2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o0 = (int)blockIdx.x * 2;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    float chain0 = 0.0f, chain1 = 0.0f;
+    for (int j = 0; j < n_used; j++) {
+        float2 a = down_h2_dot(table, sel, aq2, ad2, j, o0, in_f, n_expert, qt, rb, lane);
+        if (lane == 0) {
+            chain0 = __fmaf_rn(w[j], a.x, chain0);
+            chain1 = __fmaf_rn(w[j], a.y, chain1);
+        }
+    }
+    if (lane == 0) {
+        dst[o0] = chain0;
+        if (o0 + 1 < out_f) dst[o0 + 1] = chain1;
+    }
+}
+extern "C" __global__ void moe_down8_fma_dev_q8_w8h2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o0 = (int)blockIdx.x * 2;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    int j = threadIdx.y;                 // slot; blockDim.y == n_used (max 8)
+    __shared__ float s[2][8];
+    if (j < n_used) {
+        float2 a = down_h2_dot(table, sel, aq2, ad2, j, o0, in_f, n_expert, qt, rb, lane);
+        if (lane == 0) { s[0][j] = a.x; s[1][j] = a.y; }
+    }
+    __syncthreads();
+    if (j == 0 && lane == 0) {
+        float chain0 = 0.0f, chain1 = 0.0f;
+        for (int jj = 0; jj < n_used; jj++) {   // slot-ordered serial == base FP order
+            chain0 = __fmaf_rn(w[jj], s[0][jj], chain0);
+            chain1 = __fmaf_rn(w[jj], s[1][jj], chain1);
+        }
+        dst[o0] = chain0;
+        if (o0 + 1 < out_f) dst[o0 + 1] = chain1;
+    }
+}
+
+// w8h2 x mr2: each half-warp computes TWO serial rows (activation group regs reused across the
+// row pair — the mr2 recipe stacked on h2). 4 rows/block, block (32,8), grid (out_f/4).
+// BIT-IDENTITY per row: same single-group expert_dot_g call, same masked 32-lane tree as h2.
+extern "C" __global__ void moe_down8_fma_dev_q8_w8h2r2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o0 = (int)blockIdx.x * 4;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    int j = threadIdx.y;
+    int nsb = in_f >> 5;                 // == 16 (dispatch-gated)
+    int half = lane >> 4, l16 = lane & 15;
+    __shared__ float s[4][8];
+    if (j < n_used) {
+        int ex = sel[j];
+        const unsigned char* wbase = (const unsigned char*)table[2 * n_expert + ex];
+        const signed char* aqb = aq2 + (size_t)j * in_f + (size_t)l16 * 32;
+        float d8 = ad2[(size_t)j * nsb + l16];
+        #pragma unroll
+        for (int r = 0; r < 2; r++) {    // two row-pairs, activation regs (aqb/d8) reused
+            int o = o0 + 2 * r + half;
+            float acc = (o < out_f)
+                ? expert_dot_g(qt, wbase + (long)o * rb, l16, aqb, d8) : 0.0f;
+            float accA = (half == 0) ? acc : 0.0f;
+            float a0 = warp_reduce_sum(accA);
+            float shifted = __shfl_down_sync(0xffffffffu, acc, 16);
+            float accB = (lane < 16) ? shifted : 0.0f;
+            float a1 = warp_reduce_sum(accB);
+            if (lane == 0) { s[2 * r][j] = a0; s[2 * r + 1][j] = a1; }
+        }
+    }
+    __syncthreads();
+    if (j == 0 && lane == 0) {
+        #pragma unroll
+        for (int r = 0; r < 4; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            float chain = 0.0f;
+            for (int jj = 0; jj < n_used; jj++) chain = __fmaf_rn(w[jj], s[r][jj], chain);
+            dst[o] = chain;
+        }
+    }
+}
+
+// gate_up SLOT-PACKED blocks: block (32, n_used), warp j = slot j for the SAME row o — one block
+// per row, 8x fewer blocks, same warp count; the 8 warps share the row's activation groups via
+// L1. Each warp's body is the base kernel VERBATIM (same loop, same tree) -> bit-identical.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = threadIdx.y;                 // slot from block y-dim; blockDim.y == n_used
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+
+// gate_up 2-WARP SPLIT: the RPW multirow direction REDUCED warp count and lost; this DOUBLES it.
+// block (32,2): warp 0 computes the gate dot, warp 1 the up dot — each with the base kernel's
+// exact per-warp g order + 32-lane tree (bit-identical partials); warp 0 lane 0 applies the same
+// silu expression after the smem exchange. grid unchanged (n_ff, n_used) -> 2x warps in flight
+// on the same latency-bound weight streams, zero extra launches, zero numeric change.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int which = threadIdx.y;             // 0 = gate, 1 = up
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* wrow = (which == 0)
+        ? (const unsigned char*)table[ex] + (long)o * rb_g
+        : (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    long qt = (which == 0) ? qt_g : qt_u;
+    __shared__ float sg, su;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32)
+        acc += expert_dot_g((int)qt, wrow, g, aq + (size_t)g * 32, ad[g]);
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) { if (which == 0) sg = acc; else su = acc; }
+    __syncthreads();
+    if (which == 0 && lane == 0) {
+        float g = sg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * su;
+    }
+}
+// gate_up 4-WARP G-SPLIT (nsb==64 ONLY, i.e. in_f==2048 — the 35B expert gate/up shape): block
+// (32,4), warp y: 0=gate-low 1=gate-high 2=up-low 3=up-high. "low" computes group g=lane, "high"
+// g=lane+32 — TOGETHER exactly the base warp's two serial iterations. BIT-IDENTITY: base per-lane
+// acc = (0 + d(g=l)) + d(g=l+32); here low's d(l) (0+x==x) merges with high's d(l+32) via smem in
+// that same order, then the SAME 32-lane tree runs in the low warp. Halves each warp's serial
+// group count AND 4x the warps in flight; the up-warp's silu operand crosses via smem.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_gs4(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int wy = threadIdx.y;                // 0..3: 0=gate-low 1=gate-high 2=up-low 3=up-high
+    int is_up = wy >> 1, is_hi = wy & 1;
+    int ex = sel[j];
+    const unsigned char* wrow = is_up
+        ? (const unsigned char*)table[n_expert + ex] + (long)o * rb_u
+        : (const unsigned char*)table[ex] + (long)o * rb_g;
+    int qt = is_up ? qt_u : qt_g;
+    int g = lane + (is_hi << 5);
+    float d = expert_dot_g(qt, wrow, g, aq + (size_t)g * 32, ad[g]);
+    __shared__ float hi[2][32];
+    __shared__ float gu[2];
+    if (is_hi) hi[is_up][lane] = d;
+    __syncthreads();
+    if (!is_hi) {
+        float acc = d + hi[is_up][lane]; // base per-lane serial order verbatim
+        acc = warp_reduce_sum(acc);      // base 32-lane tree
+        if (lane == 0) gu[is_up] = acc;
+    }
+    __syncthreads();
+    if (wy == 0 && lane == 0) {
+        float gg = gu[0];
+        act[(size_t)j * n_ff + o] = (gg / (1.0f + expf(-gg))) * gu[1];
+    }
+}
+// gate_up nsb==64 UNROLLED twin (in_f==2048 — the 35B expert gate/up shape): the base loop's two
+// g-iterations (g=lane, g=lane+32) are issued as INDEPENDENT expressions so all 4 dot bodies'
+// loads pipeline (base: accg/accu serialize each warp's second iteration behind the first).
+// BIT-IDENTITY: accg = (0 + dg(l)) + dg(l+32) — the base loop's exact accumulation order — then
+// the same warp tree + silu expression. Geometry unchanged (one warp per (row,slot)).
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_u64(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    int g0 = lane, g1 = lane + 32;       // nsb==64 exactly (dispatch-gated)
+    const signed char* a0 = aq + (size_t)g0 * 32;
+    const signed char* a1 = aq + (size_t)g1 * 32;
+    float d80 = ad[g0], d81 = ad[g1];
+    float g_lo = expert_dot_g(qt_g, grow, g0, a0, d80);
+    float g_hi = expert_dot_g(qt_g, grow, g1, a1, d81);
+    float u_lo = expert_dot_g(qt_u, urow, g0, a0, d80);
+    float u_hi = expert_dot_g(qt_u, urow, g1, a1, d81);
+    float accg = (0.0f + g_lo) + g_hi;   // base loop's accumulation order verbatim
+    float accu = (0.0f + u_lo) + u_hi;
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+// s2 with ROWS packed per block for scheduler density: block (32,2,rz), grid (n_ff/rz, n_used).
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2z(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = (int)blockIdx.x * (int)blockDim.z + (int)threadIdx.z;
+    if (o >= n_ff) return;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int which = threadIdx.y;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* wrow = (which == 0)
+        ? (const unsigned char*)table[ex] + (long)o * rb_g
+        : (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    long qt = (which == 0) ? qt_g : qt_u;
+    __shared__ float sgu[16][2];         // [z][which]
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32)
+        acc += expert_dot_g((int)qt, wrow, g, aq + (size_t)g * 32, ad[g]);
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) sgu[threadIdx.z][which] = acc;
+    __syncthreads();
+    if (which == 0 && lane == 0) {
+        float g = sgu[threadIdx.z][0];
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * sgu[threadIdx.z][1];
+    }
+}
+
 extern "C" __global__ void moe_gate_up_silu8_dev(
         const unsigned long long* __restrict__ table,  // [3, n_expert] slot base addresses
         const int* __restrict__ sel,                   // [n_used] this token's expert ids (device)
