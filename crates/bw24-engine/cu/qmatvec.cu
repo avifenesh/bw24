@@ -3162,6 +3162,117 @@ extern "C" __global__ void qmatvec_expert_q8(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ---- MoE PREFILL PAIR-BATCH kernels (2026-07-06, the 16x pp hole) ----
+// ONE launch per (proj, layer) covers ALL (token, expert) routed pairs: grid.y = pair index,
+// grid.x tiles the expert-FFN rows (BW24_MMVQ_ROWS warps/block, warp-per-row). Per pair the body
+// is qmatvec_expert_q8 verbatim (same expert_dot_g order per (pair,row) — bit-identity class).
+// Replaces the per-expert loop (256 experts x 3-4 launches x tiny m_e = the 1000+ launch/layer
+// prefill wall; llama's fused MoE MMQ analog). Inputs: pair_tok[p] (activation row), pair_ex[p]
+// (expert id -> device slab ptr table like _dev), q8_1 activations for ALL T tokens.
+extern "C" __global__ void moe_pairs_matvec_q8(
+        const unsigned long long* __restrict__ table,   // [3, n_expert] slab base ptrs
+        int proj,                                        // 0=gate 1=up 2=down (table row)
+        const int* __restrict__ pair_tok,                // [n_pairs]
+        const int* __restrict__ pair_ex,                 // [n_pairs]
+        const signed char* __restrict__ aq,              // [T, in_f] q8_1 (token-major)
+        const float* __restrict__ ad,                    // [T, in_f/32]
+        float* __restrict__ y,                           // [n_pairs, out_f]
+        int in_f, int out_f, int n_expert, int n_pairs, int qtype, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int pr = blockIdx.y;
+    if (o >= out_f || pr >= n_pairs) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int tok = pair_tok[pr];
+    int ex  = pair_ex[pr];
+    const unsigned char* wrow = (const unsigned char*)table[(size_t)proj * n_expert + ex]
+                                + (long)o * row_bytes;
+    const signed char* arow = aq + (size_t)tok * in_f;
+    const float*       adrow = ad + (size_t)tok * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32)
+        acc += expert_dot_g(qtype, wrow, g, arow + (size_t)g * 32, adrow[g]);
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)pr * out_f + o] = acc;
+}
+// silu(gate)*up over the pair-major activation buffers (gate/up both [n_pairs, n_ff]).
+// EXPERT-MAJOR variant (rung 2): CSR over experts — block = (expert-segment e, row-tile); the
+// warp loads each weight GROUP once into registers and dp4a's it against ALL of expert e's
+// tokens (weight reuse across the token group = llama-MMQ's core win; the pair-major kernel
+// re-read the weight per pair). Same expert_dot_g per (pair,row) — bit-identical output order.
+// ex_off: [n_active+1] CSR into ex_pairs (pair ids grouped by expert); ex_ids: [n_active].
+extern "C" __global__ void moe_pairs_matvec_q8_em(
+        const unsigned long long* __restrict__ table, int proj,
+        const int* __restrict__ ex_ids, const int* __restrict__ ex_off,
+        const int* __restrict__ ex_pairs, const int* __restrict__ pair_tok,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y,
+        int in_f, int out_f, int n_expert, int n_active, int qtype, long row_bytes) {
+    int seg = blockIdx.y;                 // active-expert segment
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    if (seg >= n_active || o >= out_f) return;
+    int lane = threadIdx.x;
+    int ex = ex_ids[seg];
+    int lo = ex_off[seg], hi = ex_off[seg + 1];
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = (const unsigned char*)table[(size_t)proj * n_expert + ex]
+                                + (long)o * row_bytes;
+    // accumulators for up to 16 tokens per pass (register cap); loop passes if more.
+    for (int base = lo; base < hi; base += 16) {
+        int cnt = min(16, hi - base);
+        float acc[16];
+        #pragma unroll
+        for (int i = 0; i < 16; i++) acc[i] = 0.0f;
+        for (int g = lane; g < nsb; g += 32) {
+            // weight group decoded ONCE (expert_dot_g re-dequants per call — acceptable: the
+            // dp4a-int weight ints stay in L1/registers via the compiler across the token loop
+            // when cnt is unrolled; the HBM read happens once per g per row-tile pass).
+            #pragma unroll 4
+            for (int i = 0; i < cnt; i++) {
+                int pr = ex_pairs[base + i];
+                int tok = pair_tok[pr];
+                acc[i] += expert_dot_g(qtype, wrow, g,
+                                       aq + (size_t)tok * in_f + (size_t)g * 32,
+                                       ad[(size_t)tok * nsb + g]);
+            }
+        }
+        #pragma unroll
+        for (int i = 0; i < cnt; i++) {
+            float v = warp_reduce_sum(acc[i]);
+            if (lane == 0) y[(size_t)ex_pairs[base + i] * out_f + o] = v;
+        }
+    }
+}
+
+extern "C" __global__ void moe_pairs_silu_mul(
+        const float* __restrict__ gate, const float* __restrict__ up,
+        float* __restrict__ act, long n) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) { float g = gate[i]; act[i] = (g / (1.0f + expf(-g))) * up[i]; }
+}
+// scatter: moe_out[tok] += w[pr] * y_down[pr] — slot-ORDERED per token for bit-identity with the
+// sequential axpy chain: one block per (token, col-tile); walks the token's pairs in SLOT order
+// via the per-token pair list (tok_pairs CSR built on host: for each token its n_used pair ids
+// in slot order).
+extern "C" __global__ void moe_pairs_scatter(
+        const float* __restrict__ y_down,               // [n_pairs, n_embd]
+        const float* __restrict__ pair_w,               // [n_pairs]
+        const int* __restrict__ tok_pair_off,            // [T+1] CSR offsets
+        const int* __restrict__ tok_pair_ids,            // [n_pairs] pair ids, slot-ordered per token
+        float* __restrict__ moe_out,                     // [T, n_embd]
+        int n_embd) {
+    int tok = blockIdx.y;
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_embd) return;
+    int lo = tok_pair_off[tok], hi = tok_pair_off[tok + 1];
+    float acc = 0.0f;
+    for (int i = lo; i < hi; i++) {
+        int pr = tok_pair_ids[i];
+        acc = __fmaf_rn(pair_w[pr], y_down[(size_t)pr * n_embd + c], acc);
+    }
+    moe_out[(size_t)tok * n_embd + c] = acc;
+}
+
 extern "C" __global__ void qmatvec_iq4_XS_dp4a(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

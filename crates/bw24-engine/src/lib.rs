@@ -650,6 +650,79 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     /// dp4a q8 twin of the _dev pair (resident-experts arc).
     #[allow(clippy::too_many_arguments)]
+    /// MoE PREFILL pair-batch matvec: one launch covers all (token,expert) pairs for one proj.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_pairs_matvec_q8(&self, table: &CudaSlice<u64>, proj: i32,
+                               pair_tok: &CudaSlice<i32>, pair_ex: &CudaSlice<i32>,
+                               aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                               in_f: usize, out_f: usize, n_expert: usize, n_pairs: usize,
+                               qtype: i32, row_bytes: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_matvec_q8");
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        const ROWS: u32 = 4;
+        let cfg = LaunchConfig { grid_dim: ((out_f as u32 + ROWS - 1) / ROWS, n_pairs as u32, 1),
+                                 block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
+        let (inf, outf, ne, np, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
+                                        n_pairs as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(&proj).arg(pair_tok).arg(pair_ex).arg(aq).arg(ad).arg(&mut y)
+         .arg(&inf).arg(&outf).arg(&ne).arg(&np).arg(&qtype).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Expert-major pair matvec (weight-reuse across each expert's token group).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_pairs_matvec_q8_em(&self, table: &CudaSlice<u64>, proj: i32,
+                                  ex_ids: &CudaSlice<i32>, ex_off: &CudaSlice<i32>,
+                                  ex_pairs: &CudaSlice<i32>, pair_tok: &CudaSlice<i32>,
+                                  aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                  in_f: usize, out_f: usize, n_expert: usize, n_active: usize,
+                                  n_pairs: usize, qtype: i32, row_bytes: usize)
+                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_matvec_q8_em");
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        const ROWS: u32 = 4;
+        let cfg = LaunchConfig { grid_dim: ((out_f as u32 + ROWS - 1) / ROWS, n_active as u32, 1),
+                                 block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
+        let (inf, outf, ne, na, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
+                                        n_active as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(&proj).arg(ex_ids).arg(ex_off).arg(ex_pairs).arg(pair_tok)
+         .arg(aq).arg(ad).arg(&mut y)
+         .arg(&inf).arg(&outf).arg(&ne).arg(&na).arg(&qtype).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    pub fn moe_pairs_silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, n: usize)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_silu_mul");
+        let mut act = self.alloc_uninit::<f32>(n)?;
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let nl = n as i64;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&mut act).arg(&nl);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_pairs_scatter(&self, y_down: &CudaSlice<f32>, pair_w: &CudaSlice<f32>,
+                             tok_pair_off: &CudaSlice<i32>, tok_pair_ids: &CudaSlice<i32>,
+                             moe_out: &mut CudaSlice<f32>, t: usize, n_embd: usize)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_scatter");
+        let cfg = LaunchConfig { grid_dim: (((n_embd + 255) / 256) as u32, t as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let ne = n_embd as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(y_down).arg(pair_w).arg(tok_pair_off).arg(tok_pair_ids).arg(moe_out).arg(&ne);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn moe_gate_up_silu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,

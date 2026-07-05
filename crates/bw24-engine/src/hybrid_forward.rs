@@ -641,6 +641,19 @@ impl HybridModel {
         // (it measured 169.55 vs the cache path's 28.5 on the local 35B — the residency-gate
         // all-or-nothing fallback was the 6x). BIT-IDENTITY: same _dev kernels, same math; only
         // the pointer table's provenance differs (slab base+stride vs SLRU slot addresses).
+        // MoE PREFILL PAIR-BATCH (2026-07-06, the 16x pp hole): t>1 on resident experts — ONE
+        // launch per proj covers ALL (token,expert) pairs (grid.y=pair, warp-per-row), replacing
+        // the per-expert loop (256 experts x 3-4 launches x tiny m_e). Scatter is slot-ordered
+        // per token (the sequential-axpy bit-identity class). Requires q8-supported qtypes +
+        // resident slabs. BW24_MOE_PAIRS=0 rollback.
+        if t > 1 && m.dev_exps.is_some() && moe_q8_enabled()
+            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
+            && q8_expert_supported(m.down_exps.qtype)
+            && std::env::var("BW24_MOE_PAIRS").map(|v| v != "0").unwrap_or(true)
+            && std::env::var("BW24_MOE_STATS").is_err() {
+            return Self::moe_ffn_pairs(e, m, z, &logits, t, cfg);
+        }
+
         // t==1 ONLY: moe_ffn_dev loops tokens serially (1 launch-pair per token) — correct for
         // decode, catastrophic for prefill (a 257-token prime = 257x41 sequential launch-pairs;
         // measured: prime-inclusive tok/s halved). Prefill keeps the batched sequential/grouped
@@ -935,6 +948,90 @@ impl HybridModel {
     /// layer's device pointer row exists (checked under the cache lock). Router top-k runs on
     /// device; sel/w are consumed by the `_dev` matvec twins directly; NOTHING crosses PCIe.
     /// Same numerics as the fused-router + gdec chain (kernel-level bit-identity, see the
+    /// MoE PREFILL PAIR-BATCH: host routing (sel/w like the sequential path), then 5 launches
+    /// TOTAL per layer (quantize z, gate-pairs, up-pairs, silu, act-quantize, down-pairs,
+    /// scatter) regardless of T or expert count. Bit-identity class: per (pair,row) dot =
+    /// qmatvec_expert_q8 order; per-token accumulation slot-ordered (scatter kernel).
+    fn moe_ffn_pairs(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, logits: &CudaSlice<f32>,
+                     t: usize, cfg: &ModelConfig)
+                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+        let dev = m.dev_exps.as_ref().unwrap();
+
+        let (sel_all, w_all) = Self::moe_route(e, logits, t, n_expert, n_used)?;
+        let n_pairs = t * n_used;
+        // pair arrays: pair p = (token p/n_used, slot p%n_used) — ALREADY slot-ordered per token,
+        // so the CSR is trivial: tok_pair_off[tok] = tok*n_used, ids identity.
+        let pair_tok: Vec<i32> = (0..n_pairs).map(|p| (p / n_used) as i32).collect();
+        let pair_ex:  Vec<i32> = sel_all.iter().map(|&x| x as i32).collect();
+        let pair_w:   Vec<f32> = w_all.clone();
+        let tok_off:  Vec<i32> = (0..=t).map(|tok| (tok * n_used) as i32).collect();
+        let tok_ids:  Vec<i32> = (0..n_pairs as i32).collect();
+        let pt = e.htod_i32(&pair_tok)?;
+        let px = e.htod_i32(&pair_ex)?;
+        let pw = e.htod(&pair_w)?;
+        let toff = e.htod_i32(&tok_off)?;
+        let tids = e.htod_i32(&tok_ids)?;
+
+        // z quantized ONCE for all tokens; gate/up pair matvecs; silu; act quantize; down; scatter.
+        // EXPERT-MAJOR CSR (rung 2): pairs grouped by expert -> the kernel reuses each weight
+        // row across the expert's token group (llama-MMQ's core win). Host grouping is O(pairs).
+        let mut by_ex: Vec<Vec<i32>> = vec![Vec::new(); n_expert];
+        for p in 0..n_pairs { by_ex[pair_ex[p] as usize].push(p as i32); }
+        let mut ex_ids: Vec<i32> = Vec::new();
+        let mut ex_off: Vec<i32> = vec![0];
+        let mut ex_pairs: Vec<i32> = Vec::with_capacity(n_pairs);
+        for (ex, list) in by_ex.iter().enumerate() {
+            if list.is_empty() { continue; }
+            ex_ids.push(ex as i32);
+            ex_pairs.extend_from_slice(list);
+            ex_off.push(ex_pairs.len() as i32);
+        }
+        let n_active = ex_ids.len();
+        let exi = e.htod_i32(&ex_ids)?;
+        let exo = e.htod_i32(&ex_off)?;
+        let exp_d = e.htod_i32(&ex_pairs)?;
+
+        let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+        let gate = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                            n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                            m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+        let up = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 1, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                          n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                          m.up_exps.qtype, m.up_exps.row_bytes)?;
+        let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
+        let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+        // down consumes PAIR-major activation rows: pair_tok = identity.
+        let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
+        let pself = e.htod_i32(&pair_self)?;
+        let y_down = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
+                                              n_ff_exp, n_embd, n_expert, n_active, n_pairs,
+                                              m.down_exps.qtype, m.down_exps.row_bytes)?;
+        let mut moe_out = e.uninit(t * n_embd)?;   // scatter fully overwrites per (token,col)
+        e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
+
+        // SHARED EXPERT epilogue — same as the other paths.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();
+            let sg_gate = e.matmul(gate_shexp, z, t)?;
+            let sg_up = e.matmul(up_shexp, z, t)?;
+            let mut sa = e.uninit(t * n_ff_sh)?;
+            e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            let sh = e.matmul(down_shexp, &sa, t)?;
+            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+            let mut g = e.zeros(t)?;
+            e.sigmoid(&gs, &mut g, t)?;
+            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
+        }
+        Ok(moe_out)
+    }
+
     /// kernel headers); the shared-expert epilogue is byte-identical to moe_ffn_sequential's.
     #[allow(clippy::too_many_arguments)]
     fn moe_ffn_dev(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, logits: &CudaSlice<f32>,
