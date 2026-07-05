@@ -102,6 +102,31 @@ re-measure per MCOLS tier.
 landed with the session-gate oracle (3-turn MATCH both models; 42.6x turn-start at 40k). bw24-server
 still creates a fresh cache per request — wire sessions into worker.rs next serve slot.
 
+## NEXT LOCAL ARC — MoE expert dp4a upgrade (specced 2026-07-06, measured on local 35B nsys)
+
+Local 35B decode window (post launch-arc port, 19.7 tok/s): **47% of decode wall = Stage-A f32
+dequant expert kernels** — qmatvec_f32 2377ms/272k (staged sequential path via qmatvec_view),
+moe_gate_up_silu8_f32 1667ms/14.5k, moe_down8_fma_f32 1280ms/14.5k (per 48-tok window). Experts:
+gate/up = IQ3_S (GGUF type 21), down = IQ4_XS (23). All three kernels dequant f32-elementwise
+(`deq()`); the trunk already runs q8_1+dp4a everywhere.
+
+THE WORK (matched-pair set — BW24_MOE_GATE byte-identity requires sequential+fused+_dev change TOGETHER):
+1. q8_1-quantize the MoE input row `z` once per token (quantize_q8_1 exists; the trunk's rms_norm_q8_1
+   fusion pattern applies) and the act row before down.
+2. dp4a bodies: IQ4_XS lift from qmatvec_iq4_XS_dp4a (exists, :3007); IQ3_S port from llama
+   vec_dot_iq3_s_q8_1 (vecdotq.cuh:1148 — sign-via-__vcmpne4/__vsub4 trick) against bw24's
+   deq_iq3_s layout (block=110B: d@0, qs@2, qh@66, signs@74, scales@106; db=d*(1+2*sc_nib)).
+   NOTE llama's block scale applies OUTSIDE the int dot — same separable structure as q4k/q5k mmvq.
+3. Kernel set (all change in one commit): qmatvec_view -> qmatvec_view_q8 (dp4a),
+   moe_gate_up_silu8_{f32,_dev} -> _q8 twins, moe_down8_fma_{f32,_dev} -> _q8 twins. Same
+   grid/block/slot-order/silu expression; ONLY the dot arithmetic changes (int dp4a + separable
+   scales instead of f32 elementwise).
+4. GATES: 35B argmax 248046 (local) / 1178 (box) — the FP-order change SHIFTS logits, argmax +
+   run-gen prefill==decode + 64-tok stream identity vs f32 seam (BW24_MOE_Q8=0 rollback) arbitrate;
+   BW24_MOE_GATE byte-identity between new sequential and new fused (the pair contract);
+   kernel-check oracle gates for both new dot bodies (int-band rel like MMQ-W4A8's).
+5. EXPECTED: local 35B 19.7 -> ~26-28 (47% slice at ~2-3x dp4a speedup); G7e 112.9 -> higher
+   (silu8/down8 are 41% of its GPU time too). Both regimes win — this is the rare shared lever.
 ## WHERE THINGS STAND (measured, 9B-NVFP4) — UPDATED 2026-07-03 after Q4_K/Q5_K MMQ landed
 
 | metric | bw24 | llama.cpp | ratio |
