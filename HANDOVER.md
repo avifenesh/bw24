@@ -77,6 +77,27 @@ MATCH; run-spec K=1..8 PASS both models; p3 chunk-prime token-md5 identical acro
 deqw-on/deqw-off/monolithic; 16k+32k deep prompts PASS. NEXT prime lever: mul_mat_q_nvfp4_w4a8 is
 now 52.5% of the 32k prime — the prime wall is the GEMM itself, not attention.
 
+**27B K=4 SPEC CLIFF — KILLED 2026-07-05 (g7e lane, JSONL `mmvq-b8-k4-cliff-fix`).** ROOT CAUSE
+CORRECTION: the remembered "T=5 splits b4 MMVQ into b4+b1" theory was WRONG — the batched dispatch
+in matmul/matmul_pre/matmul_decode_exact was gated `(2..=4).contains(&m)`, so T=5..8 verify fell to
+the per-row grid.y=m MMVQ (K=4 nsys: 6448x `qmatvec_nvfp4_mmvq_rp` @49us avg = m FULL weight reads
+per launch, 8.3% of wall; acceptance held 54-55% — kernel path, not acceptance). Fix = `b8` tier:
+mcols=8 instantiations of the EXISTING batched templates (c>=m masked, per-(token,row) dp4a order
+verbatim) for NVFP4 (base/pf/r2/r2w8/rp/rpr2/rpr2w8) + k-quants (base/r2), dispatch widened to
+2..=8, mcols map 2/4/8. b8 AUTO = the w8 twin everywhere — the b4 wave-crossing rule MISPICKS for
+b8 register classes (measured: forced rpr2w8 97.9 vs b4-rule 93.3 tok/s e2e; DRAM-cold rp msweep
+m=5/6/8 x 5 shapes: rpr2w8 wins/ties all but ffn_gate m=5/6 where rpr2 edges 1-3%). **27B p3 spec
+pmin0.15 clock-locked N=3: K3 107.2 (unchanged, control), K4 75.4→98.0 (+30%, now 0.91x of K3 =
+cliff GONE), K5 70.8→95.5, K6 66.4→91.5. Verdict: K=3 stays the 27B optimum (acceptance decay
+67→55→50→44% outruns the kernel win); K>=4 now decays smoothly (-8.6/-10.9/-14.6% vs K3) instead
+of cliffing — deeper-K becomes viable wherever acceptance holds >60%.** Seams: `BW24_B8=0` (m=5..8
+back to per-row; m<=4 untouched), BW24_NO_BATCHED still the global reference, BW24_MMVQ_BV forces
+b8 variants too. Gates: kernel-check 126 OK 0 FAIL incl new b8 m=5/6/8 cells (rel=0.00e0 all dtypes,
+RP bit-bad=0); argmax 1178/268 MATCH; run-spec K=1..8 PASS both models; p3 real-prompt PASS K=3..6.
+LESSON x2: (1) read the dispatch before trusting a remembered mechanism — the "split" was actually
+a fall-through to the WORST path; (2) variant auto-rules don't transfer across register classes —
+re-measure per MCOLS tier.
+
 **Session/serve wiring (engine API done, server pending):** SpecSession + generate_spec_session
 landed with the session-gate oracle (3-turn MATCH both models; 42.6x turn-start at 40k). bw24-server
 still creates a fresh cache per request — wire sessions into worker.rs next serve slot.
