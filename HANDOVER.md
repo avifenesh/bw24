@@ -46,6 +46,21 @@ register path short-ctx — it won at 2k by 12x); (2) the 34B/24B block stride b
 alignment — pack-on-append into a 32B-aligned layout (needs an append+decode pair change, gate
 battery arbitrates); (3) split sizing at 40k (n_splits already retuned; check tail effects).
 
+**ARC A candidate 2 (32B-aligned split-plane K): MEASURED NEGATIVE 2026-07-05 (g7e lane, JSONL
+`arca-kv-align-probe-negative`) — probe-gated, nothing wired.** Standalone microbench
+`probe/kv_align_probe.cu`: verbatim fa_decode_vec_q + _smem bodies with a split-plane K twin
+(qs plane [max_ctx][nblk][32B] + separate scale plane — pure address remap, partials bit-identical),
+27B geometry, 8 rotating layer buffers, clock-locked N=5. The straddle theory's MECHANISM is real —
+sectors/request drops 1.22->1.07 (-11% L1 sector traffic, ncu) — but duration is UNCHANGED at
+16k-64k (smem 32k: 256.06 vs 256.03us; reg 32k: 1.2% WORSE) because the kernel is LATENCY-bound
+(DRAM 15% of peak, warps 34%), not transaction-bound: saved sectors buy zero time. Only reg@8k
+gained (+4.5%), below the wire bar and not the blocker cell. Candidate 2 CLOSED with ncu evidence.
+Side observation worth a cheap follow-up: in the 8-layer-rotating synthetic the smem twin beats the
+register path 2.1-2.3x at EVERY depth incl 8k — the BW24_FA_SMEM_TKV=16384 crossover may sit too
+high (real-trace L2 differs; sweep 4096/8192 on real prompts before believing it). Remaining ARC A
+room is NOT KV byte addressing — the +18ms/tok decay must live in latency/occupancy structure
+(combine chain, n_splits tail, launch overhead).
+
 **ARC B — fa_prefill_q chunk-prime redundant dequant: DONE 2026-07-05 (g7e lane, JSONL
 `arcb-prime-deqw`).** Was 30.5%/153ms-launch of the 32k prime wall (every T/64 q-block CTA x
 n_head re-dequanted the whole quantized KV stream). Landed all three candidates as stacked
