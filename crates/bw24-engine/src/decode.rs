@@ -602,11 +602,23 @@ impl HybridModel {
         let scale = 1.0 / (head_dim as f32).sqrt();
 
         let n_embd = cfg.n_embd as usize;
+        // Q8 TRUNK-FUSION (2026-07-05): wq+wk+wv share input h — on the 35B every full-attn
+        // projection is Q8_0, so ONE fused3 launch (block-offset split, out_f 8192/512/512)
+        // replaces three launch-latency-class m=1 launches. BIT-IDENTICAL per (tensor,row) to
+        // the three matmul_pre MMVQ dispatches (same kernel body). BW24_Q8_DUAL=0 rollback.
+        let qkv_fused = |e: &Engine, hq: &CudaSlice<i8>, hd: &CudaSlice<f32>|
+            -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+            if let Some((qf, k, v)) = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hd)? {
+                return Ok((qf, k, v));
+            }
+            Ok((e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?,
+                e.matmul_pre(&fa.wv, hq, hd, h, 1)?))
+        };
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
             match pre_q {
-                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                Some((hq, hd)) => qkv_fused(e, hq, hd)?,
                 None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+                    qkv_fused(e, &hq, &hd)? }
             }
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
@@ -766,12 +778,22 @@ impl HybridModel {
         let scale = 1.0 / (head_dim as f32).sqrt();
 
         // wq|wk|wv all take the same input `h` (in_f = n_embd) — quantize q8_1 ONCE, feed all three.
+        // Q8 TRUNK-FUSION: on Q8_0 trunks (35B) the three fold into ONE fused3 launch (same MMVQ
+        // body per (tensor,row) — bit-identical; see full_attn_decode_dc_inner). BW24_Q8_DUAL=0 off.
         let n_embd = cfg.n_embd as usize;
+        let qkv_fused = |e: &Engine, hq: &CudaSlice<i8>, hd: &CudaSlice<f32>|
+            -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+            if let Some((qf, k, v)) = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hd)? {
+                return Ok((qf, k, v));
+            }
+            Ok((e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?,
+                e.matmul_pre(&fa.wv, hq, hd, h, 1)?))
+        };
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
             match pre_q {
-                Some((hq, hd)) => (e.matmul_pre(&fa.wq, hq, hd, h, 1)?, e.matmul_pre(&fa.wk, hq, hd, h, 1)?, e.matmul_pre(&fa.wv, hq, hd, h, 1)?),
+                Some((hq, hd)) => qkv_fused(e, hq, hd)?,
                 None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-                    (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?) }
+                    qkv_fused(e, &hq, &hd)? }
             }
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
@@ -888,22 +910,48 @@ impl HybridModel {
                 if as_ != 1.0 { e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?; }
                 return Ok((b, a));
             }
+            // Q8_0 twin of the NVFP4 dual (9B GGUFs store ssm_beta/alpha as Q8_0 on most layers):
+            // one fused2 launch, bit-identical per row, no macro-scale (q8_0 scale==1.0).
+            if let Some((b, a)) = e.matmul_q8_fused2(&la.ssm_beta, &la.ssm_alpha, hq, hd)? {
+                return Ok((b, a));
+            }
             Ok((e.matmul_pre(&la.ssm_beta, hq, hd, h, 1)?,
                 e.matmul_pre(&la.ssm_alpha, hq, hd, h, 1)?))
+        };
+        // Q8 TRUNK-FUSION (2026-07-05): wqkv+wqkv_gate share (hq,hd) and in_f — on the 35B both
+        // are Q8_0 (out_f 8192/4096), so ONE fused2 launch replaces the two biggest
+        // launch-latency-class m=1 launches of every linear layer. BIT-IDENTICAL per (tensor,row)
+        // (same MMVQ body, block-offset split). Falls back per-tensor when ineligible.
+        let qkv_pair = |e: &Engine, hq: &CudaSlice<i8>, hd: &CudaSlice<f32>|
+            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+            if let Some((qkv, z)) = e.matmul_q8_fused2(&la.wqkv, &la.wqkv_gate, hq, hd)? {
+                return Ok((qkv, z));
+            }
+            Ok((e.matmul_pre(&la.wqkv, hq, hd, h, 1)?,
+                e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?))
         };
         let (qkv_mixed, z, beta_raw, alpha) = if all_fast {
             // attn-input NORM-FUSION: use the caller's pre-quantized (hq,hd) when provided (the
             // attn_norm already emitted q8_1 via rms_norm_q8_1), else quantize h here. Bit-identical.
             match pre_q {
                 Some((hq, hd)) => { let (b, a) = beta_alpha(e, hq, hd)?;
-                    (e.matmul_pre(&la.wqkv, hq, hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, hq, hd, h, 1)?, b, a) }
+                    let (qkv, z) = qkv_pair(e, hq, hd)?;
+                    (qkv, z, b, a) }
                 None => { let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
                     let (b, a) = beta_alpha(e, &hq, &hd)?;
-                    (e.matmul_pre(&la.wqkv, &hq, &hd, h, 1)?, e.matmul_pre(&la.wqkv_gate, &hq, &hd, h, 1)?, b, a) }
+                    let (qkv, z) = qkv_pair(e, &hq, &hd)?;
+                    (qkv, z, b, a) }
             }
         } else {
-            (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?,
-             e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
+            // 35B trunk lands HERE: wqkv/wqkv_gate are Q8_0 but ssm_beta/alpha are F32, so
+            // all_fast is false. Still fuse the two Q8_0 projections (one quantize + ONE launch
+            // instead of two matmuls each re-quantizing h) — matmul_q8_fused2_x is bit-identical
+            // to the two m=1 MMVQ dispatches. beta/alpha keep the Float cuBLAS path.
+            let (qm, zg) = match e.matmul_q8_fused2_x(&la.wqkv, &la.wqkv_gate, h)? {
+                Some(pair) => pair,
+                None => (e.matmul(&la.wqkv, h, 1)?, e.matmul(&la.wqkv_gate, h, 1)?),
+            };
+            (qm, zg, e.matmul(&la.ssm_beta, h, 1)?, e.matmul(&la.ssm_alpha, h, 1)?)
         };
 
         // RANK3 LEVER (conv fuse): assemble [conv_state | new col], depthwise causal conv + SiLU, and

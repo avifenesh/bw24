@@ -893,6 +893,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // --- Q8 TRUNK-FUSION (fused2/fused3) vs per-tensor MMVQ: BIT-IDENTITY gate. The fused kernels
+    // run q8_0_mmvq_row1 (the qmatvec_q8_0_mmvq body verbatim, t=0) per (tensor,row) with only the
+    // grid split changed -> outputs must be BIT-IDENTICAL (rel == 0.0) to separate m=1 launches.
+    // Uses the model's real Q8_0 tensors when >=2 same-in_f ones exist (35B: attn_qkv+attn_gate
+    // uneven pair + wq/wk/wv triple; other GGUFs: any same-in_f q8_0 pair). ---
+    if let Some(path) = std::env::args().nth(1) {
+        use bw24_gguf::{GgufFile, GgmlType};
+        let g = GgufFile::open(&path)?;
+        // candidate name sets, first (pair) and (triple) that fully resolve as Q8_0 win.
+        let pair_sets: [(&str, &str); 3] = [
+            ("blk.0.attn_qkv.weight",  "blk.0.attn_gate.weight"),   // 35B uneven 8192/4096
+            ("blk.0.ffn_gate_shexp.weight", "blk.0.ffn_up_shexp.weight"), // 35B even 512/512
+            ("blk.0.ssm_beta.weight",  "blk.0.ssm_alpha.weight"),   // 9B tiny 32/32
+        ];
+        let grab = |name: &str| -> Option<(usize, usize, usize, Vec<u8>)> {
+            let t = g.find(name)?;
+            if t.ggml_type != GgmlType::Q8_0 || t.ne.len() > 2 { return None; }
+            let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+            let raw = g.tensor_data(t);
+            Some((in_f, out_f, raw.len() / out_f, raw.to_vec()))
+        };
+        for (n0, n1) in pair_sets {
+            let (Some(t0), Some(t1)) = (grab(n0), grab(n1)) else { continue };
+            if t0.0 != t1.0 { continue; }
+            let (in_f, rb) = (t0.0, t0.2);
+            let w0 = e.htod_bytes(&t0.3)?;
+            let w1 = e.htod_bytes(&t1.3)?;
+            let x: Vec<f32> = (0..in_f).map(|i| pr(i + 131) * 0.1).collect();
+            let xd = e.htod(&x)?;
+            let r0 = e.dtoh(&e.qmatvec_mmvq_raw(&w0, &xd, 1, in_f, t0.1, bw24_engine::QT_Q8_0, rb, false)?)?;
+            let r1 = e.dtoh(&e.qmatvec_mmvq_raw(&w1, &xd, 1, in_f, t1.1, bw24_engine::QT_Q8_0, rb, false)?)?;
+            let (f0, f1) = e.qmatvec_q8_fused2_raw(&w0, &w1, &xd, in_f, t0.1, t1.1, rb)?;
+            let (f0, f1) = (e.dtoh(&f0)?, e.dtoh(&f1)?);
+            let bits_ok = r0.iter().zip(f0.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                && r1.iter().zip(f1.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
+            let d = maxdiff(&r0, &f0).max(maxdiff(&r1, &f1));
+            println!("Q8-FUSED2 {n0}+{n1} [Q8_0] out=({},{}): rel={d:.2e} bits={} {}",
+                     t0.1, t1.1, bits_ok,
+                     if bits_ok { "OK" } else { fails += 1; "FAIL" });
+        }
+        // triple: 35B full-attn wq/wk/wv (blk.3 is the first full-attn layer).
+        let tri: [&str; 3] = ["blk.3.attn_q.weight", "blk.3.attn_k.weight", "blk.3.attn_v.weight"];
+        if let (Some(t0), Some(t1), Some(t2)) = (grab(tri[0]), grab(tri[1]), grab(tri[2])) {
+            if t0.0 == t1.0 && t1.0 == t2.0 {
+                let (in_f, rb) = (t0.0, t0.2);
+                let w0 = e.htod_bytes(&t0.3)?;
+                let w1 = e.htod_bytes(&t1.3)?;
+                let w2 = e.htod_bytes(&t2.3)?;
+                let x: Vec<f32> = (0..in_f).map(|i| pr(i + 137) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let r0 = e.dtoh(&e.qmatvec_mmvq_raw(&w0, &xd, 1, in_f, t0.1, bw24_engine::QT_Q8_0, rb, false)?)?;
+                let r1 = e.dtoh(&e.qmatvec_mmvq_raw(&w1, &xd, 1, in_f, t1.1, bw24_engine::QT_Q8_0, rb, false)?)?;
+                let r2 = e.dtoh(&e.qmatvec_mmvq_raw(&w2, &xd, 1, in_f, t2.1, bw24_engine::QT_Q8_0, rb, false)?)?;
+                let (f0, f1, f2) = e.qmatvec_q8_fused3_raw(&w0, &w1, &w2, &xd, in_f, t0.1, t1.1, t2.1, rb)?;
+                let (f0, f1, f2) = (e.dtoh(&f0)?, e.dtoh(&f1)?, e.dtoh(&f2)?);
+                let bits_ok = r0.iter().zip(f0.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                    && r1.iter().zip(f1.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                    && r2.iter().zip(f2.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
+                let d = maxdiff(&r0, &f0).max(maxdiff(&r1, &f1)).max(maxdiff(&r2, &f2));
+                println!("Q8-FUSED3 wq+wk+wv [Q8_0] out=({},{},{}): rel={d:.2e} bits={} {}",
+                         t0.1, t1.1, t2.1, bits_ok,
+                         if bits_ok { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
     // NVFP4 MMVQ vs dp4a on the 9B model (in_f%64; macro-scale skipped in both raw paths).
     {
         use bw24_gguf::{GgufFile, GgmlType};

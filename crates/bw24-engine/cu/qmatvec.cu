@@ -565,6 +565,75 @@ extern "C" __global__ void qmatvec_q8_0_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ----- Q8_0 m=1 single-row body shared by the FUSED multi-tensor launches below. LIFTED VERBATIM
+// from qmatvec_q8_0_mmvq with t pinned to 0 (decode m==1): same block walk, same dp4a order, same
+// warp_reduce_sum, same write -> per (tensor,row) output bits identical to a separate m=1 launch. -----
+__device__ __forceinline__ void q8_0_mmvq_row1(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, long row_bytes, int o) {
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        const unsigned char* wb = wrow + blk * 34;
+        float dw = half_to_float(*(const unsigned short*)wb);
+        const unsigned char* wq = wb + 2;
+        const int4* aq16 = (const int4*)(aq + blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++)
+            sumi = dp4a(get_int_b2(wq + k * 4), aq4[k], sumi);
+        acc += dw * ad[blk] * (float)sumi;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[o] = acc;
+}
+
+// ----- FUSED Q8_0 m=1 matvec PAIR, UNEQUAL out_f (trunk launch-fusion, 2026-07-05). The 35B trunk
+// decode runs ~250 tiny q8_0 m=1 launches/token (2.4-8us, launch-latency class: 44k of the 48-tok
+// window's 160k-class launches are this kernel). Same-input projections fold into ONE grid: blocks
+// [0,nb0) compute tensor 0, [nb0,nb0+nb1) tensor 1 (the NVFP4 gate+up dual + beta/alpha dual proved
+// the recipe; this variant lifts the same-out_f restriction via a block-offset split instead of
+// blockIdx.y). Both tensors share in_f (Q8_0 row_bytes is a pure function of in_f -> ONE row_bytes)
+// and the SAME q8_1 activation. Per (tensor,row) the body is qmatvec_q8_0_mmvq VERBATIM ->
+// BIT-IDENTICAL to two separate m=1 launches. Targets: 35B wqkv+wqkv_gate (8192/4096),
+// gate_shexp+up_shexp (512/512). Seam BW24_Q8_DUAL=0 (host-side). -----
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, long row_bytes) {
+    int nb0 = (out0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f;
+    if (b < nb0) { W = W0; y = y0; out_f = out0; }
+    else         { W = W1; y = y1; out_f = out1; b -= nb0; }
+    q8_0_mmvq_row1(W, aq, ad, y, in_f, out_f, row_bytes, b * BW24_MMVQ_ROWS + (int)threadIdx.y);
+}
+
+// ----- FUSED Q8_0 m=1 matvec TRIPLE (wq+wk+wv: same input h, same in_f, out_f 8192/512/512 on
+// the 35B full-attn layers). Same block-offset recipe as fused2 with three ranges. -----
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused3(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, long row_bytes) {
+    int nb0 = (out0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int nb1 = (out1 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f;
+    if (b < nb0)            { W = W0; y = y0; out_f = out0; }
+    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; b -= nb0; }
+    else                    { W = W2; y = y2; out_f = out2; b -= nb0 + nb1; }
+    q8_0_mmvq_row1(W, aq, ad, y, in_f, out_f, row_bytes, b * BW24_MMVQ_ROWS + (int)threadIdx.y);
+}
+
 // ----- Q4_K warp-per-row MMVQ. Body lifted from qmatvec_q4_K_dp4a (loop @ ~line 427). -----
 extern "C" __global__ void qmatvec_q4_K_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,

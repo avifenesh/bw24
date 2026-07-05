@@ -1729,6 +1729,134 @@ impl Engine {
         Ok(Some(((y0, s0), (y1, s1))))
     }
 
+    /// FUSED Q8_0 m=1 matvec PAIR with UNEQUAL out_f (trunk launch-fusion, 2026-07-05). Folds two
+    /// same-input q8_0 projections (35B trunk: wqkv+wqkv_gate 8192/4096, gate_shexp+up_shexp
+    /// 512/512) into ONE launch via a block-offset split (blocks [0,nb0) -> w0, rest -> w1) — the
+    /// dual-mr2 recipe with the same-out_f restriction lifted. Per (tensor,row) the kernel body is
+    /// qmatvec_q8_0_mmvq VERBATIM -> BIT-IDENTICAL to two separate m=1 launches. Returns None when
+    /// ineligible (not both Q8_0 / in_f mismatch / BW24_MMVQ off / BW24_Q8_DUAL=0) — caller falls
+    /// back to the per-tensor path.
+    pub fn matmul_q8_fused2(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                            aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        let Some([p0, p1]) = self.q8_fused_params(&[w0, w1]) else { return Ok(None) };
+        Ok(Some(self.q8_fused2_core(p0.0, p1.0, aq, ad, w0.in_features(), p0.1, p1.1, p0.2)?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn q8_fused2_core(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>,
+                      aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                      in_f: usize, out0: usize, out1: usize, row_bytes: usize)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
+        let nb0 = (out0 as u32).div_ceil(ROWS_PER_BLOCK);
+        let nb1 = (out1 as u32).div_ceil(ROWS_PER_BLOCK);
+        let f = self.func("qmatvec_q8_0_mmvq_fused2");
+        let mut y0 = self.alloc_uninit::<f32>(out0)?;
+        let mut y1 = self.alloc_uninit::<f32>(out1)?;
+        let cfg = LaunchConfig { grid_dim: (nb0 + nb1, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
+                                 shared_mem_bytes: 0 };
+        let (inf, o0, o1, rbl) = (in_f as i32, out0 as i32, out1 as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+         .arg(&inf).arg(&o0).arg(&o1).arg(&rbl);
+        unsafe { b.launch(cfg)?; }
+        Ok((y0, y1))
+    }
+
+    /// f32-activation entry for the fused2 pair: quantizes x to q8_1 ONCE then runs the fused
+    /// launch — replaces two `matmul(w, x, 1)` calls that would each re-quantize the same x
+    /// (35B shared-expert gate+up per MoE layer per token). Same bits: quantize_q8_1 is
+    /// deterministic, the fused body is the MMVQ kernel verbatim. None when ineligible (the
+    /// callers' m==1-under-BW24_FAST dispatch would take MMVQ; anything else falls back).
+    pub fn matmul_q8_fused2_x(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                              x: &CudaSlice<f32>)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        if !self.uses_q8_1_fast(w0) || !self.uses_q8_1_fast(w1) { return Ok(None); }
+        let Some([p0, p1]) = self.q8_fused_params(&[w0, w1]) else { return Ok(None) };
+        let (aq, ad) = self.quantize_q8_1(x, 1, w0.in_features())?;
+        Ok(Some(self.q8_fused2_core(p0.0, p1.0, &aq, &ad, w0.in_features(), p0.1, p1.1, p0.2)?))
+    }
+
+    /// Test entry for the kernel_check gate: launch the fused2 kernel from raw weight bytes,
+    /// quantizing the f32 activation internally (mirrors qmatvec_mmvq_raw; no env gating).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_q8_fused2_raw(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>, x: &CudaSlice<f32>,
+                                 in_f: usize, out0: usize, out1: usize, row_bytes: usize)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, 1, in_f)?;
+        self.q8_fused2_core(b0, b1, &aq, &ad, in_f, out0, out1, row_bytes)
+    }
+
+    /// FUSED Q8_0 m=1 matvec TRIPLE (wq+wk+wv on the 35B full-attn layers: out_f 8192/512/512).
+    /// Same block-offset recipe as `matmul_q8_fused2` with three ranges. BIT-IDENTICAL per
+    /// (tensor,row) to three separate m=1 MMVQ launches.
+    pub fn matmul_q8_fused3(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                            w2: &crate::model::GpuTensor,
+                            aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        let Some([p0, p1, p2]) = self.q8_fused_params(&[w0, w1, w2]) else { return Ok(None) };
+        Ok(Some(self.q8_fused3_core(p0.0, p1.0, p2.0, aq, ad, w0.in_features(),
+                                    p0.1, p1.1, p2.1, p0.2)?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn q8_fused3_core(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>, b2: &CudaSlice<u8>,
+                      aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                      in_f: usize, out0: usize, out1: usize, out2: usize, row_bytes: usize)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;
+        let nb0 = (out0 as u32).div_ceil(ROWS_PER_BLOCK);
+        let nb1 = (out1 as u32).div_ceil(ROWS_PER_BLOCK);
+        let nb2 = (out2 as u32).div_ceil(ROWS_PER_BLOCK);
+        let f = self.func("qmatvec_q8_0_mmvq_fused3");
+        let mut y0 = self.alloc_uninit::<f32>(out0)?;
+        let mut y1 = self.alloc_uninit::<f32>(out1)?;
+        let mut y2 = self.alloc_uninit::<f32>(out2)?;
+        let cfg = LaunchConfig { grid_dim: (nb0 + nb1 + nb2, 1, 1), block_dim: (32, ROWS_PER_BLOCK, 1),
+                                 shared_mem_bytes: 0 };
+        let (inf, o0, o1, o2, rbl) = (in_f as i32, out0 as i32, out1 as i32, out2 as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
+         .arg(&inf).arg(&o0).arg(&o1).arg(&o2).arg(&rbl);
+        unsafe { b.launch(cfg)?; }
+        Ok((y0, y1, y2))
+    }
+
+    /// Test entry for the kernel_check gate: fused3 from raw weight bytes (internal q8_1 quant).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_q8_fused3_raw(&self, b0: &CudaSlice<u8>, b1: &CudaSlice<u8>, b2: &CudaSlice<u8>,
+                                 x: &CudaSlice<f32>, in_f: usize, out0: usize, out1: usize,
+                                 out2: usize, row_bytes: usize)
+        -> Result<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, 1, in_f)?;
+        self.q8_fused3_core(b0, b1, b2, &aq, &ad, in_f, out0, out1, out2, row_bytes)
+    }
+
+    /// Eligibility + param extraction for the fused q8_0 launches: every tensor must be Quant Q8_0
+    /// with macro-scale 1.0 (always true for GGUF q8_0; only NVFP4 carries scale) and share w[0]'s
+    /// in_f (q8_0 row_bytes is a pure function of in_f, so equal in_f => equal row_bytes). BW24_MMVQ
+    /// must be on: the fused body is the MMVQ kernel; without it decode m=1 runs dp4a and fusing
+    /// would mix dispatch families (FP-order law). BW24_Q8_DUAL=0 = rollback seam.
+    #[allow(clippy::type_complexity)]
+    fn q8_fused_params<'w, const N: usize>(&self, ws: &[&'w crate::model::GpuTensor; N])
+        -> Option<[(&'w CudaSlice<u8>, usize, usize); N]> {
+        use crate::model::GpuTensor;
+        if std::env::var("BW24_MMVQ").is_err() { return None; }
+        if std::env::var("BW24_Q8_DUAL").is_ok_and(|v| v == "0") { return None; }
+        let in_f = ws[0].in_features();
+        let mut out: [Option<(&CudaSlice<u8>, usize, usize)>; N] = [None; N];
+        for (i, w) in ws.iter().enumerate() {
+            match w {
+                GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. }
+                    if *qtype == QT_Q8_0 && *scale == 1.0 && w.in_features() == in_f =>
+                        out[i] = Some((bytes, w.out_features(), *row_bytes)),
+                _ => return None,
+            }
+        }
+        Some(out.map(|o| o.unwrap()))
+    }
+
     pub fn matmul_pre_noscale(&self, w: &crate::model::GpuTensor, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                               m: usize) -> Result<Option<(CudaSlice<f32>, f32)>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;

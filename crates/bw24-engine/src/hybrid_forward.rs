@@ -819,8 +819,17 @@ impl HybridModel {
             (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();  // 512
-            let sg_gate = e.matmul(gate_shexp, z, t)?;  // [T, 512]
-            let sg_up = e.matmul(up_shexp, z, t)?;      // [T, 512]
+            // Q8 TRUNK-FUSION (decode t=1): gate_shexp+up_shexp are Q8_0 same-shape on the 35B —
+            // ONE fused2 launch (also folds the two per-matmul re-quantizes of z into one).
+            // Bit-identical per (tensor,row); falls back to the two matmul calls when ineligible.
+            let (sg_gate, sg_up) = if t == 1 {
+                match e.matmul_q8_fused2_x(gate_shexp, up_shexp, z)? {
+                    Some(pair) => pair,
+                    None => (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?),
+                }
+            } else {
+                (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)   // [T, 512] each
+            };
             let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;     // [T, n_embd]
@@ -995,13 +1004,20 @@ impl HybridModel {
         })?;
         }
 
-        // SHARED EXPERT epilogue — byte-identical to moe_ffn_sequential step 3.
+        // SHARED EXPERT epilogue — byte-identical to moe_ffn_sequential step 3 (incl. its Q8
+        // TRUNK-FUSION arm: fused2 is bit-identical to the two matmul calls per (tensor,row)).
         if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
             (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();
-            let sg_gate = e.matmul(gate_shexp, z, t)?;
-            let sg_up = e.matmul(up_shexp, z, t)?;
+            let (sg_gate, sg_up) = if t == 1 {
+                match e.matmul_q8_fused2_x(gate_shexp, up_shexp, z)? {
+                    Some(pair) => pair,
+                    None => (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?),
+                }
+            } else {
+                (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)
+            };
             let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;

@@ -626,8 +626,20 @@ impl HybridModel {
         // accumulation order for EVERY m, matching the T=1 decode path bit-for-bit. The generic
         // `matmul` at m>=5 falls to dp4a (128-thread, two-level reduce) which has a different FP
         // sum order — ULP differences propagate through gdn_scan and flip argmax on the 27B.
-        let qkv_mixed = e.matmul_decode_exact(&la.wqkv, h, t)?;
-        let z = e.matmul_decode_exact(&la.wqkv_gate, h, t)?;
+        // Q8 TRUNK-FUSION at T=1 (35B: wqkv+wqkv_gate both Q8_0): one fused2 launch, bit-identical
+        // per (tensor,row) to the two m=1 MMVQ dispatches below — decode-exact contract holds.
+        let (qkv_mixed, z) = {
+            let mut fused = None;
+            if t == 1 && e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate) {
+                let (hq, hd) = e.quantize_q8_1(h, 1, cfg.n_embd as usize)?;
+                fused = e.matmul_q8_fused2(&la.wqkv, &la.wqkv_gate, &hq, &hd)?;
+            }
+            match fused {
+                Some(pair) => pair,
+                None => (e.matmul_decode_exact(&la.wqkv, h, t)?,
+                         e.matmul_decode_exact(&la.wqkv_gate, h, t)?),
+            }
+        };
         // beta+alpha DUAL at T=1 (75% of p3 rounds run T=1 verify — p-min chain cuts): the dual
         // mr2 kernel is bit-identical per element to the m=1 MMVQ matmul_decode_exact dispatches
         // (same warp-per-row body, blockIdx.y picks the weight), so the decode-exact contract
@@ -640,8 +652,14 @@ impl HybridModel {
                     if as_ != 1.0 { e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?; }
                     (b, a)
                 }
-                None => (e.matmul_decode_exact(&la.ssm_beta, h, 1)?,
-                         e.matmul_decode_exact(&la.ssm_alpha, h, 1)?),
+                // Q8_0 fused2 twin (9B stores beta/alpha as Q8_0): DISPATCH-MIRRORS the eager
+                // decode's beta_alpha closure — the fused body is qmatvec_q8_0_mmvq verbatim,
+                // bit-identical per row (kernel-check rel=0.00e0 gate), so decode==verify holds.
+                None => match e.matmul_q8_fused2(&la.ssm_beta, &la.ssm_alpha, &hq, &hd)? {
+                    Some((b, a)) => (b, a),
+                    None => (e.matmul_decode_exact(&la.ssm_beta, h, 1)?,
+                             e.matmul_decode_exact(&la.ssm_alpha, h, 1)?),
+                },
             }
         } else {
             (e.matmul_decode_exact(&la.ssm_beta, h, t)?,
@@ -848,11 +866,21 @@ impl HybridModel {
         // DECODE-EXACT Q/K/V projections: matmul_decode_exact forces the MMVQ (warp-per-row) path
         // for every m, matching the T=1 decode's FP accumulation order. matmul_pre at m>=5 would
         // fall to dp4a (128-thread, two-level reduce) with a different FP sum order.
-        let (qf, mut k, v) = (
-            e.matmul_decode_exact(&fa.wq, h, t)?,
-            e.matmul_decode_exact(&fa.wk, h, t)?,
-            e.matmul_decode_exact(&fa.wv, h, t)?,
-        );
+        // Q8 TRUNK-FUSION at T=1: DISPATCH-MIRRORS the eager decode's fused3 (bit-identical body).
+        let (qf, mut k, v) = {
+            let mut fused = None;
+            if t == 1 && e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+                && e.uses_q8_1_fast(&fa.wv) {
+                let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                fused = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hd)?;
+            }
+            match fused {
+                Some(triple) => triple,
+                None => (e.matmul_decode_exact(&fa.wq, h, t)?,
+                         e.matmul_decode_exact(&fa.wk, h, t)?,
+                         e.matmul_decode_exact(&fa.wv, h, t)?),
+            }
+        };
         let mut q = e.zeros(t * n_head * head_dim)?;
         let mut gate = e.zeros(t * n_head * head_dim)?;
         e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
