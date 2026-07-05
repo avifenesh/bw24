@@ -46,11 +46,21 @@ register path short-ctx — it won at 2k by 12x); (2) the 34B/24B block stride b
 alignment — pack-on-append into a 32B-aligned layout (needs an append+decode pair change, gate
 battery arbitrates); (3) split sizing at 40k (n_splits already retuned; check tail effects).
 
-**ARC B — fa_prefill_q chunk-prime redundant dequant (30.5% of the 32k prime wall, 153ms/launch):**
-each of the T/64 BLOCK_Q groups re-dequants the SAME up-to-40k KV tile stream (64x redundant at
-chunk=4096). Candidates: (1) dequant-once per (layer, chunk) into a bf16 workspace (40k x 512 x 2B
-x 2 = 82MB transient — fits), then plain bf16 fa_prefill over it; (2) cp.async double-buffer the
-tile staging (currently sync loads, no overlap); (3) raise BK to widen the MMA per stage.
+**ARC B — fa_prefill_q chunk-prime redundant dequant: DONE 2026-07-05 (g7e lane, JSONL
+`arcb-prime-deqw`).** Was 30.5%/153ms-launch of the 32k prime wall (every T/64 q-block CTA x
+n_head re-dequanted the whole quantized KV stream). Landed all three candidates as stacked
+bit-identical rungs, DEFAULT ON: (1) `fa_dequant_kv_ws_bf16` dequants K/V ONCE per (layer,chunk)
+into a resident grown-and-reused bf16 workspace (`Engine.prime_deqw_ws`, ~83MB at 40k) storing
+exactly the `__float2bfloat16(dq_*)` values the old kernel staged to smem; `fa_prefill_qw` is the
+byte-identical MMA/softmax/PV twin over it (32k prime 26.41→18.11s); (2) 16B-uint4 vectorized
+workspace→smem staging (→17.10s); (3) `fa_prefill_qw_db` cp.async double-buffered staging twin
+(+32KB smem, 1 CTA/SM — wins anyway, single-buffer ncu: mem 66%/SM 15%/DRAM 0.6% staging-stalled)
+(→16.51s). **27B N=3: 32k prime 26.41→16.51s (1.60x), 16k 11.80→8.65s (1.36x).** Seams:
+`BW24_PRIME_DEQW=0` (inline-dequant fa_prefill_q), `BW24_PRIME_DEQW_DB=0` (single-buffer twin).
+Gates: kernel-check ALL GREEN incl new ws-vs-inline bitdiff=0 gate (both twins); argmax 1178/268
+MATCH; run-spec K=1..8 PASS both models; p3 chunk-prime token-md5 identical across
+deqw-on/deqw-off/monolithic; 16k+32k deep prompts PASS. NEXT prime lever: mul_mat_q_nvfp4_w4a8 is
+now 52.5% of the 32k prime — the prime wall is the GEMM itself, not attention.
 
 **Session/serve wiring (engine API done, server pending):** SpecSession + generate_spec_session
 landed with the session-gate oracle (3-turn MATCH both models; 42.6x turn-start at 40k). bw24-server

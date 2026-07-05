@@ -2121,10 +2121,13 @@ impl Engine {
             unsafe { b.launch(cfg)?; }
         }
         // pass 2: the bf16-workspace prefill twin (same tile sizes/loop structure as fa_prefill_q).
-        // BW24_PRIME_DEQW_DB=1 -> cp.async double-buffered staging twin (fa_prefill_qw_db,
-        // +32KB smem for the second K/V tile pair, 1 CTA/SM): overlaps tile n+1's L2->smem copy
-        // with tile n's MMA. Bit-identical output (staging is a pure byte copy); A/B arbitrates.
-        let db = std::env::var("BW24_PRIME_DEQW_DB").map(|v| v == "1").unwrap_or(false);
+        // DEFAULT: cp.async double-buffered staging twin (fa_prefill_qw_db, +32KB smem for the
+        // second K/V tile pair, 1 CTA/SM): overlaps tile n+1's L2->smem copy with tile n's MMA.
+        // Bit-identical output (staging is a pure byte copy; kernel_check pins bitdiff=0 under
+        // both twins). A/B (27B g7e, N=3): 32k prime 17.10->16.51s, 16k 9.09->8.65s — the copy
+        // latency hides behind the MMA pipe and beats the 2-CTA/SM occupancy of the sync twin.
+        // BW24_PRIME_DEQW_DB=0 falls back to the single-buffer twin.
+        let db = std::env::var("BW24_PRIME_DEQW_DB").map(|v| v != "0").unwrap_or(true);
         {
             let f = self.func(if db { "fa_prefill_qw_db" } else { "fa_prefill_qw" });
             let shmem = if db {
