@@ -1628,7 +1628,16 @@ impl Engine {
         // in smem ONCE and reuses across all tokens via mma — vs the dp4a matvec's per-token weight
         // re-read. Gated behind BW24_GEMM; only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's
         // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
-        const GEMM_M_THRESHOLD: usize = 16;
+        // BW24_GEMM_M overrides the m cutoff (A/B seam, 2026-07-06): the spec m=K+1 verify batch
+        // (m=4/5) sits below the default 16 and takes the dp4a b4 kernels, which ncu shows at
+        // ~43% DRAM / ~42% SM (latency-bound, not wall-bound) — the MMA tile path is a candidate
+        // there (decode weight tile once in smem, reuse across the verify columns).
+        static GEMM_M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let gemm_m_threshold = *GEMM_M.get_or_init(|| {
+            std::env::var("BW24_GEMM_M").ok().and_then(|v| v.parse().ok()).unwrap_or(16)
+        });
+        #[allow(non_snake_case)]
+        let GEMM_M_THRESHOLD = gemm_m_threshold;
 
         // PREFILL GEMM (m>=16). ACCURACY-FIRST dispatch (2026-06-28, prefill-gemm-beat-research wf
         // wllbyo6vc step 1): the int8 W4A8 GEMM (qmatvec_gemm, q8_1 activation, s32 accumulate) is
