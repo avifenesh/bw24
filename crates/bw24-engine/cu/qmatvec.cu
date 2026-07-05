@@ -3333,6 +3333,59 @@ extern "C" __global__ void moe_down8_fma_f32(
 // same dot reduction order, same SiLU expression, same slot-ordered __fmaf_rn chain. The sel/w
 // VALUES are the same bits either way (both paths consume moe_router_topk_f32's output).
 // ================================================================================================
+// q8 dp4a twins of the _dev pair (resident-experts arc, 2026-07-06): device sel/w + pointer
+// table (like _dev) + int dp4a dots vs a q8_1 activation (like the _q8 pair). One warp per
+// (row, slot); same silu expression / slot-ordered FMA chain as every twin in this family.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+extern "C" __global__ void moe_down8_fma_dev_q8(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w,
+        const signed char* __restrict__ aq2, const float* __restrict__ ad2,
+        float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int o = blockIdx.x;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    float chain = 0.0f;
+    for (int j = 0; j < n_used; j++) {
+        int ex = sel[j];
+        const unsigned char* wrow = (const unsigned char*)table[2 * n_expert + ex] + (long)o * rb;
+        const signed char* arow = aq2 + (size_t)j * in_f;
+        const float* adrow = ad2 + (size_t)j * nsb;
+        float acc = 0.0f;
+        for (int g = lane; g < nsb; g += 32)
+            acc += expert_dot_g(qt, wrow, g, arow + (size_t)g * 32, adrow[g]);
+        acc = warp_reduce_sum(acc);
+        if (lane == 0) chain = __fmaf_rn(w[j], acc, chain);
+    }
+    if (lane == 0) dst[o] = chain;
+}
+
 extern "C" __global__ void moe_gate_up_silu8_dev(
         const unsigned long long* __restrict__ table,  // [3, n_expert] slot base addresses
         const int* __restrict__ sel,                   // [n_used] this token's expert ids (device)

@@ -648,6 +648,46 @@ impl Engine {
     /// weight pointers from the per-layer device table `[3, n_expert]` of slot base addresses.
     /// BIT-IDENTICAL math (same grid/block/reduction; only the pointer/id source differs).
     #[allow(clippy::too_many_arguments)]
+    /// dp4a q8 twin of the _dev pair (resident-experts arc).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                    in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                    qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_dev_q8");
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                        rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
+                                w: &cudarc::driver::CudaView<f32>,
+                                aq2: &CudaSlice<i8>, ad2: &CudaSlice<f32>,
+                                dst: &mut cudarc::driver::CudaViewMut<f32>,
+                                in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
+                                qt: i32, rb: usize)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_down8_fma_dev_q8");
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
+                                        n_expert as i32, rb as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn moe_gate_up_silu8_dev(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                  x: &cudarc::driver::CudaView<f32>,
                                  in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
@@ -946,6 +986,9 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.clone_htod(v)?)
+    }
+    pub fn htod_u64(&self, v: &[u64]) -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {

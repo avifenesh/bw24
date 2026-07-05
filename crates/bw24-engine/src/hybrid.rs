@@ -79,6 +79,12 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
                  exps(e, &p("ffn_down_exps.weight"))?)
             }
         };
+        // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs to device when a global
+        // budget (BW24_MOE_RESIDENT_GB, default = 80% of free VRAM at first-layer load) covers
+        // the whole model's expert bytes. Decision is made ONCE (first MoE layer): total expert
+        // bytes = per-layer bytes x n_moe_layers (uniform layers; UD-quant variance is small and
+        // the budget has 20% slack). Failure to fit => None => the SLRU spill machinery.
+        let dev_exps = build_dev_exps(e, cfg, &gate_exps, &up_exps, &down_exps)?;
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, src, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_opt(e, src, &p("ffn_gate_inp_shexp.weight"))?,
@@ -86,6 +92,7 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
             gate_shexp: load_opt(e, src, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_opt(e, src, &p("ffn_up_shexp.weight"))?,
             down_shexp: load_opt(e, src, &p("ffn_down_shexp.weight"))?,
+            dev_exps,
         })
     } else {
         Ffn::Dense {
@@ -94,6 +101,51 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
             ffn_down: load_t(e, src, &p("ffn_down.weight"))?,
         }
     })
+}
+
+/// Decide + build the resident expert slabs for one layer. Budget check runs once (static):
+/// projected total = this layer's expert bytes x (n_layer MoE layers, approximated as all);
+/// fits => every subsequent layer uploads too (uniform). BW24_MOE_RESIDENT=0 forces the SLRU path.
+fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps, down: &HostExps)
+                  -> Result<Option<crate::hybrid::DevExps>, Box<dyn std::error::Error>> {
+    use std::sync::OnceLock;
+    static DECISION: OnceLock<bool> = OnceLock::new();
+    let per_layer = gate.bytes.as_bytes().len() + up.bytes.as_bytes().len() + down.bytes.as_bytes().len();
+    let fits = *DECISION.get_or_init(|| {
+        if std::env::var("BW24_MOE_RESIDENT").as_deref() == Ok("0") { return false; }
+        if gate.tiers.is_some() { return false; }   // tiered/spill loads keep the cache path
+        let (free, _total) = match e.ctx().mem_get_info() { Ok(v) => v, Err(_) => return false };
+        let budget = std::env::var("BW24_MOE_RESIDENT_GB").ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|gb| (gb * 1e9) as usize)
+            .unwrap_or((free as f64 * 0.80) as usize);
+        let projected = per_layer * cfg.n_layer as usize;   // upper bound (dense layers shrink it)
+        let ok = projected <= budget;
+        eprintln!("[moe] resident-experts decision: per-layer {}MB x {} layers = {:.1}GB vs budget {:.1}GB -> {}",
+                  per_layer / 1_000_000, cfg.n_layer, projected as f64 / 1e9, budget as f64 / 1e9,
+                  if ok { "RESIDENT" } else { "SLRU cache" });
+        ok
+    });
+    if !fits { return Ok(None); }
+    use cudarc::driver::DevicePtr;
+    let g = e.htod_bytes(gate.bytes.as_bytes())?;
+    let u = e.htod_bytes(up.bytes.as_bytes())?;
+    let d = e.htod_bytes(down.bytes.as_bytes())?;
+    let n_expert = gate.n_expert;
+    let mut host = vec![0u64; 3 * n_expert];
+    let (pg, pu, pd) = {
+        let (pg, _e0) = g.device_ptr(e.stream());
+        let (pu, _e1) = u.device_ptr(e.stream());
+        let (pd, _e2) = d.device_ptr(e.stream());
+        (pg as u64, pu as u64, pd as u64)
+    };
+    for ex in 0..n_expert {
+        host[ex]                = pg + (ex * gate.expert_stride) as u64;
+        host[n_expert + ex]     = pu + (ex * up.expert_stride) as u64;
+        host[2 * n_expert + ex] = pd + (ex * down.expert_stride) as u64;
+    }
+    let ptr_row = e.htod_u64(&host)?;
+    Ok(Some(crate::hybrid::DevExps { gate: g, up: u, down: d, ptr_row }))
 }
 
 pub struct FullAttnLayer {
@@ -130,6 +182,23 @@ pub struct MoeWeights {
     pub gate_shexp: Option<GpuTensor>,
     pub up_shexp: Option<GpuTensor>,
     pub down_shexp: Option<GpuTensor>,
+    /// FITS-VRAM RESIDENT EXPERTS (2026-07-06): when the WHOLE model's expert bytes fit the VRAM
+    /// budget, each (proj) slab is uploaded once as a contiguous device buffer and the fused
+    /// _dev kernels take base+ex*stride pointers — no SLRU, no dispatch, no residency checks
+    /// (llama's full-offload regime; measured 169.55 vs bw24's cache path 28.5 on the local 35B).
+    /// None => the SLRU host-expert machinery (the spill regime, where it WINS vs llama's
+    /// CPU-offload degradation). Decided at load in `load_ffn` (BW24_MOE_RESIDENT=0 forces off).
+    pub dev_exps: Option<DevExps>,
+}
+
+/// Device-resident expert slabs for one layer (gate/up/down) + the prebuilt [3, n_expert]
+/// pointer row the _dev kernels consume.
+pub struct DevExps {
+    pub gate: CudaSlice<u8>,
+    pub up: CudaSlice<u8>,
+    pub down: CudaSlice<u8>,
+    /// [3*n_expert] u64 device row: gate ptrs, up ptrs, down ptrs (proj-major like layer_dev_row).
+    pub ptr_row: CudaSlice<u64>,
 }
 
 /// Per-layer FFN: dense SwiGLU (qwen35) or 256-expert MoE (qwen35moe).

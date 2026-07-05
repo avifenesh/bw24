@@ -635,6 +635,16 @@ impl HybridModel {
         // Residency: one-shot PREWARM force-admits the layer while free slots cover it
         // (BW24_MOE_PREWARM=0 -> organic residency, dev path fires when the SLRU fills).
         // Any non-resident layer falls through to host routing + the gdec/sequential path.
+        // FITS-VRAM RESIDENT EXPERTS (2026-07-06): the layer's expert slabs are device-resident
+        // (load-time decision) — fire the zero-DtoH dev path unconditionally with the prebuilt
+        // pointer row. No cache, no dispatch, no residency check: the llama full-offload regime
+        // (it measured 169.55 vs the cache path's 28.5 on the local 35B — the residency-gate
+        // all-or-nothing fallback was the 6x). BIT-IDENTITY: same _dev kernels, same math; only
+        // the pointer table's provenance differs (slab base+stride vs SLRU slot addresses).
+        if m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
+            && std::env::var("BW24_MOE_STATS").is_err() {
+            return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
+        }
         if use_cache && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             let row_ok = e.with_moe_cache(max_block, |c, eng| {
@@ -929,6 +939,38 @@ impl HybridModel {
         // moe_out rows are FULLY overwritten by moe_down8_fma_dev — uninit (stage-2 rule).
         let mut moe_out = e.uninit(t * n_embd)?;
 
+        // RESIDENT-EXPERTS arm: the pointer row comes from the load-time slab (no cache, no
+        // lock). Same kernels/loop as the SLRU arm below — only the row's provenance differs.
+        if let Some(dev) = m.dev_exps.as_ref() {
+            let q8 = moe_q8_enabled()
+                && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
+                && q8_expert_supported(m.down_exps.qtype);
+            for tok in 0..t {
+                let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);
+                let selt = sel_d.slice(tok * n_used..(tok + 1) * n_used);
+                let wt = w_d.slice(tok * n_used..(tok + 1) * n_used);
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                if q8 {
+                    let (zq, zd) = e.quantize_q8_1_view(&zt, 1, n_embd)?;
+                    let act = e.moe_gate_up_silu8_dev_q8(&dev.ptr_row, &selt, &zq, &zd,
+                                                         n_embd, n_ff_exp, n_used, n_expert,
+                                                         m.gate_exps.qtype, m.up_exps.qtype,
+                                                         m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                    let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+                    e.moe_down8_fma_dev_q8(&dev.ptr_row, &selt, &wt, &aq2, &ad2, &mut dst,
+                                           n_ff_exp, n_embd, n_used, n_expert,
+                                           m.down_exps.qtype, m.down_exps.row_bytes)?;
+                } else {
+                    let act = e.moe_gate_up_silu8_dev(&dev.ptr_row, &selt, &zt, n_embd, n_ff_exp,
+                                                      n_used, n_expert,
+                                                      m.gate_exps.qtype, m.up_exps.qtype,
+                                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                    e.moe_down8_fma_dev(&dev.ptr_row, &selt, &wt, &act, &mut dst,
+                                        n_ff_exp, n_embd, n_used, n_expert,
+                                        m.down_exps.qtype, m.down_exps.row_bytes)?;
+                }
+            }
+        } else {
         // Launch under the cache lock: the row borrow lives as long as the closure, and the
         // lock covers only launch ISSUE (µs), same policy as moe_cached_gemm.
         e.with_moe_cache(max_block, |c, eng| {
@@ -951,6 +993,7 @@ impl HybridModel {
             c.hits += (t * 3 * n_used) as u64;
             Ok(())
         })?;
+        }
 
         // SHARED EXPERT epilogue — byte-identical to moe_ffn_sequential step 3.
         if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
