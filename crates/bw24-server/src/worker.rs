@@ -469,9 +469,13 @@ fn step_session(
     // SPEC_BURST_T tokens; between bursts the scheduler round-robins other sessions. Exactness:
     // the session-gate oracle (4 turns incl empty-suffix) pins burst output == fresh greedy.
     if let Some(spec) = s.spec.as_mut() {
-        const SPEC_BURST_T: usize = 32;
+        // Burst size trades round-robin latency (other sessions wait a whole burst) against
+        // per-burst fixed cost (generate_spec_session re-runs draft-graph capture + session
+        // setup every call). BW24_SPEC_BURST overrides for measurement; 32 = latency-safe default.
+        let burst_t: usize = std::env::var("BW24_SPEC_BURST").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(32);
         let k: usize = std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
-        let room = s.budget.saturating_sub(s.generated.len()).min(SPEC_BURST_T);
+        let room = s.budget.saturating_sub(s.generated.len()).min(burst_t);
         if room == 0 { finish(s, StopReason::MaxNew); return Ok(false); }
         let suffix: Vec<u32> = s.prefill_queue.drain(..).collect();
         s.prefill_done = true;
