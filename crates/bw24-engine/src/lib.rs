@@ -2228,6 +2228,9 @@ impl Engine {
             // rp* = SPLIT-PLANE REPACKED layout kernels (A6 prototype): W must already be the
             // repacked buffer (msweep MSWEEP_RP harness) — never valid on GGUF-layout weights.
             Ok("rp") => "rp", Ok("rpr2") => "rpr2", Ok("rpr2w8") => "rpr2w8",
+            // rpca* = cp.async software-pipelined split-plane (2026-07-05): hides the _rp
+            // long_scoreboard load stall. rp-layout only; b4/b2 (no b8 twin).
+            Ok("rpca") => "rpca", Ok("rpcar2") => "rpcar2",
             _ => "auto",
         });
         // cp.async ring variants need 16B-aligned rows (in_f%256==0 -> (in_f/64)*36 % 16 == 0)
@@ -2298,13 +2301,18 @@ impl Engine {
                 else if bv == "car2" && (!ca_ok || mcols == 8) { "r2" }
                 else if bv == "pfr2" && mcols == 8 { "r2" }
                 else if (bv == "rpr2w8" || bv == "rpr2") && mcols == 2 { "rpr2" }
+                // rpca* has no b8 twin (falls to rpr2w8/rpr2); needs the ca alignment gate.
+                else if (bv == "rpca" || bv == "rpcar2") && (!ca_ok || mcols == 8) {
+                    if mcols == 8 { "rpr2w8" } else { "rpr2" }
+                }
+                else if bv == "rpcar2" && mcols == 2 { "rpca" }
                 else { bv };
             if rp {
                 match v {
                     "base" | "pf" | "ca" | "rp" => "rp",
                     "r2" | "pfr2" | "car2" | "rpr2" => "rpr2",
                     "r2w8" | "rpr2w8" => if mcols == 2 { "rpr2" } else { "rpr2w8" },
-                    other => other,
+                    other => other,   // rpca / rpcar2 pass through (already rp-layout)
                 }
             } else { v }
         } else if mcols == 8 {
@@ -2346,7 +2354,8 @@ impl Engine {
             "pf" => (format!("{base_name}_pf").into(), 1),
             "ca" => (format!("{base_name}_ca").into(), 1),
             "rp" => (format!("{base_name}_rp").into(), 1),
-            v => (format!("{base_name}_{v}").into(), 2),
+            "rpca" => (format!("{base_name}_rpca").into(), 1),   // 1 row/warp cp.async split-plane
+            v => (format!("{base_name}_{v}").into(), 2),          // r2/rpr2/rpcar2/... = 2 rows/warp
         };
         debug_assert!(!rp || name.contains("_rp"), "rp weight dispatched to a GGUF-layout kernel");
         let f = self.func(&name);

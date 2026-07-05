@@ -1759,6 +1759,146 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_car2(
     nvfp4_mmvq_batched_ca<4, 2, 3>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ---- NVFP4 split-plane matvec, cp.async SOFTWARE-PIPELINED (2026-07-05). The _rp kernels below
+// issue a SYNCHRONOUS int4 quant load per g-iter; ncu on 27B decode (b4_rpr2) showed the dominant
+// stall is long_scoreboard 7.8-9.0 inst/issue (global-load latency), occupancy only 55% (67 regs
+// -> 7 blocks/SM), DRAM 40% — memory-LATENCY bound, not wall-bound. This variant pipelines the
+// split-plane windows with cp.async so weight loads for iter it+STAGES-1 are in flight while iter
+// it computes. Split-plane makes the window trivially aligned: per warp-iter the quant read is
+// 512B contiguous (32 lanes x 16B at rowq + it*512) and the scale read is 64B (16 words at
+// rows + it*64). Window = 512B quant + 64B scale = 576B (== CA_WIN). BIT-IDENTICAL to _rp: the
+// staged bytes ARE the global bytes, same word order (qw.x..qw.w = cq0..cq3), same scale byte
+// extraction, same dp4a order + adg + warp_reduce_sum — only WHERE the bytes stage changes.
+#define RP_WIN 576   // 512B quant (32x16B) + 64B scale (4x16B)
+__device__ __forceinline__ void ca_issue_window_rp(unsigned char* dst,
+        const unsigned char* qsrc, const unsigned char* ssrc, int lane) {
+    cp_async16_g(dst + lane * 16, qsrc + lane * 16);          // quant: 32 lanes x 16B = 512B
+    if (lane < 4) cp_async16_g(dst + 512 + lane * 16, ssrc + lane * 16);  // scale: 4 lanes x 16B = 64B
+}
+template<int MCOLS, int WROWS, int STAGES>
+__device__ __forceinline__ void nvfp4_mmvq_batched_rp_ca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * WROWS;
+    if (o0 >= out_f) return;
+    const bool has1 = (WROWS == 2) && (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int nsb64 = in_f >> 6;
+    int niter = nsb >> 5;                       // dispatch gate: nsb%32==0
+    const unsigned char* qplane = W;
+    const unsigned char* splane = W + (size_t)out_f * nsb64 * 32;
+    const unsigned char* rowq0 = qplane + (size_t)o0 * nsb64 * 32;   // this warp's row0 quant base
+    const unsigned char* rows0 = splane + (size_t)o0 * nsb64 * 4;    // this warp's row0 scale base
+    long qstride = (long)nsb64 * 32;            // +1 row in the quant plane
+    long sstride = (long)nsb64 * 4;             // +1 row in the scale plane
+    __shared__ __align__(16) unsigned char smw[BW24_MMVQ_ROWS][STAGES][WROWS][RP_WIN];
+    unsigned char (*ring)[WROWS][RP_WIN] = smw[threadIdx.y];
+    float acc[WROWS][MCOLS];
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++)
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) acc[r][c] = 0.0f;
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; s++) {
+        if (s < niter) {
+            ca_issue_window_rp(&ring[s][0][0], rowq0 + (size_t)s * 512, rows0 + (size_t)s * 64, lane);
+            if (WROWS == 2 && has1)
+                ca_issue_window_rp(&ring[s][1][0], rowq0 + qstride + (size_t)s * 512,
+                                   rows0 + sstride + (size_t)s * 64, lane);
+        }
+        cp_async_commit();
+    }
+    for (int it = 0; it < niter; it++) {
+        cp_async_wait<STAGES - 2>();
+        __syncwarp();
+        int g = it * 32 + lane;
+        int s0 = (lane & 1) * 2;
+        #pragma unroll
+        for (int r = 0; r < WROWS; r++) {
+            if (WROWS == 2 && r == 1 && !has1) break;
+            const unsigned char* wnd = &ring[it % STAGES][r][0];
+            int4 qw = *(const int4*)(wnd + lane * 16);
+            int cscw = *(const int*)(wnd + 512 + (lane >> 1) * 4);
+            int2 wv[2][2];
+            float wscale[2];
+            wv[0][0] = get_int_from_table_16_d(qw.x, kvalues_mxfp4_d);
+            wv[0][1] = get_int_from_table_16_d(qw.y, kvalues_mxfp4_d);
+            wv[1][0] = get_int_from_table_16_d(qw.z, kvalues_mxfp4_d);
+            wv[1][1] = get_int_from_table_16_d(qw.w, kvalues_mxfp4_d);
+            wscale[0] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 *  s0     )) & 0xFF));
+            wscale[1] = ue4m3_to_f32_d((unsigned char)((cscw >> (8 * (s0 + 1))) & 0xFF));
+            #pragma unroll
+            for (int c = 0; c < MCOLS; c++) {
+                if (c >= m) break;
+                const signed char* arow = aq + (size_t)c * in_f;
+                const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+                int4 a01 = aq16[0];
+                int4 a23 = aq16[1];
+                int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+                float adg = ad[(size_t)c * nsb + g];
+                float partial = 0.0f;
+                #pragma unroll
+                for (int sl = 0; sl < 2; sl++) {
+                    int base = sl * 4;
+                    int2 va = wv[sl][0], vb = wv[sl][1];
+                    int sumi = 0;
+                    sumi = dp4a(va.x, aq4[base + 0], sumi);
+                    sumi = dp4a(vb.x, aq4[base + 1], sumi);
+                    sumi = dp4a(va.y, aq4[base + 2], sumi);
+                    sumi = dp4a(vb.y, aq4[base + 3], sumi);
+                    partial += wscale[sl] * (float)sumi;
+                }
+                acc[r][c] += adg * partial;
+            }
+        }
+        int itn = it + STAGES - 1;
+        if (itn < niter) {
+            ca_issue_window_rp(&ring[itn % STAGES][0][0], rowq0 + (size_t)itn * 512,
+                               rows0 + (size_t)itn * 64, lane);
+            if (WROWS == 2 && has1)
+                ca_issue_window_rp(&ring[itn % STAGES][1][0], rowq0 + qstride + (size_t)itn * 512,
+                                   rows0 + sstride + (size_t)itn * 64, lane);
+        }
+        cp_async_commit();
+    }
+    #pragma unroll
+    for (int r = 0; r < WROWS; r++) {
+        if (WROWS == 2 && r == 1 && !has1) break;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            float a = warp_reduce_sum(acc[r][c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + r] = a;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_rpca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_ca<4, 1, 4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b4_rpcar2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_ca<4, 2, 3>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_rpca(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_ca<2, 1, 4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_nvfp4_mmvq_b2_rpcar2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    nvfp4_mmvq_batched_rp_ca<2, 2, 3>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ---- NVFP4 batched matvec, SPLIT-PLANE WALK-ORDER REPACK (A6, 2026-07-04 — Marlin-style offline
 // repack). The GGUF 36B block interleaves a 4B scale word with 32B of quants, so a lane's per-g
 // weight read is 5 scattered 4B LDGs at 36B stride (the "18B straggle": 4x LDG.32 quants at a
