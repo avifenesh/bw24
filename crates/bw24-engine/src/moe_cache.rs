@@ -117,7 +117,11 @@ impl MoeSlotCache {
             n
         } else {
             // auto: fill BW24_MOE_VRAM_FRAC of free VRAM with slots (default 40%).
-            let frac = std::env::var("BW24_MOE_VRAM_FRAC").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.40);
+            // DEFAULT 0.85 (2026-07-06 local sweep: 0.40=25.0, 0.60=28.0, 0.85=28.5 tok/s on the
+            // spill-regime 35B — hit-rate 87.8% -> 99.2%, PCIe 55 -> 3.8 MB/tok; the 0.80
+            // hard-headroom cap below still bounds the true allocation, so 0.85 requests the max).
+            // Rigs co-running other GPU work should set BW24_MOE_VRAM_FRAC lower.
+            let frac = std::env::var("BW24_MOE_VRAM_FRAC").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.85);
             (((free as f64 * frac) as usize) / max_block_bytes).max(256)
         };
         let n = want.min(max_by_vram).max(8);
