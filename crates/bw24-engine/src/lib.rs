@@ -2195,13 +2195,16 @@ impl Engine {
             // DEEP-CTX smem twin (2026-07-05): the register-dequant path's GQA reuse rides L2,
             // which holds to ~8k ctx but dies at 40k (layer KV ~37MB) — the 4 GQA warps then
             // re-read every KV byte from DRAM (4x traffic). Above BW24_FA_SMEM_TKV (default
-            // 16384; 0=never) dispatch the smem-broadcast twin: dequant each tile ONCE per block.
+            // 1024 — the 2026-07-05 crossover re-sweep on real prompts: p3 spec 73.8->79.2 at
+            // 2048, flat down to 512, p2 +5%, p1/9B unchanged; the ARC-A probe's synthetic
+            // 2.1x smem-at-all-depths pointed here; 0=never) dispatch the smem-broadcast twin:
+            // dequant each tile ONCE per block.
             // Bit-identical per (token,split): same bf16 round-trip, same accumulation order,
             // same partial layout -> same combine. Short/mid ctx keeps the register path (it won
             // there by 12x — latency, not bandwidth, rules small KV).
             static SMEM_TKV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
-                std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+                std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
             });
             if smem_tkv > 0 && t_kv >= smem_tkv {
                 let fv = self.func("fa_decode_vec_q_smem");
@@ -2287,7 +2290,7 @@ impl Engine {
         // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
         static SMEM_TKV_R: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
-            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
         let smem_rows = !sk && smem_tkv > 0 && t_kv_max >= smem_tkv;
         let fname = if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
