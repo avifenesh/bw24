@@ -997,21 +997,28 @@ impl HybridModel {
         let exp_d = e.htod_i32(&ex_pairs)?;
         let _ = &px;   // pair-major twin keeps it; em path uses CSR
 
+        // DECODE-ONCE MMQ (rung 3, BW24_MOE_DEC=1 default-on): dequant each weight group once per
+        // (row,group) then dp4a across the expert's tokens. _em re-decoded per token (NEUTRAL).
+        let dec = std::env::var("BW24_MOE_DEC").map(|v| v != "0").unwrap_or(true);
+        let matvec = |proj, exi: &_, exo: &_, exp_d: &_, pt: &_, aq: &_, ad: &_,
+                      inf, outf, qtype, rb| -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+            if dec { e.moe_pairs_matvec_q8_dec(&dev.ptr_row, proj, exi, exo, exp_d, pt, aq, ad,
+                                               inf, outf, n_expert, n_active, n_pairs, qtype, rb) }
+            else   { e.moe_pairs_matvec_q8_em (&dev.ptr_row, proj, exi, exo, exp_d, pt, aq, ad,
+                                               inf, outf, n_expert, n_active, n_pairs, qtype, rb) }
+        };
         let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
-        let gate = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                                            n_embd, n_ff_exp, n_expert, n_active, n_pairs,
-                                            m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-        let up = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 1, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                                          n_embd, n_ff_exp, n_expert, n_active, n_pairs,
-                                          m.up_exps.qtype, m.up_exps.row_bytes)?;
+        let gate = matvec(0, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                          n_embd, n_ff_exp, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+        let up = matvec(1, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                        n_embd, n_ff_exp, m.up_exps.qtype, m.up_exps.row_bytes)?;
         let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
         let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
         // down consumes PAIR-major activation rows: pair_tok = identity.
         let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
         let pself = e.htod_i32(&pair_self)?;
-        let y_down = e.moe_pairs_matvec_q8_em(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
-                                              n_ff_exp, n_embd, n_expert, n_active, n_pairs,
-                                              m.down_exps.qtype, m.down_exps.row_bytes)?;
+        let y_down = matvec(2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
+                            n_ff_exp, n_embd, m.down_exps.qtype, m.down_exps.row_bytes)?;
         let mut moe_out = e.uninit(t * n_embd)?;   // scatter fully overwrites per (token,col)
         e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
 

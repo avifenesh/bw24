@@ -3138,6 +3138,84 @@ __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wr
     return 0.0f; // caller gates on supported qtypes
 }
 
+// ---- DECODE-ONCE weight-group extractors (the MMQ tile-decode, split from the dp4a) ----
+// The em/dot bodies above re-dequant the weight group on every (group,token) call; the compiler
+// can't hoist that across an unrolled token loop (proven NEUTRAL, rung 2). These split the WEIGHT
+// decode from the activation dp4a: decode fills wq[8] (32 int8 weight quants packed as 8 int32,
+// EXACTLY the values dp4a'd inside expert_dot_*) + a per-group (fscale, iscale). The reuse kernel
+// then dp4a's each pre-decoded group against MANY tokens. FP-ORDER: contrib is computed as
+// `fscale * (float)(iscale * sumi) * d8` — byte-identical to expert_dot_iq3s_g (iscale=1 =>
+// fscale=db) and expert_dot_iq4xs_g (iscale=scale => fscale=d_sb). Per-group accumulate order is
+// unchanged, so BW24_MOE_GATE byte-identity holds vs the pair-major/sequential paths.
+__device__ __forceinline__ void expert_decode_iq3s_g(const unsigned char* wrow, int g,
+                                                     int wq[8], int* iscale, float* fscale) {
+    int sblk = g >> 3, ib32 = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 110;
+    float d = half_to_float(*(const unsigned short*)b);
+    const unsigned char* qs    = b + 2  + ib32 * 8;
+    unsigned char qh           = b[66 + ib32];
+    const unsigned char* signs = b + 74 + ib32 * 4;
+    const unsigned char* scales= b + 106;
+    int sc_nib = (ib32 & 1) ? (scales[ib32 / 2] >> 4) : (scales[ib32 / 2] & 0xf);
+    *fscale = d * (1.0f + 2.0f * (float)sc_nib);
+    *iscale = 1;
+    #pragma unroll
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        int gl = iq3s_grid_d(qs[l0 + 0] | (((int)qh << (8 - l0)) & 0x100));
+        int gh = iq3s_grid_d(qs[l0 + 1] | (((int)qh << (7 - l0)) & 0x100));
+        unsigned char sb = signs[l0 / 2];
+        int signs0 = __vcmpne4(((sb & 0x03) << 7) | ((sb & 0x0C) << 21), 0);
+        int signs1 = __vcmpne4(((sb & 0x30) << 3) | ((sb & 0xC0) << 17), 0);
+        wq[l0 + 0] = __vsub4(gl ^ signs0, signs0);
+        wq[l0 + 1] = __vsub4(gh ^ signs1, signs1);
+    }
+}
+__device__ __forceinline__ void expert_decode_iq4xs_g(const unsigned char* wrow, int g,
+                                                      int wq[8], int* iscale, float* fscale) {
+    int sblk = g >> 3, ib = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 136;
+    *fscale = half_to_float(*(const unsigned short*)b);
+    unsigned short sh = *(const unsigned short*)(b + 2);
+    const unsigned char* sl = b + 4;
+    const unsigned char* qs = b + 8 + ib * 16;
+    int ls = ((sl[ib >> 1] >> (4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
+    *iscale = ls - 32;
+    #pragma unroll
+    for (int k = 0; k < 4; k++) {
+        wq[k]   = (kvalues_iq4nl_d[qs[k*4+0]&0xf]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]&0xf]&0xff)<<8)
+                | ((kvalues_iq4nl_d[qs[k*4+2]&0xf]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]&0xf]&0xff)<<24);
+        wq[k+4] = (kvalues_iq4nl_d[qs[k*4+0]>>4]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]>>4]&0xff)<<8)
+                | ((kvalues_iq4nl_d[qs[k*4+2]>>4]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]>>4]&0xff)<<24);
+    }
+}
+// NOTE the int-lane pairing: IQ3_S packs [grid_l,grid_h] interleaved (wq[0..7] = l0=0,0,2,2,4,4,6,6)
+// and the activation int order in aq matches (aq4[l0], aq4[l0+1]); IQ4_XS packs [lo x4, hi x4] and
+// the activation is aLo[0..3] then aHi[0..3]. So the dp4a token loop must feed activation ints in
+// the SAME split for each qtype. We store the activation-int layout choice per qtype via a flag.
+__device__ __forceinline__ void expert_decode_g(int qtype, const unsigned char* wrow, int g,
+                                               int wq[8], int* iscale, float* fscale) {
+    if (qtype == QT_IQ3_S)  { expert_decode_iq3s_g(wrow, g, wq, iscale, fscale); return; }
+    expert_decode_iq4xs_g(wrow, g, wq, iscale, fscale);
+}
+// dp4a a pre-decoded weight group (wq[8]) against one token's 32 activation int8 (aqb) with the
+// qtype's int pairing. IQ3_S: sequential aq4[0..7]; IQ4_XS: aLo[0..3]=aqb[0..15], aHi[0..3]=aqb[16..31]
+// interleaved as (wq[k]*aLo[k], wq[k+4]*aHi[k]) — matches expert_dot_iq4xs_g's dp4a issue order.
+__device__ __forceinline__ int expert_dp4a_group(int qtype, const int wq[8], const signed char* aqb) {
+    const int* a = (const int*)aqb;
+    int sumi = 0;
+    if (qtype == QT_IQ3_S) {
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi = dp4a(wq[k], a[k], sumi);
+    } else { // IQ4_XS: lo half then hi half
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            sumi = dp4a(wq[k],   a[k],     sumi);
+            sumi = dp4a(wq[k+4], a[k + 4], sumi);
+        }
+    }
+    return sumi;
+}
+
 // q8_1-activation MoE expert matvec (warp-per-row like mmvq): the staged/sequential expert path
 // upgrade — replaces the 256-thread f32-dequant qmatvec_f32 (Stage-A) for IQ3_S/IQ4_XS experts.
 // FP-ORDER NOTE: different reduction than qmatvec_f32 (int dp4a + per-group f32 accumulate,
@@ -3234,6 +3312,51 @@ extern "C" __global__ void moe_pairs_matvec_q8_em(
                 acc[i] += expert_dot_g(qtype, wrow, g,
                                        aq + (size_t)tok * in_f + (size_t)g * 32,
                                        ad[(size_t)tok * nsb + g]);
+            }
+        }
+        #pragma unroll
+        for (int i = 0; i < cnt; i++) {
+            float v = warp_reduce_sum(acc[i]);
+            if (lane == 0) y[(size_t)ex_pairs[base + i] * out_f + o] = v;
+        }
+    }
+}
+
+// DECODE-ONCE expert-major MMQ (rung 3): same CSR shape as _em, but the weight group is dequanted
+// ONCE per (row, group) via expert_decode_g, then dp4a'd against every token of the expert segment.
+// This is the actual MMQ win the _em kernel's comment CLAIMED but did not deliver (expert_dot_g
+// re-decoded per token — proven NEUTRAL). Here the decode cost amortizes over the token group.
+// FP-ORDER: per-group accumulate `acc[i] += fscale*(float)(iscale*sumi)*d8` in the SAME g-strided
+// order as _em/pair-major -> byte-identical logits (BW24_MOE_GATE pair contract holds).
+extern "C" __global__ void moe_pairs_matvec_q8_dec(
+        const unsigned long long* __restrict__ table, int proj,
+        const int* __restrict__ ex_ids, const int* __restrict__ ex_off,
+        const int* __restrict__ ex_pairs, const int* __restrict__ pair_tok,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y,
+        int in_f, int out_f, int n_expert, int n_active, int qtype, long row_bytes) {
+    int seg = blockIdx.y;
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    if (seg >= n_active || o >= out_f) return;
+    int lane = threadIdx.x;
+    int ex = ex_ids[seg];
+    int lo = ex_off[seg], hi = ex_off[seg + 1];
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = (const unsigned char*)table[(size_t)proj * n_expert + ex]
+                                + (long)o * row_bytes;
+    for (int base = lo; base < hi; base += 16) {
+        int cnt = min(16, hi - base);
+        float acc[16];
+        #pragma unroll
+        for (int i = 0; i < 16; i++) acc[i] = 0.0f;
+        for (int g = lane; g < nsb; g += 32) {
+            int wq[8]; int iscale; float fscale;
+            expert_decode_g(qtype, wrow, g, wq, &iscale, &fscale);  // ONCE per (row, group)
+            #pragma unroll 4
+            for (int i = 0; i < cnt; i++) {
+                int tok = pair_tok[ex_pairs[base + i]];
+                int sumi = expert_dp4a_group(qtype, wq, aq + (size_t)tok * in_f + (size_t)g * 32);
+                acc[i] += fscale * (float)(iscale * sumi) * ad[(size_t)tok * nsb + g];
             }
         }
         #pragma unroll

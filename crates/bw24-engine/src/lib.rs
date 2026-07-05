@@ -709,6 +709,31 @@ impl Engine {
         Ok(y)
     }
 
+    // Decode-once expert-major MMQ (rung 3). Same CSR inputs/geometry as _em; kernel dequants each
+    // weight group once per (row,group) then dp4a's across the expert's token group.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_pairs_matvec_q8_dec(&self, table: &CudaSlice<u64>, proj: i32,
+                                   ex_ids: &CudaSlice<i32>, ex_off: &CudaSlice<i32>,
+                                   ex_pairs: &CudaSlice<i32>, pair_tok: &CudaSlice<i32>,
+                                   aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                   in_f: usize, out_f: usize, n_expert: usize, n_active: usize,
+                                   n_pairs: usize, qtype: i32, row_bytes: usize)
+                                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_matvec_q8_dec");
+        let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
+        const ROWS: u32 = 4;
+        let cfg = LaunchConfig { grid_dim: ((out_f as u32 + ROWS - 1) / ROWS, n_active as u32, 1),
+                                 block_dim: (32, ROWS, 1), shared_mem_bytes: 0 };
+        let (inf, outf, ne, na, rbi) = (in_f as i32, out_f as i32, n_expert as i32,
+                                        n_active as i32, row_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(&proj).arg(ex_ids).arg(ex_off).arg(ex_pairs).arg(pair_tok)
+         .arg(aq).arg(ad).arg(&mut y)
+         .arg(&inf).arg(&outf).arg(&ne).arg(&na).arg(&qtype).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
     pub fn moe_pairs_silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, n: usize)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("moe_pairs_silu_mul");
