@@ -606,32 +606,75 @@ impl HostExps {
                 let (in_f, out_f) = (nv0.in_f, nv0.out_f);
                 let row_bytes = in_f / 64 * 36;
                 let expert_stride = out_f * row_bytes;
-                let mut buf: Vec<u8> = Vec::with_capacity(n_expert * expert_stride);
+                // ST DISK TIER (2026-07-06, the MiniMax OOM fix): when the total expert bytes
+                // exceed host RAM (M3 REAP50 = 122GB repacked on a 60GB host, first-load host-OOM
+                // at layer ~24), repack each layer ONCE into an on-disk cache file next to the
+                // checkpoint and mmap it (HostBuf::Mmap, MAP_SHARED no-populate — the same tier-2
+                // mechanism the GGUF spill path uses). Reloads hit the cache (size-checked), pay
+                // zero repack. BW24_ST_REPACK_DISK=0 forces the old in-RAM gather.
+                let disk = std::env::var("BW24_ST_REPACK_DISK").map(|v| v != "0").unwrap_or(true)
+                    && src.st_dir().is_some();
+                let cache_path = src.st_dir().map(|d| {
+                    let cd = d.join(".bw24-repack");
+                    let _ = std::fs::create_dir_all(&cd);
+                    cd.join(format!("blk{il}-{proj}-{n_expert}x{out_f}x{in_f}.nvfp4"))
+                });
+                let total = n_expert * expert_stride;
                 let mut macros = vec![1.0f32; n_expert];
-                for ex in 0..n_expert {
-                    let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
-                    let nv = src.find_nvfp4_native(&name)
-                        .unwrap_or_else(|| panic!("expert {name} lost NVFP4-native mid-gather"));
-                    assert_eq!((nv.in_f, nv.out_f), (in_f, out_f),
-                        "expert {ex} dims ({},{}) != expert 0 ({in_f},{out_f})", nv.in_f, nv.out_f);
-                    buf.extend_from_slice(&bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
-                        nv.wbytes, nv.wscale, out_f, in_f));
-                    // per-expert macro-scale sibling (`<stem>.scale` -> modelopt weight_scale_2)
-                    let stem = name.strip_suffix(".weight").unwrap();
-                    if let Some(sv) = src.find(&format!("{stem}.scale")) {
-                        macros[ex] = f32::from_le_bytes(sv.bytes[..4].try_into().unwrap());
+                let read_macros = |macros: &mut Vec<f32>| {
+                    for ex in 0..n_expert {
+                        let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+                        if let Some(sv) = src.find(&format!("{stem}.scale")) {
+                            macros[ex] = f32::from_le_bytes(sv.bytes[..4].try_into().unwrap());
+                        }
                     }
-                }
-                assert_eq!(buf.len(), n_expert * expert_stride);
-                let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
-                    || std::env::var("BW24_MOE_CACHE").is_ok();
-                let bytes = if pinned {
-                    let mut p = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
-                    { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
-                    let base = p.as_ptr()? as *const u8;
-                    let len = buf.len();
-                    HostBuf::Pinned { slice: p, base, len }
-                } else { HostBuf::Paged(buf) };
+                };
+                let bytes = if disk {
+                    let cp = cache_path.as_ref().unwrap();
+                    let fresh = std::fs::metadata(cp).map(|m| m.len() as usize == total).unwrap_or(false);
+                    if !fresh {
+                        // stream one expert at a time to disk — peak RAM = one expert (~8MB)
+                        use std::io::Write;
+                        let mut f = std::io::BufWriter::new(std::fs::File::create(cp)?);
+                        for ex in 0..n_expert {
+                            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+                            let nv = src.find_nvfp4_native(&name)
+                                .unwrap_or_else(|| panic!("expert {name} lost NVFP4-native mid-gather"));
+                            assert_eq!((nv.in_f, nv.out_f), (in_f, out_f),
+                                "expert {ex} dims ({},{}) != expert 0 ({in_f},{out_f})", nv.in_f, nv.out_f);
+                            f.write_all(&bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
+                                nv.wbytes, nv.wscale, out_f, in_f))?;
+                        }
+                        f.flush()?;
+                    }
+                    read_macros(&mut macros);
+                    let file = std::fs::File::open(cp)?;
+                    let map = unsafe { memmap2::Mmap::map(&file)? };
+                    assert_eq!(map.len(), total, "repack cache {cp:?} size mismatch");
+                    HostBuf::Mmap { map: std::sync::Arc::new(map), off: 0, len: total }
+                } else {
+                    let mut buf: Vec<u8> = Vec::with_capacity(total);
+                    for ex in 0..n_expert {
+                        let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+                        let nv = src.find_nvfp4_native(&name)
+                            .unwrap_or_else(|| panic!("expert {name} lost NVFP4-native mid-gather"));
+                        assert_eq!((nv.in_f, nv.out_f), (in_f, out_f),
+                            "expert {ex} dims ({},{}) != expert 0 ({in_f},{out_f})", nv.in_f, nv.out_f);
+                        buf.extend_from_slice(&bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
+                            nv.wbytes, nv.wscale, out_f, in_f));
+                    }
+                    assert_eq!(buf.len(), total);
+                    read_macros(&mut macros);
+                    let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
+                        || std::env::var("BW24_MOE_CACHE").is_ok();
+                    if pinned {
+                        let mut p = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
+                        { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
+                        let base = p.as_ptr()? as *const u8;
+                        let len = buf.len();
+                        HostBuf::Pinned { slice: p, base, len }
+                    } else { HostBuf::Paged(buf) }
+                };
                 let all_one = macros.iter().all(|&m| m == 1.0);
                 return Ok(HostExps {
                     bytes, tiers: None, qtype: QT_NVFP4, in_f, out_f, n_expert,

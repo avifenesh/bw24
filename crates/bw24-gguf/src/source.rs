@@ -53,6 +53,9 @@ pub trait TensorSource {
     /// resident layout without materializing GGUF 36B blocks. None for GGUF sources (already the
     /// import layout), for transformed weights, and for non-NVFP4 tensors.
     fn find_nvfp4_native(&self, _ggml_name: &str) -> Option<Nvfp4Native<'_>> { None }
+    /// The checkpoint directory, if this source is a safetensors HF dir (None for GGUF). Used by
+    /// the ST expert disk-tier to place its repack cache next to the shards.
+    fn st_dir(&self) -> Option<&std::path::Path> { None }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -79,6 +82,7 @@ impl<'g> TensorSource for GgufSource<'g> {
 pub struct SafetensorsSource {
     model: StModel,
     cfg: ModelConfig,
+    dir: std::path::PathBuf,
 }
 
 impl SafetensorsSource {
@@ -93,13 +97,16 @@ impl SafetensorsSource {
         };
         let cfg = ModelConfig::from_config_json(&dir.join("config.json"))?;
         let model = StModel::open(path)?;
-        Ok(Self { model, cfg })
+        Ok(Self { model, cfg, dir: dir.to_path_buf() })
     }
 
     /// Open with an explicitly-provided config (e.g. tests, or config.json elsewhere).
     pub fn open_with_config(path: &std::path::Path, cfg: ModelConfig) -> std::io::Result<Self> {
         let model = StModel::open(path)?;
-        Ok(Self { model, cfg })
+        let dir = if path.is_file() {
+            path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
+        } else { path.to_path_buf() };
+        Ok(Self { model, cfg, dir })
     }
 
     pub fn arch(&self) -> &Arch {
@@ -218,6 +225,7 @@ impl TensorSource for SafetensorsSource {
     fn config(&self) -> ModelConfig {
         self.cfg.clone()
     }
+    fn st_dir(&self) -> Option<&std::path::Path> { Some(&self.dir) }
     /// Presence check without the repack: `find` on a plain NVFP4 weight materializes the whole
     /// repacked buffer just to answer `has` (then `load_opt_from_source` repacks AGAIN to load).
     /// The native lookup is header-only, so answer from it first.
