@@ -305,10 +305,19 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
+        // qwen35 fuses [q|gate] per head in wq (2*head_dim stride); M3 has NO output gate
+        // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
+        // would read 2x out of bounds. `gated` keys both the split and the sigmoid epilogue.
+        let gated = cfg.m3.is_none();
         let qf = e.matmul(&fa.wq, h, t)?;
-        let mut q = e.zeros(t * n_head * head_dim)?;
-        let mut gate = e.zeros(t * n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+        let (mut q, gate) = if gated {
+            let mut q = e.zeros(t * n_head * head_dim)?;
+            let mut gate = e.zeros(t * n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+            (q, Some(gate))
+        } else {
+            (qf, None)
+        };
         let mut k = e.matmul(&fa.wk, h, t)?;
         let v = e.matmul(&fa.wv, h, t)?;
 
@@ -373,10 +382,16 @@ impl HybridModel {
             }
         }
 
-        let mut gsig = e.zeros(t * n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
-        let mut attn_g = e.zeros(t * n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
+                let mut ag = e.zeros(t * n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
         Ok(e.matmul(&fa.wo, &attn_g, t)?)
     }
 
@@ -458,13 +473,18 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        // wq output = head_dim*2*n_head (fused [q|gate] per head, stride 2*head_dim).
+        // qwen35: wq output = head_dim*2*n_head (fused [q|gate] per head). M3: NO output gate —
+        // wq out = n_head*head_dim, no split (see prime-path note).
+        let gated = cfg.m3.is_none();
         let qf = e.matmul(&fa.wq, h, t)?;
-        // split per head ON-DEVICE: q = [head_dim] at offset 0 within each 2*head_dim block; gate at
-        // offset head_dim. -> q,gate [head_dim, n_head, T]. No dtoh/host-loop/htod.
-        let mut q = e.zeros(t * n_head * head_dim)?;
-        let mut gate = e.zeros(t * n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+        let (mut q, gate) = if gated {
+            let mut q = e.zeros(t * n_head * head_dim)?;
+            let mut gate = e.zeros(t * n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+            (q, Some(gate))
+        } else {
+            (qf, None)
+        };
         let mut k = e.matmul(&fa.wk, h, t)?;
         let v = e.matmul(&fa.wv, h, t)?;
 
@@ -488,12 +508,17 @@ impl HybridModel {
             e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
         }
 
-        // output gate: attn * sigmoid(gate)
-        let mut gsig = e.zeros(t * n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
-        let mut attn_g = e.zeros(t * n_head * head_dim)?;
-        // reuse silu_mul? no — need plain mul. do it via a tiny host path is wasteful; use mul kernel.
-        e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
+        // output gate: attn * sigmoid(gate) — qwen35 only (M3 has no gate).
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
+                let mut ag = e.zeros(t * n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
 
         // o projection
         let o = e.matmul(&fa.wo, &attn_g, t)?;
