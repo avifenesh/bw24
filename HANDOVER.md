@@ -1,6 +1,6 @@
 # bw24 — Session Handover
 
-_Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall** — microbenched, not the 847 spec). Second box = bw24-g7e (RTX PRO 6000 96GB, sm_120-compatible). Repo PUBLIC: https://github.com/avifenesh/bw24 — both rigs sync via origin. L40S/sm_89 lane CLOSED (box terminated)._
+_Written 2026-07-03, standings updated 2026-07-07. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall** — microbenched, not the 847 spec). Second box = bw24-g7e (RTX PRO 6000 96GB, sm_120-compatible). Repo PUBLIC: https://github.com/avifenesh/bw24 — both rigs sync via origin. L40S/sm_89 lane CLOSED (box terminated)._
 
 ## STANDINGS 2026-07-06 (E2E IMAGE 6, gen tok/s p1/p2/p3, same prompts, llama at serve-best)
 
@@ -8,6 +8,14 @@ _Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue
 - **9B: 193/156/149 vs 121.7/120.5/116.8 = 1.59x/1.29x/1.28x clean sweep (HPOST, 2026-07-06).** Config: HPOST=1 K=3 pmin=0.3. 256k-ctx edge proven (278k prompt exact on 24GB).
 - **35B MoE FINAL 2026-07-06: spec K=2 = 182/160/137 tok/s (p1/p2/p3) — BEATS llama plain 169.6 at p1 (1.08x) first time; plain decode 158.2 (0.93x); pp6257 2862. ALL fast paths default-on, exactness-proven. Spec-profitability verdict FLIPPED (old "MoE spec loses" was launch-structure era). Daily: BW24_SPEC_K=2.** Day: LUT storage-class +34%, k-quant arms, MMA; real-prompt spec gate exposed ROUTER cuBLASLt n-dependence (ONE bug, three innocent suspects) — fixed via small-t decode-exact dispatch (router+shexp). Real-prompt spec now MANDATORY in MoE battery. Not a driver; feeds MiniMax.
 - **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-code75-32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
+
+## MINIMAX-M3 LANE (merged to main ba94a30, 2026-07-07)
+
+121GB NVFP4 REAP50 runs on this 24GB/60GB rig: ST disk-tier loader (stream-repack to .bw24-repack cache, ~5GB RSS), sigmoid routing + e_score_correction_bias, swigluoai via the unified ffn_act seam, gate-optional attention, dense-layer override. **T=1..4 bit-exact (gate maxdiff 0.0, verify-referenced)**. LAW: sigmoid-router MoE gates must reference the SERVING path — f32 KV oracles amplify through discontinuous top-k. Open: HF tokenizer (agent), hd128 FA twin (agent — M3 rides sdpa_naive), real-token gen, perf pass.
+
+## CLOSED 2026-07-07 (probe-first discipline)
+
+W4A4 code-search re-test (already vendored; p3 real-prompt still forks — e2m1 activation grid is the gap, FP8-act CUTLASS = the remaining prefill card); PDL (probe: +9% at 1.4us kernels but -24% at real MoE scale — prolog competes for DRAM with predecessor tail on 858GB/s silicon; launch-count reduction stays the only launch lever); 35B expert slab-repack (g7e probe +11.6% kernel = 1.3% e2e, under bar).
 
 ## 27B OPEN GAPS (ranked by measured headroom, 2026-07-06)
 
