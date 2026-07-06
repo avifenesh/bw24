@@ -1063,19 +1063,19 @@ impl HybridModel {
         // microbench: dp4a wins at tiny groups). ALSO an exactness requirement — spec verify
         // batches (t=2..K+2) must ride the dp4a path whose FP order matches the T=1 decode chain,
         // else K=1 self-consistency FAILs (caught 2026-07-06: MMA at T=2 flipped a verify argmax).
-        // OPT-IN (default-on REVERTED 2026-07-06 same day): the t>=16 floor fences the VERIFY
-        // batches but NOT the PRIME — real-prompt primes (t>=16) ride MMA and their FP-order
-        // shifts the primed state enough that spec output diverges from plain generate
-        // (self-consistency FAIL on the 27-tok code prompt AND p3; the 4-token raw-id gate
-        // prompt masked it — its prime rode dp4a). Plain generate + pp are self-consistent
-        // (argmax gate holds), so BW24_MOE_MMA=1 stays valid for prefill benches and non-spec
-        // serving; spec paths need a dp4a-prime arm before this can default on.
+        // DEFAULT ON (2026-07-06, third flip — this time with the real culprit fixed): the
+        // "MMA prime breaks spec" failure was the ROUTER's cuBLASLt n-dependence (d994271),
+        // not MMA's own FP order — both this and the k-quant arms were innocent suspects whose
+        // margin shifts surfaced the router bug. With the router decode-exact at verify t, the
+        // full battery is green with MMA on (spec p1/p2/p3 PASS, raw K=1..8 PASS, argmax MATCH,
+        // pp6257 2862 = 2.1x dec). t>=16 floor still required: verify batches must ride dp4a
+        // (dispatch parity with the T=1 decode chain). BW24_MOE_MMA=0 rollback;
         // BW24_MOE_MMA_T overrides the floor (bisect seam).
         static MMA_T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let mma_t = *MMA_T.get_or_init(|| {
             std::env::var("BW24_MOE_MMA_T").ok().and_then(|v| v.parse().ok()).unwrap_or(16)
         });
-        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(false)
+        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(true)
             && t >= mma_t
             && q8_expert_dec_supported(m.gate_exps.qtype) && q8_expert_dec_supported(m.up_exps.qtype)
             && q8_expert_dec_supported(m.down_exps.qtype)
