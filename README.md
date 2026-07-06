@@ -77,7 +77,7 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp bu
 
 | Model | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| Qwen3.5-9B NVFP4 (spec K=2) | 181 / 153 / 143 | 122 / 121 / 117 | **1.49x / 1.27x / 1.22x** |
+| Qwen3.5-9B NVFP4 (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | **1.59x / 1.29x / 1.28x** |
 | Qwen3.6-27B NVFP4 (spec K=3) | 99 / 88 / 76 | 87 / 92 / 75 | **1.14x** / 0.95x / **1.01x** |
 | Qwen3.6-35B-A3B MoE (plain decode) | 112 | 170 | 0.66x |
 
