@@ -6,13 +6,13 @@ _Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue
 
 - **27B NVFP4 (daily driver): 99.1/87.6/75.9 vs llama 86.6/91.9/75.3 = 1.14x WIN / 0.95x / 1.01x WIN.** >100 milestone crossed on code (102.6 N=3, CLI K=3). Serve 96-97 at 512-tok turns.
 - **9B: 193/156/149 vs 121.7/120.5/116.8 = 1.59x/1.29x/1.28x clean sweep (HPOST, 2026-07-06).** Config: HPOST=1 K=3 pmin=0.3. 256k-ctx edge proven (278k prompt exact on 24GB).
-- **35B MoE: 158.4 tok/s decode vs llama 169.6 = 0.94x; pp6257 2866 (MMA default-on, 0.33x llama)** — day arc 2026-07-06: LUT storage-class fixes (+34%), k-quant expert arms (+6%, tail layers off f32), MMA t>=16 default (pp 2.1x). Not a driver; MoE work feeds MiniMax.
+- **35B MoE: 148.9 decode exactness-clean (0.88x llama); pp 1365 dp4a / 2866 MMA-opt-in.** Day arc 2026-07-06: LUT storage-class +34%; then real-prompt spec gate exposed 3 stacked decode-exact holes (Float matmul, pairs dispatch, ROUTER cuBLASLt n-dependence) — all fixed, p3 spec PASSES FIRST TIME EVER. MMA prime + k-quant arms behind seams pending exactness re-test (were +6% decode / 2.1x pp). Real-prompt spec now MANDATORY in MoE battery. Not a driver; feeds MiniMax.
 - **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-code75-32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
 
 ## 27B OPEN GAPS (ranked by measured headroom, 2026-07-06)
 
 1. **Prefill 1.65x** — p3 prime 4.96s vs llama ~3.0s (pp 2098 vs ~1265 effective). Next local arc.
-2. **p2 gen 0.95x** (4.3 tok/s) — mid-ctx verify cost + mid-domain acceptance 72-74%; needs p2-depth anatomy.
+2. ~~p2 gen~~ CLOSED WITH PROOF (g7e f8ded04): per-round cost grows only +1.6% over 13x ctx; at p1 acceptance p2 would run 149.5 ≈ p1 150.5 — gap is 100% content acceptance, engine at parity. No kernel lever exists; head retrain already closed negative.
 3. **b4 verify tier on 5090** — 43% DRAM, 62% long_scoreboard, reg-limited. rpsc (smem scale prestage, f57f10e) fixed b8 tier only; k-split BANNED for verify (FP-order lesson x4: self-consistency FAIL) but LEGAL for MoE experts (softmax sums).
 4. **Acceptance** — head levers closed (retrain negative, author block + HPOST is the ceiling); untested: code75 trim variant under HPOST.
 
