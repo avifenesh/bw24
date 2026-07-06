@@ -110,7 +110,7 @@ impl HybridModel {
                     let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
                     let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
                     let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                     return Ok(e.matmul(ffn_down, &act, 1)?);
                 }
             }
@@ -118,7 +118,7 @@ impl HybridModel {
         let gate = e.matmul(ffn_gate, z, 1)?;
         let up = e.matmul(ffn_up, z, 1)?;
         let mut act = e.uninit(n_ff)?;
-        e.silu_mul(&gate, &up, &mut act, n_ff)?;
+        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
         Ok(e.matmul(ffn_down, &act, 1)?)
     }
 

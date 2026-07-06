@@ -472,7 +472,7 @@ impl HybridModel {
     }
 
     /// Full-attention mixer with QK-norm, partial RoPE, sigmoid output gate (qwen35 :257-336).
-    fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+    pub fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let _n_embd = cfg.n_embd as usize;
@@ -536,7 +536,7 @@ impl HybridModel {
     }
 
     /// Linear-attention (Gated DeltaNet) mixer (qwen35 :338-470).
-    fn linear_attn(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize)
+    pub fn linear_attn(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize)
                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let _n_embd = cfg.n_embd as usize;
@@ -617,7 +617,7 @@ impl HybridModel {
     /// Dispatch: stage-every-token into 3 scratch slots (default) OR the SLRU residency cache
     /// (BW24_MOE_CACHE). The cache-HIT weight path is bit-identical to stage-every-token (§B.3).
     /// Convenience wrapper used by the hybrid trunk/MTP loops: pulls dims + max-block from `self`.
-    pub(crate) fn moe_ffn_il(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize, il: u16)
+    pub fn moe_ffn_il(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize, il: u16)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         Self::moe_ffn(e, m, z, t, &self.cfg, il, self.max_moe_block())
     }
@@ -1007,7 +1007,7 @@ impl HybridModel {
     /// FFN activation dispatch: swigluoai (clamped, alpha/limit) when cfg.m3 says so, else the
     /// standard SiLU*up. One seam so every FFN site (dense, routed expert, shared expert) follows
     /// the model's activation exactly.
-    pub(crate) fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+    pub fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                act: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         Self::ffn_act_scaled(e, cfg, gate, up, 1.0, 1.0, act, n)
     }

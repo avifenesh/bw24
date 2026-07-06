@@ -205,7 +205,7 @@ impl HybridModel {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
                 let mut act = e.zeros(n_ff)?;
-                e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
             // MTP head is a distinct block — key its experts under a separate layer index (u16::MAX)
@@ -426,7 +426,7 @@ impl HybridModel {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
                 let mut act = e.zeros(n_ff)?;
-                e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
             crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense MTP FFN".into()),
@@ -616,7 +616,7 @@ impl HybridModel {
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -856,7 +856,7 @@ impl HybridModel {
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
