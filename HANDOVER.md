@@ -1,6 +1,24 @@
 # bw24 — Session Handover
 
-_Written 2026-07-03. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, 847 GB/s wall). AWS mirror = L40S (sm_89, Ada) on branch `arch/sm89-l40s`._
+_Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall** — microbenched, not the 847 spec). Second box = bw24-g7e (RTX PRO 6000 96GB, sm_120-compatible). Repo PUBLIC: https://github.com/avifenesh/bw24 — both rigs sync via origin. L40S/sm_89 lane CLOSED (box terminated)._
+
+## STANDINGS 2026-07-06 (E2E IMAGE 6, gen tok/s p1/p2/p3, same prompts, llama at serve-best)
+
+- **27B NVFP4 (daily driver): 99.1/87.6/75.9 vs llama 86.6/91.9/75.3 = 1.14x WIN / 0.95x / 1.01x WIN.** >100 milestone crossed on code (102.6 N=3, CLI K=3). Serve 96-97 at 512-tok turns.
+- **9B: 181.3/152.6/142.8 vs 121.7/120.5/116.8 = 1.49x/1.27x/1.22x clean sweep.** 256k-ctx edge proven (278k prompt exact on 24GB).
+- **35B MoE: 112 tok/s vs llama 169.6 = 0.66x** (not a driver; MoE work feeds MiniMax).
+- **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-balanced32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
+
+## 27B OPEN GAPS (ranked by measured headroom, 2026-07-06)
+
+1. **Prefill 1.65x** — p3 prime 4.96s vs llama ~3.0s (pp 2098 vs ~1265 effective). Next local arc.
+2. **p2 gen 0.95x** (4.3 tok/s) — mid-ctx verify cost + mid-domain acceptance 72-74%; needs p2-depth anatomy.
+3. **b4 verify tier on 5090** — 43% DRAM, 62% long_scoreboard, reg-limited. rpsc (smem scale prestage, f57f10e) fixed b8 tier only; k-split BANNED for verify (FP-order lesson x4: self-consistency FAIL) but LEGAL for MoE experts (softmax sums).
+4. **Acceptance** — head levers closed (retrain negative, author block + HPOST is the ceiling); untested: code75 trim variant under HPOST.
+
+## CLOSED DIRECTIONS 2026-07-06 (don't retry — proof in rig5090.jsonl)
+
+spec fixed-sync-overhead (pmin/burst A/B null); m=4 MMA verify (grid starves, crossover needs token volume); forced-BV globals (auto optimal); b4 unroll-2 + rpca cp.async (reg-growth occupancy trap); p3 config space (K/pmin/split/KVLOCAL all swept — KVLOCAL costs 35 accept pts); MTP head retrain at 10k corpus; 35B trunk q8 (94% wall = done); 35B expert variant space (geometry flat — new-kernel design is the open lead, agent on it).
 
 ---
 

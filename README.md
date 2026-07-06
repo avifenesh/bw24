@@ -2,7 +2,7 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 150 W). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-On its target models it trades blows with llama.cpp: 9B dense decode 1.04x ahead, 27B prefill at parity, MoE prefill closing fast — every number measured on-device with a matched protocol (see `research/tune-data/`).
+On its target models it beats llama.cpp where it counts: 9B generation 1.2-1.5x ahead at every prompt size, 27B (with MTP speculative decoding) ahead on short-code and long-agentic prompts and within 5% on the rest — every number measured on-device with a matched same-prompt protocol (see `research/tune-data/`).
 
 ## Why this project
 
@@ -73,15 +73,15 @@ Floating-point summation order is part of the contract: two mathematically equal
 
 ## Performance
 
-Measured on the target rig (RTX 5090 Laptop, locked clocks, N≥3 medians) against llama.cpp built on the same machine. Raw records with dates and commit hashes: `research/tune-data/rig5090.jsonl`.
+Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp built on the same machine at its best serve config (MTP spec draft, quantized KV, FA, graphs), same exact prompts. Generation tok/s at three real prompt sizes — short code (28 tok), medium code (1.8k), long agentic (6.3k):
 
-| Model | Metric | bw24 | llama.cpp | Ratio |
-|---|---|---|---|---|
-| Qwen3.5-9B NVFP4 | decode tg128 | 110.5 t/s | 106.3 t/s | 1.04x |
-| Qwen3.6-27B NVFP4 | prefill pp512 | 5049 t/s | 5063 t/s | 1.00x |
-| Qwen3.6-35B-A3B IQ4_XS | prefill pp6257 | 1328 t/s | — | 1.50x vs own dp4a baseline |
+| Model | bw24 | llama.cpp | Ratio |
+|---|---|---|---|
+| Qwen3.5-9B NVFP4 (spec K=2) | 181 / 153 / 143 | 122 / 121 / 117 | **1.49x / 1.27x / 1.22x** |
+| Qwen3.6-27B NVFP4 (spec K=3) | 99 / 88 / 76 | 87 / 92 / 75 | **1.14x** / 0.95x / **1.01x** |
+| Qwen3.6-35B-A3B MoE (plain decode) | 112 | 170 | 0.66x |
 
-Where bw24 is still behind (35B MoE prefill overall), that gap and its current diagnosis are tracked in the tune-data records, not hidden.
+Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind (27B medium-code and prefill, 35B MoE decode), the gap and its current diagnosis are tracked in the tune-data records, not hidden.
 
 ## Limitations
 
