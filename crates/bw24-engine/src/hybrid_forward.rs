@@ -1028,7 +1028,14 @@ impl HybridModel {
         // at tile-load + per-32 float scale; activation is q8_1_mmq (D4, same quant class as dp4a).
         // FP-ORDER differs from dp4a (MMA reduction) — logits SHIFT, gated on argmax/spec/closeness,
         // NOT byte-identity (like the W4A8 path). Requires IQ3_S/IQ4_XS + in_f % 256 == 0.
-        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(false)
+        // t >= 16 (GEMM_M-class rule): the MMA tile needs token volume (crossover ~200 tok/expert;
+        // microbench: dp4a wins at tiny groups). ALSO an exactness requirement — spec verify
+        // batches (t=2..K+2) must ride the dp4a path whose FP order matches the T=1 decode chain,
+        // else K=1 self-consistency FAILs (caught 2026-07-06: MMA at T=2 flipped a verify argmax).
+        // DEFAULT ON 2026-07-06 (was opt-in): with the t-gate + k-quant predicate split the full
+        // battery is green and pp6257 = 2866 vs dec 1365 (2.1x). BW24_MOE_MMA=0 rollback.
+        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(true)
+            && t >= 16
             && q8_expert_dec_supported(m.gate_exps.qtype) && q8_expert_dec_supported(m.up_exps.qtype)
             && q8_expert_dec_supported(m.down_exps.qtype)
             && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
