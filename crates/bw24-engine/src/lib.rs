@@ -111,6 +111,18 @@ fn fa_sm_count() -> i32 {
     })
 }
 
+/// FA-prefill kernel-name suffix for a head_dim (the template-stamped twins in flash_attn.cu):
+/// 256 = the original names (qwen35 class, dispatch unchanged), 128 = `_hd128` (MiniMax-M3).
+/// Any other dim errors — callers gate to sdpa_naive before dispatching FA.
+fn fa_hd_suffix(head_dim: usize) -> Result<&'static str, Box<dyn std::error::Error>> {
+    match head_dim {
+        256 => Ok(""),
+        128 => Ok("_hd128"),
+        d => Err(format!("fa_prefill: no kernel stamped for head_dim={d} (only 256/128); \
+                          callers must gate to sdpa_naive").into()),
+    }
+}
+
 /// Quant type codes matching qmatvec.cu QType enum.
 pub const QT_Q8_0: i32 = 0;
 pub const QT_Q4_K: i32 = 1;
@@ -2746,7 +2758,8 @@ impl Engine {
     }
 
     /// Hand-written FlashAttention prefill (sm_120, FA-2 online softmax on validated mma.sync,
-    /// head_dim 256, GQA, causal). Replaces sdpa_naive for T>1. Q/K/V/O [head_dim, n_head(_kv), T].
+    /// head_dim 256 or 128 (template-stamped twins), GQA, causal). Replaces sdpa_naive for T>1.
+    /// Q/K/V/O [head_dim, n_head(_kv), T].
     pub fn fa_prefill(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
@@ -2759,7 +2772,12 @@ impl Engine {
         // 255 regs / 2 CTAs (occupancy preserved). Bit-safe: 9B+27B argmax MATCH, rel 2.55e-3
         // vs floor 3.03e-3. BW24_FA_FLOOR reverts to the serialized-softmax floor kernel.
         const BLOCK_Q: usize = 64; const BK: usize = 32;
-        let f = self.func(if std::env::var("BW24_FA_FLOOR").is_ok() { "fa_prefill_f32" } else { "fa_prefill_f32_pp" });
+        // hd128 twins (2026-07-07): the prefill kernels are template-stamped at 256 (original
+        // names, dispatch unchanged) and 128 (`_hd128`, the MiniMax-M3 class). Callers gate
+        // other head_dims to sdpa_naive before reaching here.
+        let hd_sfx = fa_hd_suffix(head_dim)?;
+        let floor = std::env::var("BW24_FA_FLOOR").is_ok();
+        let f = self.func(&format!("fa_prefill_f32{}{hd_sfx}", if floor { "" } else { "_pp" }));
         // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
         //   = bf16*(2*BK*hd + BLOCK_Q*BK) + f32*(BLOCK_Q*BK + 2*BLOCK_Q)
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
@@ -2788,7 +2806,7 @@ impl Engine {
                            k_tok_bytes: usize, v_tok_bytes: usize)
                            -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
-        let f = self.func("fa_prefill_q");
+        let f = self.func(&format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?));
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
                    + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -2860,7 +2878,8 @@ impl Engine {
         // BW24_PRIME_DEQW_DB=0 falls back to the single-buffer twin.
         let db = std::env::var("BW24_PRIME_DEQW_DB").map(|v| v != "0").unwrap_or(true);
         {
-            let f = self.func(if db { "fa_prefill_qw_db" } else { "fa_prefill_qw" });
+            let hd_sfx = fa_hd_suffix(head_dim)?;
+            let f = self.func(&format!("fa_prefill_qw{}{hd_sfx}", if db { "_db" } else { "" }));
             let shmem = if db {
                 // 4x KV tile buffers (bf16) + sP (bf16) + sL (f32)
                 (2 * (4 * BK * head_dim + BLOCK_Q * BK) + 4 * BLOCK_Q) as u32

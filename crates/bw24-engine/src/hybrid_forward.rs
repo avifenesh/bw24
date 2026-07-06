@@ -361,10 +361,10 @@ impl HybridModel {
         };
         let mut attn = e.zeros(t * n_head * head_dim)?;
         if base_len == 0 {
-            // fa_prefill's smem layout is compiled at HEAD_DIM=256 (qwen35); other dims (M3=128)
-            // overrun the runtime-sized allocation -> ILLEGAL_ADDRESS. Fall to naive SDPA there
-            // (bring-up correctness path; a 128-dim FA twin is the perf follow-up).
-            if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
+            // fa_prefill's smem layout is compile-time HEAD_DIM: stamped twins exist for 256
+            // (qwen35) and 128 (M3, `_hd128` — 2026-07-07). Other dims would overrun the
+            // runtime-sized allocation -> ILLEGAL_ADDRESS; fall to naive SDPA there.
+            if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
                 e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             } else {
                 e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
@@ -510,9 +510,10 @@ impl HybridModel {
 
         // SDPA
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        // hand-written FlashAttention prefill (head_dim 256). BW24_NOFA falls back to naive sdpa.
-        if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
-            // head_dim gate: see prime-path note (fa_prefill is HEAD_DIM=256-compiled).
+        // hand-written FlashAttention prefill (head_dim 256/128 stamped twins). BW24_NOFA
+        // falls back to naive sdpa.
+        if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
+            // head_dim gate: see prime-path note (fa_prefill is stamped at 256 and 128 only).
             e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
         } else {
             e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
