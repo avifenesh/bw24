@@ -652,8 +652,17 @@ impl HybridModel {
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype);
 
-        // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> e.linear.
-        let logits = e.matmul(&m.gate_inp, z, t)?;
+        // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> cuBLASLt, whose
+        // reductions are n-DEPENDENT (lt_ndep probe: m=1 vs m=2 col0 differs every bit). At
+        // small t (spec verify, 2..15) that shifts router logits vs the T=1 decode chain ->
+        // top-k WEIGHTS (and at tie margins the SELECTION) differ -> verify != decode. Route
+        // small-t through per-column m=1 calls (decode-exact contract); real prefill keeps the
+        // batched GEMM.
+        let logits = if t > 1 && t < PRIME_MIN_T {
+            e.matmul_decode_exact(&m.gate_inp, z, t)?
+        } else {
+            e.matmul(&m.gate_inp, z, t)?
+        };
 
         // LAUNCH-STRUCTURE STAGE 3 (2026-07-05, BW24_MOE_DEV default ON, =0 rollback): ZERO-DtoH
         // device-dispatch when this layer's expert blocks are ALL cache-resident. The fused
@@ -877,21 +886,32 @@ impl HybridModel {
             // Q8 TRUNK-FUSION (decode t=1): gate_shexp+up_shexp are Q8_0 same-shape on the 35B —
             // ONE fused2 launch (also folds the two per-matmul re-quantizes of z into one).
             // Bit-identical per (tensor,row); falls back to the two matmul calls when ineligible.
+            // Small-t (spec verify 2..15) rides matmul_decode_exact so shexp FP chains match the
+            // t==1 decode chain per column (cuBLASLt n-dependence + dp4a-vs-mmvq class); real
+            // prefill keeps the batched matmul.
+            let verify_t = t > 1 && t < PRIME_MIN_T;
             let (sg_gate, sg_up) = if t == 1 {
                 match e.matmul_q8_fused2_x(gate_shexp, up_shexp, z)? {
                     Some(pair) => pair,
                     None => (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?),
                 }
+            } else if verify_t {
+                (e.matmul_decode_exact(gate_shexp, z, t)?, e.matmul_decode_exact(up_shexp, z, t)?)
             } else {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)   // [T, 512] each
             };
             let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
-            let sh = e.matmul(down_shexp, &sa, t)?;     // [T, n_embd]
+            let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
+                     else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
             // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
             // NOT matmul/out_features (which would index ne[1] out of bounds).
-            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;  // [T, 1]
+            let gs = if verify_t {
+                e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
+            } else {
+                e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?  // [T, 1]
+            };
             let mut g = e.uninit(t)?;  // sigmoid fully overwrites
             e.sigmoid(&gs, &mut g, t)?;
 
@@ -1241,18 +1261,28 @@ impl HybridModel {
             (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();
+            // verify-t (2..15) decode-exact arm: this fn now serves the spec verify batches
+            // (pairs gate moved to t>=PRIME_MIN_T), so the shexp chain must match t==1 per col.
+            let verify_t = t > 1 && t < PRIME_MIN_T;
             let (sg_gate, sg_up) = if t == 1 {
                 match e.matmul_q8_fused2_x(gate_shexp, up_shexp, z)? {
                     Some(pair) => pair,
                     None => (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?),
                 }
+            } else if verify_t {
+                (e.matmul_decode_exact(gate_shexp, z, t)?, e.matmul_decode_exact(up_shexp, z, t)?)
             } else {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)
             };
             let mut sa = e.uninit(t * n_ff_sh)?;  // silu_mul fully overwrites
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
-            let sh = e.matmul(down_shexp, &sa, t)?;
-            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+            let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
+                     else { e.matmul(down_shexp, &sa, t)? };
+            let gs = if verify_t {
+                e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
+            } else {
+                e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
+            };
             let mut g = e.uninit(t)?;  // sigmoid fully overwrites
             e.sigmoid(&gs, &mut g, t)?;
             e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;

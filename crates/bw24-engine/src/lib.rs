@@ -1880,19 +1880,7 @@ impl Engine {
         // reduction is the exact kernel the T=1 decode path runs, so verify==decode bit-for-bit.
         // m<=10 here (K+2 verify tier), so the extra launches are a handful of 4us gemvs.
         if let GpuTensor::Float { data, .. } = w {
-            let in_f = w.in_features();
-            let out_f = w.out_features();
-            if m == 1 { return self.linear(x, data, 1, in_f, out_f); }
-            let xv = self.view(x, m * in_f);
-            let mut y = self.alloc_uninit::<f32>(m * out_f)?;
-            for t in 0..m {
-                let row = xv.slice(t * in_f..(t + 1) * in_f);
-                let mut xr = self.alloc_uninit::<f32>(in_f)?;
-                self.copy_view_into(&mut xr, 0, &row, in_f)?;
-                let yr = self.linear(&xr, data, 1, in_f, out_f)?;
-                self.copy_into(&mut y, t * out_f, &yr, out_f)?;
-            }
-            return Ok(y);
+            return self.linear_decode_exact(x, data, m, w.in_features(), w.out_features());
         }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
         let in_f = w.in_features();
@@ -2672,6 +2660,26 @@ impl Engine {
 
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).
     /// cuBLASLt col-major mapping (see bw24_runtime::Gpu::linear_f32 for the derivation).
+    /// DECODE-EXACT float linear: per-column m=1 cuBLASLt calls. cuBLASLt's reduction split is
+    /// n-dependent (lt_ndep probe: m=1 vs m=2 col0 differs every bit), so spec-verify batches
+    /// must not batch float matmuls the T=1 decode chain runs at m=1. Used by the small-t MoE
+    /// router/shexp sites and matmul_decode_exact's Float arm.
+    pub fn linear_decode_exact(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize,
+                               in_f: usize, out_f: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if m_tokens == 1 { return self.linear(x, w, 1, in_f, out_f); }
+        let xv = self.view(x, m_tokens * in_f);
+        let mut y = self.alloc_uninit::<f32>(m_tokens * out_f)?;
+        for t in 0..m_tokens {
+            let row = xv.slice(t * in_f..(t + 1) * in_f);
+            let mut xr = self.alloc_uninit::<f32>(in_f)?;
+            self.copy_view_into(&mut xr, 0, &row, in_f)?;
+            let yr = self.linear(&xr, w, 1, in_f, out_f)?;
+            self.copy_into(&mut y, t * out_f, &yr, out_f)?;
+        }
+        Ok(y)
+    }
+
     pub fn linear(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, m_tokens: usize, in_f: usize, out_f: usize)
                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use cudarc::cublaslt::{Matmul, MatmulConfig};

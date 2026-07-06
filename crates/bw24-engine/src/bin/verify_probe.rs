@@ -84,6 +84,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cache.rollback(&e, &snap, 0)?;
     let (_l2, aux_v, _) = model.decode_step_t_aux2(&e, &[probe], pos, &mut cache, &all, None)?;
     cache.rollback(&e, &snap, 0)?;
+
+    // E2: PER-LAYER bisect at T=2 col0 (2026-07-06, the 35B blind spot): verify [probe, filler]
+    // col-0 per-layer rows vs the same eager aux — the first layer whose col-0 row diverges
+    // names the kernel family whose T=2 dispatch breaks the decode-exact contract.
+    {
+        let (_lt2, _last2, aux_p) =
+            model.decode_step_t_aux2(&e, &[probe, filler], pos, &mut cache, &all, Some(0))?;
+        cache.rollback(&e, &snap, 0)?;
+        match aux_p {
+            Some(aux_p) => {
+                println!("per-layer col0 residual maxdiff at T=2 (vs eager) — first nonzero = the bug:");
+                let mut shown = 0;
+                for il in 0..n_layer.min(aux_p.len()) {
+                    let a = e.dtoh(&aux_e[il])?;
+                    let b = e.dtoh(&aux_p[il])?;
+                    let md = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+                    let kind = match &model.layers[il].mixer {
+                        bw24_engine::hybrid::Mixer::Full(_) => "full",
+                        bw24_engine::hybrid::Mixer::Linear(_) => "lin ",
+                    };
+                    if md != 0.0 || il < 3 || il == n_layer - 1 {
+                        println!("  T2 layer {il:2} [{kind}]: maxdiff={md:.3e}");
+                        if md != 0.0 { shown += 1; if shown >= 6 { break; } }
+                    }
+                }
+            }
+            None => println!("T=2 aux: pred_col rows unavailable"),
+        }
+    }
     // F: NORM+QUANT pair check on each layer's true input: fused rms_norm_q8_1 (eager) vs
     // rms_norm_decode + quantize_q8_1 (verify). Compares int8 bytes + block scales bitwise.
     let n_embd = model.cfg.n_embd as usize;
