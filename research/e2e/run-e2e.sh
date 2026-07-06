@@ -10,9 +10,10 @@ NGEN=256
 if [ "$MODE" = 27b ]; then
   MODEL=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
   DRAFT=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M.gguf
-  TRIM=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M-frspec32768.gguf
-  BW_ENV="BW24_FRSPEC_TRIM=$TRIM BW24_SPEC_PMIN=0.2"
-  BK=3   # 27B optimum (post replay-free sweep)
+  TRIM=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M-frspec-balanced32768.gguf
+  # daily config 2026-07-06: post-norm h_seed (HPOST), balanced trim, pmin 0.15 (config-sweep JSONL)
+  BW_ENV="BW24_FRSPEC_TRIM=$TRIM BW24_SPEC_PMIN=0.15 BW24_SPEC_HPOST=1"
+  BK=3   # 27B optimum (re-confirmed under HPOST: K=3 > K=2/K=4 both domains)
 else
   MODEL=/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
   DRAFT=""
