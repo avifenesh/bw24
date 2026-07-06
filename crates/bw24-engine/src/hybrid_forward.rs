@@ -130,13 +130,18 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos)?;
 
         let mut x = self.embed(e, tokens)?;   // [T, n_embd]
+        // BW24_LAYER_PROBE=1: synchronize + print after every stage — bisects an in-graph
+        // ILLEGAL_ADDRESS to (layer, stage) at ~1 line of output per layer (M3 bring-up tool).
+        let probe = std::env::var("BW24_LAYER_PROBE").is_ok();
         for (il, layer) in self.layers.iter().enumerate() {
             let mut h = e.zeros(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} norm ok"); }
             let mixed = match &layer.mixer {
                 Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
             };
+            if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} mixer ok"); }
             let mut x1 = e.zeros(t * n_embd)?;
             e.add(&x, &mixed, &mut x1, t * n_embd)?;
             let mut z = e.zeros(t * n_embd)?;
@@ -152,6 +157,7 @@ impl HybridModel {
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
+            if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} ffn ok"); }
             let mut x2 = e.zeros(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
@@ -355,7 +361,10 @@ impl HybridModel {
         };
         let mut attn = e.zeros(t * n_head * head_dim)?;
         if base_len == 0 {
-            if std::env::var("BW24_NOFA").is_ok() {
+            // fa_prefill's smem layout is compiled at HEAD_DIM=256 (qwen35); other dims (M3=128)
+            // overrun the runtime-sized allocation -> ILLEGAL_ADDRESS. Fall to naive SDPA there
+            // (bring-up correctness path; a 128-dim FA twin is the perf follow-up).
+            if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
                 e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             } else {
                 e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
@@ -502,7 +511,8 @@ impl HybridModel {
         // SDPA
         let mut attn = e.zeros(t * n_head * head_dim)?;
         // hand-written FlashAttention prefill (head_dim 256). BW24_NOFA falls back to naive sdpa.
-        if std::env::var("BW24_NOFA").is_ok() {
+        if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
+            // head_dim gate: see prime-path note (fa_prefill is HEAD_DIM=256-compiled).
             e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
         } else {
             e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
