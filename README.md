@@ -1,6 +1,6 @@
 # bw24
 
-From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 150 W). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
+From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
 On its target models it beats llama.cpp where it counts: 9B generation 1.2-1.5x ahead at every prompt size, 27B (with MTP speculative decoding) ahead on short-code and long-agentic prompts and within 5% on the rest — every number measured on-device with a matched same-prompt protocol (see `research/tune-data/`).
 
