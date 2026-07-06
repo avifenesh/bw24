@@ -34,12 +34,19 @@ fn moe_q8_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_Q8").map(|v| v != "0").unwrap_or(true))
 }
 fn q8_expert_supported(qt: i32) -> bool {
-    // k-quant arms added 2026-07-06: the UD mix's tail layers (blk.38-40 on the 35B) carry
-    // Q3_K/Q4_K/Q6_K experts — without these they fell to the 5x-slower f32-dequant _dev arm.
-    // This predicate covers the expert_dot_g dp4a paths (dev_q8, _em, pairs); the decode-once
-    // _dec kernel and the IQ-MMA tile loader stay IQ-only (q8_expert_dec_supported).
+    // k-quant arms added 2026-07-06 (Q3_K/Q4_K/Q6_K bodies for the UD tail layers), then
+    // DEFAULT-EXCLUDED same day: with them enabled, 35B real-prompt spec self-consistency
+    // FAILS (K=2 p1) — the k-quant q8 path produces different logits at t==1 (dev_q8) vs
+    // t>1 (pairs/_em / sequential) for the same position; the IQ pair (_dec ≡ dot bodies)
+    // is bit-gated, the k-quant pair is not. Until a t-regime bit-parity gate exists for
+    // the k-quant arms, tail layers stay on the f32 path (consistent both regimes).
+    // BW24_MOE_Q8_KQ=1 opt-in re-enables (plain decode/prefill only — argmax gate holds).
+    static KQ: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let kq = *KQ.get_or_init(|| {
+        std::env::var("BW24_MOE_Q8_KQ").map(|v| v == "1").unwrap_or(false)
+    });
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
-        || qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K
+        || (kq && (qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K))
 }
 
 /// The decode-once (_dec) and IQ-MMA expert kernels dequant via IQ-specific extractors —
