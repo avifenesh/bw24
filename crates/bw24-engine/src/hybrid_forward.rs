@@ -678,7 +678,14 @@ impl HybridModel {
         // the per-expert loop (256 experts x 3-4 launches x tiny m_e). Scatter is slot-ordered
         // per token (the sequential-axpy bit-identity class). Requires q8-supported qtypes +
         // resident slabs. BW24_MOE_PAIRS=0 rollback.
-        if t > 1 && m.dev_exps.is_some() && moe_q8_enabled()
+        // t >= PRIME_MIN_T only (2026-07-06 exactness fix, verify-probe proof): spec VERIFY
+        // batches (t = 2..K+2) previously rode these pairs kernels while T=1 decode rode the
+        // dev_q8 loop — different FP chains, verify-T2 logit maxdiff 2.6e-1 vs eager -> greedy
+        // flips at tight margins -> 35B real-prompt spec self-consistency FAIL (the 27B
+        // "verify must be kernel-DISPATCH-identical to decode" lesson, MoE edition). Small-t
+        // now rides the dev loop below (same kernels per token as decode); pairs serves real
+        // prefill (t >= 16, where spec never verifies).
+        if t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype)
             && std::env::var("BW24_MOE_PAIRS").map(|v| v != "0").unwrap_or(true)
@@ -686,11 +693,10 @@ impl HybridModel {
             return Self::moe_ffn_pairs(e, m, z, &logits, t, cfg);
         }
 
-        // t==1 ONLY: moe_ffn_dev loops tokens serially (1 launch-pair per token) — correct for
-        // decode, catastrophic for prefill (a 257-token prime = 257x41 sequential launch-pairs;
-        // measured: prime-inclusive tok/s halved). Prefill keeps the batched sequential/grouped
-        // paths, which read the SAME resident slabs through the host expert_bytes (unchanged).
-        if t == 1 && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
+        // t < PRIME_MIN_T: moe_ffn_dev loops tokens serially (1 launch-pair per token) — the
+        // decode path AND the spec-verify path (dispatch parity = exactness; see pairs gate
+        // above). Serial launches are fine at t<=10 (K+2); real prefill never lands here.
+        if t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
         }

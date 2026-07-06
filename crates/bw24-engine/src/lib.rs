@@ -1840,6 +1840,28 @@ impl Engine {
     pub fn matmul_decode_exact(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // FLOAT tensors (35B ssm_beta/ssm_alpha on every linear layer, F32 ne=[2048,32]): the
+        // generic path is cuBLASLt, whose reduction splits are n-DEPENDENT — m=1 vs m=2 col-0
+        // outputs differ in every bit (probe 2026-07-06: 32/32 bit-diff, maxdiff 3.5e-3), which
+        // shifted 35B verify logits 0.26-0.56 vs eager and flipped greedy at tight margins (the
+        // p3 spec FAIL). Decode-exact contract: per-COLUMN m=1 cuBLASLt calls — each column's
+        // reduction is the exact kernel the T=1 decode path runs, so verify==decode bit-for-bit.
+        // m<=10 here (K+2 verify tier), so the extra launches are a handful of 4us gemvs.
+        if let GpuTensor::Float { data, .. } = w {
+            let in_f = w.in_features();
+            let out_f = w.out_features();
+            if m == 1 { return self.linear(x, data, 1, in_f, out_f); }
+            let xv = self.view(x, m * in_f);
+            let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+            for t in 0..m {
+                let row = xv.slice(t * in_f..(t + 1) * in_f);
+                let mut xr = self.alloc_uninit::<f32>(in_f)?;
+                self.copy_view_into(&mut xr, 0, &row, in_f)?;
+                let yr = self.linear(&xr, data, 1, in_f, out_f)?;
+                self.copy_into(&mut y, t * out_f, &yr, out_f)?;
+            }
+            return Ok(y);
+        }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
         let in_f = w.in_features();
         let out_f = w.out_features();
