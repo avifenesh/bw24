@@ -148,8 +148,12 @@ __device__ __forceinline__ float deq_q6_k(const uint8_t* row, int j) {
     return d * (float)scales[is] * (float)q;
 }
 
-// device codebook tables
-__device__ __constant__ signed char kvalues_iq4nl_d[16] =
+// device codebook tables — plain __device__ (L1), NOT __constant__: per-lane indices diverge
+// (expert_dot_iq4xs_g does 8 byte-lookups per group per lane), and the constant cache serializes
+// divergent reads. Same fix class as iq3s_grid_const (+11.8% 35B decode, 2026-07-06).
+// mxfp4 stays __constant__: its consumers go through get_int_from_table_16_d (byte_perm on two
+// uniform 8B halves — broadcast-friendly, the constant cache's good case).
+__device__ signed char kvalues_iq4nl_d[16] =
     {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
 __device__ __constant__ signed char kvalues_mxfp4_d[16] =
     {0,1,2,3,4,6,8,12,0,-1,-2,-3,-4,-6,-8,-12};
