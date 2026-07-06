@@ -434,6 +434,20 @@ extern "C" __global__ void silu_mul_scaled_f32(const float* __restrict__ gate, c
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) { float g = gate[i] * gs; dst[i] = (g / (1.0f + expf(-g))) * (up[i] * us); }
 }
+// swigluoai (MiniMax-M3 / GPT-OSS): clamped SwiGLU. Math 1:1 vs llama.cpp
+// ggml_cuda_op_swiglu_oai_single (unary.cuh:107): gate clamps ABOVE only, up clamps both sides,
+// swish uses alpha inside the sigmoid, and the linear term is (1 + up). gs/us fold the NVFP4
+// per-tensor macro-scales exactly like silu_mul_scaled_f32 (gs==us==1.0 for non-NVFP4).
+extern "C" __global__ void swigluoai_mul_scaled_f32(const float* __restrict__ gate, const float* __restrict__ up,
+                                                    float gs, float us, float alpha, float limit,
+                                                    float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = fminf(gate[i] * gs, limit);
+        float g = fmaxf(fminf(up[i] * us, limit), -limit);
+        dst[i] = (x / (1.0f + expf(-x * alpha))) * (1.0f + g);
+    }
+}
 // RANK2 LEVER (q8_1 quant-fold): FFN SwiGLU epilogue that ALSO emits the q8_1 quantization of its
 // own output, so ffn_down's activation is produced pre-quantized and the standalone quantize_q8_1
 // launch is removed (1 fewer launch + no f32 `act` HBM round-trip per dense FFN layer). The down-proj

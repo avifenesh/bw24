@@ -205,7 +205,7 @@ impl HybridModel {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
                 let mut act = e.zeros(n_ff)?;
-                e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
             // MTP head is a distinct block — key its experts under a separate layer index (u16::MAX)
@@ -257,9 +257,14 @@ impl HybridModel {
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
-        let mut q = e.zeros(n_head * head_dim)?;
-        let mut gate = e.zeros(n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+        // M3 has no attention output gate — wq out is exactly q; skip the split (see hybrid_forward).
+        let gated = self.cfg.m3.is_none();
+        let (mut q, gate) = if gated {
+            let mut q = e.zeros(n_head * head_dim)?;
+            let mut gate = e.zeros(n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+            (q, Some(gate))
+        } else { (qf, None) };
 
         let mut qn = e.zeros(n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
@@ -285,10 +290,16 @@ impl HybridModel {
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
                        &kv.len_d, bucket_max, scale, ktb, vtb)?;
 
-        let mut gsig = e.zeros(n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
-        let mut attn_g = e.zeros(n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.zeros(n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, n_head * head_dim)?;
+                let mut ag = e.zeros(n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
     }
 
@@ -415,7 +426,7 @@ impl HybridModel {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
                 let mut act = e.zeros(n_ff)?;
-                e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
             crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense MTP FFN".into()),
@@ -605,7 +616,7 @@ impl HybridModel {
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -845,7 +856,7 @@ impl HybridModel {
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -904,9 +915,14 @@ impl HybridModel {
                          e.matmul_decode_exact(&fa.wv, h, t)?),
             }
         };
-        let mut q = e.zeros(t * n_head * head_dim)?;
-        let mut gate = e.zeros(t * n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+        // M3 has no attention output gate — wq out is exactly q; skip the split (see hybrid_forward).
+        let gated = self.cfg.m3.is_none();
+        let (mut q, gate) = if gated {
+            let mut q = e.zeros(t * n_head * head_dim)?;
+            let mut gate = e.zeros(t * n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
+            (q, Some(gate))
+        } else { (qf, None) };
 
         let mut qn = e.zeros(t * n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
@@ -972,10 +988,16 @@ impl HybridModel {
             }
         }
 
-        let mut gsig = e.zeros(t * n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, t * n_head * head_dim)?;
-        let mut attn_g = e.zeros(t * n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, t * n_head * head_dim)?;
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
+                let mut ag = e.zeros(t * n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
         // DECODE-EXACT wo projection: at m>=5 (K=4+ with pending) the generic matmul would use dp4a
         // (128-thread, different FP sum order than MMVQ). Force MMVQ for bit-identity with decode.
         Ok(e.matmul_decode_exact(&fa.wo, &attn_g, t)?)

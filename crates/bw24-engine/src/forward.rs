@@ -92,7 +92,7 @@ impl Model {
                     let gate = e.matmul(ffn_gate, &z, t)?;
                     let up = e.matmul(ffn_up, &z, t)?;
                     let mut act = e.zeros(t * n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, t * n_ff)?;
+                    crate::hybrid::HybridModel::ffn_act(e, cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) =>

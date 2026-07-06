@@ -57,7 +57,11 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
             spill: Option<(&GgufFile, &mut crate::spill::SpillCtx)>)
             -> Result<Ffn, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
-    Ok(if let Some(moe) = cfg.moe.as_ref() {
+    // MiniMax-M3: moe_layer_freq[il]==0 -> this layer is a DENSE-FFN layer (layers 0..2) even
+    // though the arch is MoE; force the Dense arm (its mlp.{p}_proj names map via ggml_to_hf).
+    let dense_override = cfg.m3.as_ref()
+        .is_some_and(|m| m.moe_layer_freq.get(il as usize).copied() == Some(0));
+    Ok(if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
         let n_expert = moe.expert_count as usize;
         // Expert loader. `spill` carries an optional (GgufFile, SpillCtx) — only the GGUF on-disk
         // path can tier (it needs the file mmap); safetensors always gathers/stacks all-host.
@@ -85,9 +89,14 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
         // bytes = per-layer bytes x n_moe_layers (uniform layers; UD-quant variance is small and
         // the budget has 20% slack). Failure to fit => None => the SLRU spill machinery.
         let dev_exps = build_dev_exps(e, cfg, &gate_exps, &up_exps, &down_exps)?;
+        // e_score_correction_bias (M3 sigmoid routing): tiny [n_expert] f32, host-side.
+        let exp_probs_b = src.find(&p("exp_probs_b.bias")).map(|v| {
+            bw24_gguf::dequant::dequantize(v.ggml_type, &v.bytes, n_expert)
+        });
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, src, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_opt(e, src, &p("ffn_gate_inp_shexp.weight"))?,
+            exp_probs_b,
             gate_exps, up_exps, down_exps,
             gate_shexp: load_opt(e, src, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_opt(e, src, &p("ffn_up_shexp.weight"))?,
@@ -176,6 +185,10 @@ pub enum Mixer { Full(FullAttnLayer), Linear(LinearAttnLayer) }
 pub struct MoeWeights {
     pub gate_inp: GpuTensor,        // F32 [n_embd, n_expert] router  (GPU resident, Float)
     pub gate_inp_shexp: Option<GpuTensor>,  // F32 [n_embd] 1-D shared gate dot (qwen35moe only)
+    /// DeepSeek-V3/MiniMax-M3 `e_score_correction_bias` [n_expert]: added to the sigmoid scores
+    /// for expert SELECTION only; the routing weights use the un-biased scores. Kept host-side —
+    /// routing's top-k is a host loop and this is n_expert floats.
+    pub exp_probs_b: Option<Vec<f32>>,
     pub gate_exps: HostExps,        // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub up_exps: HostExps,          // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub down_exps: HostExps,        // [n_ff_exp, n_embd, n_expert] TRANSPOSED (HOST)

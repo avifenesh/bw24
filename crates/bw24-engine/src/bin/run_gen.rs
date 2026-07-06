@@ -16,8 +16,35 @@ use bw24_tokenizer::Tokenizer;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
         .nth(1)
-        .expect("usage: run-gen <model.gguf> [tok ids...] | --prompt \"text\"");
+        .expect("usage: run-gen <model.gguf|hf_dir> [tok ids...] | --prompt \"text\"");
     let e = Engine::new(0)?;
+    // DIRECTORY path = safetensors HF checkpoint (MiniMax-M3 first-load path; GGUF stays the
+    // dense-model norm). Tokenizer/chat paths below still need GGUF — ST runs raw-id only for now.
+    if std::path::Path::new(&path).is_dir() {
+        let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
+        let model = HybridModel::load_from_source(&e, &st)?;
+        println!("loaded {:?} from safetensors ({} layers)", model.cfg.arch, model.cfg.n_layer);
+        let prompt: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        let prompt = if prompt.is_empty() { vec![55u32] } else { prompt };
+        println!("prompt tokens: {prompt:?}");
+        // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
+        // dispatch class as the real serving prime). forward_last's fresh-f32-KV attention is NOT
+        // the M3 serving path, and its KV-precision delta amplifies through the sigmoid router's
+        // discontinuous top-k (expert flips) into false MISMATCHes (t2probe 2026-07-06: decode ==
+        // verify EXACT all 60 layers; forward-vs-decode drifts 5e-2 -> >1 by L2 via routing flips).
+        let mut vcache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+        let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
+        let n_vocab = model.output.out_features();
+        let prefill_last = &prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab];
+        let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+        let mut dec = Vec::new();
+        for &t in &prompt { dec = model.decode_step(&e, t, &mut cache)?; }
+        let (ap, ad) = (argmax(prefill_last), argmax(&dec));
+        let md = prefill_last.iter().zip(&dec).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        println!("verify-prefill argmax={ap}  decode argmax={ad}  logit maxdiff={md:.3e}  {}",
+                 if ap == ad { "MATCH" } else { "MISMATCH" });
+        return Ok(());
+    }
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load(&e, &g)?;
     println!("loaded {} ({} layers)", g.arch().unwrap_or("?"), model.cfg.n_layer);

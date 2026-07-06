@@ -75,6 +75,17 @@ impl HybridModel {
                          ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
                          z: &CudaSlice<f32>, n_embd: usize, n_ff: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // M3 dense layers use swigluoai (clamped) — the silu_mul fused fast paths below encode
+        // plain SiLU; route through ffn_act (macro-scales folded via matmul_pre) until clamped
+        // fused twins exist.
+        if self.cfg.m3.is_some() {
+            let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
+            let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
+            let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
+            let mut act = e.uninit(n_ff)?;
+            Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
+            return Ok(e.matmul(ffn_down, &act, 1)?);
+        }
         if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
             let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
             // DUAL mm-fusion first (NVFP4 gate+up in ONE launch), else two noscale launches.
@@ -99,7 +110,7 @@ impl HybridModel {
                     let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
                     let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
                     let mut act = e.uninit(n_ff)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                     return Ok(e.matmul(ffn_down, &act, 1)?);
                 }
             }
@@ -107,7 +118,7 @@ impl HybridModel {
         let gate = e.matmul(ffn_gate, z, 1)?;
         let up = e.matmul(ffn_up, z, 1)?;
         let mut act = e.uninit(n_ff)?;
-        e.silu_mul(&gate, &up, &mut act, n_ff)?;
+        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
         Ok(e.matmul(ffn_down, &act, 1)?)
     }
 
@@ -624,9 +635,14 @@ impl HybridModel {
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
-        let mut q = e.uninit(n_head * head_dim)?;
-        let mut gate = e.uninit(n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+        // M3 has no attention output gate — wq out is exactly q; skip the split.
+        let gated = self.cfg.m3.is_none();
+        let (mut q, gate) = if gated {
+            let mut q = e.uninit(n_head * head_dim)?;
+            let mut gate = e.uninit(n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+            (q, Some(gate))
+        } else { (qf, None) };
 
         let mut qn = e.uninit(n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
@@ -675,10 +691,16 @@ impl HybridModel {
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
                        &kvl.len_d, bucket_max, scale, ktb, vtb)?;
 
-        let mut gsig = e.uninit(n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
-        let mut attn_g = e.uninit(n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.uninit(n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, n_head * head_dim)?;
+                let mut ag = e.uninit(n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
     }
 
@@ -814,9 +836,14 @@ impl HybridModel {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
         // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
-        let mut q = e.uninit(n_head * head_dim)?;
-        let mut gate = e.uninit(n_head * head_dim)?;
-        e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+        // M3 has no attention output gate — wq out is exactly q; skip the split.
+        let gated = self.cfg.m3.is_none();
+        let (mut q, gate) = if gated {
+            let mut q = e.uninit(n_head * head_dim)?;
+            let mut gate = e.uninit(n_head * head_dim)?;
+            e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
+            (q, Some(gate))
+        } else { (qf, None) };
 
         // QK-norm + RoPE at position `pos`
         let mut qn = e.uninit(n_head * head_dim)?;
@@ -850,10 +877,16 @@ impl HybridModel {
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj
-        let mut gsig = e.uninit(n_head * head_dim)?;
-        e.sigmoid(&gate, &mut gsig, n_head * head_dim)?;
-        let mut attn_g = e.uninit(n_head * head_dim)?;
-        e.mul(&attn, &gsig, &mut attn_g, n_head * head_dim)?;
+        let attn_g = match &gate {
+            Some(gate) => {
+                let mut gsig = e.uninit(n_head * head_dim)?;
+                e.sigmoid(gate, &mut gsig, n_head * head_dim)?;
+                let mut ag = e.uninit(n_head * head_dim)?;
+                e.mul(&attn, &gsig, &mut ag, n_head * head_dim)?;
+                ag
+            }
+            None => attn,
+        };
         Ok(e.matmul(&fa.wo, &attn_g, 1)?)
     }
 

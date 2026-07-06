@@ -1604,6 +1604,22 @@ impl Engine {
         Ok(())
     }
 
+    /// swigluoai (MiniMax-M3 / GPT-OSS): clamped SwiGLU epilogue, math 1:1 vs llama.cpp
+    /// ggml_cuda_op_swiglu_oai_single. `dst = swish_alpha(clamp(gate*gs)) * (1 + clamp(up*us))`.
+    /// gs/us fold the NVFP4 macro-scales exactly like `silu_mul_scaled`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn swigluoai_mul_scaled(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, gs: f32, us: f32,
+                                alpha: f32, limit: f32, dst: &mut CudaSlice<f32>, n: usize)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("swigluoai_mul_scaled_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gs).arg(&us).arg(&alpha).arg(&limit).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// RANK2 LEVER (q8_1 quant-fold): SwiGLU epilogue that EMITS the q8_1 quantization of `act`
     /// directly (aq int8 [n] + ad f32 [n/32]), so ffn_down's standalone `quantize_q8_1` launch is
     /// removed — the down-proj activation has one consumer, so the quant folds into the producer for
