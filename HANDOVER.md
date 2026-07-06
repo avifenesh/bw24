@@ -6,7 +6,7 @@ _Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue
 
 - **27B NVFP4 (daily driver): 99.1/87.6/75.9 vs llama 86.6/91.9/75.3 = 1.14x WIN / 0.95x / 1.01x WIN.** >100 milestone crossed on code (102.6 N=3, CLI K=3). Serve 96-97 at 512-tok turns.
 - **9B: 193/156/149 vs 121.7/120.5/116.8 = 1.59x/1.29x/1.28x clean sweep (HPOST, 2026-07-06).** Config: HPOST=1 K=3 pmin=0.3. 256k-ctx edge proven (278k prompt exact on 24GB).
-- **35B MoE: 148.9 decode exactness-clean (0.88x llama); pp 1365 dp4a / 2866 MMA-opt-in.** Day arc 2026-07-06: LUT storage-class +34%; then real-prompt spec gate exposed 3 stacked decode-exact holes (Float matmul, pairs dispatch, ROUTER cuBLASLt n-dependence) — all fixed, p3 spec PASSES FIRST TIME EVER. MMA prime + k-quant arms behind seams pending exactness re-test (were +6% decode / 2.1x pp). Real-prompt spec now MANDATORY in MoE battery. Not a driver; feeds MiniMax.
+- **35B MoE FINAL 2026-07-06: decode 158.2 (0.93x llama) + pp6257 2862, ALL fast paths default-on, exactness-proven (spec p1/p2/p3 first ever).** Day: LUT storage-class +34%, k-quant arms, MMA; real-prompt spec gate exposed ROUTER cuBLASLt n-dependence (ONE bug, three innocent suspects) — fixed via small-t decode-exact dispatch (router+shexp). Real-prompt spec now MANDATORY in MoE battery. Not a driver; feeds MiniMax.
 - **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-code75-32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
 
 ## 27B OPEN GAPS (ranked by measured headroom, 2026-07-06)
