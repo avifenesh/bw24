@@ -47,9 +47,10 @@ impl Arch {
         };
         Arch::parse(ggml)
     }
-    /// True for arches with interleaved linear-attention (SSM) layers.
+    /// Arches the HybridModel loader/forward handles. MinimaxM3 qualifies as the degenerate
+    /// hybrid: full_attention_interval=0 -> every layer Mixer::Full, no SSM state, MoE FFN.
     pub fn is_hybrid(&self) -> bool {
-        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe)
+        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3)
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
