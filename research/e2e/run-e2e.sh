@@ -10,8 +10,8 @@ NGEN=256
 if [ "$MODE" = 27b ]; then
   MODEL=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
   DRAFT=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M.gguf
-  TRIM=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M-frspec-balanced32768.gguf
-  # daily config 2026-07-06: post-norm h_seed (HPOST), balanced trim, pmin 0.15 (config-sweep JSONL)
+  TRIM=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/mtp-Qwen3.6-27B-Q4_K_M-frspec-code75-32768.gguf
+  # daily config 2026-07-06: post-norm h_seed (HPOST), code75 trim (p2 +2.9 vs balanced, JSONL 2026-07-06), pmin 0.15 (config-sweep JSONL)
   BW_ENV="BW24_FRSPEC_TRIM=$TRIM BW24_SPEC_PMIN=0.15 BW24_SPEC_HPOST=1"
   BK=3   # 27B optimum (re-confirmed under HPOST: K=3 > K=2/K=4 both domains)
 else

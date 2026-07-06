@@ -7,7 +7,7 @@ _Written 2026-07-03, standings updated 2026-07-06. Read this cold, then continue
 - **27B NVFP4 (daily driver): 99.1/87.6/75.9 vs llama 86.6/91.9/75.3 = 1.14x WIN / 0.95x / 1.01x WIN.** >100 milestone crossed on code (102.6 N=3, CLI K=3). Serve 96-97 at 512-tok turns.
 - **9B: 181.3/152.6/142.8 vs 121.7/120.5/116.8 = 1.49x/1.27x/1.22x clean sweep.** 256k-ctx edge proven (278k prompt exact on 24GB).
 - **35B MoE: 112 tok/s vs llama 169.6 = 0.66x** (not a driver; MoE work feeds MiniMax).
-- **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-balanced32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
+- **DAILY 27B CONFIG: `BW24_SPEC_HPOST=1 BW24_SPEC_K=3 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-code75-32768>` + embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
 
 ## 27B OPEN GAPS (ranked by measured headroom, 2026-07-06)
 
