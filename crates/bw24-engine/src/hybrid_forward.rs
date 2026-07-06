@@ -869,11 +869,13 @@ impl HybridModel {
                     let gate = Self::moe_cached_gemm_q8(e, il, PROJ_GATE, ex, m, max_block, zq, zd)?;
                     let up   = Self::moe_cached_gemm_q8(e, il, PROJ_UP,   ex, m, max_block, zq, zd)?;
                     let mut act = e.uninit(n_ff_exp)?;
-                    e.silu_mul(&gate, &up, &mut act, n_ff_exp)?;
+                    Self::ffn_act_scaled(e, cfg, &gate, &up,
+                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
                     let (aq2, ad2) = e.quantize_q8_1(&act, 1, n_ff_exp)?;
                     let y = Self::moe_cached_gemm_q8(e, il, PROJ_DOWN, ex, m, max_block, &aq2, &ad2)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
-                    e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+                    // down-proj macro folds into the accumulate weight (1.0 for non-macro archs).
+                    e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
                 } else if use_cache {
                     // SLRU residency cache: per-projection, dispatch the block (HIT => resident slot,
                     // MISS => staged slot) then run the SAME unchanged qmatvec_view from that slot.
@@ -1207,7 +1209,7 @@ impl HybridModel {
                 let sg_gate = e.matmul(gate_shexp, z, t)?;
                 let sg_up = e.matmul(up_shexp, z, t)?;
                 let mut sa = e.uninit(t * n_ff_sh)?;
-                e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+                Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
                 let sh = e.matmul(down_shexp, &sa, t)?;
                 let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
                 let mut g = e.zeros(t)?;

@@ -75,6 +75,17 @@ impl HybridModel {
                          ffn_up: &crate::model::GpuTensor, ffn_down: &crate::model::GpuTensor,
                          z: &CudaSlice<f32>, n_embd: usize, n_ff: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // M3 dense layers use swigluoai (clamped) — the silu_mul fused fast paths below encode
+        // plain SiLU; route through ffn_act (macro-scales folded via matmul_pre) until clamped
+        // fused twins exist.
+        if self.cfg.m3.is_some() {
+            let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
+            let gate = e.matmul_pre(ffn_gate, &zq, &zd, z, 1)?;
+            let up = e.matmul_pre(ffn_up, &zq, &zd, z, 1)?;
+            let mut act = e.uninit(n_ff)?;
+            Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
+            return Ok(e.matmul(ffn_down, &act, 1)?);
+        }
         if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
             let (zq, zd) = e.quantize_q8_1(z, 1, n_embd)?;
             // DUAL mm-fusion first (NVFP4 gate+up in ONE launch), else two noscale launches.
