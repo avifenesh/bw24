@@ -34,16 +34,14 @@ fn moe_q8_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_Q8").map(|v| v != "0").unwrap_or(true))
 }
 fn q8_expert_supported(qt: i32) -> bool {
-    // k-quant arms added 2026-07-06 (Q3_K/Q4_K/Q6_K bodies for the UD tail layers), then
-    // DEFAULT-EXCLUDED same day: with them enabled, 35B real-prompt spec self-consistency
-    // FAILS (K=2 p1) — the k-quant q8 path produces different logits at t==1 (dev_q8) vs
-    // t>1 (pairs/_em / sequential) for the same position; the IQ pair (_dec ≡ dot bodies)
-    // is bit-gated, the k-quant pair is not. Until a t-regime bit-parity gate exists for
-    // the k-quant arms, tail layers stay on the f32 path (consistent both regimes).
-    // BW24_MOE_Q8_KQ=1 opt-in re-enables (plain decode/prefill only — argmax gate holds).
+    // k-quant arms added 2026-07-06 (Q3_K/Q4_K/Q6_K bodies for the UD tail layers). Briefly
+    // default-excluded the same day when they appeared to break 35B real-prompt spec — the
+    // ACTUAL culprit was the MoE router's cuBLASLt n-dependence (d994271); with the router
+    // decode-exact at verify t, the k-quant arms pass the full spec battery (p1/p2/p3 + raw
+    // K=1..8) and are DEFAULT ON again (+9 tok/s: 148.9 -> 157.9). BW24_MOE_Q8_KQ=0 excludes.
     static KQ: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let kq = *KQ.get_or_init(|| {
-        std::env::var("BW24_MOE_Q8_KQ").map(|v| v == "1").unwrap_or(false)
+        std::env::var("BW24_MOE_Q8_KQ").map(|v| v != "0").unwrap_or(true)
     });
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
         || (kq && (qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K))
