@@ -1061,10 +1061,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for path in srcs {
             if done { break; }
             let g = match GgufFile::open(&path) { Ok(g) => g, Err(_) => continue };
-            // two shapes: a wide-out FFN gate (rpr2-class) and a narrow-out down/out (rpr2w8/rp-class).
-            let picks: Vec<_> = g.tensors.iter()
+            // three shapes: a wide-out FFN gate (rpr2-class), a narrow-out down/out (rpr2w8/rp-
+            // class), and a DEEP-k tensor (in_f >= 6144: the rpks/rpksc k-split auto window —
+            // added 2026-07-06 so the non-bit-identical family is always gate-covered).
+            let mut picks: Vec<_> = g.tensors.iter()
                 .filter(|t| t.ggml_type == GgmlType::NVFP4 && t.ne.len() == 2 && t.ne[0] % 64 == 0)
                 .take(2).collect();
+            if let Some(deep) = g.tensors.iter().find(|t| t.ggml_type == GgmlType::NVFP4
+                    && t.ne.len() == 2 && t.ne[0] % 512 == 0 && t.ne[0] >= 6144) {
+                if !picks.iter().any(|p| p.name == deep.name) { picks.push(deep); }
+            }
             for t in picks {
                 done = true;
                 let tname = t.name.clone();
@@ -1089,15 +1095,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("RP MMVQ {tname} m={mm}: bit-bad={bad} {}",
                              if bad == 0 { "OK" } else { fails += 1; "FAIL" });
                 }
-                // batched rp (auto wave-rule picks rp/rpr2/rpr2w8 per shape) vs original per-m mmvq.
+                // batched rp (auto rule picks rp/rpr2/rpr2w8/rpsc/rpks/rpksc per shape) vs
+                // original per-m mmvq. CONTRACT SPLIT (2026-07-06): the k-split family (rpks*)
+                // reduces k in two chunks -> deterministic but NOT bit-identical to the reference
+                // (FP add order). Its gate = rel<1e-6-of-max + run-to-run BIT determinism; every
+                // other variant keeps the strict bit-bad==0 contract.
                 for (mm, mcols) in [(2usize, 2usize), (3, 4), (4, 4), (5, 8), (6, 8), (8, 8)] {
                     let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 161) * 0.1).collect();
                     let xd = e.htod(&x)?;
                     let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, false)?)?;
                     let yrp = e.dtoh(&e.qmatvec_batched_raw(&wrp, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols, true)?)?;
-                    let bad = bit_bad(&yref, &yrp);
-                    println!("RP BATCHED {tname} m={mm} mcols={mcols}: bit-bad={bad} {}",
-                             if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                    let v = e.batched_variant(mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols, true);
+                    if v.starts_with("rpks") {
+                        let d = maxdiff(&yref, &yrp);
+                        let scale = yref.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                        let rel = d / scale;
+                        let y2 = e.dtoh(&e.qmatvec_batched_raw(&wrp, &xd, mm, in_f, out_f, bw24_engine::QT_NVFP4, row_bytes, mcols, true)?)?;
+                        let det = bit_bad(&yrp, &y2);
+                        println!("RP BATCHED {tname} m={mm} mcols={mcols} [{v}]: rel={rel:.2e} det-bad={det} {}",
+                                 if rel < 1e-6 && det == 0 { "OK" } else { fails += 1; "FAIL" });
+                    } else {
+                        let bad = bit_bad(&yref, &yrp);
+                        println!("RP BATCHED {tname} m={mm} mcols={mcols} [{v}]: bit-bad={bad} {}",
+                                 if bad == 0 { "OK" } else { fails += 1; "FAIL" });
+                    }
                 }
                 // dp4a rp twin (grid (out,m), 128-thread two-level reduce) vs original dp4a.
                 for mm in [1usize, 5] {

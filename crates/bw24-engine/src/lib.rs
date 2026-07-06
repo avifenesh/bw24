@@ -2225,11 +2225,11 @@ impl Engine {
     /// `rp` = the weight buffer is the A6 SPLIT-PLANE repacked layout (NVFP4 only): the same
     /// wave-aware auto rule applies, mapped onto the `_rp` twins (rp/rpr2/rpr2w8 mirror
     /// pf/r2/r2w8 — regs 44/67/64 land in the same residency classes).
-    pub fn qmatvec_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
-                                m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize,
-                                mcols: usize, scale: f32, rp: bool)
-                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        const ROWS_PER_BLOCK: u32 = 4;
+    /// The variant the batched dispatch will pick for this (shape, m, mcols, layout) — exposed so
+    /// gates can distinguish bit-identical variants (bit-bad==0 required) from the k-split family
+    /// (deterministic but k-reduce-order-shifted: rel<1e-3 + run-to-run bit-identity required).
+    pub fn batched_variant(&self, m: usize, in_f: usize, out_f: usize, qtype: i32,
+                           row_bytes: usize, mcols: usize, rp: bool) -> &'static str {
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {
             Ok("base") => "base", Ok("pf") => "pf", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
@@ -2240,19 +2240,33 @@ impl Engine {
             // rpca* = cp.async software-pipelined split-plane (2026-07-05): hides the _rp
             // long_scoreboard load stall. rp-layout only; b4/b2 (no b8 twin).
             Ok("rpca") => "rpca", Ok("rpcar2") => "rpcar2",
+            // 2026-07-06 m-small latency arc: rpsc = rpr2 + per-warp smem scale prestage (kills
+            // the scale-plane global dependency, zero reg growth); rpms/rpmsc = m-split x2
+            // across warp pairs (2x blocks of rpr2, column halves per warp, BIT-identical to
+            // _rp); rpks/rpksc = k-split x2 (fastest microbench cells but k-reduce-order-shifted:
+            // run-spec self-consistency FAILED on the 27B daily driver — verify logits must be
+            // bit-identical to the decode path — measurement corpus ONLY, never auto).
+            Ok("rpsc") => "rpsc", Ok("rpms") => "rpms", Ok("rpmsc") => "rpmsc",
+            Ok("rpks") => "rpks", Ok("rpksc") => "rpksc",
             _ => "auto",
         });
         // cp.async ring variants need 16B-aligned rows (in_f%256==0 -> (in_f/64)*36 % 16 == 0)
         // and whole 32-group warp iterations (nsb%32==0 <=> in_f%1024==0). All 27B/9B trunk
         // shapes qualify; anything else falls back to the register variants.
         let ca_ok = qtype == QT_NVFP4 && (row_bytes % 16 == 0) && (in_f % 1024 == 0);
+        // rpsc: smem scale plane fits (nsb64 <= 272) + int4-aligned staging (nsb64 % 4 == 0).
+        // rpks/rpksc: half-plane staging alignment needs nsb64 % 8 == 0 (in_f % 512 == 0).
+        // BW24_KS=0 removes the 2026-07-06 rpsc/rpks/rpksc entries from AUTO (rollback seam;
+        // forced BW24_MMVQ_BV values still work).
+        static KS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let ks_on = *KS_ON.get_or_init(|| std::env::var("BW24_KS").as_deref() != Ok("0"));
+        let sc_ok = ks_on && qtype == QT_NVFP4 && (in_f % 256 == 0) && (in_f / 64 <= 272);
+        let ks_ok = ks_on && qtype == QT_NVFP4 && (in_f % 512 == 0) && (in_f / 64 <= 272);
         static SMS: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
         let sms = *SMS.get_or_init(|| {
             use cudarc::driver::sys::CUdevice_attribute_enum as A;
             self.gpu.ctx.attribute(A::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT).unwrap_or(82)
         });
-        let base_name = Self::batched_kernel_name(qtype, mcols)
-            .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
         // k-quant r2 port (2026-07-04): q4_K/q5_K/q6_K have _r2/_r2w8 twins. ncu on the DRAM-cold
         // 9B msweep showed q4_K/q5_K b4 memory-latency bound like NVFP4 pre-fix (long_scoreboard
         // 19.6/16.4 per issue, DRAM 47.7/38.2%, L2 weight hit ~13%); q6_K lm_head is the exception
@@ -2280,7 +2294,7 @@ impl Engine {
             Ok("base") => "base", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
             _ => "auto",
         });
-        let variant: &str = if qtype != QT_NVFP4 && !kq_r2 {
+        let variant: &'static str = if qtype != QT_NVFP4 && !kq_r2 {
             "base"
         } else if kq_r2 {
             // k-quant r2w8 only exists at b4 (b2_r2 already 8-resident; b8 has no w8 twin) ->
@@ -2315,23 +2329,31 @@ impl Engine {
                     if mcols == 8 { "rpr2w8" } else { "rpr2" }
                 }
                 else if bv == "rpcar2" && mcols == 2 { "rpca" }
+                // rpsc/rpmsc/rpks* gate on smem-fit + alignment; fall to rpr2 outside it
+                // (rpms has no smem and no alignment need — always valid on rp buffers).
+                else if (bv == "rpsc" || bv == "rpmsc") && !sc_ok { "rpr2" }
+                else if (bv == "rpks" || bv == "rpksc") && !ks_ok { "rpr2" }
                 else { bv };
             if rp {
                 match v {
                     "base" | "pf" | "ca" | "rp" => "rp",
                     "r2" | "pfr2" | "car2" | "rpr2" => "rpr2",
                     "r2w8" | "rpr2w8" => if mcols == 2 { "rpr2" } else { "rpr2w8" },
-                    other => other,   // rpca / rpcar2 pass through (already rp-layout)
+                    other => other,   // rpca/rpcar2/rpsc/rpks/rpksc pass through (already rp-layout)
                 }
             } else { v }
         } else if mcols == 8 {
-            // b8 AUTO = the w8 twin everywhere (2026-07-05, g7e DRAM-cold rp msweep m=5/6/8 on all
-            // five 27B shapes): rpr2w8 wins or ties every cell (qkv 39.0->28.4us vs rp, ffn_down
-            // 61.4->58.2, ssm_out/attn_gate win) except wide-out ffn_gate m=5/6 where rpr2 edges
-            // ~1-3% — net e2e 27B p3 K=4: forced rpr2w8 97.9 vs b4-rule auto 93.3 vs rpr2 91.4
-            // tok/s. The b4 wave-crossing rule below mispicks rp for b8 (its thresholds were tuned
-            // on b4 register classes); do NOT reuse it. BW24_MMVQ_BV still forces (handled above).
-            if rp { "rpr2w8" } else { "r2w8" }
+            // b8 AUTO (2026-07-06 m-small latency arc, g7e DRAM-cold rp msweep m=5/6/8 all five
+            // 27B shapes): rpsc — the rpr2w8 schedule with the warp's scale rows prestaged to
+            // smem, leaving ONE global dependency (the quant stream) in the k-loop at zero reg
+            // growth. BIT-identical to rpr2w8 and wins or ties EVERY b8 cell: ffn_gate m5
+            // 50.7->46.9 m8 64.1->57.1 (-11%), qkv m8 34.6->33.0, ssm_out m8 29.7->28.8,
+            // attn_gate m8 26.9->26.1, ffn_down m5 58.2->56.9. The faster split-grid twins are
+            // OUT: rpksc (k-split, ffn_down m5 -21%) broke run-spec self-consistency (k-reduce
+            // order shifts verify argmax at tie margins — verify must stay bit-identical to the
+            // m=1 decode chain); rpmsc (m-split, bit-identical) measured NEGATIVE everywhere
+            // (twin warp's duplicated weight stream: ffn_down m5 85.7 vs 56.9).
+            if rp { if sc_ok { "rpsc" } else { "rpr2w8" } } else { "r2w8" }
         } else if mcols >= 4 {
             // r2 runs 7 resident blocks/SM (67 regs); its __launch_bounds__(128,8) twin `r2w8`
             // (64 regs) runs 8. grid = ceil(out_f/8) for both. rp twins land in the same
@@ -2341,6 +2363,9 @@ impl Engine {
             let r8 = 8 * sms as usize;
             let waves = blocks as f64 / r7 as f64;
             let filled = blocks >= 4 * sms as usize;
+            // 2026-07-06 m-small latency arc: b4 keeps the wave rule (rpms/rpmsc measured
+            // flat-to-negative at m=3/4 on every shape — the m-split twin duplicates the weight
+            // stream; rpsc b4 also negative on r2-class picks, ffn_down m4 51.1 vs 46.5).
             if filled && blocks.div_ceil(r8) < blocks.div_ceil(r7) {
                 // the extra residency drops the INTEGER wave count -> the straggler wave a
                 // latency-bound kernel pays in full disappears (ffn_down 1.11 -> 0.98 waves:
@@ -2356,20 +2381,48 @@ impl Engine {
                 // (rp = the r1 split-plane twin — measured the attn_gate winner, 35.4 vs pf 36.4).
                 if rp { "rp" } else { "pf" }
             }
-        } else if in_f >= 6144 { if rp { "rpr2" } else { "r2" } }
-        else if rp { "rp" } else { "base" };
-        let (name, rows_per_warp): (std::borrow::Cow<'static, str>, u32) = match variant {
-            "base" => (base_name.into(), 1),
-            "pf" => (format!("{base_name}_pf").into(), 1),
-            "ca" => (format!("{base_name}_ca").into(), 1),
-            "rp" => (format!("{base_name}_rp").into(), 1),
-            "rpca" => (format!("{base_name}_rpca").into(), 1),   // 1 row/warp cp.async split-plane
-            v => (format!("{base_name}_{v}").into(), 2),          // r2/rpr2/rpcar2/... = 2 rows/warp
+        } else if in_f >= 6144 {
+            // b2 deep-k (2026-07-06): every new twin measured flat-to-negative here (rpms 44.1
+            // vs rpr2 40.8 ffn_down; rpsc 43.6; the winning rpks is banned on k-order) — rpr2
+            // stays.
+            if rp { "rpr2" } else { "r2" }
+        }
+        else if rp {
+            // b2 shallow-k: qkv (out_f=10240, 0.97 waves at 7-resident) is the one measured cell
+            // where the r2-schedule scale-prestage twin beats the r1 rp pick (24.7 vs 28.9us
+            // -15%); the wider (ffn_gate 1.65 waves) and smaller (attn_gate 0.58) shapes LOSE
+            // (41.8 vs 38.2 / 16.6 vs 14.6) — gate on the single-wave window.
+            let waves = ((out_f + 7) / 8) as f64 / (7 * sms as usize) as f64;
+            if sc_ok && waves >= 0.9 && waves <= 1.1 { "rpsc" } else { "rp" }
+        } else { "base" };
+        variant
+    }
+
+    pub fn qmatvec_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize,
+                                mcols: usize, scale: f32, rp: bool)
+                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;
+        let variant = self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp);
+        let base_name = Self::batched_kernel_name(qtype, mcols)
+            .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
+        let (name, rows_per_block): (std::borrow::Cow<'static, str>, u32) = match variant {
+            "base" => (base_name.into(), ROWS_PER_BLOCK),
+            "pf" => (format!("{base_name}_pf").into(), ROWS_PER_BLOCK),
+            "ca" => (format!("{base_name}_ca").into(), ROWS_PER_BLOCK),
+            "rp" => (format!("{base_name}_rp").into(), ROWS_PER_BLOCK),
+            "rpca" => (format!("{base_name}_rpca").into(), ROWS_PER_BLOCK), // 1 row/warp cp.async
+            // split families: 2 warp-pairs x 2 rows = 4 rows/block (the k-range or column set
+            // splits across the pair's two warps; grid.x doubles vs rpr2 at the same regs).
+            "rpks" => (format!("{base_name}_rpks").into(), ROWS_PER_BLOCK),
+            "rpksc" => (format!("{base_name}_rpksc").into(), ROWS_PER_BLOCK),
+            "rpms" => (format!("{base_name}_rpms").into(), ROWS_PER_BLOCK),
+            "rpmsc" => (format!("{base_name}_rpmsc").into(), ROWS_PER_BLOCK),
+            v => (format!("{base_name}_{v}").into(), ROWS_PER_BLOCK * 2), // r2-class: 2 rows/warp
         };
         debug_assert!(!rp || name.contains("_rp"), "rp weight dispatched to a GGUF-layout kernel");
         let f = self.func(&name);
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
-        let rows_per_block = ROWS_PER_BLOCK * rows_per_warp;
         let cfg = LaunchConfig {
             grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, 1, 1),
             block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0 };
