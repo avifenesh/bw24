@@ -34,6 +34,17 @@ fn moe_q8_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_Q8").map(|v| v != "0").unwrap_or(true))
 }
 fn q8_expert_supported(qt: i32) -> bool {
+    // k-quant arms added 2026-07-06: the UD mix's tail layers (blk.38-40 on the 35B) carry
+    // Q3_K/Q4_K/Q6_K experts — without these they fell to the 5x-slower f32-dequant _dev arm.
+    // This predicate covers the expert_dot_g dp4a paths (dev_q8, _em, pairs); the decode-once
+    // _dec kernel and the IQ-MMA tile loader stay IQ-only (q8_expert_dec_supported).
+    qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
+        || qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K
+}
+
+/// The decode-once (_dec) and IQ-MMA expert kernels dequant via IQ-specific extractors —
+/// k-quant tensors must fall to the _em dot path instead.
+fn q8_expert_dec_supported(qt: i32) -> bool {
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
 }
 
@@ -1018,8 +1029,8 @@ impl HybridModel {
         // FP-ORDER differs from dp4a (MMA reduction) — logits SHIFT, gated on argmax/spec/closeness,
         // NOT byte-identity (like the W4A8 path). Requires IQ3_S/IQ4_XS + in_f % 256 == 0.
         let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(false)
-            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
-            && q8_expert_supported(m.down_exps.qtype)
+            && q8_expert_dec_supported(m.gate_exps.qtype) && q8_expert_dec_supported(m.up_exps.qtype)
+            && q8_expert_dec_supported(m.down_exps.qtype)
             && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
         if use_mma {
             // gate/up: activation = z, token-major over t tokens; pair_tok gathers the routed row.
@@ -1062,6 +1073,8 @@ impl HybridModel {
         let dec = std::env::var("BW24_MOE_DEC").map(|v| v != "0").unwrap_or(true);
         let matvec = |proj, exi: &_, exo: &_, exp_d: &_, pt: &_, aq: &_, ad: &_,
                       inf, outf, qtype, rb| -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+            // _dec's decode-once extractors are IQ-only; k-quant expert layers take the _em dot path.
+            let dec = dec && q8_expert_dec_supported(qtype);
             if dec { e.moe_pairs_matvec_q8_dec(&dev.ptr_row, proj, exi, exo, exp_d, pt, aq, ad,
                                                inf, outf, n_expert, n_active, n_pairs, qtype, rb) }
             else   { e.moe_pairs_matvec_q8_em (&dev.ptr_row, proj, exi, exo, exp_d, pt, aq, ad,
@@ -1151,6 +1164,13 @@ impl HybridModel {
         } else {
         // Launch under the cache lock: the row borrow lives as long as the closure, and the
         // lock covers only launch ISSUE (µs), same policy as moe_cached_gemm.
+        // Q8 ARM PARITY (2026-07-06): the SLRU arm ran the f32-dequant _dev kernels only —
+        // 80us/launch vs the q8 twins' 15us on the SAME shapes (fixed-build profile: 228
+        // f32 launches = 36ms of the 64-tok window). Same q8 gate + kernels as the resident
+        // arm above; BW24_MOE_Q8=0 restores the byte-identical f32 path.
+        let q8 = moe_q8_enabled()
+            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
+            && q8_expert_supported(m.down_exps.qtype);
         e.with_moe_cache(max_block, |c, eng| {
             let row = c.layer_dev_row(il, n_expert, eng)?
                 .ok_or("moe_ffn_dev: layer row vanished under the lock")?;
@@ -1158,14 +1178,26 @@ impl HybridModel {
                 let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);
                 let selt = sel_d.slice(tok * n_used..(tok + 1) * n_used);
                 let wt = w_d.slice(tok * n_used..(tok + 1) * n_used);
-                let act = eng.moe_gate_up_silu8_dev(row, &selt, &zt, n_embd, n_ff_exp,
-                                                    n_used, n_expert,
-                                                    m.gate_exps.qtype, m.up_exps.qtype,
-                                                    m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
                 let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
-                eng.moe_down8_fma_dev(row, &selt, &wt, &act, &mut dst,
-                                      n_ff_exp, n_embd, n_used, n_expert,
-                                      m.down_exps.qtype, m.down_exps.row_bytes)?;
+                if q8 {
+                    let (zq, zd) = eng.quantize_q8_1_view(&zt, 1, n_embd)?;
+                    let act = eng.moe_gate_up_silu8_dev_q8(row, &selt, &zq, &zd,
+                                                           n_embd, n_ff_exp, n_used, n_expert,
+                                                           m.gate_exps.qtype, m.up_exps.qtype,
+                                                           m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                    let (aq2, ad2) = eng.quantize_q8_1(&act, n_used, n_ff_exp)?;
+                    eng.moe_down8_fma_dev_q8(row, &selt, &wt, &aq2, &ad2, &mut dst,
+                                             n_ff_exp, n_embd, n_used, n_expert,
+                                             m.down_exps.qtype, m.down_exps.row_bytes)?;
+                } else {
+                    let act = eng.moe_gate_up_silu8_dev(row, &selt, &zt, n_embd, n_ff_exp,
+                                                        n_used, n_expert,
+                                                        m.gate_exps.qtype, m.up_exps.qtype,
+                                                        m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                    eng.moe_down8_fma_dev(row, &selt, &wt, &act, &mut dst,
+                                          n_ff_exp, n_embd, n_used, n_expert,
+                                          m.down_exps.qtype, m.down_exps.row_bytes)?;
+                }
             }
             // instrumentation parity with the host paths (3 blocks/expert-slot, all hits).
             c.hits += (t * 3 * n_used) as u64;

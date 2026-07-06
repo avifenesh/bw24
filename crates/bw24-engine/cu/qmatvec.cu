@@ -3699,11 +3699,128 @@ __device__ __forceinline__ float expert_dot_iq4xs_g(const unsigned char* wrow, i
     }
     return d_sb * (float)(scale * sumi) * d8;
 }
-// group-dispatching wrapper: qtype -> dot body (compile-time-hot switch, both bodies inlined)
+// K-QUANT expert dot bodies (2026-07-06): the UD-IQ4_XS 35B mix puts Q3_K/Q4_K/Q6_K experts on
+// the tail layers (blk.38-40) — those layers fell to the f32-dequant _dev arm (80us vs 15us
+// launches = 8.5% of the fixed-build decode window). Group-g bodies lifted VERBATIM from
+// qmatvec_q3_K_dp4a / qmatvec_q4_K_mmvq / qmatvec_q6_K_mmvq (same unpack, same dp4a order,
+// same accumulate expression), so per (row,group) the math matches those kernels bit-for-bit.
+__device__ __forceinline__ float expert_dot_q3k_g(const unsigned char* wrow, int g,
+                                                  const signed char* aqb, float d8) {
+    int sblk = g >> 3, grp = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 110;
+    const unsigned char* hmask  = b;
+    const unsigned char* qs     = b + 32;
+    const unsigned char* scbyte = b + 96;
+    float d = half_to_float(*(const unsigned short*)(b + 108));
+    unsigned int aux0 = scbyte[0]|(scbyte[1]<<8)|(scbyte[2]<<16)|(scbyte[3]<<24);
+    unsigned int aux1 = scbyte[4]|(scbyte[5]<<8)|(scbyte[6]<<16)|(scbyte[7]<<24);
+    unsigned int aux2 = scbyte[8]|(scbyte[9]<<8)|(scbyte[10]<<16)|(scbyte[11]<<24);
+    const unsigned int km1=0x03030303u, km2=0x0f0f0f0fu, tmp=aux2;
+    unsigned int nA[4]={ (aux0&km2)|(((tmp>>0)&km1)<<4), (aux1&km2)|(((tmp>>2)&km1)<<4),
+                         ((aux0>>4)&km2)|(((tmp>>4)&km1)<<4), ((aux1>>4)&km2)|(((tmp>>6)&km1)<<4) };
+    signed char sc[16];
+    for(int kk=0;kk<4;kk++){ sc[kk*4+0]=(signed char)nA[kk]; sc[kk*4+1]=(signed char)(nA[kk]>>8);
+                             sc[kk*4+2]=(signed char)(nA[kk]>>16); sc[kk*4+3]=(signed char)(nA[kk]>>24); }
+    int half = grp >> 2, jiter = grp & 3;
+    int shift = 2 * jiter;
+    int m_bit_idx = half * 4 + jiter;
+    const unsigned char* q  = qs + half * 32;
+    const unsigned char* hm = hmask;
+    int is_lo = half * 8 + jiter * 2 + 0;
+    int is_hi = half * 8 + jiter * 2 + 1;
+    const int* aq4 = (const int*)aqb;
+    int sumlo = 0, sumhi = 0;
+    #pragma unroll
+    for (int k = 0; k < 8; k++) {
+        int wpack = 0; bool hiHalf = (k >= 4);
+        #pragma unroll
+        for (int e = 0; e < 4; e++) {
+            int idx = k * 4 + e;
+            int l = idx & 15;
+            int sub = idx >> 4;
+            int q2 = (q[sub * 16 + l] >> shift) & 3;
+            int hb = (hm[sub * 16 + l] & (1 << m_bit_idx)) ? 0 : 4;
+            int w = q2 - hb;
+            wpack |= (w & 0xff) << (e * 8);
+        }
+        int a = aq4[k];
+        if (!hiHalf) sumlo = dp4a(wpack, a, sumlo);
+        else         sumhi = dp4a(wpack, a, sumhi);
+    }
+    return d * d8 * ( (float)sumlo * (float)((int)sc[is_lo] - 32)
+                    + (float)sumhi * (float)((int)sc[is_hi] - 32) );
+}
+__device__ __forceinline__ float expert_dot_q4k_g(const unsigned char* wrow, int g,
+                                                  const signed char* aqb, float d8) {
+    int sblk = g >> 3, grp = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 144;
+    float d_sb    = half_to_float(*(const unsigned short*)b);
+    float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+    const unsigned char* scales = b + 4;
+    const unsigned char* qs     = b + 16;
+    unsigned char sc, mn;
+    if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+    else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+           mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+    int chunk = grp >> 1;
+    const int* q4 = (const int*)(qs + chunk * 32);
+    bool hi = (grp & 1);
+    const int* aq4 = (const int*)aqb;
+    int sumi_d = 0, sumi_sum = 0;
+    #pragma unroll
+    for (int k = 0; k < 8; k++) {
+        int raw = q4[k];
+        int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+        int a = aq4[k];
+        sumi_d   = dp4a(wpack, a, sumi_d);
+        sumi_sum = dp4a(0x01010101, a, sumi_sum);
+    }
+    return d_sb * (float)((int)sc * sumi_d) * d8 - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+}
+__device__ __forceinline__ float expert_dot_q6k_g(const unsigned char* wrow, int g,
+                                                  const signed char* aqb, float d8) {
+    int sblk = g >> 3, grp = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 210;
+    const unsigned char* ql = b;
+    const unsigned char* qh = b + 128;
+    const signed char*   scales = (const signed char*)(b + 192);
+    float d = half_to_float(*(const unsigned short*)(b + 208));
+    int n   = grp >> 2;
+    int run = grp & 3;
+    const unsigned char* qlh = ql + n * 64;
+    const unsigned char* qhh = qh + n * 32;
+    const signed char*   scn = scales + n * 8;
+    const int* aq4 = (const int*)aqb;
+    int is0 = run * 2 + 0;
+    int is1 = run * 2 + 1;
+    int sumi0 = 0, sumi1 = 0;
+    int ql_off = (run & 1) ? 32 : 0;
+    int ql_hi  = (run >= 2);
+    int qh_sh  = run * 2;
+    #pragma unroll
+    for (int k = 0; k < 8; k++) {
+        int il = k * 4;
+        int qlw = get_int_b2(qlh + ql_off + il);
+        int qhw = get_int_b2(qhh + il);
+        int qln = ql_hi ? ((qlw >> 4) & 0x0F0F0F0F) : (qlw & 0x0F0F0F0F);
+        int qhn = (qhw >> qh_sh) & 0x03030303;
+        int vpack = qln | (qhn << 4);
+        int wpack = __vsubss4(vpack, 0x20202020);
+        int a = aq4[k];
+        if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
+        else       sumi1 = dp4a(wpack, a, sumi1);
+    }
+    return d * d8 * ( (float)(sumi0 * (int)scn[is0]) + (float)(sumi1 * (int)scn[is1]) );
+}
+
+// group-dispatching wrapper: qtype -> dot body (compile-time-hot switch, bodies inlined)
 __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wrow, int g,
                                               const signed char* aqb, float d8) {
     if (qtype == QT_IQ3_S)  return expert_dot_iq3s_g(wrow, g, aqb, d8);
     if (qtype == QT_IQ4_XS) return expert_dot_iq4xs_g(wrow, g, aqb, d8);
+    if (qtype == QT_Q3_K)   return expert_dot_q3k_g(wrow, g, aqb, d8);
+    if (qtype == QT_Q4_K)   return expert_dot_q4k_g(wrow, g, aqb, d8);
+    if (qtype == QT_Q6_K)   return expert_dot_q6k_g(wrow, g, aqb, d8);
     return 0.0f; // caller gates on supported qtypes
 }
 
