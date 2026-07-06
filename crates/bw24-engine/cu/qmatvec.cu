@@ -14,7 +14,11 @@ __device__ __forceinline__ float half_to_float(uint16_t h) {
 }
 
 // IQ3_S grid: 512 u32 entries, each packs 4 unsigned bytes. Verbatim from ggml-common.h:1042.
-__device__ __constant__ unsigned int iq3s_grid_const[512] = {
+// STORAGE CLASS (2026-07-06): plain __device__ (global mem, L1-cached), NOT __constant__ —
+// the constant cache broadcasts only on uniform addresses and SERIALIZES divergent reads, and
+// these grid lookups are divergent by construction (every lane decodes different codes).
+// llama's GGML_TABLE_BEGIN is `static const __device__` for exactly this reason.
+__device__ unsigned int iq3s_grid_const[512] = {
     0x01010101, 0x01010103, 0x01010105, 0x0101010b, 0x0101010f, 0x01010301, 0x01010303, 0x01010305,
     0x01010309, 0x0101030d, 0x01010501, 0x01010503, 0x0101050b, 0x01010707, 0x01010901, 0x01010905,
     0x0101090b, 0x0101090f, 0x01010b03, 0x01010b07, 0x01010d01, 0x01010d05, 0x01010f03, 0x01010f09,
