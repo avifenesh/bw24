@@ -38,6 +38,11 @@ fn main() {
         // (47KB smem -> 2 CTA/SM vs 57KB/1; the q45k occupancy ceiling found by ncu).
         println!("cargo:rerun-if-env-changed=BW24_MMQ_X_Q45K");
         let q45k_x = std::env::var("BW24_MMQ_X_Q45K").ok();
+        // TUNE SEAM: BW24_MMQ_X_W4A8=<n> rebuilds the NVFP4 W4A8 MMQ with an n-token tile.
+        // ncu 2026-07-06 (27B pp6257): default 128x128 tile = 61KB smem = 1 CTA/SM ->
+        // warps_active 16.7%, tensor pipe 53% — the same occupancy ceiling q45k hit.
+        println!("cargo:rerun-if-env-changed=BW24_MMQ_X_W4A8");
+        let w4a8_x = std::env::var("BW24_MMQ_X_W4A8").ok();
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
@@ -48,6 +53,9 @@ fn main() {
             ];
             if mmq_src.ends_with("mmq_q45k.cu") {
                 if let Some(x) = &q45k_x { args.push(format!("-DMMQ_X={x}")); }
+            }
+            if mmq_src.ends_with("mmq_nvfp4_w4a8.cu") {
+                if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
             }
             args.extend(["-c".into(), mmq_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
