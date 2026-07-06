@@ -55,8 +55,14 @@
 
 // sm_120 launch constants (same shape as the W4A4 nvfp4 / q45k kernels: 8 warps, 128x128 tile).
 #define MMQ_WARP_SIZE 32
-#define MMQ_NWARPS    8
+// MMQ_Y seam (2026-07-06): mmq_y = nwarps * 16 (write-back static_assert), so Y and NWARPS move
+// together. Default 128x8 = 42KB tile_x = 1 CTA/SM (warps_active 16.7% of 48). Y=64/NWARPS=4
+// halves tile_x -> 2 CTA/SM candidate; total weight/act bytes UNCHANGED (unlike the MMQ_X axis,
+// which re-reads weights per token tile — that's why X=32 lost 28% while this axis is free).
+#ifndef MMQ_Y
 #define MMQ_Y         128
+#endif
+#define MMQ_NWARPS    (MMQ_Y / 16)
 #ifndef MMQ_X
 #define MMQ_X         128
 #endif
