@@ -1032,10 +1032,20 @@ impl HybridModel {
         // microbench: dp4a wins at tiny groups). ALSO an exactness requirement — spec verify
         // batches (t=2..K+2) must ride the dp4a path whose FP order matches the T=1 decode chain,
         // else K=1 self-consistency FAILs (caught 2026-07-06: MMA at T=2 flipped a verify argmax).
-        // DEFAULT ON 2026-07-06 (was opt-in): with the t-gate + k-quant predicate split the full
-        // battery is green and pp6257 = 2866 vs dec 1365 (2.1x). BW24_MOE_MMA=0 rollback.
-        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(true)
-            && t >= 16
+        // OPT-IN (default-on REVERTED 2026-07-06 same day): the t>=16 floor fences the VERIFY
+        // batches but NOT the PRIME — real-prompt primes (t>=16) ride MMA and their FP-order
+        // shifts the primed state enough that spec output diverges from plain generate
+        // (self-consistency FAIL on the 27-tok code prompt AND p3; the 4-token raw-id gate
+        // prompt masked it — its prime rode dp4a). Plain generate + pp are self-consistent
+        // (argmax gate holds), so BW24_MOE_MMA=1 stays valid for prefill benches and non-spec
+        // serving; spec paths need a dp4a-prime arm before this can default on.
+        // BW24_MOE_MMA_T overrides the floor (bisect seam).
+        static MMA_T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let mma_t = *MMA_T.get_or_init(|| {
+            std::env::var("BW24_MOE_MMA_T").ok().and_then(|v| v.parse().ok()).unwrap_or(16)
+        });
+        let use_mma = std::env::var("BW24_MOE_MMA").map(|v| v != "0").unwrap_or(false)
+            && t >= mma_t
             && q8_expert_dec_supported(m.gate_exps.qtype) && q8_expert_dec_supported(m.up_exps.qtype)
             && q8_expert_dec_supported(m.down_exps.qtype)
             && n_embd % 256 == 0 && n_ff_exp % 256 == 0;
