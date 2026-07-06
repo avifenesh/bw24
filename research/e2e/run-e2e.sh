@@ -17,8 +17,8 @@ if [ "$MODE" = 27b ]; then
 else
   MODEL=/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
   DRAFT=""
-  BW_ENV="BW24_SPEC_PMIN=0.3"
-  BK=2   # 9B optimum moved after the replay-free fix (config-sweep JSONL record)
+  BW_ENV="BW24_SPEC_PMIN=0.3 BW24_SPEC_HPOST=1"
+  BK=3   # 9B optimum under HPOST 2026-07-06 (K=3 wins p1+p3, K=2 edges p2 by 3)
 fi
 if [ "$ENGINE" = bw24 ]; then
   for P in p1-code-short p2-code-medium p3-agentic-long; do
