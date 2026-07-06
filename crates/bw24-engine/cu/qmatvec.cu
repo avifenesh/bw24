@@ -4674,6 +4674,114 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
     }
 }
 
+// ---- IQ3_S SMEM-GRID twins (2026-07-06 g7e lane) ----
+// The iq3s_grid LUT moved __constant__ -> __device__ (+11.8% decode: constant-cache divergent-read
+// serialization). It still rides L1 though, CONTENDING with the weight stream (each gate_up warp
+// does ~32 divergent grid lookups per lane per launch on the 35B shape). These twins copy the 2KB
+// grid (512 u32) into SHARED memory once per block and look up from smem: banked, divergent-
+// friendly, zero L1 contention. VALUES are the same table bytes -> outputs BIT-IDENTICAL (same
+// expert_dot_iq3s_g expression, same g order, same warp tree).
+__device__ __forceinline__ float expert_dot_iq3s_g_sm(const unsigned char* wrow, int g,
+                                                      const signed char* aqb, float d8,
+                                                      const unsigned int* gsm) {
+    int sblk = g >> 3, ib32 = g & 7;
+    const unsigned char* b = wrow + (long)sblk * 110;
+    float d = half_to_float(*(const unsigned short*)b);
+    const unsigned char* qs    = b + 2  + ib32 * 8;
+    unsigned char qh           = b[66 + ib32];
+    const unsigned char* signs = b + 74 + ib32 * 4;
+    const unsigned char* scales= b + 106;
+    int sc_nib = (ib32 & 1) ? (scales[ib32 / 2] >> 4) : (scales[ib32 / 2] & 0xf);
+    float db = d * (1.0f + 2.0f * (float)sc_nib);
+    const int* aq4 = (const int*)aqb;
+    int sumi = 0;
+    #pragma unroll
+    for (int l0 = 0; l0 < 8; l0 += 2) {
+        int gl = gsm[qs[l0 + 0] | (((int)qh << (8 - l0)) & 0x100)];
+        int gh = gsm[qs[l0 + 1] | (((int)qh << (7 - l0)) & 0x100)];
+        unsigned char sb = signs[l0 / 2];
+        int signs0 = __vcmpne4(((sb & 0x03) << 7) | ((sb & 0x0C) << 21), 0);
+        int signs1 = __vcmpne4(((sb & 0x30) << 3) | ((sb & 0xC0) << 17), 0);
+        int grid_l = __vsub4(gl ^ signs0, signs0);
+        int grid_h = __vsub4(gh ^ signs1, signs1);
+        sumi = dp4a(grid_l, aq4[l0 + 0], sumi);
+        sumi = dp4a(grid_h, aq4[l0 + 1], sumi);
+    }
+    return db * (float)sumi * d8;
+}
+// smem-or-L1 dot: IQ3_S goes through the smem grid; every other qtype = expert_dot_g verbatim.
+__device__ __forceinline__ float expert_dot_g_sm(int qtype, const unsigned char* wrow, int g,
+                                                 const signed char* aqb, float d8,
+                                                 const unsigned int* gsm) {
+    if (qtype == QT_IQ3_S) return expert_dot_iq3s_g_sm(wrow, g, aqb, d8, gsm);
+    return expert_dot_g(qtype, wrow, g, aqb, d8);
+}
+// base-geometry twin: grid (n_ff, n_used), block (32,1) — ONE warp both copies the 2KB grid
+// (16 coalesced u32 loads/lane) and runs the base dot loop.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_sg(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    __shared__ unsigned int gsm[512];
+    int lane = threadIdx.x;
+    #pragma unroll
+    for (int i = lane; i < 512; i += 32) gsm[i] = iq3s_grid_const[i];
+    __syncwarp();
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g_sm(qt_g, grow, g, aqb, d8, gsm);
+        accu += expert_dot_g_sm(qt_u, urow, g, aqb, d8, gsm);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+// j8-geometry twin: block (32, n_used) — ONE 2KB copy (spread over all 32*n_used threads)
+// serves n_used warps; 8x fewer blocks = 8x less copy traffic than _sg.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8sg(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    __shared__ unsigned int gsm[512];
+    int tid = threadIdx.y * 32 + threadIdx.x;
+    int nth = blockDim.y * 32;
+    for (int i = tid; i < 512; i += nth) gsm[i] = iq3s_grid_const[i];
+    __syncthreads();
+    int o = blockIdx.x;
+    int j = threadIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g_sm(qt_g, grow, g, aqb, d8, gsm);
+        accu += expert_dot_g_sm(qt_u, urow, g, aqb, d8, gsm);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+
 // gate_up 2-WARP SPLIT: the RPW multirow direction REDUCED warp count and lost; this DOUBLES it.
 // block (32,2): warp 0 computes the gate dot, warp 1 the up dot — each with the base kernel's
 // exact per-warp g order + 32-lane tree (bit-identical partials); warp 0 lane 0 applies the same

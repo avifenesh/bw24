@@ -77,13 +77,38 @@ fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     }) { return forced; }
     // CTX-ADAPTIVE default (2026-07-05 40k sweep: sp32 24.5 vs sp128 26.0 tok/s = +5.8% — at
     // deep ctx the n_splits count explodes (40k/32 = 1265 splits x 8 kv-heads) and the combine
-    // + partial-buffer cost dominates; at short ctx small splits fill the 82 SMs). Ladder: 32
-    // up to 8k (the validated short/mid optimum), then grow with t_kv so n_splits stays ~256
-    // per kv-head, capped 128 (the measured 40k optimum). Exactness: split size only changes
-    // the PARTITION of keys; the rows/combine order per split is fixed and the gate battery
-    // (kernel-check + run-spec K=1..8) arbitrates every default change.
-    let _ = n_head_kv;
-    if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
+    // + partial-buffer cost dominates; at short ctx small splits fill the SMs). Exactness: split
+    // size only changes the PARTITION of keys; the rows/combine order per split is fixed and the
+    // gate battery (kernel-check + run-spec K=1..8) arbitrates every default change.
+    //
+    // SM-AWARE SHORT-CTX RUNG (2026-07-06 g7e): the 32-key rung was tuned on the 82-SM 5090.
+    // On 188 SMs the vec grid (n_head_kv x n_splits CTAs) starves at short ctx — the 35B has
+    // n_head_kv=2, so ctx128/split32 = 8 CTAs on 188 SMs. Measured on g7e (N=1 sweep + N=3
+    // interleaved confirm): 35B ctx128 sp16 179 vs sp32 161 (+11%), ctx512 178 vs 158, ctx2048
+    // flat, ctx>=4096 sp64 edges sp16 by ~3%; 27B ctx128 70.9 vs 66.3 (+7%); 9B 177 vs 163
+    // (+9%). Rigs <=100 SMs keep the validated 5090 ladder EXACTLY (default unchanged there —
+    // rig-divergence law: this branch is measured on 188 SMs only).
+    let big_rig = fa_sm_count() >= 128;
+    if big_rig {
+        let _ = n_head_kv;
+        if t_kv <= 2048 { 16 } else if t_kv <= 16384 { 64 } else { 128 }
+    } else {
+        let _ = n_head_kv;
+        if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
+    }
+}
+
+/// SM count of device 0, cached (used by fa_split_keys' rig-size rung; primary-context query,
+/// same attribute Engine::batched_variant reads).
+fn fa_sm_count() -> i32 {
+    static N: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        cudarc::driver::result::init().ok();
+        cudarc::driver::result::device::get(0)
+            .and_then(|d| unsafe { cudarc::driver::result::device::get_attribute(
+                d, cudarc::driver::sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT) })
+            .unwrap_or(82)
+    })
 }
 
 /// Quant type codes matching qmatvec.cu QType enum.
@@ -789,6 +814,13 @@ impl Engine {
                                    block_dim: (32, wpb, 1), shared_mem_bytes: 0 })
             }
             "j8" if n_used <= 32 => (self.func("moe_gate_up_silu8_dev_q8_j8"),
+                     LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
+                                    block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            // SMEM-GRID twins (IQ3_S 2KB grid copied to shared, static smem — bit-identical dots)
+            "sg" => (self.func("moe_gate_up_silu8_dev_q8_sg"),
+                     LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                    block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+            "j8sg" if n_used <= 32 => (self.func("moe_gate_up_silu8_dev_q8_j8sg"),
                      LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
                                     block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
             "u64" if in_f == 2048 => (self.func("moe_gate_up_silu8_dev_q8_u64"),
