@@ -312,25 +312,11 @@ impl TensorSource for SafetensorsSource {
                         && info.shape.iter().product::<u64>() >= 1_000_000
                         && hf.starts_with("mtp.") {
                         let ne = info.ne();
-                        let n = bytes.len() / 2;
-                        if n % 32 == 0 {
-                            let mut out = Vec::with_capacity(n / 32 * 34);
-                            let mut vals = [0f32; 32];
-                            for blk in bytes.chunks_exact(64) {
-                                let mut amax = 0f32;
-                                for i in 0..32 {
-                                    let hb = u16::from_le_bytes([blk[2 * i], blk[2 * i + 1]]);
-                                    let v = f32::from_bits((hb as u32) << 16);
-                                    vals[i] = v;
-                                    amax = amax.max(v.abs());
-                                }
-                                let d = amax / 127.0;
-                                let id = if d > 0.0 { 1.0 / d } else { 0.0 };
-                                out.extend_from_slice(&crate::nvfp4_repack::f32_to_f16_bits(d).to_le_bytes());
-                                for &v in &vals {
-                                    out.push((v * id).round_ties_even() as i32 as i8 as u8);
-                                }
-                            }
+                        if (bytes.len() / 2) % 32 == 0 {
+                            let data: Vec<f32> = bytes.chunks_exact(2)
+                                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                                .collect();
+                            let out = crate::nvfp4_repack::f32_to_q8_0(&data);
                             return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
                         }
                     }
@@ -340,24 +326,12 @@ impl TensorSource for SafetensorsSource {
                             if sinfo.dtype == "F32" && sbytes.len() >= 4 {
                                 let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
                                 let ne = info.ne();
-                                let n = bytes.len();
-                                assert!(n % 32 == 0, "F8 tensor {hf} len {n} not 32-aligned");
-                                let mut out = Vec::with_capacity(n / 32 * 34);
-                                let mut vals = [0f32; 32];
-                                for blk in bytes.chunks_exact(32) {
-                                    let mut amax = 0f32;
-                                    for (i, &b) in blk.iter().enumerate() {
-                                        let v = crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale;
-                                        vals[i] = v;
-                                        amax = amax.max(v.abs());
-                                    }
-                                    let d = amax / 127.0;
-                                    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
-                                    out.extend_from_slice(&crate::nvfp4_repack::f32_to_f16_bits(d).to_le_bytes());
-                                    for &v in &vals {
-                                        out.push((v * id).round_ties_even() as i32 as i8 as u8);
-                                    }
-                                }
+                                assert!(bytes.len() % 32 == 0,
+                                        "F8 tensor {hf} len {} not 32-aligned", bytes.len());
+                                let data: Vec<f32> = bytes.iter()
+                                    .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
+                                    .collect();
+                                let out = crate::nvfp4_repack::f32_to_q8_0(&data);
                                 return Some(TensorView {
                                     bytes: Cow::Owned(out),
                                     ggml_type: GgmlType::Q8_0,
@@ -387,6 +361,20 @@ impl TensorSource for SafetensorsSource {
                 let (mut data, ne_in) = self.deq_f32(&hf)?;
                 let cfg = &self.cfg;
                 let (ne, bytes) = kind.apply(&mut data, ne_in, cfg);
+                // F8-E4M3-sourced LARGE 2D projections (NVIDIA 27B linear_attn in_proj_qkv/z +
+                // out_proj, V-reordered above): surfacing F32 is 461MB/linear-layer -> 22GB across
+                // the 48 linear layers (the load-tail OOM). Re-encode the post-reorder f32 to GGUF
+                // Q8_0 (same class as the Plain-arm F8 re-encode; per-32 fp16 scale is FINER than
+                // the source's single per-tensor scale). Small tensors (ssm_a/dt/conv1d/norms,
+                // alpha/beta [48,5120]) stay F32 — norms MUST be Float for the engine.
+                let is_f8 = self.lookup(&hf).is_some_and(|(i, _)| i.dtype == "F8_E4M3");
+                if is_f8 && ne.len() == 2 && ne[0] % 32 == 0
+                    && ne.iter().product::<u64>() >= 1_000_000 {
+                    let f32s: Vec<f32> = bytes.chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                    let out = crate::nvfp4_repack::f32_to_q8_0(&f32s);
+                    return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
+                }
                 Some(TensorView { bytes: Cow::Owned(bytes), ggml_type: GgmlType::F32, ne })
             }
         }
@@ -431,5 +419,35 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod nv27b_probe {
+    use super::*;
+
+    /// NVIDIA-official 27B (mixed FP8/NVFP4 ckpt) dtype-routing regression: every BIG tensor class
+    /// must surface memory-bounded (Q8_0 / NVFP4), NEVER F32 (461MB/linear-layer x 48 = the 22GB
+    /// load-tail OOM, 2026-07-07). Skips when the checkpoint is absent.
+    #[test]
+    fn nvidia_27b_dtype_routing() {
+        let dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        if !dir.join("model.safetensors.index.json").exists() { eprintln!("SKIP: ckpt absent"); return; }
+        let src = SafetensorsSource::open(dir).unwrap();
+        let ty = |n: &str| src.find(n).unwrap_or_else(|| panic!("{n} unresolved")).ggml_type;
+        // linear_attn F8 projections (Transform arm, V-reordered) -> Q8_0, never F32.
+        assert_eq!(ty("blk.0.attn_qkv.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.0.attn_gate.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.0.ssm_out.weight"), GgmlType::Q8_0);
+        // full-attn F8 projections (Plain arm) -> Q8_0.
+        assert_eq!(ty("blk.3.attn_q.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.3.attn_output.weight"), GgmlType::Q8_0);
+        // NVFP4 mlp + lm_head keep the native direct-import path.
+        assert!(src.find_nvfp4_native("blk.0.ffn_gate.weight").is_some());
+        assert!(src.find_nvfp4_native("output.weight").is_some());
+        // small SSM tensors stay F32 (norm-class, engine requires Float).
+        assert_eq!(ty("blk.0.ssm_alpha.weight"), GgmlType::F32);
+        assert_eq!(ty("blk.0.ssm_conv1d.weight"), GgmlType::F32);
+        assert_eq!(ty("blk.0.ssm_a"), GgmlType::F32);
     }
 }

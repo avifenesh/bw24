@@ -93,6 +93,25 @@ pub fn fp8_e4m3_to_f32(x: u8) -> f32 {
     sign * raw
 }
 
+/// f32 slice -> GGUF Q8_0 block bytes ({ fp16 d; int8 qs[32] } per 32 elems, 34 B/block).
+/// Standard ggml quantize_row_q8_0 math (amax/127 scale, round-to-nearest-even). Used by the
+/// F8-E4M3 and large-BF16 host re-encodes (NVIDIA 27B linear_attn + mtp classes). `data.len()`
+/// must be a multiple of 32 (all 2D matrices here have in_f % 32 == 0).
+pub fn f32_to_q8_0(data: &[f32]) -> Vec<u8> {
+    assert_eq!(data.len() % 32, 0, "Q8_0 encode needs len % 32 == 0, got {}", data.len());
+    let mut out = Vec::with_capacity(data.len() / 32 * 34);
+    for blk in data.chunks_exact(32) {
+        let amax = blk.iter().fold(0f32, |a, &v| a.max(v.abs()));
+        let d = amax / 127.0;
+        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+        out.extend_from_slice(&f32_to_f16_bits(d).to_le_bytes());
+        for &v in blk {
+            out.push((v * id).round_ties_even() as i32 as i8 as u8);
+        }
+    }
+    out
+}
+
 /// Repack ONE modelopt NVFP4 weight tensor `[out_f, in_f]` into bw24 GGUF block_nvfp4 bytes.
 ///
 /// `weight` = modelopt `.weight`        U8       (out_f * in_f/2 bytes), row-major.
