@@ -1351,6 +1351,14 @@ impl HybridModel {
             }
         }
         let mut round = 0usize;
+        // ADAPTIVE-K (BW24_SPEC_ADAPT=1): per-round draft length follows measured acceptance —
+        // K is prompt-CLASS dependent (p1 shallow decay -> deep K pays, p2/p3 steep decay ->
+        // K=3; 2026-07-07 sweep), and a serve daily cannot know the class up front. Mechanism:
+        // exponential moving average of per-round accepted count; draft len = ceil(ema)+1,
+        // clamped to [2, k]. Draft length already varies round-to-round (p-min chain stop), so
+        // verify/commit handle any k_round; exactness untouched (verify checks every token).
+        let adapt = std::env::var("BW24_SPEC_ADAPT").map(|v| v == "1").unwrap_or(false);
+        let mut acc_ema: f32 = (k as f32).min(3.0);   // optimistic start, settles in ~5 rounds
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
         let mut snap = cache.snapshot(e)?;
@@ -1378,6 +1386,7 @@ impl HybridModel {
             // rejected drafts, p-min extras and the pseudo-seed append via the len mechanism).
             // Legacy (BW24_SPEC_KVLOCAL): reset to empty, chain-only attention.
             scratch.set_len(e, if kv_local { 0 } else { pos + base0 - 1 })?;
+            let k_this = if adapt { ((acc_ema.ceil() as usize) + 1).clamp(2, k) } else { k };
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             if let Some(gr) = &draft_graph {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
@@ -1386,7 +1395,7 @@ impl HybridModel {
                 e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
                 e.set_u32_one(&mut g_tok, last_token)?;
                 e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
-                for j in 0..k {
+                for j in 0..k_this {
                     gr.launch()?;
                     scratch.kv.len += 1;   // host mirror (len_d advanced in-graph)
                     let idx = e.dtoh_u32_one(&g_tok)?;
@@ -1405,7 +1414,7 @@ impl HybridModel {
                 // EAGER DRAFT (fallback: MoE head/trunk, huge k, BW24_SPEC_NOGRAPH, capture fail).
                 let mut e_tok = last_token;
                 let mut d_seed = e.clone_dtod(&h_seed_buf)?;
-                for j in 0..k {
+                for j in 0..k_this {
                     // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token
                     // read instead of the ~600KB full-vocab dtoh + host argmax per draft token.
                     let mtp_pos = pos + base0 + j;
@@ -1463,6 +1472,10 @@ impl HybridModel {
             let bonus = t_pred(n_acc);
             total_drafted += k_round;
             total_accepted += n_acc;
+            // ADAPTIVE-K EMA update: alpha 0.4 — fast enough to follow a class shift within
+            // ~5 rounds, slow enough not to whipsaw on one bad round. Count the bonus-carried
+            // full-accept as k_round (the chain was fully right).
+            if adapt { acc_ema = 0.6 * acc_ema + 0.4 * (n_acc as f32); }
             if spec_stats {
                 st_len_hist[k_round] += 1;
                 for j in 0..k_round { st_drafted[j] += 1; }
