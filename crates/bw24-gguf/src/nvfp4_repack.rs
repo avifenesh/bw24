@@ -44,6 +44,74 @@ pub fn ue4m3_to_f32(x: u8) -> f32 {
     raw * 0.5
 }
 
+/// f32 -> IEEE f16 bits (round-to-nearest-even). Serde-free (no `half` dep) — used by the
+/// F8->Q8_0 host re-encode (per-32 block scale is fp16 in GGUF Q8_0).
+#[inline]
+pub fn f32_to_f16_bits(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xFF) as i32;
+    let man = b & 0x7F_FFFF;
+    if exp == 0xFF { return sign | 0x7C00 | if man != 0 { 0x200 } else { 0 }; } // inf/nan
+    let e16 = exp - 127 + 15;
+    if e16 >= 0x1F { return sign | 0x7C00; }            // overflow -> inf
+    if e16 <= 0 {                                        // subnormal / underflow
+        if e16 < -10 { return sign; }
+        let man24 = man | 0x80_0000;
+        let shift = (14 - e16) as u32;
+        let half_man = man24 >> shift;
+        let round = (man24 >> (shift - 1)) & 1;
+        let sticky = (man24 & ((1 << (shift - 1)) - 1)) != 0;
+        let mut m = half_man;
+        if round == 1 && (sticky || (m & 1) == 1) { m += 1; }
+        return sign | m as u16;
+    }
+    let mut m = (man >> 13) as u16;
+    let round = (man >> 12) & 1;
+    let sticky = (man & 0xFFF) != 0;
+    let mut e = e16 as u16;
+    if round == 1 && (sticky || (m & 1) == 1) {
+        m += 1;
+        if m == 0x400 { m = 0; e += 1; if e >= 0x1F { return sign | 0x7C00; } }
+    }
+    sign | (e << 10) | m
+}
+
+/// SIGNED FP8 E4M3 byte -> f32 (IEEE-754-style e4m3 with sign bit, bias 7; NaN = 0x7F/0xFF -> 0.0).
+/// This is the WEIGHT dtype of the NVIDIA-official 27B linear_attn projections (per-tensor F32
+/// weight_scale applied by the caller) — distinct from the UNSIGNED ue4m3 block-scale above.
+#[inline]
+pub fn fp8_e4m3_to_f32(x: u8) -> f32 {
+    let mag = x & 0x7F;
+    if mag == 0x7F {
+        return 0.0; // NaN code -> 0.0 (modelopt convention)
+    }
+    let sign = if x & 0x80 != 0 { -1.0f32 } else { 1.0 };
+    let exp = ((mag >> 3) & 0xF) as i32;
+    let man = (mag & 0x7) as f32;
+    let raw = if exp == 0 { (man / 8.0) * 2f32.powi(-6) } else { (1.0 + man / 8.0) * 2f32.powi(exp - 7) };
+    sign * raw
+}
+
+/// f32 slice -> GGUF Q8_0 block bytes ({ fp16 d; int8 qs[32] } per 32 elems, 34 B/block).
+/// Standard ggml quantize_row_q8_0 math (amax/127 scale, round-to-nearest-even). Used by the
+/// F8-E4M3 and large-BF16 host re-encodes (NVIDIA 27B linear_attn + mtp classes). `data.len()`
+/// must be a multiple of 32 (all 2D matrices here have in_f % 32 == 0).
+pub fn f32_to_q8_0(data: &[f32]) -> Vec<u8> {
+    assert_eq!(data.len() % 32, 0, "Q8_0 encode needs len % 32 == 0, got {}", data.len());
+    let mut out = Vec::with_capacity(data.len() / 32 * 34);
+    for blk in data.chunks_exact(32) {
+        let amax = blk.iter().fold(0f32, |a, &v| a.max(v.abs()));
+        let d = amax / 127.0;
+        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+        out.extend_from_slice(&f32_to_f16_bits(d).to_le_bytes());
+        for &v in blk {
+            out.push((v * id).round_ties_even() as i32 as i8 as u8);
+        }
+    }
+    out
+}
+
 /// Repack ONE modelopt NVFP4 weight tensor `[out_f, in_f]` into bw24 GGUF block_nvfp4 bytes.
 ///
 /// `weight` = modelopt `.weight`        U8       (out_f * in_f/2 bytes), row-major.
@@ -396,5 +464,26 @@ mod tests {
         assert_eq!(packed[4 + 0] & 0x0F, 5, "elem0 -> block0 byte0 low");
         // elem 1 is GGUF s=0,j=1 low nibble -> blk[4 + 1] low nibble.
         assert_eq!(packed[4 + 1] & 0x0F, 9, "elem1 -> block0 byte1 low");
+    }
+}
+
+#[cfg(test)]
+mod fp8_tests {
+    use super::fp8_e4m3_to_f32;
+    #[test]
+    fn e4m3_known_values() {
+        // e4m3 bias 7: 0x38 = s0 e7 m0 = 1.0; 0x3C = 1.5; 0x40 = 2.0; 0xB8 = -1.0;
+        // 0x08 = e1 m0 = 2^-6; 0x01 = subnormal 1/8 * 2^-6; 0x7F/0xFF = NaN -> 0
+        assert_eq!(fp8_e4m3_to_f32(0x38), 1.0);
+        assert_eq!(fp8_e4m3_to_f32(0x3C), 1.5);
+        assert_eq!(fp8_e4m3_to_f32(0x40), 2.0);
+        assert_eq!(fp8_e4m3_to_f32(0xB8), -1.0);
+        assert_eq!(fp8_e4m3_to_f32(0x08), 2f32.powi(-6));
+        assert_eq!(fp8_e4m3_to_f32(0x01), 0.125 * 2f32.powi(-6));
+        assert_eq!(fp8_e4m3_to_f32(0x7F), 0.0);
+        assert_eq!(fp8_e4m3_to_f32(0xFF), 0.0);
+        assert_eq!(fp8_e4m3_to_f32(0x00), 0.0);
+        // e4m3 max normal = 448 (0x7E)
+        assert_eq!(fp8_e4m3_to_f32(0x7E), 448.0);
     }
 }

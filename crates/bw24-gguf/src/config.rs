@@ -254,10 +254,16 @@ impl ModelConfig {
             None
         };
 
+        // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; qwen3.6-27B (dense hybrid,
+        // NVIDIA + local text ckpts) uses `mtp_num_hidden_layers`. Same meaning (head depth = 1).
+        let nextn = c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0);
+
         ModelConfig {
             arch,
             name: c.name.clone().unwrap_or_default(),
-            n_layer: c.num_hidden_layers,
+            // GGUF `block_count` INCLUDES the MTP/NextN block(s) (hybrid.rs n_trunk = n_layer -
+            // nextn); HF `num_hidden_layers` EXCLUDES them. Add nextn so both sources agree.
+            n_layer: c.num_hidden_layers + nextn,
             n_embd: c.hidden_size,
             n_head,
             n_head_kv,
@@ -275,8 +281,11 @@ impl ModelConfig {
             ssm,
             moe,
             m3,
-            nextn_predict_layers: c.num_nextn_predict_layers.unwrap_or(0),
-            n_layer_total: c.num_hidden_layers + c.num_nextn_predict_layers.unwrap_or(0),
+            // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
+            // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
+            nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
+            n_layer_total: c.num_hidden_layers
+                + c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
         }
     }
 
@@ -325,6 +334,7 @@ pub struct HfConfig {
     pub rope_theta: f32,
     pub full_attention_interval: Option<u32>,
     pub num_nextn_predict_layers: Option<u32>,
+    pub mtp_num_hidden_layers: Option<u32>,   // qwen3_5/3_6 HF key for the MTP head depth (27B: 1)
     // MoE
     pub num_experts: Option<u32>,
     pub num_experts_per_tok: Option<u32>,
@@ -368,6 +378,7 @@ impl Default for HfConfig {
             rope_theta: 10000.0,
             full_attention_interval: None,
             num_nextn_predict_layers: None,
+            mtp_num_hidden_layers: None,
             num_experts: None,
             num_experts_per_tok: None,
             moe_intermediate_size: None,
@@ -430,6 +441,7 @@ impl HfConfig {
         if let Some(v) = o.f32("rope_theta") { self.rope_theta = v; }
         if let Some(v) = o.u32("full_attention_interval") { self.full_attention_interval = Some(v); }
         if let Some(v) = o.u32("num_nextn_predict_layers") { self.num_nextn_predict_layers = Some(v); }
+        if let Some(v) = o.u32("mtp_num_hidden_layers") { self.mtp_num_hidden_layers = Some(v); }
         if let Some(v) = o.u32("num_experts").or_else(|| o.u32("num_local_experts")) { self.num_experts = Some(v); }
         if let Some(v) = o.u32("num_experts_per_tok") { self.num_experts_per_tok = Some(v); }
         if let Some(v) = o.u32("moe_intermediate_size") { self.moe_intermediate_size = Some(v); }
