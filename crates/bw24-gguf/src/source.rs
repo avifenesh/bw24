@@ -382,6 +382,19 @@ impl TensorSource for SafetensorsSource {
                 // Q8_0 (same class as the Plain-arm F8 re-encode; per-32 fp16 scale is FINER than
                 // the source's single per-tensor scale). Small tensors (ssm_a/dt/conv1d/norms,
                 // alpha/beta [48,5120]) stay F32 — norms MUST be Float for the engine.
+                // BF16-sourced in_proj_a/b [48,5120]: below the 1M-element BF16 gate, but leaving
+                // them F32 breaks `mixer_in_q8_1_fast` (requires beta+alpha quant) for EVERY
+                // linear layer -> unfused norm path + cuBLAS f32 GEMV pairs (nsys: 96 dot+reduce
+                // launches/pass + rms_norm_f32 at 12.5us vs 1.8us fused). Q8_0 puts them on the
+                // fused2/dual q8-fast chain like the GGUF twin's quantized a/b.
+                let is_bf16 = self.lookup(&hf).is_some_and(|(i, _)| i.dtype == "BF16");
+                if is_bf16 && ne.len() == 2 && ne[0] % 32 == 0
+                    && (hf.ends_with("in_proj_a.weight") || hf.ends_with("in_proj_b.weight")) {
+                    let f32s: Vec<f32> = bytes.chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                    let out = crate::nvfp4_repack::f32_to_q8_0(&f32s);
+                    return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
+                }
                 let is_f8 = self.lookup(&hf).is_some_and(|(i, _)| i.dtype == "F8_E4M3");
                 if is_f8 && ne.len() == 2 && ne[0] % 32 == 0
                     && ne.iter().product::<u64>() >= 1_000_000 {
