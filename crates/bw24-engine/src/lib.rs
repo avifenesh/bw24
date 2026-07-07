@@ -1752,11 +1752,21 @@ impl Engine {
         // lm_head `output` reach `matmul` directly at m=T=2..4). Walks the weight ONCE, dp4a vs all m
         // activation columns -> 1 weight read for m tokens (vs grid.y=m re-reading m times below). Quant
         // the activation once here (q8_1) like the _fast paths; macro-scale applied via the scale!=1.0
-        // block below. BIT-IDENTICAL per (token,row) to the _dp4a path. BW24_NO_BATCHED -> per-m path.
+        // block below. BW24_NO_BATCHED -> per-m path.
+        //
+        // DECODE-PARITY GATE (2026-07-07, the 9B synth K=3/4/6 spec FAIL root cause): the batched
+        // kernels are bit-identical per (token,row) to MMVQ's 32-thread warp reduce, NOT to the
+        // dp4a kernels' 128-thread two-level reduce. Without BW24_MMVQ the m=1 decode chain rides
+        // dp4a, so a verify riding batched here has a DIFFERENT FP order than the decode it must
+        // match bit-for-bit — greedy spec flips at tight-margin tokens (the old HANDOVER "ENV LAW:
+        // FAST+MMVQ both required" footgun, closed here). Parity law: the m>1 kernel CLASS must be
+        // a pure function of (dtype, env) equal to the m=1 class — batched iff MMVQ. Without MMVQ
+        // the verify falls to the per-m grid.y=m dp4a path below (each column = the exact m=1
+        // dp4a program). BW24_MMVQ=1 (the daily config) is dispatch-unchanged.
         if (2..=8).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
-                if self.batched_supports(*qtype) {
+                if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
                     let mcols = Self::batched_mcols(m);
                     let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
                     let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0, *rp)?;
@@ -1862,10 +1872,14 @@ impl Engine {
         // grid.y=m INDEPENDENT blocks per output row -> the weight row is re-read m times from HBM/L2.
         // The _b2/_b4 kernels walk the weight ONCE and dp4a vs all m activation columns, so m tokens
         // cost ~1 weight read instead of m (decode is weight-BW-bound). BIT-IDENTICAL per (token,row)
-        // to the _dp4a/_mmvq path. m=2 -> mcols=2; m∈{3,4} -> mcols=4; m∈{5..8} -> mcols=8 (kernel
-        // guards c>=m). Default-on; BW24_NO_BATCHED forces the per-m grid.y=m path (the A/B
-        // reference); BW24_B8=0 keeps m=5..8 on the old per-m path (b8-tier-only seam).
-        if (2..=8).contains(&m) && self.batched_supports(qtype)
+        // to the _mmvq path (32-thread warp reduce — NOT the dp4a 128-thread reduce below).
+        // m=2 -> mcols=2; m∈{3,4} -> mcols=4; m∈{5..8} -> mcols=8 (kernel guards c>=m).
+        // BW24_NO_BATCHED forces the per-m grid.y=m path (the A/B reference); BW24_B8=0 keeps
+        // m=5..8 on the old per-m path (b8-tier-only seam).
+        // DECODE-PARITY GATE (2026-07-07): batched iff mmvq_supports — see matmul's parity note.
+        // Without BW24_MMVQ, m=1 decode rides dp4a (the arm below at m=1); the verify must ride
+        // the SAME class per column (grid.y=m dp4a = the exact m=1 dp4a program per column).
+        if (2..=8).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
             let mcols = Self::batched_mcols(m);
@@ -1923,7 +1937,10 @@ impl Engine {
         // tokens. The dispatch the divergence fix must avoid is dp4a's 128-thread two-level
         // reduce, NOT this. m=5..8 is the K=4..7 spec-verify tier (b8): pre-b8 T=5 fell to the
         // grid.y=m per-row MMVQ below = 5 full weight reads/launch — the measured 27B K=4 cliff.
-        if (2..=8).contains(&m) && self.batched_supports(qtype)
+        // DECODE-PARITY GATE (2026-07-07): batched (MMVQ-class order) only when the m=1 decode
+        // chain rides MMVQ too — without BW24_MMVQ decode is dp4a, so the exact-contract here
+        // must be per-column dp4a (matmul_pre fallthrough), not the MMVQ order.
+        if (2..=8).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
             let mcols = Self::batched_mcols(m);
