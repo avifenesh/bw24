@@ -773,6 +773,17 @@ impl HybridModel {
             Self::moe_route(e, &logits, t, n_expert, n_used)?
         };
 
+        // BW24_MOE_TRACE=<path>: append one line per (layer, step) with the selected expert ids —
+        // offline analysis derives the decode working set + step-to-step reuse (the go/no-go
+        // measurement for resident-expert tiering; see rig5090.jsonl 2026-07-07 pinned-tier row).
+        if let Ok(path) = std::env::var("BW24_MOE_TRACE") {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
+                let _ = writeln!(f, "{} {} {}", il, t, ids.join(","));
+            }
+        }
+
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
         if t > 1 && std::env::var("BW24_MOE_STATS").is_ok() {
