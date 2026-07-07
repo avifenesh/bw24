@@ -3610,6 +3610,26 @@ impl Engine {
         Ok(())
     }
 
+    /// add+RMSNorm emitting the f32 normed row AND its q8_1 quantization in one launch (the MoE
+    /// layer input: z feeds the router matmul as f32, the expert dp4a as q8_1). BIT-IDENTICAL to
+    /// add_rms_norm + quantize_q8_1. Returns (q, d) alongside the caller-provided res/z buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_rms_norm_zq8(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                            res: &mut CudaSlice<f32>, z: &mut CudaSlice<f32>,
+                            ncols: usize, nrows: usize, eps: f32)
+                            -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        assert!(ncols % 32 == 0);
+        let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("add_rms_norm_zq8");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
+        let (nc, ep) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(w).arg(res).arg(z).arg(&mut q).arg(&mut d).arg(&nc).arg(&ep);
+        unsafe { b.launch(cfg)?; }
+        Ok((q, d))
+    }
+
     /// gated RMSNorm emitting q8_1 directly (fused quantize epilogue) — the ssm_out matvec input.
     /// BIT-IDENTICAL bytes to gated_rmsnorm + quantize_q8_1 (ncols % 32 == 0; blocks never straddle
     /// rows). Saves one launch per linear-attn layer (36/token on the 9B).

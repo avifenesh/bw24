@@ -276,8 +276,12 @@ impl HybridModel {
             crate::hybrid::Ffn::Moe(m) => {
                 let mut x1 = e.uninit(n_embd)?;
                 let mut z = e.uninit(n_embd)?;
+                // z-quantize fuse (add_rms_norm_zq8) measured NEGATIVE here (158.8 vs 160.6:
+                // the fused warp-per-block quantize pass re-reads z slower than the dedicated
+                // coalesced quantize_q8_1). Kernel + threading kept for graph-capture use where
+                // launch count matters more; eager default = unfused (no gain = no change).
                 e.add_rms_norm(x, mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
-                let ffn_out = self.moe_ffn_il(e, m, &z, 1, il as u16)?;
+                let ffn_out = self.moe_ffn_il_zq8(e, m, &z, None, 1, il as u16)?;
                 Ok((x1, ffn_out))
             }
         }

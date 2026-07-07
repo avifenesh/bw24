@@ -629,6 +629,15 @@ impl HybridModel {
         Self::moe_ffn(e, m, z, t, &self.cfg, il, self.max_moe_block())
     }
 
+    /// Decode-path twin with a PRE-QUANTIZED z (from add_rms_norm_zq8): threads (zq, zd) into the
+    /// t=1 dev arm so the per-layer standalone quantize_q8_1 launch folds away. Identical bytes
+    /// (the fused kernel reproduces quantize_q8_1 exactly); every other path ignores the pair.
+    pub fn moe_ffn_il_zq8(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
+                          zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize, il: u16)
+               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Self::moe_ffn_inner(e, m, z, zq8, t, &self.cfg, il, self.max_moe_block())
+    }
+
     /// MoE FFN (EDGE-1), source-/model-agnostic. z: [T, n_embd] (already post-attention-normed).
     /// Returns moe_out [T, n_embd]. Node-for-node vs llama.cpp build_moe_ffn. Shared by the hybrid
     /// (qwen35moe, shared expert present) and the dense-attention MoE (OLMoE, no shared expert) paths;
@@ -637,6 +646,14 @@ impl HybridModel {
     /// `il` is the layer index — the residency-cache key prefix. `max_block` is the global max expert
     /// stride (fixed cache-slot size); pass `self.max_moe_block()`.
     pub(crate) fn moe_ffn(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
+                          cfg: &ModelConfig, il: u16, max_block: usize)
+               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Self::moe_ffn_inner(e, m, z, None, t, cfg, il, max_block)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn moe_ffn_inner(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
+                          zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         // A2: Expert-grouped dispatch for prefill (T>1). BW24_MOE_GROUPED=1 routes here.
@@ -666,11 +683,19 @@ impl HybridModel {
             }
             return Ok(grouped_out);
         }
-        Self::moe_ffn_sequential(e, m, z, t, cfg, il, max_block)
+        Self::moe_ffn_sequential_zq8(e, m, z, zq8, t, cfg, il, max_block)
     }
 
     /// Sequential (per-token) MoE FFN -- the original path. Factored out for the gate comparison.
     pub(crate) fn moe_ffn_sequential(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
+                          cfg: &ModelConfig, il: u16, max_block: usize)
+               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Self::moe_ffn_sequential_zq8(e, m, z, None, t, cfg, il, max_block)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn moe_ffn_sequential_zq8(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
+                          zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
                                      cfg: &ModelConfig, il: u16, max_block: usize)
                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{PROJ_GATE, PROJ_UP, PROJ_DOWN};
@@ -752,7 +777,7 @@ impl HybridModel {
         let dev_ok = cfg.m3.is_none();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
-            return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
+            return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
         }
         if dev_ok && use_cache && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
@@ -761,7 +786,7 @@ impl HybridModel {
                 Ok(c.layer_dev_row(il, n_expert, eng)?.is_some())
             })?;
             if row_ok {
-                return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
+                return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
             }
         }
 
@@ -1312,7 +1337,9 @@ impl HybridModel {
 
     /// kernel headers); the shared-expert epilogue is byte-identical to moe_ffn_sequential's.
     #[allow(clippy::too_many_arguments)]
-    fn moe_ffn_dev(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, logits: &CudaSlice<f32>,
+    #[allow(clippy::too_many_arguments)]
+    fn moe_ffn_dev(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
+                   zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, logits: &CudaSlice<f32>,
                    t: usize, cfg: &ModelConfig, il: u16, max_block: usize)
                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let moe = cfg.moe.as_ref().unwrap();
@@ -1339,7 +1366,10 @@ impl HybridModel {
                 let wt = w_d.slice(tok * n_used..(tok + 1) * n_used);
                 let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                 if q8 {
-                    let (zq, zd) = e.quantize_q8_1_view(&zt, 1, n_embd)?;
+                    let (zq, zd) = match (t, zq8) {
+                        (1, Some((q, d))) => (q.clone(), d.clone()),
+                        _ => e.quantize_q8_1_view(&zt, 1, n_embd)?,
+                    };
                     let act = e.moe_gate_up_silu8_dev_q8(&dev.ptr_row, &selt, &zq, &zd,
                                                          n_embd, n_ff_exp, n_used, n_expert,
                                                          m.gate_exps.qtype, m.up_exps.qtype,
@@ -1377,7 +1407,10 @@ impl HybridModel {
                 let wt = w_d.slice(tok * n_used..(tok + 1) * n_used);
                 let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                 if q8 {
-                    let (zq, zd) = eng.quantize_q8_1_view(&zt, 1, n_embd)?;
+                    let (zq, zd) = match (t, zq8) {
+                        (1, Some((q, d))) => (q.clone(), d.clone()),
+                        _ => eng.quantize_q8_1_view(&zt, 1, n_embd)?,
+                    };
                     let act = eng.moe_gate_up_silu8_dev_q8(row, &selt, &zq, &zd,
                                                            n_embd, n_ff_exp, n_used, n_expert,
                                                            m.gate_exps.qtype, m.up_exps.qtype,
