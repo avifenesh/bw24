@@ -24,6 +24,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !qn.is_empty() {
         println!("our blk.5.q_norm[:3]: {:?} (HF raw ~[0.332, 0.305, 0.301]; +1 -> ~[1.332, 1.305, 1.301])", &qn[..3]);
     }
+    // REAL-TENSOR decode-vs-verify matmul pair check at L0 (MMVQ bisect): run wq through
+    // matmul_decode_exact at m=1 (decode class) and m=2 (verify class), compare col 0 bitwise.
+    if let bw24_engine::hybrid::Mixer::Full(fa) = &model.layers[0].mixer {
+        let in_f = fa.wq.in_features();
+        let out_f = fa.wq.out_features();
+        let x1: Vec<f32> = (0..in_f).map(|i| (((i * 40503) % 1000) as f32) / 500.0 - 1.0).collect();
+        let mut x2 = x1.clone();
+        x2.extend((0..in_f).map(|i| (((i * 2654435761usize) % 1000) as f32) / 500.0 - 1.0));
+        let x1d = e.htod(&x1)?;
+        let x2d = e.htod(&x2)?;
+        let y1 = e.matmul_decode_exact(&fa.wq, &x1d, 1)?;
+        let y2 = e.matmul_decode_exact(&fa.wq, &x2d, 2)?;
+        let h1 = e.dtoh(&y1)?;
+        let h2 = e.dtoh(&y2)?;
+        let bad = h1.iter().zip(&h2[..out_f]).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        let md = h1.iter().zip(&h2[..out_f]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        println!("L0 wq decode-exact m=1 vs m=2 col0: bit-mismatch {bad}/{out_f} maxdiff {md:.3e}");
+    }
     // hidden trace through layer 0-2 for token 20768 at T=1 (decode path): print per-layer
     // residual norms — a wrong weight class (e.g. swapped gate/up, bad repack) shows as an
     // exploding/collapsing norm long before the head.
