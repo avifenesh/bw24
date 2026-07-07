@@ -336,19 +336,54 @@ impl HybridModel {
         // embed the single token -> [1, n_embd]
         let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
 
+        // CROSS-LAYER ADD+NORM FUSION (launch-arc 2026-07-07): layer il's post-FFN residual add
+        // (x2 = x1 + ffn_out) and layer il+1's attn_norm+quantize are consecutive row-wise ops —
+        // add_rms_norm_q8_1 does all three in ONE launch (bit-identity proven in kernel_check:
+        // add_rms_norm == add then rms_norm; _q8_1 == then quantize_q8_1). Carry the un-added
+        // (x1, ffn_out) pair into the next iteration; the fused launch materializes x2 (the
+        // residual this layer needs) as its `res` output. Falls back to the separate add when
+        // the next mixer is off the q8_1 fast path.
+        let mut pending: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
         for (il, layer) in self.layers.iter().enumerate() {
-            // DECODE attn-input NORM-FUSION: when the mixer's projections are q8_1-fast, emit the
-            // attn_norm output PRE-QUANTIZED (rms_norm_q8_1) and feed the *_pre mixer (skips its
-            // internal quantize_q8_1 + the f32 `h` HBM round-trip). h only materialized on the
-            // non-fast fallback. Bit-identical (rms_norm_q8_1 == rms_norm then quantize_q8_1).
-            let mixed = self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?;
+            let anorm = layer.attn_norm.float_data();
+            let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                && self.mixer_in_q8_1_fast(e, &layer.mixer);
+            // NOTE: take() FIRST, branch on fuse after — a tuple pattern like
+            // `if let (Some(p), true) = (pending.take(), fuse)` DROPS the taken pair when
+            // fuse is false (pattern fails post-take) and silently loses the residual add.
+            let taken = pending.take();
+            let mixed = match (taken, fuse) {
+                (Some((x1, f1)), true) => {
+                    // fused add + attn_norm + q8_1 (this layer's mixer input), res -> x2
+                    let mut x2 = e.uninit(n_embd)?;
+                    let (hq, hd) = e.add_rms_norm_q8_1(&x1, &f1, anorm, &mut x2, n_embd, 1, eps)?;
+                    x = x2;
+                    let h0 = e.zeros(0)?;
+                    match &layer.mixer {
+                        Mixer::Full(fa) => self.full_attn_decode_pre(e, fa, &h0, Some((&hq, &hd)), &pos_d, pos, cache, il)?,
+                        Mixer::Linear(la) => self.linear_attn_decode_pre(e, la, &h0, &hq, &hd, cache, il, false)?,
+                    }
+                }
+                (taken, _) => {
+                    if let Some((x1, f1)) = taken {
+                        let mut x2 = e.uninit(n_embd)?;
+                        e.add(&x1, &f1, &mut x2, n_embd)?;
+                        x = x2;
+                    }
+                    self.attn_in_norm_mixer(e, layer, &x, &pos_d, pos, cache, il, n_embd, eps)?
+                }
+            };
 
             // DECODE NORM-FUSION LEVER (residual_norm_ffn): add+post_attn_norm+q8_1 fused on the Dense
             // fast path. Bit-identical to add + rms_norm + ffn (add_rms_norm == add then rms_norm,
             // proven in kernel_check; add_rms_norm_q8_1 == add_rms_norm then quantize_q8_1).
             let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
+            pending = Some((x1, ffn_out));
+        }
+        // final layer's add (no next norm to fuse with — output_norm is f32-out)
+        if let Some((x1, f1)) = pending.take() {
             let mut x2 = e.uninit(n_embd)?;
-            e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            e.add(&x1, &f1, &mut x2, n_embd)?;
             x = x2;
         }
 
