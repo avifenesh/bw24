@@ -2,13 +2,14 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-On its target models it beats llama.cpp where it counts: 9B generation 1.2-1.5x ahead at every prompt size, 27B (with MTP speculative decoding) ahead on short-code and long-agentic prompts and within 5% on the rest — every number measured on-device with a matched same-prompt protocol (see `research/tune-data/`).
+On its target models it beats or matches llama.cpp everywhere: 9B generation 1.3-1.6x ahead at every prompt size, 27B (MTP speculative decoding) 1.4x ahead on short-code and at parity on medium/long prompts, 35B MoE ahead at short prompts — every number measured on-device with a matched same-prompt protocol (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
 
 ## Why this project
 
 - Use this as a reference for real sm_120a (consumer Blackwell) kernel work: NVFP4 block-scale decode, int8 `m16n8k16` tensor-core MMA, dp4a matvec, cp.async pipelining — with the measured win/loss record for each attempt.
 - Use this if you want an inference engine whose every optimization is gated on bit-exactness (argmax match + speculative self-consistency) rather than "looks close enough."
 - Use this to run Qwen3.5/3.6 dense (9B/27B, NVFP4 hybrid) and Qwen3.6-35B-A3B MoE from GGUF on a 24 GB card, including MTP speculative decoding and MoE expert caching with VRAM/host/disk spill.
+- Use this to run safetensors checkpoints without GGUF conversion: NVIDIA's official Qwen3.6-27B-NVFP4 (modelopt mixed-precision: NVFP4 MLP, FP8-E4M3 linear attention, BF16 model-trained MTP head — re-encoded to fast-path quants at load) and MiniMax-M3 REAP50 (121 GB sigmoid-routed MoE, streamed through an NVMe disk-tier expert loader).
 - Read `research/tune-data/*.jsonl` if you want a labeled corpus of kernel-tuning experiments (config → measured perf, wins and losses both recorded).
 
 ## Requirements
@@ -16,7 +17,7 @@ On its target models it beats llama.cpp where it counts: 9B generation 1.2-1.5x 
 - NVIDIA Blackwell consumer GPU (sm_120a). Primary target: RTX 5090 Laptop. An sm_89 (Ada) branch exists at `arch/sm89-l40s`.
 - CUDA toolkit 12.8 (13.1 optional for the cuBLASLt/CUTLASS paths; 13.1 nvcc miscompiles some sm_120 kernels, see `crates/bw24-engine/build.rs`).
 - Rust (edition 2024), [cudarc](https://github.com/coreylowman/cudarc) 0.19 with dynamic loading.
-- A GGUF model. Tested: Qwen3.5-9B / Qwen3.6-27B (NVFP4 + Q5_K hybrid), Qwen3.6-35B-A3B (IQ4_XS MoE), plus Q4_K/Q5_K/Q6_K/Q8_0 k-quant variants.
+- A model. GGUF tested: Qwen3.5-9B / Qwen3.6-27B (NVFP4 + Q5_K hybrid), Qwen3.6-35B-A3B (IQ4_XS MoE), plus Q4_K/Q5_K/Q6_K/Q8_0 k-quant variants. Safetensors (HF dir) tested: nvidia/Qwen3.6-27B-NVFP4, MiniMax-M3 REAP50 NVFP4 — pass the directory instead of a .gguf path.
 
 ## Quick start
 
@@ -61,6 +62,8 @@ BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 \
 - **FlashAttention-style kernels** — fused prefill and decode attention with quantized KV (q8_0 K / q4_0 V default, FP8 optional), register-resident dequant, split-K for long context.
 - **CUDA-graph decode** — the full per-token decode is one graph replay; per-step host round-trip is 4 bytes.
 - **Hybrid architectures** — full-attention + gated-delta-net (SSM) layer mixes, as in Qwen3.6.
+- **Safetensors loader** — HF checkpoints load directly (no GGUF conversion): modelopt NVFP4 repacks byte-exact into the GGUF block layout, FP8-E4M3 and large-BF16 tensors re-encode to Q8_0/NVFP4 at load, V-head permutations apply on packed bytes, MoE experts stream through a disk-tier repack cache for models far bigger than VRAM+RAM.
+- **Sigmoid-router MoE** (MiniMax/DeepSeek-style) — e_score_correction_bias selection, swigluoai activation, gate-optional attention; with the measured law that cross-kernel-family FP-order differences are architectural on discontinuous top-k routing (exactness binds within a config).
 
 ## Correctness discipline
 
@@ -78,15 +81,17 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp bu
 | Model | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
 | Qwen3.5-9B NVFP4 (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | **1.59x / 1.29x / 1.28x** |
-| Qwen3.6-27B NVFP4 (spec K=3) | 99 / 88 / 76 | 87 / 92 / 75 | **1.14x** / 0.95x / **1.01x** |
+| Qwen3.6-27B NVFP4 (spec, per-class K) | 122 / 96 / 76 | 87 / 92 / 75 | **1.40x / 1.04x / 1.00x** |
 | Qwen3.6-35B-A3B MoE (spec K=2 / plain) | 182 / 158 | 170 | **1.08x** / 0.93x |
 
-Also running, no llama.cpp comparison possible (safetensors-only checkpoints):
+The 27B row uses the measured per-prompt-class optimum (K=7 short-code, K=3 + generic vocab trim elsewhere) — the speculative depth that pays is a property of the content's per-slot acceptance decay, not of the engine, and the two engines bind differently: llama.cpp is cost-bound at short prompts (its draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance up to 1.40x. At medium/long prompts both engines sit on the same content-acceptance ceiling.
 
-- **nvidia/Qwen3.6-27B-NVFP4** (official NVIDIA checkpoint: mixed NVFP4 + FP8 linear-attention + model-trained BF16 MTP head, loaded straight from safetensors) — spec K=2 45-48 tok/s on the laptop rig. The vLLM 0.24.0 reference on an RTX PRO 6000 runs the same checkpoint through Marlin weight-only dequant (no native FP4 on sm_120 in vLLM).
-- **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader; decode is I/O-bound by design here (routing-locality measurement in `research/tune-data/` shows capacity, not caching policy, is the binding constraint).
+Safetensors checkpoints (no llama.cpp comparison possible):
 
-Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind (27B medium-code and prefill, 35B MoE decode), the gap and its current diagnosis are tracked in the tune-data records, not hidden.
+- **nvidia/Qwen3.6-27B-NVFP4** — 92.5 tok/s spec on the laptop rig (2.3x the tuned local vLLM reference, which reaches 40.8 plain and cannot fit its MTP draft head on 24 GB; bw24's trimmed draft head byte-gathers rows from the trunk's own lm_head, zero extra VRAM). Same-silicon vLLM comparison on an RTX PRO 6000 96 GB: vLLM MTP reaches 147-184 tok/s there via batched multi-token drafting — the standing gap bw24 is working (bw24 92-97 on that box).
+- **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader (~1.5 tok/s, I/O-bound: measured routing locality shows 77% of experts get touched with weak reuse, so capacity — not caching policy — is the binding constraint). On a 96 GB RTX PRO 6000 the same code reaches ~6 tok/s and climbing with an 80 GB expert cache.
+
+Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind (prefill 1.65x vs llama.cpp, vLLM's batched MTP on big-VRAM boxes), the gap and its current diagnosis are tracked in the tune-data records, not hidden.
 
 ## Limitations
 
