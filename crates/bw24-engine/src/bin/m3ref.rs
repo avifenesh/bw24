@@ -40,5 +40,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut top: Vec<(usize, f32)> = logits.iter().cloned().enumerate().collect();
     top.sort_by(|a, b| b.1.total_cmp(&a.1));
     println!("top5 logits: {:?}", &top[..5]);
+    // WEIGHT DEQUANT CROSS-CHECK: layer-1 dense mlp gate row 0 first 8 values via our engine
+    // (Stage-A f32 dequant of the repacked bytes) vs the host modelopt reference printed by the
+    // python sidecar (expected ~[-0.0272, 0.0272, -0.0544, -0.0272, -0.0091, -0.0136, 0.0272, -0.0272]).
+    // one-hot matmul probes: y[r] = W[r][j] for one-hot x at j — reads back column j of the
+    // dequantized weight through the REAL matmul path (macro-scale applied like the forward).
+    if let bw24_engine::hybrid::Ffn::Dense { ffn_gate, .. } = &model.layers[1].ffn {
+        let in_f = ffn_gate.in_features();
+        for j in 0..8usize {
+            let mut xh = vec![0f32; in_f];
+            xh[j] = 1.0;
+            let x = e.htod(&xh)?;
+            let y = e.matmul(ffn_gate, &x, 1)?;
+            let h = e.dtoh(&y)?;
+            print!("{:.5} ", h[0]);
+        }
+        println!(" <- our W[0][0..8] via one-hot (expect ~[-0.0272, 0.0272, -0.0544, -0.0272, -0.0091, -0.0136, 0.0272, -0.0272])");
+    }
     Ok(())
 }
