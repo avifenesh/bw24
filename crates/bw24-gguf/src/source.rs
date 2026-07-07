@@ -489,3 +489,51 @@ mod nv27b_probe {
         assert!((first - 0.4375).abs() < 1e-3, "enorm +1 fold: got {first}");
     }
 }
+
+#[cfg(test)]
+mod nv27b_twin_parity {
+    use super::*;
+
+    /// Full-tensor numeric parity vs the GGUF twin (converted from the same NVIDIA ckpt):
+    /// every F32-surfaced tensor (norms incl +1 folds, ssm_a -exp, dt_bias, conv1d) must match
+    /// the twin's dequant bit-for-bit (both go bf16 -> f32 exactly). Skips when either is absent.
+    #[test]
+    fn nvidia_27b_vs_gguf_twin_f32_parity() {
+        let st_dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        let twin = std::path::Path::new(
+            "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf");
+        if !st_dir.join("model.safetensors.index.json").exists() || !twin.exists() {
+            eprintln!("SKIP: ckpt/twin absent"); return;
+        }
+        let src = SafetensorsSource::open(st_dir).unwrap();
+        let g = crate::GgufFile::open(twin.to_str().unwrap()).unwrap();
+        // NOTE: trunk pre-FFN norm resolves via the loader's ffn_norm fallback (the twin names it
+        // post_attention_norm) — compare ST ffn_norm vs twin post_attention_norm below.
+        let names = [
+            "blk.0.attn_norm.weight",
+            "blk.0.ssm_norm.weight", "blk.0.ssm_a", "blk.0.ssm_dt.bias",
+            "blk.0.ssm_conv1d.weight",
+            "blk.3.attn_q_norm.weight", "blk.3.attn_k_norm.weight",
+            "blk.64.attn_norm.weight", "blk.64.nextn.enorm.weight",
+            "blk.64.nextn.hnorm.weight", "blk.64.nextn.shared_head_norm.weight",
+            "output_norm.weight",
+        ];
+        // (ST ggml name, twin ggml name) pairs where the two sources use different aliases.
+        let pairs = [("blk.0.ffn_norm.weight", "blk.0.post_attention_norm.weight")];
+        for (st_name, twin_name) in names.iter().map(|&n| (n, n)).chain(pairs) {
+            let name = st_name;
+            let sv = src.find(st_name).unwrap_or_else(|| panic!("{st_name}: ST unresolved"));
+            let gt = g.find(twin_name).unwrap_or_else(|| panic!("{twin_name}: not in twin"));
+            assert_eq!(sv.ne, gt.ne, "{name}: ne mismatch");
+            let n: u64 = sv.ne.iter().product();
+            let a = crate::dequant::dequantize(sv.ggml_type, &sv.bytes, n as usize);
+            let b = crate::dequant::dequantize(gt.ggml_type, g.tensor_data(gt), n as usize);
+            let md = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+            // ssm_a = -exp(A_log): Rust libm expf vs the converter's numpy exp differ by ULPs.
+            // Everything else (renames, +1 folds, conv1d squeeze/reorder) must be bit-exact.
+            let tol = if name.ends_with("ssm_a") { 1e-7 } else { 0.0 };
+            assert!(md <= tol, "{name}: maxdiff {md} > tol {tol}");
+            eprintln!("{name:40} n={n:6} maxdiff={md:.1e}");
+        }
+    }
+}
