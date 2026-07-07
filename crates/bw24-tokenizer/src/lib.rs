@@ -8,6 +8,7 @@
 //! pre-tokenizers are not ported (we only need this model's).
 
 mod chat;
+mod json;
 mod unicode;
 mod unicode_data;
 
@@ -215,6 +216,205 @@ impl Tokenizer {
             bos_id,
             add_bos,
             pre,
+            chat_template,
+        })
+    }
+
+    /// Build a tokenizer from an HF fast-tokenizer checkpoint directory
+    /// (`tokenizer.json` + optional `tokenizer_config.json` / `generation_config.json` /
+    /// `chat_template.jinja`). Only byte-level BPE (the gpt2 class — MiniMax-M3, Qwen,
+    /// Llama-3 style) is supported: `model.type == "BPE"` with a ByteLevel pre-tokenizer.
+    ///
+    /// Mapping to the GGUF-built struct:
+    ///   - model.vocab (token -> id map)             -> id_to_token / token_to_id
+    ///   - model.merges ("a b" strings OR [a,b] pairs; both HF serializations) -> bpe_ranks
+    ///   - added_tokens special=true -> Control class (split before BPE + hidden on decode);
+    ///     non-special added tokens stay Normal.
+    ///   - eos/bos: tokenizer_config eos_token/bos_token (string or {content} object),
+    ///     generation_config eos_token_id (int or array) as the eos fallback.
+    ///   - add_bos: tokenizer_config add_bos_token (default false).
+    ///   - chat template: tokenizer_config chat_template, else chat_template.jinja.
+    ///   - pre = "default": every `pre` class routes to the gpt2-style byte-level split
+    ///     in bpe_tokenize (see the match there) — correct for the M3 tokenizer class.
+    pub fn from_hf_dir(dir: &std::path::Path) -> Result<Self, String> {
+        let tj_path = dir.join("tokenizer.json");
+        let text = std::fs::read_to_string(&tj_path)
+            .map_err(|e| format!("read {}: {e}", tj_path.display()))?;
+        let tj = json::parse(&text).map_err(|e| format!("{}: {e}", tj_path.display()))?;
+
+        let model = tj.get("model").ok_or("tokenizer.json: missing model")?;
+        if let Some(t) = model.get("type").and_then(|v| v.as_str()) {
+            if t != "BPE" {
+                return Err(format!("unsupported tokenizer.json model type '{t}' (only BPE)"));
+            }
+        }
+        // byte-level check: pre_tokenizer.type == ByteLevel (possibly inside a Sequence).
+        let pre_tok = tj.get("pre_tokenizer").ok_or("tokenizer.json: missing pre_tokenizer")?;
+        if !pre_tokenizer_is_byte_level(pre_tok) {
+            return Err("tokenizer.json: pre_tokenizer is not ByteLevel — only byte-level \
+                        BPE is supported"
+                .into());
+        }
+
+        // ---- vocab (token -> id). ids may exceed the map len (added_tokens append). ----
+        let vocab = model
+            .get("vocab")
+            .and_then(|v| v.as_obj())
+            .ok_or("tokenizer.json: missing model.vocab")?;
+        let empty: Vec<json::Value> = Vec::new();
+        let added = tj
+            .get("added_tokens")
+            .and_then(|v| v.as_arr())
+            .unwrap_or(&empty);
+        let mut max_id = 0u32;
+        for v in vocab.values() {
+            let id = v.as_u64().ok_or("tokenizer.json: non-integer id in model.vocab")? as u32;
+            max_id = max_id.max(id);
+        }
+        for a in added {
+            if let Some(id) = a.get("id").and_then(|v| v.as_u64()) {
+                max_id = max_id.max(id as u32);
+            }
+        }
+        let n = max_id as usize + 1;
+        let mut id_to_token = vec![String::new(); n];
+        let mut token_to_id: HashMap<String, u32> = HashMap::with_capacity(n);
+        let mut attrs = vec![TokAttr::Normal; n];
+        for (tok, v) in vocab {
+            let id = v.as_u64().unwrap() as u32;
+            id_to_token[id as usize] = tok.clone();
+            token_to_id.entry(tok.clone()).or_insert(id);
+        }
+        // added_tokens: register content + special flag. special=true -> Control (the class
+        // that is split out before BPE and hidden by decode_special(.., false)).
+        for a in added {
+            let id = a
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .ok_or("tokenizer.json: added_tokens entry missing id")? as u32;
+            let content = a
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("tokenizer.json: added_tokens entry missing content")?;
+            if id_to_token[id as usize].is_empty() {
+                id_to_token[id as usize] = content.to_string();
+            }
+            token_to_id.entry(content.to_string()).or_insert(id);
+            if a.get("special").and_then(|v| v.as_bool()).unwrap_or(false) {
+                attrs[id as usize] = TokAttr::Control;
+            }
+        }
+
+        // ---- merges: array of "a b" strings OR [a, b] pairs (HF emits both). ----
+        let merges = model
+            .get("merges")
+            .and_then(|v| v.as_arr())
+            .ok_or("tokenizer.json: missing model.merges")?;
+        let mut bpe_ranks = HashMap::with_capacity(merges.len());
+        for (i, m) in merges.iter().enumerate() {
+            let (first, second) = match m {
+                json::Value::Str(s) => {
+                    // byte search for the separating space from byte 1 (same as the GGUF
+                    // path: pieces may contain multibyte chars like 'Ġ', the space is ASCII).
+                    let bytes = s.as_bytes();
+                    let pos = bytes
+                        .iter()
+                        .skip(1)
+                        .position(|&b| b == b' ')
+                        .map(|p| p + 1)
+                        .ok_or_else(|| format!("tokenizer.json: merges[{i}] has no space"))?;
+                    (s[..pos].to_string(), s[pos + 1..].to_string())
+                }
+                json::Value::Arr(a) if a.len() == 2 => {
+                    let f = a[0]
+                        .as_str()
+                        .ok_or_else(|| format!("tokenizer.json: merges[{i}] non-string pair"))?;
+                    let s2 = a[1]
+                        .as_str()
+                        .ok_or_else(|| format!("tokenizer.json: merges[{i}] non-string pair"))?;
+                    (f.to_string(), s2.to_string())
+                }
+                _ => {
+                    return Err(format!(
+                        "tokenizer.json: merges[{i}] is neither \"a b\" string nor [a, b] pair"
+                    ));
+                }
+            };
+            bpe_ranks.insert((first, second), i as i32);
+        }
+
+        // special-token cache: same construction as from_gguf.
+        let mut special_tokens: Vec<u32> = (0..n as u32)
+            .filter(|&id| attrs[id as usize].is_special())
+            .collect();
+        special_tokens.sort_by(|&a, &b| {
+            id_to_token[b as usize]
+                .len()
+                .cmp(&id_to_token[a as usize].len())
+        });
+
+        // ---- sidecars: tokenizer_config.json + generation_config.json ----
+        let tc = std::fs::read_to_string(dir.join("tokenizer_config.json"))
+            .ok()
+            .and_then(|t| json::parse(&t).ok());
+        let gc = std::fs::read_to_string(dir.join("generation_config.json"))
+            .ok()
+            .and_then(|t| json::parse(&t).ok());
+
+        // eos_token/bos_token: plain string OR {"content": "..."} AddedToken object.
+        let tok_content = |v: &json::Value| -> Option<String> {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()))
+        };
+        let eos_from_cfg = tc
+            .as_ref()
+            .and_then(|c| c.get("eos_token"))
+            .and_then(&tok_content)
+            .and_then(|s| token_to_id.get(&s).copied());
+        // generation_config eos_token_id: int or array of ints (first entry wins).
+        let eos_from_gen = gc
+            .as_ref()
+            .and_then(|c| c.get("eos_token_id"))
+            .and_then(|v| match v {
+                json::Value::Num(_) => v.as_u64(),
+                json::Value::Arr(a) => a.first().and_then(|x| x.as_u64()),
+                _ => None,
+            })
+            .map(|v| v as u32);
+        let eos_id = eos_from_cfg.or(eos_from_gen).ok_or(
+            "no eos token: need tokenizer_config.json eos_token or \
+             generation_config.json eos_token_id",
+        )?;
+        let bos_id = tc
+            .as_ref()
+            .and_then(|c| c.get("bos_token"))
+            .and_then(&tok_content)
+            .and_then(|s| token_to_id.get(&s).copied());
+        let add_bos = tc
+            .as_ref()
+            .and_then(|c| c.get("add_bos_token"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // chat template: tokenizer_config chat_template string, else chat_template.jinja file.
+        let chat_template = tc
+            .as_ref()
+            .and_then(|c| c.get("chat_template"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| std::fs::read_to_string(dir.join("chat_template.jinja")).ok());
+
+        Ok(Tokenizer {
+            id_to_token,
+            token_to_id,
+            attrs,
+            bpe_ranks,
+            special_tokens,
+            eos_id,
+            bos_id,
+            add_bos,
+            pre: "default".to_string(),
             chat_template,
         })
     }
@@ -482,4 +682,135 @@ impl Tokenizer {
 enum Fragment {
     Text(String),
     Token(u32),
+}
+
+/// True when an HF `pre_tokenizer` object is byte-level BPE: type == "ByteLevel", or a
+/// "Sequence" whose pretokenizers include a ByteLevel step (the common Split+ByteLevel combo).
+fn pre_tokenizer_is_byte_level(pt: &json::Value) -> bool {
+    match pt.get("type").and_then(|v| v.as_str()) {
+        Some("ByteLevel") => true,
+        Some("Sequence") => pt
+            .get("pretokenizers")
+            .and_then(|v| v.as_arr())
+            .map(|arr| arr.iter().any(pre_tokenizer_is_byte_level))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod hf_tests {
+    use super::*;
+
+    /// Inline tokenizer.json fixture: byte-level BPE, ~20 tokens incl one special added
+    /// token, merges deliberately MIXED between the "a b" string format and the [a, b]
+    /// pair format (HF emits both across tokenizers versions).
+    const TOKENIZER_JSON: &str = r#"{
+      "version": "1.0",
+      "added_tokens": [
+        {"id": 15, "content": "<|end|>", "special": true},
+        {"id": 16, "content": "<think>", "special": false}
+      ],
+      "pre_tokenizer": {
+        "type": "Sequence",
+        "pretokenizers": [
+          {"type": "Split", "pattern": {"Regex": ""}, "behavior": "Isolated"},
+          {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false}
+        ]
+      },
+      "model": {
+        "type": "BPE",
+        "vocab": {
+          "h": 0, "e": 1, "l": 2, "o": 3, "Ġ": 4, "w": 5, "r": 6, "d": 7,
+          "he": 8, "ll": 9, "hell": 10, "hello": 11, "Ġw": 12, "or": 13, "!": 14
+        },
+        "merges": [
+          "h e",
+          ["l", "l"],
+          "he ll",
+          ["hell", "o"],
+          ["Ġ", "w"],
+          "o r"
+        ]
+      }
+    }"#;
+
+    fn write_fixture(name: &str, tokenizer_config: Option<&str>, generation_config: Option<&str>,
+                     jinja: Option<&str>) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bw24-tok-hf-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tokenizer.json"), TOKENIZER_JSON).unwrap();
+        if let Some(tc) = tokenizer_config {
+            std::fs::write(dir.join("tokenizer_config.json"), tc).unwrap();
+        }
+        if let Some(gc) = generation_config {
+            std::fs::write(dir.join("generation_config.json"), gc).unwrap();
+        }
+        if let Some(j) = jinja {
+            std::fs::write(dir.join("chat_template.jinja"), j).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn hf_dir_encode_decode_roundtrip_and_specials() {
+        // eos as an AddedToken OBJECT + chat_template string in tokenizer_config.
+        let tc = r#"{
+          "eos_token": {"content": "<|end|>", "lstrip": false},
+          "add_bos_token": false,
+          "chat_template": "{{ messages }}<|end|>"
+        }"#;
+        let dir = write_fixture("full", Some(tc), None, None);
+        let tok = Tokenizer::from_hf_dir(&dir).expect("from_hf_dir");
+
+        assert_eq!(tok.eos_id(), 15);
+        assert_eq!(tok.bos_id(), None);
+        assert_eq!(tok.pre(), "default");
+        assert_eq!(tok.vocab_size(), 17); // ids 0..16 (added tokens extend the table)
+        assert_eq!(tok.chat_template(), Some("{{ messages }}<|end|>"));
+
+        // BPE over both merge formats: "hello world" -> hello(11) Ġw(12) or(13) l(2) d(7).
+        // The 'hello' chain exercises string merges (h e / he ll), the pair merges
+        // ([l,l] / [hell,o] / [Ġ,w]) fire inside the same words -> both formats load.
+        let ids = tok.encode("hello world", true);
+        assert_eq!(ids, vec![11, 12, 13, 2, 7]);
+        assert_eq!(tok.decode(&ids), "hello world");
+
+        // special handling: <|end|> (Control) is split out BEFORE BPE and never byte-merged.
+        let ids = tok.encode("hello<|end|> world", true);
+        assert_eq!(ids, vec![11, 15, 12, 13, 2, 7]);
+        // decode with specials rendered vs dropped
+        assert_eq!(tok.decode_special(&ids, true), "hello<|end|> world");
+        assert_eq!(tok.decode_special(&ids, false), "hello world");
+
+        // non-special added token stays Normal: decodes as literal text.
+        assert_eq!(tok.decode(&[16]), "<think>");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hf_dir_generation_config_eos_fallback_and_jinja() {
+        // no tokenizer_config eos -> generation_config eos_token_id (array form) must win;
+        // chat template comes from chat_template.jinja.
+        let gc = r#"{"eos_token_id": [15, 14]}"#;
+        let dir = write_fixture("genconf", None, Some(gc), Some("JINJA {{ messages }}"));
+        let tok = Tokenizer::from_hf_dir(&dir).expect("from_hf_dir");
+        assert_eq!(tok.eos_id(), 15);
+        assert!(!tok.encode("hello", true).is_empty());
+        assert_eq!(tok.chat_template(), Some("JINJA {{ messages }}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hf_dir_rejects_non_byte_level() {
+        let dir = std::env::temp_dir()
+            .join(format!("bw24-tok-hf-nonbl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = TOKENIZER_JSON.replace("\"ByteLevel\"", "\"Metaspace\"");
+        std::fs::write(dir.join("tokenizer.json"), bad).unwrap();
+        assert!(Tokenizer::from_hf_dir(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

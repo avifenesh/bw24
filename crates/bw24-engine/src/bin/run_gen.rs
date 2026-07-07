@@ -21,10 +21,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // DIRECTORY path = safetensors HF checkpoint (MiniMax-M3 first-load path; GGUF stays the
     // dense-model norm). Tokenizer/chat paths below still need GGUF — ST runs raw-id only for now.
     if std::path::Path::new(&path).is_dir() {
-        let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
+        let dir = std::path::Path::new(&path);
+        let st = bw24_gguf::source::SafetensorsSource::open(dir)?;
         let model = HybridModel::load_from_source(&e, &st)?;
         println!("loaded {:?} from safetensors ({} layers)", model.cfg.arch, model.cfg.n_layer);
-        let prompt: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+
+        // --- prompt: TEXT path (--prompt / BW24_PROMPT_FILE / BW24_PROMPT, tokenizer from the
+        //     HF dir's tokenizer.json) or raw u32 ids (back-compat, the validation-gate path) ---
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let prompt_text: Option<String> = args
+            .iter()
+            .position(|a| a == "--prompt")
+            .and_then(|i| args.get(i + 1).cloned())
+            .or_else(|| std::env::var("BW24_PROMPT_FILE").ok()
+                .map(|f| std::fs::read_to_string(&f).expect("BW24_PROMPT_FILE unreadable")))
+            .or_else(|| std::env::var("BW24_PROMPT").ok());
+        let mut tokenizer: Option<Tokenizer> = None;
+        let prompt: Vec<u32> = if let Some(text) = &prompt_text {
+            let tok = Tokenizer::from_hf_dir(dir)
+                .map_err(|err| format!("HF tokenizer init failed: {err}"))?;
+            let to_encode = if std::env::var("BW24_CHAT").is_ok() {
+                let rendered = tok.apply_chat_template(&[("user", text)], true);
+                println!("chat-templated prompt:\n{rendered}");
+                rendered
+            } else {
+                text.clone()
+            };
+            let ids = tok.encode(&to_encode, true);
+            println!("prompt text: {text:?}");
+            tokenizer = Some(tok);
+            ids
+        } else {
+            args.iter().filter_map(|s| s.parse::<u32>().ok()).collect()
+        };
         let prompt = if prompt.is_empty() { vec![55u32] } else { prompt };
         println!("prompt tokens: {prompt:?}");
         // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
@@ -43,6 +72,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let md = prefill_last.iter().zip(&dec).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         println!("verify-prefill argmax={ap}  decode argmax={ad}  logit maxdiff={md:.3e}  {}",
                  if ap == ad { "MATCH" } else { "MISMATCH" });
+
+        // --- TEXT path: greedy-generate BW24_NGEN tokens on the (already primed) decode cache
+        //     and DETOKENIZE (mirrors the GGUF text path; raw-id runs keep the gate-only exit).
+        if let Some(tok) = &tokenizer {
+            let n_new: usize = std::env::var("BW24_NGEN").ok()
+                .and_then(|s| s.parse().ok()).unwrap_or(16);
+            let eos = tok.eos_id();
+            // grow-proof: the gate cache above was sized prompt+64; re-prime a cache sized for
+            // the requested generation length when it wouldn't fit.
+            let (mut gcache, mut logits) = if prompt.len() + n_new + 1 <= prompt.len() + 64 {
+                (cache, dec)
+            } else {
+                let mut c = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
+                let mut l = Vec::new();
+                for &t in &prompt { l = model.decode_step(&e, t, &mut c)?; }
+                (c, l)
+            };
+            let mut out: Vec<u32> = Vec::new();
+            e.stream().synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n_new {
+                let next = argmax(&logits) as u32;
+                out.push(next);
+                if next == eos { break; }
+                logits = model.decode_step(&e, next, &mut gcache)?;
+            }
+            e.stream().synchronize()?;
+            let dt = t0.elapsed().as_secs_f64();
+            println!("generated {} tokens in {dt:.3}s = {:.2} tok/s (ST greedy decode)",
+                     out.len(), out.len() as f64 / dt);
+            println!("tokens: {out:?}");
+            let text_ids: Vec<u32> = out.iter().copied().filter(|&id| id != eos).collect();
+            let text = tok.decode(&text_ids);
+            println!("OUTPUT TEXT: {text:?}");
+            println!("--- generated text ---\n{text}");
+        }
         return Ok(());
     }
     let g = GgufFile::open(&path)?;

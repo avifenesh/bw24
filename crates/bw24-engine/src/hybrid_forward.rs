@@ -361,10 +361,10 @@ impl HybridModel {
         };
         let mut attn = e.zeros(t * n_head * head_dim)?;
         if base_len == 0 {
-            // fa_prefill's smem layout is compiled at HEAD_DIM=256 (qwen35); other dims (M3=128)
-            // overrun the runtime-sized allocation -> ILLEGAL_ADDRESS. Fall to naive SDPA there
-            // (bring-up correctness path; a 128-dim FA twin is the perf follow-up).
-            if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
+            // fa_prefill's smem layout is compile-time HEAD_DIM: stamped twins exist for 256
+            // (qwen35) and 128 (M3, `_hd128` — 2026-07-07). Other dims would overrun the
+            // runtime-sized allocation -> ILLEGAL_ADDRESS; fall to naive SDPA there.
+            if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
                 e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             } else {
                 e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
@@ -510,9 +510,10 @@ impl HybridModel {
 
         // SDPA
         let mut attn = e.zeros(t * n_head * head_dim)?;
-        // hand-written FlashAttention prefill (head_dim 256). BW24_NOFA falls back to naive sdpa.
-        if std::env::var("BW24_NOFA").is_ok() || head_dim != 256 {
-            // head_dim gate: see prime-path note (fa_prefill is HEAD_DIM=256-compiled).
+        // hand-written FlashAttention prefill (head_dim 256/128 stamped twins). BW24_NOFA
+        // falls back to naive sdpa.
+        if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
+            // head_dim gate: see prime-path note (fa_prefill is stamped at 256 and 128 only).
             e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
         } else {
             e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
@@ -927,8 +928,10 @@ impl HybridModel {
 
         // 3. SHARED EXPERT (ALWAYS-ON, no routing) on the SAME z — qwen35moe only. OLMoE and most
         //    vanilla MoE have NO shared expert (the shexp tensors are absent / `None`); skip it then.
-        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
-            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        // gate_inp_shexp is OPTIONAL: qwen35moe gates the shared expert (sigmoid(gate_inp) x sh);
+        // MiniMax-M3 (DeepSeek-V3 class) has NO shexp gate — the shared expert adds directly.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();  // 512
             // Q8 TRUNK-FUSION (decode t=1): gate_shexp+up_shexp are Q8_0 same-shape on the 35B —
@@ -954,17 +957,22 @@ impl HybridModel {
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
-            // BUG-2 FIX: ffn_gate_inp_shexp is 1-D ne=[2048] -> out_f=1. Use e.linear(.., out_f=1),
-            // NOT matmul/out_features (which would index ne[1] out of bounds).
-            let gs = if verify_t {
-                e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
-            } else {
-                e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?  // [T, 1]
+            // shexp gate: qwen35moe sigmoid-gates via ffn_gate_inp_shexp (1-D ne=[n_embd] ->
+            // out_f=1, e.linear NOT matmul); M3 has no gate tensor -> weight 1.0.
+            let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    let gs = if verify_t {
+                        e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
+                    } else {
+                        e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?  // [T, 1]
+                    };
+                    let mut g = e.uninit(t)?;  // sigmoid fully overwrites
+                    e.sigmoid(&gs, &mut g, t)?;
+                    g
+                }
+                None => e.htod(&vec![1.0f32; t])?,
             };
-            let mut g = e.uninit(t)?;  // sigmoid fully overwrites
-            e.sigmoid(&gs, &mut g, t)?;
-
-            // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate)
+            // moe_out[r, :] += sh[r, :] * g[r]   (per-token scalar gate; g=1 ungated)
             e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
         }
 
@@ -1202,8 +1210,8 @@ impl HybridModel {
                                           m.down_exps.qtype, m.down_exps.row_bytes)?;
             let mut moe_out = e.uninit(t * n_embd)?;
             e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
-            if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
-                (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+            if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+                (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
             {
                 let n_ff_sh = gate_shexp.out_features();
                 let sg_gate = e.matmul(gate_shexp, z, t)?;
@@ -1211,9 +1219,16 @@ impl HybridModel {
                 let mut sa = e.uninit(t * n_ff_sh)?;
                 Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
                 let sh = e.matmul(down_shexp, &sa, t)?;
-                let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
-                let mut g = e.zeros(t)?;
-                e.sigmoid(&gs, &mut g, t)?;
+                // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+                let g = match &m.gate_inp_shexp {
+                    Some(gate_inp_shexp) => {
+                        let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                        let mut g = e.uninit(t)?;
+                        e.sigmoid(&gs, &mut g, t)?;
+                        g
+                    }
+                    None => e.htod(&vec![1.0f32; t])?,
+                };
                 e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
             }
             return Ok(moe_out);
@@ -1247,8 +1262,10 @@ impl HybridModel {
         e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
 
         // SHARED EXPERT epilogue — same as the other paths.
-        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
-            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        // gate_inp_shexp is OPTIONAL: qwen35moe gates the shared expert (sigmoid(gate_inp) x sh);
+        // MiniMax-M3 (DeepSeek-V3 class) has NO shexp gate — the shared expert adds directly.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();
             let sg_gate = e.matmul(gate_shexp, z, t)?;
@@ -1256,9 +1273,16 @@ impl HybridModel {
             let mut sa = e.uninit(t * n_ff_sh)?;
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
-            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
-            let mut g = e.zeros(t)?;
-            e.sigmoid(&gs, &mut g, t)?;
+            // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                    let mut g = e.uninit(t)?;
+                    e.sigmoid(&gs, &mut g, t)?;
+                    g
+                }
+                None => e.htod(&vec![1.0f32; t])?,
+            };
             e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
         }
         Ok(moe_out)
@@ -1358,8 +1382,10 @@ impl HybridModel {
 
         // SHARED EXPERT epilogue — byte-identical to moe_ffn_sequential step 3 (incl. its Q8
         // TRUNK-FUSION arm: fused2 is bit-identical to the two matmul calls per (tensor,row)).
-        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
-            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        // gate_inp_shexp is OPTIONAL: qwen35moe gates the shared expert (sigmoid(gate_inp) x sh);
+        // MiniMax-M3 (DeepSeek-V3 class) has NO shexp gate — the shared expert adds directly.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();
             // verify-t (2..15) decode-exact arm: this fn now serves the spec verify batches
@@ -1379,13 +1405,20 @@ impl HybridModel {
             e.silu_mul(&sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };
-            let gs = if verify_t {
+            // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    let gs = if verify_t {
                 e.linear_decode_exact(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
             } else {
                 e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?
             };
-            let mut g = e.uninit(t)?;  // sigmoid fully overwrites
-            e.sigmoid(&gs, &mut g, t)?;
+                    let mut g = e.uninit(t)?;
+                    e.sigmoid(&gs, &mut g, t)?;
+                    g
+                }
+                None => e.htod(&vec![1.0f32; t])?,
+            };
             e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
         }
 
@@ -1717,8 +1750,10 @@ impl HybridModel {
         }
 
         // 6. SHARED EXPERT (same as moe_ffn — untouched).
-        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp), Some(gate_inp_shexp)) =
-            (&m.gate_shexp, &m.up_shexp, &m.down_shexp, &m.gate_inp_shexp)
+        // gate_inp_shexp is OPTIONAL: qwen35moe gates the shared expert (sigmoid(gate_inp) x sh);
+        // MiniMax-M3 (DeepSeek-V3 class) has NO shexp gate — the shared expert adds directly.
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
         {
             let n_ff_sh = gate_shexp.out_features();
             let sg_gate = e.matmul(gate_shexp, z, t)?;
@@ -1726,9 +1761,16 @@ impl HybridModel {
             let mut sa = e.zeros(t * n_ff_sh)?;
             Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
-            let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
-            let mut g = e.zeros(t)?;
-            e.sigmoid(&gs, &mut g, t)?;
+            // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
+            let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                    let mut g = e.uninit(t)?;
+                    e.sigmoid(&gs, &mut g, t)?;
+                    g
+                }
+                None => e.htod(&vec![1.0f32; t])?,
+            };
             e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
         }
 

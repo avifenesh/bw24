@@ -54,15 +54,19 @@
 #include <cstdint>
 
 #define WARP_SZ 32
-#define HEAD_DIM 256
+// HEAD_DIM (2026-07-07): no longer a global #define — the FA prefill kernels are
+// template<int HD> bodies stamped at BOTH 256 (qwen35 class, the original names) and
+// 128 (MiniMax-M3 class, `_hd128` suffix). Each body opens with
+//   constexpr int HEAD_DIM = HD;  HD_KTILES = HD/K_STEP;  O_NBLK = HD/N_KEYS;
+// so the 256 instantiation compiles to the exact pre-template code (bit-identity
+// pinned by the standard argmax/spec battery). Launchers (src/lib.rs fa_prefill*)
+// pick the kernel by head_dim; other dims fall back to sdpa_naive at the callers.
 #define M_ROWS  16     // query rows per warp tile
 #define N_WARPS 4      // warps per CTA (P2 multi-warp) -> block (32,4,1)
 #define BLOCK_Q (M_ROWS*N_WARPS) // query rows per CTA = 64 (= llama ncols)
 #define N_KEYS  8      // one mma N-step = 8 keys (QK) / 8 d-cols (PV)
 #define K_STEP  16     // m16n8k16 contraction width (logical bf16)
 #define BK      32     // KV tile width (keys processed per FA step); = llama nbatch_fa
-#define HD_KTILES (HEAD_DIM/K_STEP) // 16 contraction steps over head_dim (Q-in-reg A-frag count)
-#define O_NBLK    (HEAD_DIM/N_KEYS) // 32 N-blocks of 8 cols each (register-O CTile count)
 #define NEG_INF (-1e30f)
 
 // ===================================================================== //
@@ -376,13 +380,16 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_dc(
 //  (sK∪sV doubles as the transient Q staging buffer before the KV loop.) //
 // ===================================================================== //
 
-// Load this warp's 16x256 Q tile into HD_KTILES A-fragments (Q-in-reg, P0a).
+// Load this warp's 16xHD Q tile into HD/K_STEP A-fragments (Q-in-reg, P0a).
 // Q is staged into `stage` smem (reused sK∪sV) cooperatively by the warp, then
 // ldmatrix'd. `qrow_base`/`nqw` give the warp's global Q rows; pads with 0.
+template<int HD>
 static __device__ __forceinline__ void load_q_frags(
-        ATile Qf[HD_KTILES], const float* __restrict__ Q, __nv_bfloat16* stage,
+        ATile* Qf, const float* __restrict__ Q, __nv_bfloat16* stage,
         int qrow_base, int nqw, int head, int n_head, int head_dim, int lane)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
     // stage 16 rows x HEAD_DIM into `stage` (row-major, HEAD_DIM-fastest)
     for (int i = lane; i < M_ROWS*HEAD_DIM; i += WARP_SZ) {
         int r = i / HEAD_DIM, d = i % HEAD_DIM;
@@ -396,12 +403,16 @@ static __device__ __forceinline__ void load_q_frags(
     __syncwarp();
 }
 
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32(
+template<int HD>
+static __device__ __forceinline__ void fa_prefill_f32_body(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
+    constexpr int O_NBLK    = HD / N_KEYS;
     const int warp = threadIdx.y;             // 0..N_WARPS-1
     const int lane = threadIdx.x;             // 0..31
     // grid.y = n_head (one Q-head per CTA). P1 GQA reuse via the inner gq loop is NOT
@@ -439,7 +450,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32(
 
         // --- P0a: load this warp's Q into A-fragments (registers) via reused sK∪sV ---
         ATile Qf[HD_KTILES];
-        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();   // all warps done reading their Q slab before sK/sV is overwritten
 
         // --- P0b: O accumulator in registers (CTiles), running m_i/l_i per row ---
@@ -575,6 +586,25 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32(
     }
 }
 
+// extern-C stamps: hd256 keeps the ORIGINAL name (qwen35-class dispatch unchanged);
+// `_hd128` is the MiniMax-M3 twin. Same macro-stamp pattern as fa_decode_vec_q_rows_sk{2,3,4}.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_body<256>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_body<128>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+
 // ===================================================================== //
 //  KERNEL 1c : fa_prefill_f32_pp  — Edge 5a (FA3 softmax-GEMM overlap)   //
 //  PURE REORDER of fa_prefill_f32: the QK scores of a tile are kept in   //
@@ -609,12 +639,16 @@ static __device__ __forceinline__ float row_sum4(float v) {
     return v;   // all 4 lanes of the quad hold the row sum
 }
 
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp(
+template<int HD>
+static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
+    constexpr int O_NBLK    = HD / N_KEYS;
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
@@ -643,7 +677,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_
         const int q_pos0w = (T_kv - T) + qrow_base;
 
         ATile Qf[HD_KTILES];
-        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();
 
         CTile O_acc[O_NBLK];
@@ -799,6 +833,23 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_
     }
 }
 
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<256>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<128>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+
 // ===================================================================== //
 //  KERNEL 1b : fa_prefill_q  (quantized-cache prefill: q8_0 K / q5_1 V) //
 //  Identical to fa_prefill_f32 EXCEPT the stage-to-smem copy dequants    //
@@ -806,12 +857,16 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_
 //  to the f32 kernel. Used by the MTP verify path (fa_prefill_view).     //
 //  K/V token strides differ (k_tok_bytes vs v_tok_bytes).                //
 // ===================================================================== //
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q(
+template<int HD>
+static __device__ __forceinline__ void fa_prefill_q_body(
         const float* __restrict__ Q, const uint8_t* __restrict__ K,
         const uint8_t* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal, long k_tok_bytes, long v_tok_bytes)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
+    constexpr int O_NBLK    = HD / N_KEYS;
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;           // grid.y = n_head (full SM subscription)
@@ -839,7 +894,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q(
         const int q_pos0w = (T_kv - T) + qrow_base;
 
         ATile Qf[HD_KTILES];
-        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();
 
         CTile O_acc[O_NBLK];
@@ -990,6 +1045,25 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q(
     }
 }
 
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, long k_tok_bytes, long v_tok_bytes)
+{
+    fa_prefill_q_body<256>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv,
+                           scale, causal, k_tok_bytes, v_tok_bytes);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_q_hd128(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, long k_tok_bytes, long v_tok_bytes)
+{
+    fa_prefill_q_body<128>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv,
+                           scale, causal, k_tok_bytes, v_tok_bytes);
+}
+
 // ===================================================================== //
 //  KERNEL 1b-ws : dequant-once chunk-prime workspace (ARC B, 2026-07-05)//
 //  fa_prefill_q's inline dequant is 64x-redundant at chunk prime: each  //
@@ -1035,12 +1109,16 @@ extern "C" __global__ void fa_dequant_kv_ws_bf16(
 //  the staged bf16 values are bit-identical (see fa_dequant_kv_ws_bf16) //
 //  -> bit-identical O. Keep the two kernels in lockstep on any edit.    //
 // ===================================================================== //
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw(
+template<int HD>
+static __device__ __forceinline__ void fa_prefill_qw_body(
         const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
         const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal, int kv_dim_k, int kv_dim_v)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
+    constexpr int O_NBLK    = HD / N_KEYS;
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;           // grid.y = n_head (full SM subscription)
@@ -1069,7 +1147,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw(
         const int q_pos0w = (T_kv - T) + qrow_base;
 
         ATile Qf[HD_KTILES];
-        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();
 
         CTile O_acc[O_NBLK];
@@ -1230,6 +1308,25 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw(
     }
 }
 
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v)
+{
+    fa_prefill_qw_body<256>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                            scale, causal, kv_dim_k, kv_dim_v);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_qw_hd128(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v)
+{
+    fa_prefill_qw_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                            scale, causal, kv_dim_k, kv_dim_v);
+}
+
 // ===================================================================== //
 //  KERNEL 1b-qwdb : fa_prefill_qw_db  (cp.async double-buffered twin)   //
 //  fa_prefill_qw with the K/V workspace staging DOUBLE-BUFFERED via     //
@@ -1251,11 +1348,13 @@ static __device__ __forceinline__ void cp_async_wait_0() { asm volatile("cp.asyn
 
 // Issue one KV tile's staging into buffer `sKb`/`sVb` (cp.async 16B lines; tail rows
 // past nk zero-filled with plain stores — visible after the same __syncthreads).
+template<int HD>
 static __device__ __forceinline__ void stage_kv_tile_async(
         __nv_bfloat16* sKb, __nv_bfloat16* sVb,
         const __nv_bfloat16* __restrict__ Kw, const __nv_bfloat16* __restrict__ Vw,
         int k0, int nk, int kv_dim_k, int kv_dim_v, size_t kv_off, int bt)
 {
+    constexpr int HEAD_DIM = HD;
     const uint4 z4 = make_uint4(0u, 0u, 0u, 0u);
     for (int i = bt; i < BK*(HEAD_DIM/8); i += N_WARPS*WARP_SZ) {
         int kk = i / (HEAD_DIM/8), dv = i % (HEAD_DIM/8);
@@ -1270,12 +1369,16 @@ static __device__ __forceinline__ void stage_kv_tile_async(
     cp_async_commit();
 }
 
-extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_db(
+template<int HD>
+static __device__ __forceinline__ void fa_prefill_qw_db_body(
         const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
         const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal, int kv_dim_k, int kv_dim_v)
 {
+    constexpr int HEAD_DIM  = HD;
+    constexpr int HD_KTILES = HD / K_STEP;
+    constexpr int O_NBLK    = HD / N_KEYS;
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
@@ -1304,7 +1407,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_d
         const int q_pos0w = (T_kv - T) + qrow_base;
 
         ATile Qf[HD_KTILES];
-        load_q_frags(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        load_q_frags<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
         __syncthreads();   // all warps done with sK0∪sK1 before prefetch overwrites
 
         CTile O_acc[O_NBLK];
@@ -1325,7 +1428,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_d
         if (causal_i) { int ntc = q_pos_max / BK + 1; nt = min(nt, ntc); }
 
         if (nt > 0)
-            stage_kv_tile_async(sK0, sV0, Kw, Vw, 0, min(BK, T_kv), kv_dim_k, kv_dim_v, kv_off, bt);
+            stage_kv_tile_async<HD>(sK0, sV0, Kw, Vw, 0, min(BK, T_kv), kv_dim_k, kv_dim_v, kv_off, bt);
 
         for (int ti = 0; ti < nt; ++ti) {
             const int k0 = ti * BK;
@@ -1335,7 +1438,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_d
             // prefetch tile ti+1 into the OTHER buffer (its compute finished last iter)
             if (ti + 1 < nt) {
                 const int k1 = (ti + 1) * BK;
-                stage_kv_tile_async((ti & 1) ? sK0 : sK1, (ti & 1) ? sV0 : sV1,
+                stage_kv_tile_async<HD>((ti & 1) ? sK0 : sK1, (ti & 1) ? sV0 : sV1,
                                     Kw, Vw, k1, min(BK, T_kv - k1), kv_dim_k, kv_dim_v, kv_off, bt);
                 cp_async_wait_1();   // tile ti's group done; ti+1 may still be in flight
             } else {
@@ -1463,6 +1566,25 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_d
         }
         __syncthreads();
     }
+}
+
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_db(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v)
+{
+    fa_prefill_qw_db_body<256>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                               scale, causal, kv_dim_k, kv_dim_v);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_qw_db_hd128(
+        const float* __restrict__ Q, const __nv_bfloat16* __restrict__ Kw,
+        const __nv_bfloat16* __restrict__ Vw, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int kv_dim_k, int kv_dim_v)
+{
+    fa_prefill_qw_db_body<128>(Q, Kw, Vw, O, head_dim, n_head, n_head_kv, T, T_kv,
+                               scale, causal, kv_dim_k, kv_dim_v);
 }
 
 // ===================================================================== //
