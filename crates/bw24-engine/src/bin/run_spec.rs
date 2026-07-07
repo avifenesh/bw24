@@ -20,11 +20,20 @@ fn first_divergence(a: &[u32], b: &[u32]) -> Option<usize> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).expect("usage: run-spec <model.gguf> [tok ids...]");
+    let path = std::env::args().nth(1).expect("usage: run-spec <model.gguf|hf_dir> [tok ids...]");
     let e = Engine::new(0)?;
-    let g = GgufFile::open(&path)?;
-    let model = HybridModel::load(&e, &g)?;
-    println!("loaded {} ({} layers, nextn={})", g.arch().unwrap_or("?"),
+    // DIRECTORY path = safetensors HF checkpoint (NVIDIA 27B model-trained MTP head); file = GGUF.
+    let is_dir = std::path::Path::new(&path).is_dir();
+    let g: Option<GgufFile> = if is_dir { None } else { Some(GgufFile::open(&path)?) };
+    let model = match &g {
+        Some(g) => HybridModel::load(&e, g)?,
+        None => {
+            let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
+            HybridModel::load_from_source(&e, &st)?
+        }
+    };
+    println!("loaded {} ({} layers, nextn={})",
+             g.as_ref().and_then(|g| g.arch()).unwrap_or("safetensors"),
              model.cfg.n_layer, model.cfg.nextn_predict_layers);
     if model.mtp.is_none() {
         eprintln!("ERROR: model has no MTP/NextN head (nextn_predict_layers={}, no blk.N.nextn.eh_proj). \
@@ -38,7 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prompt: Vec<u32> = if let Ok(text) = std::env::var("BW24_PROMPT_FILE")
             .map(|f| std::fs::read_to_string(&f).expect("BW24_PROMPT_FILE unreadable"))
             .or_else(|_| std::env::var("BW24_PROMPT")) {
-        let tok = bw24_tokenizer::Tokenizer::from_gguf(&g)?;
+        let tok = match &g {
+            Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
+            None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
+                .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
+        };
         let ids = tok.encode(&text, true);
         println!("text prompt ({} chars) -> {} tokens", text.len(), ids.len());
         ids
