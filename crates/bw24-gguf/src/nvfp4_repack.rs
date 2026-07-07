@@ -97,6 +97,68 @@ pub fn fp8_e4m3_to_f32(x: u8) -> f32 {
 /// Standard ggml quantize_row_q8_0 math (amax/127 scale, round-to-nearest-even). Used by the
 /// F8-E4M3 and large-BF16 host re-encodes (NVIDIA 27B linear_attn + mtp classes). `data.len()`
 /// must be a multiple of 32 (all 2D matrices here have in_f % 32 == 0).
+/// f32 -> UE4M3 scale byte (unsigned e4m3, GGUF block-scale convention: stored byte decodes via
+/// `ue4m3_to_f32` = raw*0.5 — caller passes the RAW target value, i.e. 2x the decoded scale).
+/// Round-to-nearest over the representable grid; clamps to [smallest-subnormal, 448].
+#[inline]
+fn f32_to_ue4m3(x: f32) -> u8 {
+    if !(x > 0.0) { return 0; }
+    // brute nearest over 127 codes (1..0x7E; 0 and 0x7F are zero/NaN) — encode-time only.
+    let mut best = 0u8;
+    let mut bd = f32::INFINITY;
+    for c in 1u8..0x7F {
+        let exp = ((c >> 3) & 0xF) as i32;
+        let man = (c & 0x7) as f32;
+        let v = if exp == 0 { man * 2f32.powi(-9) } else { (1.0 + man / 8.0) * 2f32.powi(exp - 7) };
+        let d = (v - x).abs();
+        if d < bd { bd = d; best = c; }
+    }
+    best
+}
+
+/// f32 slice -> bw24 internal GGUF NVFP4 block bytes (header layout above: QK=64, 36 B/block,
+/// 4 UE4M3 sub-scales + 32 interleaved code bytes). Per-16 sub-block: raw_scale = amax/6 (largest
+/// |e2m1| std value), scale byte = nearest UE4M3 to raw_scale, codes = nearest e2m1 to x/scale
+/// (decoded scale). This is a REAL re-quantization (e4m3 -> e2m1 loses mantissa bits) — callers
+/// gate it behind accuracy checks; the house 27B daily runs the same 4-bit class on these layers.
+/// `data.len()` must be a multiple of 64.
+pub fn f32_to_nvfp4(data: &[f32]) -> Vec<u8> {
+    assert!(data.len() % 64 == 0, "f32_to_nvfp4: len {} not /64", data.len());
+    // std e2m1 magnitudes (KVALUES are doubled; ue4m3_to_f32 halves — they cancel, so match on std)
+    const MAG: [f32; 8] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+    let n_blocks = data.len() / 64;
+    let mut out = vec![0u8; n_blocks * 36];
+    for (b, chunk) in data.chunks_exact(64).enumerate() {
+        let blk = &mut out[b * 36..(b + 1) * 36];
+        for s in 0..4 {
+            let sub = &chunk[s * 16..s * 16 + 16];
+            let amax = sub.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+            let sbyte = f32_to_ue4m3(amax / 6.0);
+            blk[s] = sbyte;
+            let dscale = ue4m3_to_f32(sbyte) * 2.0; // decoded raw scale (ue4m3_to_f32 halves)
+            let inv = if dscale > 0.0 { 1.0 / dscale } else { 0.0 };
+            for j in 0..8 {
+                let mut byte = 0u8;
+                for (nib, jj) in [(0usize, j), (1usize, j + 8)] {
+                    let x = sub[jj] * inv;
+                    let ax = x.abs();
+                    // nearest e2m1 magnitude (ties toward the smaller code, matching RNE on grid)
+                    let mut ci = 0usize;
+                    let mut bd = f32::INFINITY;
+                    for (i, &m) in MAG.iter().enumerate() {
+                        let d = (ax - m).abs();
+                        if d < bd { bd = d; ci = i; }
+                    }
+                    let code = if ci == 0 { 0u8 } else if x < 0.0 { (ci as u8) | 0x8 } else { ci as u8 };
+                    byte |= code << (4 * nib);
+                }
+                blk[4 + s * 8 + j] = byte;
+            }
+        }
+    }
+    out
+}
+
 pub fn f32_to_q8_0(data: &[f32]) -> Vec<u8> {
     assert_eq!(data.len() % 32, 0, "Q8_0 encode needs len % 32 == 0, got {}", data.len());
     let mut out = Vec::with_capacity(data.len() / 32 * 34);
@@ -346,6 +408,54 @@ mod tests {
                 let denom = a.abs().max(1e-6);
                 assert!((a - b).abs() / denom < 1e-6, "row {o} elem {e}: modelopt {a} != gguf {b}");
             }
+        }
+    }
+
+    #[test]
+    fn f32_to_nvfp4_roundtrip_class_error() {
+        // Encode a deterministic pseudo-random block set, dequant via the header math, and bound
+        // the relative error by the e2m1-per-16 class limit. Also: exact codebook values with a
+        // representable scale must roundtrip EXACTLY.
+        let mut x = 0x12345678u32;
+        let mut rnd = || { x ^= x << 13; x ^= x >> 17; x ^= x << 5; (x as f32 / u32::MAX as f32) * 4.0 - 2.0 };
+        let data: Vec<f32> = (0..64 * 8).map(|_| rnd()).collect();
+        let enc = f32_to_nvfp4(&data);
+        assert_eq!(enc.len(), 8 * 36);
+        let mut worst = 0.0f32;
+        for b in 0..8 {
+            let blk = &enc[b * 36..(b + 1) * 36];
+            for s in 0..4 {
+                let dscale = ue4m3_to_f32(blk[s]) * 2.0;
+                for j in 0..8 {
+                    let byte = blk[4 + s * 8 + j];
+                    for (nib, jj) in [(byte & 0xF, j), (byte >> 4, j + 8)] {
+                        // KVALUES doubled * 0.5 = std code value
+                        let v = KVALUES_MXFP4[nib as usize] as f32 * 0.5 * dscale;
+                        let orig = data[b * 64 + s * 16 + jj];
+                        let sub = &data[b * 64 + s * 16..b * 64 + s * 16 + 16];
+                        let amax = sub.iter().fold(0.0f32, |m, &y| m.max(y.abs()));
+                        if amax > 0.0 { worst = worst.max((v - orig).abs() / amax); }
+                    }
+                }
+            }
+        }
+        // e2m1 grid worst half-gap = (6-4)/2 = 1.0, relative to amax 6 => 0.167; plus UE4M3 scale
+        // rounding (3 mantissa bits => up to ~6%). 0.20 = the true class bound with slack; still
+        // catches sign/nibble/scale bugs instantly (those blow up to O(1)).
+        assert!(worst < 0.20, "relative error {worst} exceeds e2m1 class bound");
+
+        // exact codebook roundtrip: values = code * scale with scale=1.0 (representable)
+        let vals = [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0, 0.0];
+        let mut block = [0.0f32; 64];
+        block[..16].copy_from_slice(&vals);
+        let enc2 = f32_to_nvfp4(&block);
+        let dscale = ue4m3_to_f32(enc2[0]) * 2.0;
+        for (jj, &want) in vals.iter().enumerate() {
+            let j = jj % 8;
+            let byte = enc2[4 + j];
+            let nib = if jj < 8 { byte & 0xF } else { byte >> 4 };
+            let got = KVALUES_MXFP4[nib as usize] as f32 * 0.5 * dscale;
+            assert!((got - want).abs() < 1e-6, "elem {jj}: got {got} want {want}");
         }
     }
 

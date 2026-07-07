@@ -335,6 +335,17 @@ impl TensorSource for SafetensorsSource {
                                 let data: Vec<f32> = bytes.iter()
                                     .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
                                     .collect();
+                                // BW24_NV_W4=1: F8 attention weights -> NVFP4 (0.56 B/w vs Q8_0's
+                                // 1.06) — decode is bandwidth-bound and these layers are 35-40% of
+                                // per-token kernel time (nsys 2026-07-07). Real e4m3->e2m1 re-quant;
+                                // same 4-bit class the daily GGUF runs on these layers. Opt-in until
+                                // the acceptance/text battery proves the class locally.
+                                if std::env::var("BW24_NV_W4").map(|v| v == "1").unwrap_or(false)
+                                    && ne[0] % 64 == 0 {
+                                    let out = crate::nvfp4_repack::f32_to_nvfp4(&data);
+                                    return Some(TensorView {
+                                        bytes: Cow::Owned(out), ggml_type: GgmlType::NVFP4, ne });
+                                }
                                 let out = crate::nvfp4_repack::f32_to_q8_0(&data);
                                 return Some(TensorView {
                                     bytes: Cow::Owned(out),
@@ -376,6 +387,14 @@ impl TensorSource for SafetensorsSource {
                     && ne.iter().product::<u64>() >= 1_000_000 {
                     let f32s: Vec<f32> = bytes.chunks_exact(4)
                         .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                    // BW24_NV_W4: same F8->NVFP4 re-quant as the Plain arm (see there for the
+                    // bandwidth math and class argument) — post-reorder, so the V-permutation is
+                    // already baked into the f32 surface.
+                    if std::env::var("BW24_NV_W4").map(|v| v == "1").unwrap_or(false)
+                        && ne[0] % 64 == 0 {
+                        let out = crate::nvfp4_repack::f32_to_nvfp4(&f32s);
+                        return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::NVFP4, ne });
+                    }
                     let out = crate::nvfp4_repack::f32_to_q8_0(&f32s);
                     return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
                 }
