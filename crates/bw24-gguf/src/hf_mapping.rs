@@ -352,6 +352,10 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
     //    renames them; for hybrid we must additionally add +1 (qwen.py:302-303). Catch the dense
     //    norm names here so they take the Transform arm.
     if cfg.arch.is_hybrid() {
+        // MTP/NextN block FIRST: blk.{n_trunk}.* maps into the HF `mtp.*` namespace (NVIDIA 27B /
+        // qwen3.6 text ckpts), NOT model.layers.{n_trunk}.* (which does not exist — HF
+        // num_hidden_layers excludes the MTP block). Must precede the SSM/dense arms.
+        if let Some(t) = resolve_mtp_block(ggml, cfg) { return Some(t); }
         if let Some(t) = resolve_hybrid_ssm(ggml, cfg) { return Some(t); }
         // norm +1 on the dense-mapped norms (attn_norm / ffn_norm / q_norm / k_norm / output_norm).
         if is_plusone_norm(ggml) {
@@ -373,6 +377,57 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
 
     // 4. Dense plain rename (zero-copy).
     ggml_to_hf(ggml, &cfg.arch).map(HfTarget::Plain)
+}
+
+/// qwen3.5/3.6 MTP (NextN) block map: the engine asks for `blk.{n_trunk}.*` (GGUF numbering, where
+/// block_count includes the MTP block) but the HF checkpoint stores the head under a separate
+/// `mtp.*` namespace (NVIDIA 27B + qwen3.6 text ckpts; HF num_hidden_layers EXCLUDES the block):
+///   nextn.enorm  -> mtp.pre_fc_norm_embedding   (+1 fold, verified vs GGUF twin blk.64)
+///   nextn.hnorm  -> mtp.pre_fc_norm_hidden      (+1)
+///   nextn.eh_proj -> mtp.fc                     (plain, [2*n_embd, n_embd])
+///   nextn.shared_head_norm -> mtp.norm          (+1)
+///   attn/ffn/norm tensors -> mtp.layers.{il-n_trunk}.{hf dense names}  (norms +1, matrices plain)
+/// `nextn.shared_head.weight` has no mtp.* equivalent (head reuses the model's lm_head) -> None.
+fn resolve_mtp_block(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
+    if cfg.nextn_predict_layers == 0 { return None; }
+    let n_trunk = cfg.n_layer - cfg.nextn_predict_layers;
+    let rest = ggml.strip_prefix("blk.")?;
+    let (il, suffix) = rest.split_once('.')?;
+    let il: u32 = il.parse().ok()?;
+    if il < n_trunk { return None; }
+    let mtp_il = il - n_trunk; // mtp.layers.{k} index (27B: always 0)
+    // NextN glue tensors (top-level mtp.* names).
+    let glue: Option<(&str, TransformKind)> = match suffix {
+        "nextn.enorm.weight" => Some(("mtp.pre_fc_norm_embedding.weight", TransformKind::NormPlusOne)),
+        "nextn.hnorm.weight" => Some(("mtp.pre_fc_norm_hidden.weight", TransformKind::NormPlusOne)),
+        "nextn.eh_proj.weight" => Some(("mtp.fc.weight", TransformKind::Identity)),
+        "nextn.shared_head_norm.weight" => Some(("mtp.norm.weight", TransformKind::NormPlusOne)),
+        _ => None,
+    };
+    if let Some((hf, kind)) = glue {
+        return Some(match kind {
+            TransformKind::Identity => HfTarget::Plain(hf.into()),
+            k => HfTarget::Transform { hf: hf.into(), kind: k },
+        });
+    }
+    // Full transformer block tensors under mtp.layers.{k}.*
+    let (hf_suffix, plus_one): (&str, bool) = match suffix {
+        "attn_norm.weight" => ("input_layernorm.weight", true),
+        "post_attention_norm.weight" | "ffn_norm.weight" => ("post_attention_layernorm.weight", true),
+        "attn_q_norm.weight" => ("self_attn.q_norm.weight", true),
+        "attn_k_norm.weight" => ("self_attn.k_norm.weight", true),
+        "attn_q.weight" => ("self_attn.q_proj.weight", false),
+        "attn_k.weight" => ("self_attn.k_proj.weight", false),
+        "attn_v.weight" => ("self_attn.v_proj.weight", false),
+        "attn_output.weight" => ("self_attn.o_proj.weight", false),
+        "ffn_gate.weight" => ("mlp.gate_proj.weight", false),
+        "ffn_up.weight" => ("mlp.up_proj.weight", false),
+        "ffn_down.weight" => ("mlp.down_proj.weight", false),
+        _ => return None, // nextn.shared_head.weight etc: absent -> head reuses lm_head
+    };
+    let hf = format!("mtp.layers.{mtp_il}.{hf_suffix}");
+    Some(if plus_one { HfTarget::Transform { hf, kind: TransformKind::NormPlusOne } }
+         else { HfTarget::Plain(hf) })
 }
 
 /// True for the ggml norm names that get qwen35 `+1` (all norms except ssm_norm/linear_attn.norm).

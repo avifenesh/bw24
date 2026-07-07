@@ -450,4 +450,42 @@ mod nv27b_probe {
         assert_eq!(ty("blk.0.ssm_conv1d.weight"), GgmlType::F32);
         assert_eq!(ty("blk.0.ssm_a"), GgmlType::F32);
     }
+
+    /// MTP head mapping: blk.64.* (GGUF NextN numbering) resolves into the HF `mtp.*` namespace
+    /// with the exact ne the engine loads from the GGUF twin (blk.64 census 2026-07-07).
+    /// nextn_predict_layers must come from `mtp_num_hidden_layers` (the 27B HF key).
+    #[test]
+    fn nvidia_27b_mtp_mapping() {
+        let dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        if !dir.join("model.safetensors.index.json").exists() { eprintln!("SKIP: ckpt absent"); return; }
+        let src = SafetensorsSource::open(dir).unwrap();
+        let cfg = src.config();
+        assert_eq!(cfg.nextn_predict_layers, 1, "mtp_num_hidden_layers -> nextn");
+        assert_eq!(cfg.n_layer, 65, "n_layer includes the MTP block (GGUF block_count convention)");
+        let v = |n: &str| src.find(n).unwrap_or_else(|| panic!("{n} unresolved"));
+        // glue (GGUF-twin ne reference: enorm/hnorm/shared_head_norm [5120], eh_proj [10240,5120])
+        assert_eq!(v("blk.64.nextn.enorm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.nextn.hnorm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.nextn.eh_proj.weight").ne, vec![10240, 5120]);
+        assert_eq!(v("blk.64.nextn.shared_head_norm.weight").ne, vec![5120]);
+        assert!(src.find("blk.64.nextn.shared_head.weight").is_none(), "head reuses lm_head");
+        // block tensors (full-attn block: q [5120,12288], k/v [5120,1024], o [6144,5120])
+        assert_eq!(v("blk.64.attn_q.weight").ne, vec![5120, 12288]);
+        assert_eq!(v("blk.64.attn_k.weight").ne, vec![5120, 1024]);
+        assert_eq!(v("blk.64.attn_v.weight").ne, vec![5120, 1024]);
+        assert_eq!(v("blk.64.attn_output.weight").ne, vec![6144, 5120]);
+        assert_eq!(v("blk.64.attn_q_norm.weight").ne, vec![256]);
+        assert_eq!(v("blk.64.ffn_gate.weight").ne, vec![5120, 17408]);
+        assert_eq!(v("blk.64.ffn_down.weight").ne, vec![17408, 5120]);
+        assert_eq!(v("blk.64.attn_norm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.post_attention_norm.weight").ne, vec![5120]);
+        // big BF16 mtp matrices -> Q8_0 (draft class), norms -> F32 with the +1 fold.
+        assert_eq!(v("blk.64.attn_q.weight").ggml_type, GgmlType::Q8_0);
+        assert_eq!(v("blk.64.nextn.eh_proj.weight").ggml_type, GgmlType::Q8_0);
+        let en = v("blk.64.nextn.enorm.weight");
+        assert_eq!(en.ggml_type, GgmlType::F32);
+        // +1 fold check vs GGUF twin blk.64.nextn.enorm first value 0.4375 (raw bf16 -0.5625).
+        let first = f32::from_le_bytes(en.bytes[..4].try_into().unwrap());
+        assert!((first - 0.4375).abs() < 1e-3, "enorm +1 fold: got {first}");
+    }
 }
