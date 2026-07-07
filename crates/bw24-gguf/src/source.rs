@@ -176,6 +176,25 @@ impl SafetensorsSource {
                 return Some((data, vec![in_f as u64, out_f as u64]));
             }
         }
+        // FP8 E4M3 weight + scalar F32 weight_scale (NVIDIA 27B linear_attn class): dequant to
+        // f32 here so the V-reorder transforms consume it like a BF16 tensor.
+        if hf_name.ends_with(".weight") {
+            if let Some((info, bytes)) = self.lookup(hf_name) {
+                if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
+                    let stem = hf_name.strip_suffix(".weight").unwrap_or(hf_name);
+                    if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                        if sinfo.dtype == "F32" && sbytes.len() >= 4 {
+                            let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                            let ne = info.ne();
+                            let data: Vec<f32> = bytes.iter()
+                                .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
+                                .collect();
+                            return Some((data, ne));
+                        }
+                    }
+                }
+            }
+        }
         let (info, bytes) = self.lookup(hf_name)?;
         let ne = info.ne();
         let n: u64 = ne.iter().product();
@@ -278,6 +297,75 @@ impl TensorSource for SafetensorsSource {
                         ggml_type: GgmlType::NVFP4,
                         ne: vec![in_f as u64, out_f as u64], // ggml ne: [in, out]
                     });
+                }
+                // FP8 E4M3 weight (NVIDIA official 27B linear_attn projections): modelopt
+                // per-TENSOR quant — F8 codes + scalar F32 `weight_scale`. Re-encode host-side to
+                // GGUF Q8_0 blocks (per-32 fp16 scale + int8): rides the proven q8-fast/MMVQ/fused3
+                // path at ~1.06B/elem instead of a 22GB f32 blow-up (OOM, measured). Accuracy: the
+                // source is 4-mantissa-bit FP8 with ONE per-tensor scale; per-32 q8 re-quant is a
+                // FINER grid — class-equal or better. FP8-native matvec = later perf rung.
+                if let Some((info, bytes)) = self.lookup(&hf) {
+                    // Large BF16 2D matrices (NVIDIA 27B mtp.* block, ~2GB as f32): re-encode to
+                    // Q8_0 like the F8 arm below — the MTP head is a draft (acceptance-gated, never
+                    // exactness-bearing), and q8 is the same class the GGUF MTP drafts already use.
+                    if info.dtype == "BF16" && info.shape.len() == 2
+                        && info.shape.iter().product::<u64>() >= 1_000_000
+                        && hf.starts_with("mtp.") {
+                        let ne = info.ne();
+                        let n = bytes.len() / 2;
+                        if n % 32 == 0 {
+                            let mut out = Vec::with_capacity(n / 32 * 34);
+                            let mut vals = [0f32; 32];
+                            for blk in bytes.chunks_exact(64) {
+                                let mut amax = 0f32;
+                                for i in 0..32 {
+                                    let hb = u16::from_le_bytes([blk[2 * i], blk[2 * i + 1]]);
+                                    let v = f32::from_bits((hb as u32) << 16);
+                                    vals[i] = v;
+                                    amax = amax.max(v.abs());
+                                }
+                                let d = amax / 127.0;
+                                let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+                                out.extend_from_slice(&crate::nvfp4_repack::f32_to_f16_bits(d).to_le_bytes());
+                                for &v in &vals {
+                                    out.push((v * id).round_ties_even() as i32 as i8 as u8);
+                                }
+                            }
+                            return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
+                        }
+                    }
+                    if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
+                        let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
+                        if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                            if sinfo.dtype == "F32" && sbytes.len() >= 4 {
+                                let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                                let ne = info.ne();
+                                let n = bytes.len();
+                                assert!(n % 32 == 0, "F8 tensor {hf} len {n} not 32-aligned");
+                                let mut out = Vec::with_capacity(n / 32 * 34);
+                                let mut vals = [0f32; 32];
+                                for blk in bytes.chunks_exact(32) {
+                                    let mut amax = 0f32;
+                                    for (i, &b) in blk.iter().enumerate() {
+                                        let v = crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale;
+                                        vals[i] = v;
+                                        amax = amax.max(v.abs());
+                                    }
+                                    let d = amax / 127.0;
+                                    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+                                    out.extend_from_slice(&crate::nvfp4_repack::f32_to_f16_bits(d).to_le_bytes());
+                                    for &v in &vals {
+                                        out.push((v * id).round_ties_even() as i32 as i8 as u8);
+                                    }
+                                }
+                                return Some(TensorView {
+                                    bytes: Cow::Owned(out),
+                                    ggml_type: GgmlType::Q8_0,
+                                    ne,
+                                });
+                            }
+                        }
+                    }
                 }
                 self.raw_hf(&hf)
             }
