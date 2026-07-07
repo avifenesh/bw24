@@ -394,6 +394,9 @@ pub enum HostBuf {
     /// Pinned host memory. We keep the `PinnedHostSlice` alive (it owns the allocation; Drop frees it)
     /// AND cache its raw base pointer + len so the hot-path `as_bytes()` needs no per-call event sync.
     Pinned { slice: cudarc::driver::PinnedHostSlice<u8>, base: *const u8, len: usize },
+    /// Alias into a shared pinned slab (ST pinned tier): `owner` keeps the slab alive; `base`/`len`
+    /// select this expert's window. Same DMA class as `Pinned`.
+    PinnedAlias { owner: std::sync::Arc<HostBuf>, base: *const u8, len: usize },
     /// SPILLING-PLAN §1, Tier 2 (disk): the bytes live in an mmap'd region of the GGUF file, NOT in
     /// RAM. `map` is `MAP_SHARED`, no `MAP_POPULATE` — zero upfront copy. The first `memcpy_htod` of
     /// this slice page-faults → NVMe read → DMA (the demand-fault disk path). `off`/`len` select this
@@ -416,6 +419,7 @@ impl HostBuf {
             // read-only. We avoid `as_slice()` here because it would synchronize the buffer's event
             // on every hot-path call.
             HostBuf::Pinned { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
+            HostBuf::PinnedAlias { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
             // Slicing the mmap is the same `&[u8]` the kernel DMAs; the read page-faults the NVMe.
             HostBuf::Mmap { map, off, len } => &map[*off..*off + *len],
         }
@@ -425,6 +429,7 @@ impl HostBuf {
         match self {
             HostBuf::Paged(v) => v.len(),
             HostBuf::Pinned { len, .. } => *len,
+            HostBuf::PinnedAlias { len, .. } => *len,
             HostBuf::Mmap { len, .. } => *len,
         }
     }
@@ -651,7 +656,68 @@ impl HostExps {
                     let file = std::fs::File::open(cp)?;
                     let map = unsafe { memmap2::Mmap::map(&file)? };
                     assert_eq!(map.len(), total, "repack cache {cp:?} size mismatch");
-                    HostBuf::Mmap { map: std::sync::Arc::new(map), off: 0, len: total }
+                    // MADV_RANDOM: expert access is routing-driven random; kill readahead waste.
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
+                        let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
+                    }
+                    let map = std::sync::Arc::new(map);
+                    // ST PINNED TIER (2026-07-07, the M3 1.5-tok/s lever): mmap-only backing makes
+                    // every SLRU miss a page-cache (or NVMe) synchronous read into the H2D copy.
+                    // Pin as many experts as the live budget allows (same MemBudget probe + 0.6
+                    // MemAvailable cap as the GGUF spill tier) — pinned pages upload via true
+                    // async DMA at full PCIe. Budget is GLOBAL across layers (first-come: earlier
+                    // layers pin first; routing is roughly uniform so early-layer bias is benign).
+                    // BW24_ST_PINNED=0 disables (pure-mmap, the 2026-07-06 behavior).
+                    // DEFAULT OFF (2026-07-07 measured): with a 122GB expert set on 60GB RAM,
+                    // pinning 26GB EVICTED the page cache backing the mmap tier — every unpinned
+                    // expert faulted cold from NVMe and gen fell 1.5 -> 0.05 tok/s (30x WORSE).
+                    // Pinning only pays when (total - pinned) fits page cache; here it never can.
+                    // BW24_ST_PINNED=1 opt-in for fits-in-RAM checkpoints (e.g. REAP-heavier cuts).
+                    let tiers = if std::env::var("BW24_ST_PINNED").map(|v| v == "1").unwrap_or(false) {
+                        static PIN_BUDGET: std::sync::OnceLock<std::sync::Mutex<usize>> = std::sync::OnceLock::new();
+                        let budget = PIN_BUDGET.get_or_init(|| {
+                            let b = crate::spill::MemBudget::probe(e)
+                                .map(|b| b.free_pinnable_ram).unwrap_or(0);
+                            eprintln!("[st-spill] pinned budget {:.1} GB", b as f64 / 1e9);
+                            std::sync::Mutex::new(b)
+                        });
+                        let mut rem = budget.lock().unwrap();
+                        // ONE pinned slab per file prefix (n_pin experts contiguous): 1 alloc +
+                        // 1 bulk copy instead of n_pin small allocs (per-expert cudaHostAllocs
+                        // stalled the 122GB M3 load >10min).
+                        let n_pin = (*rem / expert_stride).min(n_expert);
+                        if n_pin == 0 { None } else {
+                            let slab_len = n_pin * expert_stride;
+                            let mut pn = unsafe { e.ctx().alloc_pinned::<u8>(slab_len)? };
+                            { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&map[..slab_len]); }
+                            let base = pn.as_ptr()? as *const u8;
+                            *rem -= slab_len;
+                            let slab = std::sync::Arc::new(HostBuf::Pinned { slice: pn, base, len: slab_len });
+                            let mut tiers: Vec<HostBuf> = Vec::with_capacity(n_expert);
+                            for ex in 0..n_expert {
+                                let off = ex * expert_stride;
+                                if ex < n_pin {
+                                    tiers.push(HostBuf::PinnedAlias { owner: slab.clone(),
+                                        base: unsafe { base.add(off) }, len: expert_stride });
+                                } else {
+                                    tiers.push(HostBuf::Mmap { map: map.clone(), off, len: expert_stride });
+                                }
+                            }
+                            Some(tiers)
+                        }
+                    } else { None };
+                    if let Some(tiers) = tiers {
+                        let all_one = macros.iter().all(|&m| m == 1.0);
+                        return Ok(HostExps {
+                            bytes: HostBuf::Mmap { map, off: 0, len: total },
+                            tiers: Some(tiers), qtype: QT_NVFP4, in_f, out_f, n_expert,
+                            row_bytes, expert_stride,
+                            macros: if all_one { None } else { Some(macros) },
+                        });
+                    }
+                    HostBuf::Mmap { map, off: 0, len: total }
                 } else {
                     let mut buf: Vec<u8> = Vec::with_capacity(total);
                     for ex in 0..n_expert {

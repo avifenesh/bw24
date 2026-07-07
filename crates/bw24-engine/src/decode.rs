@@ -254,7 +254,11 @@ impl HybridModel {
         match &layer.ffn {
             crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                 let n_ff = ffn_gate.out_features();
+                // cfg.m3: the fused-pre chain's silu_mul_scaled* epilogues are plain SiLU —
+                // M3's swigluoai must route through ffn_swiglu_decode's m3 arm (FAST-gate
+                // MISMATCH root cause #2, 2026-07-07: L0 dense FFN clamp skipped under FAST).
                 let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                    && self.cfg.m3.is_none()
                     && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up);
                 if fuse {
                     let mut x1 = e.uninit(n_embd)?;
