@@ -308,9 +308,13 @@ impl TensorSource for SafetensorsSource {
                     // Large BF16 2D matrices (NVIDIA 27B mtp.* block, ~2GB as f32): re-encode to
                     // Q8_0 like the F8 arm below — the MTP head is a draft (acceptance-gated, never
                     // exactness-bearing), and q8 is the same class the GGUF MTP drafts already use.
+                    // ... and the token-embedding table: the spec/graph decode paths gather rows
+                    // ON DEVICE (embed_gather kernel), which has no BF16 arm — and 2.5GB BF16 vs
+                    // 1.35GB Q8_0 matters on the 24GB card. Q8_0 is FINER than the GGUF twin's own
+                    // Q5_K embed class. Host-side row gather dequants Q8_0 identically.
                     if info.dtype == "BF16" && info.shape.len() == 2
                         && info.shape.iter().product::<u64>() >= 1_000_000
-                        && hf.starts_with("mtp.") {
+                        && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight") {
                         let ne = info.ne();
                         if (bytes.len() / 2) % 32 == 0 {
                             let data: Vec<f32> = bytes.chunks_exact(2)
