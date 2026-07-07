@@ -1059,7 +1059,17 @@ impl HybridModel {
             std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
         }
 
-        // gated RMSNorm + ssm_out
+        // gated RMSNorm + ssm_out. FUSED-QUANTIZE ARM (launch-arc): when ssm_out rides the
+        // q8_1 fast path, emit q8_1 straight from the gated norm (bit-identical bytes to
+        // gated_rmsnorm + quantize_q8_1) and feed matmul_pre — one launch instead of three
+        // (norm, quantize, scale all fold away). Fallback = the original f32 chain.
+        if e.uses_q8_1_fast(&la.ssm_out) {
+            // norm is PER d_state-ROW (num_v rows), exactly like the f32 twin's grid; the q8_1
+            // block stream is row-major so the flat bytes feed the matvec unchanged.
+            let (gq, gd) = e.gated_rmsnorm_q8_1(&o, la.ssm_norm.float_data(), &z, d_state, num_v, eps)?;
+            let g0 = e.zeros(0)?;
+            return Ok(e.matmul_pre(&la.ssm_out, &gq, &gd, &g0, 1)?);
+        }
         let mut gn = e.uninit(d_state * num_v)?;
         e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v, eps)?;
         Ok(e.matmul(&la.ssm_out, &gn, 1)?)

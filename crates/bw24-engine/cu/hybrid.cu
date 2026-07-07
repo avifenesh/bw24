@@ -884,6 +884,51 @@ extern "C" __global__ void gated_rmsnorm_f32(const float* __restrict__ o, const 
     }
 }
 
+// gated RMSNorm with FUSED q8_1 quantize epilogue (launch-arc 2026-07-07): same math as
+// gated_rmsnorm_f32 (identical reduce + normalize + swish gate), the normalized row emitted
+// directly as q8_1 blocks for the ssm_out matvec (matmul_pre) instead of a f32 write + a separate
+// quantize_q8_1 launch. ncols (d_state) % 32 == 0 -> per-32 blocks never straddle rows, so the
+// global block index is row*(ncols/32)+blk: BIT-IDENTICAL bytes to quantize_q8_1 over the flat
+// [nrows*ncols] vector.
+extern "C" __global__ void gated_rmsnorm_q8_1(const float* __restrict__ o, const float* __restrict__ w,
+                                              const float* __restrict__ z,
+                                              signed char* __restrict__ out_q, float* __restrict__ out_d,
+                                              int ncols, float eps) {
+    int row = blockIdx.x; int tid = threadIdx.x;
+    const float* orow = o + (size_t)row * ncols;
+    const float* zrow = z + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = orow[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o2);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o2 = 16; o2 > 0; o2 >>= 1) v += __shfl_down_sync(0xffffffff, v, o2);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    // quantize per-32 block, warp-per-block (ncols=128 -> 4 blocks/row; block never straddles rows)
+    int nblk = ncols / 32;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    int lane = tid & 31;
+    for (int blk = tid >> 5; blk < nblk; blk += blockDim.x >> 5) {
+        int i = blk * 32 + lane;
+        float zz = zrow[i];
+        float v = (orow[i] * scale * w[i]) * (zz / (1.0f + expf(-zz)));
+        float amax = fabsf(v);
+        #pragma unroll
+        for (int o2 = 16; o2 > 0; o2 >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o2));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        base_q[i] = (signed char)__float2int_rn(v * id);
+        if (lane == 0) base_d[blk] = d;
+    }
+}
+
 // Repeat-interleave heads: in [head_dim, n_in_heads, T] -> out [head_dim, n_out_heads, T],
 // each in-head replicated rep = n_out_heads/n_in_heads times (contiguous in head axis).
 // matches ggml_repeat_4d on the head axis. idx over out elements.

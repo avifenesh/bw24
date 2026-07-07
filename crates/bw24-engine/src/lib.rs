@@ -3610,6 +3610,24 @@ impl Engine {
         Ok(())
     }
 
+    /// gated RMSNorm emitting q8_1 directly (fused quantize epilogue) — the ssm_out matvec input.
+    /// BIT-IDENTICAL bytes to gated_rmsnorm + quantize_q8_1 (ncols % 32 == 0; blocks never straddle
+    /// rows). Saves one launch per linear-attn layer (36/token on the 9B).
+    pub fn gated_rmsnorm_q8_1(&self, o: &CudaSlice<f32>, w: &CudaSlice<f32>, z: &CudaSlice<f32>,
+                              ncols: usize, nrows: usize, eps: f32)
+                              -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        assert!(ncols % 32 == 0);
+        let f = self.func("gated_rmsnorm_q8_1");
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (nc, ep) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(o).arg(w).arg(z).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&ep);
+        unsafe { b.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
     /// transpose [rows,cols] row-major -> [cols,rows] row-major.
     pub fn transpose(&self, inp: &CudaSlice<f32>, rows: usize, cols: usize)
                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
