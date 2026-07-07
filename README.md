@@ -81,6 +81,11 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp bu
 | Qwen3.6-27B NVFP4 (spec K=3) | 99 / 88 / 76 | 87 / 92 / 75 | **1.14x** / 0.95x / **1.01x** |
 | Qwen3.6-35B-A3B MoE (spec K=2 / plain) | 182 / 158 | 170 | **1.08x** / 0.93x |
 
+Also running, no llama.cpp comparison possible (safetensors-only checkpoints):
+
+- **nvidia/Qwen3.6-27B-NVFP4** (official NVIDIA checkpoint: mixed NVFP4 + FP8 linear-attention + model-trained BF16 MTP head, loaded straight from safetensors) — spec K=2 45-48 tok/s on the laptop rig. The vLLM 0.24.0 reference on an RTX PRO 6000 runs the same checkpoint through Marlin weight-only dequant (no native FP4 on sm_120 in vLLM).
+- **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader; decode is I/O-bound by design here (routing-locality measurement in `research/tune-data/` shows capacity, not caching policy, is the binding constraint).
+
 Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind (27B medium-code and prefill, 35B MoE decode), the gap and its current diagnosis are tracked in the tune-data records, not hidden.
 
 ## Limitations
