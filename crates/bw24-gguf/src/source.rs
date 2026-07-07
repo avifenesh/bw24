@@ -176,6 +176,25 @@ impl SafetensorsSource {
                 return Some((data, vec![in_f as u64, out_f as u64]));
             }
         }
+        // FP8 E4M3 weight + scalar F32 weight_scale (NVIDIA 27B linear_attn class): dequant to
+        // f32 here so the V-reorder transforms consume it like a BF16 tensor.
+        if hf_name.ends_with(".weight") {
+            if let Some((info, bytes)) = self.lookup(hf_name) {
+                if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
+                    let stem = hf_name.strip_suffix(".weight").unwrap_or(hf_name);
+                    if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                        if sinfo.dtype == "F32" && sbytes.len() >= 4 {
+                            let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                            let ne = info.ne();
+                            let data: Vec<f32> = bytes.iter()
+                                .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
+                                .collect();
+                            return Some((data, ne));
+                        }
+                    }
+                }
+            }
+        }
         let (info, bytes) = self.lookup(hf_name)?;
         let ne = info.ne();
         let n: u64 = ne.iter().product();
@@ -279,6 +298,53 @@ impl TensorSource for SafetensorsSource {
                         ne: vec![in_f as u64, out_f as u64], // ggml ne: [in, out]
                     });
                 }
+                // FP8 E4M3 weight (NVIDIA official 27B linear_attn projections): modelopt
+                // per-TENSOR quant — F8 codes + scalar F32 `weight_scale`. Re-encode host-side to
+                // GGUF Q8_0 blocks (per-32 fp16 scale + int8): rides the proven q8-fast/MMVQ/fused3
+                // path at ~1.06B/elem instead of a 22GB f32 blow-up (OOM, measured). Accuracy: the
+                // source is 4-mantissa-bit FP8 with ONE per-tensor scale; per-32 q8 re-quant is a
+                // FINER grid — class-equal or better. FP8-native matvec = later perf rung.
+                if let Some((info, bytes)) = self.lookup(&hf) {
+                    // Large BF16 2D matrices (NVIDIA 27B mtp.* block, ~2GB as f32): re-encode to
+                    // Q8_0 like the F8 arm below — the MTP head is a draft (acceptance-gated, never
+                    // exactness-bearing), and q8 is the same class the GGUF MTP drafts already use.
+                    // ... and the token-embedding table: the spec/graph decode paths gather rows
+                    // ON DEVICE (embed_gather kernel), which has no BF16 arm — and 2.5GB BF16 vs
+                    // 1.35GB Q8_0 matters on the 24GB card. Q8_0 is FINER than the GGUF twin's own
+                    // Q5_K embed class. Host-side row gather dequants Q8_0 identically.
+                    if info.dtype == "BF16" && info.shape.len() == 2
+                        && info.shape.iter().product::<u64>() >= 1_000_000
+                        && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight") {
+                        let ne = info.ne();
+                        if (bytes.len() / 2) % 32 == 0 {
+                            let data: Vec<f32> = bytes.chunks_exact(2)
+                                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                                .collect();
+                            let out = crate::nvfp4_repack::f32_to_q8_0(&data);
+                            return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
+                        }
+                    }
+                    if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
+                        let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
+                        if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                            if sinfo.dtype == "F32" && sbytes.len() >= 4 {
+                                let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                                let ne = info.ne();
+                                assert!(bytes.len() % 32 == 0,
+                                        "F8 tensor {hf} len {} not 32-aligned", bytes.len());
+                                let data: Vec<f32> = bytes.iter()
+                                    .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
+                                    .collect();
+                                let out = crate::nvfp4_repack::f32_to_q8_0(&data);
+                                return Some(TensorView {
+                                    bytes: Cow::Owned(out),
+                                    ggml_type: GgmlType::Q8_0,
+                                    ne,
+                                });
+                            }
+                        }
+                    }
+                }
                 self.raw_hf(&hf)
             }
             // A value transform. Two paths:
@@ -299,6 +365,20 @@ impl TensorSource for SafetensorsSource {
                 let (mut data, ne_in) = self.deq_f32(&hf)?;
                 let cfg = &self.cfg;
                 let (ne, bytes) = kind.apply(&mut data, ne_in, cfg);
+                // F8-E4M3-sourced LARGE 2D projections (NVIDIA 27B linear_attn in_proj_qkv/z +
+                // out_proj, V-reordered above): surfacing F32 is 461MB/linear-layer -> 22GB across
+                // the 48 linear layers (the load-tail OOM). Re-encode the post-reorder f32 to GGUF
+                // Q8_0 (same class as the Plain-arm F8 re-encode; per-32 fp16 scale is FINER than
+                // the source's single per-tensor scale). Small tensors (ssm_a/dt/conv1d/norms,
+                // alpha/beta [48,5120]) stay F32 — norms MUST be Float for the engine.
+                let is_f8 = self.lookup(&hf).is_some_and(|(i, _)| i.dtype == "F8_E4M3");
+                if is_f8 && ne.len() == 2 && ne[0] % 32 == 0
+                    && ne.iter().product::<u64>() >= 1_000_000 {
+                    let f32s: Vec<f32> = bytes.chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                    let out = crate::nvfp4_repack::f32_to_q8_0(&f32s);
+                    return Some(TensorView { bytes: Cow::Owned(out), ggml_type: GgmlType::Q8_0, ne });
+                }
                 Some(TensorView { bytes: Cow::Owned(bytes), ggml_type: GgmlType::F32, ne })
             }
         }
@@ -343,5 +423,121 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod nv27b_probe {
+    use super::*;
+
+    /// NVIDIA-official 27B (mixed FP8/NVFP4 ckpt) dtype-routing regression: every BIG tensor class
+    /// must surface memory-bounded (Q8_0 / NVFP4), NEVER F32 (461MB/linear-layer x 48 = the 22GB
+    /// load-tail OOM, 2026-07-07). Skips when the checkpoint is absent.
+    #[test]
+    fn nvidia_27b_dtype_routing() {
+        let dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        if !dir.join("model.safetensors.index.json").exists() { eprintln!("SKIP: ckpt absent"); return; }
+        let src = SafetensorsSource::open(dir).unwrap();
+        let ty = |n: &str| src.find(n).unwrap_or_else(|| panic!("{n} unresolved")).ggml_type;
+        // linear_attn F8 projections (Transform arm, V-reordered) -> Q8_0, never F32.
+        assert_eq!(ty("blk.0.attn_qkv.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.0.attn_gate.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.0.ssm_out.weight"), GgmlType::Q8_0);
+        // full-attn F8 projections (Plain arm) -> Q8_0.
+        assert_eq!(ty("blk.3.attn_q.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.3.attn_output.weight"), GgmlType::Q8_0);
+        // NVFP4 mlp + lm_head keep the native direct-import path.
+        assert!(src.find_nvfp4_native("blk.0.ffn_gate.weight").is_some());
+        assert!(src.find_nvfp4_native("output.weight").is_some());
+        // small SSM tensors stay F32 (norm-class, engine requires Float).
+        assert_eq!(ty("blk.0.ssm_alpha.weight"), GgmlType::F32);
+        assert_eq!(ty("blk.0.ssm_conv1d.weight"), GgmlType::F32);
+        assert_eq!(ty("blk.0.ssm_a"), GgmlType::F32);
+    }
+
+    /// MTP head mapping: blk.64.* (GGUF NextN numbering) resolves into the HF `mtp.*` namespace
+    /// with the exact ne the engine loads from the GGUF twin (blk.64 census 2026-07-07).
+    /// nextn_predict_layers must come from `mtp_num_hidden_layers` (the 27B HF key).
+    #[test]
+    fn nvidia_27b_mtp_mapping() {
+        let dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        if !dir.join("model.safetensors.index.json").exists() { eprintln!("SKIP: ckpt absent"); return; }
+        let src = SafetensorsSource::open(dir).unwrap();
+        let cfg = src.config();
+        assert_eq!(cfg.nextn_predict_layers, 1, "mtp_num_hidden_layers -> nextn");
+        assert_eq!(cfg.n_layer, 65, "n_layer includes the MTP block (GGUF block_count convention)");
+        let v = |n: &str| src.find(n).unwrap_or_else(|| panic!("{n} unresolved"));
+        // glue (GGUF-twin ne reference: enorm/hnorm/shared_head_norm [5120], eh_proj [10240,5120])
+        assert_eq!(v("blk.64.nextn.enorm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.nextn.hnorm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.nextn.eh_proj.weight").ne, vec![10240, 5120]);
+        assert_eq!(v("blk.64.nextn.shared_head_norm.weight").ne, vec![5120]);
+        assert!(src.find("blk.64.nextn.shared_head.weight").is_none(), "head reuses lm_head");
+        // block tensors (full-attn block: q [5120,12288], k/v [5120,1024], o [6144,5120])
+        assert_eq!(v("blk.64.attn_q.weight").ne, vec![5120, 12288]);
+        assert_eq!(v("blk.64.attn_k.weight").ne, vec![5120, 1024]);
+        assert_eq!(v("blk.64.attn_v.weight").ne, vec![5120, 1024]);
+        assert_eq!(v("blk.64.attn_output.weight").ne, vec![6144, 5120]);
+        assert_eq!(v("blk.64.attn_q_norm.weight").ne, vec![256]);
+        assert_eq!(v("blk.64.ffn_gate.weight").ne, vec![5120, 17408]);
+        assert_eq!(v("blk.64.ffn_down.weight").ne, vec![17408, 5120]);
+        assert_eq!(v("blk.64.attn_norm.weight").ne, vec![5120]);
+        assert_eq!(v("blk.64.post_attention_norm.weight").ne, vec![5120]);
+        // big BF16 mtp matrices -> Q8_0 (draft class), norms -> F32 with the +1 fold.
+        assert_eq!(v("blk.64.attn_q.weight").ggml_type, GgmlType::Q8_0);
+        assert_eq!(v("blk.64.nextn.eh_proj.weight").ggml_type, GgmlType::Q8_0);
+        let en = v("blk.64.nextn.enorm.weight");
+        assert_eq!(en.ggml_type, GgmlType::F32);
+        // +1 fold check vs GGUF twin blk.64.nextn.enorm first value 0.4375 (raw bf16 -0.5625).
+        let first = f32::from_le_bytes(en.bytes[..4].try_into().unwrap());
+        assert!((first - 0.4375).abs() < 1e-3, "enorm +1 fold: got {first}");
+    }
+}
+
+#[cfg(test)]
+mod nv27b_twin_parity {
+    use super::*;
+
+    /// Full-tensor numeric parity vs the GGUF twin (converted from the same NVIDIA ckpt):
+    /// every F32-surfaced tensor (norms incl +1 folds, ssm_a -exp, dt_bias, conv1d) must match
+    /// the twin's dequant bit-for-bit (both go bf16 -> f32 exactly). Skips when either is absent.
+    #[test]
+    fn nvidia_27b_vs_gguf_twin_f32_parity() {
+        let st_dir = std::path::Path::new("/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4");
+        let twin = std::path::Path::new(
+            "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf");
+        if !st_dir.join("model.safetensors.index.json").exists() || !twin.exists() {
+            eprintln!("SKIP: ckpt/twin absent"); return;
+        }
+        let src = SafetensorsSource::open(st_dir).unwrap();
+        let g = crate::GgufFile::open(twin.to_str().unwrap()).unwrap();
+        // NOTE: trunk pre-FFN norm resolves via the loader's ffn_norm fallback (the twin names it
+        // post_attention_norm) — compare ST ffn_norm vs twin post_attention_norm below.
+        let names = [
+            "blk.0.attn_norm.weight",
+            "blk.0.ssm_norm.weight", "blk.0.ssm_a", "blk.0.ssm_dt.bias",
+            "blk.0.ssm_conv1d.weight",
+            "blk.3.attn_q_norm.weight", "blk.3.attn_k_norm.weight",
+            "blk.64.attn_norm.weight", "blk.64.nextn.enorm.weight",
+            "blk.64.nextn.hnorm.weight", "blk.64.nextn.shared_head_norm.weight",
+            "output_norm.weight",
+        ];
+        // (ST ggml name, twin ggml name) pairs where the two sources use different aliases.
+        let pairs = [("blk.0.ffn_norm.weight", "blk.0.post_attention_norm.weight")];
+        for (st_name, twin_name) in names.iter().map(|&n| (n, n)).chain(pairs) {
+            let name = st_name;
+            let sv = src.find(st_name).unwrap_or_else(|| panic!("{st_name}: ST unresolved"));
+            let gt = g.find(twin_name).unwrap_or_else(|| panic!("{twin_name}: not in twin"));
+            assert_eq!(sv.ne, gt.ne, "{name}: ne mismatch");
+            let n: u64 = sv.ne.iter().product();
+            let a = crate::dequant::dequantize(sv.ggml_type, &sv.bytes, n as usize);
+            let b = crate::dequant::dequantize(gt.ggml_type, g.tensor_data(gt), n as usize);
+            let md = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+            // ssm_a = -exp(A_log): Rust libm expf vs the converter's numpy exp differ by ULPs.
+            // Everything else (renames, +1 folds, conv1d squeeze/reorder) must be bit-exact.
+            let tol = if name.ends_with("ssm_a") { 1e-7 } else { 0.0 };
+            assert!(md <= tol, "{name}: maxdiff {md} > tol {tol}");
+            eprintln!("{name:40} n={n:6} maxdiff={md:.1e}");
+        }
     }
 }
