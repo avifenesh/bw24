@@ -2201,6 +2201,11 @@ impl Engine {
             // rows = 8% of the 27B p3 spec wall (1.02ms/draft launch, latency-bound like the
             // other k-quants pre-fix). Bit-identical per row to the single-row kernel.
             mr_env.unwrap_or(2)
+        } else if m == 1 && qtype == QT_Q6_K {
+            // Q6_K mr2 measured FLAT (2026-07-07: 983us vs 967 on the 9B lm_head — that matvec
+            // is weight-bandwidth-bound at 528GB/s effective; activation reuse buys nothing).
+            // Kernel kept as BW24_MMVQ_MR=2 opt-in; default single-row (no gain = no change).
+            mr_env.unwrap_or(1)
         } else { 1 };
         // A6 rp layout: mr4 has no rp twin (mr4 crashes pre-existing, non-default) -> mr2.
         if rp && qtype == QT_NVFP4 && mr == 4 { mr = 2; }
@@ -2213,6 +2218,7 @@ impl Engine {
             (QT_Q5_K, 2, _) => "qmatvec_q5_K_mmvq_mr2",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q5_K, _, _) => "qmatvec_q5_K_mmvq",
+            (QT_Q6_K, 2, _) => "qmatvec_q6_K_mmvq_mr2",
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
