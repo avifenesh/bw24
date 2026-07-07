@@ -53,8 +53,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(128);
     let mode = std::env::args().nth(4).unwrap_or_else(|| "eager".to_string());
     let e = Engine::new(0)?;
-    let g = GgufFile::open(&path)?;
-    let m = HybridModel::load(&e, &g)?;
+    // Directory path = safetensors HF checkpoint, same convention as run-gen.
+    let m = if std::path::Path::new(&path).is_dir() {
+        let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
+        HybridModel::load_from_source(&e, &st)?
+    } else {
+        let g = GgufFile::open(&path)?;
+        HybridModel::load(&e, &g)?
+    };
     let prompt: Vec<u32> = (0..p).map(|i| (100 + (i*7)%900) as u32).collect();
 
     match mode.as_str() {
