@@ -3814,6 +3814,39 @@ __device__ __forceinline__ float expert_dot_q6k_g(const unsigned char* wrow, int
 }
 
 // group-dispatching wrapper: qtype -> dot body (compile-time-hot switch, bodies inlined)
+// NVFP4 expert dot (2026-07-07, MiniMax-M3): group-g body lifted VERBATIM from qmatvec_nvfp4_mmvq
+// (same 36B GGUF block walk, same get_int_from_table_16_d + ue4m3 sub-scales, same dp4a order) —
+// bit-identical per (row, group) to the m=1 kernel. The per-expert weight_scale_2 macro is applied
+// by the CALLER (ffn_act_scaled / axpy fold), matching the dense-path contract.
+__device__ __forceinline__ float expert_dot_nvfp4_g(const unsigned char* wrow, int g,
+                                                    const signed char* aqb, float d8) {
+    int sblk = g >> 1;
+    int whichHalf = g & 1;
+    const unsigned char* b = wrow + (long)sblk * 36;
+    const unsigned char* d_bytes = b;
+    const unsigned char* qs = b + 4;
+    int s0 = whichHalf * 2;
+    const int* aq4 = (const int*)aqb;
+    float partial = 0.0f;
+    #pragma unroll
+    for (int sl = 0; sl < 2; sl++) {
+        int s = s0 + sl;
+        const unsigned char* qss = qs + s * 8;
+        int q4a = get_int_b4(qss);
+        int q4b = get_int_b4(qss + 4);
+        int2 va = get_int_from_table_16_d(q4a, kvalues_mxfp4_d);
+        int2 vb = get_int_from_table_16_d(q4b, kvalues_mxfp4_d);
+        int base = sl * 4;
+        int sumi = 0;
+        sumi = dp4a(va.x, aq4[base + 0], sumi);
+        sumi = dp4a(vb.x, aq4[base + 1], sumi);
+        sumi = dp4a(va.y, aq4[base + 2], sumi);
+        sumi = dp4a(vb.y, aq4[base + 3], sumi);
+        partial += ue4m3_to_f32_d(d_bytes[s]) * (float)sumi;
+    }
+    return d8 * partial;
+}
+
 __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wrow, int g,
                                               const signed char* aqb, float d8) {
     if (qtype == QT_IQ3_S)  return expert_dot_iq3s_g(wrow, g, aqb, d8);
@@ -3821,6 +3854,7 @@ __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wr
     if (qtype == QT_Q3_K)   return expert_dot_q3k_g(wrow, g, aqb, d8);
     if (qtype == QT_Q4_K)   return expert_dot_q4k_g(wrow, g, aqb, d8);
     if (qtype == QT_Q6_K)   return expert_dot_q6k_g(wrow, g, aqb, d8);
+    if (qtype == QT_NVFP4)  return expert_dot_nvfp4_g(wrow, g, aqb, d8);
     return 0.0f; // caller gates on supported qtypes
 }
 
