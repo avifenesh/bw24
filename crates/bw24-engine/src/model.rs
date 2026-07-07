@@ -198,9 +198,20 @@ impl GpuTensor {
                 })
             }
             None => {
-                // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.
                 let n: u64 = v.ne.iter().product();
                 let f32v = dequant::dequantize(v.ggml_type, &v.bytes, n as usize);
+                // ssm_beta/ssm_alpha stored F32 (the 35B GGUF): Q8_0-encode at load. F32 here
+                // fails `mixer_in_q8_1_fast` for the whole linear-attn mixer -> every linear
+                // layer falls off the fused norm+quantize chain onto cuBLAS f32 GEMV pairs
+                // (the NV-27B in_proj_a/b lesson, same all-or-nothing capability check; nsys
+                // 35B: 100 dot+reduce launches/token). Q8_0 of an F32 source is the same
+                // class-lossless step every 9B GGUF already ships for these tensors.
+                if v.ne.len() == 2 && v.ne[0] % 32 == 0
+                    && (name.ends_with("ssm_beta.weight") || name.ends_with("ssm_alpha.weight")) {
+                    let q8 = bw24_gguf::nvfp4_repack::f32_to_q8_0(&f32v);
+                    return GpuTensor::from_quant_bytes(e, &q8, GgmlType::Q8_0, v.ne[0], v.ne[1], 1.0);
+                }
+                // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.
                 Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: v.ne.clone() })
             }
         }
