@@ -56,6 +56,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let prompt = if prompt.is_empty() { vec![55u32] } else { prompt };
         println!("prompt tokens: {prompt:?}");
+
+        // BW24_PP_ONLY (ST arm): prefill-anatomy profiling mode (nsys) — warmup + BW24_PP_REPS
+        // timed SERVING prefills (prime_cache, the same pass PRIME_NANOS measures in run-spec)
+        // and exit. Mirrors the GGUF arm's PP_ONLY; skips the decode gate so the profile is pure
+        // prefill. Fresh cache per rep (fresh-prompt prime, cache.pos==0 each time).
+        if std::env::var("BW24_PP_ONLY").is_ok() {
+            let reps: usize = std::env::var("BW24_PP_REPS").ok()
+                .and_then(|s| s.parse().ok()).unwrap_or(3);
+            let warmups: usize = std::env::var("BW24_PP_WARMUP").ok()
+                .and_then(|s| s.parse().ok()).unwrap_or(1);
+            for _ in 0..warmups {
+                let mut c = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            }
+            e.stream().synchronize()?;
+            let mut times = Vec::with_capacity(reps);
+            for r in 0..reps {
+                let mut c = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+                let tp = std::time::Instant::now();
+                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+                e.stream().synchronize()?;
+                let dt = tp.elapsed().as_secs_f64();
+                times.push(dt);
+                println!("pp-only rep {r}: {:.4}s = {:.1} tok/s", dt, prompt.len() as f64 / dt);
+            }
+            let mut ts = times.clone();
+            ts.sort_by(|a, b| a.total_cmp(b));
+            let med = ts[ts.len() / 2];
+            println!("pp-only MEDIAN: {} tok in {:.4}s = {:.1} tok/s (pp{}, {} reps)",
+                     prompt.len(), med, prompt.len() as f64 / med, prompt.len(), reps);
+            return Ok(());
+        }
         // GATE REFERENCE = the batched VERIFY path (decode_step_t: quantized-KV attend, the same
         // dispatch class as the real serving prime). forward_last's fresh-f32-KV attention is NOT
         // the M3 serving path, and its KV-precision delta amplifies through the sigmoid router's
