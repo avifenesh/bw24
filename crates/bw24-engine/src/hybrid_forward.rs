@@ -734,7 +734,7 @@ impl HybridModel {
         // "verify must be kernel-DISPATCH-identical to decode" lesson, MoE edition). Small-t
         // now rides the dev loop below (same kernels per token as decode); pairs serves real
         // prefill (t >= 16, where spec never verifies).
-        if t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
+        if cfg.m3.is_none() && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype)
             && std::env::var("BW24_MOE_PAIRS").map(|v| v != "0").unwrap_or(true)
@@ -745,11 +745,16 @@ impl HybridModel {
         // t < PRIME_MIN_T: moe_ffn_dev loops tokens serially (1 launch-pair per token) — the
         // decode path AND the spec-verify path (dispatch parity = exactness; see pairs gate
         // above). Serial launches are fine at t<=10 (K+2); real prefill never lands here.
-        if t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
+        // moe_ffn_dev routes via the FUSED SOFTMAX device router (moe_router_topk) — M3's
+        // sigmoid routing (+e_score_correction_bias) has no device kernel yet, so M3 must NOT
+        // enter the dev arms: with MOE_CACHE=1 it silently routed softmax = wrong experts
+        // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
+        let dev_ok = cfg.m3.is_none();
+        if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             return Self::moe_ffn_dev(e, m, z, &logits, t, cfg, il, max_block);
         }
-        if use_cache && n_used <= 8 && moe_dev_enabled()
+        if dev_ok && use_cache && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             let row_ok = e.with_moe_cache(max_block, |c, eng| {
                 if moe_prewarm_enabled() { c.prewarm_layer(il, m, eng)?; }
