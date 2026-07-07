@@ -1738,13 +1738,12 @@ impl Engine {
         // matmul_pre siblings. qmatvec_mmvq_raw quantizes the activation internally (q8_1) like the
         // _fast paths; the NVFP4 macro-scale is applied by the `scale != 1.0` block below.
         if m == 1 && fast {
-            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, scale, .. } = w {
                 if self.mmvq_supports(*qtype) {
-                    let mut y = self.qmatvec_mmvq_raw(bytes, x, m, in_f, out_f, *qtype, *row_bytes, *rp)?;
-                    if let GpuTensor::Quant { scale, .. } = w {
-                        if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
-                    }
-                    return Ok(y);
+                    // NVFP4 macro-scale rides the kernel's fused epilogue arg (one launch total);
+                    // non-NVFP4 has scale==1.0 so qmatvec_mmvq skips scale_inplace either way.
+                    let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                    return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, *scale, *rp);
                 }
             }
         }
@@ -1994,9 +1993,12 @@ impl Engine {
             block_dim: (32, ROWS_PER_BLOCK, 1), shared_mem_bytes: 0,
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, 1i32, rb0 as i64);
+        // noscale contract: the caller folds s0/s1 into the SwiGLU epilogue — the kernel's fused
+        // yscale args stay 1.0 here (they exist for the single-tensor callers).
+        let one = 1.0f32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
-         .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+         .arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&one).arg(&one);
         unsafe { b.launch(cfg)?; }
         Ok(Some(((y0, s0), (y1, s1))))
     }
@@ -2233,9 +2235,17 @@ impl Engine {
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
-        unsafe { b.launch(cfg)?; }
-        if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        // NVFP4 mmvq kernels take the macro-scale as a fused epilogue arg (applied at the write —
+        // bit-identical to the old separate scale_inplace pass, minus one launch per matvec: 53
+        // scale launches/token on the 9B). Non-NVFP4 mmvq kernels keep the 8-arg signature.
+        if qtype == QT_NVFP4 {
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
+            unsafe { b.launch(cfg)?; }
+        } else {
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+        }
         Ok(y)
     }
 

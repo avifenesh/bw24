@@ -1031,7 +1031,7 @@ extern "C" __global__ void qmatvec_q6_K_mmvq(
 extern "C" __global__ void qmatvec_nvfp4_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
     int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
     int t = blockIdx.y;
     if (o >= out_f || t >= m) return;
@@ -1074,7 +1074,7 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq(
         acc += adrow[g] * partial;
     }
     acc = warp_reduce_sum(acc);
-    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+    if (lane == 0) y[(size_t)t * out_f + o] = acc * yscale;
 }
 
 // ---- NVFP4 MMVQ, MULTI-ROW-PER-WARP (MLP lever). The single-row mmvq above is m=1 LATENCY-bound
@@ -1086,11 +1086,14 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq(
 // barrier was why more-WARPS-per-row was slower; more-ROWS-per-warp has no barrier). Activation
 // bytes leave HBM/L2 1x per warp instead of 1x per row. BIT-IDENTICAL per row to qmatvec_nvfp4_mmvq:
 // same dp4a order, same ue4m3 scale, same warp_reduce_sum, same write. grid.x sized for RPW rows/warp.
+// yscale = the per-tensor NVFP4 macro-scale, applied AT THE WRITE (y = reduced_acc * yscale).
+// Bit-identical to the old separate scale_inplace pass (same single IEEE multiply on the same
+// value); folding it removes one launch per matvec (53 scale_f32 launches/token on the 9B).
 template<int RPW>
 __device__ __forceinline__ void nvfp4_mmvq_multirow(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
     int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;   // first of this warp's RPW rows
     int t = blockIdx.y;
     if (o0 >= out_f || t >= m) return;
@@ -1143,7 +1146,7 @@ __device__ __forceinline__ void nvfp4_mmvq_multirow(
         int o = o0 + r;
         if (o >= out_f) break;
         float a = warp_reduce_sum(acc[r]);
-        if (lane == 0) y[(size_t)t * out_f + o] = a;
+        if (lane == 0) y[(size_t)t * out_f + o] = a * yscale;
     }
 }
 // t=0-pinned single-token body of nvfp4_mmvq_multirow (blockIdx.y is repurposed by the dual
@@ -1153,7 +1156,7 @@ template<int RPW>
 __device__ __forceinline__ void nvfp4_mmvq_dual_row(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, long row_bytes) {
+        int in_f, int out_f, long row_bytes, float yscale) {
     int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
     if (o0 >= out_f) return;
     int lane = threadIdx.x;
@@ -1204,21 +1207,21 @@ __device__ __forceinline__ void nvfp4_mmvq_dual_row(
         int o = o0 + r;
         if (o >= out_f) break;
         float a = warp_reduce_sum(acc[r]);
-        if (lane == 0) y[o] = a;
+        if (lane == 0) y[o] = a * yscale;
     }
 }
 
 extern "C" __global__ void qmatvec_nvfp4_mmvq_mr2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
-    nvfp4_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
+    nvfp4_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes, yscale);
 }
 extern "C" __global__ void qmatvec_nvfp4_mmvq_mr4(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
-    nvfp4_mmvq_multirow<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
+    nvfp4_mmvq_multirow<4>(W, aq, ad, y, in_f, out_f, m, row_bytes, yscale);
 }
 // DUAL gate+up matvec (mm-fusion, 2026-07-03): the FFN gate and up projections share the SAME
 // activation and the same (in_f, out_f) shape; running them as two sequential launches leaves the
@@ -1230,14 +1233,15 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_mr2(
         const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float y0scale, float y1scale) {
     const unsigned char* W = (blockIdx.y == 0) ? W0 : W1;
     float* y = (blockIdx.y == 0) ? y0 : y1;
+    float yscale = (blockIdx.y == 0) ? y0scale : y1scale;
     // nvfp4_mmvq_multirow reads blockIdx.y as the token index; decode m==1 -> token 0. Inline the
     // call with t forced to 0 via a shifted grid: we reuse the body by passing m=1 and mapping
     // blockIdx.y ourselves — the helper uses blockIdx.y for t, so temporarily this kernel only
     // supports m==1 (asserted host-side).
-    nvfp4_mmvq_dual_row<2>(W, aq, ad, y, in_f, out_f, row_bytes);
+    nvfp4_mmvq_dual_row<2>(W, aq, ad, y, in_f, out_f, row_bytes, yscale);
 }
 
 // ---- NVFP4 BATCHED matvec, WEIGHT-TILE-RESIDENT across M token columns (the m=2-4 concurrent-decode
@@ -2554,7 +2558,7 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_b8_rpksc(
 extern "C" __global__ void qmatvec_nvfp4_mmvq_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
     int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
     int t = blockIdx.y;
     if (o >= out_f || t >= m) return;
@@ -2592,7 +2596,7 @@ extern "C" __global__ void qmatvec_nvfp4_mmvq_rp(
         acc += adrow[g] * partial;
     }
     acc = warp_reduce_sum(acc);
-    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+    if (lane == 0) y[(size_t)t * out_f + o] = acc * yscale;
 }
 
 // multirow rp body (t from blockIdx.y unless pinned): twin of nvfp4_mmvq_multirow.
@@ -2600,7 +2604,7 @@ template<int RPW, bool PIN_T0>
 __device__ __forceinline__ void nvfp4_mmvq_multirow_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
     int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
     int t = PIN_T0 ? 0 : blockIdx.y;
     if (o0 >= out_f || t >= m) return;
@@ -2650,24 +2654,25 @@ __device__ __forceinline__ void nvfp4_mmvq_multirow_rp(
         int o = o0 + r;
         if (o >= out_f) break;
         float a = warp_reduce_sum(acc[r]);
-        if (lane == 0) y[(size_t)t * out_f + o] = a;
+        if (lane == 0) y[(size_t)t * out_f + o] = a * yscale;
     }
 }
 extern "C" __global__ void qmatvec_nvfp4_mmvq_mr2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
-    nvfp4_mmvq_multirow_rp<2, false>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+        int in_f, int out_f, int m, long row_bytes, float yscale) {
+    nvfp4_mmvq_multirow_rp<2, false>(W, aq, ad, y, in_f, out_f, m, row_bytes, yscale);
 }
 // DUAL gate+up rp twin (blockIdx.y selects tensor; m==1 asserted host-side like the original).
 extern "C" __global__ void qmatvec_nvfp4_mmvq_dual_mr2_rp(
         const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1,
-        int in_f, int out_f, int m, long row_bytes) {
+        int in_f, int out_f, int m, long row_bytes, float y0scale, float y1scale) {
     const unsigned char* W = (blockIdx.y == 0) ? W0 : W1;
     float* y = (blockIdx.y == 0) ? y0 : y1;
-    nvfp4_mmvq_multirow_rp<2, true>(W, aq, ad, y, in_f, out_f, 1, row_bytes);
+    float yscale = (blockIdx.y == 0) ? y0scale : y1scale;
+    nvfp4_mmvq_multirow_rp<2, true>(W, aq, ad, y, in_f, out_f, 1, row_bytes, yscale);
 }
 
 // dp4a rp twin (128-thread two-level reduce, grid (out_f, m)). Twin of qmatvec_nvfp4_dp4a.
