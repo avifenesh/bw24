@@ -81,6 +81,8 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp bu
 | Qwen3.6-27B NVFP4 (spec K=3) | 99 / 88 / 76 | 87 / 92 / 75 | **1.14x** / 0.95x / **1.01x** |
 | Qwen3.6-35B-A3B MoE (spec K=2 / plain) | 182 / 158 | 170 | **1.08x** / 0.93x |
 
+The benchmark artifacts — trimmed draft-head GGUFs (generic/code75/balanced FR-Spec vocab trims for `BW24_FRSPEC_TRIM`), the exact prompts, and the full reproduction configs (env law, per-class K/pmin, llama.cpp build + serve flags) — are published at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
+
 Also running, no llama.cpp comparison possible (safetensors-only checkpoints):
 
 - **nvidia/Qwen3.6-27B-NVFP4** (official NVIDIA checkpoint: mixed NVFP4 + FP8 linear-attention + model-trained BF16 MTP head, loaded straight from safetensors) — spec K=2 45-48 tok/s on the laptop rig. The vLLM 0.24.0 reference on an RTX PRO 6000 runs the same checkpoint through Marlin weight-only dequant (no native FP4 on sm_120 in vLLM).
