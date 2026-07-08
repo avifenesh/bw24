@@ -2316,6 +2316,20 @@ impl Engine {
         let q5_il = qtype == QT_Q5_K && m == 1
             && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
         if q5_il && !q5_force && out_f > 65536 { mr = 1; }
+        // q4issue lane (2026-07-08): BW24_Q4V routes the SINGLE-ROW q4_K matvec to the
+        // issue-reduced body (qmatvec_q4_K_mmvq_v: 3x LDG.128 replace ~13 narrow weight loads
+        // per 32-elem group; scale decode = register shifts on the header uint4; identical
+        // dp4a values+order -> bit-identical). Micro-bench (DRAM-cold, 8-copy rotation, N=3):
+        // v wins where the g-loop is deep relative to rows (12288x4096 ffn_down +6.9%,
+        // 4096x4096 +1.5%) and is noise-to--1.7% on wide shapes already at 84-97% of wall
+        // (L2-warm v is +16-24% everywhere — the kernel IS issue-lighter; DRAM hides it).
+        // =1 smart: v only when in_f >= out_f (the win shapes). =2 force-everywhere (A/B seam).
+        // Default OFF until main-thread tok/s proves it.
+        let q4v = match std::env::var("BW24_Q4V").as_deref() {
+            Ok("1") => in_f >= out_f,
+            Ok("2") => true,
+            _ => false,
+        };
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
@@ -2323,7 +2337,9 @@ impl Engine {
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
             (QT_Q4_K, 2, _) => "qmatvec_q4_K_mmvq_mr2",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
-            (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
+            (QT_Q4_K, _, _) if q4v => "qmatvec_q4_K_mmvq_v",
+            (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, 2, _) => "qmatvec_q6_K_mmvq_mr2",
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",

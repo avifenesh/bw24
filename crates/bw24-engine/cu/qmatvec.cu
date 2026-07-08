@@ -693,6 +693,113 @@ extern "C" __global__ void qmatvec_q4_K_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ----- Q4_K ISSUE-REDUCED warp-per-row MMVQ (q4issue lane 2026-07-08). WHY: the q4_K trunk
+// matvecs run ~70% of wall on both engines — instruction-issue bound like q6_K/down8, not
+// bandwidth-bound. Per 32-elem group the baseline issues 2 LDG.U16 (d/dmin) + up to 3 LDG.U8
+// (scale bytes, behind a grp<4 branch) + 8 LDG.32 (qs) = ~13 weight-load issues against 8 dp4a
+// of real work. This body computes the SAME packed ints from the SAME bytes with 3 LDG.128:
+// 1x the 16B superblock header (d|dmin|scales[12] — q4_K's header is exactly one uint4) and
+// 2x the 32B qs chunk. The scale/min unpack becomes register shifts on the header words
+// (branchless select; grp/hs/sh8/lo4 are loop-invariant per lane since g strides by 32), and
+// per-iteration addressing is strength-reduced to pointer bumps (sblk advances exactly 4
+// superblocks = 576B per g-step).
+// BIT-IDENTITY: value-level — little-endian word extraction == the scalar byte/half loads
+// ((hdr.y>>8j)&0xff == scales[j] etc.); wpack = (raw>>hs)&0x0F0F0F0F with hs in {0,4} == the
+// hi/lo ternary; the dp4a issue order (sumi_d, sumi_sum per k) and the closing float expression
+// are UNCHANGED from qmatvec_q4_K_mmvq.
+// ALIGNMENT: superblock=144B (16-mult), so b is 16-aligned whenever W and row_bytes are
+// (cudaMalloc slabs are 256B-aligned; q4_K row_bytes=(in_f/256)*144 is always a 16-mult).
+// Warp-uniform guard falls back to the scalar body for any exotic base — same values either
+// way. Dispatch: BW24_Q4V=1 (host-side, default OFF).
+extern "C" __global__ void qmatvec_q4_K_mmvq_v(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    if ((((unsigned long long)W | (unsigned long long)row_bytes) & 15ull) == 0ull) {
+        // loop-invariant per lane: grp = g & 7 never changes (g strides by 32, a multiple of 8).
+        int grp  = lane & 7;
+        int hs   = (grp & 1) * 4;          // nibble-plane shift (0 = low, 4 = high)
+        int sh8  = (grp & 3) * 8;          // scale byte lane within each header word
+        bool lo4 = (grp < 4);
+        const unsigned char* b   = wrow + (long)(lane >> 3) * 144;
+        const unsigned char* qsb = b + 16 + (grp >> 1) * 32;
+        const signed char*   ap  = arow + (size_t)lane * 32;
+        const float*         dpp = adrow + lane;
+        for (int g = lane; g < nsb; g += 32, b += 576, qsb += 576, ap += 1024, dpp += 32) {
+            uint4 hdr = *(const uint4*)b;                 // d|dmin + scales[12]: one LDG.128
+            float d_sb    = half_to_float((unsigned short)(hdr.x & 0xffffu));
+            float dmin_sb = half_to_float((unsigned short)(hdr.x >> 16));
+            unsigned int bA = (hdr.y >> sh8) & 0xffu;     // scales[j],   j = grp & 3
+            unsigned int bB = (hdr.z >> sh8) & 0xffu;     // scales[j+4]
+            unsigned int bC = (hdr.w >> sh8) & 0xffu;     // scales[j+8]
+            int sc = lo4 ? (int)(bA & 63u) : (int)((bC & 0xFu) | ((bA >> 6) << 4));
+            int mn = lo4 ? (int)(bB & 63u) : (int)((bC >> 4)  | ((bB >> 6) << 4));
+            uint4 q03 = *(const uint4*)qsb;               // the 32B qs chunk: 2x LDG.128
+            uint4 q47 = *(const uint4*)(qsb + 16);
+            int q4v[8] = { (int)q03.x, (int)q03.y, (int)q03.z, (int)q03.w,
+                           (int)q47.x, (int)q47.y, (int)q47.z, (int)q47.w };
+            const int4* aq16 = (const int4*)ap;
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            int sumi_d = 0, sumi_sum = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                int wpack = (q4v[k] >> hs) & 0x0F0F0F0F;
+                int a = aq4[k];
+                sumi_d   = dp4a(wpack, a, sumi_d);
+                sumi_sum = dp4a(0x01010101, a, sumi_sum);
+            }
+            float d8 = *dpp;
+            acc += d_sb   * (float)(sc * sumi_d) * d8
+                 - dmin_sb * (float)(mn * sumi_sum) * d8;
+        }
+    } else {
+        // scalar fallback: qmatvec_q4_K_mmvq body VERBATIM (non-16-aligned slab).
+        for (int g = lane; g < nsb; g += 32) {
+            int sblk = g >> 3;
+            int grp  = g & 7;
+            const unsigned char* b = wrow + (long)sblk * 144;
+            float d_sb    = half_to_float(*(const unsigned short*)b);
+            float dmin_sb = half_to_float(*(const unsigned short*)(b + 2));
+            const unsigned char* scales = b + 4;
+            const unsigned char* qs     = b + 16;
+            unsigned char sc, mn;
+            if (grp < 4) { sc = scales[grp] & 63; mn = scales[grp + 4] & 63; }
+            else { sc = (scales[grp + 4] & 0xF) | ((scales[grp - 4] >> 6) << 4);
+                   mn = (scales[grp + 4] >> 4) | ((scales[grp] >> 6) << 4); }
+            int chunk = grp >> 1;
+            const int* q4 = (const int*)(qs + chunk * 32);
+            bool hi = (grp & 1);
+            const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            int sumi_d = 0, sumi_sum = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                int raw = q4[k];
+                int wpack = hi ? ((raw >> 4) & 0x0F0F0F0F) : (raw & 0x0F0F0F0F);
+                int a = aq4[k];
+                sumi_d   = dp4a(wpack, a, sumi_d);
+                sumi_sum = dp4a(0x01010101, a, sumi_sum);
+            }
+            float d8 = adrow[g];
+            acc += d_sb   * (float)((int)sc * sumi_d) * d8
+                 - dmin_sb * (float)((int)mn * sumi_sum) * d8;
+        }
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 // ----- Q5_K warp-per-row MMVQ. Body lifted from qmatvec_q5_K_dp4a (the only major decode matvec that
 // still fell to the slow dp4a path at m=1 — 7% of 9B decode). One warp owns one output row; lane
 // strides the 32-blocks; warp-only shfl reduce (no smem barrier). Bit-equivalent to qmatvec_q5_K_dp4a
