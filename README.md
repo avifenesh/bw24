@@ -109,15 +109,21 @@ Depth behavior is part of the comparison: at 6.3k-token context the 35B decodes 
 
 All rows are the raw-prompt continuation protocol (llama.cpp measured through llama-server at its serve-best speculative config on the same machine, N=3 medians, full power verified). Config is content-class dependent — the chat protocol shifts both the optimal draft depth and the trim choice (chat short-code runs K=7 at 122 tok/s on the 27B); the published HF artifacts document every configuration.
 
-Three speculative mechanisms shipped in the 2026-07-08 push, vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — a 32k-row d2t list transfers across every model sharing a tokenizer (the gather reads each model's own lm_head bytes), and for a new vocab the `frspec_rank` tool builds one from any local corpus in minutes (the 9B's 248320-token vocab got its own: p1/p2/p3 +22/+17/+14%); zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost (pays below ~75% base acceptance, hurts above ~90%); and per-class draft depth (K is a property of the content's per-slot acceptance decay, protocol included).
+Three speculative mechanisms drive these numbers — FR-Spec vocabulary trims, whole-round
+confidence gating for unpredictable stretches, and per-content-class draft depth — mechanism and
+measurement detail in [`HANDOVER.md`](HANDOVER.md) (see the SPEC SCOREBOARD sections) and
+[`research/tune-data/`](research/tune-data/).
 
-On the 27B the two engines bind differently: llama.cpp is cost-bound at short prompts (draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance (1.25x raw, 1.40x chat); at medium/long prompts both sit near the same content-acceptance ceiling.
+**Reproducing these numbers:** every artifact the claims depend on is public — trimmed draft-head
+GGUFs, exact prompts, and full configs at
+[huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). llama.cpp
+build/serve flags are in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); the harness is
+`research/e2e/run-e2e.sh`.
 
-**Reproducing these numbers:** every artifact the claims depend on is public — trimmed draft-head GGUFs (generic/code75/balanced for the 27B/35B, the 9B-native ranking, all for `BW24_FRSPEC_TRIM`), the exact prompts, and the full configs (env law, per-class K/pmin, llama.cpp build + serve flags) at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). The llama.cpp side runs its measured-best serve config per model (build flags and per-model serve lines in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)); the harness is `research/e2e/run-e2e.sh`.
-
-Safetensors checkpoints (no llama.cpp comparison possible):
-
-- **nvidia/Qwen3.6-27B-NVFP4** — 92.5 tok/s spec on the laptop rig (2.3x the tuned local vLLM reference, which reaches 40.8 plain and cannot fit its MTP draft head on 24 GB; bw24's trimmed draft head byte-gathers rows from the trunk's own lm_head, zero extra VRAM). Same-silicon vLLM comparison on an RTX PRO 6000 96 GB: vLLM MTP reaches 147-184 tok/s there via batched multi-token drafting — the standing gap bw24 is working (bw24 92-97 on that box).
+Safetensors checkpoints load and run directly (no GGUF conversion) — NVIDIA's official
+Qwen3.6-27B-NVFP4 and MiniMax-M3 REAP50 (121 GB MoE) both measured on this 24 GB card; numbers and
+the same-silicon vLLM comparison are in [`HANDOVER.md`](HANDOVER.md) (see the NVIDIA-OFFICIAL and
+MINIMAX-M3 lane sections).
 - **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader (~1.5 tok/s, I/O-bound: measured routing locality shows 77% of experts get touched with weak reuse, so capacity — not caching policy — is the binding constraint). On a 96 GB RTX PRO 6000 the same code reaches ~6 tok/s and climbing with an 80 GB expert cache.
 
 Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind, the gap and its diagnosis are tracked in the tune-data records, not hidden — currently: **prefill** (pp≈2k same-day board: 9B 3799 vs 6287, 27B 1055 vs 2348, 35B 2338 vs 3981 — llama's int8 tensor-core MMQ GEMM vs our dp4a path; an FP8-activation tensor-core prefill is in flight, targeting the compute headroom this silicon has that neither engine uses), the 35B deep-context decode residual (152.8 vs 159.9 at 6.3k), and vLLM's batched MTP on big-VRAM boxes.

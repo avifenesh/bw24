@@ -1,3 +1,5 @@
+<!-- AGENTS.md is a symlink to this file, for tools that read that name by convention instead. -->
+
 # bw24 — project instructions
 
 ## Perf board: README must stay current, every push
