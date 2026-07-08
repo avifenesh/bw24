@@ -276,7 +276,12 @@ fn fa_ppool_on() -> bool {
 /// graph _dc path switch TOGETHER (the spec-exactness law). Default OFF. Read per call (not
 /// OnceLock) so the gate battery can A/B within one process, matching the BW24_NO_FA_VEC pattern.
 fn fa_v2_on() -> bool {
-    std::env::var("BW24_FA_V2").map(|v| v == "1").unwrap_or(false)
+    // DEFAULT ON since 2026-07-08 (BW24_FA_V2=0 reverts): tile-batched online softmax, e2e
+    // measured across every model x depth — 35B 168.7->173.4 (d512) / 153.1->158.5 (d6257),
+    // 9B 131.2->132.7 / 108.4->124.5 (+15% — the engine-wide depth-slope fix), 27B 47.2->47.7 /
+    // 42.2->44.9. One-time numeric-config change; kernel-check + argmax + spec self-consistency
+    // + graph bit-identity green on all three models.
+    std::env::var("BW24_FA_V2").map(|v| v != "0").unwrap_or(true)
 }
 
 /// FADEPTH lane env gate: BW24_FA_CMB_WIDE=1 dispatches the wide-grid combine twins
