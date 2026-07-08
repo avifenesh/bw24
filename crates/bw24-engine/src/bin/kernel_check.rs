@@ -961,6 +961,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Q8-FUSED2 {n0}+{n1} [Q8_0] out=({},{}): rel={d:.2e} bits={} {}",
                      t0.1, t1.1, bits_ok,
                      if bits_ok { "OK" } else { fails += 1; "FAIL" });
+            // BATCHED twin (verify t=2-4 tier, BW24_SPEC_FUSED_T): fused2_b vs the per-tensor
+            // _b2/_b4 launches matmul_decode_exact dispatches — body verbatim, must be
+            // BIT-IDENTICAL per (tensor,token,row).
+            for mm in [2usize, 3, 4] {
+                let xm: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151 + mm) * 0.1).collect();
+                let xmd = e.htod(&xm)?;
+                let (aq, ad) = e.quantize_q8_1(&xmd, mm, in_f)?;
+                let mc = bw24_engine::Engine::batched_mcols(mm);
+                let r0 = e.dtoh(&e.qmatvec_mmvq_batched(&w0, &aq, &ad, mm, in_f, t0.1,
+                                                        bw24_engine::QT_Q8_0, rb, mc, 1.0, false)?)?;
+                let r1 = e.dtoh(&e.qmatvec_mmvq_batched(&w1, &aq, &ad, mm, in_f, t1.1,
+                                                        bw24_engine::QT_Q8_0, rb, mc, 1.0, false)?)?;
+                let (f0, f1) = e.qmatvec_q8_fused2_t_raw(&w0, &w1, &xmd, mm, in_f, t0.1, t1.1, rb)?;
+                let (f0, f1) = (e.dtoh(&f0)?, e.dtoh(&f1)?);
+                let bits_ok = r0.iter().zip(f0.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                    && r1.iter().zip(f1.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
+                let d = maxdiff(&r0, &f0).max(maxdiff(&r1, &f1));
+                println!("Q8-FUSED2-B {n0}+{n1} [Q8_0] m={mm} out=({},{}): rel={d:.2e} bits={} {}",
+                         t0.1, t1.1, bits_ok,
+                         if bits_ok { "OK" } else { fails += 1; "FAIL" });
+            }
         }
         // triple: 35B full-attn wq/wk/wv (blk.3 is the first full-attn layer).
         let tri: [&str; 3] = ["blk.3.attn_q.weight", "blk.3.attn_k.weight", "blk.3.attn_v.weight"];
@@ -984,6 +1005,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Q8-FUSED3 wq+wk+wv [Q8_0] out=({},{},{}): rel={d:.2e} bits={} {}",
                          t0.1, t1.1, t2.1, bits_ok,
                          if bits_ok { "OK" } else { fails += 1; "FAIL" });
+                // BATCHED twin (verify t=2-4 tier): fused3_b vs three per-tensor batched launches.
+                for mm in [2usize, 3, 4] {
+                    let xm: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 157 + mm) * 0.1).collect();
+                    let xmd = e.htod(&xm)?;
+                    let (aq, ad) = e.quantize_q8_1(&xmd, mm, in_f)?;
+                    let mc = bw24_engine::Engine::batched_mcols(mm);
+                    let r0 = e.dtoh(&e.qmatvec_mmvq_batched(&w0, &aq, &ad, mm, in_f, t0.1,
+                                                            bw24_engine::QT_Q8_0, rb, mc, 1.0, false)?)?;
+                    let r1 = e.dtoh(&e.qmatvec_mmvq_batched(&w1, &aq, &ad, mm, in_f, t1.1,
+                                                            bw24_engine::QT_Q8_0, rb, mc, 1.0, false)?)?;
+                    let r2 = e.dtoh(&e.qmatvec_mmvq_batched(&w2, &aq, &ad, mm, in_f, t2.1,
+                                                            bw24_engine::QT_Q8_0, rb, mc, 1.0, false)?)?;
+                    let (f0, f1, f2) = e.qmatvec_q8_fused3_t_raw(&w0, &w1, &w2, &xmd, mm, in_f,
+                                                                 t0.1, t1.1, t2.1, rb)?;
+                    let (f0, f1, f2) = (e.dtoh(&f0)?, e.dtoh(&f1)?, e.dtoh(&f2)?);
+                    let bits_ok = r0.iter().zip(f0.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                        && r1.iter().zip(f1.iter()).all(|(a, b)| a.to_bits() == b.to_bits())
+                        && r2.iter().zip(f2.iter()).all(|(a, b)| a.to_bits() == b.to_bits());
+                    let d = maxdiff(&r0, &f0).max(maxdiff(&r1, &f1)).max(maxdiff(&r2, &f2));
+                    println!("Q8-FUSED3-B wq+wk+wv [Q8_0] m={mm} out=({},{},{}): rel={d:.2e} bits={} {}",
+                             t0.1, t1.1, t2.1, bits_ok,
+                             if bits_ok { "OK" } else { fails += 1; "FAIL" });
+                }
             }
         }
     }

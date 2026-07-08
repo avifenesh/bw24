@@ -1476,7 +1476,20 @@ impl HybridModel {
                     None => (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?),
                 }
             } else if verify_t {
-                (e.matmul_decode_exact(gate_shexp, z, t)?, e.matmul_decode_exact(up_shexp, z, t)?)
+                // VERIFY-TIER TRUNK FUSION (BW24_SPEC_FUSED_T, t=2-4): the shexp gate+up pair
+                // rides one shared quantize + one fused2 batched launch instead of two
+                // decode-exact calls. Bit-identical per (tensor,token,row) — see spec_fused_t.
+                let mut fused = None;
+                if crate::spec::spec_fused_t() && (2..=4).contains(&t)
+                    && e.uses_q8_1_fast(gate_shexp) && e.uses_q8_1_fast(up_shexp) {
+                    let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+                    fused = e.matmul_q8_fused2_t(gate_shexp, up_shexp, &zq, &zd, t)?;
+                }
+                match fused {
+                    Some(pair) => pair,
+                    None => (e.matmul_decode_exact(gate_shexp, z, t)?,
+                             e.matmul_decode_exact(up_shexp, z, t)?),
+                }
             } else {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)
             };

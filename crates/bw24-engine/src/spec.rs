@@ -64,6 +64,19 @@ pub(crate) fn spec_m2() -> bool {
     *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
 }
 
+/// VERIFY-TIER TRUNK LAUNCH-FUSION (BW24_SPEC_FUSED_T=1, default OFF — lane/close35b): extend
+/// the t=1 fused2/fused3 Q8_0 trunk launches to the batched verify tier (t=2-4, the K=1..3
+/// verify shapes). At t>1 the trunk pairs/triples (35B wqkv+wqkv_gate, wq/wk/wv,
+/// gate_shexp+up_shexp) each run a separate `matmul_decode_exact` — one q8_1 re-quantize of the
+/// SAME activation plus one _b2/_b4 launch per tensor. The fused twins share ONE quantize and
+/// ONE launch per group; per (tensor,token,row) the kernel body is q8_0_mmvq_batched verbatim
+/// with the identical row mapping -> BIT-IDENTICAL by construction (kernel-check pins it,
+/// run-spec K=1..8 + acceptance identity arbitrate e2e).
+pub(crate) fn spec_fused_t() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("BW24_SPEC_FUSED_T").map(|v| v == "1").unwrap_or(false))
+}
+
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
 /// Only call this on such buffers — the lean contract is "identical bytes by construction".
 fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -707,11 +720,23 @@ impl HybridModel {
         // sum order — ULP differences propagate through gdn_scan and flip argmax on the 27B.
         // Q8 TRUNK-FUSION at T=1 (35B: wqkv+wqkv_gate both Q8_0): one fused2 launch, bit-identical
         // per (tensor,row) to the two m=1 MMVQ dispatches below — decode-exact contract holds.
+        // VERIFY-TIER TRUNK FUSION (BW24_SPEC_FUSED_T, t=2-4): quantize h ONCE for every
+        // fused-eligible same-input Q8_0 pair of this layer (35B wqkv+wqkv_gate; 9B
+        // ssm_beta+ssm_alpha) — each fused2 batched launch then replaces two decode-exact
+        // calls (each of which re-quantizes the same h + runs its own _b2/_b4 launch).
+        // Bit-identical per (tensor,token,row) — see spec_fused_t().
+        let h_q8_t = if spec_fused_t() && (2..=4).contains(&t)
+            && ((e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate))
+                || (e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha))) {
+            Some(e.quantize_q8_1(h, t, cfg.n_embd as usize)?)
+        } else { None };
         let (qkv_mixed, z) = {
             let mut fused = None;
             if t == 1 && e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate) {
                 let (hq, hd) = e.quantize_q8_1(h, 1, cfg.n_embd as usize)?;
                 fused = e.matmul_q8_fused2(&la.wqkv, &la.wqkv_gate, &hq, &hd)?;
+            } else if let Some((hq, hd)) = h_q8_t.as_ref() {
+                fused = e.matmul_q8_fused2_t(&la.wqkv, &la.wqkv_gate, hq, hd, t)?;
             }
             match fused {
                 Some(pair) => pair,
@@ -741,8 +766,17 @@ impl HybridModel {
                 },
             }
         } else {
-            (e.matmul_decode_exact(&la.ssm_beta, h, t)?,
-             e.matmul_decode_exact(&la.ssm_alpha, h, t)?)
+            // fused-t twin (9B stores beta/alpha as Q8_0): same shared-quantize + one launch
+            // contract as the wqkv pair above; 35B beta/alpha are Float -> None -> fallback.
+            let mut fused = None;
+            if let Some((hq, hd)) = h_q8_t.as_ref() {
+                fused = e.matmul_q8_fused2_t(&la.ssm_beta, &la.ssm_alpha, hq, hd, t)?;
+            }
+            match fused {
+                Some(pair) => pair,
+                None => (e.matmul_decode_exact(&la.ssm_beta, h, t)?,
+                         e.matmul_decode_exact(&la.ssm_alpha, h, t)?),
+            }
         };
 
         // conv with CARRIED state + ring roll (T >= pad rides the input-column update kernel;
@@ -953,6 +987,13 @@ impl HybridModel {
                 && e.uses_q8_1_fast(&fa.wv) {
                 let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
                 fused = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hd)?;
+            } else if spec_fused_t() && (2..=4).contains(&t) && e.uses_q8_1_fast(&fa.wq)
+                && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+                // VERIFY-TIER TRUNK FUSION (BW24_SPEC_FUSED_T): one shared quantize + one
+                // fused3 batched launch replaces three decode-exact calls (3 re-quantizes of
+                // the same h + 3 _b2/_b4 launches). Bit-identical per (tensor,token,row).
+                let (hq, hd) = e.quantize_q8_1(h, t, n_embd)?;
+                fused = e.matmul_q8_fused3_t(&fa.wq, &fa.wk, &fa.wv, &hq, &hd, t)?;
             }
             match fused {
                 Some(triple) => triple,

@@ -185,6 +185,7 @@ winner; the seam is the documented way back.
 | `BW24_MOE_MMA_T=<n>` | MMA t-floor override (bisect seam; <16 puts spec verify on MMA) | verify must stay dp4a (dispatch-parity law) — measurement only |
 | `BW24_IQ_FAST` | opt-in IQ4_XS fast matvec (non-expert path) | UNCLEAR — no concluding JSONL row found; left untouched by the audit |
 | `BW24_EAGLE` / `BW24_EAGLE_ALIGN=0` | EAGLE draft lane (run-eagle bin; ALIGN=0 = un-shifted MTP-style pairing A/B) | experimental lane, not on the daily path |
+| `BW24_SPEC_FUSED_T=1` | verify-tier trunk launch-fusion (lane/close35b): fused2/fused3 Q8_0 batched twins at verify t=2-4 — one shared quantize + one launch per same-input pair/triple (35B wqkv+gate, wq/wk/wv, shexp gate+up; 9B beta/alpha) instead of per-tensor decode-exact calls | bit-identical per (tensor,token,row) by construction (kernel-check Q8-FUSED2-B/FUSED3-B gates); default-flip candidate after board soak |
 
 ---
 

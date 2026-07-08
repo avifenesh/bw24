@@ -2701,12 +2701,15 @@ extern "C" __global__ void qmatvec_nvfp4_dp4a_rp(
 // MCOLS is the compile-time batch (2 or 4); m<=MCOLS, the c>=m columns are skipped.
 
 // ----- Q8_0 batched. Per-group reusable: dw + 8 weight ints. Per-column: activation int8 + dp4a. -----
+// Row-parameterized body (`o` = the output row this warp owns): LIFTED VERBATIM from the original
+// q8_0_mmvq_batched so the per-(token,row) FP chain is unchanged. The plain _b2/_b4/_b8 kernels
+// pass the standard blockIdx.x mapping; the FUSED multi-tensor twins below pass the
+// block-offset-split mapping (the fused2/fused3 m=1 recipe applied to the batched tier).
 template<int MCOLS>
-__device__ __forceinline__ void q8_0_mmvq_batched(
+__device__ __forceinline__ void q8_0_mmvq_batched_row(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
-    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+        int in_f, int out_f, int m, long row_bytes, int o) {
     if (o >= out_f) return;
     int lane = threadIdx.x;
     int nblk = in_f / 32;
@@ -2741,6 +2744,14 @@ __device__ __forceinline__ void q8_0_mmvq_batched(
         if (lane == 0) y[(size_t)c * out_f + o] = a;
     }
 }
+template<int MCOLS>
+__device__ __forceinline__ void q8_0_mmvq_batched(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q8_0_mmvq_batched_row<MCOLS>(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                                 blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y);
+}
 extern "C" __global__ void qmatvec_q8_0_mmvq_b2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -2758,6 +2769,77 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_b8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q8_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
+// ----- FUSED Q8_0 BATCHED matvec PAIR/TRIPLE (verify t=2-4 trunk launch-fusion, BW24_SPEC_FUSED_T,
+// lane/close35b): the m=1 fused2/fused3 block-offset split applied to the batched weight-resident
+// tier. Blocks [0,nb0) compute tensor 0, [nb0,nb0+nb1) tensor 1 (fused3: a third range). Per
+// (tensor,token,row) the body is q8_0_mmvq_batched_row VERBATIM with the identical row mapping
+// (Q8_0 batched_variant is always "base", ROWS=4) -> BIT-IDENTICAL to the separate _b2/_b4
+// launches the verify t=2-4 path otherwise runs via matmul_decode_exact, with ONE shared q8_1
+// activation quantize and ONE launch instead of two/three. y per tensor is token-major [m, out_f],
+// same as the per-tensor kernels. Targets: 35B wqkv+wqkv_gate (8192/4096), wq/wk/wv (8192/512/512),
+// gate_shexp+up_shexp (512/512). -----
+template<int MCOLS>
+__device__ __forceinline__ void q8_0_mmvq_fused2_b(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    int nb0 = (out0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f;
+    if (b < nb0) { W = W0; y = y0; out_f = out0; }
+    else         { W = W1; y = y1; out_f = out1; b -= nb0; }
+    q8_0_mmvq_batched_row<MCOLS>(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                                 b * BW24_MMVQ_ROWS + (int)threadIdx.y);
+}
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused2_b2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q8_0_mmvq_fused2_b<2>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused2_b4(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q8_0_mmvq_fused2_b<4>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+template<int MCOLS>
+__device__ __forceinline__ void q8_0_mmvq_fused3_b(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    int nb0 = (out0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int nb1 = (out1 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f;
+    if (b < nb0)            { W = W0; y = y0; out_f = out0; }
+    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; b -= nb0; }
+    else                    { W = W2; y = y2; out_f = out2; b -= nb0 + nb1; }
+    q8_0_mmvq_batched_row<MCOLS>(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                                 b * BW24_MMVQ_ROWS + (int)threadIdx.y);
+}
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused3_b2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q8_0_mmvq_fused3_b<2>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q8_0_mmvq_fused3_b4(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q8_0_mmvq_fused3_b<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
 }
 
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a
