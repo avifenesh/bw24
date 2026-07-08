@@ -86,6 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gen_tps = (n_new - 1) as f64 / gen_dt;
     println!("\n[generate]   {} tok in {gen_dt:.3}s = {gen_tps:.2} tok/s (gen-only; this run's prime {prime_dt:.3}s)", n_new - 1);
     println!("  tokens: {gold:?}");
+    // BW24_PRINT_TEXT=1: decode the greedy output between stable markers (agent-loop harnesses
+    // append it to a growing transcript; ids alone are not transcript-usable).
+    if std::env::var("BW24_PRINT_TEXT").as_deref() == Ok("1") {
+        let tok = match &g {
+            Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
+            None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
+                .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
+        };
+        println!("--- generated text ---\n{}\n--- end ---", tok.decode(&gold));
+    }
     if gen_only { return Ok(()); }
 
     let mut all_pass = true;
