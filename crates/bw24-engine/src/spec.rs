@@ -1254,6 +1254,13 @@ impl HybridModel {
         let p_min = *PMIN.get_or_init(|| {
             std::env::var("BW24_SPEC_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
         });
+        // ZERO-DRAFT ROUNDS (BW24_SPEC_PMIN0=1, vendored from llama.cpp's draft gating): let the
+        // p-min gate apply at j==0 too, so a low-confidence round drafts NOTHING and the verify
+        // batch is just the pending bonus (m=1 = a plain decode step). llama's 35B win rides
+        // exactly this — draft acceptance 76% at mean len 2.5 because unpredictable stretches
+        // never pay draft+verify overhead. Only legal when a pending bonus exists (an empty
+        // verify batch is not); the j==0 exemption stays for pending-less rounds.
+        let pmin0 = std::env::var("BW24_SPEC_PMIN0").map(|v| v == "1").unwrap_or(false);
 
         // --- GRAPH DRAFT setup: persistent I/O buffers + ONE capture (2 warmups inside). The
         // warmups mutate scratch len_d / pos / tok / seed — all reset at every round start, so the
@@ -1403,7 +1410,7 @@ impl HybridModel {
                     let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
                     if p_min > 0.0 {
                         let p = e.dtoh(&g_p)?[0];
-                        if p < p_min && j > 0 { break; }
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
                     }
                     draft.push(d);
                     // with a trimmed head the NEXT embed must read the TARGET id, not the draft
@@ -1425,7 +1432,7 @@ impl HybridModel {
                     if p_min > 0.0 {
                         let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
                         let p = e.dtoh(&p_d)?[0];
-                        if p < p_min && j > 0 { break; }
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
                     }
                     draft.push(d);
                     e_tok = d;
