@@ -2107,6 +2107,45 @@ extern "C" __global__ void fa_decode_combine_f32(
 }
 
 // ===================================================================== //
+//  FADEPTH lane (2026-07-08): WIDE-GRID combine twin.                    //
+//  fa_decode_combine_f32 launches only n_head CTAs (16 on the 35B) —    //
+//  16/82 SMs busy while every thread serially walks n_splits (98 at     //
+//  d6257); nsys on the fa_ppool_bench probe: combine = 30.8% of FA      //
+//  decode GPU time (med 8.7us vs 49us main kernel). This twin spreads   //
+//  head_dim over grid.y chunks (grid = (n_head, head_dim/blockDim.x)),  //
+//  so each output element is STILL computed by exactly ONE thread       //
+//  running the byte-identical serial program (same fmax scan order,    //
+//  same ascending-split sum order, same exp2f/LOG2E) -> outputs are    //
+//  BIT-IDENTICAL to fa_decode_combine_f32. The per-thread partM scan   //
+//  is duplicated across chunks (98 x 4B redundant L2 reads — noise).   //
+//  Dispatched by fa_decode under BW24_FA_CMB_WIDE=1 (default OFF).     //
+// ===================================================================== //
+extern "C" __global__ void fa_decode_combine_f32_wide(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, float* __restrict__ O,
+        int head_dim, int n_head, int n_splits)
+{
+    const int head = blockIdx.x;
+    const int tid  = blockIdx.y * blockDim.x + threadIdx.x;   // dim element of this thread
+    if (head >= n_head || tid >= head_dim) return;
+
+    // global max over splits (identical scan order to the narrow twin)
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, partM[head * n_splits + s]);
+    // combined sum and o (identical ascending-split order)
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = partM[head * n_splits + s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += partL[head * n_splits + s] * w;
+        o += partO[((size_t)head * n_splits + s) * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    O[((size_t)0 * n_head + head) * head_dim + tid] = o * linv;
+}
+
+// ===================================================================== //
 //  DEVICE-COUNTER decode variants (CUDA-GRAPH-PLAN Phase 2)             //
 //  Identical math to fa_decode_f32 / fa_decode_vec_q, but the sequence  //
 //  length T_kv is read from a device int[1] counter (t_kv_dev[0]) for   //
@@ -2557,6 +2596,39 @@ extern "C" __global__ void fa_decode_combine_rows(
     const int T_kv     = t_kv_base + r + 1;
     const int n_splits = (T_kv + split_keys - 1) / split_keys;
     const int tid      = threadIdx.x;
+    if (head >= n_head || tid >= head_dim) return;
+    const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pO = partO + ((size_t)r * n_head + head) * n_splits_max * head_dim;
+
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, pM[s]);
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = pM[s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += pL[s] * w;
+        o += pO[(size_t)s * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
+}
+
+// FADEPTH lane: wide-grid rows-combine twin (see fa_decode_combine_f32_wide).
+// grid = (n_head, T, head_dim/blockDim.x); each output element computed by exactly
+// ONE thread with the byte-identical serial program -> BIT-IDENTICAL outputs.
+// Dispatched by fa_decode_rows under BW24_FA_CMB_WIDE=1 (default OFF).
+extern "C" __global__ void fa_decode_combine_rows_wide(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, float* __restrict__ O,
+        int head_dim, int n_head, int t_kv_base, int n_splits_max, int split_keys)
+{
+    const int head     = blockIdx.x;
+    const int r        = blockIdx.y;
+    const int T_kv     = t_kv_base + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int tid      = blockIdx.z * blockDim.x + threadIdx.x;
     if (head >= n_head || tid >= head_dim) return;
     const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
     const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
