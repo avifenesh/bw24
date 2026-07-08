@@ -2,12 +2,13 @@
 
 _Written 2026-07-03, standings updated 2026-07-07. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall** — microbenched, not the 847 spec). Second box = bw24-g7e (RTX PRO 6000 96GB, sm_120-compatible). Repo PUBLIC: https://github.com/avifenesh/bw24 — both rigs sync via origin. L40S/sm_89 lane CLOSED (box terminated)._
 
-## STANDINGS 2026-07-06 (E2E IMAGE 6, gen tok/s p1/p2/p3, same prompts, llama at serve-best)
+## STANDINGS 2026-07-08 (full-power verified, plain-first per mandate; llama = floor, margin bar = 1.15x)
 
-- **27B NVFP4 (daily driver): 99.1/87.6/75.9 vs llama 86.6/91.9/75.3 = 1.14x WIN / 0.95x / 1.01x WIN.** >100 milestone crossed on code (102.6 N=3, CLI K=3). Serve 96-97 at 512-tok turns.
-- **9B: 193/156/149 vs 121.7/120.5/116.8 = 1.59x/1.29x/1.28x clean sweep (HPOST, 2026-07-06).** Config: HPOST=1 K=3 pmin=0.3. 256k-ctx edge proven (278k prompt exact on 24GB).
-- **35B MoE FINAL 2026-07-06: spec K=2 = 182/160/137 tok/s (p1/p2/p3) — BEATS llama plain 169.6 at p1 (1.08x) first time; plain decode 158.2 (0.93x); pp6257 2862. ALL fast paths default-on, exactness-proven. Spec-profitability verdict FLIPPED (old "MoE spec loses" was launch-structure era). Daily: BW24_SPEC_K=2.** Day: LUT storage-class +34%, k-quant arms, MMA; real-prompt spec gate exposed ROUTER cuBLASLt n-dependence (ONE bug, three innocent suspects) — fixed via small-t decode-exact dispatch (router+shexp). Real-prompt spec now MANDATORY in MoE battery. Not a driver; feeds MiniMax.
-- **DAILY 27B CONFIG (2026-07-07 deep-K re-sweep): `BW24_SPEC_HPOST=1 BW24_SPEC_K=7 BW24_SPEC_PMIN=0.15 BW24_FRSPEC_TRIM=<frspec-code75-32768>` — K=7 = 121.6 tok/s p1 (was K=3 114-117; graph-draft work made deep K profitable; K=7+1 = exactly the b8 verify tier, K=8 falls off the cliff to 65). >100 CROSSED WITH MARGIN, 1.40x llama serve-best on code-short. K optimum is (trunk,head)-pair-specific: NV trunk stays K=3. Embedded MTP block + env law (FAST/GEMM/MMVQ/FA_VEC).** HPOST = post-norm h_seed (llama.cpp 166fe2949 convention); the pre-norm era was the low-acceptance era. Retrain-at-10k-corpus CLOSED negative (author block best).
+PLAIN (tg128@d512, N=3): 27B 47.2 vs llama 43.6 = 1.08x | 9B 128.7 vs 124.5 = 1.03x (134.5 with KQ_NVFP4=2 speed mode, ~3pt acceptance tax) | 35B 169.0 vs 170.5 = 0.99x (depth: d6257 152.8 vs 159.9 = 0.96x after the split taper). NO CELL AT MARGIN YET — the k-quant kernel campaign targets exactly this (family runs 61-70% of wall on BOTH engines; NVFP4 in-house kernel runs 96%).
+
+SPEC: 27B per-class K = 122/96/76 vs llama serve 87/92/75 (1.40x/1.04x/1.00x) | 9B K=3 = 200-202 p1 (1.6x) | 35B K=2+trim+zero-draft = 197/194/177 vs llama self-MTP 215/208/202 (0.92/0.93/0.88x). Spec mechanisms are per-(model,content): K depth, trim variant (generic transfers across same-vocab models; specialized rankings do not), PMIN0 zero-draft rounds (pays below ~75% base acceptance, hurts above ~90%).
+
+LAWS HARDENED THIS CYCLE: power boost (+25W) silently resets — verify before EVERY bench session (cost two false boards). FA/split geometry validates across the DEPTH axis (3 depths minimum). bpw equality ≠ quality-class equality across asymmetric/symmetric quant families (Q4_K→NVFP4 taxes acceptance despite equal bits). Float-poison tripwire now in the loader (occurrence #4 was M3's 4.9GB BF16 lm_head). Dynamic activation quant = immune to the uncalibrated-tail-expert checkpoint trap.
 
 ## MINIMAX-M3 LANE (merged to main ba94a30, 2026-07-07)
 
