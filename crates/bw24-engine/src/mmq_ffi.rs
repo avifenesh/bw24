@@ -120,13 +120,17 @@ pub fn mmq_w4a8_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(true))
 }
 
-/// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT OFF): `BW24_PP_Q8MMQ=1` routes Q8_0 dense
+/// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT ON since 2026-07-09 — `BW24_PP_Q8MMQ=0`
+/// reverts): routes Q8_0 dense
 /// projections (m>=16) through the vendored int8-MMA MMQ (cu/mmq_q8_0.cu) instead of the hand-rolled
 /// `qmatvec_gemm_q8_0` tiling GEMM. Its own numeric config (MMA f32 reduction order != the tiling
 /// GEMM's) — gated with the full exactness battery. Default OFF until the battery is green.
 pub fn mmq_q8_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_PP_Q8MMQ").map(|v| v == "1").unwrap_or(false))
+    // Promotion battery (2026-07-09): argmax MATCH on 35B p1/p2/p3 + 9B p2/p3 (p4-16k OOMs
+    // identically with and without the flag — pre-existing gate capacity limit, not this seam);
+    // kernel-check ALL GREEN; run-spec K=1..8 PASS on 9B+35B. 35B pp 2456->3069 free-clock.
+    *ON.get_or_init(|| std::env::var("BW24_PP_Q8MMQ").map(|v| v != "0").unwrap_or(true))
 }
 
 impl Engine {
