@@ -27,6 +27,26 @@ pub(crate) fn spec_hpost() -> bool {
     *H.get_or_init(|| std::env::var("BW24_SPEC_HPOST").map(|v| v != "0").unwrap_or(false))
 }
 
+/// LEAN VERIFY (BW24_SPEC_LEAN=1, default OFF — close35 lane, 2026-07-08): the verify m-scaling
+/// probe + nsys diff showed the verify t-path pays ~1.0ms/call at m=1 over eager decode on the
+/// 35B, and the kernels are NOT the cause (dev-MoE identical, kernel-time delta only +179us).
+/// The overhead is (a) ~250 extra cuMemsetD8Async/call from `e.zeros()` on buffers every kernel
+/// fully overwrites (~0.9ms host issue + ~0.35ms GPU) and (b) the t=1 FA rows dispatch (rows_v2 +
+/// combine_rows, +50us vs the eager fa_decode pair). This flag switches (a) fully-overwritten
+/// verify buffers to `e.uninit` (identical bytes: every element is written before read) and
+/// (b) t==1 verify FA to the eager `fa_decode` entry (byte-identical: kernel-check pins the
+/// rows-vs-loop identity and the per-row loop at t=1 IS fa_decode on the same q). Gates arbitrate.
+pub(crate) fn spec_lean() -> bool {
+    static L: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(false))
+}
+
+/// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
+/// Only call this on such buffers — the lean contract is "identical bytes by construction".
+fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    if spec_lean() { e.uninit(n) } else { e.zeros(n) }
+}
+
 /// Scratch KV for the MTP block (one full-attn layer).
 ///
 /// PERSISTENT MODE (default, 2026-07-03 — the acceptance lever): sized cap = max_ctx and kept in
@@ -498,7 +518,7 @@ impl HybridModel {
         let t = tokens.len();
         let (logits, x) = self.decode_step_t_core(e, tokens, pos0, cache, embd_dev, None)?;
         // h_seed for the next round = LAST column's pre-output_norm hidden ([n_embd]).
-        let mut hs = e.zeros(n_embd)?;
+        let mut hs = vbuf(e, n_embd)?;   // fully written by copy_view_into below
         e.copy_view_into(&mut hs, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
         Ok((logits, hs))
     }
@@ -535,7 +555,7 @@ impl HybridModel {
             // 2.3e-1 logit maxdiff at the head -> K=1..8 divergence at a 0.03-margin token).
             let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
             let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
-            let mut h = e.zeros(t * n_embd)?;
+            let mut h = vbuf(e, t * n_embd)?;   // fully written by either rms_norm arm
             if norm_fused {
                 e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             } else {
@@ -562,11 +582,11 @@ impl HybridModel {
                         }
                         out
                     } else {
-                        let mut out = e.zeros(t * n_embd)?;
+                        let mut out = vbuf(e, t * n_embd)?;   // every col written by copy_into
                         let mut col_states: Option<Vec<(CudaSlice<f32>, CudaSlice<f32>)>> =
                             if ckpt.is_some() && t >= 2 { Some(Vec::with_capacity(t - 1)) } else { None };
                         for col in 0..t {
-                            let mut h_col = e.zeros(n_embd)?;
+                            let mut h_col = vbuf(e, n_embd)?;   // fully written by copy_view_into
                             let src = h.slice(col * n_embd..(col + 1) * n_embd);
                             e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
                             let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
@@ -599,8 +619,8 @@ impl HybridModel {
                         && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
                 crate::hybrid::Ffn::Moe(_) => false,
             };
-            let mut x1 = e.zeros(t * n_embd)?;
-            let mut z = e.zeros(t * n_embd)?;
+            let mut x1 = vbuf(e, t * n_embd)?;   // fully written by add / add_rms_norm
+            let mut z = vbuf(e, t * n_embd)?;    // fully written by rms_norm_decode / add_rms_norm
             if ffn_fuse {
                 e.add(&x, &mixed, &mut x1, t * n_embd)?;
                 e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
@@ -616,18 +636,18 @@ impl HybridModel {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
-                    let mut act = e.zeros(t * n_ff)?;
+                    let mut act = vbuf(e, t * n_ff)?;   // fully written by ffn_act
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = e.zeros(t * n_embd)?;
+            let mut x2 = vbuf(e, t * n_embd)?;   // fully written by add
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
 
-        let mut hn = e.zeros(t * n_embd)?;
+        let mut hn = vbuf(e, t * n_embd)?;   // fully written by rms_norm_decode
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         cache.pos += t;
@@ -816,7 +836,7 @@ impl HybridModel {
             // DISPATCH-MIRRORED norms (FP-order lesson #8) — see decode_step_t_h_emb.
             let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
             let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
-            let mut h = e.zeros(t * n_embd)?;
+            let mut h = vbuf(e, t * n_embd)?;   // fully written by either rms_norm arm
             if norm_fused {
                 e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             } else {
@@ -842,8 +862,8 @@ impl HybridModel {
                         && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
                 crate::hybrid::Ffn::Moe(_) => false,
             };
-            let mut x1 = e.zeros(t * n_embd)?;
-            let mut z = e.zeros(t * n_embd)?;
+            let mut x1 = vbuf(e, t * n_embd)?;   // fully written by add / add_rms_norm
+            let mut z = vbuf(e, t * n_embd)?;    // fully written by rms_norm_decode / add_rms_norm
             if ffn_fuse {
                 e.add(&x, &mixed, &mut x1, t * n_embd)?;
                 e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
@@ -856,13 +876,13 @@ impl HybridModel {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
-                    let mut act = e.zeros(t * n_ff)?;
+                    let mut act = vbuf(e, t * n_ff)?;   // fully written by ffn_act
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = e.zeros(t * n_embd)?;
+            let mut x2 = vbuf(e, t * n_embd)?;   // fully written by add
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             if aux_layers.contains(&il) {
                 let mut a = e.zeros(n_embd)?;
@@ -876,7 +896,7 @@ impl HybridModel {
             }
             x = x2;
         }
-        let mut hn = e.zeros(t * n_embd)?;
+        let mut hn = vbuf(e, t * n_embd)?;   // fully written by rms_norm_decode
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
@@ -919,16 +939,16 @@ impl HybridModel {
         // M3 has no attention output gate — wq out is exactly q; skip the split (see hybrid_forward).
         let gated = self.cfg.m3.is_none();
         let (mut q, gate) = if gated {
-            let mut q = e.zeros(t * n_head * head_dim)?;
-            let mut gate = e.zeros(t * n_head * head_dim)?;
+            let mut q = vbuf(e, t * n_head * head_dim)?;      // fully written by q_gate_split
+            let mut gate = vbuf(e, t * n_head * head_dim)?;   // fully written by q_gate_split
             e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
             (q, Some(gate))
         } else { (qf, None) };
 
-        let mut qn = e.zeros(t * n_head * head_dim)?;
+        let mut qn = vbuf(e, t * n_head * head_dim)?;   // fully written by rms_norm
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
         q = qn;
-        let mut kn = e.zeros(t * n_head_kv * head_dim)?;
+        let mut kn = vbuf(e, t * n_head_kv * head_dim)?;   // fully written by rms_norm
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
@@ -963,13 +983,23 @@ impl HybridModel {
         // construction; kernel-check pins rows-vs-loop byte identity, run-spec is the end gate.
         // Short ctx (any row below the vec crossover) and BW24_NO_FA_VEC/BW24_FA_ROWS_OFF keep the
         // per-row loop (whose fa_decode picks scalar/vec per row exactly like eager decode).
-        let mut attn = e.zeros(t * n_head * head_dim)?;
+        let mut attn = vbuf(e, t * n_head * head_dim)?;   // fully written by every FA arm below
         let base_len = kvl.len - t;   // KV len BEFORE this round's T tokens were appended
         // T=1 INCLUDED (2026-07-05): p-min cuts the draft to 1 in ~75% of rounds on hard
         // (agentic) content — the old t>1 gate sent those rounds to the per-row loop (262us/row
         // + q-row copy + per-row allocs vs 93us/row through the fused kernel at grid.z=1, same
         // program). nsys accounting: 1088 of 1456 verify FA launches were T=1 escapees.
-        if e.fa_rows_eligible(base_len, head_dim) {
+        // LEAN T=1 ARM (BW24_SPEC_LEAN, close35): at t==1, q IS one row and fa_decode on it is
+        // the EXACT eager decode dispatch (vec_q_v2 + combine_f32; the rows pair measured +50us
+        // at m=1). Byte-identical: kernel-check pins rows-vs-loop identity, and the per-row loop
+        // at t=1 is fa_decode on the same q with zero-offset copies. Gates arbitrate.
+        if spec_lean() && t == 1 {
+            let t_kv = base_len + 1;
+            let k_view = e.view_u8(&kvl.k, t_kv * ktb);
+            let v_view = e.view_u8(&kvl.v, t_kv * vtb);
+            e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                        t_kv, scale, ktb, vtb)?;
+        } else if e.fa_rows_eligible(base_len, head_dim) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
@@ -980,10 +1010,10 @@ impl HybridModel {
                 let k_view_r = e.view_u8(&kvl.k, t_kv_r * ktb);
                 let v_view_r = e.view_u8(&kvl.v, t_kv_r * vtb);
                 // copy q row into an owned buffer (fa_decode takes &CudaSlice, not CudaView)
-                let mut q_row = e.zeros(n_head * head_dim)?;
+                let mut q_row = vbuf(e, n_head * head_dim)?;   // fully written by copy_view_into
                 let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
                 e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
-                let mut attn_row = e.zeros(n_head * head_dim)?;
+                let mut attn_row = vbuf(e, n_head * head_dim)?;   // fully written by fa_decode
                 e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
                 e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
             }
@@ -991,9 +1021,9 @@ impl HybridModel {
 
         let attn_g = match &gate {
             Some(gate) => {
-                let mut gsig = e.zeros(t * n_head * head_dim)?;
+                let mut gsig = vbuf(e, t * n_head * head_dim)?;   // fully written by sigmoid
                 e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
-                let mut ag = e.zeros(t * n_head * head_dim)?;
+                let mut ag = vbuf(e, t * n_head * head_dim)?;     // fully written by mul
                 e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
                 ag
             }
