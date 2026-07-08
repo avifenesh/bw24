@@ -769,11 +769,13 @@ static size_t mmq_nvfp4_w4a8_nbytes_shared(bool pipe) {
     return nbs_ids + nbs_x + GGML_PAD(nbs_y, pad);
 }
 
-// BW24_PP_PIPE=1: cp.async multi-stage pipeline for the MMQ tile (default OFF — plain tile loads).
+// cp.async multi-stage pipeline for the MMQ tile — DEFAULT ON since 2026-07-09 (BW24_PP_PIPE=0
+// reverts to plain tile loads). Bit-identical (0/6.3M mismatches at T=512, W4A8 rel lines
+// byte-identical); measured pp1845: 27B +4.7%, 9B +5.6% on the rig, 1.135x kernel-level.
 static bool mmq_w4a8_pipe_on() {
     static const bool on = [] {
         const char * v = std::getenv("BW24_PP_PIPE");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
+        return v == nullptr || v[0] != '0';
     }();
     return on;
 }
