@@ -57,7 +57,11 @@ pub(crate) fn spec_lean() -> bool {
 /// Gates arbitrate: run-spec K=1..8 self-consistency (35B+9B), kernel-check, run-gen argmax.
 pub(crate) fn spec_m2() -> bool {
     static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(false))
+    // DEFAULT ON since 2026-07-09 (BW24_SPEC_M2=0 reverts): launch-structure only — t=2
+    // batched linear arm (ring-roll copies, zero new FP order) + MoE dev-rows kernels
+    // (grid.z=token, 4 launches/layer at any verify t). Acceptance bit-identical at every K;
+    // 35B p2 +3.4% / p3 +3.6%; the profitable-K plateau widens (new optimum K=3 at 223).
+    *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
 }
 
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
