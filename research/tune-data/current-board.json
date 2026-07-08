@@ -1,24 +1,24 @@
 {
   "updated": "2026-07-09",
   "rig": "RTX 5090 Laptop",
-  "protocol": "N≥3 medians, power state verified before every session",
+  "protocol": "N≥2 medians, both engines measured in the SAME session and thermal regime, no flags (tuned paths are defaults)",
   "plain_decode": {
-    "context": "tg128 at 512-token context, no flags (every tuned path is the default)",
+    "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
     "rows": [
       {
         "model": "Qwen3.6-27B NVFP4",
-        "bw24": 47.8,
-        "llama": 43.5
+        "bw24": 44.8,
+        "llama": 40.3
       },
       {
         "model": "Qwen3.5-9B NVFP4",
-        "bw24": 134.6,
-        "llama": 124.6
+        "bw24": 128.1,
+        "llama": 113.9
       },
       {
         "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 173.6,
-        "llama": 170.5
+        "bw24": 170.7,
+        "llama": 159.6
       }
     ]
   },
@@ -68,22 +68,22 @@
   },
   "bold_ratio_threshold": 1.05,
   "plain_decode_depth": {
-    "context": "tg128 at 6257-token context (depth behavior is part of the comparison)",
+    "context": "tg128 at 6257-token context (same session)",
     "rows": [
       {
         "model": "Qwen3.6-27B NVFP4",
-        "bw24": 45.0,
-        "llama": 42.0
+        "bw24": 42.4,
+        "llama": 38.7
       },
       {
         "model": "Qwen3.5-9B NVFP4",
-        "bw24": 124.3,
-        "llama": 119.6
+        "bw24": 117.1,
+        "llama": 109.1
       },
       {
         "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 158.6,
-        "llama": 159.9
+        "bw24": 154.1,
+        "llama": 151.2
       }
     ]
   }
