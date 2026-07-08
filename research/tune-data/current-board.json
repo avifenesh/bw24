@@ -1,23 +1,23 @@
 {
-  "updated": "2026-07-08",
+  "updated": "2026-07-09",
   "rig": "RTX 5090 Laptop",
   "protocol": "N≥3 medians, power state verified before every session",
   "plain_decode": {
-    "context": "tg128 at 512-token context (FA_V2 tile-batched softmax default since 2026-07-08)",
+    "context": "tg128 at 512-token context, no flags (every tuned path is the default)",
     "rows": [
       {
         "model": "Qwen3.6-27B NVFP4",
-        "bw24": 47.7,
+        "bw24": 47.8,
         "llama": 43.5
       },
       {
         "model": "Qwen3.5-9B NVFP4",
-        "bw24": 132.7,
+        "bw24": 134.6,
         "llama": 124.6
       },
       {
         "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 173.4,
+        "bw24": 173.6,
         "llama": 170.5
       }
     ]
@@ -28,9 +28,9 @@
       {
         "model": "Qwen3.5-9B (K=3 + native trim)",
         "bw24": [
-          243,
-          195,
-          162
+          246,
+          206,
+          172
         ],
         "llama": [
           186,
@@ -41,9 +41,9 @@
       {
         "model": "Qwen3.6-27B (K=3 + generic trim)",
         "bw24": [
-          108,
-          91,
-          79.5
+          109,
+          100,
+          78.8
         ],
         "llama": [
           86.4,
@@ -54,9 +54,9 @@
       {
         "model": "Qwen3.6-35B-A3B (K=2 + trim + zero-draft)",
         "bw24": [
-          202.8,
-          200.5,
-          184.8
+          225,
+          212,
+          185
         ],
         "llama": [
           215,
@@ -72,17 +72,17 @@
     "rows": [
       {
         "model": "Qwen3.6-27B NVFP4",
-        "bw24": 44.9,
+        "bw24": 45.0,
         "llama": 42.0
       },
       {
         "model": "Qwen3.5-9B NVFP4",
-        "bw24": 124.5,
+        "bw24": 124.3,
         "llama": 119.6
       },
       {
         "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 158.5,
+        "bw24": 158.6,
         "llama": 159.9
       }
     ]
