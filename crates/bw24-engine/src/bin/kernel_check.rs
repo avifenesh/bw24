@@ -1419,6 +1419,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let regress = rel_v > rel + 2.5e-3;
             println!("fa_decode_vec_q(KVQ) Tkv={tkv}: rel={rel_v:.2e} (scalar {rel:.2e}) {}",
                      if rel_v<kvq_tol && !regress {"OK"} else {fails+=1;"FAIL"});
+            // --- FA v3 (BW24_FA_V3=1, dp4a-K hybrid — its OWN numeric config) vs the SAME
+            //     CPU oracle. Q rides int8 (one shared scale per 32-elem block, amax/127)
+            //     -> adds bounded Q-quantization noise on the scores beyond the bf16 rounding
+            //     of the vec path; measured ~2-4e-3 extra on this synthetic. Slack 1e-2 over
+            //     scalar, still far under the q5_1 6e-2 noise floor. Only meaningful when the
+            //     v3 gate can actually engage (default KV formats + hd%128==0 + vec range).
+            if bw24_engine::kv_cache_formats() == ("q8_0", "q5_1") && hd % 128 == 0 {
+                unsafe { std::env::set_var("BW24_FA_V3", "1"); }
+                let mut od_3=e.zeros(hd*nh)?;
+                e.fa_decode(&qd,&kview,&vview,&mut od_3,hd,nh,nhkv,tkv,scale,k_tok_bytes,v_tok_bytes)?;
+                unsafe { std::env::remove_var("BW24_FA_V3"); }
+                let rel_3 = maxdiff(&cpu,&e.dtoh(&od_3)?)/sc;
+                let regress3 = rel_3 > rel + 1e-2;
+                println!("fa_decode_vec_q_v3(KVQ) Tkv={tkv}: rel={rel_3:.2e} (scalar {rel:.2e}) {}",
+                         if rel_3<kvq_tol && !regress3 {"OK"} else {fails+=1;"FAIL"});
+            }
         }
 
         // --- MULTI-ROW verify FA vs per-row loop: BYTE identity (the spec-exactness contract) ---
@@ -1463,6 +1479,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
                      if bitdiff == 0 {"OK"} else {fails+=1;"FAIL"});
+            // --- Same rows-vs-loop BYTE identity WITHIN the v3 config (BW24_FA_V3=1): the
+            //     rows_v3 twin calls the SAME fa_dec_v3_walk as eager v3 -> bitdiff must be 0
+            //     (the spec-exactness contract, per numeric config). ---
+            if bw24_engine::kv_cache_formats() == ("q8_0", "q5_1") && hd % 128 == 0 {
+                unsafe { std::env::set_var("BW24_FA_V3", "1"); }
+                let mut o_loop3 = e.zeros(hd*nh*t)?;
+                for r in 0..t {
+                    let t_kv_r = base_len + r + 1;
+                    let kview=e.view_u8(&kc, t_kv_r*k_tok_bytes);
+                    let vview=e.view_u8(&vc, t_kv_r*v_tok_bytes);
+                    let mut q_row = e.zeros(hd*nh)?;
+                    let q_src = qd.slice(r*nh*hd..(r+1)*nh*hd);
+                    e.copy_view_into(&mut q_row, 0, &q_src, nh*hd)?;
+                    let mut o_row = e.zeros(hd*nh)?;
+                    e.fa_decode(&q_row,&kview,&vview,&mut o_row,hd,nh,nhkv,t_kv_r,scale,k_tok_bytes,v_tok_bytes)?;
+                    e.copy_into(&mut o_loop3, r*nh*hd, &o_row, nh*hd)?;
+                }
+                let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
+                let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
+                let mut o_rows3 = e.zeros(hd*nh*t)?;
+                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes)?;
+                unsafe { std::env::remove_var("BW24_FA_V3"); }
+                let a3 = e.dtoh(&o_loop3)?; let b3 = e.dtoh(&o_rows3)?;
+                let bd3 = a3.iter().zip(&b3).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
+                println!("fa_decode_rows_v3 vs per-row loop (FA_V3) base={base_len} T={t}: bitdiff={bd3} {}",
+                         if bd3 == 0 {"OK"} else {fails+=1;"FAIL"});
+            }
         }
 
         // --- ARC B: fa_prefill_view_ws (dequant-once bf16 workspace) vs fa_prefill_view: BYTE

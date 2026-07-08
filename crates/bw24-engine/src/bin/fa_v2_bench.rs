@@ -24,8 +24,18 @@ impl Lcg {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let e = Engine::new(0)?;
-    // 35B full-attn geometry (Qwen3.6-35B-A3B gguf metadata)
-    let (n_head, n_head_kv, head_dim) = (16usize, 2usize, 256usize);
+    // Default: 35B full-attn geometry (Qwen3.6-35B-A3B gguf metadata).
+    // BW24_FA_SHAPE=9b selects the 9B geometry (nh16/nkv4/hd256, gqa=4 — gguf metadata);
+    // BW24_FA_SHAPE=nh,nkv,hd sets it explicitly (FA v3 lane: v3 must not regress the 9B shape).
+    let (n_head, n_head_kv, head_dim) = match std::env::var("BW24_FA_SHAPE").as_deref() {
+        Ok("9b") => (16usize, 4usize, 256usize),
+        Ok(s) if s.contains(',') => {
+            let p: Vec<usize> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+            assert_eq!(p.len(), 3, "BW24_FA_SHAPE=nh,nkv,hd");
+            (p[0], p[1], p[2])
+        }
+        _ => (16usize, 2usize, 256usize),
+    };
     let kv_dim = n_head_kv * head_dim;              // 512
     let nblk = kv_dim / 32;                         // 16 blocks/token
     let k_tok_bytes = nblk * 34;                    // q8_0
@@ -68,9 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qd = e.htod(&qh)?;
 
     let v2 = std::env::var("BW24_FA_V2").unwrap_or_default();
+    let v3 = std::env::var("BW24_FA_V3").unwrap_or_default();
     let smem = std::env::var("BW24_FA_SMEM_TKV").unwrap_or_else(|_| "1024".into());
     let split = std::env::var("BW24_FA_SPLIT").unwrap_or_else(|_| "default".into());
-    println!("# config v2={v2} smem_tkv={smem} split={split}  shape nh={n_head} nkv={n_head_kv} hd={head_dim}");
+    println!("# config v2={v2} v3={v3} smem_tkv={smem} split={split}  shape nh={n_head} nkv={n_head_kv} hd={head_dim}");
 
     const REPS: usize = 200;
     let tkvs: Vec<usize> = {

@@ -1,0 +1,60 @@
+//! FA v3 lane same-process A/B (2026-07-09): decode-bench's graph protocol with the
+//! BW24_FA_V3 flag flipped BETWEEN rounds inside ONE process — kills the model-reload +
+//! thermal pairing noise that made cross-process tg128 A/B useless at the ~3% effect size
+//! (measured spread ±15% across reloads, bimodal clock states). The flag is read per call
+//! (fa_v3_on, the BW24_FA_V2 pattern) and the graph re-captures per round, so each round's
+//! captured graph carries its own FA twins. Prime is measured separately and subtracted
+//! (decode-bench's bench_graph protocol, honest steady-state gen-only tok/s).
+//!
+//! usage: fa-ab-bench <model.gguf> [P=6257] [N=128] [pairs=3]
+use bw24_engine::Engine;
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::decode::GraphDecodeState;
+use bw24_gguf::GgufFile;
+
+fn bench_graph(e: &Engine, m: &HybridModel, prompt: &[u32], n: usize)
+               -> Result<f64, Box<dyn std::error::Error>> {
+    let mut gsp = GraphDecodeState::new(e)?;
+    e.stream().synchronize()?;
+    let tp = std::time::Instant::now();
+    let _ = m.generate_graph(e, &mut gsp, prompt, 0)?;
+    e.stream().synchronize()?;
+    let dt_prime = tp.elapsed().as_secs_f64();
+    let mut gsb = GraphDecodeState::new(e)?;
+    e.stream().synchronize()?;
+    let t1 = std::time::Instant::now();
+    let _ = m.generate_graph(e, &mut gsb, prompt, n)?;
+    e.stream().synchronize()?;
+    Ok((t1.elapsed().as_secs_f64() - dt_prime).max(1e-9))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: fa-ab-bench <model> [P] [N] [pairs]");
+    let p: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(6257);
+    let n: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(128);
+    let pairs: usize = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let e = Engine::new(0)?;
+    let g = GgufFile::open(&path)?;
+    let m = HybridModel::load(&e, &g)?;
+    let prompt: Vec<u32> = (0..p).map(|i| (100 + (i * 7) % 900) as u32).collect();
+    // warmup round (cold caches/JIT) — discarded
+    unsafe { std::env::set_var("BW24_FA_V3", "0"); }
+    let _ = bench_graph(&e, &m, &prompt, n.min(32))?;
+    let (mut a2, mut a3) = (Vec::new(), Vec::new());
+    for i in 0..pairs {
+        // both orders: even pairs v2-first, odd pairs v3-first
+        let order = if i % 2 == 0 { [("0", &mut a2), ("1", &mut a3)] }
+                    else          { [("1", &mut a3), ("0", &mut a2)] };
+        for (flag, acc) in order {
+            unsafe { std::env::set_var("BW24_FA_V3", flag); }
+            let dt = bench_graph(&e, &m, &prompt, n)?;
+            let tps = n as f64 / dt;
+            println!("  pair {i} v{} : {tps:.1} tok/s", if flag == "1" { "3" } else { "2" });
+            acc.push(tps);
+        }
+    }
+    let med = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2] };
+    let (m2, m3) = (med(&mut a2), med(&mut a3));
+    println!("P={p} N={n} pairs={pairs}: v2 median {m2:.1} tok/s | v3 median {m3:.1} tok/s | ratio {:.3}x", m3 / m2);
+    Ok(())
+}
