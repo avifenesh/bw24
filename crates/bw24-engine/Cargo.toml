@@ -64,6 +64,10 @@ name = "argmax-gate"
 path = "src/bin/argmax_gate.rs"
 
 [[bin]]
+name = "moe-devq8-check"
+path = "src/bin/moe_devq8_check.rs"
+
+[[bin]]
 name = "decode-dc-gate"
 path = "src/bin/decode_dc_gate.rs"
 
