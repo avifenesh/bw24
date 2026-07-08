@@ -96,6 +96,14 @@ name = "verify-mscale"
 path = "src/bin/verify_mscale.rs"
 
 [[bin]]
+name = "depth-profile"
+path = "src/bin/depth_profile.rs"
+
+[[bin]]
+name = "decode-window-profile"
+path = "src/bin/decode_window_profile.rs"
+
+[[bin]]
 name = "session-gate"
 path = "src/bin/session_gate.rs"
 
