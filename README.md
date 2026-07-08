@@ -90,11 +90,13 @@ Depth behavior is part of the comparison: at 6.3k-token context the 35B decodes 
 
 **Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
 
-| Model | bw24 spec | llama.cpp spec-best | Notes |
+| Model | bw24 spec | llama.cpp spec-best | Ratio |
 |---|---|---|---|
-| Qwen3.5-9B (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | p1/p2/p3 prompts, 2026-07-06 session |
-| Qwen3.6-27B (per-class K) | 122 / 96 / 76 | 87 / 92 / 75 | K=7 short-code, K=3 + generic trim elsewhere |
-| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 177 | 215 / 208 / 202 | raw-prompt protocol; llama = self-MTP serve-best |
+| Qwen3.5-9B (K=3) | 193 / 156 / 149 | 122 / 121 / 117 | **1.59x / 1.29x / 1.28x** |
+| Qwen3.6-27B (K=3 + generic trim) | 108 / 91 / 79.5 | 86.4 / 89.9 / 73.2 | **1.25x** / 1.01x / **1.09x** |
+| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 177 | 215 / 208 / 202 | 0.92x / 0.93x / 0.88x |
+
+All rows are the raw-prompt continuation protocol (llama.cpp measured through llama-server at its serve-best speculative config on the same machine, N=3 medians, full power verified). Config is content-class dependent — the chat protocol shifts both the optimal draft depth and the trim choice (chat short-code runs K=7 at 122 tok/s on the 27B); the published HF artifacts document every configuration.
 
 Two speculative mechanisms shipped in 2026-07-08's 35B push, both vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — the same 32k-row d2t list transfers across every model sharing the Qwen tokenizer (the gather reads each model's own lm_head bytes); and zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost while predictable ones ride the full chain (35B acceptance 65% → 84%).
 
