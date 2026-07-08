@@ -13,8 +13,8 @@ Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x
 
 ## Why this project
 
-- Use this as a reference for real sm_120a (consumer Blackwell) kernel work — every optimization ships with its measured win/loss record, not just the winners.
-- Use this if you want an inference engine gated on bit-exactness (argmax + speculative self-consistency) rather than "looks close enough."
+- Use this as a real, running inference engine on sm_120a (consumer Blackwell), with every shipped optimization backed by its measured win/loss record.
+- Use this if you want an inference engine gated on bit-exactness — argmax match and speculative self-consistency, verified on every kernel change.
 - Use this to run Qwen3.5/3.6 dense and MoE checkpoints on a 24 GB card — from GGUF or straight from HF safetensors, no conversion step — including models far larger than VRAM+RAM.
 
 ## Requirements

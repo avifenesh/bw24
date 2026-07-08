@@ -268,11 +268,30 @@ impl GpuTensor {
                 // surface as Q8_0 from the source's re-encode) ALSO stash the raw e4m3 device
                 // bytes + weight_scale. The source guarantees byte order matches `v` (the
                 // Transform arm's V-reorder is baked into both); the ne check guards a mixup.
+                // VRAM BUDGET (24GB rigs, 2026-07-08): the stash duplicates every F8-origin
+                // projection (~+3.4GB on the 27B) — fine on the 96GB box, OOM here. The stash
+                // spends from BW24_PP_FP8_BUDGET_MB (default 1536); once spent, remaining
+                // tensors ride the old path. Load order is layer order, so the budget covers a
+                // PREFIX of layers — coverage (and the prefill win) scales with the budget.
                 let fp8 = if qt == QT_Q8_0 && crate::fp8_ffi::pp_fp8_enabled() {
                     match src.find_fp8_native(name) {
                         Some(f8) if v.ne.len() == 2
-                            && f8.in_f as u64 == v.ne[0] && f8.out_f as u64 == v.ne[1] =>
-                            Some(Fp8Weight { bytes: e.htod_bytes(&f8.bytes)?, scale: f8.scale }),
+                            && f8.in_f as u64 == v.ne[0] && f8.out_f as u64 == v.ne[1] => {
+                            use std::sync::atomic::{AtomicUsize, Ordering};
+                            static FP8_SPENT: AtomicUsize = AtomicUsize::new(0);
+                            static FP8_BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+                            let budget = *FP8_BUDGET.get_or_init(|| {
+                                std::env::var("BW24_PP_FP8_BUDGET_MB").ok()
+                                    .and_then(|v| v.parse::<usize>().ok()).unwrap_or(1536) << 20
+                            });
+                            let sz = f8.bytes.len();
+                            if FP8_SPENT.fetch_add(sz, Ordering::Relaxed) + sz <= budget {
+                                Some(Fp8Weight { bytes: e.htod_bytes(&f8.bytes)?, scale: f8.scale })
+                            } else {
+                                FP8_SPENT.fetch_sub(sz, Ordering::Relaxed);
+                                None
+                            }
+                        }
                         _ => None,
                     }
                 } else { None };
