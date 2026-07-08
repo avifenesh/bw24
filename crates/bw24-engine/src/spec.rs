@@ -74,7 +74,10 @@ pub(crate) fn spec_m2() -> bool {
 /// run-spec K=1..8 + acceptance identity arbitrate e2e).
 pub(crate) fn spec_fused_t() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("BW24_SPEC_FUSED_T").map(|v| v == "1").unwrap_or(false))
+    // DEFAULT ON since 2026-07-09 (BW24_SPEC_FUSED_T=0 reverts): verify t=2-4 trunk launch-fusion
+    // (fused2/fused3 Q8_0 batched twins, bit-identical by construction — m=1 block-offset split on
+    // the batched body). m=2 marginal token 2117->1762us; 35B daily: p3 +3.7% (crosses llama), p2 +5%.
+    *F.get_or_init(|| std::env::var("BW24_SPEC_FUSED_T").map(|v| v != "0").unwrap_or(true))
 }
 
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
