@@ -19,7 +19,7 @@ Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x
 
 ## Requirements
 
-- NVIDIA Blackwell consumer GPU (sm_120a). Primary target: RTX 5090 Laptop. An sm_89 (Ada) branch exists at `arch/sm89-l40s`.
+- NVIDIA Blackwell consumer GPU (sm_120a). Primary target: RTX 5090 Laptop.
 - CUDA toolkit 12.8 (13.1 optional for the cuBLASLt/CUTLASS paths; 13.1 nvcc miscompiles some sm_120 kernels, see `crates/bw24-engine/build.rs`).
 - Rust (edition 2024), [cudarc](https://github.com/coreylowman/cudarc) 0.19 with dynamic loading.
 - A model. GGUF tested: Qwen3.5-9B / Qwen3.6-27B (NVFP4 + Q5_K hybrid), Qwen3.6-35B-A3B (IQ4_XS MoE), plus Q4_K/Q5_K/Q6_K/Q8_0 k-quant variants. Safetensors (HF dir) tested: nvidia/Qwen3.6-27B-NVFP4, MiniMax-M3 REAP50 NVFP4 — pass the directory instead of a .gguf path.
@@ -129,7 +129,7 @@ Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-id
 
 ## Limitations
 
-- Built for sm_120a. It compiles nowhere else without the `arch/sm89-l40s` branch, and the tuning choices assume this exact memory/compute ratio.
+- Built for sm_120a only; the tuning choices assume this exact memory/compute ratio.
 - Model coverage is what's listed above — this is not a general GGUF runner.
 - Single GPU, single stream. No tensor parallelism, no continuous batching.
 - APIs and env flags change without notice; this is a moving research codebase.
