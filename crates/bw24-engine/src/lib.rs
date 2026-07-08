@@ -92,8 +92,15 @@ fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     if big_rig {
         let _ = n_head_kv;
         if t_kv <= 2048 { 16 } else if t_kv <= 16384 { 64 } else { 128 }
+    } else if n_head_kv <= 4 {
+        // KV-HEAD-AWARE RUNG (2026-07-08, 5090): the 8192->32 rung was validated on kv=8 models
+        // (27B/9B: 8 heads x n_splits fills 82 SMs). The 35B has n_head_kv=2 — at ctx512/sp32
+        // the vec grid is 2 x 20 = 40 CTAs on 82 SMs (half idle). Measured (35B, run-gen 128tok
+        // N=1 sweep + N=3 confirm): sp8 162.1 / sp16 161.3 / sp32 159.4. Same starvation class
+        // the g7e 188-SM rung fixed; here gated on the MODEL property (few kv heads), so kv=8
+        // models keep the validated ladder exactly.
+        if t_kv <= 8192 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
     } else {
-        let _ = n_head_kv;
         if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
     }
 }
