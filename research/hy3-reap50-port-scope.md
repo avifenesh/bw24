@@ -272,3 +272,78 @@ Done criteria status in this lane:
 - CPU-only transcoder tests with sampled real tensors: done
 - JSONL research row and commit on `lane/hy3-prep`: done before handoff
 - target-rig forward/quality/perf gates: intentionally not run in this CPU/disk-only lane
+
+## Loader glue addendum (2026-07-09)
+
+This continuation implements the CPU-only loader pieces for the transcoded REAP checkpoint. No GPU
+model load, `kernel-check`, `run-gen`, or `run-spec` was run in this lane.
+
+### Implemented loader surface
+
+| item | implementation | status |
+|---|---|---|
+| `hy_v3` config parse | `Arch::Hy3`, dense-attention MoE, `is_hybrid=false`, `is_moe=true`, nested `rope_parameters.rope_theta`, `expert_hidden_dim`, sigmoid router, expert bias, route norm, router scale 2.826, QK norm, default layer-0 dense marker | implemented in `crates/bw24-gguf/src/config.rs:16`, `crates/bw24-gguf/src/config.rs:67`, `crates/bw24-gguf/src/config.rs:113`, `crates/bw24-gguf/src/config.rs:503` |
+| HF/MLX name map | `mlp.router.*`, `mlp.shared_mlp.*`, stacked `mlp.switch_mlp.*`, and layer-0 dense `mlp.*_proj` map to bw24 `ffn_*` names | implemented in `crates/bw24-gguf/src/hf_mapping.rs:55` |
+| Repack source | `Hy3RepackSource` reads `manifest.json`, mmaps tensor files, exposes Q4_K 2D/3D bytes, F32 router/bias tensors, and dequantized F32 one-dimensional BF16 norm tensors | implemented in `crates/bw24-gguf/src/source.rs:115`, `crates/bw24-gguf/src/source.rs:195`, `crates/bw24-gguf/src/source.rs:204` |
+| Stripped MTP override | REAP config says `num_nextn_predict_layers=1`, but the repack manifest only has `blk.0..blk.79`; source config is overridden to `n_layer=80`, `nextn_predict_layers=0` for this artifact | implemented in `crates/bw24-gguf/src/source.rs:242` |
+| Layer-0 dense FFN | Dense-attention loader uses `Ffn::Dense` for Hy3 layers `< first_k_dense_replace`, then existing MoE loader for layers 1-79 | implemented in `crates/bw24-engine/src/model.rs:485` |
+
+The source adapter is intentionally a repack-directory reader, not a GGUF writer. It keeps the
+single-file GGUF question out of the loader lane while preserving the existing `TensorSource`
+contract used by GGUF and safetensors paths.
+
+### CPU-only tests added
+
+The new tests are:
+
+- `config::hf_tests::parse_hy3_reap_config`
+- `hf_mapping::tests::hy3_moe_names`
+- `source::hy3_repack_probe::hy3_manifest_offset_roundtrip`
+- `source::hy3_repack_probe::hy3_inventory_dtype_shape_assertions`
+- `source::hy3_repack_probe::hy3_load_plan_dry_run_no_cuda`
+
+The manifest offset test checks expert 37 in `blk.1.ffn_gate_exps.weight` by comparing the source
+view against a 64-byte direct read at `37 * 3,538,944`. The inventory test checks TSV source
+dtype/shape rows against the source adapter's exposed qtype/ne for representative attention, dense
+MLP, router, shared MLP, stacked expert, and norm tensors. The dry-run test walks every tensor name
+the dense loader will request for all 80 REAP layers without constructing an `Engine` or touching
+CUDA.
+
+### MTP base-check result
+
+Current Hugging Face metadata was checked on 2026-07-09 with `hf download` metadata-only pulls for
+[`tencent/Hy3`](https://huggingface.co/tencent/Hy3),
+[`tencent/Hy3-preview-Base`](https://huggingface.co/tencent/Hy3-preview-Base), and
+[`tencent/Hy3-preview`](https://huggingface.co/tencent/Hy3-preview). All three configs report
+`num_hidden_layers=80` and `num_nextn_predict_layers=1`. None of the indexes contains tensor names
+matching `mtp`, `nextn`, or `next`, but all three carry an appended `model.layers.80.*` block.
+
+For `tencent/Hy3`, layer 80 has 593 tensor keys:
+
+| class | evidence |
+|---|---|
+| MTP glue | `model.layers.80.eh_proj.weight`, `enorm.weight`, `hnorm.weight` |
+| full-attention block | q/k/v/o projections plus q/k norms and layer norms |
+| MoE block | router gate, expert bias, shared MLP, and 192 experts x gate/up/down |
+| shard files | current repo layer-80 tensors are in `model-00018-of-00099`, `model-00066-of-00099`, `model-00091-of-00099`, `model-00096-of-00099`, `model-00097-of-00099` |
+
+Conclusion: the base checkpoint does carry the `num_nextn_predict_layers=1` head, stored as appended
+`model.layers.80.*`; the REAP artifact stripped that block. A later spec lane can extract it by
+downloading only the layer-80 shard set, header-scanning those safetensors, and transcoding the
+appended block through the same Q4_K path. Expected Q4_K expert payload for the layer-80 MoE portion
+is about `192 * 10,616,832 = 2.04 GB`, plus attention/glue/norm tensors. The extraction lane must
+also handle the base head's 192-expert MLP while the REAP trunk has 96 routed experts; that is a
+spec-head loader/config detail, not part of this plain-loader lane.
+
+If a future metadata refresh shows the official repo has moved, treat these as the 2026-07-09 HF
+index facts and re-run the metadata-only check before extracting.
+
+### Remaining GPU-gated work
+
+- Hy3 forward correctness: sigmoid router, `expert_bias` selection, route normalization, and
+  `router_scaling_factor=2.826` need target-rig validation against a reference.
+- Argmax/quality gates: all quality claims remain unverified — pending target-rig gates.
+- Spill-tier bring-up: resident/RAM/NVMe split must be validated with real miss traffic on the
+  RTX 5090 Laptop path.
+- Speculative decode: base layer-80 MTP extraction/transcode plus per-head expert-count handling
+  remain future work.

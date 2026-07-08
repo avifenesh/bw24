@@ -7,7 +7,10 @@
 //! bw24-gguf, so `GpuTensor::load_from_source(&dyn TensorSource, ...)` introduces no new dep.
 
 use std::borrow::Cow;
-use crate::config::{Arch, ModelConfig};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use memmap2::Mmap;
+use crate::config::{Arch, JsonObj, ModelConfig};
 use crate::safetensors::StModel;
 use crate::{GgufFile, GgmlType};
 
@@ -92,6 +95,172 @@ impl<'g> TensorSource for GgufSource<'g> {
         })
     }
     fn gguf(&self) -> Option<&GgufFile> { Some(self.0) }
+}
+
+#[derive(Debug, Clone)]
+struct RepackTensor {
+    file: PathBuf,
+    ggml_type: GgmlType,
+    ne: Vec<u64>,
+    bytes: usize,
+    expert_stride: Option<usize>,
+}
+
+/// Manifest-backed source for bw24 Hy3 Q4_K repack directories.
+///
+/// The transcoder writes one file per tensor (including stacked expert slabs) plus a manifest with
+/// ggml-style names. This source presents those bytes directly to the existing loaders without a
+/// single-file GGUF wrapper. Files are mmap'd lazily by the OS; opening the 80G repack maps address
+/// space but does not fault tensor pages into RAM.
+pub struct Hy3RepackSource {
+    cfg: ModelConfig,
+    dir: PathBuf,
+    tensors: BTreeMap<String, RepackTensor>,
+    files: BTreeMap<PathBuf, Mmap>,
+}
+
+impl Hy3RepackSource {
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let manifest = if path.is_dir() { path.join("manifest.json") } else { path.to_path_buf() };
+        let dir = manifest.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let txt = std::fs::read_to_string(&manifest)?;
+        let top = JsonObj::parse(&txt);
+        let tensors_obj = top.object("tensors").ok_or_else(|| invalid_data("manifest missing tensors object"))?;
+        let mut tensors = BTreeMap::new();
+        for (name, raw) in tensors_obj.fields() {
+            let obj = JsonObj::parse(raw);
+            let file = obj.string("file")
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing file")))?;
+            let qtype = obj.string("qtype")
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing qtype")))?;
+            let ne = obj.u64_array("ne")
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing ne")))?;
+            let bytes = obj.u64("bytes")
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing bytes")))? as usize;
+            tensors.insert(name.to_string(), RepackTensor {
+                file: PathBuf::from(file),
+                ggml_type: manifest_qtype(&qtype)
+                    .ok_or_else(|| invalid_data(format!("manifest tensor {name} unsupported qtype {qtype}")))?,
+                ne,
+                bytes,
+                expert_stride: obj.u64("expert_stride").map(|x| x as usize),
+            });
+        }
+
+        let cfg_path = top.string("source_dir")
+            .map(PathBuf::from)
+            .map(|p| p.join("config.json"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| dir.join("config.json"));
+        let mut cfg = ModelConfig::from_config_json(&cfg_path)?;
+        apply_stripped_mtp_override(&mut cfg, &tensors);
+
+        let mut files = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        for t in tensors.values() {
+            if !seen.insert(t.file.clone()) { continue; }
+            let p = dir.join(&t.file);
+            let f = std::fs::File::open(&p)?;
+            let map = unsafe { Mmap::map(&f)? };
+            files.insert(t.file.clone(), map);
+        }
+        for (name, t) in &tensors {
+            let len = files.get(&t.file)
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} file not mapped")))?
+                .len();
+            if len < t.bytes {
+                return Err(invalid_data(format!(
+                    "manifest tensor {name} declares {} bytes but {:?} has {len}",
+                    t.bytes, t.file
+                )));
+            }
+        }
+
+        Ok(Self { cfg, dir, tensors, files })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn tensor_count(&self) -> usize {
+        self.tensors.len()
+    }
+
+    pub fn expert_stride(&self, ggml_name: &str) -> Option<usize> {
+        self.tensors.get(ggml_name).and_then(|t| t.expert_stride)
+    }
+}
+
+impl TensorSource for Hy3RepackSource {
+    fn config(&self) -> ModelConfig {
+        self.cfg.clone()
+    }
+
+    fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
+        let t = self.tensors.get(ggml_name)?;
+        let map = self.files.get(&t.file)?;
+        let raw = &map[..t.bytes];
+        if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
+            let n: u64 = t.ne.iter().product();
+            let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
+            let mut bytes = Vec::with_capacity(vals.len() * 4);
+            for f in vals {
+                bytes.extend_from_slice(&f.to_le_bytes());
+            }
+            return Some(TensorView {
+                bytes: Cow::Owned(bytes),
+                ggml_type: GgmlType::F32,
+                ne: t.ne.clone(),
+            });
+        }
+        Some(TensorView {
+            bytes: Cow::Borrowed(raw),
+            ggml_type: t.ggml_type,
+            ne: t.ne.clone(),
+        })
+    }
+}
+
+fn manifest_qtype(s: &str) -> Option<GgmlType> {
+    Some(match s {
+        "F32" => GgmlType::F32,
+        "F16" => GgmlType::F16,
+        "BF16" => GgmlType::BF16,
+        "Q8_0" => GgmlType::Q8_0,
+        "Q4_K" => GgmlType::Q4_K,
+        "Q5_K" => GgmlType::Q5_K,
+        "Q6_K" => GgmlType::Q6_K,
+        "Q3_K" => GgmlType::Q3_K,
+        "IQ4_XS" => GgmlType::IQ4_XS,
+        "IQ3_S" => GgmlType::IQ3_S,
+        "NVFP4" => GgmlType::NVFP4,
+        _ => return None,
+    })
+}
+
+fn apply_stripped_mtp_override(cfg: &mut ModelConfig, tensors: &BTreeMap<String, RepackTensor>) {
+    if cfg.nextn_predict_layers == 0 {
+        return;
+    }
+    let max_blk = tensors.keys().filter_map(|name| {
+        let rest = name.strip_prefix("blk.")?;
+        let (il, _) = rest.split_once('.')?;
+        il.parse::<u32>().ok()
+    }).max();
+    let Some(max_blk) = max_blk else { return; };
+    let manifest_layers = max_blk + 1;
+    let trunk_layers = cfg.n_layer.saturating_sub(cfg.nextn_predict_layers);
+    let has_nextn_names = tensors.keys().any(|name| name.contains(".nextn."));
+    if manifest_layers <= trunk_layers && !has_nextn_names {
+        cfg.n_layer = manifest_layers;
+        cfg.n_layer_total = manifest_layers;
+        cfg.nextn_predict_layers = 0;
+    }
+}
+
+fn invalid_data(msg: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
 }
 
 /// safetensors-backed source: an HF checkpoint (config.json + one/more .safetensors shards).
@@ -522,6 +691,143 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod hy3_repack_probe {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom};
+
+    fn repack_dir() -> Option<&'static Path> {
+        let dir = Path::new("/data/ai-ml/hf-models/hy3-reap50-q4k-bw24");
+        if dir.join("manifest.json").exists() { Some(dir) } else { None }
+    }
+
+    fn tsv_row(source_name: &str) -> Option<(String, String)> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../research/hy3-reap50-tensor-inventory.tsv");
+        let txt = std::fs::read_to_string(path).ok()?;
+        for line in txt.lines().skip(1) {
+            let mut cols = line.split('\t');
+            let name = cols.next()?;
+            let dtype = cols.next()?;
+            let shape = cols.next()?;
+            if name == source_name {
+                return Some((dtype.to_string(), shape.to_string()));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn hy3_manifest_offset_roundtrip() {
+        let Some(dir) = repack_dir() else { eprintln!("SKIP: Hy3 repack absent"); return; };
+        let src = Hy3RepackSource::open(dir).unwrap();
+        assert_eq!(src.dir(), dir);
+        assert_eq!(src.tensor_count(), 1278);
+        let cfg = src.config();
+        assert_eq!(cfg.arch, Arch::Hy3);
+        assert_eq!(cfg.n_layer, 80, "REAP manifest stripped the appended MTP block");
+        assert_eq!(cfg.nextn_predict_layers, 0);
+        assert_eq!(cfg.n_layer_total, 80);
+        assert_eq!(cfg.moe.as_ref().unwrap().expert_count, 96);
+        assert_eq!(cfg.moe.as_ref().unwrap().expert_used_count, 8);
+        assert_eq!(cfg.hy3.as_ref().unwrap().first_k_dense_replace, 1);
+
+        let name = "blk.1.ffn_gate_exps.weight";
+        let v = src.find(name).unwrap();
+        assert_eq!(v.ggml_type, GgmlType::Q4_K);
+        assert_eq!(v.ne, vec![4096, 1536, 96]);
+        let stride = src.expert_stride(name).unwrap();
+        assert_eq!(stride, 3_538_944);
+        assert_eq!(v.bytes.len(), stride * 96);
+
+        let expert = 37usize;
+        let offset = expert * stride;
+        let mut f = std::fs::File::open(dir.join("experts/blk1-gate-96x1536x4096.q4k")).unwrap();
+        f.seek(SeekFrom::Start(offset as u64)).unwrap();
+        let mut buf = [0u8; 64];
+        f.read_exact(&mut buf).unwrap();
+        assert_eq!(&v.bytes[offset..offset + buf.len()], &buf);
+    }
+
+    #[test]
+    fn hy3_inventory_dtype_shape_assertions() {
+        let Some(dir) = repack_dir() else { eprintln!("SKIP: Hy3 repack absent"); return; };
+        let src = Hy3RepackSource::open(dir).unwrap();
+        let cases = [
+            ("model.layers.0.self_attn.q_proj.weight", "U32", "8192x512",
+             "blk.0.attn_q.weight", GgmlType::Q4_K, vec![4096, 8192]),
+            ("model.layers.0.mlp.down_proj.weight", "U32", "4096x1664",
+             "blk.0.ffn_down.weight", GgmlType::Q4_K, vec![13312, 4096]),
+            ("model.layers.1.mlp.router.gate.weight", "U32", "96x1024",
+             "blk.1.ffn_gate_inp.weight", GgmlType::F32, vec![4096, 96]),
+            ("model.layers.1.mlp.router.expert_bias", "F32", "96",
+             "blk.1.exp_probs_b.bias", GgmlType::F32, vec![96]),
+            ("model.layers.1.mlp.shared_mlp.gate_proj.weight", "U32", "1536x512",
+             "blk.1.ffn_gate_shexp.weight", GgmlType::Q4_K, vec![4096, 1536]),
+            ("model.layers.1.mlp.switch_mlp.gate_proj.weight", "U32", "96x1536x512",
+             "blk.1.ffn_gate_exps.weight", GgmlType::Q4_K, vec![4096, 1536, 96]),
+            ("model.norm.weight", "BF16", "4096",
+             "output_norm.weight", GgmlType::F32, vec![4096]),
+        ];
+        for (source_name, dtype, shape, ggml_name, qtype, ne) in cases {
+            let row = tsv_row(source_name).unwrap_or_else(|| panic!("missing TSV row {source_name}"));
+            assert_eq!(row, (dtype.to_string(), shape.to_string()), "{source_name}");
+            let v = src.find(ggml_name).unwrap_or_else(|| panic!("missing manifest tensor {ggml_name}"));
+            assert_eq!(v.ggml_type, qtype, "{ggml_name}");
+            assert_eq!(v.ne, ne, "{ggml_name}");
+        }
+    }
+
+    #[test]
+    fn hy3_load_plan_dry_run_no_cuda() {
+        let Some(dir) = repack_dir() else { eprintln!("SKIP: Hy3 repack absent"); return; };
+        let src = Hy3RepackSource::open(dir).unwrap();
+        let cfg = src.config();
+        let hy3 = cfg.hy3.as_ref().unwrap();
+
+        for name in ["token_embd.weight", "output_norm.weight", "output.weight"] {
+            assert!(src.find(name).is_some(), "missing {name}");
+        }
+        for il in 0..cfg.n_layer {
+            let p = |s: &str| format!("blk.{il}.{s}");
+            for name in [
+                p("attn_norm.weight"),
+                p("attn_q.weight"),
+                p("attn_k.weight"),
+                p("attn_v.weight"),
+                p("attn_output.weight"),
+                p("attn_q_norm.weight"),
+                p("attn_k_norm.weight"),
+                p("ffn_norm.weight"),
+            ] {
+                assert!(src.find(&name).is_some(), "missing load-plan tensor {name}");
+            }
+            if il < hy3.first_k_dense_replace {
+                for name in [p("ffn_gate.weight"), p("ffn_up.weight"), p("ffn_down.weight")] {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing dense tensor {name}"));
+                    assert_eq!(v.ggml_type, GgmlType::Q4_K, "{name}");
+                    assert_eq!(v.ne.len(), 2, "{name}");
+                }
+            } else {
+                for (name, qtype, rank) in [
+                    (p("ffn_gate_inp.weight"), GgmlType::F32, 2usize),
+                    (p("exp_probs_b.bias"), GgmlType::F32, 1),
+                    (p("ffn_gate_shexp.weight"), GgmlType::Q4_K, 2),
+                    (p("ffn_up_shexp.weight"), GgmlType::Q4_K, 2),
+                    (p("ffn_down_shexp.weight"), GgmlType::Q4_K, 2),
+                    (p("ffn_gate_exps.weight"), GgmlType::Q4_K, 3),
+                    (p("ffn_up_exps.weight"), GgmlType::Q4_K, 3),
+                    (p("ffn_down_exps.weight"), GgmlType::Q4_K, 3),
+                ] {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing MoE tensor {name}"));
+                    assert_eq!(v.ggml_type, qtype, "{name}");
+                    assert_eq!(v.ne.len(), rank, "{name}");
+                }
+            }
+        }
     }
 }
 
