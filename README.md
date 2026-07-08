@@ -2,7 +2,7 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-On its target models it beats or matches llama.cpp everywhere: 9B generation 1.3-1.6x ahead at every prompt size, 27B (MTP speculative decoding) 1.4x ahead on short-code and at parity on medium/long prompts, 35B MoE ahead at short prompts — every number measured on-device with a matched same-prompt protocol (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
+Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x) and at 0.99x on the 35B MoE; with MTP speculative decoding it leads 9B 1.31x/1.23x and 27B up to 1.25x at the same raw-prompt protocol — every number measured on-device against llama.cpp's serve-best config on the same machine, N=3 medians, both engines re-baselined the same day (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
 
 ## Why this project
 
@@ -92,15 +92,15 @@ Depth behavior is part of the comparison: at 6.3k-token context the 35B decodes 
 
 | Model | bw24 spec | llama.cpp spec-best | Ratio |
 |---|---|---|---|
-| Qwen3.5-9B (K=3) | 193 / 156 / 149 | 122 / 121 / 117 | **1.59x / 1.29x / 1.28x** |
+| Qwen3.5-9B (K=3 + native trim) | 243 / 195 / 162 | 186 / 158 / 155 | **1.31x / 1.23x** / 1.04x |
 | Qwen3.6-27B (K=3 + generic trim) | 108 / 91 / 79.5 | 86.4 / 89.9 / 73.2 | **1.25x** / 1.01x / **1.09x** |
 | Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 177 | 215 / 208 / 202 | 0.92x / 0.93x / 0.88x |
 
 All rows are the raw-prompt continuation protocol (llama.cpp measured through llama-server at its serve-best speculative config on the same machine, N=3 medians, full power verified). Config is content-class dependent — the chat protocol shifts both the optimal draft depth and the trim choice (chat short-code runs K=7 at 122 tok/s on the 27B); the published HF artifacts document every configuration.
 
-Two speculative mechanisms shipped in 2026-07-08's 35B push, both vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — the same 32k-row d2t list transfers across every model sharing the Qwen tokenizer (the gather reads each model's own lm_head bytes); and zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost while predictable ones ride the full chain (35B acceptance 65% → 84%).
+Three speculative mechanisms shipped in the 2026-07-08 push, vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — a 32k-row d2t list transfers across every model sharing a tokenizer (the gather reads each model's own lm_head bytes), and for a new vocab the `frspec_rank` tool builds one from any local corpus in minutes (the 9B's 248320-token vocab got its own: p1/p2/p3 +22/+17/+14%); zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost (pays below ~75% base acceptance, hurts above ~90%); and per-class draft depth (K is a property of the content's per-slot acceptance decay, protocol included).
 
-On the 27B the two engines bind differently: llama.cpp is cost-bound at short prompts (draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance to 1.40x; at medium/long prompts both sit on the same content-acceptance ceiling.
+On the 27B the two engines bind differently: llama.cpp is cost-bound at short prompts (draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance (1.25x raw, 1.40x chat); at medium/long prompts both sit near the same content-acceptance ceiling.
 
 The benchmark artifacts — trimmed draft-head GGUFs (generic/code75/balanced FR-Spec vocab trims for `BW24_FRSPEC_TRIM`), the exact prompts, and the full reproduction configs (env law, per-class K/pmin, llama.cpp build + serve flags) — are published at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
 
