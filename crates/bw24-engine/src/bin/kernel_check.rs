@@ -1013,6 +1013,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- F8-E4M3 matvec (BW24_ST_E4M3 decode class, lane e4m3dec): synthetic weights, THREE gates.
+    // (1) CPU REFERENCE: qmatvec_e4m3_mmvq vs an f64 CPU dot over the SAME q8_1 activation bytes
+    //     (aq/ad read back from the GPU quantizer — the kernel's actual input) and a CPU e4m3
+    //     decode. rel < 1e-3 (f32 fmaf chain vs f64; same gate class as the MMVQ checks).
+    // (2) DECODE-PARITY: the grid.y=m launch must be BIT-IDENTICAL per (token,row) to the m=1
+    //     launch on that token's row (the spec verify==decode law; per-warp body is independent
+    //     of blockIdx.y by construction — this gate pins it).
+    // (3) BATCHED TWINS: _b2/_b4/_b8 must be BIT-IDENTICAL to the grid.y=m mmvq (weight bytes
+    //     read once for all columns; identical fmaf chain per (token,row)). ---
+    {
+        // CPU e4m3 decode: sign / 4-bit exp (bias 7) / 3-bit mantissa, subnormals (mirrors the
+        // KV-format gate's closure; NaN never generated below).
+        let e4m3 = |b: u8| -> f32 {
+            let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
+            let ex = ((b >> 3) & 0x0F) as i32;
+            let mn = (b & 0x07) as f32;
+            if ex == 0 { s * mn * (2f32).powi(-9) }
+            else if ex == 15 && mn == 7.0 { f32::NAN }
+            else { s * (1.0 + mn / 8.0) * (2f32).powi(ex - 7) }
+        };
+        let qt = bw24_engine::QT_F8_E4M3;
+        for (in_f, out_f) in [(5120usize, 512usize), (2048, 320)] {
+            // pseudo-random e4m3 bytes; remap the two NaN codes (0x7F/0xFF -> exp field 0xE).
+            let wb: Vec<u8> = (0..in_f * out_f).map(|i| {
+                let mut b = ((i.wrapping_mul(2654435761) ^ 0x9E3779B9) >> 9) as u8;
+                if b & 0x7F == 0x7F { b &= 0xF7; }
+                b
+            }).collect();
+            let wd = e.htod_bytes(&wb)?;
+            let row_bytes = in_f;   // raw e4m3: 1 B/element
+            for mm in [1usize, 2, 5, 9] {
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 151) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let (aqd, add) = e.quantize_q8_1(&xd, mm, in_f)?;
+                let y = e.dtoh(&e.qmatvec_mmvq(&wd, &aqd, &add, mm, in_f, out_f, qt, row_bytes,
+                                               1.0, false)?)?;
+                // (1) CPU reference from the kernel's exact q8_1 inputs, f64 accumulate.
+                let aq: Vec<i8> = e.stream().clone_dtoh(&aqd)?; e.stream().synchronize()?;
+                let ad = e.dtoh(&add)?;
+                let nblk = in_f / 32;
+                let mut cpu = vec![0f32; mm * out_f];
+                for t in 0..mm {
+                    for o in 0..out_f {
+                        let mut acc = 0f64;
+                        for blk in 0..nblk {
+                            let mut bs = 0f64;
+                            for j in 0..32 {
+                                let w = e4m3(wb[o * in_f + blk * 32 + j]) as f64;
+                                bs += w * aq[t * in_f + blk * 32 + j] as f64;
+                            }
+                            acc += ad[t * nblk + blk] as f64 * bs;
+                        }
+                        cpu[t * out_f + o] = acc as f32;
+                    }
+                }
+                let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                let rel = maxdiff(&cpu, &y) / scale;
+                let mut ok = rel < 1e-3;
+                // (2) decode-parity: token t's rows at grid.y=m == the m=1 launch on token t alone.
+                let mut bits_ok = true;
+                if mm > 1 {
+                    for t in 0..mm {
+                        let xt = &x[t * in_f..(t + 1) * in_f];
+                        let xtd = e.htod(xt)?;
+                        let y1 = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xtd, 1, in_f, out_f, qt,
+                                                            row_bytes, false)?)?;
+                        bits_ok &= y1.iter().zip(&y[t * out_f..(t + 1) * out_f])
+                            .all(|(a, b)| a.to_bits() == b.to_bits());
+                    }
+                    ok &= bits_ok;
+                }
+                println!("E4M3-MMVQ synth [{in_f}x{out_f}] m={mm}: rel={rel:.2e} m1-bits={bits_ok} {}",
+                         if ok { "OK" } else { fails += 1; "FAIL" });
+            }
+            // (3) batched twins vs grid.y=m mmvq: bit-exact.
+            for mm in 2..=8usize {
+                let mcols = bw24_engine::Engine::batched_mcols(mm);
+                let x: Vec<f32> = (0..mm * in_f).map(|i| pr(i + 163) * 0.1).collect();
+                let xd = e.htod(&x)?;
+                let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wd, &xd, mm, in_f, out_f, qt, row_bytes, false)?)?;
+                let yb = e.dtoh(&e.qmatvec_batched_raw(&wd, &xd, mm, in_f, out_f, qt, row_bytes,
+                                                       mcols, false)?)?;
+                let bits_bad = yref.iter().zip(&yb).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                let d = maxdiff(&yref, &yb);
+                println!("E4M3-BATCHED synth [{in_f}x{out_f}] m={mm} b{mcols}: rel={d:.2e} bit-bad={bits_bad} {}",
+                         if bits_bad == 0 { "OK" } else { fails += 1; "FAIL" });
+            }
+        }
+    }
+
     // --- BATCHED weight-resident matvec (_b2/_b4/_b8) vs the per-m _mmvq reference (the MTP/verify
     // path). Both quantize the same f32 activation to q8_1; the batched kernel only changes the loop
     // nest (weight loaded once, reused across m token columns) so per-(token,row) it MUST be

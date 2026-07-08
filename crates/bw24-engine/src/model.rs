@@ -178,6 +178,29 @@ impl GpuTensor {
                 }
             }
         }
+        // E4M3-DIRECT (BW24_ST_E4M3=1, lane e4m3dec 2026-07-08): F8-E4M3-origin 2D projections keep
+        // the checkpoint's RAW e4m3 device bytes + per-tensor weight_scale as the ONE resident copy
+        // (QT_F8_E4M3) instead of the Q8_0 re-encode — decode dequants e4m3 in-kernel
+        // (qmatvec_e4m3_mmvq, the checkpoint's own precision, no lossy re-quant hop), prefill
+        // (m>=16) rides the cuBLASLt FP8 GEMM on the SAME bytes (try_fp8_gemm). Frees the Q8_0
+        // duplicate the BW24_PP_FP8 stash needed (~3.4GB on the NV-27B) — full FP8 prefill coverage
+        // with no VRAM budget. Placed BEFORE `find` so the host-side F8->Q8_0 re-encode is skipped
+        // entirely (faster load). in_f%32 is the q8_1 activation block gate (every F8 projection in
+        // the NV-27B satisfies it; a violator falls through to the Q8_0 arm unchanged).
+        if crate::fp8_ffi::st_e4m3_enabled() {
+            if let Some(f8) = src.find_fp8_native(name) {
+                if f8.in_f % 32 == 0 && f8.out_f > 0 {
+                    return Ok(GpuTensor::Quant {
+                        bytes: e.htod_bytes(&f8.bytes)?, qtype: crate::QT_F8_E4M3,
+                        row_bytes: f8.in_f, ne: vec![f8.in_f as u64, f8.out_f as u64],
+                        scale: f8.scale, rp: false,
+                        #[cfg(bw24_cutlass)]
+                        cutlass: None,
+                        fp8: None,
+                    });
+                }
+            }
+        }
         let mut v = src.find(name).unwrap_or_else(|| panic!("missing tensor {name}"));
         // BW24_KQ_NVFP4=1 (opt-in, 2026-07-08): re-encode Q4_K/Q5_K 2D matmul weights to NVFP4 at
         // load. The k-quant mmvq family runs at 61-70% of the bandwidth wall on this rig (measured

@@ -201,6 +201,12 @@ pub const QT_Q3_K: i32 = 4;
 pub const QT_IQ4_XS: i32 = 5;
 pub const QT_IQ3_S: i32 = 6;
 pub const QT_NVFP4: i32 = 7;
+/// Checkpoint-native FP8-E4M3 (BW24_ST_E4M3, lane e4m3dec): raw safetensors e4m3 weight bytes
+/// [out_f, in_f] row-major (row_bytes == in_f), per-tensor f32 weight_scale in GpuTensor `scale`
+/// (fused at the mmvq write / post-matmul scale_inplace). Decode = qmatvec_e4m3_mmvq (+ _b2/_b4/_b8
+/// batched twins); prefill (m>=16) = the cuBLASLt FP8 GEMM on the SAME resident bytes (fp8_ffi.rs)
+/// — ONE weight copy total, no Q8_0 re-encode duplicate.
+pub const QT_F8_E4M3: i32 = 10;
 /// Device-side tag for the A6 SPLIT-PLANE repacked NVFP4 layout (Stage-A generic kernel only;
 /// GpuTensor keeps qtype=QT_NVFP4 + an `rp` flag — this tag never lives in a GpuTensor).
 pub const QT_NVFP4_RP: i32 = 9;
@@ -1999,6 +2005,20 @@ impl Engine {
                 }
             }
         }
+        // F8-E4M3 (BW24_ST_E4M3) catch-all for the m<16 band the arms above didn't take (m=9..15,
+        // the K=8 verify tier; or m=2..8 under BW24_NO_BATCHED/BW24_B8=0): grid.y=m e4m3 mmvq —
+        // the SAME per-(token,row) program as the m=1 decode launch (bit-identical by construction),
+        // weight re-read m times (rare tier; exactness over bandwidth here). There is no _dp4a twin
+        // for this dtype, so the generic match below must never see it under `fast`.
+        if fast {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, scale, .. } = w {
+                if *qtype == QT_F8_E4M3 {
+                    let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                    return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes,
+                                             *scale, false);
+                }
+            }
+        }
         let mut y = match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, .. } if fast && *qtype == QT_Q8_0 =>
                 self.qmatvec_q8_0_fast(bytes, x, m, in_f, out_f, *row_bytes)?,
@@ -2044,7 +2064,7 @@ impl Engine {
         if std::env::var("BW24_FAST").as_deref() == Ok("0") { return false; }
         match w {
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
-                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4)
+                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3)
                 || (*qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok()),
             GpuTensor::Float { .. } => false,
         }
@@ -2111,6 +2131,11 @@ impl Engine {
             && (m <= 4 || Self::b8_enabled()) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
+        }
+        // F8-E4M3 catch-all (m=9..15 / batched-disabled seams): grid.y=m e4m3 mmvq — this dtype
+        // has NO _dp4a twin, and per (token,row) the mmvq body is the exact m=1 decode program.
+        if qtype == QT_F8_E4M3 {
+            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
         }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
@@ -2398,6 +2423,10 @@ impl Engine {
     /// daily-hot dtypes (Q8_0, Q4_K, Q6_K, NVFP4) — others keep the _dp4a matvec (oracle/fallback).
     pub fn mmvq_supports(&self, qtype: i32) -> bool {
         // DEFAULT ON since 2026-07-08 (BW24_MMVQ=0 reverts to the _dp4a matvec class).
+        // QT_F8_E4M3 is exempt from the BW24_MMVQ=0 escape: the e4m3 mmvq family is that dtype's
+        // ONLY int8-act kernel class (there is no _dp4a twin), so its m=1/verify/batched dispatch
+        // is a pure function of the dtype — the decode-parity law holds under every env.
+        if qtype == QT_F8_E4M3 { return true; }
         if std::env::var("BW24_MMVQ").as_deref() == Ok("0") { return false; }
         matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
     }
@@ -2447,6 +2476,7 @@ impl Engine {
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq",
             (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
+            (QT_F8_E4M3, _, _) => "qmatvec_e4m3_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
@@ -2460,10 +2490,11 @@ impl Engine {
         };
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
-        // NVFP4 mmvq kernels take the macro-scale as a fused epilogue arg (applied at the write —
-        // bit-identical to the old separate scale_inplace pass, minus one launch per matvec: 53
-        // scale launches/token on the 9B). Non-NVFP4 mmvq kernels keep the 8-arg signature.
-        if qtype == QT_NVFP4 {
+        // NVFP4 + e4m3 mmvq kernels take the macro-scale as a fused epilogue arg (applied at the
+        // write — bit-identical to the old separate scale_inplace pass, minus one launch per matvec:
+        // 53 scale launches/token on the 9B; for e4m3 the scale is the checkpoint's per-tensor f32
+        // weight_scale). Other mmvq kernels keep the 8-arg signature.
+        if qtype == QT_NVFP4 || qtype == QT_F8_E4M3 {
             b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
             unsafe { b.launch(cfg)?; }
         } else {
@@ -2488,7 +2519,7 @@ impl Engine {
     /// `_mmvq` kernels but iterate the m token columns INSIDE one warp/row, so the weight bytes leave
     /// HBM/L2 once for m tokens (vs grid.y=m re-reading m times). The 5 daily-hot dtypes have them.
     pub fn batched_supports(&self, qtype: i32) -> bool {
-        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4 | QT_F8_E4M3)
     }
 
     /// b8 tier seam: BW24_B8=0 keeps m=5..8 on the per-m grid.y=m path (m=2..4 batched dispatch
@@ -2519,6 +2550,8 @@ impl Engine {
             (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
+            (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
+            (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
             _ => return None,
         })
     }
