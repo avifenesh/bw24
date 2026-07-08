@@ -4893,6 +4893,79 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
     }
 }
 
+// ---- SMALL-M VERIFY ROWS TWINS (BW24_SPEC_M2, lane/spec-m2 2026-07-08) ----
+// grid.z = token: the spec verify's MoE dev token loop (t = 2..K+2) ran one launch-pair per
+// token (plus per-token quantizes: 4t launches/layer). These twins run the serial loop's
+// per-token program on a z axis of tokens — every pointer is offset by tok exactly as the host
+// loop sliced it (sel/w + tok*n_used; aq/ad + token activation rows; act/dst + token output
+// rows). Per (token, row, slot) the body is the _v / w8h2v kernel VERBATIM: same dot order,
+// same warp tree, same slot-ordered __fmaf_rn chain -> outputs BIT-IDENTICAL to the serial
+// loop. n_used rides a kernel param here (the non-rows gate_up encodes it as gridDim.y, which
+// the z-twin keeps; down needs it for the activation-row stride).
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        int n_used) {
+    int tok = blockIdx.z;
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[tok * n_used + j];
+    const signed char* aqt = aq + (size_t)tok * in_f;
+    const float* adt = ad + (size_t)tok * nsb;
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aqt + (size_t)g * 32;
+        float d8 = adt[g];
+        accg += expert_dot_g_v(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+// down rows twin of w8h2v (the AUTO winner for the 35B shape, in_f==512 && n_used<=8 —
+// dispatch-gated by the host). Same down_h2_dot_v body per (token, row-pair, slot).
+extern "C" __global__ void moe_down8_fma_dev_q8_w8h2v_rows(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w, const signed char* __restrict__ aq2,
+        const float* __restrict__ ad2, float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int tok = blockIdx.z;
+    int o0 = (int)blockIdx.x * 2;
+    if (o0 >= out_f) return;
+    int lane = threadIdx.x;
+    int j = threadIdx.y;                 // slot; blockDim.y == n_used (max 8)
+    const int* selt = sel + tok * n_used;
+    const float* wt = w + tok * n_used;
+    const signed char* aq2t = aq2 + (size_t)tok * n_used * in_f;
+    const float* ad2t = ad2 + (size_t)tok * n_used * (in_f >> 5);
+    float* dstt = dst + (size_t)tok * out_f;
+    __shared__ float s[2][8];
+    if (j < n_used) {
+        float2 a = down_h2_dot_v(table, selt, aq2t, ad2t, j, o0, in_f, n_expert, qt, rb, lane);
+        if (lane == 0) { s[0][j] = a.x; s[1][j] = a.y; }
+    }
+    __syncthreads();
+    if (j == 0 && lane == 0) {
+        float chain0 = 0.0f, chain1 = 0.0f;
+        for (int jj = 0; jj < n_used; jj++) {   // slot-ordered serial == base FP order
+            chain0 = __fmaf_rn(wt[jj], s[0][jj], chain0);
+            chain1 = __fmaf_rn(wt[jj], s[1][jj], chain1);
+        }
+        dstt[o0] = chain0;
+        if (o0 + 1 < out_f) dstt[o0 + 1] = chain1;
+    }
+}
+
 // gate_up SLOT-PACKED blocks: block (32, n_used), warp j = slot j for the SAME row o — one block
 // per row, 8x fewer blocks, same warp count; the 8 warps share the row's activation groups via
 // L1. Each warp's body is the base kernel VERBATIM (same loop, same tree) -> bit-identical.
