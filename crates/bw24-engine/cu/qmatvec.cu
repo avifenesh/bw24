@@ -7,6 +7,7 @@
 //         y token-major [m, out] (y[t*out + o]). One block per (token, out-row); threads reduce over `in`.
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cuda_fp8.h>
 #include <cstdint>
 
 __device__ __forceinline__ float half_to_float(uint16_t h) {
@@ -330,7 +331,26 @@ enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              // [out_f x in_f/64 x 32B] followed by scale plane [out_f x in_f/64 x 4B].
              // Host-side tag only for the Stage-A generic kernel (GpuTensor keeps QT_NVFP4 +
              // an rp flag); deq() cannot express it (needs tensor base + out_f, not a row ptr).
-             QT_NVFP4_RP = 9 };
+             QT_NVFP4_RP = 9,
+             // CHECKPOINT-NATIVE FP8-E4M3 (BW24_ST_E4M3, lane e4m3dec 2026-07-08): the raw
+             // safetensors e4m3 weight bytes [out_f, in_f] row-major (row_bytes == in_f), NO
+             // per-32 scales — the per-tensor f32 weight_scale rides the host GpuTensor `scale`
+             // (fused at the mmvq write, like the NVFP4 macro-scale). Weight side is EXACT
+             // (the checkpoint's own precision; the Q8_0 re-encode this replaces was lossy).
+             QT_F8_E4M3 = 10 };
+
+// e4m3 (OCP FP8, signed, bias 7) -> f32 via the native sm_89+ cvt (e4m3x2 -> f16x2 -> f32x2;
+// every e4m3 value is exactly representable in f16, and f16 -> f32 is exact, so this chain is
+// EXACT). Byte 0 of the ushort -> .x, byte 1 -> .y (little-endian, matches the cvt semantics).
+__device__ __forceinline__ float2 e4m3x2_to_f32x2(unsigned short w2) {
+    __half2_raw hr = __nv_cvt_fp8x2_to_halfraw2((__nv_fp8x2_storage_t)w2, __NV_E4M3);
+    return __half22float2(*reinterpret_cast<__half2*>(&hr));
+}
+// Single-byte e4m3 -> f32 (Stage-A deq + scalar tails). Same exact chain as the x2 form.
+__device__ __forceinline__ float e4m3_to_f32_d(unsigned char b) {
+    __nv_fp8_e4m3 v; v.__x = (__nv_fp8_storage_t)b;
+    return (float)v;
+}
 
 __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
     switch (qtype) {
@@ -345,6 +365,9 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
         // Unquantized f32 weight row (safetensors MoE Path A: experts gathered + dequantized to f32
         // host-resident, staged verbatim). `row` is the start of one out-row of `in_f` contiguous f32s.
         case QT_F32:    return ((const float*)row)[j];
+        // Checkpoint-native e4m3 (BW24_ST_E4M3): 1 byte/element, row_bytes == in_f. The per-tensor
+        // weight_scale is applied POST-matmul by the host (scale_inplace), like the NVFP4 macro-scale.
+        case QT_F8_E4M3: return e4m3_to_f32_d(row[j]);
     }
     return 0.0f;
 }
@@ -2771,6 +2794,7 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_b8(
     q8_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+<<<<<<< HEAD
 // ----- FUSED Q8_0 BATCHED matvec PAIR/TRIPLE (verify t=2-4 trunk launch-fusion, BW24_SPEC_FUSED_T,
 // lane/close35b): the m=1 fused2/fused3 block-offset split applied to the batched weight-resident
 // tier. Blocks [0,nb0) compute tensor 0, [nb0,nb0+nb1) tensor 1 (fused3: a third range). Per
@@ -2840,6 +2864,138 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_fused3_b4(
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
         int in_f, int out0, int out1, int out2, int m, long row_bytes) {
     q8_0_mmvq_fused3_b<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+||||||| f17e32a
+=======
+// ==================== F8-E4M3 (checkpoint-native) warp-per-row MMVQ + batched ====================
+// BW24_ST_E4M3 decode path (lane e4m3dec, 2026-07-08): F8-E4M3-origin safetensors projections keep
+// their RAW checkpoint e4m3 bytes resident ([out_f, in_f] row-major, row_bytes == in_f) instead of
+// the lossy Q8_0 re-encode — the weight side of this dot is EXACT w.r.t. the checkpoint. The
+// activation is the SAME q8_1 (aq int8 [m,in] + per-32 f32 ad) every fast decode path rides, so the
+// fused norm->quantize producer chain is untouched. Per 32-block:
+//     bs   = sum_j f32(e4m3(w[j])) * f32(aq[j])      (fmaf chain, fixed j order 0..31)
+//     acc += ad[blk] * bs                            (fmaf, lane-strided blk walk like q8_0_mmvq)
+// f32 accumulate throughout (e4m3 max 448 * 127 * 32 fits comfortably). The per-tensor f32
+// weight_scale is FUSED at the write (`ws` arg, the NVFP4 macro-scale convention).
+//
+// EXACTNESS LAW: per (token,row) the body is a pure function of (row bytes, that token's q8_1
+// row) — grid.y=m verify launches are bit-identical to the m=1 decode launch by construction,
+// and the batched _b2/_b4/_b8 twins below replay the IDENTICAL fmaf chain per column.
+
+// One row x one token: the shared body (bit-contract anchor for the m=1, grid.y=m and batched forms).
+__device__ __forceinline__ float e4m3_row_dot(
+        const unsigned char* __restrict__ wrow, const signed char* __restrict__ arow,
+        const float* __restrict__ adrow, int nblk, int lane) {
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        // 32 e4m3 weight bytes: 2x LDG.128 (wrow is 32B-aligned: base alloc 256B, row stride
+        // in_f % 32 == 0). 32 int8 activation: 2x LDG.128 (same as the q8_0 twin).
+        const uint4* w16 = (const uint4*)(wrow + blk * 32);
+        uint4 w01 = w16[0], w23 = w16[1];
+        unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        const int4* aq16 = (const int4*)(arow + blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int au[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float bs = 0.0f;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) {
+            float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+            float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+            int a = au[k];
+            bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
+            bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
+            bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
+            bs = fmaf(whi.y, (float)(a >> 24), bs);   // arithmetic shift: already sign-extended
+        }
+        acc = fmaf(adrow[blk], bs, acc);
+    }
+    return acc;
+}
+
+extern "C" __global__ void qmatvec_e4m3_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes, float ws) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;   // this warp's output row
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    float acc = e4m3_row_dot(W + (long)o * row_bytes, aq + (size_t)t * in_f,
+                             ad + (size_t)t * nblk, nblk, lane);
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc * ws;
+}
+
+// ----- F8-E4M3 batched (b2/b4/b8): ONE warp owns ONE row, weight bytes leave HBM/L2 ONCE for all
+// m token columns (the m=2..8 verify/MTP tier — without this the F8 class re-reads its ~GBs of
+// weights m times per verify, the known K>=4 spec cliff). Per (token,row) the fmaf chain is the
+// e4m3_row_dot body VERBATIM (weights re-converted per column from the SAME registers — cvt is
+// deterministic, so the f32 inputs and order are identical) -> bit-identical to grid.y=m _mmvq.
+// NOTE: 8-arg signature (no ws) like every other batched kernel — the host launcher applies the
+// macro-scale via scale_inplace. -----
+template<int MCOLS>
+__device__ __forceinline__ void e4m3_mmvq_batched(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        const uint4* w16 = (const uint4*)(wrow + blk * 32);
+        uint4 w01 = w16[0], w23 = w16[1];                 // weight bytes read ONCE for all columns
+        unsigned wu[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int4* aq16 = (const int4*)(arow + blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int au[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            float bs = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                float2 wlo = e4m3x2_to_f32x2((unsigned short)(wu[k] & 0xFFFF));
+                float2 whi = e4m3x2_to_f32x2((unsigned short)(wu[k] >> 16));
+                int a = au[k];
+                bs = fmaf(wlo.x, (float)(signed char)(a & 0xff), bs);
+                bs = fmaf(wlo.y, (float)(signed char)((a >> 8) & 0xff), bs);
+                bs = fmaf(whi.x, (float)(signed char)((a >> 16) & 0xff), bs);
+                bs = fmaf(whi.y, (float)(a >> 24), bs);
+            }
+            acc[c] = fmaf(ad[(size_t)c * nblk + blk], bs, acc[c]);
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_e4m3_mmvq_b2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    e4m3_mmvq_batched<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_e4m3_mmvq_b4(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    e4m3_mmvq_batched<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_e4m3_mmvq_b8(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    e4m3_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+>>>>>>> lane/e4m3dec
 }
 
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a

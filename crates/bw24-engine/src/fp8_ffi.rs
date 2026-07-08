@@ -47,6 +47,18 @@ pub fn pp_fp8_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_PP_FP8").map(|v| v == "1").unwrap_or(false))
 }
 
+/// `BW24_ST_E4M3=1` gate (default OFF; lane e4m3dec 2026-07-08): F8-E4M3-origin safetensors
+/// projections load as RAW e4m3 (QT_F8_E4M3) instead of the Q8_0 re-encode. NEW NUMERIC CONFIG:
+/// decode reads the checkpoint's own e4m3 precision (the Q8_0 re-encode was a lossy extra hop) via
+/// qmatvec_e4m3_mmvq; prefill (m>=16) rides the cuBLASLt FP8 GEMM on the SAME resident bytes —
+/// one weight copy total (frees the ~GBs the BW24_PP_FP8 stash duplicated, no budget cap needed).
+/// Superset relationship: with this on, BW24_PP_FP8 and its budget are irrelevant for F8-origin
+/// tensors (they never surface as Q8_0, so the stash arm never fires).
+pub fn st_e4m3_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_ST_E4M3").map(|v| v == "1").unwrap_or(false))
+}
+
 /// Resident scratch for the FP8 prefill GEMM (mirrors `CutlassScratch`): the quantized activation
 /// (grown to the largest m*k seen), the 4-float scale block ([0]=amax, [1]=quant mul, [2]=folded
 /// B_SCALE — the GEMM desc holds a POINTER to slot 2, so the buffer must be resident/stable), and
@@ -69,8 +81,18 @@ impl crate::Engine {
     pub fn try_fp8_gemm(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
                         -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
-        if !pp_fp8_enabled() { return Ok(None); }
-        let GpuTensor::Quant { fp8: Some(f8), ne, .. } = w else { return Ok(None) };
+        // Two e4m3 operand sources, one GEMM:
+        //  * QT_F8_E4M3 (BW24_ST_E4M3): the RESIDENT decode bytes ARE the raw checkpoint e4m3 —
+        //    prefill rides them directly (one copy, no budget). Unconditional: this dtype has no
+        //    other prefill GEMM class, so the FP8 path is inherent to the config, not a flag.
+        //  * fp8 stash (BW24_PP_FP8=1): the Q8_0-decode config's optional duplicate operand.
+        let (w_bytes, w_scale, ne) = match w {
+            GpuTensor::Quant { qtype, bytes, scale, ne, .. } if *qtype == crate::QT_F8_E4M3 =>
+                (bytes, *scale, ne),
+            GpuTensor::Quant { fp8: Some(f8), ne, .. } if pp_fp8_enabled() =>
+                (&f8.bytes, f8.scale, ne),
+            _ => return Ok(None),
+        };
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
 
         // lazy build / grow the resident scratch to this m*k
@@ -95,7 +117,7 @@ impl crate::Engine {
             let stream = &self.gpu.stream;
             // Hold every SyncOnDrop guard across the FFI call (same pattern as cutlass_ffi);
             // the block scope drops them before `y` is returned.
-            let (w_p, _gw) = f8.bytes.device_ptr(stream);
+            let (w_p, _gw) = w_bytes.device_ptr(stream);
             let (x_p, _gx) = x.device_ptr(stream);
             let (q_p, _gq) = s.xq.device_ptr_mut(stream);
             let (sc_p, _gs) = s.scales.device_ptr_mut(stream);
@@ -109,7 +131,7 @@ impl crate::Engine {
                     sc_p as *mut f32,
                     y_p as *mut f32,
                     m as i32, out_f as i32, in_f as i32,
-                    f8.scale,
+                    w_scale,
                     ws_p as *mut core::ffi::c_void, FP8_WS_BYTES,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
