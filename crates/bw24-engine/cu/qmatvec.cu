@@ -1029,6 +1029,179 @@ extern "C" __global__ void qmatvec_q6_K_mmvq(
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
 
+// ----- Q6_K ISSUE-REDUCTION MMVQ (lane/q6issue 2026-07-08). Same warp-per-row layout / same
+// lane->group mapping / same float expression as qmatvec_q6_K_mmvq — attacks the 181-instr/group
+// SASS loop body (32x LDG.E.U16 + 16x IMAD get_int_b2 merges + a ~5-instr __vsubss4 emulation
+// per k, all serving 8 IDP.4A). Three changes, each bit-exact:
+//  1) WIDE LOADS: per lane the 32 ql bytes and the 32 qh bytes it needs are CONTIGUOUS, and the
+//     byte misalignment dlt=(addr&3) is LOOP-INVARIANT (g+=32 -> sblk+=4 -> +840 bytes = 0 mod 4).
+//     Load 9 aligned u32 per stream (windows stay in-block: ql ends <= b+131, qh <= b+195 of the
+//     210B block; needs the tensor base 4-aligned — cudaMalloc gives 256) and assemble each k-word
+//     with one PRMT (sel = 0x3210 + dlt*0x1111): byte-for-byte the get_int_b2 value.
+//  2) SELECT->SHIFT: qln = (ql4 >> ql_sh) & 0x0F0F0F0F with per-lane ql_sh in {0,4} replaces the
+//     run>=2 ternary (logical vs arithmetic shift is identical after the mask — sign fill lands
+//     only in bits the mask clears).
+//  3) BIAS FOLD (_iss, FOLD=1): dp4a takes the UNBIASED v = qln|(qhn<<4) (bytes 0..63) and the
+//     -32 is folded out after the chain: sum((v-32)*a) == sum(v*a) - 32*sum(a). All int32, max
+//     |term| < 2^18 -> EXACT -> identical sumi0/sumi1 ints -> identical float bits. sum(a) is one
+//     dp4a(a, 0x01010101) per k. Kills the __vsubss4 emulation (~40 instr/group).
+// _issv (FOLD=0) keeps __vsubss4 on the identical wpack values (changes 1+2 only): the strict
+// dp4a-input-preserving fallback + the A/B attribution probe.
+// MEASURED (2026-07-08, locked-clock sweep, DRAM-cold 8-copy rotation): the kernel is memory-
+// LATENCY bound in the real-decode clock regime — GB/s is LINEAR in core clock (0.426 GB/s/MHz:
+// 511 @1.2GHz ... 767 @1.8GHz) and IDENTICAL for base/iss/issv at every locked clock. Issue
+// reduction only shows at unlocked sustained clocks (+5% @ ~1.8GHz). Hence the latency levers:
+//  PF: prefetch.global.L2 the NEXT group window (+840B) — same warps, zero registers, turns the
+//      next window's DRAM miss into an L2 hit.
+//  G2: TWO GROUPS PER LANE ITERATION (g, g+32 windows both loaded up front) — doubles the bytes
+//      in flight per warp WITHOUT halving the warp count (mr2 halved warps -> W*B flat -> no
+//      gain; G2 keeps one warp per row). Float accumulation order unchanged (term g then g+32,
+//      the exact baseline per-lane order).
+__device__ __forceinline__ void q6k_iss_window(
+        const int* __restrict__ qlw, const int* __restrict__ qhw, unsigned int sel,
+        int lw[9], int hw[9]) {
+    #pragma unroll
+    for (int i = 0; i < 9; i++) { lw[i] = __ldg(qlw + i); hw[i] = __ldg(qhw + i); }
+}
+template<int FOLD>
+__device__ __forceinline__ float q6k_iss_group(
+        const int lw[9], const int hw[9], unsigned int sel,
+        unsigned int ql_sh, unsigned int qh_sh, const int aq4[8],
+        float d, float d8, int s0, int s1) {
+    int sumi0 = 0, sumi1 = 0, asum0 = 0, asum1 = 0;
+    #pragma unroll
+    for (int k = 0; k < 8; k++) {
+        int ql4 = __byte_perm(lw[k], lw[k + 1], sel);  // == get_int_b2(qlh + k*4 + ql_off)
+        int qh4 = __byte_perm(hw[k], hw[k + 1], sel);  // == get_int_b2(qhh + k*4)
+        int qln = (int)(((unsigned int)ql4 >> ql_sh) & 0x0F0F0F0Fu);
+        int qhn = (int)(((unsigned int)qh4 >> qh_sh) & 0x03030303u);
+        int vpack = qln | (qhn << 4);                  // biased 6-bit bytes, 0..63
+        int a = aq4[k];
+        if (FOLD) {
+            if (k < 4) { sumi0 = dp4a(vpack, a, sumi0); asum0 = dp4a(a, 0x01010101, asum0); }
+            else       { sumi1 = dp4a(vpack, a, sumi1); asum1 = dp4a(a, 0x01010101, asum1); }
+        } else {
+            int wpack = __vsubss4(vpack, 0x20202020);  // identical dp4a inputs to baseline
+            if (k < 4) sumi0 = dp4a(wpack, a, sumi0);
+            else       sumi1 = dp4a(wpack, a, sumi1);
+        }
+    }
+    if (FOLD) { sumi0 -= asum0 * 32; sumi1 -= asum1 * 32; }
+    return d * d8 * ( (float)(sumi0 * s0) + (float)(sumi1 * s1) );
+}
+__device__ __forceinline__ void q6k_iss_pf(const unsigned char* p) {
+    asm volatile("prefetch.global.L2 [%0];" :: "l"(p));
+}
+template<int FOLD, int PF, int G2>
+__device__ __forceinline__ void q6k_mmvq_iss_body(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    // Per-lane loop invariants: grp = g&7 == lane&7 for every g = lane + 32*it.
+    int grp = lane & 7;
+    int n   = grp >> 2;
+    int run = grp & 3;
+    int is0 = run * 2;
+    int ql_off = (run & 1) ? 32 : 0;
+    unsigned int ql_sh = (run >= 2) ? 4u : 0u;
+    unsigned int qh_sh = (unsigned int)(run * 2);
+    const unsigned char* b0  = wrow + (long)(lane >> 3) * 210;
+    const unsigned char* qlp = b0 + n * 64 + ql_off;   // 32 contiguous ql bytes for this lane
+    const unsigned char* qhp = b0 + 128 + n * 32;      // 32 contiguous qh bytes
+    unsigned int dlt = (unsigned int)((size_t)qlp & 3);   // == qhp&3 (offsets differ by mult of 4)
+    unsigned int sel = 0x3210u + dlt * 0x1111u;           // PRMT window selector, loop-invariant
+    // align-down IN POINTER ARITHMETIC (a size_t round-trip loses the global address space ->
+    // generic LD.E instead of LDG.E.CONSTANT — measured in SASS).
+    const int* qlw = (const int*)(qlp - dlt);
+    const int* qhw = (const int*)(qhp - dlt);
+    const unsigned char* scp = b0 + 192 + n * 8 + is0;    // the lane's 2 adjacent scales (2-aligned)
+    const unsigned char* dp  = b0 + 208;
+    const int STEP = G2 ? 64 : 32;                        // groups per lane iteration
+    const int BSTEP = G2 ? 1680 : 840;                    // bytes per iteration (4 blocks/group)
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += STEP) {
+        if (PF) {  // pull the NEXT iteration's windows into L2 while this one computes
+            const unsigned char* nql = (const unsigned char*)qlw + BSTEP;
+            const unsigned char* nqh = (const unsigned char*)qhw + BSTEP;
+            q6k_iss_pf(nql); q6k_iss_pf(nql + 32);
+            q6k_iss_pf(nqh); q6k_iss_pf(nqh + 32);
+            q6k_iss_pf(scp + BSTEP);
+            if (G2) {   // both halves of the next double-window
+                q6k_iss_pf(nql + 840); q6k_iss_pf(nql + 840 + 32);
+                q6k_iss_pf(nqh + 840); q6k_iss_pf(nqh + 840 + 32);
+                q6k_iss_pf(scp + BSTEP + 840);
+            }
+        }
+        int lw[9], hw[9], lw2[9], hw2[9];
+        q6k_iss_window(qlw, qhw, sel, lw, hw);
+        int g2ok = G2 && (g + 32 < nsb);   // warp-uniform for nsb % 32 == 0 (all real shapes)
+        if (g2ok) q6k_iss_window(qlw + 210, qhw + 210, sel, lw2, hw2);  // +840B = 4 blocks fwd
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        float d = half_to_float(*(const unsigned short*)dp);
+        int sc2 = (int)*(const unsigned short*)scp;        // both scales in one LDG.U16
+        int s0 = (int)(signed char)(sc2 & 0xff);
+        int s1 = (int)(signed char)(sc2 >> 8);
+        acc += q6k_iss_group<FOLD>(lw, hw, sel, ql_sh, qh_sh, aq4, d, d8, s0, s1);
+        if (g2ok) {
+            const int4* aq16b = (const int4*)(arow + (size_t)(g + 32) * 32);
+            int4 b01 = aq16b[0], b23 = aq16b[1];
+            int bq4[8] = { b01.x, b01.y, b01.z, b01.w, b23.x, b23.y, b23.z, b23.w };
+            float d8b = adrow[g + 32];
+            float db = half_to_float(*(const unsigned short*)(dp + 840));
+            int sc2b = (int)*(const unsigned short*)(scp + 840);
+            int s0b = (int)(signed char)(sc2b & 0xff);
+            int s1b = (int)(signed char)(sc2b >> 8);
+            acc += q6k_iss_group<FOLD>(lw2, hw2, sel, ql_sh, qh_sh, bq4, db, d8b, s0b, s1b);
+        }
+        qlw = (const int*)((const unsigned char*)qlw + BSTEP);   // alignment class preserved
+        qhw = (const int*)((const unsigned char*)qhw + BSTEP);
+        scp += BSTEP; dp += BSTEP;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_iss(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_iss_body<1, 0, 0>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_issv(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_iss_body<0, 0, 0>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_issp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_iss_body<1, 1, 0>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_iss2g(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_iss_body<1, 0, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q6_K_mmvq_iss2gp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_iss_body<1, 1, 1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ----- NVFP4 warp-per-row MMVQ. Body lifted from qmatvec_nvfp4_dp4a (loop @ ~line 674). -----
 extern "C" __global__ void qmatvec_nvfp4_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,

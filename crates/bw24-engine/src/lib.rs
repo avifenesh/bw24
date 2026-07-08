@@ -2309,7 +2309,22 @@ impl Engine {
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q5_K, _, _) => "qmatvec_q5_K_mmvq",
             (QT_Q6_K, 2, _) => "qmatvec_q6_K_mmvq_mr2",
-            (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
+            // lane/q6issue (2026-07-08): issue/latency-reduction variants, default OFF. All are
+            // bit-identical per (token,row) (int-exact bias fold; float order unchanged).
+            // BW24_Q6_ISSUE=1 -> _iss   (wide loads + PRMT assembly + bias fold)
+            //               =2 -> _issv (wide loads only, keeps __vsubss4 — A/B attribution)
+            //               =3 -> _issp (iss + prefetch.global.L2 next window — latency lever)
+            //               =4 -> _iss2g (iss + 2 groups/lane iteration — 2x bytes in flight/warp)
+            //               =5 -> _iss2gp (2-group + prefetch)
+            (QT_Q6_K, _, _) => match std::env::var("BW24_Q6_ISSUE").as_deref() {
+                Ok("1") => "qmatvec_q6_K_mmvq_iss",
+                Ok("2") => "qmatvec_q6_K_mmvq_issv",
+                Ok("3") => "qmatvec_q6_K_mmvq_issp",
+                Ok("4") => "qmatvec_q6_K_mmvq_iss2g",
+                Ok("5") => "qmatvec_q6_K_mmvq_iss2gp",
+                _ => "qmatvec_q6_K_mmvq",
+            },
+            (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
