@@ -76,7 +76,7 @@ Floating-point summation order is part of the contract: two mathematically equal
 
 ## Performance
 
-Measured on the target rig (RTX 5090 Laptop, N≥3 medians, power state verified before every session) against llama.cpp built on the same machine, same exact prompts.
+Measured 2026-07-08 on the target rig (RTX 5090 Laptop, N≥3 medians, power state verified before every session) against llama.cpp built on the same machine, same exact prompts, both engines re-baselined the same day. Boards move with the tuning campaign — `research/tune-data/rig5090.jsonl` is the running record; the README is refreshed with every board-moving merge.
 
 **Plain decode first** (no speculation, tg128 at 512-token context — the honest floor comparison):
 
@@ -102,7 +102,7 @@ Three speculative mechanisms shipped in the 2026-07-08 push, vendored-and-verifi
 
 On the 27B the two engines bind differently: llama.cpp is cost-bound at short prompts (draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance (1.25x raw, 1.40x chat); at medium/long prompts both sit near the same content-acceptance ceiling.
 
-The benchmark artifacts — trimmed draft-head GGUFs (generic/code75/balanced FR-Spec vocab trims for `BW24_FRSPEC_TRIM`), the exact prompts, and the full reproduction configs (env law, per-class K/pmin, llama.cpp build + serve flags) — are published at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
+**Reproducing these numbers:** every artifact the claims depend on is public — trimmed draft-head GGUFs (generic/code75/balanced for the 27B/35B, the 9B-native ranking, all for `BW24_FRSPEC_TRIM`), the exact prompts, and the full configs (env law, per-class K/pmin, llama.cpp build + serve flags) at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). The llama.cpp side runs its measured-best serve config per model (build flags and per-model serve lines in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md)); the harness is `research/e2e/run-e2e.sh`.
 
 Safetensors checkpoints (no llama.cpp comparison possible):
 
@@ -120,10 +120,13 @@ Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-id
 
 ## Docs
 
-- `ARCHITECTURE.md` — tech stack + sm_120a feasibility ledger (what the silicon can and cannot do, measured).
-- `research/sm120-empirical-capabilities.md` — microbenched peaks for this GPU.
-- `research/benchmarks.md` — the A/B measurement protocol.
-- `research/tune-data/` — every tuning experiment as JSONL (the labeled corpus).
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — tech stack + sm_120a feasibility ledger (what the silicon can and cannot do, measured).
+- [`HANDOVER.md`](HANDOVER.md) — the living state-of-work doc (current standings, laws, open lanes); internal but readable.
+- [`docs/decisions/`](docs/decisions/) — design decision records: internal weight format, quant/GEMM policy, safetensors import, hybrid-architecture plan.
+- [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — how each competitor engine is built and tuned to its peak on this box (the "beat them at their best" contract).
+- [`research/sm120-empirical-capabilities.md`](research/sm120-empirical-capabilities.md) — microbenched silicon peaks for this GPU.
+- [`research/benchmarks.md`](research/benchmarks.md) — the A/B measurement protocol.
+- [`research/tune-data/`](research/tune-data/) — every tuning experiment as JSONL: config → measured result, wins and losses both. ~215 records and counting; treat it as a labeled corpus of what sm_120a actually rewards.
 
 ## Contributing
 

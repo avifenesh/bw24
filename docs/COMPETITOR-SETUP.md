@@ -1,8 +1,13 @@
 # COMPETITOR-SETUP.md — peak single-stream setups on RTX 5090 Laptop (sm_120, 24 GB)
 
 Beat-target reference for the bw24 benchmark. Every competitor is tuned to its **best** runnable
-single-stream config on THIS box (consumer Blackwell GB203, cap 12.0, CUDA 13.1, 847 GB/s, 82 SMs,
-thermal-bound). We beat them at their PEAK, not their defaults.
+single-stream config on THIS box (consumer Blackwell GB203, cap 12.0, CUDA 13.1, 858 GB/s measured
+read wall, 82 SMs, thermal-bound). We beat them at their PEAK, not their defaults.
+
+_Measured tok/s values quoted in this file are point-in-time records from the session that tuned
+that config — both engines move. The current authoritative board lives in the README performance
+section and `research/tune-data/rig5090.jsonl`; this file's job is the CONFIGS (build flags, serve
+lines, model files), which change rarely._
 
 Daily models in scope here: **Qwen3.5-9B** and **Qwen3.6-27B** (hybrid GDN: gated-deltanet
 linear-attn + periodic full-attn + MTP). The 35B-A3B MoE setups live in the per-engine sections of

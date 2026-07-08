@@ -1,5 +1,7 @@
 # bw24 — Session Handover
 
+_Internal living document: the cold-start state for whoever (or whatever) works on bw24 next. Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly._
+
 _Written 2026-07-03, standings updated 2026-07-07. Read this cold, then continue. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall** — microbenched, not the 847 spec). Second box = bw24-g7e (RTX PRO 6000 96GB, sm_120-compatible). Repo PUBLIC: https://github.com/avifenesh/bw24 — both rigs sync via origin. L40S/sm_89 lane CLOSED (box terminated)._
 
 ## STANDINGS 2026-07-08 (full-power verified, plain-first per mandate; llama = floor, margin bar = 1.15x)
