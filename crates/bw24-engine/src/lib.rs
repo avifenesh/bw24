@@ -2311,8 +2311,10 @@ impl Engine {
         // `2` = force il at the current mr for EVERY shape (A/B probe seam). Default OFF.
         let q5_mode = std::env::var("BW24_Q5K_ISSUE").ok();
         let q5_force = q5_mode.as_deref() == Some("2");
+        // DEFAULT ON since 2026-07-08 (BW24_Q5K_ISSUE=0 reverts): +1.8% 9B plain e2e N=3
+        // (128.2 -> 130.4), 27B flat (its big head is already at the mem wall), all gates green.
         let q5_il = qtype == QT_Q5_K && m == 1
-            && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(false));
+            && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
         if q5_il && !q5_force && out_f > 65536 { mr = 1; }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
