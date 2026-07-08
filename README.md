@@ -33,18 +33,17 @@ cargo build --release
 # verify all kernels against the CPU reference
 ./target/release/kernel-check
 
-# generate text
-BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_CHAT=1 \
-  ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches in one paragraph."
+# generate text (the fast path is the default — no flags needed)
+BW24_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches in one paragraph."
 
 # speculative decoding with the embedded MTP draft head (Qwen3.6)
-BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_SPEC_K=3 \
-  ./target/release/run-spec /path/to/qwen36-27b.gguf
+BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf
 
 # OpenAI-compatible server
-BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 \
-  ./target/release/bw24-server
+./target/release/bw24-server
 ```
+
+Every tuned kernel path is the default; environment flags exist only for runtime parameters (prompt, draft depth, trims), machine-specific configuration, and rollback seams (`BW24_FAST=0` drops to the f32 oracle path). The catalog lives in `docs/FLAGS.md`.
 
 `run-gen` prints a prefill/decode correctness gate (prefill argmax must match decode argmax) before timing anything — if that line says MISMATCH, the numbers after it don't count.
 
