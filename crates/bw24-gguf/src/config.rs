@@ -13,6 +13,7 @@ pub enum Arch {
     Olmoe,        // dense full-attention + MoE FFN (no shared expert, no SSM, no MTP)
     MinimaxM3,    // dense full-attention (MSA later) + MoE FFN: sigmoid router + shared expert,
                   // gemma-norm, swigluoai, GQA 64/4 hd128 partial-RoPE, QK-norm
+    Hy3,          // dense full-attention + MoE FFN: sigmoid router + bias + shared MLP, QK-norm
     Llama,
     Other(String),
 }
@@ -26,6 +27,7 @@ impl Arch {
             "qwen35moe" => Arch::Qwen35Moe,
             "olmoe" => Arch::Olmoe,
             "minimax-m3" => Arch::MinimaxM3,
+            "hy3" => Arch::Hy3,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -42,6 +44,7 @@ impl Arch {
             "olmoe" => "olmoe",
             // MiniMax-M3 (incl the VL wrapper model_type; text_config flattening handles the rest)
             "minimax_m3" | "minimax_m3_vl" | "minimax_m3_text" => "minimax-m3",
+            "hy_v3" | "hy3" => "hy3",
             "llama" => "llama",
             other => other,
         };
@@ -54,12 +57,14 @@ impl Arch {
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
-        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3)
+        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3)
     }
     /// MiniMax-M3: sigmoid router (+e_score_correction_bias), gemma-norm, swigluoai clamp,
     /// Mixtral-style expert tensor names. Full attention v0 (MSA is bit-exact-degenerate <=2048
     /// ctx — the sparse indexer selects everything; the MSA kernel is a later arc).
     pub fn is_minimax(&self) -> bool { matches!(self, Arch::MinimaxM3) }
+    /// Tencent HunYuan/Hunyuan Hy3 (`hy_v3` in HF config.json).
+    pub fn is_hy3(&self) -> bool { matches!(self, Arch::Hy3) }
 }
 
 /// What kind of token-mixing a given layer performs.
@@ -101,6 +106,21 @@ pub struct M3Config {
     pub moe_layer_freq: Vec<u32>,       // per-layer 0=dense 1=moe (len == n_layer)
 }
 
+/// Hy3-specific loader metadata. Forward/kernel support is a later GPU-gated lane; these fields
+/// let the CPU-side loader distinguish REAP's dense layer 0 from routed layers 1..79 and preserve
+/// the routing contract documented in the port dossier.
+#[derive(Debug, Clone)]
+pub struct Hy3Config {
+    pub sigmoid_routing: bool,
+    pub use_routing_bias: bool,
+    pub route_norm: bool,
+    pub router_scaling_factor: f32,
+    pub n_shared_experts: u32,
+    pub first_k_dense_replace: u32,
+    pub qk_norm: bool,
+    pub hidden_act: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub arch: Arch,
@@ -125,6 +145,8 @@ pub struct ModelConfig {
     pub moe: Option<MoeConfig>,
     // MiniMax-M3 extras (None for every other arch)
     pub m3: Option<M3Config>,
+    // Hy3 extras (None for every other arch)
+    pub hy3: Option<Hy3Config>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -194,6 +216,7 @@ impl ModelConfig {
             ssm,
             moe,
             m3: None,   // GGUF M3 metadata keys are a later arc (ST import first)
+            hy3: None,  // GGUF Hy3 metadata keys are a later arc (repack source first)
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -211,14 +234,21 @@ impl ModelConfig {
         let n_head_kv = c.num_key_value_heads.unwrap_or(n_head);
 
         let moe = if c.num_experts.is_some() || c.num_local_experts.is_some() || arch.is_moe() {
+            let expert_ff_length = c.moe_intermediate_size
+                .or(c.expert_hidden_dim)
+                .unwrap_or(c.intermediate_size);
+            let n_shared = c.n_shared_experts.unwrap_or(0);
+            let shared_ff_length = c.shared_expert_intermediate_size
+                .or(c.shared_intermediate_size)
+                .or_else(|| if arch.is_hy3() && n_shared > 0 { Some(expert_ff_length * n_shared) } else { None })
+                .unwrap_or(0);
             Some(MoeConfig {
                 // M3 names the count `num_local_experts`, the shared FF `shared_intermediate_size`.
                 expert_count: c.num_experts.or(c.num_local_experts).unwrap_or(0),
                 expert_used_count: c.num_experts_per_tok.unwrap_or(0),
                 // OLMoE has no separate `moe_intermediate_size`; its experts use `intermediate_size`.
-                expert_ff_length: c.moe_intermediate_size.unwrap_or(c.intermediate_size),
-                expert_shared_ff_length: c.shared_expert_intermediate_size
-                    .or(c.shared_intermediate_size).unwrap_or(0),
+                expert_ff_length,
+                expert_shared_ff_length: shared_ff_length,
             })
         } else {
             None
@@ -236,6 +266,19 @@ impl ModelConfig {
                 rotary_dim: c.rotary_dim.unwrap_or(0),
                 dense_intermediate_size: c.dense_intermediate_size.unwrap_or(c.intermediate_size),
                 moe_layer_freq: c.moe_layer_freq.clone().unwrap_or_default(),
+            })
+        } else { None };
+
+        let hy3 = if arch.is_hy3() {
+            Some(Hy3Config {
+                sigmoid_routing: c.moe_router_use_sigmoid.unwrap_or(false),
+                use_routing_bias: c.moe_router_enable_expert_bias.unwrap_or(false),
+                route_norm: c.route_norm.unwrap_or(false),
+                router_scaling_factor: c.router_scaling_factor.unwrap_or(1.0),
+                n_shared_experts: c.n_shared_experts.unwrap_or(0),
+                first_k_dense_replace: c.first_k_dense_replace.unwrap_or(1),
+                qk_norm: c.qk_norm.unwrap_or(false),
+                hidden_act: c.hidden_act.clone().unwrap_or_else(|| "silu".to_string()),
             })
         } else { None };
 
@@ -281,6 +324,7 @@ impl ModelConfig {
             ssm,
             moe,
             m3,
+            hy3,
             // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
             // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
             nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
@@ -339,6 +383,7 @@ pub struct HfConfig {
     pub num_experts: Option<u32>,
     pub num_experts_per_tok: Option<u32>,
     pub moe_intermediate_size: Option<u32>,
+    pub expert_hidden_dim: Option<u32>,
     pub shared_expert_intermediate_size: Option<u32>,
     // hybrid linear-attn (qwen3_5 text_config)
     pub linear_conv_kernel_dim: Option<u32>,
@@ -359,6 +404,14 @@ pub struct HfConfig {
     pub swiglu_alpha: Option<f32>,             // swigluoai clamp params
     pub swiglu_limit: Option<f32>,
     pub moe_layer_freq: Option<Vec<u32>>,      // per-layer 0=dense 1=moe
+    // ---- Hy3 (`hy_v3`) ----
+    pub first_k_dense_replace: Option<u32>,
+    pub moe_router_use_sigmoid: Option<bool>,
+    pub moe_router_enable_expert_bias: Option<bool>,
+    pub route_norm: Option<bool>,
+    pub router_scaling_factor: Option<f32>,
+    pub qk_norm: Option<bool>,
+    pub hidden_act: Option<String>,
 }
 
 impl Default for HfConfig {
@@ -382,6 +435,7 @@ impl Default for HfConfig {
             num_experts: None,
             num_experts_per_tok: None,
             moe_intermediate_size: None,
+            expert_hidden_dim: None,
             shared_expert_intermediate_size: None,
             linear_conv_kernel_dim: None,
             linear_key_head_dim: None,
@@ -400,6 +454,13 @@ impl Default for HfConfig {
             swiglu_alpha: None,
             swiglu_limit: None,
             moe_layer_freq: None,
+            first_k_dense_replace: None,
+            moe_router_use_sigmoid: None,
+            moe_router_enable_expert_bias: None,
+            route_norm: None,
+            router_scaling_factor: None,
+            qk_norm: None,
+            hidden_act: None,
         }
     }
 }
@@ -439,12 +500,16 @@ impl HfConfig {
         if let Some(v) = o.u32("max_position_embeddings") { self.max_position_embeddings = v; }
         if let Some(v) = o.f32("rms_norm_eps") { self.rms_norm_eps = v; }
         if let Some(v) = o.f32("rope_theta") { self.rope_theta = v; }
+        if let Some(rp) = o.object("rope_parameters") {
+            if let Some(v) = rp.f32("rope_theta") { self.rope_theta = v; }
+        }
         if let Some(v) = o.u32("full_attention_interval") { self.full_attention_interval = Some(v); }
         if let Some(v) = o.u32("num_nextn_predict_layers") { self.num_nextn_predict_layers = Some(v); }
         if let Some(v) = o.u32("mtp_num_hidden_layers") { self.mtp_num_hidden_layers = Some(v); }
         if let Some(v) = o.u32("num_experts").or_else(|| o.u32("num_local_experts")) { self.num_experts = Some(v); }
         if let Some(v) = o.u32("num_experts_per_tok") { self.num_experts_per_tok = Some(v); }
         if let Some(v) = o.u32("moe_intermediate_size") { self.moe_intermediate_size = Some(v); }
+        if let Some(v) = o.u32("expert_hidden_dim") { self.expert_hidden_dim = Some(v); }
         if let Some(v) = o.u32("shared_expert_intermediate_size") { self.shared_expert_intermediate_size = Some(v); }
         if let Some(v) = o.u32("linear_conv_kernel_dim") { self.linear_conv_kernel_dim = Some(v); }
         if let Some(v) = o.u32("linear_key_head_dim") { self.linear_key_head_dim = Some(v); }
@@ -455,7 +520,7 @@ impl HfConfig {
         if let Some(v) = o.u32("num_local_experts") { self.num_local_experts = Some(v); }
         if let Some(v) = o.u32("dense_intermediate_size") { self.dense_intermediate_size = Some(v); }
         if let Some(v) = o.u32("shared_intermediate_size") { self.shared_intermediate_size = Some(v); }
-        if let Some(v) = o.u32("n_shared_experts") { self.n_shared_experts = Some(v); }
+        if let Some(v) = o.u32("n_shared_experts").or_else(|| o.u32("num_shared_experts")) { self.n_shared_experts = Some(v); }
         if let Some(v) = o.u32("rotary_dim") { self.rotary_dim = Some(v); }
         if let Some(v) = o.boolean("use_gemma_norm") { self.use_gemma_norm = Some(v); }
         if let Some(v) = o.string("scoring_func") { self.scoring_func = Some(v); }
@@ -464,6 +529,14 @@ impl HfConfig {
         if let Some(v) = o.f32("swiglu_alpha") { self.swiglu_alpha = Some(v); }
         if let Some(v) = o.f32("swiglu_limit") { self.swiglu_limit = Some(v); }
         if let Some(v) = o.u32_array("moe_layer_freq") { self.moe_layer_freq = Some(v); }
+        // ---- Hy3 keys ----
+        if let Some(v) = o.u32("first_k_dense_replace") { self.first_k_dense_replace = Some(v); }
+        if let Some(v) = o.boolean("moe_router_use_sigmoid") { self.moe_router_use_sigmoid = Some(v); }
+        if let Some(v) = o.boolean("moe_router_enable_expert_bias") { self.moe_router_enable_expert_bias = Some(v); }
+        if let Some(v) = o.boolean("route_norm") { self.route_norm = Some(v); }
+        if let Some(v) = o.f32("router_scaling_factor") { self.router_scaling_factor = Some(v); }
+        if let Some(v) = o.boolean("qk_norm") { self.qk_norm = Some(v); }
+        if let Some(v) = o.string("hidden_act") { self.hidden_act = Some(v); }
     }
 }
 
@@ -474,13 +547,13 @@ impl HfConfig {
 // the value-bearing tokens for the keys we care about. Nested objects/arrays are captured as
 // raw substrings so they can be re-parsed on demand.
 
-struct JsonObj {
+pub(crate) struct JsonObj {
     // key -> raw value substring (trimmed). Objects/arrays keep their braces/brackets.
     fields: std::collections::BTreeMap<String, String>,
 }
 
 impl JsonObj {
-    fn parse(json: &str) -> Self {
+    pub(crate) fn parse(json: &str) -> Self {
         let b = json.as_bytes();
         let mut i = 0usize;
         let mut fields = std::collections::BTreeMap::new();
@@ -509,11 +582,15 @@ impl JsonObj {
         JsonObj { fields }
     }
 
-    fn raw(&self, key: &str) -> Option<&str> {
+    pub(crate) fn fields(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.fields.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    pub(crate) fn raw(&self, key: &str) -> Option<&str> {
         self.fields.get(key).map(|s| s.as_str())
     }
 
-    fn string(&self, key: &str) -> Option<String> {
+    pub(crate) fn string(&self, key: &str) -> Option<String> {
         let v = self.raw(key)?.trim();
         if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
             Some(v[1..v.len() - 1].to_string())
@@ -522,7 +599,7 @@ impl JsonObj {
         }
     }
 
-    fn u32(&self, key: &str) -> Option<u32> {
+    pub(crate) fn u32(&self, key: &str) -> Option<u32> {
         let v = self.raw(key)?.trim();
         if v == "null" { return None; }
         // accept integers (and floats that are whole, e.g. "8.0")
@@ -530,31 +607,45 @@ impl JsonObj {
             .or_else(|| v.parse::<f64>().ok().map(|x| x as u32))
     }
 
-    fn f32(&self, key: &str) -> Option<f32> {
+    pub(crate) fn u64(&self, key: &str) -> Option<u64> {
+        let v = self.raw(key)?.trim();
+        if v == "null" { return None; }
+        v.parse::<u64>().ok()
+            .or_else(|| v.parse::<f64>().ok().map(|x| x as u64))
+    }
+
+    pub(crate) fn f32(&self, key: &str) -> Option<f32> {
         let v = self.raw(key)?.trim();
         if v == "null" { return None; }
         v.parse::<f32>().ok()
     }
 
-    fn boolean(&self, key: &str) -> Option<bool> {
+    pub(crate) fn boolean(&self, key: &str) -> Option<bool> {
         match self.raw(key)?.trim() { "true" => Some(true), "false" => Some(false), _ => None }
     }
 
     /// Integer array field (e.g. moe_layer_freq: [0,0,0,1,...]).
-    fn u32_array(&self, key: &str) -> Option<Vec<u32>> {
+    pub(crate) fn u32_array(&self, key: &str) -> Option<Vec<u32>> {
         let v = self.raw(key)?.trim();
         if !v.starts_with('[') || !v.ends_with(']') { return None; }
         Some(v[1..v.len()-1].split(',')
             .filter_map(|x| x.trim().parse::<u32>().ok()).collect())
     }
 
-    fn object(&self, key: &str) -> Option<JsonObj> {
+    pub(crate) fn u64_array(&self, key: &str) -> Option<Vec<u64>> {
+        let v = self.raw(key)?.trim();
+        if !v.starts_with('[') || !v.ends_with(']') { return None; }
+        Some(v[1..v.len()-1].split(',')
+            .filter_map(|x| x.trim().parse::<u64>().ok()).collect())
+    }
+
+    pub(crate) fn object(&self, key: &str) -> Option<JsonObj> {
         let v = self.raw(key)?.trim();
         if v.starts_with('{') { Some(JsonObj::parse(v)) } else { None }
     }
 
     /// First string element of a string array field (e.g. architectures[0]).
-    fn first_string_in_array(&self, key: &str) -> Option<String> {
+    pub(crate) fn first_string_in_array(&self, key: &str) -> Option<String> {
         let v = self.raw(key)?.trim();
         let inner = v.strip_prefix('[')?.trim_start();
         let q = inner.find('"')? + 1;
@@ -753,6 +844,66 @@ mod hf_tests {
         assert_eq!(moe.expert_count, 128);
         assert_eq!(moe.expert_used_count, 8);
         assert_eq!(moe.expert_ff_length, 768);
+    }
+
+    #[test]
+    fn parse_hy3_reap_config() {
+        let json = r#"{
+          "model_type": "hy_v3",
+          "num_hidden_layers": 80,
+          "hidden_size": 4096,
+          "num_attention_heads": 64,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "intermediate_size": 13312,
+          "vocab_size": 120832,
+          "max_position_embeddings": 262144,
+          "rms_norm_eps": 1e-05,
+          "rope_parameters": {"rope_theta": 11158840.0, "rope_type": "default"},
+          "num_nextn_predict_layers": 1,
+          "num_experts": 96,
+          "num_experts_per_tok": 8,
+          "moe_intermediate_size": 1536,
+          "expert_hidden_dim": 1536,
+          "num_shared_experts": 1,
+          "moe_router_use_sigmoid": true,
+          "moe_router_enable_expert_bias": true,
+          "route_norm": true,
+          "router_scaling_factor": 2.826,
+          "qk_norm": true,
+          "hidden_act": "silu"
+        }"#;
+        let c = HfConfig::parse(json);
+        assert_eq!(Arch::from_hf_model_type(&c.model_type), Arch::Hy3);
+        assert!((c.rope_theta - 11_158_840.0).abs() < 1.0);
+        let mc = ModelConfig::from_hf(&c);
+        assert_eq!(mc.arch, Arch::Hy3);
+        assert!(mc.arch.is_moe());
+        assert!(!mc.arch.is_hybrid());
+        assert_eq!(mc.n_layer, 81, "HF config convention includes the appended MTP block");
+        assert_eq!(mc.nextn_predict_layers, 1);
+        assert_eq!(mc.n_embd, 4096);
+        assert_eq!(mc.n_head, 64);
+        assert_eq!(mc.n_head_kv, 8);
+        assert_eq!(mc.head_dim_k, 128);
+        assert_eq!(mc.n_ff, 13312);
+        assert_eq!(mc.n_vocab, 120832);
+        assert_eq!(mc.context_length, 262144);
+        assert_eq!(mc.rope_dim_count, 128);
+        let moe = mc.moe.as_ref().unwrap();
+        assert_eq!(moe.expert_count, 96);
+        assert_eq!(moe.expert_used_count, 8);
+        assert_eq!(moe.expert_ff_length, 1536);
+        assert_eq!(moe.expert_shared_ff_length, 1536);
+        let hy3 = mc.hy3.as_ref().unwrap();
+        assert!(hy3.sigmoid_routing);
+        assert!(hy3.use_routing_bias);
+        assert!(hy3.route_norm);
+        assert!((hy3.router_scaling_factor - 2.826).abs() < 1e-6);
+        assert_eq!(hy3.n_shared_experts, 1);
+        assert_eq!(hy3.first_k_dense_replace, 1);
+        assert!(hy3.qk_norm);
+        assert_eq!(hy3.hidden_act, "silu");
     }
 }
 

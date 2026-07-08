@@ -482,6 +482,17 @@ impl Model {
         let mut layers = Vec::with_capacity(cfg.n_layer as usize);
         for il in 0..cfg.n_layer {
             let p = |s: &str| format!("blk.{il}.{s}");
+            let hy3_dense_ffn = cfg.hy3.as_ref()
+                .is_some_and(|h| il < h.first_k_dense_replace);
+            let ffn = if hy3_dense_ffn {
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate: GpuTensor::load_from_source(e, src, &p("ffn_gate.weight"))?,
+                    ffn_up: GpuTensor::load_from_source(e, src, &p("ffn_up.weight"))?,
+                    ffn_down: GpuTensor::load_from_source(e, src, &p("ffn_down.weight"))?,
+                }
+            } else {
+                crate::hybrid::load_ffn(e, src, &cfg, il, None)?
+            };
             layers.push(Layer {
                 attn_norm: GpuTensor::load_from_source(e, src, &p("attn_norm.weight"))?,
                 wq: GpuTensor::load_from_source(e, src, &p("attn_q.weight"))?,
@@ -491,7 +502,7 @@ impl Model {
                 q_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_q_norm.weight"))?,
                 k_norm: GpuTensor::load_opt_from_source(e, src, &p("attn_k_norm.weight"))?,
                 ffn_norm: GpuTensor::load_from_source(e, src, &p("ffn_norm.weight"))?,
-                ffn: crate::hybrid::load_ffn(e, src, &cfg, il, None)?,
+                ffn,
             });
         }
         Ok(Model { cfg, embd, output_norm, output, layers })

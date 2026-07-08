@@ -52,6 +52,25 @@ pub fn ggml_to_hf(ggml: &str, arch: &Arch) -> Option<String> {
         }
     }
 
+    // Hy3 REAP tensors use dense layer-0 `mlp.{gate,up,down}_proj`, then routed MoE layers with
+    // `mlp.router.*`, `mlp.shared_mlp.*`, and stacked `mlp.switch_mlp.*` projections.
+    if arch.is_hy3() {
+        let hy3_suffix: Option<&str> = match suffix {
+            "ffn_gate_inp.weight" => Some("mlp.router.gate.weight"),
+            "exp_probs_b.bias" => Some("mlp.router.expert_bias"),
+            "ffn_gate_shexp.weight" => Some("mlp.shared_mlp.gate_proj.weight"),
+            "ffn_up_shexp.weight" => Some("mlp.shared_mlp.up_proj.weight"),
+            "ffn_down_shexp.weight" => Some("mlp.shared_mlp.down_proj.weight"),
+            "ffn_gate_exps.weight" => Some("mlp.switch_mlp.gate_proj.weight"),
+            "ffn_up_exps.weight" => Some("mlp.switch_mlp.up_proj.weight"),
+            "ffn_down_exps.weight" => Some("mlp.switch_mlp.down_proj.weight"),
+            _ => None,
+        };
+        if let Some(s) = hy3_suffix {
+            return Some(format!("model.layers.{il}.{s}"));
+        }
+    }
+
     let hf_suffix: &str = match suffix {
         // attention block
         "attn_norm.weight" => "input_layernorm.weight",
@@ -516,6 +535,47 @@ mod tests {
                    "model.layers.5.block_sparse_moe.experts.63.w2.weight");
         assert_eq!(hf_expert_name(5, 63, "up", &Arch::MinimaxM3),
                    "model.layers.5.block_sparse_moe.experts.63.w3.weight");
+    }
+
+    #[test]
+    fn hy3_moe_names() {
+        let a = Arch::Hy3;
+        assert_eq!(
+            ggml_to_hf("blk.0.ffn_gate.weight", &a).unwrap(),
+            "model.layers.0.mlp.gate_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_gate_inp.weight", &a).unwrap(),
+            "model.layers.1.mlp.router.gate.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.exp_probs_b.bias", &a).unwrap(),
+            "model.layers.1.mlp.router.expert_bias"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_gate_shexp.weight", &a).unwrap(),
+            "model.layers.1.mlp.shared_mlp.gate_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_up_shexp.weight", &a).unwrap(),
+            "model.layers.1.mlp.shared_mlp.up_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_down_shexp.weight", &a).unwrap(),
+            "model.layers.1.mlp.shared_mlp.down_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_gate_exps.weight", &a).unwrap(),
+            "model.layers.1.mlp.switch_mlp.gate_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_up_exps.weight", &a).unwrap(),
+            "model.layers.1.mlp.switch_mlp.up_proj.weight"
+        );
+        assert_eq!(
+            ggml_to_hf("blk.1.ffn_down_exps.weight", &a).unwrap(),
+            "model.layers.1.mlp.switch_mlp.down_proj.weight"
+        );
     }
 
     /// The V-head reorder permutation: HF grouped [0,1, 2,3, ...] -> ggml tiled [0,2,...,1,3,...].
