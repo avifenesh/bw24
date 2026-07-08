@@ -83,6 +83,20 @@ unsafe extern "C" {
         stream: *mut core::ffi::c_void,
     ) -> i32;
 
+    /// Bytes needed for the block_q8_1_mmq (D4) activation scratch for the Q8_0 MMQ path.
+    pub fn bw24_mmq_q8_0_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Run the Q8_0 int8-MMA MMQ prefill GEMM (BW24_PP_Q8MMQ). Conventional xy-tiling only (no fixup
+    /// scratch). Weight = raw ggml block_q8_0 rows (34B blocks, in_f/32 per row); activation is
+    /// quantized internally to q8_1 D4. Requires in_f % 32 == 0. Returns 0 or (1000 + cudaError).
+    pub fn bw24_mmq_q8_0(
+        w_q8_0_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32, out_f: i32, n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+
     // ---- IQ3_S / IQ4_XS expert-segmented int8-MMA MMQ (cu/mmq_iq_experts.cu, BW24_MOE_MMA) ----
     /// Bytes for the token-major block_q8_1_mmq activation scratch (in_f, n_tokens).
     pub fn bw24_mmq_iq_experts_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -115,6 +129,15 @@ pub fn mmq_w4a8_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(true))
 }
 
+/// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT OFF): `BW24_PP_Q8MMQ=1` routes Q8_0 dense
+/// projections (m>=16) through the vendored int8-MMA MMQ (cu/mmq_q8_0.cu) instead of the hand-rolled
+/// `qmatvec_gemm_q8_0` tiling GEMM. Its own numeric config (MMA f32 reduction order != the tiling
+/// GEMM's) — gated with the full exactness battery. Default OFF until the battery is green.
+pub fn mmq_q8_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_PP_Q8MMQ").map(|v| v == "1").unwrap_or(false))
+}
+
 impl Engine {
     /// True if `w` should take a vendored MMQ GEMM under the current env policy (see
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
@@ -133,6 +156,10 @@ impl Engine {
                 (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0,
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
                 (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0,
+            // Q8_0 dense projections (35B attn/ssm/shexp): opt-in only (BW24_PP_Q8MMQ=1), its own
+            // numeric config vs qmatvec_gemm_q8_0. in_f % 32 == 0 (integral q8_0 blocks per row).
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q8_0 =>
+                mmq_q8_enabled() && w.in_features() % 32 == 0,
             _ => false,
         }
     }
@@ -161,6 +188,11 @@ impl Engine {
             q if q == crate::QT_NVFP4 => self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale),
             q if q == crate::QT_Q4_K || q == crate::QT_Q5_K => {
                 let mut y = self.qmatvec_mmq_q45k_raw(bytes, x, m, in_f, out_f, q)?;
+                if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
+                Ok(y)
+            }
+            q if q == crate::QT_Q8_0 => {
+                let mut y = self.qmatvec_mmq_q8_0_raw(bytes, x, m, in_f, out_f)?;
                 if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
                 Ok(y)
             }
@@ -209,6 +241,36 @@ impl Engine {
                 )
             };
             if rc != 0 { return Err(format!("bw24_mmq_q45k(qtype={qtype}) rc={rc}").into()); }
+        }
+        Ok(y)
+    }
+
+    /// Bare Q8_0 int8-MMA MMQ launch (no macro-scale) — the kernel_check accuracy-gate entry and
+    /// the `qmatvec_mmq` dispatch body. Conventional xy-tiling only (no stream-K / fixup scratch).
+    pub fn qmatvec_mmq_q8_0_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
+                               in_f: usize, out_f: usize)
+                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(in_f % 32 == 0, "MMQ Q8_0 requires in_f % 32 == 0, got {in_f}");
+        let act_bytes = unsafe { bw24_mmq_q8_0_act_bytes(in_f as i32, m as i32) };
+        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        {
+            let stream = &self.gpu.stream;
+            let (w_p, _gw) = bytes.device_ptr(stream);
+            let (x_p, _gx) = x.device_ptr(stream);
+            let (y_p, _gy) = y.device_ptr_mut(stream);
+            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let rc = unsafe {
+                bw24_mmq_q8_0(
+                    w_p as *const core::ffi::c_void,
+                    x_p as *const f32,
+                    y_p as *mut f32,
+                    in_f as i32, out_f as i32, m as i32,
+                    s_p as *mut core::ffi::c_void,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            };
+            if rc != 0 { return Err(format!("bw24_mmq_q8_0 rc={rc}").into()); }
         }
         Ok(y)
     }
