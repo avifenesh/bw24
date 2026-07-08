@@ -75,6 +75,38 @@ pub fn rp_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_RP").map(|v| v != "0").unwrap_or(true))
 }
 
+/// LOADER-LAW allowlist (loadersweep audit 2026-07-08): 2D Float tensors that are DELIBERATELY
+/// Float despite being matmul-class. Every entry needs an audit rationale — this list silences
+/// the tripwire below, so an unjustified entry re-opens the trap.
+///   * ffn_gate_inp (MoE router, 35B GGUF F32 [2048,256] / M3 ST F32 [6144,64]): the router's
+///     top-k SELECTION is discontinuous — quantizing shifts logits and flips expert choice (a
+///     class change, not an FP-order change). llama.cpp keeps every router F32 (its converter
+///     forces F32) so Float is bench-parity, it sits on NO all-or-nothing predicate, and the
+///     decode-exact contract is already built around its cuBLASLt path
+///     (hybrid_forward.rs moe_ffn_sequential_zq8 router comment).
+fn float_2d_audited(name: &str) -> bool {
+    name.ends_with("ffn_gate_inp.weight")
+}
+
+/// Once-per-name-pattern loader-law warning (`blk.{il}.` collapses to `blk.*.` so a 48-layer
+/// offender prints ONE line, not 48). See the call site in `load_from_source` for the law.
+fn warn_float_2d_once(name: &str, ne: &[u64], src_type: GgmlType) {
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let pat = match name.strip_prefix("blk.").and_then(|r| r.split_once('.')) {
+        Some((_, suffix)) => format!("blk.*.{suffix}"),
+        None => name.to_string(),
+    };
+    let mut seen = SEEN.get_or_init(|| Mutex::new(std::collections::HashSet::new())).lock().unwrap();
+    if seen.insert(pat.clone()) {
+        eprintln!("[loader-law] WARNING: {pat} loads as 2D Float ne={ne:?} (src {src_type:?}) — \
+                   a Float matmul weight rides cuBLAS f32 GEMV and poisons all-or-nothing q8-fast \
+                   predicates (uses_q8_1_fast/mixer_in_q8_1_fast). If matmul-class: Q8_0-encode at \
+                   load (model.rs ssm arm / source.rs BF16+F8 gates). If deliberately Float: add \
+                   it to float_2d_audited with the audit rationale.");
+    }
+}
+
 /// CUTLASS-layout NVFP4 weight (B operand) for the prefill FP4 GEMM. Built once at load from the raw
 /// GGUF bytes (de-interleave + SFB swizzle). Coexists with the raw `bytes` (decode reads bytes).
 #[cfg(bw24_cutlass)]
@@ -210,6 +242,18 @@ impl GpuTensor {
                     && (name.ends_with("ssm_beta.weight") || name.ends_with("ssm_alpha.weight")) {
                     let q8 = bw24_gguf::nvfp4_repack::f32_to_q8_0(&f32v);
                     return GpuTensor::from_quant_bytes(e, &q8, GgmlType::Q8_0, v.ne[0], v.ne[1], 1.0);
+                }
+                // LOADER-LAW TRIPWIRE (loadersweep 2026-07-08): a 2D Float tensor with both dims
+                // >= 16 is almost certainly MATMUL-class, and a Float matmul weight (a) rides
+                // cuBLAS f32 GEMV pairs (dot_kernel + reduce_1Block in nsys) and (b) fails
+                // uses_q8_1_fast, poisoning every ALL-OR-NOTHING fast-path predicate it sits on
+                // (mixer_in_q8_1_fast etc.) — the trap that cost measurable perf 4 times (NV-27B
+                // in_proj_a/b BF16, 35B ssm_beta/alpha F32, M3 shexp cousin, M3 BF16 lm_head).
+                // Fix recipe: name-gated f32_to_q8_0 encode at load (see the ssm arm above /
+                // source.rs BF16+F8 gates). Norm-class tensors are 1D or have a dim < 16
+                // (conv1d ne[0]=4) and never reach this warning.
+                if v.ne.len() == 2 && v.ne[0] >= 16 && v.ne[1] >= 16 && !float_2d_audited(name) {
+                    warn_float_2d_once(name, &v.ne, v.ggml_type);
                 }
                 // F32/F16/BF16 (or as-yet-unhandled quant): dequant to f32. Small tensors only.
                 Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: v.ne.clone() })
