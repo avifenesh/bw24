@@ -3,20 +3,88 @@
   "rig": "RTX 5090 Laptop",
   "protocol": "N≥3 medians, power state verified before every session",
   "plain_decode": {
-    "context": "tg128 at 512-token context",
+    "context": "tg128 at 512-token context (FA_V2 tile-batched softmax default since 2026-07-08)",
     "rows": [
-      { "model": "Qwen3.6-27B NVFP4", "bw24": 47.2, "llama": 43.6 },
-      { "model": "Qwen3.5-9B NVFP4", "bw24": 131.6, "llama": 124.5 },
-      { "model": "Qwen3.6-35B-A3B MoE", "bw24": 169.0, "llama": 170.5 }
+      {
+        "model": "Qwen3.6-27B NVFP4",
+        "bw24": 47.7,
+        "llama": 43.5
+      },
+      {
+        "model": "Qwen3.5-9B NVFP4",
+        "bw24": 132.7,
+        "llama": 124.6
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE",
+        "bw24": 173.4,
+        "llama": 170.5
+      }
     ]
   },
   "speculative": {
     "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol",
     "rows": [
-      { "model": "Qwen3.5-9B (K=3 + native trim)", "bw24": [243, 195, 162], "llama": [186, 158, 155] },
-      { "model": "Qwen3.6-27B (K=3 + generic trim)", "bw24": [108, 91, 79.5], "llama": [86.4, 89.9, 73.2] },
-      { "model": "Qwen3.6-35B-A3B (K=2 + trim + zero-draft)", "bw24": [197, 194, 177], "llama": [215, 208, 202] }
+      {
+        "model": "Qwen3.5-9B (K=3 + native trim)",
+        "bw24": [
+          243,
+          195,
+          162
+        ],
+        "llama": [
+          186,
+          158,
+          155
+        ]
+      },
+      {
+        "model": "Qwen3.6-27B (K=3 + generic trim)",
+        "bw24": [
+          108,
+          91,
+          79.5
+        ],
+        "llama": [
+          86.4,
+          89.9,
+          73.2
+        ]
+      },
+      {
+        "model": "Qwen3.6-35B-A3B (K=2 + trim + zero-draft)",
+        "bw24": [
+          202.8,
+          200.5,
+          184.8
+        ],
+        "llama": [
+          215,
+          208,
+          202
+        ]
+      }
     ]
   },
-  "bold_ratio_threshold": 1.05
+  "bold_ratio_threshold": 1.05,
+  "plain_decode_depth": {
+    "context": "tg128 at 6257-token context (depth behavior is part of the comparison)",
+    "rows": [
+      {
+        "model": "Qwen3.6-27B NVFP4",
+        "bw24": 44.9,
+        "llama": 42.0
+      },
+      {
+        "model": "Qwen3.5-9B NVFP4",
+        "bw24": 124.5,
+        "llama": 119.6
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE",
+        "bw24": 158.5,
+        "llama": 159.9
+      }
+    ]
+  }
 }
