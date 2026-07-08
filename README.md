@@ -83,7 +83,7 @@ Measured 2026-07-08 on the target rig (RTX 5090 Laptop, N≥3 medians, power sta
 | Model | bw24 plain | llama.cpp plain | Ratio |
 |---|---|---|---|
 | Qwen3.6-27B NVFP4 | 47.2 | 43.6 | **1.08x** |
-| Qwen3.5-9B NVFP4 | 128.7 | 124.5 | **1.03x** |
+| Qwen3.5-9B NVFP4 | 131.6 | 124.5 | **1.06x** |
 | Qwen3.6-35B-A3B MoE | 169.0 | 170.5 | 0.99x |
 
 Depth behavior is part of the comparison: at 6.3k-token context the 35B decodes at 152.8 vs llama.cpp's 159.9 (0.96x) — split-ladder geometry is validated across the depth axis, not just the short-context point.
