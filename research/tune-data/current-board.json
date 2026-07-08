@@ -1,0 +1,22 @@
+{
+  "updated": "2026-07-08",
+  "rig": "RTX 5090 Laptop",
+  "protocol": "N≥3 medians, power state verified before every session",
+  "plain_decode": {
+    "context": "tg128 at 512-token context",
+    "rows": [
+      { "model": "Qwen3.6-27B NVFP4", "bw24": 47.2, "llama": 43.6 },
+      { "model": "Qwen3.5-9B NVFP4", "bw24": 131.6, "llama": 124.5 },
+      { "model": "Qwen3.6-35B-A3B MoE", "bw24": 169.0, "llama": 170.5 }
+    ]
+  },
+  "speculative": {
+    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol",
+    "rows": [
+      { "model": "Qwen3.5-9B (K=3 + native trim)", "bw24": [243, 195, 162], "llama": [186, 158, 155] },
+      { "model": "Qwen3.6-27B (K=3 + generic trim)", "bw24": [108, 91, 79.5], "llama": [86.4, 89.9, 73.2] },
+      { "model": "Qwen3.6-35B-A3B (K=2 + trim + zero-draft)", "bw24": [197, 194, 177], "llama": [215, 208, 202] }
+    ]
+  },
+  "bold_ratio_threshold": 1.05
+}
