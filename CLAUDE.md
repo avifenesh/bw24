@@ -34,3 +34,26 @@ and isn't worth automating at this update cadence.
 Same three gates as CONTRIBUTING.md: `kernel-check`, the `run-gen` argmax gate, and `run-spec`
 K=1..8 self-consistency. A kernel change without before/after numbers measured per
 `research/benchmarks.md` isn't done.
+
+## Releases: every board-moving or user-facing change
+
+Tag it — `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow compiles, drafts the
+changelog from conventional commits (`tools/changelog.sh`), and publishes. Minor bump per
+mechanism/board move, patch per fix/docs. Full process: `docs/RELEASING.md`. Commit prefixes feed
+the changelog: `perf:`/`feat:`/`fix:`/`config:`/`docs:` are public; `data:`/`chore:`/`wip:`/`probe:`
+are filtered as research-log noise — pick the prefix accordingly.
+
+## CI is compile-only; the exactness battery is the real gate
+
+GitHub runners have no GPU. `.github/workflows/ci.yml` catches build breaks (nvcc compiles fine
+GPU-less). Before any merge or tag, the battery runs on the rig: `kernel-check` ALL GREEN,
+`run-gen` argmax MATCH on affected models, `run-spec` K=1..8 self-consistency PASS. Never tag on
+a commit whose battery didn't run here.
+
+## Flags doctrine
+
+Winners are defaults — no flag needed to get the tuned path (naked commands = full speed).
+Environment variables exist only for: runtime parameters (prompt/gen/spec knobs), machine-specific
+config (VRAM budgets, KV formats, spill), rollback seams (`BW24_FAST=0` oracle path), diagnostics,
+and explicitly-blocked experimental doors. Catalog: `docs/FLAGS.md`. When an experiment concludes
+negative or flat, kill its flag and dispatch arm — the JSONL row is the record, not dead code.

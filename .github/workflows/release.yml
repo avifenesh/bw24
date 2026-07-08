@@ -1,0 +1,47 @@
+name: release
+
+# Tag push vX.Y.Z => compile gate, auto-draft changelog from conventional commits,
+# publish the GitHub release. The exactness battery already ran on the rig before
+# the tag (docs/RELEASING.md) — CI here is the build check + the paperwork.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # changelog needs tag history
+
+      - name: Install CUDA 13.1 (nvcc + headers)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y -q cuda-nvcc-13-1 cuda-cudart-dev-13-1
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --bins
+        env:
+          BW24_NVCC: /usr/local/cuda-13.1/bin/nvcc
+
+      - name: Draft changelog
+        run: bash tools/changelog.sh > /tmp/notes.md && cat /tmp/notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            --verify-tag

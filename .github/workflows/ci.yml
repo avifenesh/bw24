@@ -1,0 +1,34 @@
+name: ci
+
+# Compile gate only. GitHub runners have no GPU, so the exactness battery
+# (kernel-check, argmax gates, spec self-consistency) runs on the rig before
+# any merge — see docs/RELEASING.md. What CI catches: broken Rust, broken
+# kernel compiles (nvcc runs fine without a GPU), fatbin flag drift.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA 13.1 (nvcc + headers only — compile needs no GPU)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y -q cuda-nvcc-13-1 cuda-cudart-dev-13-1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (all bins, release — compiles every CUDA fatbin)
+        run: cargo build --release --bins
+        env:
+          BW24_NVCC: /usr/local/cuda-13.1/bin/nvcc
