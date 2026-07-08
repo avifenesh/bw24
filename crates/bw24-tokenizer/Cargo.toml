@@ -9,3 +9,7 @@ bw24-gguf = { path = "../bw24-gguf" }
 [[bin]]
 name = "tok-check"
 path = "src/bin/tok_check.rs"
+
+[[bin]]
+name = "tok-trim"
+path = "src/bin/tok_trim.rs"

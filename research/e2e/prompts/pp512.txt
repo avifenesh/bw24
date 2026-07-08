@@ -1,0 +1,28 @@
+
+
+=== FILE: crates/bw24-engine/src/cache.rs ===
+//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):
+//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
+//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
+//! No host round-trips per step. Single sequence.
+
+use cudarc::driver::CudaSlice;
+use bw24_gguf::config::{ModelConfig, LayerKind};
+use crate::Engine;
+
+/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
+/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
+/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
+/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
+pub struct KvLayer {
+    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
+    pub len: usize,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
+    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_d: CudaSl

@@ -21,6 +21,7 @@ pub mod spill;
 #[cfg(bw24_cutlass)]
 pub mod cutlass_ffi;
 pub mod mmq_ffi;
+pub mod fp8_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
 const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
@@ -161,6 +162,10 @@ pub struct Engine {
     /// until the first CUTLASS FP4 GEMM. Mutex guards lazy build/grow only (matches `moe_cache`).
     #[cfg(bw24_cutlass)]
     cutlass_scratch: Mutex<Option<crate::cutlass_ffi::CutlassScratch>>,
+    /// FP8-ACT PREFILL scratch (BW24_PP_FP8): quantized-activation buffer + scale block + cuBLASLt
+    /// workspace, allocated once and grown to the largest prefill m*k (see fp8_ffi.rs). `None`
+    /// until the first FP8 prefill GEMM; Mutex guards lazy build/grow only (matches cutlass_scratch).
+    fp8_scratch: Mutex<Option<crate::fp8_ffi::Fp8Scratch>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
     /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
@@ -259,6 +264,7 @@ impl Engine {
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
+                  fp8_scratch: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -1718,6 +1724,14 @@ impl Engine {
         // repack; BW24_MMQ_W4A8=0 = escape hatch). W4A4 mxf4nvf4 + Q4_K/Q5_K stay behind BW24_MMQ=1.
         // The env policy lives in mmq_supports/qmatvec_mmq. Feeds raw f32 activation `x` (the
         // launcher quantizes internally). out_f>=MMQ_Y/2 keeps the tile grid from starving the SMs.
+        // FP8-ACT PREFILL (BW24_PP_FP8=1, probe verdict 2026-07-08): F8-E4M3-origin projections
+        // carry their raw e4m3 device bytes (the `fp8` operand stashed at load next to the Q8_0
+        // re-encode) — cuBLASLt FP8 TN at 620-795 TF vs 47-72 TF for this class's int8 GEMM.
+        // Weight side EXACT (checkpoint bytes); activation rides ONE per-batch e4m3 scale
+        // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
+        if m >= GEMM_M_THRESHOLD {
+            if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
+        }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
         }
@@ -1835,6 +1849,11 @@ impl Engine {
                       x_fallback: &CudaSlice<f32>, m: usize)
                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        // FP8-ACT PREFILL (BW24_PP_FP8=1): same arm as `matmul` — the fp8 operand needs the RAW
+        // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
+        if m >= 16 {
+            if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
+        }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
         // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not aq/ad.

@@ -28,8 +28,22 @@ pub enum GpuTensor {
         /// prefill (m>=128) reads this. Only ever Some for NVFP4 weights under cfg(bw24_cutlass).
         #[cfg(bw24_cutlass)]
         cutlass: Option<CutlassWeight>,
+        /// FP8-ACT PREFILL operand (BW24_PP_FP8=1, probe verdict 2026-07-08): the checkpoint's RAW
+        /// e4m3 bytes + per-tensor f32 weight_scale, stashed ALONGSIDE the Q8_0 re-encode for the
+        /// F8-E4M3-origin 2D projections (~1 B/w extra on those layers). `bytes` stays Q8_0 so
+        /// decode (dp4a/MMVQ) is untouched; only the m>=16 prefill dispatch (cuBLASLt FP8 TN,
+        /// fp8_ffi.rs) reads this. None unless the env is set at load (zero VRAM cost by default).
+        fp8: Option<Fp8Weight>,
     },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
+}
+
+/// FP8-native prefill operand: raw checkpoint e4m3 codes `[out_f, in_f]` row-major (EXACT — the
+/// weight side of the FP8 GEMM does no re-quantization) + the per-tensor `weight_scale` dequant
+/// scalar, folded into the GEMM's scale pointer together with the per-batch activation scale.
+pub struct Fp8Weight {
+    pub bytes: CudaSlice<u8>,
+    pub scale: f32,
 }
 
 /// Host-side split-plane repack of NVFP4 GGUF block bytes (A6). Input: out_f rows of in_f/64
@@ -127,6 +141,7 @@ impl GpuTensor {
                         ne: vec![nv.in_f as u64, nv.out_f as u64], scale, rp: true,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
+                        fp8: None,
                     });
                 }
             }
@@ -191,10 +206,23 @@ impl GpuTensor {
                         Some(CutlassWeight { b_packed, sfb_swizzled })
                     } else { None }
                 };
+                // FP8-ACT PREFILL operand (BW24_PP_FP8=1): for F8-E4M3-sourced projections (they
+                // surface as Q8_0 from the source's re-encode) ALSO stash the raw e4m3 device
+                // bytes + weight_scale. The source guarantees byte order matches `v` (the
+                // Transform arm's V-reorder is baked into both); the ne check guards a mixup.
+                let fp8 = if qt == QT_Q8_0 && crate::fp8_ffi::pp_fp8_enabled() {
+                    match src.find_fp8_native(name) {
+                        Some(f8) if v.ne.len() == 2
+                            && f8.in_f as u64 == v.ne[0] && f8.out_f as u64 == v.ne[1] =>
+                            Some(Fp8Weight { bytes: e.htod_bytes(&f8.bytes)?, scale: f8.scale }),
+                        _ => None,
+                    }
+                } else { None };
                 Ok(GpuTensor::Quant {
                     bytes, qtype: qt, row_bytes, ne: v.ne.clone(), scale, rp,
                     #[cfg(bw24_cutlass)]
                     cutlass,
+                    fp8,
                 })
             }
             None => {
@@ -238,6 +266,7 @@ impl GpuTensor {
             bytes: dev, qtype: qt, row_bytes, ne: vec![ne0, ne1], scale, rp,
             #[cfg(bw24_cutlass)]
             cutlass: None,
+            fp8: None,
         })
     }
 
