@@ -93,6 +93,37 @@ pub fn fp8_e4m3_to_f32(x: u8) -> f32 {
     sign * raw
 }
 
+/// f32 -> SIGNED FP8 E4M3 byte: nearest on the e4m3 grid, ties to the even code, saturate to
+/// +-448 (max normal), +-0 -> 0x00. Inverse of `fp8_e4m3_to_f32` (roundtrip-exact over all
+/// non-NaN codes — pinned by the test below). Used by the BW24_PP_FP8 loader to re-encode the
+/// V-reordered F8 projections back to checkpoint e4m3 codes (an exact permutation round-trip:
+/// inputs are `code*scale/scale`, within an f32 ULP of the grid point, and the e4m3 grid spacing
+/// is >= 2^-3 relative — nearest always recovers the original code).
+#[inline]
+pub fn f32_to_fp8_e4m3(x: f32) -> u8 {
+    // Decoded magnitudes of codes 0..=0x7E are strictly increasing (0x7F is the NaN code).
+    static TABLE: std::sync::OnceLock<[f32; 127]> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut t = [0f32; 127];
+        for (c, v) in t.iter_mut().enumerate() { *v = fp8_e4m3_to_f32(c as u8); }
+        t
+    });
+    if x.is_nan() { return 0; } // NaN never encodes to the NaN code (modelopt decode maps it to 0)
+    let sign = if x.is_sign_negative() { 0x80u8 } else { 0 };
+    let ax = x.abs();
+    if ax == 0.0 { return 0; }
+    if ax >= t[126] { return sign | 0x7E; } // saturate to +-448 (covers +-inf too)
+    // binary search: largest lo with t[lo] <= ax; then nearest of (lo, lo+1), ties-to-even code.
+    let (mut lo, mut hi) = (0usize, 126usize);
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if t[mid] <= ax { lo = mid } else { hi = mid }
+    }
+    let (dl, dh) = (ax - t[lo], t[hi] - ax);
+    let c = if dl < dh { lo } else if dh < dl { hi } else if lo % 2 == 0 { lo } else { hi };
+    if c == 0 { 0 } else { sign | c as u8 }
+}
+
 /// f32 slice -> GGUF Q8_0 block bytes ({ fp16 d; int8 qs[32] } per 32 elems, 34 B/block).
 /// Standard ggml quantize_row_q8_0 math (amax/127 scale, round-to-nearest-even). Used by the
 /// F8-E4M3 and large-BF16 host re-encodes (NVIDIA 27B linear_attn + mtp classes). `data.len()`
@@ -595,5 +626,31 @@ mod fp8_tests {
         assert_eq!(fp8_e4m3_to_f32(0x00), 0.0);
         // e4m3 max normal = 448 (0x7E)
         assert_eq!(fp8_e4m3_to_f32(0x7E), 448.0);
+    }
+
+    /// BW24_PP_FP8 loader gate: the f32->e4m3 encoder must invert the decoder over every non-NaN
+    /// code, INCLUDING through the weight_scale fold the Transform arm performs
+    /// (`encode(decode(b) * scale / scale) == b` — the exact-permutation round-trip claim).
+    #[test]
+    fn e4m3_encode_roundtrip() {
+        use super::f32_to_fp8_e4m3;
+        for b in 0u16..=0xFF {
+            let b = b as u8;
+            if b & 0x7F == 0x7F || b == 0x80 { continue; } // NaN codes; -0 canonicalizes to 0x00
+            assert_eq!(f32_to_fp8_e4m3(fp8_e4m3_to_f32(b)), b, "roundtrip code {b:#04x}");
+            for scale in [1.0f32, 0.007831, 3.25e-3, 17.0, 1.9e-5] {
+                let v = fp8_e4m3_to_f32(b) * scale;
+                assert_eq!(f32_to_fp8_e4m3(v / scale), b, "scale-fold roundtrip {b:#04x} s={scale}");
+            }
+        }
+        // saturation + zero + NaN policy
+        assert_eq!(f32_to_fp8_e4m3(1e30), 0x7E);
+        assert_eq!(f32_to_fp8_e4m3(-1e30), 0xFE);
+        assert_eq!(f32_to_fp8_e4m3(0.0), 0x00);
+        assert_eq!(f32_to_fp8_e4m3(-0.0), 0x00);
+        assert_eq!(f32_to_fp8_e4m3(f32::NAN), 0x00);
+        // ties-to-even on the grid midpoint: between 1.0 (0x38) and 1.0625? no — e4m3 step at
+        // exp 7 is 0.125: midpoint 1.0625 between 1.0 (0x38, even) and 1.125 (0x39) -> even.
+        assert_eq!(f32_to_fp8_e4m3(1.0625), 0x38);
     }
 }

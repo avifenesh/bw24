@@ -1,0 +1,16 @@
+#!/bin/sh
+# Refuses the push if research/tune-data/current-board.json changed but README.md /
+# docs/perf-card.svg weren't regenerated to match (tools/update-perf-board.py).
+#
+# Install once: git config core.hooksPath tools/hooks
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+if ! python3 tools/update-perf-board.py --check; then
+    echo ""
+    echo "pre-push: perf board is stale. Run:"
+    echo "    python3 tools/update-perf-board.py"
+    echo "and commit the regenerated README.md + docs/perf-card.svg before pushing."
+    exit 1
+fi
