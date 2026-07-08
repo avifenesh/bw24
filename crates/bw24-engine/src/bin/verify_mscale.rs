@@ -71,8 +71,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let (embd_qt, embd_rb) = model.embd.qt_and_row_bytes(n_embd);
 
+    // BW24_MSCALE_NOEAGER=1: skip the eager reference (keeps an nsys trace verify-only).
+    // BW24_MSCALE_PROFILE=1: bracket the TIMED verify reps in cuProfilerStart/Stop so
+    // `nsys --capture-range=cudaProfilerApi` records ONLY the verify kernel chain (run with a
+    // single-m list; warmups + rollbacks sit outside the bracket per rep is not possible —
+    // rollback D2D copies are inside the window and must be subtracted by name).
+    let profile = std::env::var("BW24_MSCALE_PROFILE").is_ok();
     // Eager decode_step reference (the plain-decode per-token cost at this depth).
-    {
+    if std::env::var("BW24_MSCALE_NOEAGER").is_err() {
         for _ in 0..3 { let _ = model.decode_step(&e, gold[0], &mut cache)?; cache.rollback(&e, &snap, 0)?; }
         e.stream().synchronize()?;
         let mut ts: Vec<f64> = Vec::with_capacity(reps);
@@ -99,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cache.rollback(&e, &snap, 0)?;
         }
         e.stream().synchronize()?;
+        if profile { unsafe { cudarc::driver::sys::cuProfilerStart().result()?; } }
         let mut ts: Vec<f64> = Vec::with_capacity(reps);
         for _ in 0..reps {
             e.stream().synchronize()?;
@@ -109,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ts.push(t0.elapsed().as_secs_f64() * 1e6);
             cache.rollback(&e, &snap, 0)?;
         }
+        if profile { unsafe { cudarc::driver::sys::cuProfilerStop().result()?; } }
         ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = pct(&ts, 0.5);
         if m == 1 || med1 == 0.0 { if m == ms[0] { med1 = med; } }

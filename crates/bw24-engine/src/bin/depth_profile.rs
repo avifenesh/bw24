@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Same synthetic prompt family as decode-bench.
     let prompt: Vec<u32> = (0..depth).map(|i| (100 + (i * 7) % 900) as u32).collect();
-    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, depth + n + 8)?;
+    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, depth + n + 72)?;
     let t_prime = std::time::Instant::now();
     let mut ll: Vec<f32> = if depth >= bw24_engine::hybrid_forward::PRIME_MIN_T {
         let (l, _h, _hiddens) = model.prime_cache(&e, &prompt, &mut cache)?;
@@ -36,13 +36,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for &t in &prompt { l = model.decode_step(&e, t, &mut cache)?; }
         l
     };
-    // Warmup decode steps (JIT/alloc pools) BEFORE the gap so the window is steady-state.
-    for _ in 0..4 { let nx = argmax(&ll) as u32; ll = model.decode_step(&e, nx, &mut cache)?; }
+    // Warmup decode steps BEFORE the marker: JIT/alloc pools AND the laptop-GPU clock ramp —
+    // 4 steps measured 50-78 tok/s windows vs the 153-173 steady state; 64 steps ramps fully.
+    for _ in 0..64 { let nx = argmax(&ll) as u32; ll = model.decode_step(&e, nx, &mut cache)?; }
     e.stream().synchronize()?;
-    println!("primed depth={} (+4 warmup) in {:.2}s", cache.pos, t_prime.elapsed().as_secs_f64());
+    println!("primed depth={} (+64 warmup) in {:.2}s", cache.pos, t_prime.elapsed().as_secs_f64());
 
-    // GAP MARKER: 300ms of guaranteed GPU idle separates prime from the measured window.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // BUSY MARKER (not idle: a sleep gap downclocks the laptop GPU and poisons the window —
+    // measured 78 vs 162 tok/s): 64 memsets of a DISTINCTIVE 7777792-byte scratch buffer keep
+    // the clocks up; post-process the trace by taking kernels AFTER the last such memset.
+    {
+        let mut scratch = e.uninit(1_944_448)?;   // 7_777_792 bytes — the marker signature
+        for _ in 0..64 {
+            let mut v = scratch.slice_mut(0..1_944_448);
+            e.memset_zeros_view(&mut v)?;
+        }
+        e.stream().synchronize()?;
+    }
 
     let t0 = std::time::Instant::now();
     for _ in 0..n { let nx = argmax(&ll) as u32; ll = model.decode_step(&e, nx, &mut cache)?; }
