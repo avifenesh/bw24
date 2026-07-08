@@ -103,7 +103,7 @@ Depth behavior is part of the comparison — at 6.3k-token context (same protoco
 |---|---|---|---|
 | Qwen3.5-9B (K=3 + native trim) | 246 / 206 / 172 | 186 / 158 / 155 | **1.32x** / **1.30x** / **1.11x** |
 | Qwen3.6-27B (K=3 + generic trim) | 109 / 100 / 78.8 | 86.4 / 89.9 / 73.2 | **1.26x** / **1.11x** / **1.08x** |
-| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 225 / 212 / 185 | 215 / 208 / 202 | 1.05x / 1.02x / 0.92x |
+| Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 249 / 232 / 192 | 215 / 208.5 / 201.7 | **1.16x** / **1.11x** / 0.95x |
 <!-- PERF-SPEC:END -->
 
 All rows are the raw-prompt continuation protocol (llama.cpp measured through llama-server at its serve-best speculative config on the same machine, N=3 medians, full power verified). Config is content-class dependent — the chat protocol shifts both the optimal draft depth and the trim choice (chat short-code runs K=7 at 122 tok/s on the 27B); the published HF artifacts document every configuration.

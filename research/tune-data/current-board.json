@@ -52,16 +52,16 @@
         ]
       },
       {
-        "model": "Qwen3.6-35B-A3B (K=2 + trim + zero-draft)",
+        "model": "Qwen3.6-35B-A3B (K=3 + trim + zero-draft)",
         "bw24": [
-          225,
-          212,
-          185
+          249,
+          232,
+          192
         ],
         "llama": [
           215,
-          208,
-          202
+          208.5,
+          201.7
         ]
       }
     ]
