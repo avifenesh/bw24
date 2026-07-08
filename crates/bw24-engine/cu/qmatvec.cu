@@ -822,6 +822,119 @@ extern "C" __global__ void qmatvec_q5_K_mmvq_mr2(
     q5k_mmvq_multirow<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
+// ---- Q5_K ISSUE-REDUCED MMVQ family (`_il`, q5issue lane 2026-07-08, BW24_Q5K_ISSUE=1) ----
+// WHY: the q5_K mmvq family sits at ~61% of the bandwidth wall on the 27B lm_head (1030us) —
+// the k-quant mmvq ceiling is instruction-ISSUE, not loads (q6krp repack: exactly 0 gain; the
+// down8 byte_perm decode: +2.5% e2e). Per 32-elem group the reference body issues 2 LDG.U16
+// (d/dmin) + a warp-DIVERGENT grp<4 / grp>=4 scale unpack (2-4 LDG.U8 byte loads, both paths
+// serialized every iteration since grp = lane&7 splits the warp) + 16 LDG.32 (get_int_b2 qs/qh)
+// = ~21 LSU ops + divergence against 16 dp4a of real work. This body produces the IDENTICAL
+// packed ints from the IDENTICAL bytes with 5 LDG.128: one uint4 header (d|dmin|scales[12]),
+// 2x uint4 qh (the whole 32B plane), 2x uint4 qs — and replaces the divergent scale branch with
+// branchless register extraction (both paths computed + select on the loop-invariant grp>=4).
+// BIT-IDENTITY (value-level): the uint4 components ARE the little-endian 32-bit words
+// get_int_b2 builds (q5_K block=176B: b, b+16, b+48+g64*32 all 16-aligned when W is);
+// (q4 >> sh4) & M with sh4 = hi*4 == the `hi ? (q4>>4)&M : q4&M` select (>>0 is identity);
+// the scale/min register math lands the exact scales[] bytes the branchy path loads
+// (hdr.y/z/w = scales[0..3]/[4..7]/[8..11], byte j via >>8j). The dp4a chain order (k
+// ascending, sumi_d/sumi_sum separate integer chains) and the closing float expression are
+// UNCHANGED, so outputs are bit-identical per (token,row).
+// ALIGNMENT: q5_K row_bytes = (in_f/256)*176, a multiple of 16 -> every superblock pointer is
+// 16-aligned iff W is (cudaMalloc slabs are 256B-aligned; every real dispatch passes the
+// tensor-base slice). A GRID-UNIFORM guard falls back to the reference body for exotic bases.
+template<int RPW>
+__device__ __forceinline__ void q5k_mmvq_multirow_il(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    if ((((unsigned long long)W | (unsigned long long)row_bytes) & 15ull) != 0ull) {
+        q5k_mmvq_multirow<RPW>(W, aq, ad, y, in_f, out_f, m, row_bytes);  // reference fallback
+        return;
+    }
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * RPW;
+    int t = blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    // decode geometry is loop-invariant per lane: g = lane + 32*i -> g&7 == lane&7.
+    int grp  = lane & 7;
+    int g64  = grp >> 1;
+    int sh4  = (grp & 1) * 4;        // 0 for the low-nibble plane, 4 for the high
+    int hbit = 2 * g64 + (grp & 1);
+    bool hi4 = grp >= 4;
+    int sh8  = 8 * (grp & 3);        // byte j of the scale words, j = grp or grp-4
+    float acc[RPW];
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) acc[r] = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        int sblk = g >> 3;
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sumi_sum = 0;                        // row-independent activation sum (shared)
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi_sum = dp4a(0x01010101, aq4[k], sumi_sum);
+        #pragma unroll
+        for (int r = 0; r < RPW; r++) {
+            int o = o0 + r;
+            if (o >= out_f) break;
+            const unsigned char* b = W + (long)o * row_bytes + (long)sblk * 176;
+            uint4 hdr = *(const uint4*)b;        // d|dmin (4B) + scales[12] in one LDG.128
+            float d_sb    = half_to_float((unsigned short)(hdr.x & 0xffffu));
+            float dmin_sb = half_to_float((unsigned short)(hdr.x >> 16));
+            unsigned by = (hdr.y >> sh8) & 0xffu;   // scales[j]
+            unsigned bz = (hdr.z >> sh8) & 0xffu;   // scales[j+4]
+            unsigned bw = (hdr.w >> sh8) & 0xffu;   // scales[j+8]
+            int sc = hi4 ? (int)((bw & 0xFu) | ((by >> 6) << 4)) : (int)(by & 63u);
+            int mn = hi4 ? (int)((bw >> 4)   | ((bz >> 6) << 4)) : (int)(bz & 63u);
+            const uint4* qhv = (const uint4*)(b + 16);            // whole 32B qh plane
+            uint4 h01 = qhv[0], h23 = qhv[1];
+            const uint4* qsv = (const uint4*)(b + 48 + g64 * 32); // 32B nibble plane
+            uint4 q01 = qsv[0], q23 = qsv[1];
+            int qw[8]  = { (int)q01.x, (int)q01.y, (int)q01.z, (int)q01.w,
+                           (int)q23.x, (int)q23.y, (int)q23.z, (int)q23.w };
+            int qhw[8] = { (int)h01.x, (int)h01.y, (int)h01.z, (int)h01.w,
+                           (int)h23.x, (int)h23.y, (int)h23.z, (int)h23.w };
+            int sumi_d = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) {
+                int low = (qw[k] >> sh4) & 0x0F0F0F0F;
+                int h   = (qhw[k] >> hbit) & 0x01010101;
+                int wpack = low | (h << 4);
+                sumi_d = dp4a(wpack, aq4[k], sumi_d);
+            }
+            acc[r] += d_sb * (float)(sc * sumi_d) * d8
+                    - dmin_sb * (float)(mn * sumi_sum) * d8;
+        }
+    }
+    #pragma unroll
+    for (int r = 0; r < RPW; r++) {
+        int o = o0 + r;
+        if (o >= out_f) break;
+        float a = warp_reduce_sum(acc[r]);
+        if (lane == 0) y[(size_t)t * out_f + o] = a;
+    }
+}
+// Single-row twin: RPW=1 of the multirow body is bit-identical to qmatvec_q5_K_mmvq (the only
+// difference is sumi_sum computed before sumi_d — separate exact integer chains; the float
+// expression and per-g accumulation order are unchanged). Fallback likewise goes to
+// q5k_mmvq_multirow<1>, bit-identical to the reference single-row kernel.
+extern "C" __global__ void qmatvec_q5_K_mmvq_il(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_multirow_il<1>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q5_K_mmvq_mr2_il(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q5k_mmvq_multirow_il<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 // ----- Q4_K MULTI-ROW-PER-WARP MMVQ (MLP lever for the 27B daily, whose weights are Q4_K_M). Each
 // warp computes RPW output rows in one activation pass: the activation int8 (loaded once as 2x int4)
 // is reused across all RPW rows; RPW weight rows + RPW acc chains -> RPW x loads-in-flight, hiding
