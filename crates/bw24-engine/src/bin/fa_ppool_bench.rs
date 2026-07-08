@@ -23,6 +23,10 @@ impl Lcg {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // this probe HAND-CRAFTS q8_0/q5_1 cache bytes — only valid on the default KV formats
+    // (kv-fmt-bench is the format-generic twin: it builds the cache via the append kernel).
+    assert_eq!(bw24_engine::kv_cache_formats(), ("q8_0", "q5_1"),
+               "fa_ppool_bench requires default KV formats; use kv-fmt-bench for BW24_KV_K/V arms");
     let e = Engine::new(0)?;
     // 35B full-attn geometry (Qwen3.6-35B-A3B gguf metadata)
     let (n_head, n_head_kv, head_dim) = (16usize, 2usize, 256usize);

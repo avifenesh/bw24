@@ -50,7 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // quant prefill twin (fa_prefill_q via fa_prefill_view) — quantize K/V then run.
     let kv_dim_k = hd * nhkv; let kv_dim_v = hd * nhkv;
-    let k_tok_bytes = (kv_dim_k / 32) * 34; let v_tok_bytes = (kv_dim_v / 32) * 24;
+    let (kbb, vbb) = bw24_engine::kv_blk_bytes();  // env-selected KV formats
+    let k_tok_bytes = (kv_dim_k / 32) * kbb; let v_tok_bytes = (kv_dim_v / 32) * vbb;
     for (t, tkv) in [(16usize, 16usize), (64, 64), (100, 100), (256, 256)] {
         let q: Vec<f32> = (0..hd*nh*t).map(|i| pr(i)*0.2).collect();
         let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();

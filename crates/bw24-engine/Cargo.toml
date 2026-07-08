@@ -23,6 +23,10 @@ name = "fa-sanitize"
 path = "src/bin/fa_sanitize.rs"
 
 [[bin]]
+name = "kv-fmt-bench"
+path = "src/bin/kv_fmt_bench.rs"
+
+[[bin]]
 name = "fa-hd128-check"
 path = "src/bin/fa_hd128_check.rs"
 
