@@ -96,10 +96,13 @@ fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
         // KV-HEAD-AWARE RUNG (2026-07-08, 5090): the 8192->32 rung was validated on kv=8 models
         // (27B/9B: 8 heads x n_splits fills 82 SMs). The 35B has n_head_kv=2 — at ctx512/sp32
         // the vec grid is 2 x 20 = 40 CTAs on 82 SMs (half idle). Measured (35B, run-gen 128tok
-        // N=1 sweep + N=3 confirm): sp8 162.1 / sp16 161.3 / sp32 159.4. Same starvation class
-        // the g7e 188-SM rung fixed; here gated on the MODEL property (few kv heads), so kv=8
-        // models keep the validated ladder exactly.
-        if t_kv <= 8192 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
+        // N=1 sweep + N=3 confirm): sp8 162.1 / sp16 161.3 / sp32 159.4 at short ctx.
+        // DEPTH TAPER (same day, the deep-ctx lesson re-learned on this rung): sp8 at d6257 =
+        // 782 splits -> combine + partial-buffer cost dominates (141.2 tok/s); the d6257 sweep
+        // says sp64 = 153.0 (sp16/32 147, sp96 147.6, sp128 141). Few-kv-head models need the
+        // taper EARLIER than kv=8 (per-split grid 4x thinner, same per-split combine cost).
+        // Crossover hunt: sp8 vs sp64 = 156.7/155.9 at d3072, 151.7/155.6 at d4096 -> boundary 3072.
+        if t_kv <= 3072 { 8 } else if t_kv <= 16384 { 64 } else { 128 }
     } else {
         if t_kv <= 8192 { 32 } else if t_kv <= 16384 { 64 } else { 128 }
     }
