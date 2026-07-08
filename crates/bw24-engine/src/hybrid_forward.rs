@@ -1360,6 +1360,29 @@ impl HybridModel {
             let q8 = moe_q8_enabled()
                 && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
                 && q8_expert_supported(m.down_exps.qtype);
+            // SMALL-M ROWS ARM (BW24_SPEC_M2, lane/spec-m2): batch the verify token loop —
+            // ONE batched z-quantize + ONE gate_up rows launch + ONE act quantize + ONE down
+            // rows launch (4 launches/layer, was 4t). BIT-IDENTICAL per token to the serial
+            // loop below (rows twins = the _v/w8h2v per-token programs on a grid.z token axis;
+            // quantize_q8_1 is per-32-block row-independent). Gated to the AUTO kernel modes —
+            // a custom BW24_MOE_DEVQ8_GU/DOWN diagnostic run keeps the serial loop so the
+            // dispatched kernel stays exactly the env-selected one — and to the w8h2v shape
+            // (n_ff_exp==512, n_used<=8), the same contract the AUTO down dispatch keys on.
+            let rows_arm = q8 && t > 1 && crate::spec::spec_m2()
+                && n_ff_exp == 512 && n_used <= 8
+                && std::env::var("BW24_MOE_DEVQ8_GU").map(|v| v.is_empty() || v == "v").unwrap_or(true)
+                && std::env::var("BW24_MOE_DEVQ8_DOWN").map(|v| v.is_empty() || v == "w8h2v").unwrap_or(true);
+            if rows_arm {
+                let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+                let act = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
+                                                          n_embd, n_ff_exp, n_used, n_expert,
+                                                          m.gate_exps.qtype, m.up_exps.qtype,
+                                                          m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
+                e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
+                                            t, n_ff_exp, n_embd, n_used, n_expert,
+                                            m.down_exps.qtype, m.down_exps.row_bytes)?;
+            } else {
             for tok in 0..t {
                 let zt = z.slice(tok * n_embd..(tok + 1) * n_embd);
                 let selt = sel_d.slice(tok * n_used..(tok + 1) * n_used);
@@ -1387,6 +1410,7 @@ impl HybridModel {
                                         n_ff_exp, n_embd, n_used, n_expert,
                                         m.down_exps.qtype, m.down_exps.row_bytes)?;
                 }
+            }
             }
         } else {
         // Launch under the cache lock: the row borrow lives as long as the closure, and the

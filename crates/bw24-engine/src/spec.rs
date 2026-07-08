@@ -43,6 +43,23 @@ pub(crate) fn spec_lean() -> bool {
     *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(true))
 }
 
+/// SMALL-M BATCHED VERIFY (BW24_SPEC_M2=1, default OFF — lane/spec-m2 2026-07-08): extend the
+/// batched linear-attn verify arm down to t=2 and batch the MoE dev token loop over a
+/// grid.z=token axis at every verify t. The close35 m-scaling probe put the m=2 verify tier at
+/// x1.54 of m=1 (llama x1.14); the per-column linear chain (t<3) and the serial MoE dev token
+/// loop are the two launch-structure causes. Both changes are LAUNCH-STRUCTURE ONLY:
+/// (a) the batched conv's t<pad ring update is pure copies (ssm_conv_ring_rebuild from a cloned
+///     ring — the ring stores raw input columns); every arithmetic kernel is the same one the
+///     t>=3 arm already runs (matmul_decode_exact bit-identical at m=2-4, gdn_scan's internal
+///     t-loop == chained T=1 steps);
+/// (b) the MoE dev-rows twins run the serial loop's per-token warp program with tok-offset
+///     pointers (same sel/w/aq/ad bytes, same dot order, same slot-ordered FMA chain).
+/// Gates arbitrate: run-spec K=1..8 self-consistency (35B+9B), kernel-check, run-gen argmax.
+pub(crate) fn spec_m2() -> bool {
+    static M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(false))
+}
+
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
 /// Only call this on such buffers — the lean contract is "identical bytes by construction".
 fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
@@ -575,7 +592,9 @@ impl HybridModel {
                     // projection is off the q8_1 fast path: matmul_decode_exact would route a Float
                     // tensor to cuBLAS at m=t (different FP accumulation than eager's per-token
                     // GEMV), so mixed-dtype layers stay on the eager-identical per-column chain.
-                    if t >= 3 && mixer_fast && e.uses_q8_1_fast(&la.ssm_out) {
+                    // BW24_SPEC_M2 (lane/spec-m2): the t==2 batch rides the same arm — the conv
+                    // wrapper handles t<pad with a pure-copy ring rebuild; see spec_m2() header.
+                    if (t >= 3 || (t == 2 && spec_m2())) && mixer_fast && e.uses_q8_1_fast(&la.ssm_out) {
                         let want = ckpt.is_some();
                         let (out, stash) = self.linear_attn_verify_t(e, la, &h, t, cache, il, want)?;
                         if let (Some(ck), Some(st)) = (ckpt.as_deref_mut(), stash) {
@@ -722,7 +741,8 @@ impl HybridModel {
              e.matmul_decode_exact(&la.ssm_alpha, h, t)?)
         };
 
-        // conv with CARRIED state + ring roll (T >= pad guaranteed by caller).
+        // conv with CARRIED state + ring roll (T >= pad rides the input-column update kernel;
+        // T < pad — the BW24_SPEC_M2 t=2 arm — rolls via the pure-copy ring rebuild).
         let rl = cache.recur[il].as_mut().unwrap();
         let mut conv_out = e.uninit(conv_dim * t)?;
         e.ssm_conv1d_tm_state(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),

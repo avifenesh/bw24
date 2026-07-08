@@ -1013,6 +1013,55 @@ impl Engine {
         Ok(())
     }
 
+    /// SMALL-M VERIFY rows twin (BW24_SPEC_M2, lane/spec-m2): ONE launch covers all `t` tokens
+    /// of the spec verify's MoE dev gate/up (grid.z = token) — the _v geometry per token, with
+    /// tok-offset sel/aq/ad/act pointers matching the serial loop's slices. BIT-IDENTICAL per
+    /// token (see the kernel header). aq/ad are the BATCHED z-quantize ([t, in_f] rows —
+    /// quantize_q8_1's per-32-block program is row-independent, so batched rows == the serial
+    /// loop's per-token quantize_q8_1_view bytes). Returns act [t, n_used, n_ff].
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8_dev_q8_rows(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                         aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, t: usize,
+                                         in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                         qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_dev_q8_v_rows");
+        let mut act = self.alloc_uninit::<f32>(t * n_used * n_ff)?;
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, t as u32),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, ne, nu, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                            n_used as i32, rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    /// SMALL-M VERIFY rows twin of the down proj: w8h2v geometry per token on a grid.z token
+    /// axis. Caller gates the w8h2v shape contract (in_f == 512, n_used <= 8) — same gate as
+    /// the AUTO dispatch in `moe_down8_fma_dev_q8`. aq2/ad2 = batched act quantize
+    /// ([t*n_used, in_f] rows). dst rows are FULLY overwritten per token.
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_dev_q8_rows(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                     w: &CudaSlice<f32>, aq2: &CudaSlice<i8>, ad2: &CudaSlice<f32>,
+                                     dst: &mut CudaSlice<f32>, t: usize,
+                                     in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
+                                     qt: i32, rb: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        assert!(in_f == 512 && n_used <= 8, "down rows twin is w8h2v shape-gated");
+        let f = self.func("moe_down8_fma_dev_q8_w8h2v_rows");
+        let cfg = LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, t as u32),
+                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 };
+        let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
+                                        n_expert as i32, rb as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// TEST SEAM (down8 lane 2026-07-08): launch a down dev_q8 variant BY NAME with its
     /// canonical geometry, bypassing the env-cached dispatch so moe-devq8-check can byte-
     /// compare variants in one process. Variants: "base", "w8h2", "w8h2r2", "w8h2v", "w8h2r2v".
@@ -3467,13 +3516,21 @@ impl Engine {
     }
 
     /// BATCHED verify conv (T>1, carried state): window reads the resident conv ring for
-    /// negative rows; separate ring-update launch afterwards. Requires T >= d_conv-1 (host
-    /// guarantees; verify runs T=K+1 with K>=2). BIT-IDENTICAL per value to the T=1 chain.
+    /// negative rows; separate ring-update launch afterwards. BIT-IDENTICAL per value to the
+    /// T=1 chain. T >= pad rides the pure input-column ring update (unchanged legacy path);
+    /// T < pad (the BW24_SPEC_M2 t=2 verify arm) needs old-ring sources for the roll — the
+    /// update kernel would race reading the ring it rewrites, so that arm clones the ring
+    /// (dtod) and rolls via ssm_conv_ring_rebuild (PURE COPIES: the ring stores raw input
+    /// columns; the final ring == what T sequential decode ring rolls leave).
     pub fn ssm_conv1d_tm_state(&self, qkv_tm: &CudaSlice<f32>, conv_state: &mut CudaSlice<f32>,
                                w: &CudaSlice<f32>, y: &mut CudaSlice<f32>,
                                conv_dim: usize, t: usize, d_conv: usize)
                                -> Result<(), Box<dyn std::error::Error>> {
-        assert!(t >= d_conv - 1, "ssm_conv1d_tm_state requires T >= pad");
+        assert!(t >= 1, "ssm_conv1d_tm_state requires T >= 1");
+        // clone BEFORE the window kernel is issued is not required (stream-ordered: the dtod and
+        // the window kernel both read the pre-roll ring; the roll launches after both) — but
+        // cloning first keeps the ordering trivially correct under any future stream split.
+        let ring_old = if t < d_conv - 1 { Some(self.clone_dtod(conv_state)?) } else { None };
         {
             let f = self.func("ssm_conv1d_tm_state_f32");
             let cfg = LaunchConfig {
@@ -3485,14 +3542,17 @@ impl Engine {
             b.arg(qkv_tm).arg(&*conv_state).arg(w).arg(y).arg(&cd).arg(&ti).arg(&dc);
             unsafe { b.launch(cfg)?; }
         }
-        {
-            let f = self.func("ssm_conv_ring_update_f32");
-            let n = conv_dim * (d_conv - 1);
-            let cfg = LaunchConfig::for_num_elems(n as u32);
-            let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
-            unsafe { b.launch(cfg)?; }
+        match ring_old {
+            None => {
+                let f = self.func("ssm_conv_ring_update_f32");
+                let n = conv_dim * (d_conv - 1);
+                let cfg = LaunchConfig::for_num_elems(n as u32);
+                let (cd, ti, dc) = (conv_dim as i32, t as i32, d_conv as i32);
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(qkv_tm).arg(conv_state).arg(&cd).arg(&ti).arg(&dc);
+                unsafe { b.launch(cfg)?; }
+            }
+            Some(old) => self.ssm_conv_ring_rebuild(qkv_tm, &old, conv_state, conv_dim, t, d_conv)?,
         }
         Ok(())
     }
