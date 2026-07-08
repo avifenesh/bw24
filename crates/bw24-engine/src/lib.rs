@@ -268,6 +268,43 @@ fn fa_v2_on() -> bool {
     std::env::var("BW24_FA_V2").map(|v| v != "0").unwrap_or(true)
 }
 
+/// FA v3 lane env gate (2026-07-09, research/fa/fa_v3_design.md): BW24_FA_V3=1 dispatches the
+/// HYBRID decode twins (fa_decode_vec_q_v3 / _rows_v3 / _v3_dc): llama's int8-dp4a K.Q with
+/// register-quantized Q (no K dequant, no K smem) + OUR CTA-shared staged bf16 V tile + OUR
+/// split partition/combine. NEW NUMERIC CONFIG (int8 Q quantization changes the K.Q accumulation
+/// vs the bf16-roundtrip FMA chain) — own argmax baseline; eager decode, the spec-verify rows
+/// path AND the graph _dc path switch TOGETHER (the spec-exactness law). Default OFF. Read per
+/// call so the gate battery can A/B within one process (the BW24_FA_V2 pattern). Takes
+/// precedence over the default-on v2 when set.
+fn fa_v3_on() -> bool {
+    std::env::var("BW24_FA_V3").map(|v| v == "1").unwrap_or(false)
+}
+
+/// The v3 dp4a K path reads RAW q8_0 bytes (34B blocks) and stages q5_1 V verbatim — it is only
+/// correct on the DEFAULT KV formats — and needs dpl % 4 == 0 consecutive quants per lane
+/// (head_dim % 128 == 0; both daily models are hd256). All three dispatch sites share this
+/// predicate so the twins can never diverge.
+fn fa_v3_active(head_dim: usize) -> bool {
+    fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
+}
+
+/// v3 GSUB (grid-fill knob): split the kv-head's gqa warp-pack across `gsub` CTAs
+/// (grid.x = n_head_kv*gsub, block.y = gqa/gsub). PURE SCHEDULING — the per-head walk,
+/// staged V values and partial layout are unchanged, so outputs are BIT-IDENTICAL for any
+/// gsub (not a numeric config; tunable freely). Each CTA re-reads/re-stages the V tile
+/// (x gsub DRAM+unpack) to buy CTA count: at depth the vec grid (n_splits x n_head_kv)
+/// starves the 82 SMs (ncu: 38% achieved occupancy at d6257 on the 35B) while DRAM sits
+/// at 10%. Default: gsub=2 at t_kv>=3072 when gqa>=4 (measured, see the lane JSONL);
+/// BW24_FA_V3_GSUB forces (must divide gqa).
+fn fa_v3_gsub(t_kv: usize, n_head: usize, n_head_kv: usize) -> usize {
+    let gqa = (n_head / n_head_kv).max(1);
+    let g: usize = if let Ok(v) = std::env::var("BW24_FA_V3_GSUB") {
+        v.parse().unwrap_or(1)
+    } else if t_kv >= 3072 && gqa >= 4 { 2 } else { 1 };
+    let g = g.clamp(1, gqa);
+    if gqa % g != 0 { 1 } else { g }
+}
+
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
 /// DtoH staging. cudarc's `alloc_pinned` uses CU_MEMHOSTALLOC_WRITECOMBINED, which is right for
 /// HtoD streams but pathologically slow for host READS — the router readback is host-read-heavy,
@@ -3315,7 +3352,17 @@ impl Engine {
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
                 std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
             });
-            if fa_v2_on() {
+            if fa_v3_active(head_dim) {
+                // FA v3 lane: dp4a-K hybrid (register-quantized Q, raw q8_0 K, staged-V kept).
+                // smem = sV only (half of v2's). GSUB folds into grid.x (scheduling only —
+                // bit-identical outputs for any gsub).
+                let gsub = fa_v3_gsub(t_kv, n_head, n_head_kv) as u32;
+                let fv = self.func("fa_decode_vec_q_v3");
+                let shmem = (32 * head_dim * 2) as u32;      // sV bf16 [FA_DEC_TILE=32][hd]
+                (fv,
+                 LaunchConfig { grid_dim: (n_head_kv as u32 * gsub, n_splits as u32, 1),
+                     block_dim: (32, gqa / gsub, 1), shared_mem_bytes: shmem })
+            } else if fa_v2_on() {
                 // FAVENDOR lane: llama fattn-vec tile-batched softmax + wide-load staging on
                 // OUR smem KV broadcast. Replaces BOTH per-key twins when on; same grid/block/
                 // partials; same 32KB sK+sV tile as the smem twin.
@@ -3345,9 +3392,11 @@ impl Engine {
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         };
+        let gsubi = fa_v3_gsub(t_kv, n_head, n_head_kv) as i32;   // v3 twins take the extra arg
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
+        if fa_vec && fa_v3_active(head_dim) { b.arg(&gsubi); }
         unsafe { b.launch(cfg)?; }
         let (fc, cfg2) = (self.func("fa_decode_combine_f32"),
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
@@ -3404,23 +3453,30 @@ impl Engine {
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
-        let smem_rows = !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
+        let v3 = fa_v3_active(head_dim);
+        let smem_rows = !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
+        let fname = if v3 { "fa_decode_vec_q_rows_v3" }
+                    else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = self.func(fname);
-        let shmem = if smem_rows || fa_v2_on() {
-            let sh = (2 * 32 * head_dim * 2) as u32;
+        let shmem = if v3 || smem_rows || fa_v2_on() {
+            // v3 stages sV only (16KB @hd256); v2/smem twins stage sK+sV (32KB).
+            let sh = (if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             sh
         } else { 0 };
-        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
-            block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
+        // v3 GSUB (scheduling only, bit-identical): keyed on the LAST row's bound (t_kv_max).
+        let gsub = if v3 { fa_v3_gsub(t_kv_max, n_head, n_head_kv) as u32 } else { 1 };
+        let gsubi = gsub as i32;
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32 * gsub, n_splits_max as u32, t as u32),
+            block_dim: (32, gqa / gsub, 1), shared_mem_bytes: shmem };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb);
+        if v3 { b.arg(&gsubi); }
         unsafe { b.launch(cfg)?; }
         let (fc, cfg2) = (self.func("fa_decode_combine_rows"),
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
@@ -3461,7 +3517,19 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec && fa_v2_on() {
+        let (f, cfg) = if fa_vec && fa_v3_active(head_dim) {
+            // FA v3 lane _dc twin: the captured graph must run the SAME walk body as eager
+            // under BW24_FA_V3=1 (eager, rows-verify and graph switch together). GSUB is
+            // keyed on bucket_max (host, capture-time) — a gsub mismatch vs eager's t_kv
+            // pick cannot break identity (gsub is scheduling only, bit-identical outputs).
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let gsub = fa_v3_gsub(bucket_max, n_head, n_head_kv) as u32;
+            let fv = self.func("fa_decode_vec_q_v3_dc");
+            let shmem = (32 * head_dim * 2) as u32;       // sV bf16 [FA_DEC_TILE=32][hd]
+            (fv,
+             LaunchConfig { grid_dim: (n_head_kv as u32 * gsub, n_splits as u32, 1),
+                 block_dim: (32, gqa / gsub, 1), shared_mem_bytes: shmem })
+        } else if fa_vec && fa_v2_on() {
             // FAVENDOR lane: v2 _dc twin — the captured graph must run the SAME walk body as
             // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
             // a numeric config; eager, rows-verify and graph all switch together).
@@ -3486,6 +3554,8 @@ impl Engine {
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
+        let gsubi = fa_v3_gsub(bucket_max, n_head, n_head_kv) as i32;
+        if fa_vec && fa_v3_active(head_dim) { b.arg(&gsubi); }
         unsafe { b.launch(cfg)?; }
         let fc = self.func("fa_decode_combine_f32");
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
