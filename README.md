@@ -76,15 +76,27 @@ Floating-point summation order is part of the contract: two mathematically equal
 
 ## Performance
 
-Measured on the target rig (RTX 5090 Laptop, N≥3 medians) against llama.cpp built on the same machine at its best serve config (MTP spec draft, quantized KV, FA, graphs), same exact prompts. Generation tok/s at three real prompt sizes — short code (28 tok), medium code (1.8k), long agentic (6.3k):
+Measured on the target rig (RTX 5090 Laptop, N≥3 medians, power state verified before every session) against llama.cpp built on the same machine, same exact prompts.
 
-| Model | bw24 | llama.cpp | Ratio |
+**Plain decode first** (no speculation, tg128 at 512-token context — the honest floor comparison):
+
+| Model | bw24 plain | llama.cpp plain | Ratio |
 |---|---|---|---|
-| Qwen3.5-9B NVFP4 (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | **1.59x / 1.29x / 1.28x** |
-| Qwen3.6-27B NVFP4 (spec, per-class K) | 122 / 96 / 76 | 87 / 92 / 75 | **1.40x / 1.04x / 1.00x** |
-| Qwen3.6-35B-A3B MoE (spec K=2 / plain) | 182 / 158 | 170 | **1.08x** / 0.93x |
+| Qwen3.6-27B NVFP4 | 47.2 | 43.6 | **1.08x** |
+| Qwen3.5-9B NVFP4 | 128.7 | 124.5 | **1.03x** |
+| Qwen3.6-35B-A3B MoE | 164.8 | 170.5 | 0.97x |
 
-The 27B row uses the measured per-prompt-class optimum (K=7 short-code, K=3 + generic vocab trim elsewhere) — the speculative depth that pays is a property of the content's per-slot acceptance decay, not of the engine, and the two engines bind differently: llama.cpp is cost-bound at short prompts (its draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance up to 1.40x. At medium/long prompts both engines sit on the same content-acceptance ceiling.
+**Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
+
+| Model | bw24 spec | llama.cpp spec-best | Notes |
+|---|---|---|---|
+| Qwen3.5-9B (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | p1/p2/p3 prompts, 2026-07-06 session |
+| Qwen3.6-27B (per-class K) | 122 / 96 / 76 | 87 / 92 / 75 | K=7 short-code, K=3 + generic trim elsewhere |
+| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 162 | n/a / 208 / 202 | raw-prompt protocol; llama = self-MTP serve-best |
+
+Two speculative mechanisms shipped in 2026-07-08's 35B push, both vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — the same 32k-row d2t list transfers across every model sharing the Qwen tokenizer (the gather reads each model's own lm_head bytes); and zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost while predictable ones ride the full chain (35B acceptance 65% → 84%).
+
+On the 27B the two engines bind differently: llama.cpp is cost-bound at short prompts (draft overhead caps it even at near-full acceptance) while bw24's cheaper rounds ride high acceptance to 1.40x; at medium/long prompts both sit on the same content-acceptance ceiling.
 
 The benchmark artifacts — trimmed draft-head GGUFs (generic/code75/balanced FR-Spec vocab trims for `BW24_FRSPEC_TRIM`), the exact prompts, and the full reproduction configs (env law, per-class K/pmin, llama.cpp build + serve flags) — are published at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench).
 
