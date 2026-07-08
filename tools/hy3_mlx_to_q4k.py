@@ -686,6 +686,262 @@ def transcode(args: argparse.Namespace) -> None:
     print(f"wrote {manifest_path}")
 
 
+def map_hy3_mtp_name(name: str, layer: int) -> str | None:
+    """Map base-checkpoint `model.layers.{layer}.*` MTP-head names to bw24 ggml names.
+
+    The base tencent/Hy3 head block differs from the REAP trunk naming in three ways:
+      * MTP glue tensors exist (`eh_proj`, `enorm`, `hnorm`, `final_layernorm`) — these map to the
+        `blk.N.nextn.*` names `MtpHead` loads (final_layernorm == shared_head_norm: the norm
+        before the reused trunk lm_head).
+      * the selection bias is `mlp.expert_bias` (trunk REAP artifact used `mlp.router.expert_bias`).
+      * routed experts are per-expert `mlp.experts.{i}.{gate,up,down}_proj.weight` (not stacked
+        `mlp.switch_mlp.*`) — handled by the expert-stacking path, not this map.
+
+    Returns None for names outside this layer or for per-expert names.
+    """
+    prefix = f"model.layers.{layer}."
+    if not name.startswith(prefix):
+        return None
+    s = name[len(prefix):]
+    if s.startswith("mlp.experts."):
+        return None
+    table = {
+        "eh_proj.weight": "nextn.eh_proj.weight",
+        "enorm.weight": "nextn.enorm.weight",
+        "hnorm.weight": "nextn.hnorm.weight",
+        "final_layernorm.weight": "nextn.shared_head_norm.weight",
+        "input_layernorm.weight": "attn_norm.weight",
+        "post_attention_layernorm.weight": "ffn_norm.weight",
+        "self_attn.q_norm.weight": "attn_q_norm.weight",
+        "self_attn.k_norm.weight": "attn_k_norm.weight",
+        "self_attn.q_proj.weight": "attn_q.weight",
+        "self_attn.k_proj.weight": "attn_k.weight",
+        "self_attn.v_proj.weight": "attn_v.weight",
+        "self_attn.o_proj.weight": "attn_output.weight",
+        "mlp.router.gate.weight": "ffn_gate_inp.weight",
+        "mlp.expert_bias": "exp_probs_b.bias",
+        "mlp.router.expert_bias": "exp_probs_b.bias",
+        "mlp.shared_mlp.gate_proj.weight": "ffn_gate_shexp.weight",
+        "mlp.shared_mlp.up_proj.weight": "ffn_up_shexp.weight",
+        "mlp.shared_mlp.down_proj.weight": "ffn_down_shexp.weight",
+    }
+    mapped = table.get(s)
+    if mapped is None:
+        raise ValueError(f"unrecognized MTP-head tensor name: {name}")
+    return f"blk.{layer}.{mapped}"
+
+
+def write_q4k_from_bf16(
+    store: SafeTensorDir,
+    name: str,
+    out_f: BinaryIO,
+    max_work_bytes: int,
+) -> tuple[list[int], int]:
+    """Stream one BF16 2D tensor -> Q4_K rows appended to out_f. Returns (shape, bytes_written)."""
+    info, raw = store.raw(name)
+    if info.dtype != "BF16":
+        raise ValueError(f"{name}: expected BF16 source, got {info.dtype}")
+    if len(info.shape) != 2:
+        raise ValueError(f"{name}: expected 2D, got {info.shape}")
+    rows_n, in_f = info.shape
+    if in_f % Q4K_BLOCK != 0:
+        raise ValueError(f"{name}: in_f {in_f} not a multiple of {Q4K_BLOCK}")
+    chunk = row_chunk_for(in_f, max_work_bytes)
+    written = 0
+    for start in range(0, rows_n, chunk):
+        end = min(start + chunk, rows_n)
+        rows = bf16_to_f32(raw[start * in_f * 2 : end * in_f * 2]).reshape(end - start, in_f)
+        b = quantize_q4k_rows(rows)
+        out_f.write(b)
+        written += len(b)
+    return [rows_n, in_f], written
+
+
+def write_f32_from_bf16(store: SafeTensorDir, name: str, out_path: Path) -> list[int]:
+    """Dequantize a small BF16 tensor to F32 bytes (router gate / expert bias safety)."""
+    info, raw = store.raw(name)
+    if info.dtype == "F32":
+        arr = np.frombuffer(raw, dtype="<f4")
+    elif info.dtype == "BF16":
+        arr = bf16_to_f32(raw)
+    else:
+        raise ValueError(f"{name}: expected BF16/F32 source, got {info.dtype}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(np.asarray(arr, dtype="<f4").tobytes())
+    return list(info.shape)
+
+
+def transcode_mtp(args: argparse.Namespace) -> None:
+    """Extract + transcode the base-checkpoint MTP head (`model.layers.{L}.*`) to Q4_K.
+
+    Source is BF16 (base tencent/Hy3), not MLX 4-bit — this is the bf16 -> Q4_K sibling of
+    `transcode`. Only the head layer's tensors are touched, so a partial shard set (just the
+    shards holding layer-L keys) is sufficient.
+    """
+    model_dir = Path(args.model_dir)
+    out_dir = Path(args.out_dir)
+    layer = int(args.layer)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "tensors").mkdir(exist_ok=True)
+    (out_dir / "experts").mkdir(exist_ok=True)
+    config = json.loads((model_dir / "config.json").read_text())
+    store = SafeTensorDir(model_dir)
+    max_work = int(args.max_work_mb) << 20
+    prefix = f"model.layers.{layer}."
+    names = sorted(n for n in store.weight_map if n.startswith(prefix))
+    if not names:
+        raise SystemExit(f"no {prefix}* tensors in index")
+    manifest: dict[str, Any] = {
+        "format": "bw24-hy3-mtp-q4k-repack-v1",
+        "source_repo": args.source_repo,
+        "source_dir": str(model_dir),
+        "head_layer": layer,
+        "created_utc": _dt.datetime.now(_dt.UTC).isoformat(),
+        "quality": "unverified — pending target-rig gates",
+        "source_metadata": store.metadata,
+        "config_sha256": sha256_file(model_dir / "config.json"),
+        "files": {},
+        "tensors": {},
+        "experts": [],
+    }
+    for side in ["config.json", "model.safetensors.index.json"]:
+        p = model_dir / side
+        if p.exists():
+            manifest["files"][side] = {"bytes": p.stat().st_size, "sha256": sha256_file(p)}
+
+    norm_names = {"enorm.weight", "hnorm.weight", "final_layernorm.weight",
+                  "input_layernorm.weight", "post_attention_layernorm.weight",
+                  "self_attn.q_norm.weight", "self_attn.k_norm.weight"}
+    f32_names = {"mlp.router.gate.weight", "mlp.expert_bias", "mlp.router.expert_bias"}
+    expert_re = re.compile(rf"^model\.layers\.{layer}\.mlp\.experts\.(\d+)\.(gate|up|down)_proj\.weight$")
+
+    experts: dict[str, dict[int, str]] = {"gate": {}, "up": {}, "down": {}}
+    consumed: set[str] = set()
+    try:
+        for name in names:
+            m = expert_re.match(name)
+            if m:
+                experts[m.group(2)][int(m.group(1))] = name
+                continue
+            s = name[len(prefix):]
+            mapped = map_hy3_mtp_name(name, layer)
+            info = store.info(name)
+            if s in norm_names:
+                out_path = out_dir / "tensors" / f"{safe_name(mapped)}.bin"
+                if not (args.resume and out_path.exists() and out_path.stat().st_size == info.nbytes):
+                    copy_tensor(store, name, out_path)
+                rec = {
+                    "source": name, "mapped": mapped,
+                    "file": str(out_path.relative_to(out_dir)),
+                    "qtype": info.dtype, "shape": info.shape,
+                    "ne": list(reversed(info.shape)), "bytes": info.nbytes,
+                    "note": "copied source tensor bytes",
+                }
+            elif s in f32_names:
+                out_path = out_dir / "tensors" / f"{safe_name(mapped)}.f32"
+                shape = write_f32_from_bf16(store, name, out_path)
+                rec = {
+                    "source": name, "mapped": mapped,
+                    "file": str(out_path.relative_to(out_dir)),
+                    "qtype": "F32", "shape": shape,
+                    "ne": list(reversed(shape)), "bytes": out_path.stat().st_size,
+                    "note": "router/selection tensor dequantized to F32 for routing safety",
+                }
+            else:
+                out_path = out_dir / "tensors" / f"{safe_name(mapped)}.q4k"
+                expected = q4k_expected_size(info.shape)
+                if not (args.resume and out_path.exists() and out_path.stat().st_size == expected):
+                    with out_path.open("wb") as f:
+                        shape, written = write_q4k_from_bf16(store, name, f, max_work)
+                    if written != expected:
+                        raise RuntimeError(f"{out_path} wrote {written} != {expected}")
+                row_bytes = (info.shape[-1] // Q4K_BLOCK) * Q4K_BYTES
+                rec = {
+                    "source": name, "mapped": mapped,
+                    "file": str(out_path.relative_to(out_dir)),
+                    "qtype": "Q4_K",
+                    "source_quant": {"mode": "bf16", "bits": 16},
+                    "shape": info.shape, "ne": list(reversed(info.shape)),
+                    "row_bytes": row_bytes, "bytes": expected,
+                }
+            manifest["tensors"][mapped] = rec
+            consumed.add(name)
+            print(f"{rec['qtype']:5s} {name} -> {rec['file']} {rec['bytes'] / 1e6:.3f} MB", flush=True)
+            store.drop_cached_shards()
+            trim_process_memory()
+
+        for proj in ["gate", "up", "down"]:
+            by_id = experts[proj]
+            n_expert = len(by_id)
+            if n_expert == 0:
+                continue
+            if sorted(by_id) != list(range(n_expert)):
+                raise RuntimeError(f"{proj}: non-contiguous expert ids {sorted(by_id)[:5]}...")
+            info0 = store.info(by_id[0])
+            out_f_dim, in_f = info0.shape
+            row_bytes = (in_f // Q4K_BLOCK) * Q4K_BYTES
+            expert_stride = out_f_dim * row_bytes
+            out_path = out_dir / "experts" / f"blk{layer}-{proj}-{n_expert}x{out_f_dim}x{in_f}.q4k"
+            expected_total = n_expert * expert_stride
+            if not (args.resume and out_path.exists() and out_path.stat().st_size == expected_total):
+                with out_path.open("wb") as f:
+                    for i in range(n_expert):
+                        name = by_id[i]
+                        shape, written = write_q4k_from_bf16(store, name, f, max_work)
+                        if shape != [out_f_dim, in_f]:
+                            raise RuntimeError(f"{name}: shape {shape} != [{out_f_dim},{in_f}]")
+                        if written != expert_stride:
+                            raise RuntimeError(f"{name}: wrote {written} != stride {expert_stride}")
+                        consumed.add(name)
+                        if i % 16 == 15:
+                            store.drop_cached_shards()
+                            trim_process_memory()
+            else:
+                consumed.update(by_id.values())
+            if out_path.stat().st_size != expected_total:
+                raise RuntimeError(f"{out_path} size != {expected_total}")
+            mapped = f"blk.{layer}.ffn_{proj}_exps.weight"
+            logical = [n_expert, out_f_dim, in_f]
+            manifest["tensors"][mapped] = {
+                "source": f"model.layers.{layer}.mlp.experts.{{0..{n_expert - 1}}}.{proj}_proj.weight",
+                "mapped": mapped,
+                "file": str(out_path.relative_to(out_dir)),
+                "qtype": "Q4_K",
+                "source_quant": {"mode": "bf16", "bits": 16},
+                "shape": logical, "ne": list(reversed(logical)),
+                "row_bytes": row_bytes, "bytes": expected_total,
+                "expert_stride": expert_stride,
+            }
+            manifest["experts"].append({
+                "mapped": mapped, "layer": layer, "proj": proj,
+                "file": str(out_path.relative_to(out_dir)),
+                "qtype": "Q4_K", "n_expert": n_expert,
+                "out_f": out_f_dim, "in_f": in_f,
+                "row_bytes": row_bytes, "expert_stride": expert_stride,
+                "expert_offsets": [
+                    {"expert": i, "offset": i * expert_stride, "size": expert_stride}
+                    for i in range(n_expert)
+                ],
+            })
+            print(f"Q4_K  {mapped} <- {n_expert} experts -> {out_path.name} "
+                  f"{expected_total / 1e6:.1f} MB", flush=True)
+            store.drop_cached_shards()
+            trim_process_memory()
+    finally:
+        store.close()
+
+    missing = [n for n in names if n not in consumed]
+    if missing:
+        raise RuntimeError(f"{len(missing)} layer-{layer} tensors not consumed: {missing[:5]}")
+    manifest["source_tensor_count"] = len(names)
+    manifest_path = out_dir / "manifest.json"
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    tmp.replace(manifest_path)
+    print(f"wrote {manifest_path} ({len(manifest['tensors'])} tensors, "
+          f"{len(manifest['experts'])} expert slabs, {len(names)} source keys consumed)")
+
+
 def encode_mlx_affine(arr: np.ndarray, bits: int = 4, group_size: int = 64) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     arr = np.asarray(arr, dtype=np.float32)
     if arr.shape[-1] % group_size != 0:
@@ -805,7 +1061,160 @@ def run_synthetic_tests() -> None:
             raise AssertionError("synthetic expert offset manifest mismatch")
         if (out_dir / rec["file"]).stat().st_size != q4k_expected_size([2, 32, 256]):
             raise AssertionError("synthetic transcode Q4_K file size mismatch")
+    run_synthetic_mtp_test(rng)
     print("synthetic tests: PASS")
+
+
+def f32_to_bf16_bytes(arr: np.ndarray) -> bytes:
+    """Round-to-nearest-even f32 -> bf16 raw bytes."""
+    u32 = np.asarray(arr, dtype="<f4").view(np.uint32)
+    rounded = (u32 + 0x7FFF + ((u32 >> 16) & 1)) >> 16
+    return rounded.astype("<u2").tobytes()
+
+
+def run_synthetic_mtp_test(rng: np.random.Generator) -> None:
+    """End-to-end transcode-mtp on a tiny fake BF16 layer-80-style checkpoint."""
+    import tempfile
+
+    hid, kv, ffn, n_exp = 512, 256, 256, 3
+    layer = 80
+    tensors: dict[str, tuple[str, list[int], bytes]] = {}
+    f32_ref: dict[str, np.ndarray] = {}
+
+    def add_bf16(suffix: str, shape: list[int]) -> None:
+        a = rng.normal(0, 0.25, size=shape).astype(np.float32)
+        b = f32_to_bf16_bytes(a)
+        name = f"model.layers.{layer}.{suffix}"
+        tensors[name] = ("BF16", shape, b)
+        f32_ref[name] = bf16_to_f32(b).reshape(shape)
+
+    for s in ["enorm.weight", "hnorm.weight", "final_layernorm.weight",
+              "input_layernorm.weight", "post_attention_layernorm.weight"]:
+        add_bf16(s, [hid])
+    add_bf16("self_attn.q_norm.weight", [64])
+    add_bf16("self_attn.k_norm.weight", [64])
+    add_bf16("eh_proj.weight", [hid, 2 * hid])
+    add_bf16("self_attn.q_proj.weight", [hid, hid])
+    add_bf16("self_attn.k_proj.weight", [kv, hid])
+    add_bf16("self_attn.v_proj.weight", [kv, hid])
+    add_bf16("self_attn.o_proj.weight", [hid, hid])
+    add_bf16("mlp.router.gate.weight", [n_exp, hid])
+    bias = rng.normal(0, 1.0, size=[n_exp]).astype("<f4")
+    tensors[f"model.layers.{layer}.mlp.expert_bias"] = ("F32", [n_exp], bias.tobytes())
+    for p in ["gate", "up"]:
+        add_bf16(f"mlp.shared_mlp.{p}_proj.weight", [ffn, hid])
+    add_bf16("mlp.shared_mlp.down_proj.weight", [hid, ffn])
+    for i in range(n_exp):
+        for p in ["gate", "up"]:
+            add_bf16(f"mlp.experts.{i}.{p}_proj.weight", [ffn, hid])
+        add_bf16(f"mlp.experts.{i}.down_proj.weight", [hid, ffn])
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        shard = root / "model-00001-of-00001.safetensors"
+        write_safetensors(shard, tensors)
+        (root / "model.safetensors.index.json").write_text(json.dumps({
+            "metadata": {"total_size": shard.stat().st_size},
+            "weight_map": {n: shard.name for n in tensors},
+        }))
+        (root / "config.json").write_text(json.dumps({"model_type": "hy_v3"}))
+        out_dir = root / "out"
+        transcode_mtp(argparse.Namespace(
+            model_dir=str(root), out_dir=str(out_dir), layer=layer,
+            max_work_mb=32, resume=True, source_repo="synthetic",
+        ))
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        if len(manifest["tensors"]) != 17 + 3:
+            raise AssertionError(f"mtp manifest tensor count {len(manifest['tensors'])}")
+        if manifest["source_tensor_count"] != len(tensors):
+            raise AssertionError("mtp manifest did not consume all source keys")
+
+        # Glue names map to the MtpHead nextn.* namespace.
+        for want in [f"blk.{layer}.nextn.eh_proj.weight", f"blk.{layer}.nextn.enorm.weight",
+                     f"blk.{layer}.nextn.hnorm.weight", f"blk.{layer}.nextn.shared_head_norm.weight",
+                     f"blk.{layer}.exp_probs_b.bias", f"blk.{layer}.ffn_gate_inp.weight"]:
+            if want not in manifest["tensors"]:
+                raise AssertionError(f"missing mapped tensor {want}")
+
+        # Q4_K tensors: quantize->dequantize must match a direct quantize of the bf16-derived f32.
+        rec = manifest["tensors"][f"blk.{layer}.nextn.eh_proj.weight"]
+        raw = (out_dir / rec["file"]).read_bytes()
+        ref_src = f32_ref[f"model.layers.{layer}.eh_proj.weight"]
+        if raw != quantize_q4k_rows(ref_src):
+            raise AssertionError("mtp eh_proj Q4_K bytes differ from direct quantize of f32 reference")
+        back = q4k_dequant_rows(raw, ref_src.shape[-1])
+        q_step = np.abs(ref_src).max() / 7.5  # coarse Q4_K-class bound
+        if float(np.max(np.abs(back - ref_src))) > q_step:
+            raise AssertionError("mtp eh_proj dequant outside Q4_K rounding class")
+
+        # Router/bias must be F32 with exact values.
+        gate = np.frombuffer((out_dir / manifest["tensors"][f"blk.{layer}.ffn_gate_inp.weight"]["file"]).read_bytes(), dtype="<f4")
+        if not np.array_equal(gate.reshape(n_exp, hid), f32_ref[f"model.layers.{layer}.mlp.router.gate.weight"]):
+            raise AssertionError("router gate F32 dequant mismatch")
+        got_bias = np.frombuffer((out_dir / manifest["tensors"][f"blk.{layer}.exp_probs_b.bias"]["file"]).read_bytes(), dtype="<f4")
+        if not np.array_equal(got_bias, bias):
+            raise AssertionError("expert_bias F32 copy mismatch")
+
+        # Expert slab: expert-axis-slowest stacking, offsets, per-expert byte equality.
+        for exp in manifest["experts"]:
+            slab = (out_dir / exp["file"]).read_bytes()
+            if len(slab) != exp["n_expert"] * exp["expert_stride"]:
+                raise AssertionError("expert slab size mismatch")
+            for i in range(exp["n_expert"]):
+                src = f32_ref[f"model.layers.{layer}.mlp.experts.{i}.{exp['proj']}_proj.weight"]
+                want = quantize_q4k_rows(src)
+                off = exp["expert_offsets"][i]["offset"]
+                if slab[off : off + exp["expert_stride"]] != want:
+                    raise AssertionError(f"expert {i} {exp['proj']} slab bytes mismatch at offset {off}")
+    print("synthetic mtp transcode test: PASS")
+
+
+def run_real_mtp_sample(model_dir: Path, out_dir: Path, limit: int) -> None:
+    """Re-derive Q4_K bytes for sampled rows of real transcoded MTP tensors and compare."""
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    store = SafeTensorDir(model_dir)
+    checked = 0
+    try:
+        for mapped, rec in sorted(manifest["tensors"].items()):
+            if checked >= limit or rec["qtype"] != "Q4_K" or "{" in rec["source"]:
+                continue
+            info, raw = store.raw(rec["source"])
+            rows_n, in_f = info.shape
+            rows = min(3, rows_n)
+            f = bf16_to_f32(bytes(raw[: rows * in_f * 2])).reshape(rows, in_f)
+            del raw
+            want = quantize_q4k_rows(f)
+            row_bytes = rec["row_bytes"]
+            with (out_dir / rec["file"]).open("rb") as fh:
+                got = fh.read(rows * row_bytes)
+            if got != want:
+                raise AssertionError(f"{mapped}: on-disk Q4_K rows differ from recomputed reference")
+            back = q4k_dequant_rows(got, in_f)
+            print(f"real mtp sample {checked + 1}: {mapped} rows={rows} "
+                  f"max_abs={np.max(np.abs(back - f)):.6f}")
+            checked += 1
+        # One expert spot-check straight from the slab offsets.
+        for exp in manifest["experts"][:1]:
+            i = exp["n_expert"] - 1
+            src_name = f"model.layers.{exp['layer']}.mlp.experts.{i}.{exp['proj']}_proj.weight"
+            info, raw = store.raw(src_name)
+            f = bf16_to_f32(bytes(raw)).reshape(info.shape)
+            del raw
+            want = quantize_q4k_rows(f)
+            off = exp["expert_offsets"][i]["offset"]
+            with (out_dir / exp["file"]).open("rb") as fh:
+                fh.seek(off)
+                got = fh.read(exp["expert_stride"])
+            if got != want:
+                raise AssertionError(f"expert {i} {exp['proj']} slab bytes != recomputed reference")
+            back = q4k_dequant_rows(got, exp["in_f"])
+            print(f"real mtp expert check: expert {i} {exp['proj']} offset {off} "
+                  f"max_abs={np.max(np.abs(back - f)):.6f}")
+    finally:
+        store.close()
+    if checked == 0:
+        raise SystemExit("no real MTP Q4_K tensors sampled")
+    print("real mtp sampled tests: PASS")
 
 
 def run_real_sample(model_dir: Path, limit: int) -> None:
@@ -864,9 +1273,18 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--max-work-mb", type=int, default=512)
     tr.add_argument("--resume", action="store_true", default=True)
     tr.add_argument("--limit-tensors", type=int, default=0, help="test/debug: stop after N output tensors")
+    trm = sub.add_parser("transcode-mtp", help="extract+transcode the BF16 MTP head layer to Q4_K")
+    trm.add_argument("model_dir", help="dir with model.safetensors.index.json + the head-layer shards")
+    trm.add_argument("out_dir")
+    trm.add_argument("--layer", type=int, default=80)
+    trm.add_argument("--max-work-mb", type=int, default=512)
+    trm.add_argument("--resume", action="store_true", default=True)
+    trm.add_argument("--source-repo", default="tencent/Hy3")
     tst = sub.add_parser("test")
     tst.add_argument("--real-model-dir")
     tst.add_argument("--real-limit", type=int, default=3)
+    tst.add_argument("--real-mtp-dir", help="base shard dir for real MTP sample checks")
+    tst.add_argument("--real-mtp-out", help="transcoded MTP output dir for real sample checks")
     args = p.parse_args(argv)
     if args.cmd == "inventory":
         summary = inventory(Path(args.model_dir), Path(args.out))
@@ -875,10 +1293,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "transcode":
         transcode(args)
         return 0
+    if args.cmd == "transcode-mtp":
+        transcode_mtp(args)
+        return 0
     if args.cmd == "test":
         run_synthetic_tests()
         if args.real_model_dir:
             run_real_sample(Path(args.real_model_dir), args.real_limit)
+        if args.real_mtp_dir and args.real_mtp_out:
+            run_real_mtp_sample(Path(args.real_mtp_dir), Path(args.real_mtp_out), args.real_limit)
         return 0
     raise AssertionError(args.cmd)
 
