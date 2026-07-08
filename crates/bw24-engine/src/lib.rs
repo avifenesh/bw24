@@ -204,12 +204,14 @@ fn fa_ppool_on() -> bool {
 }
 
 /// FAVENDOR lane env gate (2026-07-08): BW24_FA_V2=1 dispatches the llama-fattn-vec-mechanism
-/// decode kernels (fa_decode_vec_q_v2 / fa_decode_vec_q_rows_v2): tile-batched online softmax
-/// (one alpha rescale per 32-key tile instead of per key) + register streaming (no smem staging,
-/// no block syncs). NEW NUMERIC CONFIG (tile-level softmax regrouping changes FP order vs the
-/// per-key twins) — own argmax baseline; eager decode and the spec-verify rows path switch
-/// TOGETHER (the spec-exactness law). Default OFF. Read per call (not OnceLock) so the gate
-/// battery can A/B within one process, matching the BW24_NO_FA_VEC pattern.
+/// decode kernels (fa_decode_vec_q_v2 / fa_decode_vec_q_rows_v2 / fa_decode_vec_q_v2_dc):
+/// tile-batched online softmax (one alpha rescale per 32-key tile instead of per key) + wide-load
+/// block dequant in the staging phase. NOTE rev2: llama's register streaming (no smem) was ALSO
+/// tried and measured 2x WORSE at depth in our gqa-warps frame — the smem KV-tile broadcast stays
+/// (see the kernel comment). NEW NUMERIC CONFIG (tile-level softmax regrouping changes FP order vs
+/// the per-key twins) — own argmax baseline; eager decode, the spec-verify rows path AND the
+/// graph _dc path switch TOGETHER (the spec-exactness law). Default OFF. Read per call (not
+/// OnceLock) so the gate battery can A/B within one process, matching the BW24_NO_FA_VEC pattern.
 fn fa_v2_on() -> bool {
     std::env::var("BW24_FA_V2").map(|v| v == "1").unwrap_or(false)
 }
@@ -3401,7 +3403,17 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec {
+        let (f, cfg) = if fa_vec && fa_v2_on() {
+            // FAVENDOR lane: v2 _dc twin — the captured graph must run the SAME walk body as
+            // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
+            // a numeric config; eager, rows-verify and graph all switch together).
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let fv = self.func("fa_decode_vec_q_v2_dc");
+            let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
+            (fv,
+             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+        } else if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // REGISTER-DEQUANT twin: zero dynamic smem (see fa_decode above).
             let fv = self.func("fa_decode_vec_q_dc");

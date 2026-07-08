@@ -2353,6 +2353,70 @@ extern "C" __global__ void fa_decode_vec_q_rows_v2(
     }
 }
 
+// _dc (graph-capture) twin of fa_decode_vec_q_v2: T_kv comes from a device counter, n_splits is
+// sized from bucket_max at capture (same contract as fa_decode_vec_q_dc). Calls the SAME
+// fa_dec_v2_walk body -> bit-identical to the eager v2 kernel for equal (t_kv, n_splits), which is
+// the graph-vs-eager identity the graph_decode_gate pins. Without this twin, BW24_FA_V2=1 would
+// silently diverge the captured graph (per-key _dc walk) from eager (tile-batched v2 walk).
+extern "C" __global__ void fa_decode_vec_q_v2_dc(
+        const float* __restrict__ Q,
+        const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V,
+        float* __restrict__ partO,
+        float* __restrict__ partM,
+        float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
+        float scale, int n_splits,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    float q_reg[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)0 * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    extern __shared__ __nv_bfloat16 ssh_v2_dc[];     // sK[FA_DEC_TILE*head_dim] then sV[...]
+    __nv_bfloat16* sK = ssh_v2_dc;
+    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim;
+    const int bt  = wy * WARP_SZ + lane;
+    const int bsz = WARP_SZ * gqa;
+    const int kblk0 = (kv_head * head_dim) >> 5;
+    fa_dec_v2_walk(K, V, sK, sV, bt, bsz, q_reg, dpl, lane, head_dim,
+                   t_lo, t_hi, kblk0, k_tok_bytes, v_tok_bytes, m_i, l_i, acc);
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
+}
+
 // Combine flash-decoding splits with the log-sum-exp rule -> final O[head_dim, n_head, 1].
 // grid = (n_head, 1, 1); block = (head_dim, 1, 1).
 extern "C" __global__ void fa_decode_combine_f32(
