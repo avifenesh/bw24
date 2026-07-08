@@ -6,7 +6,7 @@ _Written 2026-07-03, standings updated 2026-07-07. Read this cold, then continue
 
 ## STANDINGS 2026-07-08 (full-power verified, plain-first per mandate; llama = floor, margin bar = 1.15x)
 
-PLAIN (tg128@d512, N=3): 27B 47.2 vs llama 43.6 = 1.08x | 9B 131.6 vs 124.5 = 1.06x (q5 il default-on; 134.5+ with KQ_NVFP4=2 speed mode, ~3pt acceptance tax) | 35B 169.0 vs 170.5 = 0.99x (depth: d6257 152.8 vs 159.9 = 0.96x). NO CELL AT 1.15x MARGIN — and the campaign KILLED the '61%-of-wall k-quant headroom' premise: that figure was a mem-P-state artifact + DVFS clock residency (see laws below). Remaining plain levers = J/token reduction (DVFS headroom) + the 35B depth residual, not SASS dieting.
+PLAIN (tg128, both engines same-day, FA_V2 default-on 2026-07-08 evening): d512 — 9B 132.7 vs 124.6 = 1.07x | 27B 47.7 vs 43.5 = 1.10x | 35B 173.4 vs 170.5 = 1.02x (ALL THREE ABOVE LLAMA, first time). d6257 — 9B 124.5 vs 119.6 = 1.04x | 27B 44.9 vs 42.0 = 1.07x | 35B 158.5 vs 159.9 = 0.99x. Mechanism that did it: FA_V2 tile-batched online softmax (favendor lane — llama's depth flatness was OUR serial softmax chain, not their kernel; theirs is actually slower). Margin bar (>=1.1x) still open everywhere except 27B d512.
 
 SPEC: 27B per-class K = 122/96/76 vs llama serve 87/92/75 (1.40x/1.04x/1.00x) | 9B K=3 = 200-202 p1 (1.6x) | 35B K=2+trim+zero-draft = 197/194/177 vs llama self-MTP 215/208/202 (0.92/0.93/0.88x). Spec mechanisms are per-(model,content): K depth, trim variant (generic transfers across same-vocab models; specialized rankings do not), PMIN0 zero-draft rounds (pays below ~75% base acceptance, hurts above ~90%).
 
