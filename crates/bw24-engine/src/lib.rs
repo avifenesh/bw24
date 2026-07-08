@@ -283,7 +283,10 @@ fn fa_v2_on() -> bool {
 /// call so the gate battery can A/B within one process (the BW24_FA_V2 pattern). Takes
 /// precedence over the default-on v2 when set.
 fn fa_v3_on() -> bool {
-    std::env::var("BW24_FA_V3").map(|v| v == "1").unwrap_or(false)
+    // DEFAULT ON since 2026-07-09 (BW24_FA_V3=0 reverts to v2): dp4a-K hybrid FA decode —
+    // fa kernel -21-23% at depth (micro), 35B spec p3 +5% (190->200, the last spec cell),
+    // d6257 +1.7%. Own numeric config; full battery green on 35B+9B incl graph bit-identity.
+    std::env::var("BW24_FA_V3").map(|v| v != "0").unwrap_or(true)
 }
 
 /// The v3 dp4a K path reads RAW q8_0 bytes (34B blocks) and stages q5_1 V verbatim — it is only
