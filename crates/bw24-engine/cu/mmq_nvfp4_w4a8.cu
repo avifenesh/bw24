@@ -26,6 +26,10 @@
 //
 // C-ABI launcher: bw24_mmq_nvfp4_w4a8 (+ shared bw24_mmq_nvfp4_w4a8_act_bytes). Compiled to the same
 // libbw24_mmq.a static lib, called from Rust via FFI, dispatched behind BW24_MMQ_W4A8=1.
+//
+// BW24_PP_PIPE=1 (experiment, default OFF): cp.async multi-stage smem pipeline for the same tile —
+// raw FP4 staged async + LUT-dequanted from smem, q8_1 y-chunks double-buffered. Bit-identical
+// output (data movement only); see the pipeline section below for the schedule.
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -255,6 +259,154 @@ static __device__ __forceinline__ void load_tiles_nvfp4_w4a8(
     }
 }
 
+// ======================= cp.async multi-stage pipeline (BW24_PP_PIPE=1) =======================
+// Marlin-style cross-iteration smem pipeline for the SAME tile math above. cp.async changes WHEN
+// bytes arrive, never WHAT is computed: the weight FP4 bytes are staged RAW into a smem buffer and
+// the LUT dequant (dequant_tiles_* below) reads the identical bytes with identical math, thread
+// mapping, and smem write order as load_tiles_nvfp4_w4a8 — bit-identical tile_x. The q8_1 y-chunks
+// go into a 2-slot smem ring, each chunk's copy issued one compute phase ahead of use.
+//
+// Steady-state per k-iteration i (3 commit groups, uniform wait counts, 4 syncthreads = baseline):
+//   wait<1>  -> X_i raw complete (G2 of iter i-1)          | sync (a)
+//   dequant xr -> tile_x (smem->smem, off critical mem path)
+//   G1: cp.async Y[2i+1] -> ty1                            | wait<1> -> Y[2i] (G3 of i-1) | sync(bc)
+//   G2: cp.async X_{i+1} raw -> xr (single slot: free after dequant; empty group on last iter)
+//   vec_dot(ty0, k00=0)                                    | sync (d)
+//   G3: cp.async Y[2i+2] -> ty0 (empty group on last iter)
+//   wait<2>  -> Y[2i+1] (G1) complete                      | sync (e)
+//   vec_dot(ty1, k00=32)
+// X_{i+1} is in flight across BOTH vec_dots (a full iteration); each Y chunk across one vec_dot.
+
+static __device__ __forceinline__ void pipe_cp_async_16(void * smem_dst, const void * gsrc) {
+    const unsigned d = (unsigned) __cvta_generic_to_shared(smem_dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(d), "l"(gsrc));
+}
+static __device__ __forceinline__ void pipe_cp_async_4(void * smem_dst, const void * gsrc) {
+    const unsigned d = (unsigned) __cvta_generic_to_shared(smem_dst);
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(d), "l"(gsrc));
+}
+static __device__ __forceinline__ void pipe_commit() { asm volatile("cp.async.commit_group;\n"); }
+template <int n>
+static __device__ __forceinline__ void pipe_wait() { asm volatile("cp.async.wait_group %0;\n" :: "n"(n)); }
+
+// Stage one q8_1 y-chunk (mmq_x * MMQ_TILE_Y_K ints, contiguous in global) as 16B lines. Global
+// offsets are all multiples of 144B (36-int block_q8_1_mmq strides) -> 16B alignment holds.
+template <int mmq_x>
+static __device__ __forceinline__ void pipe_stage_y(int * __restrict__ dst, const int * __restrict__ src) {
+    constexpr int nthreads = MMQ_NWARPS * MMQ_WARP_SIZE;
+    constexpr int nlines   = mmq_x * MMQ_TILE_Y_K / 4; // 16B lines (TILE_Y_K=36 -> always integral)
+    const int t = threadIdx.y * MMQ_WARP_SIZE + threadIdx.x;
+#pragma unroll
+    for (int l0 = 0; l0 < nlines; l0 += nthreads) {
+        const int L = l0 + t;
+        if (nlines % nthreads != 0 && L >= nlines) { break; }
+        pipe_cp_async_16(dst + 4 * L, src + 4 * L);
+    }
+}
+
+// Raw x-stage buffer layout (18KB at mmq_y=128, both weight layouts):
+//   is_rp=true : [mmq_y*4 blocks x 32B qs][mmq_y*4 blocks x 4B d]  (local block li = i*4 + kbx)
+//   is_rp=false: [mmq_y*4 blocks x 36B block_nvfp4]                (li*36, rows contiguous 144B)
+// need_check: source row clamps to i_max (same rows the plain loader reads); dest slot stays
+// UNclamped so no two cp.async writes alias — dequant reads slot min(i,i_max), which holds row
+// min(i,i_max)'s bytes either way.
+#define PIPE_XR_BYTES ((size_t) MMQ_Y * 4 * 36)
+
+template <int mmq_y, bool need_check>
+static __device__ __forceinline__ void pipe_stage_x_rp(
+        char * __restrict__ xr, const char * __restrict__ x, const char * __restrict__ x_sc,
+        const int kb0, const int i_max, const int stride) {
+    constexpr int nthreads = MMQ_NWARPS * MMQ_WARP_SIZE;
+    const int t = threadIdx.y * MMQ_WARP_SIZE + threadIdx.x;
+    // qs plane: mmq_y rows x 128B (4 consecutive blocks x 32B, 32B-aligned) as 16B lines.
+    constexpr int qlines = mmq_y * 8;
+#pragma unroll
+    for (int l0 = 0; l0 < qlines; l0 += nthreads) {
+        const int L = l0 + t;
+        const int r = L / 8, line = L % 8;
+        const int row = need_check ? min(r, i_max) : r;
+        pipe_cp_async_16(xr + (size_t) r * 128 + line * 16,
+                         x + (size_t) (kb0 + row * stride) * 32 + line * 16);
+    }
+    // d plane: mmq_y rows x 16B (4 blocks x 4B). Global only 4B-aligned in general -> 4B copies.
+    char * xr_d = xr + (size_t) mmq_y * 128;
+    constexpr int dops = mmq_y * 4;
+#pragma unroll
+    for (int l0 = 0; l0 < dops; l0 += nthreads) {
+        const int L = l0 + t;
+        const int r = L / 4, w = L % 4;
+        const int row = need_check ? min(r, i_max) : r;
+        pipe_cp_async_4(xr_d + (size_t) r * 16 + w * 4,
+                        x_sc + (size_t) (kb0 + row * stride) * 4 + w * 4);
+    }
+}
+
+template <int mmq_y, bool need_check>
+static __device__ __forceinline__ void pipe_stage_x_gguf(
+        char * __restrict__ xr, const char * __restrict__ x,
+        const int kb0, const int i_max, const int stride) {
+    constexpr int nthreads = MMQ_NWARPS * MMQ_WARP_SIZE;
+    const int t = threadIdx.y * MMQ_WARP_SIZE + threadIdx.x;
+    // mmq_y rows x 144B (4 consecutive 36B blocks). 36B blocks are only 4B-aligned -> 4B copies.
+    constexpr int ops = mmq_y * 36;
+#pragma unroll
+    for (int l0 = 0; l0 < ops; l0 += nthreads) {
+        const int L = l0 + t;
+        const int r = L / 36, o = L % 36;
+        const int row = need_check ? min(r, i_max) : r;
+        pipe_cp_async_4(xr + (size_t) r * 144 + o * 4,
+                        x + (size_t) (kb0 + row * stride) * 36 + o * 4);
+    }
+}
+
+// Dequant the staged raw bytes -> tile_x. Token-for-token the same math, thread mapping, and smem
+// write order as load_tiles_nvfp4_w4a8 — only the source pointers move from global to the xr stage.
+template <int mmq_y, bool need_check, bool is_rp>
+static __device__ __forceinline__ void dequant_tiles_nvfp4_w4a8(
+        const char * __restrict__ xr, int * __restrict__ x_tile, const int i_max) {
+    constexpr int nwarps = MMQ_NWARPS;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K * 2);
+
+    constexpr int threads_per_row = MMQ_ITER_K / QK_NVFP4;     // 4 blocks per row per iter
+    constexpr int rows_per_warp = warp_size / threads_per_row; // 8
+    const int kbx = threadIdx.x % threads_per_row;
+    const int row_in_warp = threadIdx.x / threads_per_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += rows_per_warp * nwarps) {
+        int i = i0 + threadIdx.y * rows_per_warp + row_in_warp;
+        if constexpr (need_check) { i = min(i, i_max); }
+
+        const int li = i * threads_per_row + kbx; // staged local block index
+        const uint32_t * __restrict__ src_qs;
+        const uint8_t  * __restrict__ src_d;
+        if constexpr (is_rp) {
+            src_qs = reinterpret_cast<const uint32_t *>(xr + (size_t) li * 32);
+            src_d  = reinterpret_cast<const uint8_t  *>(xr + (size_t) mmq_y * 128 + (size_t) li * 4);
+        } else {
+            const block_nvfp4 * bxi = (const block_nvfp4 *) xr + li;
+            src_qs = reinterpret_cast<const uint32_t *>(bxi->qs);
+            src_d  = bxi->d;
+        }
+        const int kqs = 16 * kbx;
+        const int ksc = 4 * kbx;
+
+#pragma unroll
+        for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
+            const int2 q0 = get_int_from_table_16(src_qs[2 * sub + 0], kvalues_mxfp4);
+            const int2 q1 = get_int_from_table_16(src_qs[2 * sub + 1], kvalues_mxfp4);
+            x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 0] = q0.x;
+            x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 1] = q1.x;
+            x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 2] = q0.y;
+            x_qs[i * MMQ_MMA_TILE_X_K_NVFP4 + kqs + 4 * sub + 3] = q1.y;
+            x_df[i * MMQ_MMA_TILE_X_K_NVFP4 + ksc + sub] = ggml_cuda_ue4m3_to_fp32(src_d[sub]);
+        }
+    }
+}
+
 // ======================= vec_dot_q8_0_16_q8_1_mma (mmq.cuh:1495, TURING arm) =======================
 template <int mmq_x, int mmq_y>
 static __device__ __forceinline__ void vec_dot_nvfp4_w4a8_mma(
@@ -418,8 +570,95 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_w4a8(
         sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
 }
 
-// ======================= mul_mat_q (conventional xy-tiling, NVFP4 W4A8) =======================
+// ======================= mul_mat_q_process_tile PIPELINED (BW24_PP_PIPE=1) =======================
+// Same math as mul_mat_q_process_tile_nvfp4_w4a8 (identical dequant/vec_dot/write-back and FP add
+// order); only the global->smem movement is restructured onto cp.async (schedule in the pipeline
+// header comment above). smem: ids | ty0 | ty1 | tile_x | xr = 98816B at 128x128 (<= 99KB opt-in).
 template <int mmq_x, bool need_check, bool is_rp>
+static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_w4a8_pipe(
+        const char * __restrict__ x, const char * __restrict__ x_sc, const int offset_x,
+        const int * __restrict__ y,
+        const int * __restrict__ ids_dst, float * __restrict__ dst,
+        const int stride_row_x, const int ncols_y, const int stride_col_dst,
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
+        const float out_scale) {
+    constexpr int warp_size = MMQ_WARP_SIZE;
+    constexpr int nwarps    = MMQ_NWARPS;
+    constexpr int qk        = QK_NVFP4;
+    constexpr int mmq_y     = MMQ_Y;
+
+    extern __shared__ int data_mul_mat_q[];
+    constexpr int y_chunk_ints = GGML_PAD(mmq_x * MMQ_TILE_Y_K, nwarps * warp_size);
+    int  * tile_y0 = data_mul_mat_q + mmq_x;
+    int  * tile_y1 = tile_y0 + y_chunk_ints;
+    int  * tile_x  = tile_y1 + y_chunk_ints;
+    char * xr      = (char *) (tile_x + mmq_y * MMQ_MMA_TILE_X_K_NVFP4);
+
+    constexpr int ne_block        = 4 * QK8_1;                  // 128 values per block_q8_1_mmq
+    constexpr int blocks_per_iter = MMQ_ITER_K / qk;            // 4 NVFP4 blocks per iteration
+
+    float sum[mmq_x * mmq_y / (nwarps * warp_size)] = {0.0f};
+
+    constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int); // == MMQ_TILE_Y_K (36)
+    // y chunk k: global base y + ncols_y*k*sz (same address math as the plain path's by0).
+    // Per iteration kb0: chunks kb0*qk/ne_block and +1.
+
+    if (kb0_start >= kb0_stop) { return; }
+
+    // Prologue: X_0 raw (waited as "G2 of iter -1"), then Y chunk 0 (waited as "G3 of iter -1").
+    if constexpr (is_rp) {
+        pipe_stage_x_rp<mmq_y, need_check>(xr, x, x_sc, offset_x + kb0_start, tile_x_max_i, stride_row_x);
+    } else {
+        pipe_stage_x_gguf<mmq_y, need_check>(xr, x, offset_x + kb0_start, tile_x_max_i, stride_row_x);
+    }
+    pipe_commit();
+    pipe_stage_y<mmq_x>(tile_y0, y + ncols_y * (kb0_start * qk / ne_block) * sz);
+    pipe_commit();
+
+    for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        const int  kchunk   = kb0 * qk / ne_block;
+        const bool has_next = kb0 + blocks_per_iter < kb0_stop;
+
+        pipe_wait<1>();     // X_kb0 raw complete (all but {last y-chunk group} done)
+        __syncthreads();    // (a) publish X raw; prev iter's reads of tile_x/ty1 are done
+
+        dequant_tiles_nvfp4_w4a8<mmq_y, need_check, is_rp>(xr, tile_x, tile_x_max_i);
+
+        pipe_stage_y<mmq_x>(tile_y1, y + ncols_y * (kchunk + 1) * sz);
+        pipe_commit();      // G1 = Y[2i+1]
+        pipe_wait<1>();     // Y[2i] complete (G1 stays in flight)
+        __syncthreads();    // (bc) publish dequant + Y[2i]; xr slot now free
+
+        if (has_next) {     // G2 = X_{i+1} raw (empty group on last iter keeps wait counts uniform)
+            if constexpr (is_rp) {
+                pipe_stage_x_rp<mmq_y, need_check>(xr, x, x_sc, offset_x + kb0 + blocks_per_iter, tile_x_max_i, stride_row_x);
+            } else {
+                pipe_stage_x_gguf<mmq_y, need_check>(xr, x, offset_x + kb0 + blocks_per_iter, tile_x_max_i, stride_row_x);
+            }
+        }
+        pipe_commit();
+
+        vec_dot_nvfp4_w4a8_mma<mmq_x, mmq_y>(tile_x, tile_y0, sum, 0);
+        __syncthreads();    // (d) ty0 free
+
+        if (has_next) {     // G3 = Y[2i+2] (empty group on last iter)
+            pipe_stage_y<mmq_x>(tile_y0, y + ncols_y * (kchunk + 2) * sz);
+        }
+        pipe_commit();
+
+        pipe_wait<2>();     // Y[2i+1] complete (G2/G3 stay in flight)
+        __syncthreads();    // (e) publish Y[2i+1]
+
+        vec_dot_nvfp4_w4a8_mma<mmq_x, mmq_y>(tile_x, tile_y1, sum, MMQ_TILE_NE_K);
+    }
+    pipe_wait<0>();         // drain (final G2/G3 are empty)
+
+    mmq_write_back_nvfp4_w4a8<mmq_x, mmq_y, need_check>(
+        sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
+}
+
+// ======================= mul_mat_q (conventional xy-tiling, NVFP4 W4A8) =======================
+template <int mmq_x, bool need_check, bool is_rp, bool pipe>
 __launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
 static __global__ void mul_mat_q_nvfp4_w4a8(
         const char * __restrict__ x, const char * __restrict__ x_sc,
@@ -451,9 +690,15 @@ static __global__ void mul_mat_q_nvfp4_w4a8(
 
     const int offset_x = it * mmq_y * stride_row_x;
 
-    mul_mat_q_process_tile_nvfp4_w4a8<mmq_x, need_check, is_rp>(
-        x, x_sc, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
-        stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
+    if constexpr (pipe) {
+        mul_mat_q_process_tile_nvfp4_w4a8_pipe<mmq_x, need_check, is_rp>(
+            x, x_sc, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
+            stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
+    } else {
+        mul_mat_q_process_tile_nvfp4_w4a8<mmq_x, need_check, is_rp>(
+            x, x_sc, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
+            stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
+    }
 }
 
 // ======================= activation quantizer (quantize.cu:276, D4 layout) =======================
@@ -513,12 +758,24 @@ size_t bw24_mmq_nvfp4_w4a8_act_bytes(int in_f, int n_tokens) {
     return (size_t) nblocks * sizeof(block_q8_1_mmq);
 }
 
-static size_t mmq_nvfp4_w4a8_nbytes_shared() {
+static size_t mmq_nvfp4_w4a8_nbytes_shared(bool pipe) {
     const size_t nbs_ids = (size_t) MMQ_X * sizeof(int);
     const size_t nbs_x   = (size_t) MMQ_Y * MMQ_MMA_TILE_X_K_NVFP4 * sizeof(int);
     const size_t nbs_y   = (size_t) MMQ_X * sizeof(block_q8_1_mmq);
     const size_t pad     = (size_t) MMQ_NWARPS * MMQ_WARP_SIZE * sizeof(int);
+    if (pipe) { // ids | ty ring x2 | tile_x | raw x stage — 98816B at 128x128
+        return nbs_ids + 2 * GGML_PAD(nbs_y, pad) + nbs_x + PIPE_XR_BYTES;
+    }
     return nbs_ids + nbs_x + GGML_PAD(nbs_y, pad);
+}
+
+// BW24_PP_PIPE=1: cp.async multi-stage pipeline for the MMQ tile (default OFF — plain tile loads).
+static bool mmq_w4a8_pipe_on() {
+    static const bool on = [] {
+        const char * v = std::getenv("BW24_PP_PIPE");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return on;
 }
 
 // Run the NVFP4 W4A8 MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
@@ -560,7 +817,8 @@ int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, floa
     const int ntx = (n_tokens + MMQ_X - 1) / MMQ_X;
     const dim3 grid((unsigned) nty, (unsigned) ntx, 1);
     const dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
-    const size_t smem = mmq_nvfp4_w4a8_nbytes_shared();
+    const bool pipe = mmq_w4a8_pipe_on();
+    const size_t smem = mmq_nvfp4_w4a8_nbytes_shared(pipe);
 
     const bool need_check = (out_f % MMQ_Y) != 0;
     const int * y_q = (const int *) act_scratch;
@@ -568,27 +826,32 @@ int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, floa
     // rp: scale plane sits after the quant plane (out_f rows x in_f/64 groups x 32B). Unused for rp=0.
     const char * W_sc = W + (size_t) out_f * (in_f / QK_NVFP4) * 32;
 
-    if (rp) {
-        if (need_check) {
-            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, true, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_nvfp4_w4a8<MMQ_X, true, true><<<grid, block, smem, st>>>(
-                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+    #define BW24_W4A8_LAUNCH(NC, RP, PIPE) do {                                                          \
+        cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, NC, RP, PIPE>,                                  \
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem);                         \
+        mul_mat_q_nvfp4_w4a8<MMQ_X, NC, RP, PIPE><<<grid, block, smem, st>>>(                            \
+            W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00,    \
+            out_scale);                                                                                  \
+    } while (0)
+
+    if (pipe) {
+        if (rp) {
+            if (need_check) { BW24_W4A8_LAUNCH(true,  true,  true); }
+            else            { BW24_W4A8_LAUNCH(false, true,  true); }
         } else {
-            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_nvfp4_w4a8<MMQ_X, false, true><<<grid, block, smem, st>>>(
-                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+            if (need_check) { BW24_W4A8_LAUNCH(true,  false, true); }
+            else            { BW24_W4A8_LAUNCH(false, false, true); }
         }
     } else {
-        if (need_check) {
-            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, true, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_nvfp4_w4a8<MMQ_X, true, false><<<grid, block, smem, st>>>(
-                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+        if (rp) {
+            if (need_check) { BW24_W4A8_LAUNCH(true,  true,  false); }
+            else            { BW24_W4A8_LAUNCH(false, true,  false); }
         } else {
-            cudaFuncSetAttribute(mul_mat_q_nvfp4_w4a8<MMQ_X, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_nvfp4_w4a8<MMQ_X, false, false><<<grid, block, smem, st>>>(
-                W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00, out_scale);
+            if (need_check) { BW24_W4A8_LAUNCH(true,  false, false); }
+            else            { BW24_W4A8_LAUNCH(false, false, false); }
         }
     }
+    #undef BW24_W4A8_LAUNCH
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { return 1000 + (int) e; }
     return 0;
