@@ -38,7 +38,10 @@ pub(crate) fn spec_hpost() -> bool {
 /// rows-vs-loop identity and the per-row loop at t=1 IS fa_decode on the same q). Gates arbitrate.
 pub(crate) fn spec_lean() -> bool {
     static L: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(false))
+    // DEFAULT ON since 2026-07-08 (BW24_SPEC_LEAN=0 reverts): bit-identical (buffers fully
+    // overwritten; gates green incl maxdiff-identical run-gen) and measured +2.4% e2e p3 /
+    // +1.5% p2 at the daily 35B config. m=1 verify now costs eager-decode parity.
+    *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(true))
 }
 
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
