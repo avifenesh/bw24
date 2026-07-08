@@ -2605,8 +2605,9 @@ static __device__ __forceinline__ void fa_dec_v3_walk(
             const int blk_i = b - j * blocks_per_key;    // block within key
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
-            const float d = __half2float(*(const half*)blk);
-            const float m = __half2float(*(const half*)(blk + 2));
+            uint32_t wdm; memcpy(&wdm, blk, 4);          // d|m in one aligned word
+            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
             uint32_t qh; memcpy(&qh, blk + 4, 4);
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
@@ -2631,11 +2632,23 @@ static __device__ __forceinline__ void fa_dec_v3_walk(
             const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes
                                    + (size_t)(kblk0 + bK) * 34;
             const float dK = __half2float(*(const half*)blk);
-            int sumi = 0;
-            #pragma unroll
-            for (int w = 0; w < FA_DEC_MAX_DPL / 4; ++w)
-                if (4 * w < dpl)
-                    sumi = __dp4a(fa_ld_int_2a(blk + 2 + koff + 4 * w), qq[w], sumi);
+            // ALIGNED-WORD K loads (REVISION 4b): the qs pointer's alignment class
+            // ((34*blk + 2 + koff) & 3, 0 or 2) is CONSTANT per lane across keys
+            // (k_tok_bytes % 4 == 0), so read aligned u32s and funnel-shift the
+            // lane's bytes out — 2-3 L1 transactions/key vs 4 u16 (L1 was 64%
+            // utilized, top stall long_scoreboard). Extracted ints bit-identical
+            // to fa_ld_int_2a's. The trailing word is loaded ONLY when the class
+            // needs it (misaligned lanes) — never reads past the last block.
+            const uint8_t* qsp = blk + 2 + koff;
+            const unsigned sh8 = ((unsigned)(size_t)qsp & 3u) * 8u;
+            const uint8_t* ap  = (const uint8_t*)((size_t)qsp & ~(size_t)3);
+            uint32_t w0, w1 = 0, w2 = 0;
+            memcpy(&w0, ap, 4);
+            if (dpl > 4) { memcpy(&w1, ap + 4, 4); if (sh8) memcpy(&w2, ap + 8, 4); }
+            else if (sh8) memcpy(&w1, ap + 4, 4);
+            int sumi = __dp4a((int)__funnelshift_r(w0, w1, sh8), qq[0], 0);
+            if (dpl > 4)
+                sumi = __dp4a((int)__funnelshift_r(w1, w2, sh8), qq[1], sumi);
             const float part = __fmul_rn(__fmul_rn(dK, dQ), (float)sumi);
             const float score = warp_reduce_sum(part);
             if (lane == j) my_score = score;
@@ -2655,14 +2668,25 @@ static __device__ __forceinline__ void fa_dec_v3_walk(
 
         __syncthreads();   // sV staged by ALL warps before any warp reads it
 
-        // ---- Phase B3: ascending-t V accumulation from smem (v2 verbatim) ----
+        // ---- Phase B3: ascending-t V accumulation from smem. PAIRED loads
+        //      (bf16x2): acc register i holds dim 2*lane + 64*(i/2) + (i&1) so a
+        //      lane reads dpl/2 aligned 4B words instead of dpl 2B ones — half
+        //      the LDS transactions. Element values and each dim's j-ascending
+        //      accumulation chain are unchanged (bit-identical partials; only
+        //      the register->dim mapping moved, and the partial store maps it
+        //      back). ----
         #pragma unroll 2
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
-            const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+            const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl) acc[i] += p * __bfloat162float(vj[lane + (i << 5)]);
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * __bfloat162float(vv.x);
+                    acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                }
+            }
         }
         __syncthreads();   // tile fully consumed before the next staging overwrites sV
     }
@@ -2679,23 +2703,16 @@ extern "C" __global__ void fa_decode_vec_q_v3(
         float* __restrict__ partL,      // [n_head, n_splits]
         int head_dim, int n_head, int n_head_kv, int T_kv,
         float scale, int n_splits,
-        long k_tok_bytes, long v_tok_bytes, int gsub)
+        long k_tok_bytes, long v_tok_bytes)
 {
-    // GSUB (grid-fill knob, PURE SCHEDULING — outputs bit-identical for any
-    // gsub): grid.x = n_head_kv*gsub; each CTA carries gqa/gsub of the kv
-    // head's q-warps and stages the V tile redundantly (DRAM has 10x headroom
-    // at depth; the starved 2.4-CTA/SM grid does not — ncu 38% occupancy).
-    const int kvg     = blockIdx.x;
+    const int kv_head = blockIdx.x;
     const int split   = blockIdx.y;
-    const int kv_head = kvg / gsub;
-    const int gs      = kvg - kv_head * gsub;
     if (kv_head >= n_head_kv || split >= n_splits) return;
     const int gqa     = n_head / n_head_kv;
-    const int gqs     = gqa / gsub;              // q-warps in THIS CTA
     const int wy      = threadIdx.y;
     const int lane    = threadIdx.x;
-    if (wy >= gqs) return;
-    const int head    = kv_head * gqa + gs * gqs + wy;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
     const int per  = (T_kv + n_splits - 1) / n_splits;
@@ -2713,7 +2730,7 @@ extern "C" __global__ void fa_decode_vec_q_v3(
     extern __shared__ __nv_bfloat16 ssh_v3[];        // sV[FA_DEC_TILE*head_dim] only
     __nv_bfloat16* sV = ssh_v3;
     const int bt  = wy * WARP_SZ + lane;
-    const int bsz = WARP_SZ * gqs;
+    const int bsz = WARP_SZ * gqa;
     const int kblk0 = (kv_head * head_dim) >> 5;
     fa_dec_v3_walk(K, V, sV, bt, bsz, qq, dQ, dpl, lane, head_dim,
                    t_lo, t_hi, kblk0, k_tok_bytes, v_tok_bytes, m_i, l_i, acc);
@@ -2721,7 +2738,7 @@ extern "C" __global__ void fa_decode_vec_q_v3(
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
         if (i < dpl) {
-            int d = lane + (i << 5);
+            int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);   // paired-B3 dim map
             partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
         }
     }
@@ -2740,22 +2757,19 @@ extern "C" __global__ void fa_decode_vec_q_rows_v3(
         float* __restrict__ partL,      // [T, n_head, n_splits_max]
         int head_dim, int n_head, int n_head_kv, int t_kv_base,
         float scale, int n_splits_max, int split_keys,
-        long k_tok_bytes, long v_tok_bytes, int gsub)
+        long k_tok_bytes, long v_tok_bytes)
 {
     const int r        = blockIdx.z;             // query row (verify column)
     const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
     const int n_splits = (T_kv + split_keys - 1) / split_keys;  // == host fa_split_keys sizing
-    const int kvg      = blockIdx.x;             // GSUB-folded (see T=1 twin)
+    const int kv_head  = blockIdx.x;
     const int split    = blockIdx.y;
-    const int kv_head  = kvg / gsub;
-    const int gs       = kvg - kv_head * gsub;
     if (kv_head >= n_head_kv || split >= n_splits) return;
     const int gqa     = n_head / n_head_kv;
-    const int gqs     = gqa / gsub;
     const int wy      = threadIdx.y;
     const int lane    = threadIdx.x;
-    if (wy >= gqs) return;
-    const int head    = kv_head * gqa + gs * gqs + wy;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
     const int per  = (T_kv + n_splits - 1) / n_splits;
@@ -2773,7 +2787,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v3(
     extern __shared__ __nv_bfloat16 ssh_rows_v3[];   // sV[FA_DEC_TILE*head_dim] only
     __nv_bfloat16* sV = ssh_rows_v3;
     const int bt  = wy * WARP_SZ + lane;
-    const int bsz = WARP_SZ * gqs;
+    const int bsz = WARP_SZ * gqa;
     const int kblk0 = (kv_head * head_dim) >> 5;
     fa_dec_v3_walk(K, V, sV, bt, bsz, qq, dQ, dpl, lane, head_dim,
                    t_lo, t_hi, kblk0, k_tok_bytes, v_tok_bytes, m_i, l_i, acc);
@@ -2781,7 +2795,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v3(
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
         if (i < dpl) {
-            int d = lane + (i << 5);
+            int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);   // paired-B3 dim map
             partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
         }
     }
@@ -2803,24 +2817,17 @@ extern "C" __global__ void fa_decode_vec_q_v3_dc(
         float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
         float scale, int n_splits,
-        long k_tok_bytes, long v_tok_bytes, int gsub)
+        long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
-    // GSUB (grid-fill knob, PURE SCHEDULING — outputs bit-identical for any
-    // gsub): grid.x = n_head_kv*gsub; each CTA carries gqa/gsub of the kv
-    // head's q-warps and stages the V tile redundantly (DRAM has 10x headroom
-    // at depth; the starved 2.4-CTA/SM grid does not — ncu 38% occupancy).
-    const int kvg     = blockIdx.x;
+    const int kv_head = blockIdx.x;
     const int split   = blockIdx.y;
-    const int kv_head = kvg / gsub;
-    const int gs      = kvg - kv_head * gsub;
     if (kv_head >= n_head_kv || split >= n_splits) return;
     const int gqa     = n_head / n_head_kv;
-    const int gqs     = gqa / gsub;              // q-warps in THIS CTA
     const int wy      = threadIdx.y;
     const int lane    = threadIdx.x;
-    if (wy >= gqs) return;
-    const int head    = kv_head * gqa + gs * gqs + wy;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
     const int per  = (T_kv + n_splits - 1) / n_splits;
@@ -2838,7 +2845,7 @@ extern "C" __global__ void fa_decode_vec_q_v3_dc(
     extern __shared__ __nv_bfloat16 ssh_v3_dc[];     // sV[FA_DEC_TILE*head_dim] only
     __nv_bfloat16* sV = ssh_v3_dc;
     const int bt  = wy * WARP_SZ + lane;
-    const int bsz = WARP_SZ * gqs;
+    const int bsz = WARP_SZ * gqa;
     const int kblk0 = (kv_head * head_dim) >> 5;
     fa_dec_v3_walk(K, V, sV, bt, bsz, qq, dQ, dpl, lane, head_dim,
                    t_lo, t_hi, kblk0, k_tok_bytes, v_tok_bytes, m_i, l_i, acc);
@@ -2846,7 +2853,7 @@ extern "C" __global__ void fa_decode_vec_q_v3_dc(
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
         if (i < dpl) {
-            int d = lane + (i << 5);
+            int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);   // paired-B3 dim map
             partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
         }
     }
