@@ -849,7 +849,7 @@ impl Engine {
                      LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                     block_dim: (32, 4, 1), shared_mem_bytes: 0 }),
             // _v twin (down8 lane 2026-07-08): wide-load IQ4_XS dot, base geometry, bit-identical.
-            "v" => (self.func("moe_gate_up_silu8_dev_q8_v"),
+            "v" | "" => (self.func("moe_gate_up_silu8_dev_q8_v"),
                     LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                    block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
             "s2" => (self.func("moe_gate_up_silu8_dev_q8_s2"),
@@ -901,7 +901,7 @@ impl Engine {
             // "" = AUTO: the measured winner for the 35B expert shape (arc 2026-07-05, +3.8%);
             // any shape the h2 kernels can't take (nsb!=16 / n_used>8) falls to base via `_`.
             // _v twins (down8 lane 2026-07-08): wide-load IQ4_XS dot, bit-identical outputs.
-            "w8h2v" if in_f == 512 && n_used <= 8 =>
+            "w8h2v" | "" if in_f == 512 && n_used <= 8 =>
                 (self.func("moe_down8_fma_dev_q8_w8h2v"),
                  LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
@@ -913,7 +913,7 @@ impl Engine {
                 (self.func("moe_down8_fma_dev_q8_w8h2r2"),
                  LaunchConfig { grid_dim: (out_f.div_ceil(4) as u32, 1, 1),
                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
-            "w8h2" | "" if in_f == 512 && n_used <= 8 =>
+            "w8h2" if in_f == 512 && n_used <= 8 =>
                 (self.func("moe_down8_fma_dev_q8_w8h2"),
                  LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
