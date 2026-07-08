@@ -84,7 +84,9 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians, power state verified
 |---|---|---|---|
 | Qwen3.6-27B NVFP4 | 47.2 | 43.6 | **1.08x** |
 | Qwen3.5-9B NVFP4 | 128.7 | 124.5 | **1.03x** |
-| Qwen3.6-35B-A3B MoE | 164.8 | 170.5 | 0.97x |
+| Qwen3.6-35B-A3B MoE | 169.0 | 170.5 | 0.99x |
+
+Depth behavior is part of the comparison: at 6.3k-token context the 35B decodes at 152.8 vs llama.cpp's 159.9 (0.96x) — split-ladder geometry is validated across the depth axis, not just the short-context point.
 
 **Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
 
@@ -92,7 +94,7 @@ Measured on the target rig (RTX 5090 Laptop, N≥3 medians, power state verified
 |---|---|---|---|
 | Qwen3.5-9B (spec K=3) | 193 / 156 / 149 | 122 / 121 / 117 | p1/p2/p3 prompts, 2026-07-06 session |
 | Qwen3.6-27B (per-class K) | 122 / 96 / 76 | 87 / 92 / 75 | K=7 short-code, K=3 + generic trim elsewhere |
-| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 162 | n/a / 208 / 202 | raw-prompt protocol; llama = self-MTP serve-best |
+| Qwen3.6-35B-A3B (K=2 + trim + zero-draft) | 197 / 194 / 177 | 215 / 208 / 202 | raw-prompt protocol; llama = self-MTP serve-best |
 
 Two speculative mechanisms shipped in 2026-07-08's 35B push, both vendored-and-verified rather than invented: the FR-Spec vocab trims are *vocabulary* artifacts, not model artifacts — the same 32k-row d2t list transfers across every model sharing the Qwen tokenizer (the gather reads each model's own lm_head bytes); and zero-draft rounds (`BW24_SPEC_PMIN0`) apply llama.cpp's whole-round confidence gate so unpredictable stretches run at plain-decode cost while predictable ones ride the full chain (35B acceptance 65% → 84%).
 
