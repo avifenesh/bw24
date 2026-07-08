@@ -392,12 +392,10 @@ static __device__ __forceinline__ void mmq_write_back_q45k(
 
 // ======================= mul_mat_q_process_tile (mmq.cuh:3447, k-quant) =======================
 // QTYPE: 4 -> Q4_K, 5 -> Q5_K (compile-time load_tiles selection; vec_dot + write_back shared).
-// fixup: stream-K partial tiles write to tmp_fixup[blockIdx.x] instead of dst (summed later by
-// the fixup kernel) — false for the conventional path and all completed stream-K tiles.
-template <int mmq_x, bool need_check, int QTYPE, bool fixup>
+template <int mmq_x, bool need_check, int QTYPE>
 static __device__ __forceinline__ void mul_mat_q_process_tile_q45k(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
-        const int * __restrict__ ids_dst, float * __restrict__ dst, float * __restrict__ tmp_fixup,
+        const int * __restrict__ ids_dst, float * __restrict__ dst,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
     constexpr int warp_size = MMQ_WARP_SIZE;
@@ -447,18 +445,14 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_q45k(
         __syncthreads();
     }
 
-    if (fixup) {
-        // Partial tile: park the raw f32 partial sums in the per-CTA fixup slot (dense mmq_x*mmq_y,
-        // identity ids, no bounds clamp needed — buffer is always full-tile sized).
-        mmq_write_back_q45k<mmq_x, mmq_y, need_check>(
-            sum, ids_dst, tmp_fixup + (size_t) blockIdx.x * (mmq_x * mmq_y), mmq_y, mmq_y, mmq_x);
-    } else {
-        mmq_write_back_q45k<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
-    }
+    mmq_write_back_q45k<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
 }
 
 // ======================= mul_mat_q (conventional xy-tiling) =======================
-// Grid: (nty = ceil(nrows_x/mmq_y), ntx = ceil(ncols_dst/mmq_x), 1). One tile per CTA, fixup=false.
+// Grid: (nty = ceil(nrows_x/mmq_y), ntx = ceil(ncols_dst/mmq_x), 1). One tile per CTA.
+// (A vendored stream-K decomposition existed behind BW24_MMQ_STREAMK — measured 1.11x per-GEMM
+// but its k-split f32 reorder flipped the model argmax gate; removed 2026-07-08, record in
+// rig5090.jsonl 2026-07-03. Conventional tiling is the only path.)
 template <int mmq_x, bool need_check, int QTYPE>
 __launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
 static __global__ void mul_mat_q_q45k(
@@ -491,198 +485,9 @@ static __global__ void mul_mat_q_q45k(
 
     const int offset_x = it * mmq_y * stride_row_x;
 
-    mul_mat_q_process_tile_q45k<mmq_x, need_check, QTYPE, /*fixup=*/false>(
-        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, /*tmp_fixup=*/nullptr,
+    mul_mat_q_process_tile_q45k<mmq_x, need_check, QTYPE>(
+        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst,
         stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00);
-}
-
-// ======================= mul_mat_q stream-K (mmq.cuh:3545, stream-K branch) =======================
-// Stream-K work partitioning (https://arxiv.org/abs/2301.03598), as in llama's mul_mat_q Volta+
-// branch: the continuous index space (nty * ntx * blocks_per_ne00) is split evenly across gridDim.x
-// CTAs. Each CTA walks its [kbc, kbc_stop) range; every output tile it COMPLETES (reaches
-// kb0_stop == blocks_per_ne00) is written straight to dst (fixup=false); a trailing PARTIAL tile
-// is parked in tmp_fixup and summed into dst by mul_mat_q_stream_k_fixup_q45k afterwards.
-// Plumbing simplifications vs llama: plain 2D GEMM (no channel/sample/expert dims, ids identity),
-// plain / and % instead of the fastdiv structs.
-template <int mmq_x, bool need_check, int QTYPE>
-__launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
-static __global__ void mul_mat_q_q45k_sk(
-        const char * __restrict__ x, const int * __restrict__ y, float * __restrict__ dst,
-        float * __restrict__ tmp_fixup,
-        const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y,
-        const int stride_col_dst, const int blocks_per_ne00) {
-    constexpr int nwarps    = MMQ_NWARPS;
-    constexpr int warp_size = MMQ_WARP_SIZE;
-    constexpr int mmq_y     = MMQ_Y;
-    constexpr int qk        = QK_K;
-    constexpr int blocks_per_iter = MMQ_ITER_K / qk;   // 1
-
-    const int nty = (nrows_x   + mmq_y - 1) / mmq_y;   // out-row tiles
-    const int ntx = (ncols_dst + mmq_x - 1) / mmq_x;   // token tiles
-
-    // ids identity (plain GEMM: dst row == column index).
-    extern __shared__ int ids_dst_shared[];
-#pragma unroll
-    for (int j0 = 0; j0 < mmq_x; j0 += nwarps * warp_size) {
-        const int j = j0 + threadIdx.y * warp_size + threadIdx.x;
-        if (j0 + nwarps * warp_size > mmq_x && j >= mmq_x) { break; }
-        ids_dst_shared[j] = j;
-    }
-    __syncthreads();
-
-    // kbc == k block continuous, current index in continuous ijk space.
-    int kbc      = (int) (int64_t(blockIdx.x)     * (int64_t(ntx) * nty * blocks_per_ne00) / gridDim.x);
-    int kbc_stop = (int) (int64_t(blockIdx.x + 1) * (int64_t(ntx) * nty * blocks_per_ne00) / gridDim.x);
-
-    kbc      -= (kbc      % blocks_per_ne00) % blocks_per_iter;
-    kbc_stop -= (kbc_stop % blocks_per_ne00) % blocks_per_iter;
-
-    // kb0 == k index when doing the matrix multiplication for an output tile.
-    int kb0_start = kbc % blocks_per_ne00;
-    int kb0_stop  = min(blocks_per_ne00, kb0_start + kbc_stop - kbc);
-    while (kbc < kbc_stop && kb0_stop == blocks_per_ne00) {
-        // Tiles this CTA finishes (reaches the end of the k range): write dst directly.
-        const int tile = kbc / blocks_per_ne00;
-        const int jt   = tile % ntx;   // token tile
-        const int it   = tile / ntx;   // out-row tile
-
-        const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-        const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
-
-        const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
-        const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
-
-        const int offset_x = it * mmq_y * stride_row_x;
-
-        mul_mat_q_process_tile_q45k<mmq_x, need_check, QTYPE, /*fixup=*/false>(
-            x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup,
-            stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
-
-        kbc += blocks_per_ne00;
-        kbc -= kbc % blocks_per_ne00;
-
-        kb0_start = 0;
-        kb0_stop  = min(blocks_per_ne00, kbc_stop - kbc);
-    }
-
-    if (kbc >= kbc_stop) {
-        return;
-    }
-
-    // Last (partial) tile: write to the fixup buffer to avoid races with the CTA(s) owning the rest.
-    const int tile = kbc / blocks_per_ne00;
-    const int jt   = tile % ntx;
-    const int it   = tile / ntx;
-
-    const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
-    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
-
-    const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
-    const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
-
-    const int offset_x = it * mmq_y * stride_row_x;
-
-    mul_mat_q_process_tile_q45k<mmq_x, need_check, QTYPE, /*fixup=*/true>(
-        x, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup,
-        stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, kb0_start, kb0_stop);
-}
-
-// ======================= mul_mat_q_stream_k_fixup (mmq.cuh:3789) =======================
-// Second kernel: for every output tile whose k range was split across CTAs, the CTA that wrote
-// dst (the one holding the END of the tile's k range) is missing the partial sums parked in
-// tmp_fixup by earlier CTAs. Re-derive the same kbc partitioning, walk PREVIOUS CTAs in fixed
-// descending order (deterministic accumulation, same as llama), and add their partials into dst.
-// Launch: grid=(n_sk_ctas, mmq_y/warp_size), block=(warp_size, nwarps/2).
-template <int mmq_x, bool need_check>
-__launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS / 2, 1)
-static __global__ void mul_mat_q_stream_k_fixup_q45k(
-        float * __restrict__ dst, const float * __restrict__ tmp_last_tile,
-        const int nrows_x, const int ncols_dst, const int stride_col_dst, const int blocks_per_ne00) {
-    constexpr int mmq_y           = MMQ_Y;
-    constexpr int qk              = QK_K;
-    constexpr int blocks_per_iter = MMQ_ITER_K / qk;   // 1
-    constexpr int nwarps          = MMQ_NWARPS / 2;
-    constexpr int warp_size       = MMQ_WARP_SIZE;
-
-    float sum[mmq_x / nwarps] = {0.0f};
-    const int i = blockIdx.y * warp_size + threadIdx.x;
-
-    const int nty = (nrows_x   + mmq_y - 1) / mmq_y;
-    const int ntx = (ncols_dst + mmq_x - 1) / mmq_x;
-
-    const int bidx0 = blockIdx.x;
-
-    // Same continuous-k partitioning as the GEMM kernel (gridDim.x here == its gridDim.x).
-    int kbc0      = (int) (int64_t(bidx0)     * (int64_t(ntx) * nty * blocks_per_ne00) / gridDim.x);
-    int kbc0_stop = (int) (int64_t(bidx0 + 1) * (int64_t(ntx) * nty * blocks_per_ne00) / gridDim.x);
-
-    kbc0      -= (kbc0      % blocks_per_ne00) % blocks_per_iter;
-    kbc0_stop -= (kbc0_stop % blocks_per_ne00) % blocks_per_iter;
-
-    const bool did_not_have_any_data   = kbc0 == kbc0_stop;
-    const bool wrote_beginning_of_tile = kbc0 % blocks_per_ne00 == 0;
-    const bool did_not_write_last      = kbc0 / blocks_per_ne00 == kbc0_stop / blocks_per_ne00
-                                         && kbc0_stop % blocks_per_ne00 != 0;
-    if (did_not_have_any_data || wrote_beginning_of_tile || did_not_write_last) {
-        return;
-    }
-
-    bool any_fixup = false;
-
-    // Iterate over previous blocks (descending, fixed order -> deterministic f32 accumulation)
-    // and sum up the partial sums they wrote to the fixup buffer.
-    int bidx = bidx0 - 1;
-    int kbc_stop = kbc0;
-    while (true) {
-        int kbc = (int) (int64_t(bidx) * (int64_t(ntx) * nty * blocks_per_ne00) / gridDim.x);
-        kbc -= (kbc % blocks_per_ne00) % blocks_per_iter;
-
-        if (kbc == kbc_stop) { // Did not have any data.
-            bidx--;
-            kbc_stop = kbc;
-            continue;
-        }
-
-        any_fixup = true;
-
-#pragma unroll
-        for (int j0 = 0; j0 < mmq_x; j0 += nwarps) {
-            const int j = j0 + threadIdx.y;
-            sum[j0 / nwarps] += tmp_last_tile[(size_t) bidx * (mmq_x * mmq_y) + j * mmq_y + i];
-        }
-
-        // If this block started in a previous tile we are done and don't need to combine additional partial results.
-        if (kbc % blocks_per_ne00 == 0 || kbc / blocks_per_ne00 < kbc0 / blocks_per_ne00) {
-            break;
-        }
-        bidx--;
-        kbc_stop = kbc;
-    }
-
-    if (!any_fixup) {
-        return;
-    }
-
-    const int tile = kbc0 / blocks_per_ne00;
-    const int jt   = tile % ntx;
-    const int it   = tile / ntx;
-
-    dst += jt * mmq_x * stride_col_dst + it * mmq_y;
-
-    const int i_max = nrows_x   - it * mmq_y - 1;
-    const int j_max = ncols_dst - jt * mmq_x - 1;
-    if (need_check && i > i_max) {
-        return;
-    }
-
-#pragma unroll
-    for (int j0 = 0; j0 < mmq_x; j0 += nwarps) {
-        const int j = j0 + threadIdx.y;
-        if (j > j_max) {
-            return;
-        }
-        dst[j * stride_col_dst + i] += sum[j0 / nwarps];
-    }
 }
 
 // ======================= activation quantizer (quantize.cu:277, DS4 layout) =======================
@@ -765,50 +570,13 @@ static int mmq_q45k_nsm() {
     return nsm;
 }
 
-// Env override: BW24_MMQ_STREAMK=0 forces conventional, =1 forces stream-K, unset = policy.
-// -1 unset / 0 off / 1 on (cached — read once per process).
-static int mmq_q45k_streamk_env() {
-    static int v = -2;
-    if (v == -2) {
-        const char * e = getenv("BW24_MMQ_STREAMK");
-        v = (e == nullptr) ? -1 : (e[0] == '0' ? 0 : 1);
-    }
-    return v;
-}
-
-// Stream-K grid.x for this problem, or 0 for the conventional xy-tiling path.
-// DEFAULT = CONVENTIONAL (stream-K only under BW24_MMQ_STREAMK=1). NEGATIVE RESULT 2026-07-03:
-// the stream-K port is correct (conv-vs-SK per-GEMM rel <= 1.2e-6 on all model shapes, fixup
-// accumulation deterministic — llama's exact descending-bidx order) and ~1.6% faster pp512
-// interleaved, but the k-split changes f32 summation order, and ~1e-6/layer reorder noise
-// amplifies chaotically across 33 layers into ~0.2 logit shifts — enough to flip the canonical
-// argmax gate's 0.14 top-2 margin (prompt 101..612: 82 -> 68, deterministic; Stage-A f32 oracle
-// says 82). Same failure class as the FA split-count lesson: gate order-sensitivity is binding.
-// When forced on, llama's tile-efficiency shortcut still applies: if the last conventional wave
-// is >= 90% full, plain tiling wins (no fixup kernel) — llama mmq.cuh launch_mul_mat_q.
-static int mmq_q45k_streamk_grid(int in_f, int out_f, int n_tokens) {
-    const int env = mmq_q45k_streamk_env();
-    if (env != 1) { return 0; }
-    const int nsm  = mmq_q45k_nsm();
-    const int nty  = (out_f    + MMQ_Y - 1) / MMQ_Y;
-    const int ntx  = (n_tokens + MMQ_X - 1) / MMQ_X;
-    const int64_t ntiles = (int64_t) nty * ntx;
-    const int64_t blocks_per_ne00 = in_f / QK_K;
-    if (ntiles * blocks_per_ne00 >= (int64_t) 1 << 30) { return 0; } // kbc int overflow guard
-    const int64_t tiles_nwaves = (ntiles + nsm - 1) / nsm;
-    const int64_t tiles_efficiency_percent = 100 * ntiles / (nsm * tiles_nwaves);
-    if (tiles_efficiency_percent >= 90) { return 0; }
-    return nsm;
-}
 
 // Shared launcher body. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
 // Requires in_f % QK_K == 0 (integral superblocks per weight row).
-// fixup_scratch: pre-alloc'd >= bw24_mmq_q45k_fixup_bytes(in_f, out_f, n_tokens); may be null
-// when that returns 0 (conventional path or no partial tiles).
 template <int QTYPE>
 static int bw24_mmq_q45k_launch(const void * W_blocks, const float * act_f32, float * y,
                                 int in_f, int out_f, int n_tokens, void * act_scratch,
-                                void * fixup_scratch, void * stream) {
+                                void * stream) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
 
     // ---- 1) quantize activation f32 -> block_q8_1_mmq DS4 (quantize_mmq_q8_1_cuda) ----
@@ -825,7 +593,7 @@ static int bw24_mmq_q45k_launch(const void * W_blocks, const float * act_f32, fl
         if (e != cudaSuccess) { return 1000 + (int) e; }
     }
 
-    // ---- 2) launch mul_mat_q (stream-K when the tile grid can't fill the SMs, else xy-tiling) ----
+    // ---- 2) launch mul_mat_q (conventional xy-tiling) ----
     const int stride_row_x    = in_f / QK_K;   // superblocks per weight row
     const int blocks_per_ne00 = in_f / QK_K;
     const int stride_col_dst  = out_f;
@@ -840,51 +608,15 @@ static int bw24_mmq_q45k_launch(const void * W_blocks, const float * act_f32, fl
     const int * y_q = (const int *) act_scratch;
     const char * W  = (const char *) W_blocks;
 
-    const int sk_grid = mmq_q45k_streamk_grid(in_f, out_f, n_tokens);
-
-    if (sk_grid > 0) {
-        const int64_t ntiles = (int64_t) nty * ntx;
-        const bool fixup_needed = (ntiles % sk_grid) != 0;
-        float * tmp_fixup = (float *) fixup_scratch;
-        if (fixup_needed && tmp_fixup == nullptr) { return 2001; } // caller must pass fixup scratch
-
-        const dim3 grid_sk((unsigned) sk_grid, 1, 1);
-        // Fixup kernel: one CTA column per stream-K CTA, mmq_y rows split across blockIdx.y warps.
-        const dim3 grid_fix((unsigned) sk_grid, MMQ_Y / MMQ_WARP_SIZE, 1);
-        const dim3 block_fix(MMQ_WARP_SIZE, MMQ_NWARPS / 2, 1);
-
-        if (need_check) {
-            cudaFuncSetAttribute(mul_mat_q_q45k_sk<MMQ_X, true, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_q45k_sk<MMQ_X, true, QTYPE><<<grid_sk, block, smem, st>>>(
-                W, y_q, y, tmp_fixup, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
-            if (fixup_needed) {
-                cudaError_t e = cudaGetLastError();
-                if (e != cudaSuccess) { return 1000 + (int) e; }
-                mul_mat_q_stream_k_fixup_q45k<MMQ_X, true><<<grid_fix, block_fix, 0, st>>>(
-                    y, tmp_fixup, out_f, n_tokens, stride_col_dst, blocks_per_ne00);
-            }
-        } else {
-            cudaFuncSetAttribute(mul_mat_q_q45k_sk<MMQ_X, false, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_q45k_sk<MMQ_X, false, QTYPE><<<grid_sk, block, smem, st>>>(
-                W, y_q, y, tmp_fixup, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
-            if (fixup_needed) {
-                cudaError_t e = cudaGetLastError();
-                if (e != cudaSuccess) { return 1000 + (int) e; }
-                mul_mat_q_stream_k_fixup_q45k<MMQ_X, false><<<grid_fix, block_fix, 0, st>>>(
-                    y, tmp_fixup, out_f, n_tokens, stride_col_dst, blocks_per_ne00);
-            }
-        }
+    const dim3 grid((unsigned) nty, (unsigned) ntx, 1);
+    if (need_check) {
+        cudaFuncSetAttribute(mul_mat_q_q45k<MMQ_X, true, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        mul_mat_q_q45k<MMQ_X, true, QTYPE><<<grid, block, smem, st>>>(
+            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
     } else {
-        const dim3 grid((unsigned) nty, (unsigned) ntx, 1);
-        if (need_check) {
-            cudaFuncSetAttribute(mul_mat_q_q45k<MMQ_X, true, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_q45k<MMQ_X, true, QTYPE><<<grid, block, smem, st>>>(
-                W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
-        } else {
-            cudaFuncSetAttribute(mul_mat_q_q45k<MMQ_X, false, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-            mul_mat_q_q45k<MMQ_X, false, QTYPE><<<grid, block, smem, st>>>(
-                W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
-        }
+        cudaFuncSetAttribute(mul_mat_q_q45k<MMQ_X, false, QTYPE>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+        mul_mat_q_q45k<MMQ_X, false, QTYPE><<<grid, block, smem, st>>>(
+            W, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00);
     }
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { return 1000 + (int) e; }
@@ -901,33 +633,18 @@ size_t bw24_mmq_q45k_act_bytes(int in_f, int n_tokens) {
     return (size_t) nblocks * sizeof(block_q8_1_mmq);
 }
 
-// Bytes needed for the stream-K fixup buffer (one dense mmq_x*mmq_y f32 tile per stream-K CTA).
-// Returns 0 when this problem takes the conventional path or the partitioning needs no fixup —
-// the caller may then pass fixup_scratch == nullptr. Same policy math as the launcher.
-size_t bw24_mmq_q45k_fixup_bytes(int in_f, int out_f, int n_tokens) {
-    const int sk_grid = mmq_q45k_streamk_grid(in_f, out_f, n_tokens);
-    if (sk_grid <= 0) { return 0; }
-    const int nty = (out_f    + MMQ_Y - 1) / MMQ_Y;
-    const int ntx = (n_tokens + MMQ_X - 1) / MMQ_X;
-    if (((int64_t) nty * ntx) % sk_grid == 0) { return 0; }
-    return (size_t) sk_grid * MMQ_X * MMQ_Y * sizeof(float);
-}
-
-// Run the Q4_K W4A8 MMQ prefill GEMM. fixup_scratch: >= bw24_mmq_q45k_fixup_bytes(in_f, out_f,
-// n_tokens) bytes, nullable when that returns 0. Returns 0 on success, else (1000 + cudaError).
+// Run the Q4_K W4A8 MMQ prefill GEMM. Returns 0 on success, else (1000 + cudaError).
 int bw24_mmq_q4_K(const void * W_q4k_blocks, const float * act_f32, float * y,
-                  int in_f, int out_f, int n_tokens, void * act_scratch, void * fixup_scratch,
-                  void * stream) {
+                  int in_f, int out_f, int n_tokens, void * act_scratch, void * stream) {
     return bw24_mmq_q45k_launch<4>(W_q4k_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
-                                   fixup_scratch, stream);
+                                   stream);
 }
 
 // Run the Q5_K W4A8 MMQ prefill GEMM (176B superblocks). Same contract as bw24_mmq_q4_K.
 int bw24_mmq_q5_K(const void * W_q5k_blocks, const float * act_f32, float * y,
-                  int in_f, int out_f, int n_tokens, void * act_scratch, void * fixup_scratch,
-                  void * stream) {
+                  int in_f, int out_f, int n_tokens, void * act_scratch, void * stream) {
     return bw24_mmq_q45k_launch<5>(W_q5k_blocks, act_f32, y, in_f, out_f, n_tokens, act_scratch,
-                                   fixup_scratch, stream);
+                                   stream);
 }
 
 } // extern "C"

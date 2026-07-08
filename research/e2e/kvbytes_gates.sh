@@ -5,7 +5,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 M=/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
-ENVL="BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_MOE_CACHE=1"
+ENVL="BW24_MOE_CACHE=1"
 
 gpu_wait() {  # wait until no non-embedder compute process (up to 15 min), then report
     for _ in $(seq 1 15); do
@@ -21,18 +21,18 @@ run_arm() {  # $1 = label, rest = env pairs
     echo "########## ARM: $label ($*) ##########"
     gpu_wait
     echo "--- run-gen argmax ---"
-    env "$@" BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_MOE_CACHE=1 \
+    env "$@" BW24_MOE_CACHE=1 \
         ./target/release/run-gen "$M" 2>&1 | grep -E 'argmax|MATCH|MISMATCH'
     for p in p2-code-medium p3-agentic-long; do
         echo "--- run-spec sweep $p (NGEN=32) ---"
         gpu_wait
         env "$@" BW24_PROMPT_FILE=research/e2e/prompts/$p.txt \
-            BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_MOE_CACHE=1 \
+            BW24_MOE_CACHE=1 \
             ./target/release/run-spec "$M" 2>&1 | grep -E 'generate_spec K|acceptance|FAIL'
         echo "--- run-spec K=3 NGEN=128 $p ---"
         gpu_wait
         env "$@" BW24_PROMPT_FILE=research/e2e/prompts/$p.txt BW24_SPEC_K=3 BW24_NGEN=128 \
-            BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 BW24_MOE_CACHE=1 \
+            BW24_MOE_CACHE=1 \
             ./target/release/run-spec "$M" 2>&1 | grep -E 'generate_spec K|acceptance|FAIL'
     done
 }

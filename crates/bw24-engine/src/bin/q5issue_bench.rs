@@ -1,11 +1,10 @@
 //! q5issue lane micro-bench: qmatvec_q5_K_mmvq{,_mr2} reference vs the issue-reduced `_il`
-//! twins (BW24_Q5K_ISSUE=1) on SYNTHETIC q5_K weights at the two real shapes:
-//!   - 27B lm_head: in_f=5120 out_f=151936 (535MB row-major stream, DRAM-cold every launch)
-//!   - 27B/9B trunk-class square: in_f=5120 out_f=5120 (18MB -> rotated over 8 copies so each
-//!     launch reads L2-cold bytes, MSWEEP_COPIES-style)
-//! For each (shape, mr) cell: bit-exactness of il vs reference (must be 0 mismatches), then
-//! N-rep wall time + implied weight GB/s. Variants toggled in-process via BW24_Q5K_ISSUE /
-//! BW24_MMVQ_MR (the dispatch reads env per call — house style).
+//! twins (BW24_Q5K_ISSUE, default ON) on SYNTHETIC q5_K weights at the real shapes:
+//!   - 27B lm_head: in_f=5120 out_f=248320 (874MB row-major stream, DRAM-cold every launch)
+//!   - trunk-class shapes rotated over copies so each launch reads L2-cold bytes.
+//! Per shape: bit-exactness of il vs reference at the shipped mr policy (must be 0 mismatches),
+//! then N-rep wall time + implied weight GB/s. Toggled in-process via BW24_Q5K_ISSUE (the
+//! dispatch reads env per call — house style). The old forced-mr sweep went with BW24_MMVQ_MR.
 use bw24_engine::Engine;
 use std::time::Instant;
 
@@ -49,8 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let wbytes = out_f * row_bytes;
         println!("=== {label}: in_f={in_f} out_f={out_f} row_bytes={row_bytes} \
                   weight={:.1}MB copies={copies} iters={iters} ===", wbytes as f64 / 1e6);
-        for mr in ["1", "2"] {
-            unsafe { std::env::set_var("BW24_MMVQ_MR", mr); }
+        {
             // bit-exactness: il vs reference on the same bytes ("2" = force il at every shape).
             unsafe { std::env::set_var("BW24_Q5K_ISSUE", "0"); }
             let yref = e.dtoh(&e.qmatvec_mmvq_raw(&wds[0], &xd, 1, in_f, out_f, QT, row_bytes, false)?)?;
@@ -67,10 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 e.stream().synchronize()?;
                 let us = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
                 let gbs = wbytes as f64 / (us * 1e-6) / 1e9;
-                println!("  mr{mr} {tag}: {us:8.2} us/call  {gbs:6.1} GB/s weight-implied  \
+                println!("  {tag}: {us:8.2} us/call  {gbs:6.1} GB/s weight-implied  \
                           bit-bad={bit_bad} finite={finite}");
             }
-            assert_eq!(bit_bad, 0, "il variant NOT bit-identical at mr={mr} {label}");
+            assert_eq!(bit_bad, 0, "il variant NOT bit-identical at {label}");
         }
     }
     Ok(())

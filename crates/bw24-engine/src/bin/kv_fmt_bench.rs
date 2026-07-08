@@ -8,7 +8,7 @@
 //! GB/s, and an FNV-1a output hash (identical across reps; DIFFERS across formats —
 //! each format is its own numeric config).
 //!
-//! Run (env law): BW24_FAST=1 BW24_FA_VEC=1 [BW24_KV_K=fp8] [BW24_KV_V=q4_0] \
+//! Run: [BW24_KV_K=fp8] [BW24_KV_V=q4_0] \
 //!   cargo run --release -p bw24-engine --bin kv-fmt-bench [t_kv...]
 use bw24_engine::Engine;
 

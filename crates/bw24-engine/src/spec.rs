@@ -6,8 +6,7 @@
 //!   - `decode_step_t`     (§D.3, T=K+1): batched target verify forward, all-column logits.
 //!   - `generate_spec`     (§B): the draft/verify/accept/rollback orchestrator.
 //! Cache snapshot/rollback lives in cache.rs (§D.4). The MTP head uses its OWN scratch KV (§D.6),
-//! PERSISTENT over the committed sequence by default (see `MtpScratch`; BW24_SPEC_KVLOCAL=1 for
-//! the legacy round-local scratch).
+//! PERSISTENT over the committed sequence (see `MtpScratch`).
 
 use cudarc::driver::CudaSlice;
 use crate::Engine;
@@ -63,7 +62,6 @@ fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Erro
 ///     from EXACT trunk hiddens (K/V-only MTP-block pass, no attention/FFN/lm_head).
 /// Rejected drafts / p-min extras / pseudo-seed appends are all discarded by the round-start
 /// `set_len` truncation (the KvLayer len mechanism — §C rollback for the draft side).
-/// BW24_SPEC_KVLOCAL=1 restores the legacy round-local scratch (reset to empty each round, cap=k+1).
 /// Multi-turn spec-decode session (2026-07-05): trunk Cache + persistent MTP draft scratch +
 /// the committed token list, alive across generate_spec_session calls. Turn N+1 primes ONLY its
 /// suffix (chunked continuation prime over the quantized past) and mtp_kv_fill's its suffix rows,
@@ -1117,11 +1115,7 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         // SESSION MODE: reuse the live cache/scratch, prime only the suffix. `base` = tokens
         // already committed (their state is in the caches); 0 = fresh single-shot call.
-        // kv_local (round-local scratch) is incompatible with sessions (the persistent draft KV
-        // IS the session's draft state) — asserted below.
-        let kv_local = std::env::var("BW24_SPEC_KVLOCAL").is_ok();
         let session_mode = sess.is_some();
-        assert!(!(session_mode && kv_local), "BW24_SPEC_KVLOCAL unsupported in session mode");
         let max_ctx = match sess.as_ref() {
             Some(s) => s.cache.max_ctx,
             None => prompt.len() + max_new + k + 8,
@@ -1138,16 +1132,15 @@ impl HybridModel {
                 }
                 None => {
                     own_cache = Cache::new(e, &self.cfg, max_ctx)?;
-                    // Persistent scratch = max_ctx rows (~2KB/token quantized); legacy = k+1.
-                    own_scratch = MtpScratch::new(e, &self.cfg,
-                                                  if kv_local { k + 1 } else { max_ctx })?;
+                    // Persistent scratch = max_ctx rows (~2KB/token quantized).
+                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx)?;
                     (&mut own_cache, &mut own_scratch, None)
                 }
             };
         let base = cache.pos;
-        // PERSISTENT DRAFT KV (default): the scratch mirrors the committed sequence so the draft
-        // chain attends over full history. BW24_SPEC_KVLOCAL=1 = legacy round-local scratch (A/B
-        // + fallback seam; acceptance-only — exactness is verify's job either way).
+        // PERSISTENT DRAFT KV (the only mode since 2026-07-08 — the legacy round-local scratch,
+        // BW24_SPEC_KVLOCAL, measured -35 acceptance pts on the 27B p3 sweep and was removed;
+        // acceptance-only — exactness is verify's job either way).
         // HIDDEN-PAIRING CONVENTION (DEFAULT = predecessor-row, 2026-07-04 — the 27B acceptance
         // unlock, +16pts): the MTP head is TRAINED on rows pairing token x_p with the trunk
         // hidden of its PREDECESSOR h_{p-1} (the reference engine's mtp_update shifts the target
@@ -1156,12 +1149,12 @@ impl HybridModel {
         // and seeded chain step 0 through an extra MTP pass on a duplicated token (the
         // pseudo-seed) — measured 27B p2 K=3 acceptance 0.569 vs 0.731, p3 0.445 vs 0.63+, and
         // the chain steps j>=1 were already predecessor-shaped, so ONLY the fill + step-0 seed
-        // move. Under the default the fill shifts by one and the chain seeds from the
-        // predecessor's true hidden DIRECTLY (vh_seed / vx[j-1]) — the pseudo pass disappears
-        // (one MTP-block pass saved per round on top of the acceptance win). Draft-quality-only:
-        // exactness stays the verify's job either way. Requires the persistent scratch (prompt
-        // hiddens): gated off by KVLOCAL. BW24_SPEC_HSAME=1 restores the legacy pairing (A/B seam).
-        let h_prev_pairing = !kv_local && std::env::var("BW24_SPEC_HSAME").is_err();
+        // move. The fill shifts by one and the chain seeds from the predecessor's true hidden
+        // DIRECTLY (vh_seed / vx[j-1]) — the pseudo pass disappears (one MTP-block pass saved
+        // per round on top of the acceptance win). Draft-quality-only: exactness stays the
+        // verify's job either way. (The legacy same-row pairing seam, BW24_SPEC_HSAME, and its
+        // pseudo-seed passes were removed 2026-07-08 — predecessor pairing won by +16 acc pts;
+        // the legacy round-local scratch, BW24_SPEC_KVLOCAL, went with it.)
         // REPLAY-FREE PARTIAL ACCEPT (default, 2026-07-03): partial rounds keep the verify's own
         // bit-identical committed-prefix state (KV truncate + recur rebuild from the VerifyCkpt)
         // and leave the bonus PENDING — no duplicate trunk pass (profiled ~0.54 extra full weight
@@ -1171,7 +1164,7 @@ impl HybridModel {
         // TRUE-HIDDEN REFRESH (default in persistent-draft-KV mode): every round overwrites the
         // committed positions' scratch entries from the verify's exact hiddens (mtp_kv_fill batch)
         // instead of keeping chain-approximate entries. BW24_SPEC_NOREFRESH=1 = legacy (A/B seam).
-        let refresh = !kv_local && std::env::var("BW24_SPEC_NOREFRESH").is_err();
+        let refresh = std::env::var("BW24_SPEC_NOREFRESH").is_err();
 
         // prime: BATCHED cache prime (prime_cache — the measured #1 e2e gap: tokenwise primed at
         // ~102/38 tok/s vs the engine's ~2000-5900 tok/s batched prefill). prime_cache returns the
@@ -1201,10 +1194,10 @@ impl HybridModel {
         } else if batched_prime {
             let (l, _h_seed, hiddens) = self.prime_cache(e, prompt, &mut *cache)?;
             prime_logits = l;
-            if !kv_local { prompt_h = Some(hiddens); }
+            prompt_h = Some(hiddens);
         } else {
             prime_logits = Vec::new();
-            if !kv_local { prompt_h = Some(e.uninit(prompt.len() * n_embd)?); }
+            prompt_h = Some(e.uninit(prompt.len() * n_embd)?);
             for (i, &tok) in prompt.iter().enumerate() {
                 let (l, h) = self.decode_step_h(e, tok, &mut *cache)?;
                 if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
@@ -1257,7 +1250,7 @@ impl HybridModel {
         // hidden of the row BEFORE last_token = the prompt's last row at round 0 (h_seed_buf
         // overwritten below).
         let mut fill_prev = e.clone_dtod(&h_seed0)?;
-        if h_prev_pairing {
+        {
             if let Some(ph) = &prompt_h {
                 let np = prompt.len();
                 e.copy_view_into(&mut h_seed_buf, 0, &ph.slice((np - 1) * n_embd..np * n_embd),
@@ -1305,7 +1298,6 @@ impl HybridModel {
         let mut g_seed = e.zeros(n_embd)?;
         let mut g_p = e.zeros(1)?;
         let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
-        let mut seed_graph: Option<cudarc::driver::CudaGraph> = None;
         if graph_draft {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
@@ -1317,26 +1309,6 @@ impl HybridModel {
                 Err(err) => {
                     scratch.set_len(e, 0)?;
                     if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
-                }
-            }
-            // HEAD-LESS pseudo-seed twin (2026-07-03): the once-per-round pseudo replay only needs
-            // h_nextn + the scratch append — capturing it without lm_head/argmax/prob saves the
-            // draft head's full weight read per round (~1.06ms q6_K on the 9B). Same kernels up to
-            // op 10 -> identical seed value; capture-failure falls back to the full graph.
-            // Only the LEGACY same-row pairing (BW24_SPEC_HSAME) runs pseudo passes — skip the
-            // capture under the predecessor-pairing default.
-            if draft_graph.is_some() && !h_prev_pairing {
-                let cap_res = e.capture_graph(|e| {
-                    self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                              &mut *scratch, false, false, embd_gpu, embd_qt,
-                                              embd_rb, d_vocab)
-                });
-                match cap_res {
-                    Ok(g) => { scratch.set_len(e, 0)?; seed_graph = Some(g); }
-                    Err(err) => {
-                        scratch.set_len(e, 0)?;
-                        if debug_spec { eprintln!("[spec] seed-graph capture failed ({err}); full-graph pseudo"); }
-                    }
                 }
             }
         }
@@ -1361,7 +1333,7 @@ impl HybridModel {
             while start < tp {
                 let end = (start + fill_chunk).min(tp);
                 let tc = end - start;
-                if h_prev_pairing {
+                {
                     // PREDECESSOR pairing: row i gets h[i-1]; global row 0 a zeros row (the
                     // reference engine's initial pending-h is zeroed too); a session turn's row 0
                     // gets the PREVIOUS turn's last committed hidden (sess.last_h). Per chunk:
@@ -1381,34 +1353,22 @@ impl HybridModel {
                     }
                     self.mtp_kv_fill(e, mtp, &prompt[start..end], &phs, base + start, &mut *scratch,
                                      embd_gpu, embd_qt, embd_rb)?;
-                } else {
-                    let mut phc = e.zeros(tc * n_embd)?;
-                    e.copy_view_into(&mut phc, 0, &ph.slice(start * n_embd..end * n_embd),
-                                     tc * n_embd)?;
-                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phc, base + start, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
                 }
                 start = end;
             }
         }
         let mut round = 0usize;
-        // ADAPTIVE-K (BW24_SPEC_ADAPT=1): per-round draft length follows measured acceptance —
-        // K is prompt-CLASS dependent (p1 shallow decay -> deep K pays, p2/p3 steep decay ->
-        // K=3; 2026-07-07 sweep), and a serve daily cannot know the class up front. Mechanism:
-        // exponential moving average of per-round accepted count; draft len = ceil(ema)+1,
-        // clamped to [2, k]. Draft length already varies round-to-round (p-min chain stop), so
-        // verify/commit handle any k_round; exactness untouched (verify checks every token).
-        let adapt = std::env::var("BW24_SPEC_ADAPT").map(|v| v == "1").unwrap_or(false);
-        let mut acc_ema: f32 = (k as f32).min(3.0);   // optimistic start, settles in ~5 rounds
+        // (Adaptive-K — BW24_SPEC_ADAPT, acceptance-EMA draft length — measured an HONEST LOSS
+        // to static per-class optima on 2026-07-07 (115.0/85.8/73.4 vs 121.6/92.7/75.6, EMA lag)
+        // and was removed 2026-07-08; rig5090.jsonl has the record. K is fixed per call.)
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
         let mut snap = cache.snapshot(e)?;
         // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
         // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as
-        // column 0 of the NEXT round's verify batch. Under the predecessor-pairing default the
-        // next chain seeds from the bonus's predecessor's TRUE verify hidden (free — no extra
-        // pass of any kind); under BW24_SPEC_HSAME it seeds from the MTP block's pseudo-hidden
-        // at the bonus position (one extra MTP-block pass, ~1/33 of a trunk read). Verify still
+        // column 0 of the NEXT round's verify batch. Under predecessor pairing the next chain
+        // seeds from the bonus's predecessor's TRUE verify hidden (free — no extra
+        // pass of any kind). Verify still
         // checks every emitted token against the target -> exactness holds by construction; only
         // DRAFT QUALITY can shift, which the acceptance numbers arbitrate.
         let mut pending: Option<u32> = None;   // bonus emitted but not yet committed to cache
@@ -1424,10 +1384,9 @@ impl HybridModel {
             // Round-start draft-KV sync (BOTH paths). Persistent: truncate/align to the committed
             // history — slots 0..P hold entries for the tokens before last_token@P (P = pos +
             // base0 - 1); this single set_len IS the draft-side rollback (drops last round's
-            // rejected drafts, p-min extras and the pseudo-seed append via the len mechanism).
-            // Legacy (BW24_SPEC_KVLOCAL): reset to empty, chain-only attention.
-            scratch.set_len(e, if kv_local { 0 } else { pos + base0 - 1 })?;
-            let k_this = if adapt { ((acc_ema.ceil() as usize) + 1).clamp(2, k) } else { k };
+            // rejected drafts and p-min extras via the len mechanism).
+            scratch.set_len(e, pos + base0 - 1)?;
+            let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             if let Some(gr) = &draft_graph {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
@@ -1513,10 +1472,6 @@ impl HybridModel {
             let bonus = t_pred(n_acc);
             total_drafted += k_round;
             total_accepted += n_acc;
-            // ADAPTIVE-K EMA update: alpha 0.4 — fast enough to follow a class shift within
-            // ~5 rounds, slow enough not to whipsaw on one bad round. Count the bonus-carried
-            // full-accept as k_round (the chain was fully right).
-            if adapt { acc_ema = 0.6 * acc_ema + 0.4 * (n_acc as f32); }
             if spec_stats {
                 st_len_hist[k_round] += 1;
                 for j in 0..k_round { st_drafted[j] += 1; }
@@ -1565,76 +1520,39 @@ impl HybridModel {
                     // chain-approximate entries AND the old last-token-only fill. Acceptance-only
                     // (draft attention quality); exactness stays the verify's job.
                     scratch.set_len(e, pos)?;
-                    if h_prev_pairing {
-                        // PREDECESSOR pairing: row i gets vx[i-1]; row 0 the carried fill_prev
-                        // (hidden of the last committed row before this verify batch).
-                        let mut vxs = e.zeros(t_v * n_embd)?;
-                        e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
-                        if t_v > 1 {
-                            e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(t_v - 1) * n_embd),
-                                             (t_v - 1) * n_embd)?;
-                        }
-                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
-                    } else {
-                        self.mtp_kv_fill(e, mtp, &verify_tokens, &vx, pos, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
+                    // PREDECESSOR pairing: row i gets vx[i-1]; row 0 the carried fill_prev
+                    // (hidden of the last committed row before this verify batch).
+                    let mut vxs = e.zeros(t_v * n_embd)?;
+                    e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
+                    if t_v > 1 {
+                        e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(t_v - 1) * n_embd),
+                                         (t_v - 1) * n_embd)?;
                     }
-                } else if !kv_local {
-                    scratch.set_len(e, pos + base + k_round - 1)?;
-                    if h_prev_pairing {
-                        // predecessor of the last draft = verify col t_v-2 (or fill_prev at t_v==1)
-                        let mut hp = e.zeros(n_embd)?;
-                        if t_v >= 2 {
-                            e.copy_view_into(&mut hp, 0,
-                                             &vx.slice((t_v - 2) * n_embd..(t_v - 1) * n_embd),
-                                             n_embd)?;
-                        } else {
-                            e.copy_into(&mut hp, 0, &fill_prev, n_embd)?;
-                        }
-                        self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &hp,
-                                         pos + base + k_round - 1, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
-                    } else {
-                        self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &vh_seed,
-                                         pos + base + k_round - 1, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
-                    }
-                }
-                if h_prev_pairing {
-                    // REFERENCE SEEDING: no pseudo pass — the next chain's step 0 IS the
-                    // reference's (id_last, h_prev) draft row; it appends the bonus's scratch
-                    // entry itself. Seed = TRUE hidden of the bonus's predecessor (last verify
-                    // col). Saves one MTP-block pass per round on top of the pairing fix.
-                    e.copy_into(&mut h_seed_buf, 0, &vh_seed, n_embd)?;
-                    e.copy_into(&mut fill_prev, 0, &vh_seed, n_embd)?;
-                    pending = Some(bonus);
-                    if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending, prev-h seed)"); }
-                    round += 1;
-                    continue;
-                }
-                // Pseudo-seed pass rope: persistent keeps the chain convention rope(token@p)=p+1
-                // (bonus sits at position pos+base+k_round); legacy keeps its historical value.
-                let pseudo_pos = pos + base + k_round + if kv_local { 0 } else { 1 };
-                if let Some(gr) = seed_graph.as_ref().or(draft_graph.as_ref()) {
-                    // pseudo-hidden seed via ONE graph replay (same MTP forward, inputs re-set).
-                    // vh_seed is copied into the baked seed buffer BEFORE the replay, so its own
-                    // (pool-transient) storage is dead by the time the graph writes scratch.
-                    e.set_u32_one(&mut g_tok, bonus)?;
-                    e.copy_into(&mut g_seed, 0, &vh_seed, n_embd)?;
-                    e.set_i32_one(&mut g_pos, pseudo_pos as i32)?;
-                    gr.launch()?;
-                    scratch.kv.len += 1;
-                    // next round's seed = the pseudo hidden the replay left in g_seed.
-                    e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
+                    self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut *scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
                 } else {
-                    let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                        e, mtp, bonus, &vh_seed, &mut *scratch, pseudo_pos,
-                        embd_gpu, embd_qt, embd_rb)?;
-                    e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
+                    scratch.set_len(e, pos + base + k_round - 1)?;
+                    // predecessor of the last draft = verify col t_v-2 (or fill_prev at t_v==1)
+                    let mut hp = e.zeros(n_embd)?;
+                    if t_v >= 2 {
+                        e.copy_view_into(&mut hp, 0,
+                                         &vx.slice((t_v - 2) * n_embd..(t_v - 1) * n_embd),
+                                         n_embd)?;
+                    } else {
+                        e.copy_into(&mut hp, 0, &fill_prev, n_embd)?;
+                    }
+                    self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &hp,
+                                     pos + base + k_round - 1, &mut *scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
                 }
+                // REFERENCE SEEDING: no pseudo pass — the next chain's step 0 IS the
+                // reference's (id_last, h_prev) draft row; it appends the bonus's scratch
+                // entry itself. Seed = TRUE hidden of the bonus's predecessor (last verify
+                // col). Saves one MTP-block pass per round on top of the pairing fix.
+                e.copy_into(&mut h_seed_buf, 0, &vh_seed, n_embd)?;
+                e.copy_into(&mut fill_prev, 0, &vh_seed, n_embd)?;
                 pending = Some(bonus);
-                if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending)"); }
+                if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending, prev-h seed)"); }
             } else if !spec_replay && base + n_acc >= 1 {
                 // PARTIAL ACCEPT, REPLAY-FREE (2026-07-03 — the profiled #1 long-ctx spec cost):
                 // the verify's first j = base+n_acc columns ARE the committed sequence, computed
@@ -1656,48 +1574,23 @@ impl HybridModel {
                 // (persistent mode), rope pos+j+1 (chain convention).
                 if refresh {
                     scratch.set_len(e, pos)?;
-                    if h_prev_pairing {
-                        let mut vxs = e.zeros(j * n_embd)?;
-                        e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
-                        if j > 1 {
-                            e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(j - 1) * n_embd),
-                                             (j - 1) * n_embd)?;
-                        }
-                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vxs, pos, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
-                    } else {
-                        self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vx, pos, &mut *scratch,
-                                         embd_gpu, embd_qt, embd_rb)?;
+                    let mut vxs = e.zeros(j * n_embd)?;
+                    e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
+                    if j > 1 {
+                        e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(j - 1) * n_embd),
+                                         (j - 1) * n_embd)?;
                     }
-                } else if !kv_local {
+                    self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vxs, pos, &mut *scratch,
+                                     embd_gpu, embd_qt, embd_rb)?;
+                } else {
                     scratch.set_len(e, pos + j)?;
                 }
-                if h_prev_pairing {
-                    // REFERENCE SEEDING (see the full-accept branch): seed = TRUE hidden of the
-                    // bonus's predecessor (verify col j-1); no pseudo pass.
-                    e.copy_into(&mut h_seed_buf, 0, &seed, n_embd)?;
-                    e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
-                    pending = Some(bonus);
-                    if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)"); }
-                    round += 1;
-                    continue;
-                }
-                let pseudo_pos = pos + j + if kv_local { 0 } else { 1 };
-                if let Some(gr) = seed_graph.as_ref().or(draft_graph.as_ref()) {
-                    e.set_u32_one(&mut g_tok, bonus)?;
-                    e.copy_into(&mut g_seed, 0, &seed, n_embd)?;
-                    e.set_i32_one(&mut g_pos, pseudo_pos as i32)?;
-                    gr.launch()?;
-                    scratch.kv.len += 1;
-                    e.copy_into(&mut h_seed_buf, 0, &g_seed, n_embd)?;
-                } else {
-                    let (_dl_d, h_bonus_pseudo) = self.mtp_head_forward_dev(
-                        e, mtp, bonus, &seed, &mut *scratch, pseudo_pos,
-                        embd_gpu, embd_qt, embd_rb)?;
-                    e.copy_into(&mut h_seed_buf, 0, &h_bonus_pseudo, n_embd)?;
-                }
+                // REFERENCE SEEDING (see the full-accept branch): seed = TRUE hidden of the
+                // bonus's predecessor (verify col j-1); no pseudo pass.
+                e.copy_into(&mut h_seed_buf, 0, &seed, n_embd)?;
+                e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
                 pending = Some(bonus);
-                if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending)"); }
+                if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)"); }
             } else {
                 // PARTIAL ACCEPT, LEGACY REPLAY (seam BW24_SPEC_REPLAY=1 — or j==0: nothing of
                 // this round survives, only possible before the first pending exists, ~round 0):
@@ -1721,24 +1614,19 @@ impl HybridModel {
                 e.argmax_token_device_col(&rl_d, replay.len() - 1, n_vocab, &mut preds_d, 0)?;
                 last_pred = e.dtoh_u32(&preds_d)?[0];
                 let lr = replay.len();
-                if h_prev_pairing {
-                    if lr >= 2 {
-                        e.copy_view_into(&mut h_seed_buf, 0,
-                                         &rx.slice((lr - 2) * n_embd..(lr - 1) * n_embd), n_embd)?;
-                    } else {
-                        // 1-token replay (round-0 miss): the bonus's predecessor is the OLD
-                        // last_token, whose own-row hidden fill_prev still holds.
-                        e.copy_into(&mut h_seed_buf, 0, &fill_prev, n_embd)?;
-                    }
-                    // the bonus is COMMITTED here — it becomes the last committed row.
-                    let mut rh_last = e.zeros(n_embd)?;
-                    e.copy_view_into(&mut rh_last, 0, &rx.slice((lr - 1) * n_embd..lr * n_embd),
-                                     n_embd)?;
-                    e.copy_into(&mut fill_prev, 0, &rh_last, n_embd)?;
+                if lr >= 2 {
+                    e.copy_view_into(&mut h_seed_buf, 0,
+                                     &rx.slice((lr - 2) * n_embd..(lr - 1) * n_embd), n_embd)?;
                 } else {
-                    e.copy_view_into(&mut h_seed_buf, 0, &rx.slice((lr - 1) * n_embd..lr * n_embd),
-                                     n_embd)?;
+                    // 1-token replay (round-0 miss): the bonus's predecessor is the OLD
+                    // last_token, whose own-row hidden fill_prev still holds.
+                    e.copy_into(&mut h_seed_buf, 0, &fill_prev, n_embd)?;
                 }
+                // the bonus is COMMITTED here — it becomes the last committed row.
+                let mut rh_last = e.zeros(n_embd)?;
+                e.copy_view_into(&mut rh_last, 0, &rx.slice((lr - 1) * n_embd..lr * n_embd),
+                                 n_embd)?;
+                e.copy_into(&mut fill_prev, 0, &rh_last, n_embd)?;
                 if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
             }
             round += 1;
@@ -1772,13 +1660,8 @@ impl HybridModel {
                 // the prediction AFTER the bonus never materialized; it would have been the next
                 // round's verify col 0). The bonus commit's own logits ARE that prediction.
                 *next_pred_slot = Some(argmax(&lg_b) as u32);
-                if h_prev_pairing {
-                    self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
-                } else {
-                    self.mtp_kv_fill(e, mtp, &[b], &hb, pos_b, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
-                }
+                self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch,
+                                 embd_gpu, embd_qt, embd_rb)?;
                 *last_h = Some(hb);
             } else {
                 // fill_prev tracks the hidden of the last COMMITTED row throughout the loop.

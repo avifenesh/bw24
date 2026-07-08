@@ -10,7 +10,7 @@
 //! write slot + rope pos + token id are all device-resident; only a [1] u32 token is read back per
 //! step. NO host sync inside the captured region.
 //!
-//! usage: graph-decode-gate <model> [P] [N] [bench]   (env: BW24_FAST=1 BW24_MMVQ=1 BW24_FA_VEC=1)
+//! usage: graph-decode-gate <model> [P] [N] [bench]   (fast-path core is default-on)
 use bw24_engine::Engine;
 use bw24_engine::hybrid::HybridModel;
 use bw24_engine::decode::GraphDecodeState;

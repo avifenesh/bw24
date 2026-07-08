@@ -1589,7 +1589,8 @@ impl HybridModel {
         let host_bytes = exps.expert_bytes(ex);
         e.with_moe_cache(max_block, |c, eng| {
             let slot = c.dispatch(id, host_bytes, eng)?;
-            let buf = match slot { DispatchSlot::Resident(s) => c.slot(s), DispatchSlot::Staging(s) => c.buf(DispatchSlot::Staging(s)) };
+            let DispatchSlot::Resident(sl) = slot;
+            let buf = c.slot(sl);
             eng.qmatvec_expert_q8(buf, 0..len, aq, ad, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
         })
     }
@@ -1607,7 +1608,8 @@ impl HybridModel {
             let slot = c.dispatch(id, host_bytes, eng)?;
             // resolve the device buffer for this slot; the GEMM is enqueued on the compute stream
             // (the same stream the memcpy was issued on, so ordering holds without extra sync).
-            let buf = match slot { DispatchSlot::Resident(s) => c.slot(s), DispatchSlot::Staging(s) => c.buf(DispatchSlot::Staging(s)) };
+            let DispatchSlot::Resident(sl) = slot;
+            let buf = c.slot(sl);
             eng.qmatvec_view(buf, 0..len, x, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
         })
     }
@@ -1692,8 +1694,8 @@ impl HybridModel {
         };
 
         // 4. PER ACTIVE EXPERT: gather, compute, scatter.
-        // Processing ORDER: DEFAULT = DESCENDING m_e (biggest token batches first);
-        // BW24_MOE_ORDER=id restores ascending expert id. Measured (rig5090, 2026-07-04): desc is
+        // Processing ORDER: DESCENDING m_e (biggest token batches first) — the concluded winner
+        // (rig5090 2026-07-04, the ascending-id arm and its BW24_MOE_ORDER seam removed): desc is
         // a first-forward win at partial cache capacity — the hot (big-m_e) experts are admitted
         // to the SLRU before the small-m_e tail can pollute it, so residency converges in ONE
         // forward instead of several: auto-cache T=501 126.9 -> 169.9 tok/s (1.34x), cap512
@@ -1701,13 +1703,10 @@ impl HybridModel {
         // at long prompts where every expert stages regardless. Order is FREE to change without
         // breaking the byte-identity gate: the slot scheme pins each token's accumulation order
         // regardless of expert processing order (the whole point of the slots).
-        let desc = std::env::var("BW24_MOE_ORDER").map(|v| v != "id").unwrap_or(true);
         let mut order: Vec<usize> =
             (0..n_expert).filter(|&ex| !groups[ex].tok_indices.is_empty()).collect();
-        if desc {
-            order.sort_by(|&a, &b| groups[b].tok_indices.len()
-                .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
-        }
+        order.sort_by(|&a, &b| groups[b].tok_indices.len()
+            .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
         for ex in order {
             let grp = &groups[ex];

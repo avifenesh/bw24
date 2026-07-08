@@ -8,7 +8,7 @@
 //! plus it keeps the token id + rope pos device-resident. With bucket_max==t_kv the _dc fa_decode
 //! reproduces the eager n_splits/per/combine EXACTLY -> bit-identical.
 //!
-//! usage: decode-dc-gate <model> [P] [N]    (env: BW24_FAST=1 BW24_MMVQ=1 BW24_FA_VEC=1)
+//! usage: decode-dc-gate <model> [P] [N]    (fast-path core is default-on)
 use bw24_engine::Engine;
 use bw24_engine::hybrid::HybridModel;
 use bw24_engine::forward::argmax;

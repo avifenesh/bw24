@@ -248,22 +248,6 @@ pub struct Engine {
     /// fused-router sel/w readback — one async DtoH pair + ONE sync instead of two synced dtohs.
     /// Grown lazily; reused every MoE layer (single-threaded decode serializes on the sync).
     router_stage: Mutex<Option<PinnedStage>>,
-    /// FADEPTH lane (2026-07-08, BW24_FA_PPOOL=1): persistent FA-decode split-partial pool
-    /// (part_o, part_m, part_l) shared by `fa_decode` and `fa_decode_rows`. Replaces the 3x
-    /// `self.zeros` per FA call (at 35B d6257: 10 FA layers x 3 allocs + 3 memsets (1.6MB part_o)
-    /// + 3 frees per token — the depth-sloping host+memset tax). Grown lazily to the high-water
-    /// (o_len, ml_len), UNINITIALIZED: every decode-FA kernel variant writes its whole partial
-    /// slot unconditionally (empty splits write m=NEG_INF/l=0/acc=0) and the combines read ONLY
-    /// slots the launch grid wrote — see the exactness note at the use site in `fa_decode`.
-    /// NOT used by `fa_decode_dc` (graph-capture path: per-call stream-ordered allocs become
-    /// graph-owned; a shared grown pool would retire pointers baked into captured graphs).
-    fa_partials: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
-}
-
-/// FADEPTH lane env gate: BW24_FA_PPOOL=1 enables the persistent FA partial pool (default OFF).
-fn fa_ppool_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA_PPOOL").map(|v| v == "1").unwrap_or(false))
 }
 
 /// FAVENDOR lane env gate (2026-07-08): BW24_FA_V2=1 dispatches the llama-fattn-vec-mechanism
@@ -282,21 +266,6 @@ fn fa_v2_on() -> bool {
     // 42.2->44.9. One-time numeric-config change; kernel-check + argmax + spec self-consistency
     // + graph bit-identity green on all three models.
     std::env::var("BW24_FA_V2").map(|v| v != "0").unwrap_or(true)
-}
-
-/// FADEPTH lane env gate: BW24_FA_CMB_WIDE=1 dispatches the wide-grid combine twins
-/// (bit-identical per output element; default OFF). Applies to eager fa_decode +
-/// fa_decode_rows only — the _dc/graph path keeps the narrow combine untouched.
-fn fa_cmb_wide_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA_CMB_WIDE").map(|v| v == "1").unwrap_or(false))
-}
-
-/// Chunk width (threads/block) for the wide combine: head_dim must split evenly; 64 gives
-/// n_head x head_dim/64 CTAs (16x4=64 on the 35B vs 16 narrow). Returns None (-> narrow twin)
-/// when head_dim isn't chunkable.
-fn fa_cmb_chunks(head_dim: usize) -> Option<u32> {
-    if head_dim % 64 == 0 { Some((head_dim / 64) as u32) } else { None }
 }
 
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
@@ -354,8 +323,8 @@ impl Engine {
         let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;
-        // DECODE EVENT-TRACKING ELISION — DEFAULT ON (2026-07-05; BW24_EVT=1 = escape hatch,
-        // BW24_NO_EVT kept as a legacy no-op alias). cudarc is in multi-stream mode (main stream +
+        // DECODE EVENT-TRACKING ELISION — DEFAULT ON (2026-07-05; BW24_EVT=1 = escape hatch).
+        // cudarc is in multi-stream mode (main stream +
         // copy_stream are both created streams), so with tracking on EVERY launch arg records a
         // read/write CudaEvent and inserts cuStreamWaitEvent on prior events. On the 35B MoE decode
         // that is ~19k cuStreamWaitEvent + ~9k cuEventRecord + ~6k event create/destroy per token
@@ -381,7 +350,6 @@ impl Engine {
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
-                  fa_partials: Mutex::new(None),
                   fp8_scratch: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
@@ -1663,30 +1631,6 @@ impl Engine {
         self.alloc_uninit::<f32>(n)
     }
 
-    /// FADEPTH lane: lock + lazily grow the persistent FA partial pool to at least
-    /// (o_len f32 for part_o, ml_len f32 each for part_m/part_l). Buffers are UNINITIALIZED on
-    /// (re)alloc — see the exactness note in `fa_decode`. Lock held by the caller across the
-    /// FA + combine enqueues only (µs; all compute serializes on gpu.stream — the
-    /// `prime_deqw_ws` precedent).
-    #[allow(clippy::type_complexity)]
-    fn fa_part_pool(&self, o_len: usize, ml_len: usize)
-        -> Result<std::sync::MutexGuard<'_, Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
-                  Box<dyn std::error::Error>> {
-        let mut guard = self.fa_partials.lock().unwrap();
-        let need_grow = match guard.as_ref() {
-            Some((o, m, _)) => o.len() < o_len || m.len() < ml_len,
-            None => true,
-        };
-        if need_grow {
-            let (co, cm) = guard.as_ref().map(|(o, m, _)| (o.len(), m.len())).unwrap_or((0, 0));
-            let (no, nml) = (co.max(o_len), cm.max(ml_len));
-            *guard = Some((self.alloc_uninit::<f32>(no)?,
-                           self.alloc_uninit::<f32>(nml)?,
-                           self.alloc_uninit::<f32>(nml)?));
-        }
-        Ok(guard)
-    }
-
     /// RMSNorm: x[ncols,nrows] row-major, weight[ncols] -> dst. One block/row, 256 threads.
     pub fn rms_norm(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
                     ncols: usize, nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
@@ -1912,18 +1856,13 @@ impl Engine {
         let out_f = w.out_features();
         // PREFILL (T>1) ROOT FIX: batched tensor-core int8 GEMM. Decodes each weight tile to int8
         // in smem ONCE and reuses across all tokens via mma — vs the dp4a matvec's per-token weight
-        // re-read. Gated behind BW24_GEMM; only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's
-        // bandwidth-bound, mma gives nothing). Quantize the activation once here then call the GEMM.
-        // BW24_GEMM_M overrides the m cutoff (A/B seam, 2026-07-06): the spec m=K+1 verify batch
-        // (m=4/5) sits below the default 16 and takes the dp4a b4 kernels, which ncu shows at
-        // ~43% DRAM / ~42% SM (latency-bound, not wall-bound) — the MMA tile path is a candidate
-        // there (decode weight tile once in smem, reuse across the verify columns).
-        static GEMM_M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let gemm_m_threshold = *GEMM_M.get_or_init(|| {
-            std::env::var("BW24_GEMM_M").ok().and_then(|v| v.parse().ok()).unwrap_or(16)
-        });
+        // re-read. Only the 4 daily-hot dtypes; m=1 decode keeps dp4a (it's bandwidth-bound, mma
+        // gives nothing). Quantize the activation once here then call the GEMM.
+        // m cutoff FIXED at 16: the m=4 MMA-verify A/B (2026-07-06, was BW24_GEMM_M) measured
+        // NEGATIVE — the MMA tile grid starves at m=4 (BN=256 -> grid.y=1) and its FP order
+        // shifted verify argmax at tight margins. Do not lower without re-running that battery.
         #[allow(non_snake_case)]
-        let GEMM_M_THRESHOLD = gemm_m_threshold;
+        let GEMM_M_THRESHOLD = 16usize;
 
         // PREFILL GEMM (m>=16). ACCURACY-FIRST dispatch (2026-06-28, prefill-gemm-beat-research wf
         // wllbyo6vc step 1): the int8 W4A8 GEMM (qmatvec_gemm, q8_1 activation, s32 accumulate) is
@@ -2423,35 +2362,15 @@ impl Engine {
                         rp: bool)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
-        // MLP LEVER (BW24_MMVQ_MR=2|4): NVFP4 m=1 multi-row-per-warp variant. Each warp computes RPW
-        // output rows in one activation pass (RPW acc chains + weight loads in flight -> hides the
-        // weight-load latency that pins the single-row kernel at 30-46% DRAM). NVFP4 only (the big
-        // matvec); other dtypes keep the single-row kernel. grid.x covers RPW rows per warp.
-        // Default RPW=2 (clean clock-locked graph A/B: +1.7%@128, +0.7%@512, +1.8%@2048 vs single-row;
-        // RPW=4 regresses on register pressure). Bit-identical per row (argmax 142, same logit maxdiff
-        // as single-row on 9B). BW24_MMVQ_MR overrides (1 = single-row reference).
-        // NVFP4 default RPW=2 (clean +1-2% on 9B). Q4_K multi-row is AVAILABLE (qmatvec_q4_K_mmvq_mr2)
-        // but NOT default: measured only +0.7% on the 27B (q4_K is 8% of its decode, multi-row barely
-        // helps the k-quant load pattern) — within noise, not worth the default. BW24_MMVQ_MR forces it
-        // (=2 enables multi-row for both NVFP4 and Q4_K; =1 single-row reference everywhere).
-        let mr_env = std::env::var("BW24_MMVQ_MR").ok().and_then(|s| s.parse::<u32>().ok());
-        let mut mr: u32 = if m == 1 && qtype == QT_NVFP4 {
-            mr_env.unwrap_or(2)
-        } else if m == 1 && qtype == QT_Q4_K {
-            mr_env.unwrap_or(1)   // q4_K multi-row off by default (+0.7% only)
-        } else if m == 1 && qtype == QT_Q5_K {
-            // Q5_K mr2 default ON (2026-07-05): the FR-Spec trimmed draft head is Q5_K 32768
-            // rows = 8% of the 27B p3 spec wall (1.02ms/draft launch, latency-bound like the
-            // other k-quants pre-fix). Bit-identical per row to the single-row kernel.
-            mr_env.unwrap_or(2)
-        } else if m == 1 && qtype == QT_Q6_K {
-            // Q6_K mr2 measured FLAT (2026-07-07: 983us vs 967 on the 9B lm_head — that matvec
-            // is weight-bandwidth-bound at 528GB/s effective; activation reuse buys nothing).
-            // Kernel kept as BW24_MMVQ_MR=2 opt-in; default single-row (no gain = no change).
-            mr_env.unwrap_or(1)
-        } else { 1 };
-        // A6 rp layout: mr4 has no rp twin (mr4 crashes pre-existing, non-default) -> mr2.
-        if rp && qtype == QT_NVFP4 && mr == 4 { mr = 2; }
+        // Multi-row-per-warp (mr2) policy, fixed since the 2026-07 sweeps (the BW24_MMVQ_MR
+        // override + mr4 kernel were retired 2026-07-08 — mr4 regressed on register pressure and
+        // crashed under rp; q4_K/q6_K mr2 measured flat, "no gain = no change"):
+        //   NVFP4 m=1 -> mr2 (clean +1-2% on 9B: RPW acc chains hide the weight-load latency
+        //     that pins the single-row kernel at 30-46% DRAM). Bit-identical per row.
+        //   Q5_K m=1 -> mr2 (2026-07-05: the FR-Spec trimmed draft head is Q5_K 32768 rows = 8%
+        //     of the 27B p3 spec wall; latency-bound like the other k-quants pre-fix).
+        //   Q4_K/Q6_K m=1 -> single-row (mr2 measured +0.7% / flat — weight-bandwidth-bound).
+        let mut mr: u32 = if m == 1 && (qtype == QT_NVFP4 || qtype == QT_Q5_K) { 2 } else { 1 };
         // q5issue lane (2026-07-08): BW24_Q5K_ISSUE swaps the q5_K m=1 mmvq kernels for the
         // issue-reduced `_il` bodies (uint4 header/qh/qs loads + branchless scale decode —
         // cuts ~34 LDG.U16 + ~5 LDG.U8 + a warp-divergent scale branch per 32-elem group-row
@@ -2469,47 +2388,15 @@ impl Engine {
         let q5_il = qtype == QT_Q5_K && m == 1
             && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
         if q5_il && !q5_force && out_f > 65536 { mr = 1; }
-        // q4issue lane (2026-07-08): BW24_Q4V routes the SINGLE-ROW q4_K matvec to the
-        // issue-reduced body (qmatvec_q4_K_mmvq_v: 3x LDG.128 replace ~13 narrow weight loads
-        // per 32-elem group; scale decode = register shifts on the header uint4; identical
-        // dp4a values+order -> bit-identical). Micro-bench (DRAM-cold, 8-copy rotation, N=3):
-        // v wins where the g-loop is deep relative to rows (12288x4096 ffn_down +6.9%,
-        // 4096x4096 +1.5%) and is noise-to--1.7% on wide shapes already at 84-97% of wall
-        // (L2-warm v is +16-24% everywhere — the kernel IS issue-lighter; DRAM hides it).
-        // =1 smart: v only when in_f >= out_f (the win shapes). =2 force-everywhere (A/B seam).
-        // Default OFF until main-thread tok/s proves it.
-        let q4v = match std::env::var("BW24_Q4V").as_deref() {
-            Ok("1") => in_f >= out_f,
-            Ok("2") => true,
-            _ => false,
-        };
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
-            (QT_NVFP4, 4, false) => "qmatvec_nvfp4_mmvq_mr4",
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
-            (QT_Q4_K, 2, _) => "qmatvec_q4_K_mmvq_mr2",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
-            (QT_Q4_K, _, _) if q4v => "qmatvec_q4_K_mmvq_v",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
-            (QT_Q6_K, 2, _) => "qmatvec_q6_K_mmvq_mr2",
-            // lane/q6issue (2026-07-08): issue/latency-reduction variants, default OFF. All are
-            // bit-identical per (token,row) (int-exact bias fold; float order unchanged).
-            // BW24_Q6_ISSUE=1 -> _iss   (wide loads + PRMT assembly + bias fold)
-            //               =2 -> _issv (wide loads only, keeps __vsubss4 — A/B attribution)
-            //               =3 -> _issp (iss + prefetch.global.L2 next window — latency lever)
-            //               =4 -> _iss2g (iss + 2 groups/lane iteration — 2x bytes in flight/warp)
-            //               =5 -> _iss2gp (2-group + prefetch)
-            (QT_Q6_K, _, _) => match std::env::var("BW24_Q6_ISSUE").as_deref() {
-                Ok("1") => "qmatvec_q6_K_mmvq_iss",
-                Ok("2") => "qmatvec_q6_K_mmvq_issv",
-                Ok("3") => "qmatvec_q6_K_mmvq_issp",
-                Ok("4") => "qmatvec_q6_K_mmvq_iss2g",
-                Ok("5") => "qmatvec_q6_K_mmvq_iss2gp",
-                _ => "qmatvec_q6_K_mmvq",
-            },
+            (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq",
             (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
@@ -2897,8 +2784,8 @@ impl Engine {
     /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. NVFP4 needs in_f % 64 == 0.
     /// DEFAULT-ON (2026-06-28): measured pp512 9B-NVFP4 = 1413 tok/s WITH this GEMM vs 298 with the
     /// dp4a fallback (4.7x) AND MORE accurate (prefill logit maxdiff 0.159 vs dp4a 0.55, both argmax
-    /// MATCH). The int8 tensor-core GEMM was gated behind BW24_GEMM "until Phase 0 lands" — Phase 0
-    /// (mma + smem swizzle + cp.async, tasks #30-36) shipped, so the gate is stale. Prefill-only
+    /// MATCH). The int8 tensor-core GEMM is unconditional (its historical BW24_GEMM opt-in gate
+    /// shipped with Phase 0 — mma + smem swizzle + cp.async — and was removed). Prefill-only
     /// (m>=GEMM_M_THRESHOLD); m=1 decode keeps dp4a/MMVQ (this returns true but matmul only calls it
     /// at m>=threshold). BW24_NO_GEMM forces the dp4a fallback (the bit-reference).
     pub fn gemm_supports(&self, w: &crate::model::GpuTensor) -> bool {
@@ -3233,7 +3120,7 @@ impl Engine {
                      head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
                      k_tok_bytes: usize, v_tok_bytes: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
-        // PERF-4: BW24_FA_VEC swaps the scalar element-per-thread fa_decode_f32 for the
+        // PERF-4: the warp-per-token vec path replaces the scalar element-per-thread fa_decode_f32 —
         // warp-per-token fa_decode_vec_q (grid=(n_head_kv,n_splits), block=(32,gqa_ratio)).
         // The block dequants each KV tile ONCE into smem (bf16) and broadcasts to all gqa Q-head
         // warps -> each KV byte leaves HBM/L2 ~1x/group (vs 4x). ARGS identical; func/grid/block/
@@ -3253,29 +3140,11 @@ impl Engine {
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
-        // FADEPTH lane (BW24_FA_PPOOL=1, default OFF): partials from the persistent pool,
-        // UNINITIALIZED, instead of 3x alloc_zeros per call. EXACTNESS (bit-identity): the combine
-        // reads partM[head][s] only for s < n_splits, and every launched variant (fa_decode_f32,
-        // fa_decode_vec_q, fa_decode_vec_q_smem) writes ITS ENTIRE partial slot unconditionally at
-        // kernel tail — empty splits write m=NEG_INF/l=0/acc=0, so no slot the combine reads is
-        // ever left at pool garbage. partO/partL of a split are read only alongside its written
-        // partM. Head coverage: the vec grid writes heads kv_head*gqa+wy = exactly n_head slots
-        // iff n_head % n_head_kv == 0 (all shipped models) — guarded below, else fall back to
-        // zeroed fresh buffers (the scalar grid covers all heads either way, but keep one guard).
-        // The kernels + combine receive identical values in identical order -> outputs bit-equal.
-        let use_pool = fa_ppool_on() && n_head % n_head_kv == 0;
         let o_len = n_head * n_splits * head_dim;
         let ml_len = n_head * n_splits;
-        let mut pool_guard = if use_pool { Some(self.fa_part_pool(o_len, ml_len)?) } else { None };
-        let mut local: Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)> = None;
-        let (part_o, part_m, part_l): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>) =
-            match pool_guard.as_deref_mut() {
-                Some(p) => { let (o, m, l) = p.as_mut().unwrap(); (o, m, l) }
-                None => {
-                    local = Some((self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?));
-                    let (o, m, l) = local.as_mut().unwrap(); (o, m, l)
-                }
-            };
+        let (mut part_o, mut part_m, mut part_l) =
+            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         // The vec kernel holds head_dim/32 register accumulators (FA_DEC_MAX_DPL=8 -> head_dim<=256).
@@ -3332,15 +3201,8 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        // FADEPTH lane (BW24_FA_CMB_WIDE=1): wide-grid combine twin — n_head x head_dim/64 CTAs
-        // instead of n_head; every output element still computed by exactly ONE thread running
-        // the byte-identical serial split walk -> bit-identical O (probe hash + gate battery).
-        let (fc, cfg2) = match (fa_cmb_wide_on(), fa_cmb_chunks(head_dim)) {
-            (true, Some(ch)) => (self.func("fa_decode_combine_f32_wide"),
-                LaunchConfig { grid_dim: (n_head as u32, ch, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 }),
-            _ => (self.func("fa_decode_combine_f32"),
-                LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 }),
-        };
+        let (fc, cfg2) = (self.func("fa_decode_combine_f32"),
+            LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
@@ -3382,36 +3244,11 @@ impl Engine {
         let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let gqa = (n_head / n_head_kv).max(1) as u32;
-        // SHARED-K path (2026-07-05): T=2..4 rows fold into one CTA per (kv_head, split) — key
-        // bytes read once instead of T times (bit-identical per row; kernel-check sk-vs-rows gate).
-        // BW24_FA_SK=0 forces the plain rows kernel.
-        // MEASURED NEGATIVE 2026-07-05 (default OFF, kept as seam): folding T rows registers
-        // (q_reg+acc x T per lane) collapses occupancy — p3 spec 108.0 -> 51.9 tok/s. Same class
-        // as the wall-ledgered 2-key ILP. The FA byte-reuse win cannot pay for Tx register state
-        // in this kernel shape; a smem-staged variant would reintroduce the smem-broadcast loss.
-        // FAVENDOR lane: BW24_FA_V2 takes precedence over the (default-OFF, measured-negative)
-        // sk fold — eager fa_decode has no sk seam, so letting sk win under v2 would diverge
-        // eager decode from the verify (run-spec exactness).
-        let sk = t >= 2 && t <= 4 && !fa_v2_on()
-            && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
-        // FADEPTH lane (BW24_FA_PPOOL=1): pooled UNINITIALIZED partials — same exactness argument
-        // as `fa_decode`: the rows kernels (plain + smem twin) write every (row, split<n_splits_r)
-        // slot unconditionally (early-return only for split >= n_splits_r) and fa_decode_combine_rows
-        // reads ONLY s < n_splits_r per row ("slots >= n_splits_r are never read"). Guarded on !sk
-        // (the sk fold kernels' write coverage is unaudited; sk is default OFF, measured negative).
-        let use_pool = fa_ppool_on() && !sk && n_head % n_head_kv == 0;
         let o_len = t * n_head * n_splits_max * head_dim;
         let ml_len = t * n_head * n_splits_max;
-        let mut pool_guard = if use_pool { Some(self.fa_part_pool(o_len, ml_len)?) } else { None };
-        let mut local: Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)> = None;
-        let (part_o, part_m, part_l): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>) =
-            match pool_guard.as_deref_mut() {
-                Some(p) => { let (o, m, l) = p.as_mut().unwrap(); (o, m, l) }
-                None => {
-                    local = Some((self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?));
-                    let (o, m, l) = local.as_mut().unwrap(); (o, m, l)
-                }
-            };
+        let (mut part_o, mut part_m, mut part_l) =
+            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
         // Deep-ctx smem twin for the VERIFY rows (2026-07-05): same threshold + rationale as
         // fa_decode's dispatch — at 40k the register path's GQA L2-reuse premise is dead and the
         // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
@@ -3419,11 +3256,8 @@ impl Engine {
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
-        let smem_rows = !sk && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
+        let smem_rows = !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
         let fname = if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
-                    else if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
-                                       3 => "fa_decode_vec_q_rows_sk3",
-                                       _ => "fa_decode_vec_q_rows_sk4" } }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = self.func(fname);
@@ -3433,24 +3267,16 @@ impl Engine {
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             sh
         } else { 0 };
-        let zdim = if sk { 1 } else { t as u32 };
-        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, zdim),
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        // FADEPTH lane (BW24_FA_CMB_WIDE=1): wide rows-combine twin (grid.z = head_dim/64
-        // chunks) — bit-identical per output element, see fa_decode_combine_rows_wide.
-        let (fc, cfg2) = match (fa_cmb_wide_on(), fa_cmb_chunks(head_dim)) {
-            (true, Some(ch)) => (self.func("fa_decode_combine_rows_wide"),
-                LaunchConfig { grid_dim: (n_head as u32, t as u32, ch),
-                    block_dim: (64, 1, 1), shared_mem_bytes: 0 }),
-            _ => (self.func("fa_decode_combine_rows"),
-                LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
-                    block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 }),
-        };
+        let (fc, cfg2) = (self.func("fa_decode_combine_rows"),
+            LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(&base_i).arg(&nspm).arg(&spk);
@@ -3764,41 +3590,6 @@ impl Engine {
         let (h, ti) = (n_head as i32, t as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o).arg(&h).arg(&ti).arg(&scale);
-        unsafe { b.launch(cfg)?; }
-        Ok(())
-    }
-
-    /// GDN FUSE (lane/gdnfuse): fused decode prep+scan, OPT-IN via BW24_GDN_FUSE=1 (default off).
-    pub fn gdn_fuse_enabled() -> bool {
-        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *E.get_or_init(|| std::env::var("BW24_GDN_FUSE").map(|v| v == "1").unwrap_or(false))
-    }
-
-    /// FUSED decode GDN prep + scan (BW24_GDN_FUSE=1, T=1, d_state==128 ONLY): one launch
-    /// replaces gdn_prep_decode + gdn_scan_s128. Same launch shape as the decode scan
-    /// (grid (H,1,32), block (32,4)) — the prep runs per-block into smem (replicated across a
-    /// head's 32 z-blocks; deterministic). BIT-IDENTICAL to the chain: every FP expression,
-    /// reduce tree, and accumulation order copied unchanged; smem staging is exact. State
-    /// ping-pong contract identical to gdn_scan_s128 (reads state_in, writes DISTINCT state_out).
-    #[allow(clippy::too_many_arguments)]
-    pub fn gdn_fused_decode(&self, conv_out: &CudaSlice<f32>, beta_raw: &CudaSlice<f32>,
-                            alpha: &CudaSlice<f32>, dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
-                            state_in: &CudaSlice<f32>, state_out: &mut CudaSlice<f32>,
-                            o: &mut CudaSlice<f32>,
-                            num_v: usize, num_k: usize, key_dim: usize, eps: f32, scale: f32)
-                            -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("gdn_fused_decode_f32");
-        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
-        let cfg = LaunchConfig {
-            grid_dim: (num_v as u32, 1, S_V / COLS_PER_BLOCK),
-            block_dim: (WARP, COLS_PER_BLOCK, 1),
-            shared_mem_bytes: 0,
-        };
-        let (nk, kd) = (num_k as i32, key_dim as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(conv_out).arg(beta_raw).arg(alpha).arg(dt_bias).arg(a)
-         .arg(state_in).arg(state_out).arg(o)
-         .arg(&nk).arg(&kd).arg(&eps).arg(&scale);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

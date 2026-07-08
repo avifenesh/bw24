@@ -23,8 +23,8 @@ fi
 if [ "$ENGINE" = bw24 ]; then
   for P in p1-code-short p2-code-medium p3-agentic-long; do
     echo "=== bw24 $MODE $P (K=$BK) ==="
-    env $BW_ENV BW24_PROMPT="$(cat "$DIR/$P.txt")" BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 \
-      BW24_FA_VEC=1 BW24_SPEC_K=$BK BW24_NGEN=$NGEN /home/avifenesh/projects/bw24/target/release/run-spec "$MODEL" 2>/dev/null \
+    env $BW_ENV BW24_PROMPT="$(cat "$DIR/$P.txt")" \
+      BW24_SPEC_K=$BK BW24_NGEN=$NGEN /home/avifenesh/projects/bw24/target/release/run-spec "$MODEL" 2>/dev/null \
       | grep -E "text prompt|generate\]|K=$BK\]" | head -3
   done
 else

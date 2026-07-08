@@ -11,7 +11,7 @@
 //! usage: decode-window-profile <model.gguf> [depth=512] [n=32]
 //!   nsys profile --capture-range=cudaProfilerApi --capture-range-end=stop \
 //!     -o /tmp/... ./target/release/decode-window-profile <model> 6257 32
-//! env law: BW24_FAST=1 BW24_GEMM=1 BW24_MMVQ=1 BW24_FA_VEC=1 (+BW24_MOE_CACHE=1 on the 35B)
+//! env: fast-path core is default-on; nothing to set (MoE cache included).
 
 use bw24_engine::Engine;
 use bw24_engine::hybrid::HybridModel;

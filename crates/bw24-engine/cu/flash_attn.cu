@@ -674,7 +674,7 @@ static __device__ __forceinline__ void fa_prefill_f32_body(
 }
 
 // extern-C stamps: hd256 keeps the ORIGINAL name (qwen35-class dispatch unchanged);
-// `_hd128` is the MiniMax-M3 twin. Same macro-stamp pattern as fa_decode_vec_q_rows_sk{2,3,4}.
+// `_hd128` is the MiniMax-M3 twin.
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
@@ -2513,45 +2513,6 @@ extern "C" __global__ void fa_decode_combine_f32(
 }
 
 // ===================================================================== //
-//  FADEPTH lane (2026-07-08): WIDE-GRID combine twin.                    //
-//  fa_decode_combine_f32 launches only n_head CTAs (16 on the 35B) —    //
-//  16/82 SMs busy while every thread serially walks n_splits (98 at     //
-//  d6257); nsys on the fa_ppool_bench probe: combine = 30.8% of FA      //
-//  decode GPU time (med 8.7us vs 49us main kernel). This twin spreads   //
-//  head_dim over grid.y chunks (grid = (n_head, head_dim/blockDim.x)),  //
-//  so each output element is STILL computed by exactly ONE thread       //
-//  running the byte-identical serial program (same fmax scan order,    //
-//  same ascending-split sum order, same exp2f/LOG2E) -> outputs are    //
-//  BIT-IDENTICAL to fa_decode_combine_f32. The per-thread partM scan   //
-//  is duplicated across chunks (98 x 4B redundant L2 reads — noise).   //
-//  Dispatched by fa_decode under BW24_FA_CMB_WIDE=1 (default OFF).     //
-// ===================================================================== //
-extern "C" __global__ void fa_decode_combine_f32_wide(
-        const float* __restrict__ partO, const float* __restrict__ partM,
-        const float* __restrict__ partL, float* __restrict__ O,
-        int head_dim, int n_head, int n_splits)
-{
-    const int head = blockIdx.x;
-    const int tid  = blockIdx.y * blockDim.x + threadIdx.x;   // dim element of this thread
-    if (head >= n_head || tid >= head_dim) return;
-
-    // global max over splits (identical scan order to the narrow twin)
-    float m = NEG_INF;
-    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, partM[head * n_splits + s]);
-    // combined sum and o (identical ascending-split order)
-    float l = 0.0f, o = 0.0f;
-    for (int s = 0; s < n_splits; ++s) {
-        float ms = partM[head * n_splits + s];
-        if (ms == NEG_INF) continue;
-        float w = exp2f((ms - m) * LOG2E);
-        l += partL[head * n_splits + s] * w;
-        o += partO[((size_t)head * n_splits + s) * head_dim + tid] * w;
-    }
-    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
-    O[((size_t)0 * n_head + head) * head_dim + tid] = o * linv;
-}
-
-// ===================================================================== //
 //  DEVICE-COUNTER decode variants (CUDA-GRAPH-PLAN Phase 2)             //
 //  Identical math to fa_decode_f32 / fa_decode_vec_q, but the sequence  //
 //  length T_kv is read from a device int[1] counter (t_kv_dev[0]) for   //
@@ -2741,140 +2702,6 @@ extern "C" __global__ void fa_decode_vec_q_dc(
 //  the KV prefix across rows through L2 within ONE launch.              //
 //  partO layout: [row, n_head, n_splits_max, head_dim]; M/L analogous.  //
 // ===================================================================== //
-// SHARED-K MULTI-ROW variant (2026-07-05): fold the T verify rows into the CTA so each key
-// byte is read ONCE per (kv_head, split) instead of T times. Register state (q_reg, acc, m, l)
-// is per-row per-lane; each row keeps ITS OWN ascending-t accumulation over ITS OWN causal bound
-// (t < base+r+1) -> every row output is BIT-IDENTICAL to fa_decode_vec_q_rows (kernel-check pins
-// it). Templated on T (2..4); T=1 and T>4 stay on the plain rows kernel. The FA-verify byte
-// traffic at long ctx drops ~T-fold (16.9% of the p3 round measured before this).
-template <int TROWS>
-__device__ __forceinline__ void fa_rows_sharedk_body(
-        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
-        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base,
-        float scale, int n_splits_max, int split_keys,
-        long k_tok_bytes, long v_tok_bytes)
-{
-    const int T_kv_last = t_kv_base + TROWS;                 // last row bound (max keys)
-    const int n_splits  = (T_kv_last + split_keys - 1) / split_keys;
-    const int kv_head = blockIdx.x;
-    const int split   = blockIdx.y;
-    if (kv_head >= n_head_kv || split >= n_splits) return;
-    const int gqa  = n_head / n_head_kv;
-    const int wy   = threadIdx.y;
-    const int lane = threadIdx.x;
-    if (wy >= gqa) return;
-    const int head = kv_head * gqa + wy;
-    const int dpl  = head_dim >> 5;
-
-    // EXACTNESS SUBTLETY: each row r must use ITS OWN per-row split geometry (per_r =
-    // ceil(T_kv_r / n_splits_r) with n_splits_r = ceil(T_kv_r/split_keys)) so its split
-    // boundaries + combine order match the plain rows kernel bit-for-bit. Rows whose n_splits_r
-    // < split index simply contribute nothing here (their partials were written by lower splits).
-    int t_lo_r[TROWS], t_hi_r[TROWS];
-    #pragma unroll
-    for (int r = 0; r < TROWS; ++r) {
-        const int T_kv_r = t_kv_base + r + 1;
-        const int ns_r   = (T_kv_r + split_keys - 1) / split_keys;
-        const int per_r  = (T_kv_r + ns_r - 1) / ns_r;
-        if (split < ns_r) { t_lo_r[r] = split * per_r; t_hi_r[r] = min(T_kv_r, t_lo_r[r] + per_r); }
-        else              { t_lo_r[r] = 0; t_hi_r[r] = 0; }   // row not present in this split
-    }
-    // CTA walk range = union of the rows ranges (contiguous: t_lo of the smallest to t_hi of the largest)
-    int walk_lo = t_hi_r[0], walk_hi = 0;
-    #pragma unroll
-    for (int r = 0; r < TROWS; ++r) { if (t_hi_r[r] > t_lo_r[r]) { walk_lo = min(walk_lo, t_lo_r[r]); walk_hi = max(walk_hi, t_hi_r[r]); } }
-    if (walk_lo >= walk_hi) return;
-
-    float q_reg[TROWS][FA_DEC_MAX_DPL];
-    float m_i[TROWS], l_i[TROWS], acc[TROWS][FA_DEC_MAX_DPL];
-    #pragma unroll
-    for (int r = 0; r < TROWS; ++r) {
-        m_i[r] = NEG_INF; l_i[r] = 0.0f;
-        #pragma unroll
-        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
-            acc[r][i] = 0.0f;
-            q_reg[r][i] = (i < dpl) ? Q[((size_t)r * n_head + head) * head_dim + (lane + (i << 5))] * scale : 0.0f;
-        }
-    }
-
-    const int kblk0 = (kv_head * head_dim) >> 5;
-    for (int t = walk_lo; t < walk_hi; ++t) {
-        // load K block bytes ONCE for this t (register dequant, shared across rows via registers)
-        const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
-        float kval[FA_DEC_MAX_DPL];
-        #pragma unroll
-        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
-            if (i < dpl) {
-                const uint8_t* blk = kt + i * K_BLK_B;
-                kval[i] = __bfloat162float(__float2bfloat16(dq_K_lane(blk, lane)));
-            } else kval[i] = 0.0f;
-        }
-        // V bytes once
-        const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
-        float vval[FA_DEC_MAX_DPL];
-        #pragma unroll
-        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
-            if (i < dpl) {
-                const uint8_t* blk = vt + i * V_BLK_B;
-                vval[i] = __bfloat162float(__float2bfloat16(dq_V_lane(blk, lane)));
-            } else vval[i] = 0.0f;
-        }
-        #pragma unroll
-        for (int r = 0; r < TROWS; ++r) {
-            if (t >= t_lo_r[r] && t < t_hi_r[r]) {
-                float part = 0.0f;
-                #pragma unroll
-                for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                    if (i < dpl) part += q_reg[r][i] * kval[i];
-                float score = warp_reduce_sum(part);
-                float m_new = fmaxf(m_i[r], score);
-                float alpha = (m_i[r] == NEG_INF) ? 0.0f : exp2f((m_i[r] - m_new) * LOG2E);
-                float pex   = exp2f((score - m_new) * LOG2E);
-                #pragma unroll
-                for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                    if (i < dpl) acc[r][i] = acc[r][i] * alpha + pex * vval[i];
-                l_i[r] = l_i[r] * alpha + pex;
-                m_i[r] = m_new;
-            }
-        }
-    }
-
-    #pragma unroll
-    for (int r = 0; r < TROWS; ++r) {
-        if (t_hi_r[r] > t_lo_r[r]) {
-            #pragma unroll
-            for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
-                if (i < dpl)
-                    partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + (lane + (i << 5))] = acc[r][i];
-            if (lane == 0) {
-                partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i[r];
-                partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i[r];
-            }
-        }
-    }
-}
-extern "C" __global__ void fa_decode_vec_q_rows_sk2(
-        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
-        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base, float scale,
-        int n_splits_max, int split_keys, long k_tok_bytes, long v_tok_bytes) {
-    fa_rows_sharedk_body<2>(Q,K,V,partO,partM,partL,head_dim,n_head,n_head_kv,t_kv_base,scale,n_splits_max,split_keys,k_tok_bytes,v_tok_bytes);
-}
-extern "C" __global__ void fa_decode_vec_q_rows_sk3(
-        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
-        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base, float scale,
-        int n_splits_max, int split_keys, long k_tok_bytes, long v_tok_bytes) {
-    fa_rows_sharedk_body<3>(Q,K,V,partO,partM,partL,head_dim,n_head,n_head_kv,t_kv_base,scale,n_splits_max,split_keys,k_tok_bytes,v_tok_bytes);
-}
-extern "C" __global__ void fa_decode_vec_q_rows_sk4(
-        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
-        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base, float scale,
-        int n_splits_max, int split_keys, long k_tok_bytes, long v_tok_bytes) {
-    fa_rows_sharedk_body<4>(Q,K,V,partO,partM,partL,head_dim,n_head,n_head_kv,t_kv_base,scale,n_splits_max,split_keys,k_tok_bytes,v_tok_bytes);
-}
 
 extern "C" __global__ void fa_decode_vec_q_rows(
         const float* __restrict__ Q,    // [T, n_head, head_dim] token-major (verify q stack)
@@ -3003,35 +2830,3 @@ extern "C" __global__ void fa_decode_combine_rows(
     O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
 }
 
-// FADEPTH lane: wide-grid rows-combine twin (see fa_decode_combine_f32_wide).
-// grid = (n_head, T, head_dim/blockDim.x); each output element computed by exactly
-// ONE thread with the byte-identical serial program -> BIT-IDENTICAL outputs.
-// Dispatched by fa_decode_rows under BW24_FA_CMB_WIDE=1 (default OFF).
-extern "C" __global__ void fa_decode_combine_rows_wide(
-        const float* __restrict__ partO, const float* __restrict__ partM,
-        const float* __restrict__ partL, float* __restrict__ O,
-        int head_dim, int n_head, int t_kv_base, int n_splits_max, int split_keys)
-{
-    const int head     = blockIdx.x;
-    const int r        = blockIdx.y;
-    const int T_kv     = t_kv_base + r + 1;
-    const int n_splits = (T_kv + split_keys - 1) / split_keys;
-    const int tid      = blockIdx.z * blockDim.x + threadIdx.x;
-    if (head >= n_head || tid >= head_dim) return;
-    const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
-    const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
-    const float* pO = partO + ((size_t)r * n_head + head) * n_splits_max * head_dim;
-
-    float m = NEG_INF;
-    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, pM[s]);
-    float l = 0.0f, o = 0.0f;
-    for (int s = 0; s < n_splits; ++s) {
-        float ms = pM[s];
-        if (ms == NEG_INF) continue;
-        float w = exp2f((ms - m) * LOG2E);
-        l += pL[s] * w;
-        o += pO[(size_t)s * head_dim + tid] * w;
-    }
-    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
-    O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
-}

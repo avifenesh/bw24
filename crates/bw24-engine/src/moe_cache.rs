@@ -4,7 +4,8 @@
 //! The same ~15-20% of experts recur (the "hot expert" mass), so an SLRU residency cache makes
 //! the steady-state re-stage count -> ~0. The cache holds N fixed-address GPU slots (never
 //! re-allocated, never fragmented), a `BlockId -> slot` residency table, an SLRU eviction policy
-//! (probation + protected segments) and a second-miss "ghost" admission filter so a one-off cold
+//! (probation + protected segments; the second-miss "ghost" admission filter was measured a net
+//! loss in both regimes and removed 2026-07-08 — first-miss admit is the policy) so a one-off cold
 //! expert can never evict a genuinely hot one.
 //!
 //! THE bit-identity property (MOE-SLRU-PLAN §B.3): a cache HIT and a MISS feed `qmatvec_view` the
@@ -34,11 +35,11 @@ impl BlockId {
     pub fn new(layer: u16, proj: u8, ex: u16) -> Self { BlockId { layer, proj, ex } }
 }
 
-/// Where a dispatched block landed: a retained resident slot or a transient staging slot.
+/// Where a dispatched block landed (always a retained resident slot since the first-miss-admit
+/// policy, 2026-07-08 — the transient staging tier went with the ghost filter).
 #[derive(Clone, Copy, Debug)]
 pub enum DispatchSlot {
     Resident(usize),
-    Staging(usize),
 }
 
 /// SLRU GPU expert-residency cache. N fixed slots, each sized to the largest block so any block
@@ -50,11 +51,6 @@ pub struct MoeSlotCache {
     probation: VecDeque<usize>,       // SLRU segment 1 (slot indices, LRU front = coldest)
     protected: VecDeque<usize>,       // SLRU segment 2 (hot; capped at ~0.8*N)
     free: Vec<usize>,                 // unused slot indices (startup)
-    ghost: HashSet<BlockId>,          // SECOND-MISS admission: seen-once keys, no payload
-    /// Transient double-buffered staging slots for blocks NOT admitted (first miss). Two so an
-    /// in-flight prefetch and the consuming GEMM don't clobber each other; sized `max_block_bytes`.
-    staging: Vec<CudaSlice<u8>>,
-    staging_next: usize,
 
     n: usize,
     protected_cap: usize,
@@ -87,21 +83,6 @@ pub struct MoeSlotCache {
     pub staged_bytes: u64,    // total H2D bytes the cache caused (admit + first-miss transient)
 }
 
-/// FREE-SLOT FAST-ADMIT gate (BW24_MOE_FAST_ADMIT, default ON; `=0` restores the strict
-/// second-miss ghost filter even while free slots remain). See `dispatch`.
-fn ghost_enabled() -> bool {
-    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // DEFAULT OFF (2026-07-06 A/B): local 35B spill 24.2 -> 25.0 (+3.4%, N=3 tight); on 96GB the
-    // free-slot fast-admit already bypasses the filter, so this only changes the FULL-cache
-    // regime where the double-copy cost measured above the eviction-protection benefit.
-    // BW24_MOE_GHOST=1 restores the strict second-miss filter.
-    *E.get_or_init(|| std::env::var("BW24_MOE_GHOST").map(|v| v == "1").unwrap_or(false))
-}
-fn fast_admit_enabled() -> bool {
-    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| std::env::var("BW24_MOE_FAST_ADMIT").map(|v| v != "0").unwrap_or(true))
-}
-
 impl MoeSlotCache {
     /// Build the cache sizing N from free VRAM (MOE-SLRU-PLAN §B.4): probe free VRAM AFTER residents
     /// are loaded; N is shared across ALL layers so it must hold the WHOLE-MODEL hot set, not one
@@ -111,7 +92,7 @@ impl MoeSlotCache {
     /// 0.40) of free VRAM, clamped to [256, ~hot-set]. `BW24_MOE_SLOTS` forces an exact N.
     pub fn new(e: &Engine, max_block_bytes: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let (free, _total) = e.ctx().mem_get_info()?;
-        // hard headroom: never use more than 80% of free; reserve 2 staging buffers.
+        // hard headroom: never use more than 80% of free; keep 2 blocks of slack.
         let max_by_vram = ((free as f64 * 0.80) as usize / max_block_bytes).saturating_sub(2).max(8);
         let want = if let Some(n) = std::env::var("BW24_MOE_SLOTS").ok().and_then(|s| s.parse::<usize>().ok()) {
             n
@@ -134,13 +115,11 @@ impl MoeSlotCache {
             occupant.push(None);
             free_list.push(n - 1 - s); // push reversed so pop() yields 0,1,2,... (deterministic fill)
         }
-        let staging = vec![e.alloc_u8(max_block_bytes)?, e.alloc_u8(max_block_bytes)?];
         let protected_cap = ((n as f64 * 0.8) as usize).max(1);
 
         Ok(MoeSlotCache {
             slots, occupant, table: HashMap::with_capacity(n * 2),
             probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
-            ghost: HashSet::new(), staging, staging_next: 0,
             n, protected_cap, max_block_bytes,
             prefetch_active: false,
             per_layer: HashMap::new(), dev_rows: HashMap::new(), prewarm_tried: HashSet::new(),
@@ -226,17 +205,6 @@ impl MoeSlotCache {
         self.dev_rows.remove(&layer);
     }
 
-    /// Stage `host_bytes` into a NON-retained transient staging slot (first miss, ghost-only). The
-    /// caller runs the GEMM from this slot THIS token but the block is not retained. Double-buffered.
-    fn stage_transient(&mut self, host_bytes: &[u8], e: &Engine)
-                       -> Result<usize, Box<dyn std::error::Error>> {
-        let idx = self.staging_next;
-        self.staging_next ^= 1; // toggle 0<->1
-        e.stage_expert(host_bytes, &mut self.staging[idx], 0)?;
-        self.staged_bytes += host_bytes.len() as u64;
-        Ok(idx)
-    }
-
     /// Admit a block: evict a victim, stage `host_bytes` into its slot, register residency, place in
     /// probation (new admissions enter probation — they earn promotion on a later hit).
     fn admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
@@ -266,10 +234,9 @@ impl MoeSlotCache {
     /// the device buffer with `buf()`. On the bit-identity-critical path the buffer holds EXACTLY
     /// `host_bytes` either way (a HIT skipped the copy; the prior stage wrote the same bytes).
     ///
-    /// Policy (MOE-SLRU-PLAN §B.2):
+    /// Policy (MOE-SLRU-PLAN §B.2, first-miss admit since 2026-07-06):
     /// - HIT  (table[id] = s): promote, return s. ZERO PCIe.
-    /// - MISS, id not in ghost (FIRST miss): insert into ghost, stage transient, DON'T retain.
-    /// - MISS, id in ghost   (SECOND miss): admit (stage into a retained slot), remove from ghost.
+    /// - MISS: admit (stage into a retained slot, evicting an SLRU victim when full).
     pub fn dispatch(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
                     -> Result<DispatchSlot, Box<dyn std::error::Error>> {
         if let Some(s) = self.table.get(&id).copied() {
@@ -278,39 +245,20 @@ impl MoeSlotCache {
             return Ok(DispatchSlot::Resident(s));
         }
         self.misses += 1;
-        // FREE-SLOT FAST-ADMIT (STAGING-ELISION stage, 2026-07-04): the ghost second-miss filter
-        // exists to stop a one-off cold expert from EVICTING a genuinely hot one. While FREE slots
-        // remain, admission evicts nothing — the filter only delays residency, so every block pays
-        // a SECOND H2D copy before it can ever hit. On 96GB the auto-sized cache exceeds the
-        // whole-model block count (46k slots vs 31.5k blocks on the 35B), so the ghost path was
-        // pure staging overhead: steady-state hit-rate 83.7% instead of ~100% (74 MB/token of
-        // avoidable PCIe). Admit on first miss while free slots exist; fall back to the ghost
-        // filter once the cache is FULL (eviction now has a victim — the original SLRU-protection
-        // argument applies). BW24_MOE_FAST_ADMIT=0 restores the strict filter. Bit-identity
-        // unchanged: the slot holds byte-for-byte the same GGUF block either way (D.2 gate).
-        if !self.free.is_empty() && fast_admit_enabled() {
-            let s = self.admit(id, host_bytes, e)?;
-            return Ok(DispatchSlot::Resident(s));
-        }
-        // SPILL FIRST-MISS ADMIT (BW24_MOE_GHOST=0, 2026-07-06): in the SPILL regime (cache
-        // permanently full — 10.4k slots vs 31.5k blocks on the local 35B) the ghost filter makes
-        // every cold block pay TWO H2D copies (transient now, retained on second miss) — ~6% of
-        // steady-state token PCIe. Disabling it admits on first miss (evicting an SLRU victim).
-        // Risk profile: one-off cold experts can evict warm ones — the SLRU probation segment
-        // still protects the protected set; A/B arbitrates per rig. Default KEEPS the filter.
-        if self.ghost.contains(&id) || !ghost_enabled() {
-            self.ghost.remove(&id);
-            let s = self.admit(id, host_bytes, e)?;
-            Ok(DispatchSlot::Resident(s))
-        } else {
-            self.ghost.insert(id);
-            let s = self.stage_transient(host_bytes, e)?;
-            Ok(DispatchSlot::Staging(s))
-        }
+        // FIRST-MISS ADMIT (the only policy since 2026-07-08; the second-miss "ghost" filter and
+        // its seams BW24_MOE_GHOST / BW24_MOE_FAST_ADMIT are gone). Measured record: while FREE
+        // slots remain, admission evicts nothing — filtering only delayed residency (96GB: 83.7%
+        // steady hit-rate instead of ~100%, 74 MB/token avoidable PCIe; 2026-07-04). In the SPILL
+        // regime (cache permanently full, local 35B) the filter made every cold block pay TWO H2D
+        // copies — ~6% of token PCIe, measured ABOVE its eviction-protection benefit (24.2 -> 25.0
+        // tok/s with it off, 2026-07-06). First-miss admit evicts an SLRU victim when full; the
+        // SLRU probation segment still protects the protected set. Bit-identity unchanged: the
+        // slot holds byte-for-byte the same GGUF block (D.2 gate).
+        let s = self.admit(id, host_bytes, e)?;
+        Ok(DispatchSlot::Resident(s))
     }
 
     /// Pre-warm: force-admit a block (used by the §D.2 bit-identity gate to make all blocks resident).
-    /// Bypasses the ghost filter — admits on the spot.
     pub fn force_admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
                        -> Result<usize, Box<dyn std::error::Error>> {
         if let Some(s) = self.table.get(&id).copied() { return Ok(s); }
@@ -374,7 +322,6 @@ impl MoeSlotCache {
     pub fn buf(&self, d: DispatchSlot) -> &CudaSlice<u8> {
         match d {
             DispatchSlot::Resident(s) => &self.slots[s],
-            DispatchSlot::Staging(s) => &self.staging[s],
         }
     }
 

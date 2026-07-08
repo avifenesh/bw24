@@ -1,10 +1,10 @@
 //! FAVENDOR lane micro-bench (2026-07-08): fa_decode at the REAL 35B full-attn shape
 //! (n_head=16, n_head_kv=2, head_dim=256, q8_0 K / q5_1 V) on synthetic KV, per-depth.
-//! Twin of fa_ppool_bench with a deeper cache (t_kv_max=12288) for the depth-law matrix.
+//! Deep synthetic cache (t_kv_max=12288) for the depth-law matrix.
 //!
 //! Sweep configs via env, ONE config per process (fa_decode reads the flags per call but
 //! SMEM_TKV/SPLIT are process OnceLocks):
-//!   BW24_FA_V2={0,1}  BW24_FA_SMEM_TKV=...  BW24_FA_SPLIT=...  BW24_FA_PPOOL={0,1}
+//!   BW24_FA_V2={0,1}  BW24_FA_SMEM_TKV=...  BW24_FA_SPLIT=...
 //! Prints per-t_kv: us/call, implied unique-KV GB/s, and an FNV-1a output hash.
 //! NOTE: the hash is expected to DIFFER between BW24_FA_V2=0 and =1 (v2 is its own numeric
 //! config — tile-level softmax regrouping); it must be IDENTICAL across runs of the SAME config.
@@ -68,10 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qd = e.htod(&qh)?;
 
     let v2 = std::env::var("BW24_FA_V2").unwrap_or_default();
-    let ppool = std::env::var("BW24_FA_PPOOL").unwrap_or_default();
     let smem = std::env::var("BW24_FA_SMEM_TKV").unwrap_or_else(|_| "1024".into());
     let split = std::env::var("BW24_FA_SPLIT").unwrap_or_else(|_| "default".into());
-    println!("# config v2={v2} ppool={ppool} smem_tkv={smem} split={split}  shape nh={n_head} nkv={n_head_kv} hd={head_dim}");
+    println!("# config v2={v2} smem_tkv={smem} split={split}  shape nh={n_head} nkv={n_head_kv} hd={head_dim}");
 
     const REPS: usize = 200;
     let tkvs: Vec<usize> = {

@@ -1066,22 +1066,13 @@ impl HybridModel {
         let mut o = e.uninit(d_state * num_v)?;
         let n_state = d_state * d_state * num_v;
         let _ = head_k;  // head_k == d_state; the kernels use head_k = d_state internally.
-        if Engine::gdn_fuse_enabled() && d_state == 128 {
-            // GDN FUSE (lane/gdnfuse, BW24_GDN_FUSE=1): prep + scan in ONE launch — the prep
-            // intermediates (q_l2/k_l2/v_gd/beta/g_log) stage through smem, never HBM.
-            // BIT-IDENTICAL to the chain below (same FP orders); ping-pong contract unchanged
-            // (reads ssm_state, writes the spare ssm_state_alt — stable resident pointers, so
-            // both the eager swap and the capture-safe copy-back below work as-is).
-            let RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
-            e.gdn_fused_decode(&conv_out, &beta_raw, &alpha,
-                               la.ssm_dt.float_data(), la.ssm_a.float_data(),
-                               ssm_state, ssm_state_alt, &mut o,
-                               num_v, num_k, key_dim, eps, scale)?;
-        } else {
-            // GDN PREP, FUSED (2026-07-03): repack + q/k L2-norm + beta sigmoid + g_log in ONE
-            // gdn_prep_decode launch (was 5 tiny serialized kernels: qkv_to_gdn_repack, 2x l2_norm,
-            // sigmoid, gdn_glog). Same math; the L2 reduce runs a 32-lane warp tree instead of the
-            // 256-thread two-level tree (different FP sum order) — gates: argmax + run-spec exactness.
+        // GDN PREP, FUSED (2026-07-03): repack + q/k L2-norm + beta sigmoid + g_log in ONE
+        // gdn_prep_decode launch (was 5 tiny serialized kernels: qkv_to_gdn_repack, 2x l2_norm,
+        // sigmoid, gdn_glog). Same math; the L2 reduce runs a 32-lane warp tree instead of the
+        // 256-thread two-level tree (different FP sum order) — gates: argmax + run-spec exactness.
+        // (A prep+scan single-launch fusion — lane/gdnfuse, BW24_GDN_FUSE — measured NEUTRAL on
+        // eager decode 2026-07-08 and was removed in the flag audit; rig5090.jsonl holds the record.)
+        {
             let mut q_l2 = e.uninit(d_state * num_v)?;
             let mut k_l2 = e.uninit(d_state * num_v)?;
             let mut v_gd = e.uninit(d_state * num_v)?;
