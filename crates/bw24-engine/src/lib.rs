@@ -3413,6 +3413,41 @@ impl Engine {
         Ok(())
     }
 
+    /// GDN FUSE (lane/gdnfuse): fused decode prep+scan, OPT-IN via BW24_GDN_FUSE=1 (default off).
+    pub fn gdn_fuse_enabled() -> bool {
+        static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *E.get_or_init(|| std::env::var("BW24_GDN_FUSE").map(|v| v == "1").unwrap_or(false))
+    }
+
+    /// FUSED decode GDN prep + scan (BW24_GDN_FUSE=1, T=1, d_state==128 ONLY): one launch
+    /// replaces gdn_prep_decode + gdn_scan_s128. Same launch shape as the decode scan
+    /// (grid (H,1,32), block (32,4)) — the prep runs per-block into smem (replicated across a
+    /// head's 32 z-blocks; deterministic). BIT-IDENTICAL to the chain: every FP expression,
+    /// reduce tree, and accumulation order copied unchanged; smem staging is exact. State
+    /// ping-pong contract identical to gdn_scan_s128 (reads state_in, writes DISTINCT state_out).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_fused_decode(&self, conv_out: &CudaSlice<f32>, beta_raw: &CudaSlice<f32>,
+                            alpha: &CudaSlice<f32>, dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+                            state_in: &CudaSlice<f32>, state_out: &mut CudaSlice<f32>,
+                            o: &mut CudaSlice<f32>,
+                            num_v: usize, num_k: usize, key_dim: usize, eps: f32, scale: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_fused_decode_f32");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
+        let cfg = LaunchConfig {
+            grid_dim: (num_v as u32, 1, S_V / COLS_PER_BLOCK),
+            block_dim: (WARP, COLS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (nk, kd) = (num_k as i32, key_dim as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(conv_out).arg(beta_raw).arg(alpha).arg(dt_bias).arg(a)
+         .arg(state_in).arg(state_out).arg(o)
+         .arg(&nk).arg(&kd).arg(&eps).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// A4 seam: chunked WY GDN prefill. DEFAULT ON (`BW24_GDN_CHUNKED=0` = rollback to the
     /// sequential scan). Flipped 2026-07-04 with the full battery green: kernel-check ALL
     /// GREEN x {9B, 27B} incl the f64-truth chunk gates; run-gen argmax 82==82 both models
