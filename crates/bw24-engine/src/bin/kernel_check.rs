@@ -769,6 +769,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            // --- VENDORED llama Q8_0 MMQ GEMM (BW24_PP_Q8MMQ) vs the f32 dequant oracle. ---
+            // Q8_0 weight IS int8 (lossless tile-load) + q8_1 D4 activation -> same int8-activation
+            // band as q45k (~1e-3..1e-2). 2e-2 hard gate. Uses the 35B model's Q8_0 projections.
+            {
+                const G35: &str = "/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf";
+                if std::path::Path::new(G35).exists() {
+                    let g35 = GgufFile::open(G35)?;
+                    use bw24_gguf::dequant;
+                    use bw24_runtime::cpu_linear;
+                    for tname in ["blk.0.attn_qkv.weight", "blk.0.ffn_gate_shexp.weight"] {
+                        let Some(t) = g35.find(tname).filter(|t| t.ggml_type == GgmlType::Q8_0) else { continue };
+                        let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;
+                        let raw = g35.tensor_data(t);
+                        let w_f32 = dequant::dequantize(GgmlType::Q8_0, raw, in_f * out_f);
+                        let wd = e.htod_bytes(raw)?;
+                        for tt in [16usize, 64, 128, 512] {
+                            let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 53) * 0.1).collect();
+                            let xd = e.htod(&x)?;
+                            let cpu = cpu_linear(&x, &w_f32, tt, in_f, out_f);
+                            let yb = e.dtoh(&e.qmatvec_mmq_q8_0_raw(&wd, &xd, tt, in_f, out_f)?)?;
+                            let d = maxdiff(&cpu, &yb);
+                            let scale = cpu.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-3);
+                            let rel = d / scale;
+                            println!("MMQ-Q8_0 {tname} [Q8_0 in={in_f} out={out_f}] T={tt}: rel={rel:.2e} {}",
+                                     if rel < 2e-2 { "OK" } else { fails += 1; "FAIL" });
+                        }
+                    }
+                }
+            }
             // 27B ffn_down NVFP4 shape probe (in_f=17408 not a clean MMQ_ITER_K_FP4 multiple? T=512)
             // — compare MMQ vs the dp4a oracle to isolate the 27B T=513 mismatch.
             {
