@@ -185,6 +185,37 @@ pub struct Engine {
     /// fused-router sel/w readback — one async DtoH pair + ONE sync instead of two synced dtohs.
     /// Grown lazily; reused every MoE layer (single-threaded decode serializes on the sync).
     router_stage: Mutex<Option<PinnedStage>>,
+    /// FADEPTH lane (2026-07-08, BW24_FA_PPOOL=1): persistent FA-decode split-partial pool
+    /// (part_o, part_m, part_l) shared by `fa_decode` and `fa_decode_rows`. Replaces the 3x
+    /// `self.zeros` per FA call (at 35B d6257: 10 FA layers x 3 allocs + 3 memsets (1.6MB part_o)
+    /// + 3 frees per token — the depth-sloping host+memset tax). Grown lazily to the high-water
+    /// (o_len, ml_len), UNINITIALIZED: every decode-FA kernel variant writes its whole partial
+    /// slot unconditionally (empty splits write m=NEG_INF/l=0/acc=0) and the combines read ONLY
+    /// slots the launch grid wrote — see the exactness note at the use site in `fa_decode`.
+    /// NOT used by `fa_decode_dc` (graph-capture path: per-call stream-ordered allocs become
+    /// graph-owned; a shared grown pool would retire pointers baked into captured graphs).
+    fa_partials: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
+}
+
+/// FADEPTH lane env gate: BW24_FA_PPOOL=1 enables the persistent FA partial pool (default OFF).
+fn fa_ppool_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA_PPOOL").map(|v| v == "1").unwrap_or(false))
+}
+
+/// FADEPTH lane env gate: BW24_FA_CMB_WIDE=1 dispatches the wide-grid combine twins
+/// (bit-identical per output element; default OFF). Applies to eager fa_decode +
+/// fa_decode_rows only — the _dc/graph path keeps the narrow combine untouched.
+fn fa_cmb_wide_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA_CMB_WIDE").map(|v| v == "1").unwrap_or(false))
+}
+
+/// Chunk width (threads/block) for the wide combine: head_dim must split evenly; 64 gives
+/// n_head x head_dim/64 CTAs (16x4=64 on the 35B vs 16 narrow). Returns None (-> narrow twin)
+/// when head_dim isn't chunkable.
+fn fa_cmb_chunks(head_dim: usize) -> Option<u32> {
+    if head_dim % 64 == 0 { Some((head_dim / 64) as u32) } else { None }
 }
 
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
@@ -269,6 +300,7 @@ impl Engine {
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
+                  fa_partials: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -1547,6 +1579,30 @@ impl Engine {
     /// fully overwrites. SAFETY: producing kernel must write every element before any read.
     pub fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.alloc_uninit::<f32>(n)
+    }
+
+    /// FADEPTH lane: lock + lazily grow the persistent FA partial pool to at least
+    /// (o_len f32 for part_o, ml_len f32 each for part_m/part_l). Buffers are UNINITIALIZED on
+    /// (re)alloc — see the exactness note in `fa_decode`. Lock held by the caller across the
+    /// FA + combine enqueues only (µs; all compute serializes on gpu.stream — the
+    /// `prime_deqw_ws` precedent).
+    #[allow(clippy::type_complexity)]
+    fn fa_part_pool(&self, o_len: usize, ml_len: usize)
+        -> Result<std::sync::MutexGuard<'_, Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
+                  Box<dyn std::error::Error>> {
+        let mut guard = self.fa_partials.lock().unwrap();
+        let need_grow = match guard.as_ref() {
+            Some((o, m, _)) => o.len() < o_len || m.len() < ml_len,
+            None => true,
+        };
+        if need_grow {
+            let (co, cm) = guard.as_ref().map(|(o, m, _)| (o.len(), m.len())).unwrap_or((0, 0));
+            let (no, nml) = (co.max(o_len), cm.max(ml_len));
+            *guard = Some((self.alloc_uninit::<f32>(no)?,
+                           self.alloc_uninit::<f32>(nml)?,
+                           self.alloc_uninit::<f32>(nml)?));
+        }
+        Ok(guard)
     }
 
     /// RMSNorm: x[ncols,nrows] row-major, weight[ncols] -> dst. One block/row, 256 threads.
@@ -3052,9 +3108,29 @@ impl Engine {
         let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
-        let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
-        let mut part_m = self.zeros(n_head * n_splits)?;
-        let mut part_l = self.zeros(n_head * n_splits)?;
+        // FADEPTH lane (BW24_FA_PPOOL=1, default OFF): partials from the persistent pool,
+        // UNINITIALIZED, instead of 3x alloc_zeros per call. EXACTNESS (bit-identity): the combine
+        // reads partM[head][s] only for s < n_splits, and every launched variant (fa_decode_f32,
+        // fa_decode_vec_q, fa_decode_vec_q_smem) writes ITS ENTIRE partial slot unconditionally at
+        // kernel tail — empty splits write m=NEG_INF/l=0/acc=0, so no slot the combine reads is
+        // ever left at pool garbage. partO/partL of a split are read only alongside its written
+        // partM. Head coverage: the vec grid writes heads kv_head*gqa+wy = exactly n_head slots
+        // iff n_head % n_head_kv == 0 (all shipped models) — guarded below, else fall back to
+        // zeroed fresh buffers (the scalar grid covers all heads either way, but keep one guard).
+        // The kernels + combine receive identical values in identical order -> outputs bit-equal.
+        let use_pool = fa_ppool_on() && n_head % n_head_kv == 0;
+        let o_len = n_head * n_splits * head_dim;
+        let ml_len = n_head * n_splits;
+        let mut pool_guard = if use_pool { Some(self.fa_part_pool(o_len, ml_len)?) } else { None };
+        let mut local: Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)> = None;
+        let (part_o, part_m, part_l): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>) =
+            match pool_guard.as_deref_mut() {
+                Some(p) => { let (o, m, l) = p.as_mut().unwrap(); (o, m, l) }
+                None => {
+                    local = Some((self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?));
+                    let (o, m, l) = local.as_mut().unwrap(); (o, m, l)
+                }
+            };
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         // The vec kernel holds head_dim/32 register accumulators (FA_DEC_MAX_DPL=8 -> head_dim<=256).
@@ -3099,13 +3175,20 @@ impl Engine {
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = self.func("fa_decode_combine_f32");
-        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        // FADEPTH lane (BW24_FA_CMB_WIDE=1): wide-grid combine twin — n_head x head_dim/64 CTAs
+        // instead of n_head; every output element still computed by exactly ONE thread running
+        // the byte-identical serial split walk -> bit-identical O (probe hash + gate battery).
+        let (fc, cfg2) = match (fa_cmb_wide_on(), fa_cmb_chunks(head_dim)) {
+            (true, Some(ch)) => (self.func("fa_decode_combine_f32_wide"),
+                LaunchConfig { grid_dim: (n_head as u32, ch, 1), block_dim: (64, 1, 1), shared_mem_bytes: 0 }),
+            _ => (self.func("fa_decode_combine_f32"),
+                LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 }),
+        };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
@@ -3141,9 +3224,6 @@ impl Engine {
         let t_kv_max = base_len + t;                       // LAST row's key bound
         let sp = fa_split_keys(t_kv_max, n_head_kv);       // env/default — same value every row
         let n_splits_max = (t_kv_max + sp - 1) / sp;
-        let mut part_o = self.zeros(t * n_head * n_splits_max * head_dim)?;
-        let mut part_m = self.zeros(t * n_head * n_splits_max)?;
-        let mut part_l = self.zeros(t * n_head * n_splits_max)?;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
@@ -3156,6 +3236,24 @@ impl Engine {
         // as the wall-ledgered 2-key ILP. The FA byte-reuse win cannot pay for Tx register state
         // in this kernel shape; a smem-staged variant would reintroduce the smem-broadcast loss.
         let sk = t >= 2 && t <= 4 && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
+        // FADEPTH lane (BW24_FA_PPOOL=1): pooled UNINITIALIZED partials — same exactness argument
+        // as `fa_decode`: the rows kernels (plain + smem twin) write every (row, split<n_splits_r)
+        // slot unconditionally (early-return only for split >= n_splits_r) and fa_decode_combine_rows
+        // reads ONLY s < n_splits_r per row ("slots >= n_splits_r are never read"). Guarded on !sk
+        // (the sk fold kernels' write coverage is unaudited; sk is default OFF, measured negative).
+        let use_pool = fa_ppool_on() && !sk && n_head % n_head_kv == 0;
+        let o_len = t * n_head * n_splits_max * head_dim;
+        let ml_len = t * n_head * n_splits_max;
+        let mut pool_guard = if use_pool { Some(self.fa_part_pool(o_len, ml_len)?) } else { None };
+        let mut local: Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)> = None;
+        let (part_o, part_m, part_l): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>) =
+            match pool_guard.as_deref_mut() {
+                Some(p) => { let (o, m, l) = p.as_mut().unwrap(); (o, m, l) }
+                None => {
+                    local = Some((self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?));
+                    let (o, m, l) = local.as_mut().unwrap(); (o, m, l)
+                }
+            };
         // Deep-ctx smem twin for the VERIFY rows (2026-07-05): same threshold + rationale as
         // fa_decode's dispatch — at 40k the register path's GQA L2-reuse premise is dead and the
         // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
@@ -3180,15 +3278,22 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, zdim),
             block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = self.func("fa_decode_combine_rows");
-        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
-            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        // FADEPTH lane (BW24_FA_CMB_WIDE=1): wide rows-combine twin (grid.z = head_dim/64
+        // chunks) — bit-identical per output element, see fa_decode_combine_rows_wide.
+        let (fc, cfg2) = match (fa_cmb_wide_on(), fa_cmb_chunks(head_dim)) {
+            (true, Some(ch)) => (self.func("fa_decode_combine_rows_wide"),
+                LaunchConfig { grid_dim: (n_head as u32, t as u32, ch),
+                    block_dim: (64, 1, 1), shared_mem_bytes: 0 }),
+            _ => (self.func("fa_decode_combine_rows"),
+                LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                    block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 }),
+        };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(&base_i).arg(&nspm).arg(&spk);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
