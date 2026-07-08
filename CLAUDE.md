@@ -23,8 +23,7 @@ hand-written; only the tables + date sentence are mechanical.
 
 A `pre-push` hook (`tools/hooks/pre-push`, wired via `git config core.hooksPath tools/hooks`)
 runs `tools/update-perf-board.py --check` and refuses the push if the board and README have
-drifted — treat a failure there as "regenerate and re-commit," not something to bypass with
-`--no-verify`.
+drifted — treat a failure there as "regenerate and re-commit." **Never** bypass with `--no-verify`.
 
 This does not cover the GitHub repo social-preview image (the OG thumbnail used for link
 shares) — GitHub has no API for that field, it's a manual upload in Settings → Social preview,
