@@ -208,6 +208,19 @@ fn fa_ppool_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA_PPOOL").map(|v| v == "1").unwrap_or(false))
 }
 
+/// FAVENDOR lane env gate (2026-07-08): BW24_FA_V2=1 dispatches the llama-fattn-vec-mechanism
+/// decode kernels (fa_decode_vec_q_v2 / fa_decode_vec_q_rows_v2 / fa_decode_vec_q_v2_dc):
+/// tile-batched online softmax (one alpha rescale per 32-key tile instead of per key) + wide-load
+/// block dequant in the staging phase. NOTE rev2: llama's register streaming (no smem) was ALSO
+/// tried and measured 2x WORSE at depth in our gqa-warps frame — the smem KV-tile broadcast stays
+/// (see the kernel comment). NEW NUMERIC CONFIG (tile-level softmax regrouping changes FP order vs
+/// the per-key twins) — own argmax baseline; eager decode, the spec-verify rows path AND the
+/// graph _dc path switch TOGETHER (the spec-exactness law). Default OFF. Read per call (not
+/// OnceLock) so the gate battery can A/B within one process, matching the BW24_NO_FA_VEC pattern.
+fn fa_v2_on() -> bool {
+    std::env::var("BW24_FA_V2").map(|v| v == "1").unwrap_or(false)
+}
+
 /// FADEPTH lane env gate: BW24_FA_CMB_WIDE=1 dispatches the wide-grid combine twins
 /// (bit-identical per output element; default OFF). Applies to eager fa_decode +
 /// fa_decode_rows only — the _dc/graph path keeps the narrow combine untouched.
@@ -3220,7 +3233,16 @@ impl Engine {
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
                 std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
             });
-            if smem_tkv > 0 && t_kv >= smem_tkv {
+            if fa_v2_on() {
+                // FAVENDOR lane: llama fattn-vec tile-batched softmax + wide-load staging on
+                // OUR smem KV broadcast. Replaces BOTH per-key twins when on; same grid/block/
+                // partials; same 32KB sK+sV tile as the smem twin.
+                let fv = self.func("fa_decode_vec_q_v2");
+                let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
+                (fv,
+                 LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                     block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+            } else if smem_tkv > 0 && t_kv >= smem_tkv {
                 let fv = self.func("fa_decode_vec_q_smem");
                 let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -3302,7 +3324,11 @@ impl Engine {
         // (q_reg+acc x T per lane) collapses occupancy — p3 spec 108.0 -> 51.9 tok/s. Same class
         // as the wall-ledgered 2-key ILP. The FA byte-reuse win cannot pay for Tx register state
         // in this kernel shape; a smem-staged variant would reintroduce the smem-broadcast loss.
-        let sk = t >= 2 && t <= 4 && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
+        // FAVENDOR lane: BW24_FA_V2 takes precedence over the (default-OFF, measured-negative)
+        // sk fold — eager fa_decode has no sk seam, so letting sk win under v2 would diverge
+        // eager decode from the verify (run-spec exactness).
+        let sk = t >= 2 && t <= 4 && !fa_v2_on()
+            && std::env::var("BW24_FA_SK").map(|v| v == "1").unwrap_or(false);
         // FADEPTH lane (BW24_FA_PPOOL=1): pooled UNINITIALIZED partials — same exactness argument
         // as `fa_decode`: the rows kernels (plain + smem twin) write every (row, split<n_splits_r)
         // slot unconditionally (early-return only for split >= n_splits_r) and fa_decode_combine_rows
@@ -3328,14 +3354,15 @@ impl Engine {
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
-        let smem_rows = !sk && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
+        let smem_rows = !sk && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
+        let fname = if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
+                    else if sk { match t { 2 => "fa_decode_vec_q_rows_sk2",
                                        3 => "fa_decode_vec_q_rows_sk3",
                                        _ => "fa_decode_vec_q_rows_sk4" } }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = self.func(fname);
-        let shmem = if smem_rows {
+        let shmem = if smem_rows || fa_v2_on() {
             let sh = (2 * 32 * head_dim * 2) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
@@ -3395,7 +3422,17 @@ impl Engine {
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec {
+        let (f, cfg) = if fa_vec && fa_v2_on() {
+            // FAVENDOR lane: v2 _dc twin — the captured graph must run the SAME walk body as
+            // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
+            // a numeric config; eager, rows-verify and graph all switch together).
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let fv = self.func("fa_decode_vec_q_v2_dc");
+            let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
+            (fv,
+             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+        } else if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // REGISTER-DEQUANT twin: zero dynamic smem (see fa_decode above).
             let fv = self.func("fa_decode_vec_q_dc");
