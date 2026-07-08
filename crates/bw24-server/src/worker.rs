@@ -150,7 +150,7 @@ pub fn run(
     };
     // BW24_FAST is read ONCE here (same handling as run_gen): the matmul path consults the env var
     // per-call, but logging it once keeps the worker's behavior explicit and stable for the run.
-    let fast = std::env::var("BW24_FAST").is_ok();
+    let fast = std::env::var("BW24_FAST").as_deref() != Ok("0");
     eprintln!("[worker] Engine ready (BW24_FAST={})", fast);
 
     let mut loaded: HashMap<String, LoadedModel> = HashMap::new();

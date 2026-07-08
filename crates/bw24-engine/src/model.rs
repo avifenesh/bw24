@@ -635,7 +635,8 @@ impl HostExps {
         assert_eq!(expert_stride, out_f * row_bytes,
             "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
 
-        let pinned = std::env::var("BW24_MOE_PINNED").is_ok() || std::env::var("BW24_MOE_CACHE").is_ok();
+        let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
+            || std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0");
         let bytes = if pinned {
             // alloc pinned host memory, copy the GGUF block bytes in once, cache the base pointer.
             let mut p = unsafe { e.ctx().alloc_pinned::<u8>(raw.len())? };
@@ -861,7 +862,7 @@ impl HostExps {
                     assert_eq!(buf.len(), total);
                     read_macros(&mut macros);
                     let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
-                        || std::env::var("BW24_MOE_CACHE").is_ok();
+                        || std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0");
                     if pinned {
                         let mut p = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
                         { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
@@ -908,7 +909,8 @@ impl HostExps {
             "{ggml_exps_name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
 
         // Same pinned-vs-paged choice as the GGUF loader (the bytes are H2D-only on the hot path).
-        let pinned = std::env::var("BW24_MOE_PINNED").is_ok() || std::env::var("BW24_MOE_CACHE").is_ok();
+        let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
+            || std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0");
         let bytes = if pinned {
             let mut p = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
             { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }

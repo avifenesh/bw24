@@ -415,7 +415,7 @@ impl Engine {
     }
 
     /// True if the MoE residency cache is enabled (BW24_MOE_CACHE set).
-    pub fn moe_cache_enabled() -> bool { std::env::var("BW24_MOE_CACHE").is_ok() }
+    pub fn moe_cache_enabled() -> bool { std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0") }
 
     /// Snapshot the MoE cache counters (hits, misses, staged_bytes, n_slots) for the §D.4 PCIe gate.
     /// Returns None if the cache was never built (disabled or no MoE forward ran).
@@ -1964,9 +1964,10 @@ impl Engine {
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp4_gemm(w, x, m, in_f, out_f)? { return Ok(y); }
         }
-        // Stage-A (f32 dequant) is the validated correctness path. Stage-B fast Q8_0 is gated
-        // behind BW24_FAST until it passes the isolation gate vs Stage-A.
-        let fast = std::env::var("BW24_FAST").is_ok();
+        // Stage-B fast int8 dp4a is the DEFAULT since 2026-07-08 (it has been the daily path
+        // for weeks; the old opt-in flag was a silent-slow-path landmine). BW24_FAST=0 reverts
+        // to Stage-A f32-dequant (the correctness oracle path).
+        let fast = std::env::var("BW24_FAST").as_deref() != Ok("0");
         // PERF-3 decode-GEMV: m=1 warp-per-row MMVQ (BW24_MMVQ). The big decode matvecs reach
         // `matmul` directly (ffn_down, lm_head output, wo), so route them here too — not only the
         // matmul_pre siblings. qmatvec_mmvq_raw quantizes the activation internally (q8_1) like the
@@ -2052,7 +2053,7 @@ impl Engine {
     /// pre-quantized once and shared across sibling matmuls via `matmul_pre`).
     pub fn uses_q8_1_fast(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if std::env::var("BW24_FAST").is_err() { return false; }
+        if std::env::var("BW24_FAST").as_deref() == Ok("0") { return false; }
         match w {
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
                 QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4)
@@ -2355,7 +2356,7 @@ impl Engine {
     fn q8_fused_params<'w, const N: usize>(&self, ws: &[&'w crate::model::GpuTensor; N])
         -> Option<[(&'w CudaSlice<u8>, usize, usize); N]> {
         use crate::model::GpuTensor;
-        if std::env::var("BW24_MMVQ").is_err() { return None; }
+        if std::env::var("BW24_MMVQ").as_deref() == Ok("0") { return None; }
         if std::env::var("BW24_Q8_DUAL").is_ok_and(|v| v == "0") { return None; }
         let in_f = ws[0].in_features();
         let mut out: [Option<(&CudaSlice<u8>, usize, usize)>; N] = [None; N];
@@ -2408,7 +2409,8 @@ impl Engine {
     /// True if `qtype` has a warp-per-row MMVQ decode kernel AND BW24_MMVQ is set. Only the 4
     /// daily-hot dtypes (Q8_0, Q4_K, Q6_K, NVFP4) — others keep the _dp4a matvec (oracle/fallback).
     pub fn mmvq_supports(&self, qtype: i32) -> bool {
-        if std::env::var("BW24_MMVQ").is_err() { return false; }
+        // DEFAULT ON since 2026-07-08 (BW24_MMVQ=0 reverts to the _dp4a matvec class).
+        if std::env::var("BW24_MMVQ").as_deref() == Ok("0") { return false; }
         matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
     }
 

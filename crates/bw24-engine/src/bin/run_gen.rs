@@ -293,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dt = (dt_total - prime_s).max(1e-9);
     let out = gen_out.tokens;
     let emitted = out.len();
-    let path = if std::env::var("BW24_FAST").is_ok() { "Stage-B int8 dp4a" } else { "Stage-A f32-dequant" };
+    let path = if std::env::var("BW24_FAST").as_deref() != Ok("0") { "Stage-B int8 dp4a" } else { "Stage-A f32-dequant" };
     println!("generated {} tokens in {:.3}s = {:.2} tok/s ({path} decode, gen-only; prime {:.3}s) [stop: {:?}]",
              emitted, dt, emitted as f64 / dt, prime_s, gen_out.stop_reason);
     println!("tokens: {out:?}");
