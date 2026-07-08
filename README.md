@@ -9,7 +9,7 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x) and at 0.99x on the 35B MoE; with MTP speculative decoding it leads 9B 1.31x/1.23x and 27B up to 1.25x at the same raw-prompt protocol — every number measured on-device against llama.cpp's serve-best config on the same machine, N=3 medians, both engines re-baselined the same day (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
+Plain decode beats llama.cpp on all three models at short context (27B 1.10x, 9B 1.07x, 35B MoE 1.02x); with MTP speculative decoding it leads 9B 1.31x/1.23x and 27B up to 1.25x at the same raw-prompt protocol — every number measured on-device against llama.cpp's serve-best config on the same machine, N=3 medians, both engines re-baselined the same day (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
 
 ## Why this project
 
@@ -20,7 +20,7 @@ Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x
 ## Requirements
 
 - NVIDIA Blackwell consumer GPU (sm_120a). Primary target: RTX 5090 Laptop.
-- CUDA toolkit 12.8 (13.1 optional for the cuBLASLt/CUTLASS paths; 13.1 nvcc miscompiles some sm_120 kernels, see `crates/bw24-engine/build.rs`).
+- CUDA toolkit 13.1 (the build default — `crates/bw24-engine/build.rs` uses `/usr/local/cuda-13.1/bin/nvcc`; override with `BW24_NVCC=/path/to/nvcc`).
 - Rust (edition 2024), [cudarc](https://github.com/coreylowman/cudarc) 0.19 with dynamic loading.
 - A model. GGUF tested: Qwen3.5-9B / Qwen3.6-27B (NVFP4 + Q5_K hybrid), Qwen3.6-35B-A3B (IQ4_XS MoE), plus Q4_K/Q5_K/Q6_K/Q8_0 k-quant variants. Safetensors (HF dir) tested: nvidia/Qwen3.6-27B-NVFP4, MiniMax-M3 REAP50 NVFP4 — pass the directory instead of a .gguf path.
 
@@ -63,7 +63,7 @@ Every tuned kernel path is the default; environment flags exist only for runtime
 - **NVFP4 (W4) decode path** — block-scaled FP4 matvec with split-plane repack, warp-level dp4a, and an int8 W4A8 tensor-core GEMM for prefill. Auto-dispatches per matrix shape.
 - **MTP speculative decoding** — draft with the model's embedded multi-token-prediction head, verify K+1 tokens in one batched target forward. The whole draft chain runs inside a captured CUDA graph; exactness is enforced by a K=1..8 self-consistency gate (all K must emit identical tokens).
 - **MoE on 24 GB** — expert-major CSR batching, decode-once dequant kernels, int8 tensor-core expert GEMM (`BW24_MOE_MMA=1`), and an SLRU expert-residency cache with VRAM → host → disk spill.
-- **FlashAttention-style kernels** — fused prefill and decode attention with quantized KV (q8_0 K / q4_0 V default, FP8 optional), register-resident dequant, split-K for long context.
+- **FlashAttention-style kernels** — fused prefill and decode attention with quantized KV (q8_0 K / q5_1 V default; FP8 and q4_0 arms exist behind flags — q4_0 V measured quality-taxed and stays off), register-resident dequant, split-K for long context.
 - **CUDA-graph decode** — the full per-token decode is one graph replay; per-step host round-trip is 4 bytes.
 - **Hybrid architectures** — full-attention + gated-delta-net (SSM) layer mixes, as in Qwen3.6.
 - **Safetensors loader** — HF checkpoints load directly (no GGUF conversion): modelopt NVFP4 repacks byte-exact into the GGUF block layout, FP8-E4M3 and large-BF16 tensors re-encode to Q8_0/NVFP4 at load, V-head permutations apply on packed bytes, MoE experts stream through a disk-tier repack cache for models far bigger than VRAM+RAM.
@@ -94,7 +94,7 @@ Measured 2026-07-08 on the target rig (RTX 5090 Laptop, N≥3 medians, power sta
 | Qwen3.6-35B-A3B MoE | 173.4 | 170.5 | 1.02x |
 <!-- PERF-PLAIN:END -->
 
-Depth behavior is part of the comparison — at 6.3k-token context (same protocol): 9B 124.5 vs 119.6 (**1.04x**), 27B 44.9 vs 42.0 (**1.07x**), 35B 158.5 vs 159.9 (0.99x). The engine-wide depth slope was closed by the FA_V2 tile-batched online softmax (vendored mechanism study: llama's depth flatness was never a faster attention core — measured, their kernel+combine costs more than ours at depth); every FA/split geometry change is validated across the depth axis, not just the short-context point.
+Depth behavior is part of the comparison — at 6.3k-token context (same protocol): 9B 124.5 vs 119.6 (1.04x), 27B 44.9 vs 42.0 (**1.07x**), 35B 158.5 vs 159.9 (0.99x). The engine-wide depth slope was closed by the FA_V2 tile-batched online softmax (vendored mechanism study: llama's depth flatness was never a faster attention core — measured, their kernel+combine costs more than ours at depth); every FA/split geometry change is validated across the depth axis, not just the short-context point.
 
 **Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
 
@@ -125,7 +125,7 @@ the same-silicon vLLM comparison are in [`HANDOVER.md`](HANDOVER.md) (see the NV
 MINIMAX-M3 lane sections).
 - **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader (~1.5 tok/s, I/O-bound: measured routing locality shows 77% of experts get touched with weak reuse, so capacity — not caching policy — is the binding constraint). On a 96 GB RTX PRO 6000 the same code reaches ~6 tok/s and climbing with an 80 GB expert cache.
 
-Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind, the gap and its diagnosis are tracked in the tune-data records, not hidden — currently: **prefill** (pp≈2k same-day board: 9B 3799 vs 6287, 27B 1055 vs 2348, 35B 2338 vs 3981 — llama's int8 tensor-core MMQ GEMM vs our dp4a path; an FP8-activation tensor-core prefill is in flight, targeting the compute headroom this silicon has that neither engine uses), the 35B deep-context decode residual (152.8 vs 159.9 at 6.3k), and vLLM's batched MTP on big-VRAM boxes.
+Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind, the gap and its diagnosis are tracked in the tune-data records, not hidden — currently: **prefill** (pp1845 same-day board: 9B 4631 vs 6287 = 0.74x, 27B 1297 vs 2348 = 0.55x, 35B 2387 vs 3981 = 0.60x — decomposed: 90%+ already rides tensor-core GEMMs and the residual is the int8-vs-native-FP4 precision ceiling; the exactness-safe levers are a cp.async pipeline for the W4A8 GEMM and vendoring llama's q8_0 MMQ tile), the 35B deep-context decode residual (158.5 vs 159.9 at 6.3k), and vLLM's batched MTP on big-VRAM boxes.
 
 ## Limitations
 
