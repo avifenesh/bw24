@@ -35,6 +35,19 @@ pub struct Nvfp4Native<'a> {
     pub in_f: usize,
 }
 
+/// Raw FP8-E4M3-native weight view (BW24_PP_FP8 prefill operand): the checkpoint's e4m3 codes
+/// `[out_f, in_f]` row-major + the per-tensor f32 `weight_scale`. For a PLAIN (untransformed)
+/// F8 Linear this borrows the mmap verbatim (EXACT bytes); for the hybrid V-reordered F8
+/// projections it is an OWNED buffer produced by the f32 transform round-trip — exact too, since
+/// the V-reorder is a pure permutation and every f32 value is `e4m3_code * scale`, which the
+/// nearest-e4m3 re-encode of `value/scale` recovers bit-for-bit (grid spacing >> f32 rounding).
+pub struct Fp8Native<'a> {
+    pub bytes: Cow<'a, [u8]>, // e4m3 codes, [out_f, in_f] row-major
+    pub scale: f32,           // per-tensor weight_scale (dequant multiplier)
+    pub out_f: usize,
+    pub in_f: usize,
+}
+
 /// A weight source the engine can load from. GGUF and safetensors both implement it.
 pub trait TensorSource {
     /// The model configuration (from GGUF metadata or config.json).
@@ -53,6 +66,11 @@ pub trait TensorSource {
     /// resident layout without materializing GGUF 36B blocks. None for GGUF sources (already the
     /// import layout), for transformed weights, and for non-NVFP4 tensors.
     fn find_nvfp4_native(&self, _ggml_name: &str) -> Option<Nvfp4Native<'_>> { None }
+    /// FP8-E4M3-native access (BW24_PP_FP8 prefill operand): the raw e4m3 codes + per-tensor f32
+    /// `weight_scale` for an F8-sourced 2D projection, so the engine can stash the exact weight
+    /// bytes for the cuBLASLt FP8 prefill GEMM alongside its Q8_0 re-encode. None for GGUF
+    /// sources and for anything that is not an F8-E4M3 2D Linear.
+    fn find_fp8_native(&self, _ggml_name: &str) -> Option<Fp8Native<'_>> { None }
     /// The checkpoint directory, if this source is a safetensors HF dir (None for GGUF). Used by
     /// the ST expert disk-tier to place its repack cache next to the shards.
     fn st_dir(&self) -> Option<&std::path::Path> { None }
@@ -262,6 +280,48 @@ impl TensorSource for SafetensorsSource {
         };
         let (out_f, in_f, wbytes, wscale, _macro) = self.nvfp4_quant(&hf)?;
         Some(Nvfp4Native { wbytes, wscale, out_f, in_f })
+    }
+    /// FP8-E4M3-native access (BW24_PP_FP8 prefill operand). Two arms, mirroring the Q8_0
+    /// re-encode arms in `find` (the engine only stashes this when `find` surfaced Q8_0):
+    ///  * Plain: borrow the checkpoint's e4m3 bytes verbatim (zero copy, EXACT).
+    ///  * Transform (hybrid V-reorders): run the SAME `deq_f32` + `kind.apply` the Q8_0 arm runs,
+    ///    then re-encode `value/scale` to nearest e4m3 — exact for a pure permutation (every value
+    ///    is `code*scale`; the e4m3 grid spacing dwarfs the f32 divide rounding).
+    /// Dim gates: 2D, in_f/out_f % 16 == 0 (cuBLASLt FP8 TN alignment), and the Transform arm
+    /// keeps the >=1M-element gate of its Q8_0 twin (small tensors stay F32 there).
+    fn find_fp8_native(&self, ggml_name: &str) -> Option<Fp8Native<'_>> {
+        use crate::hf_mapping::{HfTarget, resolve_ggml};
+        let (hf, kind) = match resolve_ggml(ggml_name, &self.cfg)? {
+            HfTarget::Plain(hf) => (hf, None),
+            HfTarget::Transform { hf, kind } => (hf, Some(kind)),
+        };
+        let (info, bytes) = self.lookup(&hf)?;
+        if info.dtype != "F8_E4M3" || info.shape.len() != 2 { return None; }
+        let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
+        let (sinfo, sbytes) = self.lookup(&format!("{stem}.weight_scale"))?;
+        if sinfo.dtype != "F32" || sbytes.len() < 4 { return None; }
+        let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+        if !(scale > 0.0) || !scale.is_finite() { return None; }
+        match kind {
+            None => {
+                let ne = info.ne();
+                let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+                if in_f % 16 != 0 || out_f % 16 != 0 { return None; }
+                Some(Fp8Native { bytes: Cow::Borrowed(bytes), scale, out_f, in_f })
+            }
+            Some(kind) => {
+                let (mut data, ne_in) = self.deq_f32(&hf)?;
+                let (ne, fbytes) = kind.apply(&mut data, ne_in, &self.cfg);
+                if ne.len() != 2 || ne.iter().product::<u64>() < 1_000_000 { return None; }
+                let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+                if in_f % 16 != 0 || out_f % 16 != 0 { return None; }
+                let enc: Vec<u8> = fbytes.chunks_exact(4)
+                    .map(|c| crate::nvfp4_repack::f32_to_fp8_e4m3(
+                        f32::from_le_bytes(c.try_into().unwrap()) / scale))
+                    .collect();
+                Some(Fp8Native { bytes: Cow::Owned(enc), scale, out_f, in_f })
+            }
+        }
     }
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         use crate::hf_mapping::{HfTarget, resolve_ggml};

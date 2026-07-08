@@ -48,7 +48,11 @@ fn main() {
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
         println!("cargo:rerun-if-env-changed=BW24_MMQ_Y_W4A8");
         let w4a8_y = std::env::var("BW24_MMQ_Y_W4A8").ok();
-        for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu"] {
+        // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
+        // kernels for the BW24_PP_FP8 prefill path (runtime-gated; always built — no external
+        // header deps beyond the CUDA toolkit, which ships cublasLt).
+        for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
+                        "cu/fp8_prefill.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
@@ -92,6 +96,8 @@ fn main() {
         // dylib link-lib (not link-arg) so cudart/stdc++ propagate to downstream binaries too.
         println!("cargo:rustc-link-lib=dylib=cudart");
         println!("cargo:rustc-link-lib=dylib=stdc++");
+        // fp8_prefill.cu calls the cuBLASLt host API directly (same lib64 search path as cudart).
+        println!("cargo:rustc-link-lib=dylib=cublasLt");
     }
 
     // ---- CUTLASS sm_120a NVFP4 GEMM: a STATIC LIB (7th artifact, different kind), NOT a fatbin ----
