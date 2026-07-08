@@ -333,6 +333,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("gdn_scan     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- gdn FUSED decode (lane/gdnfuse, BW24_GDN_FUSE=1): prep+scan single kernel vs the
+    //     gdn_prep_decode -> gdn_scan_s128 chain. BIT-IDENTITY is the contract (smem staging
+    //     of exact f32 intermediates, identical FP orders) -> BYTE-EXACT compare of o AND
+    //     state_out, nonzero initial state, realistic GDN shapes (d_state=128, num_v=32,
+    //     num_k=16 -> shared-kh repeat exercised). ---
+    {
+        let d_state = 128usize; let num_v = 32usize; let num_k = 16usize;
+        let key_dim = d_state * num_k;
+        let conv_dim = 2 * key_dim + d_state * num_v;
+        let eps = 1e-6f32;
+        let scale = 1.0 / (d_state as f32).sqrt();
+        let conv_out: Vec<f32> = (0..conv_dim).map(|i| pr(i + 41) * 0.5).collect();
+        let beta_raw: Vec<f32> = (0..num_v).map(|i| pr(i + 43)).collect();
+        let alpha: Vec<f32> = (0..num_v).map(|i| pr(i + 47) * 0.5).collect();
+        let dt_bias: Vec<f32> = (0..num_v).map(|i| pr(i + 53) * 0.2).collect();
+        let a: Vec<f32> = (0..num_v).map(|i| -0.1 - pr(i + 59).abs()).collect(); // a<0 => g in (0,1)
+        let st0: Vec<f32> = (0..d_state * d_state * num_v).map(|i| pr(i + 61) * 0.5).collect();
+        let cd = e.htod(&conv_out)?; let brd = e.htod(&beta_raw)?; let ad = e.htod(&alpha)?;
+        let dtd = e.htod(&dt_bias)?; let aad = e.htod(&a)?; let sid = e.htod(&st0)?;
+        // chain (reference)
+        let mut q_l2 = e.zeros(d_state * num_v)?;
+        let mut k_l2 = e.zeros(d_state * num_v)?;
+        let mut v_gd = e.zeros(d_state * num_v)?;
+        let mut beta = e.zeros(num_v)?;
+        let mut g_log = e.zeros(num_v)?;
+        e.gdn_prep_decode(&cd, &brd, &ad, &dtd, &aad,
+                          &mut q_l2, &mut k_l2, &mut v_gd, &mut beta, &mut g_log,
+                          d_state, num_v, num_k, key_dim, eps)?;
+        let mut so_ref = e.zeros(d_state * d_state * num_v)?;
+        let mut o_ref = e.zeros(d_state * num_v)?;
+        e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta, &sid, &mut so_ref, &mut o_ref,
+                        num_v, 1, scale)?;
+        // fused
+        let mut so_f = e.zeros(d_state * d_state * num_v)?;
+        let mut o_f = e.zeros(d_state * num_v)?;
+        e.gdn_fused_decode(&cd, &brd, &ad, &dtd, &aad, &sid, &mut so_f, &mut o_f,
+                           num_v, num_k, key_dim, eps, scale)?;
+        let (orh, ofh) = (e.dtoh(&o_ref)?, e.dtoh(&o_f)?);
+        let (srh, sfh) = (e.dtoh(&so_ref)?, e.dtoh(&so_f)?);
+        let obad = orh.iter().zip(&ofh).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        let sbad = srh.iter().zip(&sfh).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        println!("gdn_fused    o_mismatch={obad} state_mismatch={sbad} {}",
+                 if obad == 0 && sbad == 0 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- A4 gdn chunked WY prefill: BOTH kernels vs an f64 CPU oracle of the exact recurrence.
     //     Chunked is NOT bit-identical to the sequential scan by design (different FP
     //     accumulation order) — the fair truth is f64. MEASURED noise classes (2026-07-04,

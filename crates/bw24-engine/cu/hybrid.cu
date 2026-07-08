@@ -324,6 +324,109 @@ extern "C" __global__ void gdn_scan_s128(
     gdn_scan_kernel<128, 32>(q, k, v, g, beta, state_in, state_out, o, H, T, scale);
 }
 
+// GDN FUSE (lane/gdnfuse 2026-07-08, BW24_GDN_FUSE=1): gdn_prep_decode + gdn_scan_s128 in ONE
+// kernel (T=1 decode, d_state==128 only). Vendored STRUCTURE from llama.cpp's single-kernel
+// gated_delta_net_cuda<128>; code is ours. The launch shape is EXACTLY gdn_scan_s128's decode
+// launch — grid (H, 1, 32), block (32, 4) — so the bandwidth-bound state read/write keeps its
+// full 1024-block parallelism (a one-block-per-head shape would idle 50 of 82 SMs on the 2MB
+// state stream). Each block first replays gdn_prep_decode_f32's body for ITS head into shared
+// memory (warp 0 = q L2-norm, warp 1 = k L2-norm, warp 2 = v copy, warp 3 lane 0 = beta
+// sigmoid + g_log) — the prep is REPLICATED across the 32 z-blocks of a head (deterministic,
+// same expressions, conv_out is L2-resident) — then __syncthreads and runs gdn_scan_kernel's
+// T=1 body verbatim with q/k/v/beta/g read from smem instead of HBM.
+// BIT-IDENTITY: every FP expression, reduce tree, and accumulation order is copied unchanged
+// from gdn_prep_decode_f32 / gdn_scan_kernel<128,32>; staging f32 intermediates through smem
+// instead of HBM does not change values. Removes 1 launch + the q_l2/k_l2/v_gd/beta/g_log
+// HBM round-trip per linear layer per token.
+// NOT folded: the conv stage. Its q/k channels are SHARED across v-heads (kh = vh % num_k) and
+// the ring roll must happen EXACTLY once per channel; with independent blocks that is a
+// cross-block read-vs-roll race (needs a grid sync). Conv stays its own kernel.
+extern "C" __global__ void gdn_fused_decode_f32(
+        const float* __restrict__ conv_out,   // [conv_dim] (T=1, channel-major, SiLU'd)
+        const float* __restrict__ beta_raw,   // [num_v]
+        const float* __restrict__ alpha,      // [num_v]
+        const float* __restrict__ dt_bias,    // [num_v]
+        const float* __restrict__ a,          // [num_v]
+        const float* __restrict__ state_in,   // [128,128,H] transposed M[col][i]
+        float* __restrict__ state_out,        // [128,128,H] (distinct from state_in; ping-pong)
+        float* __restrict__ o,                // [128,H] (T=1)
+        int num_k, int key_dim, float eps, float scale) {
+    constexpr int S_v = 128;
+    const int vh = blockIdx.x;                // head (H = gridDim.x = num_v)
+    const int warp = threadIdx.y;             // 4 warps/block, same as gdn_prep_decode
+    const int lane = threadIdx.x;
+    const int kh = vh % num_k;
+
+    __shared__ float sm_q[S_v], sm_k[S_v], sm_v[S_v];
+    __shared__ float sm_beta, sm_g;
+
+    // ---- phase 1: prep into smem — gdn_prep_decode_f32's body verbatim (dst -> smem) ----
+    if (warp == 2) {
+        // v: straight copy of channels [2*key_dim + vh*128, +128)
+        const float* src = conv_out + 2 * key_dim + (size_t)vh * S_v;
+        for (int i = lane; i < S_v; i += 32) sm_v[i] = src[i];
+    } else if (warp == 3) {
+        if (lane == 0) {
+            sm_beta = 1.0f / (1.0f + expf(-beta_raw[vh]));
+            float x = alpha[vh] + dt_bias[vh];
+            float sp = (x > 20.0f) ? x : log1pf(expf(x));
+            sm_g = a[vh] * sp;
+        }
+    } else {
+        // warp 0/1: q/k gather + L2 norm — SAME 32-lane strided partials + shfl_down tree +
+        // lane-0 broadcast as gdn_prep_decode_f32 (scale = rsqrt(sum + eps)).
+        const float* src = conv_out + (warp == 0 ? 0 : key_dim) + (size_t)kh * S_v;
+        float* dst = (warp == 0 ? sm_q : sm_k);
+        float sum = 0.0f;
+        for (int i = lane; i < S_v; i += 32) { float v = src[i]; sum += v * v; }
+        #pragma unroll
+        for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o2);
+        sum = __shfl_sync(0xffffffff, sum, 0);
+        float sc = rsqrtf(sum + eps);
+        for (int i = lane; i < S_v; i += 32) dst[i] = src[i] * sc;
+    }
+    __syncthreads();
+
+    // ---- phase 2: scan — gdn_scan_kernel<128,32> T=1 body verbatim (q/k/v/g/beta from smem) ----
+    const int col = blockIdx.z * blockDim.y + warp;   // gridDim.z=32, blockDim.y=4: cols 0..127
+    constexpr int rows_per_lane = S_v / 32;
+
+    const float* st = state_in + ((size_t)vh * S_v + col) * S_v;  // row `col` contiguous
+    float s_shard[rows_per_lane];
+    #pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) s_shard[r] = st[r * 32 + lane];
+
+    float g_val = expf(sm_g);
+    float beta_val = sm_beta;
+
+    float k_reg[rows_per_lane], q_reg[rows_per_lane];
+    #pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) {
+        int i = r * 32 + lane;
+        k_reg[r] = sm_k[i]; q_reg[r] = sm_q[i];
+    }
+    // kv[col] = sum_i S[i][col]*k[i]
+    float kv_shard = 0.0f;
+    #pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) kv_shard += s_shard[r] * k_reg[r];
+    float kv_col = warp_reduce_sum<32>(kv_shard);
+    // delta[col] = (v[col] - g*kv[col]) * beta
+    float delta_col = (sm_v[col] - g_val * kv_col) * beta_val;
+    // fused state update + attn
+    float attn_partial = 0.0f;
+    #pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) {
+        s_shard[r] = g_val * s_shard[r] + k_reg[r] * delta_col;
+        attn_partial += s_shard[r] * q_reg[r];
+    }
+    float attn_col = warp_sum_down<32>(attn_partial);   // lane-0-valid only (write below)
+    if (lane == 0) o[(size_t)vh * S_v + col] = attn_col * scale;
+    // write state back
+    float* so = state_out + ((size_t)vh * S_v + col) * S_v;
+    #pragma unroll
+    for (int r = 0; r < rows_per_lane; r++) so[r * 32 + lane] = s_shard[r];
+}
+
 // =====================================================================================
 // A4 (SOTA-ADOPTION rank 6.0): CHUNKED WY / BLOCKWISE-INVERSE GDN PREFILL.
 // Chunk-parallel matmul form of the gated delta rule (the flashinfer/fla chunked
