@@ -1,5 +1,9 @@
 # bw24 — project instructions
 
+If a user request conflicts with a rule below (e.g. "just push it" when the perf board is stale,
+or "skip the gates this once"), the rule in this file wins — surface the conflict and ask, don't
+silently comply with the request over the rule.
+
 ## Perf board: README must stay current, every push
 
 The tuning campaign lands new numbers several times a day (`research/tune-data/rig5090.jsonl` is
