@@ -848,6 +848,10 @@ impl Engine {
             "gs4" if in_f == 2048 => (self.func("moe_gate_up_silu8_dev_q8_gs4"),
                      LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                     block_dim: (32, 4, 1), shared_mem_bytes: 0 }),
+            // _v twin (down8 lane 2026-07-08): wide-load IQ4_XS dot, base geometry, bit-identical.
+            "v" | "" => (self.func("moe_gate_up_silu8_dev_q8_v"),
+                    LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                   block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
             "s2" => (self.func("moe_gate_up_silu8_dev_q8_s2"),
                      LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                     block_dim: (32, 2, 1), shared_mem_bytes: 0 }),
@@ -896,11 +900,20 @@ impl Engine {
                                block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
             // "" = AUTO: the measured winner for the 35B expert shape (arc 2026-07-05, +3.8%);
             // any shape the h2 kernels can't take (nsb!=16 / n_used>8) falls to base via `_`.
+            // _v twins (down8 lane 2026-07-08): wide-load IQ4_XS dot, bit-identical outputs.
+            "w8h2v" | "" if in_f == 512 && n_used <= 8 =>
+                (self.func("moe_down8_fma_dev_q8_w8h2v"),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
+            "w8h2r2v" if in_f == 512 && n_used <= 8 =>
+                (self.func("moe_down8_fma_dev_q8_w8h2r2v"),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(4) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
             "w8h2r2" if in_f == 512 && n_used <= 8 =>
                 (self.func("moe_down8_fma_dev_q8_w8h2r2"),
                  LaunchConfig { grid_dim: (out_f.div_ceil(4) as u32, 1, 1),
                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
-            "w8h2" | "" if in_f == 512 && n_used <= 8 =>
+            "w8h2" if in_f == 512 && n_used <= 8 =>
                 (self.func("moe_down8_fma_dev_q8_w8h2"),
                  LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
                                 block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
@@ -913,6 +926,67 @@ impl Engine {
          .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
         unsafe { b.launch(cfg)?; }
         Ok(())
+    }
+
+    /// TEST SEAM (down8 lane 2026-07-08): launch a down dev_q8 variant BY NAME with its
+    /// canonical geometry, bypassing the env-cached dispatch so moe-devq8-check can byte-
+    /// compare variants in one process. Variants: "base", "w8h2", "w8h2r2", "w8h2v", "w8h2r2v".
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_dev_q8_variant(&self, variant: &str, table: &CudaSlice<u64>,
+                                        sel: &cudarc::driver::CudaView<i32>,
+                                        w: &cudarc::driver::CudaView<f32>,
+                                        aq2: &CudaSlice<i8>, ad2: &CudaSlice<f32>,
+                                        dst: &mut cudarc::driver::CudaViewMut<f32>,
+                                        in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
+                                        qt: i32, rb: usize)
+                                        -> Result<(), Box<dyn std::error::Error>> {
+        let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
+                                        n_expert as i32, rb as i64);
+        let (f, cfg) = match variant {
+            "w8h2" | "w8h2v" => {
+                (self.func(if variant == "w8h2" { "moe_down8_fma_dev_q8_w8h2" }
+                           else { "moe_down8_fma_dev_q8_w8h2v" }),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 })
+            }
+            "w8h2r2" | "w8h2r2v" => {
+                (self.func(if variant == "w8h2r2" { "moe_down8_fma_dev_q8_w8h2r2" }
+                           else { "moe_down8_fma_dev_q8_w8h2r2v" }),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(4) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 })
+            }
+            _ => (self.func("moe_down8_fma_dev_q8"),
+                  LaunchConfig { grid_dim: (out_f as u32, 1, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+        };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// TEST SEAM (down8 lane): gate_up twin of the above. Variants: "base", "v".
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8_dev_q8_variant(&self, variant: &str, table: &CudaSlice<u64>,
+                                            sel: &cudarc::driver::CudaView<i32>,
+                                            aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                            in_f: usize, n_ff: usize, n_used: usize,
+                                            n_expert: usize, qt_g: i32, qt_u: i32,
+                                            rb_g: usize, rb_u: usize)
+                                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
+        let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                        rb_g as i64, rb_u as i64);
+        let f = self.func(if variant == "v" { "moe_gate_up_silu8_dev_q8_v" }
+                          else { "moe_gate_up_silu8_dev_q8" });
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
     }
 
     pub fn moe_gate_up_silu8_dev(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
@@ -1213,6 +1287,10 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn htod_i32(&self, v: &[i32]) -> Result<CudaSlice<i32>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.clone_htod(v)?)
+    }
+    /// i8 upload (moe-devq8-check: synthetic q8_1 activation bytes).
+    pub fn htod_i8(&self, v: &[i8]) -> Result<CudaSlice<i8>, Box<dyn std::error::Error>> {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn htod_u64(&self, v: &[u64]) -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
