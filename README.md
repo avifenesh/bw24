@@ -1,5 +1,10 @@
 # bw24
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
+![CUDA](https://img.shields.io/badge/CUDA-12.8%20%2F%2013.1-76B900.svg)
+![arch](https://img.shields.io/badge/arch-sm__120a%20(Blackwell)-black.svg)
+
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
 Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x) and at 0.99x on the 35B MoE; with MTP speculative decoding it leads 9B 1.31x/1.23x and 27B up to 1.25x at the same raw-prompt protocol — every number measured on-device against llama.cpp's serve-best config on the same machine, N=3 medians, both engines re-baselined the same day (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
@@ -109,7 +114,7 @@ Safetensors checkpoints (no llama.cpp comparison possible):
 - **nvidia/Qwen3.6-27B-NVFP4** — 92.5 tok/s spec on the laptop rig (2.3x the tuned local vLLM reference, which reaches 40.8 plain and cannot fit its MTP draft head on 24 GB; bw24's trimmed draft head byte-gathers rows from the trunk's own lm_head, zero extra VRAM). Same-silicon vLLM comparison on an RTX PRO 6000 96 GB: vLLM MTP reaches 147-184 tok/s there via batched multi-token drafting — the standing gap bw24 is working (bw24 92-97 on that box).
 - **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader (~1.5 tok/s, I/O-bound: measured routing locality shows 77% of experts get touched with weak reuse, so capacity — not caching policy — is the binding constraint). On a 96 GB RTX PRO 6000 the same code reaches ~6 tok/s and climbing with an 80 GB expert cache.
 
-Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind (prefill 1.65x vs llama.cpp, vLLM's batched MTP on big-VRAM boxes), the gap and its current diagnosis are tracked in the tune-data records, not hidden.
+Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind, the gap and its diagnosis are tracked in the tune-data records, not hidden — currently: **prefill** (pp≈2k same-day board: 9B 3799 vs 6287, 27B 1055 vs 2348, 35B 2338 vs 3981 — llama's int8 tensor-core MMQ GEMM vs our dp4a path; an FP8-activation tensor-core prefill is in flight, targeting the compute headroom this silicon has that neither engine uses), the 35B deep-context decode residual (152.8 vs 159.9 at 6.3k), and vLLM's batched MTP on big-VRAM boxes.
 
 ## Limitations
 
@@ -130,7 +135,7 @@ Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-id
 
 ## Contributing
 
-Issues and PRs welcome. Any kernel PR must pass the three correctness gates above and include before/after numbers measured with the protocol in `research/benchmarks.md`.
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
