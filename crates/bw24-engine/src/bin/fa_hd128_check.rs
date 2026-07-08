@@ -72,8 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 3) quant view twin (fa_prefill_q / _hd128): quantize K/V into a resident
             //    q8_0/q5_1 cache first. Tolerance = kernel_check's quant bound (6e-2).
             let kv_dim = hd * nhkv;
-            let k_tok_bytes = (kv_dim / 32) * 34;
-            let v_tok_bytes = (kv_dim / 32) * 24;
+            let (kbb, vbb) = bw24_engine::kv_blk_bytes();  // env-selected KV formats
+            let k_tok_bytes = (kv_dim / 32) * kbb;
+            let v_tok_bytes = (kv_dim / 32) * vbb;
             let mut kc = e.alloc_u8(tkv * k_tok_bytes)?;
             let mut vc = e.alloc_u8(tkv * v_tok_bytes)?;
             for tok in 0..tkv {

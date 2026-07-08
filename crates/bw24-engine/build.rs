@@ -25,6 +25,27 @@ fn main() {
         println!("cargo:rustc-env={env}={}", fatbin.display());
     }
 
+    // ---- KV-format fatbin variants of flash_attn.cu (kvbytes lane, 2026-07-08) ----
+    // Same kernels/entry names, compile-time K/V cache format via -D. Engine::new picks the
+    // fatbin at runtime from env BW24_KV_K / BW24_KV_V (lib.rs flash_fatbin_path); the default
+    // (no env) loads the plain flash_attn.fatbin built above — bit-identical daily config.
+    for (suffix, kfmt, vfmt) in [("VQ4", 0, 1), ("VF8", 0, 2), ("KF8", 1, 0),
+                                 ("KF8VQ4", 1, 1), ("KF8VF8", 1, 2)] {
+        let fatbin = out.join(format!("flash_attn_{}.fatbin", suffix.to_lowercase()));
+        let status = Command::new(&nvcc)
+            .args([
+                "-gencode", "arch=compute_120a,code=sm_120a",
+                "-O3", "--fatbin",
+                &format!("-DBW24_KV_KFMT={kfmt}"), &format!("-DBW24_KV_VFMT={vfmt}"),
+                "-o", fatbin.to_str().unwrap(),
+                "cu/flash_attn.cu",
+            ])
+            .status()
+            .expect("spawn nvcc (flash_attn kv-format variant)");
+        assert!(status.success(), "nvcc fatbin build failed for flash_attn kv variant {suffix}");
+        println!("cargo:rustc-env=BW24_FLASH_FATBIN_{suffix}={}", fatbin.display());
+    }
+
     // ---- Vendored llama MMQ GEMMs: a STATIC LIB with C-ABI host launchers (extern "C"). ----
     // Same kind as the CUTLASS artifact (a host-side launcher cannot go through the device-only fatbin
     // path), but ALWAYS built (no external header deps — fully ggml-decoupled). The launchers do

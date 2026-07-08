@@ -39,6 +39,64 @@ fn gemm_fatbin_path() -> String {
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
 }
 
+// ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
+// `BW24_KV_K` = q8_0 (default, 34 B/32elem) | fp8 (raw e4m3, 32 B — the -6% K-bytes arm)
+// `BW24_KV_V` = q5_1 (default, 24 B/32elem) | q4_0 (18 B, -25% V bytes) | fp8 (32 B, +33%)
+// A non-default format is a NEW NUMERIC CONFIG: its own run-gen argmax baseline is legal,
+// but the gate battery (kernel-check, run-spec self-consistency) must pass WITHIN it and
+// the choice is explicit env, never silent. flash_attn.cu is compiled once per format pair
+// (build.rs); the kernels keep their names — Engine::new just loads the matching fatbin.
+const FLASH_FATBIN_VQ4: &str = env!("BW24_FLASH_FATBIN_VQ4");
+const FLASH_FATBIN_VF8: &str = env!("BW24_FLASH_FATBIN_VF8");
+const FLASH_FATBIN_KF8: &str = env!("BW24_FLASH_FATBIN_KF8");
+const FLASH_FATBIN_KF8VQ4: &str = env!("BW24_FLASH_FATBIN_KF8VQ4");
+const FLASH_FATBIN_KF8VF8: &str = env!("BW24_FLASH_FATBIN_KF8VF8");
+
+/// The (K, V) cache formats picked by env (cached; both the fatbin pick and every
+/// tok-bytes computation MUST come through here so they can never diverge).
+pub fn kv_cache_formats() -> (&'static str, &'static str) {
+    static F: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        let k = match std::env::var("BW24_KV_K").as_deref() {
+            Ok("fp8") => "fp8",
+            Ok("q8_0") | Ok("") | Err(_) => "q8_0",
+            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8)"),
+        };
+        let v = match std::env::var("BW24_KV_V").as_deref() {
+            Ok("q4_0") => "q4_0",
+            Ok("fp8") => "fp8",
+            Ok("q5_1") | Ok("") | Err(_) => "q5_1",
+            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8)"),
+        };
+        if (k, v) != ("q8_0", "q5_1") {
+            eprintln!("[bw24] KV cache format: K={k} V={v} (non-default — new numeric config)");
+        }
+        (k, v)
+    })
+}
+
+/// Per-32-element block bytes for the selected (K, V) formats. Callers compute
+/// `tok_bytes = (kv_dim/32) * blk_bytes` (cache.rs, spec.rs, eagle.rs, gates, benches).
+pub fn kv_blk_bytes() -> (usize, usize) {
+    let (k, v) = kv_cache_formats();
+    let kb = match k { "fp8" => 32, _ => 34 };
+    let vb = match v { "q4_0" => 18, "fp8" => 32, _ => 24 };
+    (kb, vb)
+}
+
+/// The flash_attn fatbin matching the selected KV formats.
+fn flash_fatbin_path() -> &'static str {
+    match kv_cache_formats() {
+        ("q8_0", "q5_1") => FLASH_FATBIN_PATH,
+        ("q8_0", "q4_0") => FLASH_FATBIN_VQ4,
+        ("q8_0", "fp8")  => FLASH_FATBIN_VF8,
+        ("fp8",  "q5_1") => FLASH_FATBIN_KF8,
+        ("fp8",  "q4_0") => FLASH_FATBIN_KF8VQ4,
+        ("fp8",  "fp8")  => FLASH_FATBIN_KF8VF8,
+        other => unreachable!("kv_cache_formats returned {other:?}"),
+    }
+}
+
 /// TUNE SEAM (tools/sweep): kernel1 (Q8_0/Q4_K/Q5_K) launch-tile override,
 /// `BW24_GEMM_K1_LAUNCH="BM,BN,NWARP"`. MUST match the `-D K1_BM/K1_BN/NWARP` the swept
 /// fatbin was compiled with (the .cu tile and the host launch grid/block have to agree —
@@ -287,7 +345,7 @@ impl Engine {
         let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
-        let flash = gpu.ctx.load_module(Ptx::from_file(FLASH_FATBIN_PATH))?;
+        let flash = gpu.ctx.load_module(Ptx::from_file(flash_fatbin_path()))?;
         let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;

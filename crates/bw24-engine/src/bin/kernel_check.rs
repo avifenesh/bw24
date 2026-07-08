@@ -1244,8 +1244,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // inline. Tolerance loosened vs the f32 path: q5_1 V (5-bit affine) is the looser link.
         let kv_dim_k = hd * nhkv;   // head_dim_k * n_head_kv (head_dim_v == head_dim_k here)
         let kv_dim_v = hd * nhkv;
-        let k_tok_bytes = (kv_dim_k / 32) * 34;
-        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        let (kbb, vbb) = bw24_engine::kv_blk_bytes();  // env-selected KV formats (default 34/24)
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
+        // format noise floor on the uniform-random synth: default q8_0/q5_1 = 6e-2 (validated).
+        // V-format element noise MEASURED by the round-trip gate below (rel to amax): q5_1
+        // 1.35e-2, fp8 3.23e-2 (2.4x), q4_0 6.06e-2 (4.5x, == its amax/16 theory bound — the
+        // symmetric-4-bit cost). The SDPA rel scales with V element noise because |O| is a
+        // small softmax average of the noise-carrying V (the amplification already documented
+        // for q5_1 above) -> scale the gate by the measured ratio. Packing correctness is
+        // pinned exactly by the round-trip gate; quality arbitration for non-default formats
+        // = run-spec acceptance within the config (the kvbytes-lane protocol).
+        let kvq_tol: f32 = 6e-2 * match bw24_engine::kv_cache_formats().1 {
+            "q4_0" => 5.0, "fp8" => 2.5, _ => 1.0,
+        };
         for tkv in [64usize, 128, 257] {
             let q: Vec<f32> = (0..hd*nh).map(|i| pr(i+1)*0.2).collect();
             let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
@@ -1278,7 +1290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // noise ~1.35e-2/elem, amplified through the softmax-weighted average when |O| is small).
             // The block round-trip + 5th-bit gates below isolate packing CORRECTNESS; the AUTHORITATIVE
             // end-to-end gate is argmax stability on real models. Gate here: rel < 6e-2 (noise floor).
-            println!("fa_decode(KVQ) Tkv={tkv}: rel={rel:.2e} {}", if rel<6e-2 {"OK"} else {fails+=1;"FAIL"});
+            println!("fa_decode(KVQ) Tkv={tkv}: rel={rel:.2e} {}", if rel<kvq_tol {"OK"} else {fails+=1;"FAIL"});
             // PERF-4 gate: vec kernel rel < 6e-2 AND no worse than scalar within slack. The vec
             // kernel stores the dequanted KV tile in bf16 smem (8-bit mantissa) for occupancy
             // (-> the 2.2x mid-ctx decode win); the scalar path keeps f32. That adds ~1-1.5e-3
@@ -1286,7 +1298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the AUTHORITATIVE end-to-end argmax gate (268/271/1178) is unaffected. Slack 2.5e-3.
             let regress = rel_v > rel + 2.5e-3;
             println!("fa_decode_vec_q(KVQ) Tkv={tkv}: rel={rel_v:.2e} (scalar {rel:.2e}) {}",
-                     if rel_v<6e-2 && !regress {"OK"} else {fails+=1;"FAIL"});
+                     if rel_v<kvq_tol && !regress {"OK"} else {fails+=1;"FAIL"});
         }
 
         // --- MULTI-ROW verify FA vs per-row loop: BYTE identity (the spec-exactness contract) ---
@@ -1371,11 +1383,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (esp. the q5_1 qh ballot) from attention. Includes a 5th-bit-boundary block (15<->16, 31).
     {
         use bw24_gguf::dequant::fp16_to_f32;
+        let (kfmt, vfmt) = bw24_engine::kv_cache_formats();
+        let (kbb, vbb) = bw24_engine::kv_blk_bytes();
         let nblk = 4usize;                 // 4 blocks -> 128 elements
         let kv_dim_k = nblk * 32;
         let kv_dim_v = nblk * 32;
-        let k_tok_bytes = (kv_dim_k / 32) * 34;
-        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
         // K input: signed random; V input: includes a block crafted to span the 5th-bit boundary.
         let kin: Vec<f32> = (0..kv_dim_k).map(|i| pr(i + 71) * 1.3).collect();
         let mut vin: Vec<f32> = (0..kv_dim_v).map(|i| pr(i + 91) * 0.7 + 0.1).collect();
@@ -1387,46 +1401,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut kc = e.alloc_u8(k_tok_bytes)?; let mut vc = e.alloc_u8(v_tok_bytes)?;
         e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
         let kbytes = e.dtoh_u8(&kc)?; let vbytes = e.dtoh_u8(&vc)?;
-        // CPU dequant of q8_0 (K)
         let f16_to_f32 = |b: &[u8]| -> f32 { fp16_to_f32(u16::from_le_bytes([b[0], b[1]])) };
+        // CPU e4m3 decode (raw-fp8 arms): sign / 4-bit exp (bias 7) / 3-bit mantissa, subnormals.
+        let e4m3 = |b: u8| -> f32 {
+            let s = if b & 0x80 != 0 { -1.0f32 } else { 1.0 };
+            let ex = ((b >> 3) & 0x0F) as i32;
+            let mn = (b & 0x07) as f32;
+            if ex == 0 { s * mn * (2f32).powi(-9) }                 // subnormal: 2^-6 * m/8
+            else if ex == 15 && mn == 7.0 { f32::NAN }              // e4m3 NaN encoding
+            else { s * (1.0 + mn / 8.0) * (2f32).powi(ex - 7) }
+        };
+        // ---- K round-trip (format-exact CPU dequant) ----
         let mut k_deq = vec![0f32; kv_dim_k];
         for blk in 0..nblk {
-            let base = blk * 34;
-            let d = f16_to_f32(&kbytes[base..base + 2]);
-            for j in 0..32 {
-                let q = kbytes[base + 2 + j] as i8;
-                k_deq[blk * 32 + j] = d * q as f32;
+            let base = blk * kbb;
+            match kfmt {
+                "fp8" => for j in 0..32 { k_deq[blk * 32 + j] = e4m3(kbytes[base + j]); },
+                _ => {
+                    let d = f16_to_f32(&kbytes[base..base + 2]);
+                    for j in 0..32 { k_deq[blk * 32 + j] = d * (kbytes[base + 2 + j] as i8) as f32; }
+                }
             }
         }
         let kerr = maxdiff(&kin, &k_deq);
-        // per-block d for K rel tol: q8_0 max abs err <= d/2; report relative to amax.
+        // q8_0 abs err <= d/2 (rel 5e-3 vs amax, validated); raw e4m3 rel err <= 2^-4 -> gate 7e-2.
         let kamax = kin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
         let krel = kerr / kamax;
-        println!("kvq q8_0 K round-trip: rel={krel:.2e} {}", if krel < 5e-3 { "OK" } else { fails += 1; "FAIL" });
-        // CPU dequant of q5_1 (V)
+        let ktol = if kfmt == "fp8" { 7e-2 } else { 5e-3 };
+        println!("kvq {kfmt} K round-trip: rel={krel:.2e} {}", if krel < ktol { "OK" } else { fails += 1; "FAIL" });
+        // ---- V round-trip (format-exact CPU dequant) ----
         let mut v_deq = vec![0f32; kv_dim_v];
         for blk in 0..nblk {
-            let base = blk * 24;
-            let d = f16_to_f32(&vbytes[base..base + 2]);
-            let m = f16_to_f32(&vbytes[base + 2..base + 4]);
-            let qh = u32::from_le_bytes([vbytes[base + 4], vbytes[base + 5], vbytes[base + 6], vbytes[base + 7]]);
-            let qs = &vbytes[base + 8..base + 24];
-            for j in 0..32 {
-                let lo = if j < 16 { (qs[j] & 0x0F) as i32 } else { (qs[j - 16] >> 4) as i32 };
-                let hi = (((qh >> j) & 1) << 4) as i32;
-                let q5 = lo | hi;
-                v_deq[blk * 32 + j] = d * q5 as f32 + m;
+            let base = blk * vbb;
+            match vfmt {
+                "fp8" => for j in 0..32 { v_deq[blk * 32 + j] = e4m3(vbytes[base + j]); },
+                "q4_0" => {
+                    let d = f16_to_f32(&vbytes[base..base + 2]);
+                    let qs = &vbytes[base + 2..base + 18];
+                    for j in 0..32 {
+                        let q = if j < 16 { (qs[j] & 0x0F) as i32 } else { (qs[j - 16] >> 4) as i32 };
+                        v_deq[blk * 32 + j] = d * (q - 8) as f32;
+                    }
+                }
+                _ => {
+                    let d = f16_to_f32(&vbytes[base..base + 2]);
+                    let m = f16_to_f32(&vbytes[base + 2..base + 4]);
+                    let qh = u32::from_le_bytes([vbytes[base + 4], vbytes[base + 5], vbytes[base + 6], vbytes[base + 7]]);
+                    let qs = &vbytes[base + 8..base + 24];
+                    for j in 0..32 {
+                        let lo = if j < 16 { (qs[j] & 0x0F) as i32 } else { (qs[j - 16] >> 4) as i32 };
+                        let hi = (((qh >> j) & 1) << 4) as i32;
+                        v_deq[blk * 32 + j] = d * (lo | hi) as f32 + m;
+                    }
+                }
             }
         }
         let verr = maxdiff(&vin, &v_deq);
         let vamax = vin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
         let vrel = verr / vamax;
-        println!("kvq q5_1 V round-trip: rel={vrel:.2e} {}", if vrel < 3e-2 { "OK" } else { fails += 1; "FAIL" });
-        // explicit 5th-bit-boundary check on V block 1 (q5 sweeps 0..31).
-        let bnd_err = (0..32).map(|j| (vin[32 + j] - v_deq[32 + j]).abs()).fold(0.0, f32::max);
-        let bnd_d = step;  // block1 d ~= (31*step - 0)/31 = step
-        println!("kvq q5_1 5th-bit boundary: maxerr={bnd_err:.2e} (d~{bnd_d:.2e}) {}",
-                 if bnd_err < bnd_d { "OK" } else { fails += 1; "FAIL" });
+        // q5_1 3e-2 (validated); q4_0 half-step = amax/16 -> 7e-2; raw e4m3 -> 7e-2.
+        let vtol = if vfmt == "q5_1" { 3e-2 } else { 7e-2 };
+        println!("kvq {vfmt} V round-trip: rel={vrel:.2e} {}", if vrel < vtol { "OK" } else { fails += 1; "FAIL" });
+        // explicit 5th-bit-boundary check on V block 1 (q5 sweeps 0..31) — q5_1 layout only.
+        if vfmt == "q5_1" {
+            let bnd_err = (0..32).map(|j| (vin[32 + j] - v_deq[32 + j]).abs()).fold(0.0, f32::max);
+            let bnd_d = step;  // block1 d ~= (31*step - 0)/31 = step
+            println!("kvq q5_1 5th-bit boundary: maxerr={bnd_err:.2e} (d~{bnd_d:.2e}) {}",
+                     if bnd_err < bnd_d { "OK" } else { fails += 1; "FAIL" });
+        }
     }
 
     // --- BATCHED PROMPT PRIME: batched-rows KV append vs T sequential per-token appends must be
@@ -1436,8 +1478,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let nblk = 4usize;
         let kv_dim_k = nblk * 32;
         let kv_dim_v = nblk * 32;
-        let k_tok_bytes = (kv_dim_k / 32) * 34;
-        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        let (kbb, vbb) = bw24_engine::kv_blk_bytes();
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
         let (t0, t) = (3usize, 7usize);
         let cap = t0 + t;
         let kin: Vec<f32> = (0..t * kv_dim_k).map(|i| pr(i + 301) * 1.1).collect();

@@ -84,8 +84,9 @@ impl MtpScratch {
                 "KVQUANT requires head_dim%32==0 (MTP scratch)");
         let kv_dim_k = head_dim_k * n_head_kv;
         let kv_dim_v = head_dim_v * n_head_kv;
-        let k_tok_bytes = (kv_dim_k / 32) * 34;
-        let v_tok_bytes = (kv_dim_v / 32) * 24;
+        let (kbb, vbb) = crate::kv_blk_bytes();   // env-selected KV formats (default 34/24)
+        let k_tok_bytes = (kv_dim_k / 32) * kbb;
+        let v_tok_bytes = (kv_dim_v / 32) * vbb;
         Ok(MtpScratch { kv: KvLayer {
             k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
             kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
