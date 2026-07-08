@@ -346,4 +346,185 @@ index facts and re-run the metadata-only check before extracting.
 - Spill-tier bring-up: resident/RAM/NVMe split must be validated with real miss traffic on the
   RTX 5090 Laptop path.
 - Speculative decode: base layer-80 MTP extraction/transcode plus per-head expert-count handling
-  remain future work.
+  remain future work. (Extraction/transcode done 2026-07-09 — see the MTP head addendum below;
+  the rig-side loader/forward work remains.)
+
+## MTP head extraction + transcode addendum (2026-07-09, lane/hy3-mtp)
+
+CPU/disk-only lane. No GPU loads, `kernel-check`, `run-gen`, or `run-spec`. All quality statements
+remain unverified — pending target-rig gates.
+
+### Selective download
+
+The 593 `model.layers.80.*` keys of [tencent/Hy3](https://huggingface.co/tencent/Hy3) live in five
+of the repo's 99 shards. Mapped via `model.safetensors.index.json` first, then only those shards
+were pulled:
+
+| shard | bytes |
+|---|---:|
+| `model-00018-of-00099.safetensors` | 1.1 GB (eh_proj, o_proj) |
+| `model-00066-of-00099.safetensors` | 1.0 GB (q/k/v_proj) |
+| `model-00091-of-00099.safetensors` | 306 MB (norms, router, bias, shared MLP) |
+| `model-00096-of-00099.safetensors` | 4.8 GB (experts, first span) |
+| `model-00097-of-00099.safetensors` | 2.4 GB (experts, second span) |
+
+Command shape (non-Xet, single worker, per the trunk download lesson):
+
+```bash
+HF_HUB_DISABLE_XET=1 hf download tencent/Hy3 model.safetensors.index.json config.json \
+  model-000{18,66,91,96,97}-of-00099.safetensors --local-dir /data/ai-ml/hf-models/hy3-base-mtp-shards --max-workers 1
+```
+
+Actual download: 9,654,796,051 bytes (9.65 GB) against the <100 GB budget. Layer-80 payload inside
+those shards is 7.505 GB (7.248 GB experts + 257.5 MB glue/attention/router/shared). After the
+transcode and byte-level verification passed, all five shards were deleted — 9.65 GB freed;
+`config.json` + `model.safetensors.index.json` (4.3 MB) kept in
+`/data/ai-ml/hf-models/hy3-base-mtp-shards/` for provenance and re-pull instructions.
+
+### Head architecture (from shard headers + vLLM `hy_v3_mtp.py` + HF `modeling_hy_v3.py`)
+
+HF transformers does not implement the head — `modeling_hy_v3.py` lists
+`_keys_to_ignore_on_load_unexpected = [r"model\.layers\.80.*"]` with a "Not supporting
+multi-token prediction (MTP) atm" comment. The working reference is vLLM's
+`model_executor/models/hy_v3_mtp.py` (`HYV3MultiTokenPredictorLayer`). Structure is
+DeepSeek-V3-style NextN, the same family as the Qwen3.5 35B-MoE head bw24 already runs:
+
+1. `inputs_embeds[positions == 0] = 0` (mask the position-0 embedding),
+2. `e = enorm(embed(next_tok))`, `h = hnorm(prev_hidden)`,
+3. `x = eh_proj(concat[e; h])` with `eh_proj` `[4096, 8192]` (out, in),
+4. one full `HYV3DecoderLayer` — the SAME block class as trunk layers: GQA 64/8 heads, hd128,
+   QK norm, RoPE, then MoE FFN with its OWN router (sigmoid + expert_bias + route_norm +
+   router_scaling_factor), 192 routed experts, one shared expert,
+5. `final_layernorm`, then logits through the TRUNK `lm_head` (the checkpoint has no
+   `model.layers.80.shared_head.*` and no layer-80 `embed_tokens` — both are shared with the
+   trunk; vLLM maps `lm_head.weight -> shared_head.head`).
+
+Chaining for K>1 draft steps: `num_nextn_predict_layers=1`, so the single head is applied
+recursively (vLLM indexes `layers[str(80 + spec_step_idx % 1)]` — always layer 80), exactly like
+bw24's Qwen path where `mtp_head_forward` is looped with its own scratch KV.
+
+Layer-80 tensor inventory (17 non-expert + 192 x 3 expert keys = 593):
+
+| source (model.layers.80.*) | dtype | shape | mapped bw24 name |
+|---|---|---:|---|
+| `eh_proj.weight` | BF16 | [4096, 8192] | `blk.80.nextn.eh_proj.weight` |
+| `enorm.weight` / `hnorm.weight` | BF16 | [4096] | `blk.80.nextn.{enorm,hnorm}.weight` |
+| `final_layernorm.weight` | BF16 | [4096] | `blk.80.nextn.shared_head_norm.weight` |
+| `input_layernorm.weight` / `post_attention_layernorm.weight` | BF16 | [4096] | `blk.80.{attn_norm,ffn_norm}.weight` |
+| `self_attn.{q,k}_norm.weight` | BF16 | [128] | `blk.80.attn_{q,k}_norm.weight` |
+| `self_attn.q_proj.weight` | BF16 | [8192, 4096] | `blk.80.attn_q.weight` |
+| `self_attn.{k,v}_proj.weight` | BF16 | [1024, 4096] | `blk.80.attn_{k,v}.weight` |
+| `self_attn.o_proj.weight` | BF16 | [4096, 8192] | `blk.80.attn_output.weight` |
+| `mlp.router.gate.weight` | BF16 | [192, 4096] | `blk.80.ffn_gate_inp.weight` (-> F32) |
+| `mlp.expert_bias` | F32 | [192] | `blk.80.exp_probs_b.bias` |
+| `mlp.shared_mlp.{gate,up,down}_proj.weight` | BF16 | [1536,4096]/[4096,1536] | `blk.80.ffn_{gate,up,down}_shexp.weight` |
+| `mlp.experts.{0..191}.{gate,up,down}_proj.weight` | BF16 | [1536,4096]/[4096,1536] | stacked `blk.80.ffn_{gate,up,down}_exps.weight` |
+
+Base-vs-REAP naming wrinkles: the base head stores the selection bias as `mlp.expert_bias` (the
+REAP trunk artifact used `mlp.router.expert_bias`) and stores experts per-expert under
+`mlp.experts.{i}.*` (the MLX artifact used stacked `mlp.switch_mlp.*`). Attention shapes here are
+plain BF16 logical shapes — no MLX U32 packing.
+
+### Expert mismatch decision: transcode the full 192-expert head (single variant)
+
+The dossier's 192-vs-96 caveat resolves to full-192, on this evidence:
+
+1. **No kept-index list exists.** The REAP artifact's `config.json` carries only
+   `"reap": {"kept_per_layer": 96, "orig_experts": 192}` — no per-layer index lists. The HF repo
+   file listing has no sidecar metadata (no saliency dumps, no pruning maps), and the README says
+   only "kept 96/192 routed experts/layer by REAP saliency". The kept experts were renumbered
+   0..95 per layer with their original identities unrecorded.
+2. **Routing is per-layer-independent.** In `hy_v3` every decoder layer owns its router
+   (`mlp.router.gate` `[n_experts, 4096]` + `expert_bias`); there is no cross-layer routing state.
+   Layer 80 has its own `[192, 4096]` gate and `[192]` F32 bias. A trunk layer's kept-list — even
+   if recovered — would be meaningless for the head's expert space.
+3. **Layer 80 was never REAP-pruned.** REAP saliency is computed per layer from calibration
+   activations; the REAP50 release simply stripped layer 80. No saliency data exists for the head,
+   so ANY 96-subset would be arbitrary, not a REAP-consistent choice. This is why only the full-192
+   variant was transcoded: the "both variants" branch was for genuine ambiguity, and there is none —
+   a subset variant has no principled construction. Bytes were not the constraint (2.1 GB).
+4. **The head is draft-only.** Verification runs on the REAP trunk; head expert count affects
+   acceptance rate, never output correctness. Keeping all 192 maximizes draft fidelity to the
+   base head's training.
+
+Known open risk (rig-side, unverifiable here): the head was trained on BASE-trunk hiddens; it will
+consume REAP-trunk hiddens whose distribution has shifted. That is an acceptance-rate question for
+the target-rig gates, not a transcode decision. If acceptance disappoints, recovering the trunk
+kept-lists by weight-matching REAP experts against base experts (downloading base trunk shards)
+is possible future forensics, but it would still not produce a principled head subset.
+
+### Transcode output
+
+New `transcode-mtp` subcommand in `tools/hy3_mlx_to_q4k.py` — the BF16 -> Q4_K sibling of the MLX
+path. It reuses `quantize_q4k_rows`, the streaming row-chunk machinery (`--max-work-mb 64`,
+per-tensor shard-mmap drop + `malloc_trim`), and the manifest schema. Command:
+
+```bash
+python3 tools/hy3_mlx_to_q4k.py transcode-mtp /data/ai-ml/hf-models/hy3-base-mtp-shards \
+  /data/ai-ml/hf-models/hy3-reap50-q4k-bw24/mtp --max-work-mb 64
+```
+
+| item | value |
+|---|---:|
+| output directory | `/data/ai-ml/hf-models/hy3-reap50-q4k-bw24/mtp` |
+| manifest format | `bw24-hy3-mtp-q4k-repack-v1`, `head_layer: 80` |
+| tensor records | 20 (13 Q4_K, 5 BF16 norms, 2 F32) |
+| expert slabs | 3 (`blk80-{gate,up,down}-192x…​.q4k`), 192 offsets each |
+| expert stride | 3,538,944 bytes/expert/projection — identical to the trunk repack stride |
+| payload bytes | 2,113,578,240 (2.11 GB), `du -sh` 2.0G |
+| source keys consumed | 593 of 593 (hard-checked; missing keys raise) |
+| quality label | unverified — pending target-rig gates |
+
+Dtype policy matches the trunk repack: router gate BF16 -> F32 (loader law: selection tensors stay
+F32), `expert_bias` F32 copied byte-exact, 1-D norms copied as BF16 (Hy3RepackSource already
+dequantizes 1-D BF16 to F32 at load), all matmul weights Q4_K.
+
+Byte-level tests (`python3 tools/hy3_mlx_to_q4k.py test --real-mtp-dir … --real-mtp-out …`):
+
+- synthetic end-to-end `transcode-mtp` on a fake BF16 layer-80 checkpoint: name mapping to
+  `nextn.*`, F32 router/bias exactness, expert-axis-slowest slab stacking, per-expert offset
+  byte-equality against direct quantization, Q4_K-class dequant bound;
+- real sampled rows: on-disk Q4_K bytes byte-equal to recomputed quantization of the BF16 source
+  for `attn_k/attn_output/attn_q/attn_v/ffn_down_shexp/ffn_gate_shexp` (dequant max_abs
+  0.000575–0.002438) plus expert 191's gate slab at offset 675,938,304 (max_abs 0.002313).
+  These are transcode rounding evidence only, not quality claims.
+
+One dead end recorded: the first real-sample test run crashed with `BufferError: cannot close
+exported pointers exist` — safetensors memoryviews must be materialized (`bytes(raw)`) and dropped
+before `SafeTensorDir.close()`, the same mmap-lifetime lesson the trunk sampler already encoded
+with `del wraw, sraw, braw`.
+
+### What the bw24 spec path needs from this head (vs Qwen MTP in `crates/bw24-engine/src/spec.rs`)
+
+The head maps 1:1 onto the existing `MtpHead` contract (`crates/bw24-engine/src/hybrid.rs:234`):
+`enorm`/`hnorm`/`eh_proj` glue, `attn_norm`/`post_attn_norm`, a `Mixer::Full` attention block, an
+FFN, `shared_head_norm` = the transcoded `final_layernorm`, `shared_head_head` = None -> reuse
+trunk `output` (exactly the existing fallback at `crates/bw24-engine/src/spec.rs:280-285`).
+`mtp_head_forward_dev`'s op sequence (embed -> enorm/hnorm -> concat -> eh_proj -> full-attn on
+scratch KV -> FFN -> shared-head norm -> lm_head) is the same graph vLLM runs for Hy3. Remaining
+rig-side deltas:
+
+1. **MoE FFN in the head with n_expert != trunk.** Qwen35's head FFN is MoE and spec.rs already
+   keys head experts under a separate layer index (`u16::MAX`, `spec.rs:270`), so the SLRU/spill
+   machinery does not collide with trunk layers. But the Hy3 head has 192 experts while trunk
+   layers have 96 — loader/config paths that assume a single global `n_expert` must take the head
+   count from the mtp manifest (`n_expert` per expert record), not from the trunk config.
+2. **Sigmoid router in the head.** Same sigmoid + expert_bias + route_norm + scale-2.826 selection
+   as the trunk Hy3 layers (single forward implementation shared, still GPU-gated). Must stay out
+   of the softmax fused-router arms, like the trunk.
+3. **Manifest wiring.** The head lives in the SIBLING `mtp/` manifest, not the trunk
+   `manifest.json`, so `apply_stripped_mtp_override` (`crates/bw24-gguf/src/source.rs:242`) still
+   correctly strips nextn for trunk-only loads. Spec bring-up needs `Hy3RepackSource` (or a
+   wrapper) to open both manifests and re-assert `nextn_predict_layers=1`, `n_layer_total=81`,
+   exposing `blk.80.*`/`blk.80.nextn.*` alongside trunk names.
+4. **h-seed convention.** vLLM feeds the head raw trunk hidden states and applies `hnorm` inside
+   (pre-norm seed). bw24's `BW24_SPEC_HPOST` seam (`spec.rs:17`) covers both conventions; which
+   seed drafts better on the REAP trunk is a rig-side acceptance experiment.
+5. **Position-0 masking.** vLLM zeroes `inputs_embeds` at absolute position 0 before enorm. bw24's
+   qwen35 path has no such mask; for Hy3 parity the draft embed at `mtp_pos=0` should be zeroed —
+   a one-liner in `mtp_head_forward_dev`, draft-quality-only.
+6. **Budget.** 2.11 GB Q4_K head: glue+attention (~150 MB) VRAM-resident beside the trunk body;
+   the 679.5 MB x 3 expert slabs join the spill tier with the same stride/offset scheme as trunk
+   experts.
+
+Acceptance/quality/perf of spec decode with this head: unverified — pending target-rig gates.
