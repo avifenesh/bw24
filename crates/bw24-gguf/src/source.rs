@@ -312,9 +312,16 @@ impl TensorSource for SafetensorsSource {
                     // ON DEVICE (embed_gather kernel), which has no BF16 arm — and 2.5GB BF16 vs
                     // 1.35GB Q8_0 matters on the 24GB card. Q8_0 is FINER than the GGUF twin's own
                     // Q5_K embed class. Host-side row gather dequants Q8_0 identically.
+                    // ... and lm_head (loadersweep 2026-07-08, LOADER LAW): MiniMax-M3 ships a BF16
+                    // lm_head [200064,6144] while every other Linear is NVFP4 — falling through to
+                    // the F32 surface made the head a 4.9GB GpuTensor::Float riding cuBLAS f32 GEMV
+                    // EVERY decoded token (the 4th occurrence of the Float-poison trap: any F32/BF16
+                    // 2D matmul tensor fails uses_q8_1_fast and rides dot_kernel+reduce_1Block
+                    // pairs). Q8_0 is FINER than the Q5_K/Q6_K lm_heads every GGUF twin ships.
                     if info.dtype == "BF16" && info.shape.len() == 2
                         && info.shape.iter().product::<u64>() >= 1_000_000
-                        && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight") {
+                        && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight"
+                            || hf == "lm_head.weight") {
                         let ne = info.ne();
                         if (bytes.len() / 2) % 32 == 0 {
                             let data: Vec<f32> = bytes.chunks_exact(2)
@@ -380,8 +387,8 @@ impl TensorSource for SafetensorsSource {
                 // out_proj, V-reordered above): surfacing F32 is 461MB/linear-layer -> 22GB across
                 // the 48 linear layers (the load-tail OOM). Re-encode the post-reorder f32 to GGUF
                 // Q8_0 (same class as the Plain-arm F8 re-encode; per-32 fp16 scale is FINER than
-                // the source's single per-tensor scale). Small tensors (ssm_a/dt/conv1d/norms,
-                // alpha/beta [48,5120]) stay F32 — norms MUST be Float for the engine.
+                // the source's single per-tensor scale). Small norm-class tensors (ssm_a/dt/
+                // conv1d/norms) stay F32 — the engine consumes them via float_data().
                 // BF16-sourced in_proj_a/b [48,5120]: below the 1M-element BF16 gate, but leaving
                 // them F32 breaks `mixer_in_q8_1_fast` (requires beta+alpha quant) for EVERY
                 // linear layer -> unfused norm path + cuBLAS f32 GEMV pairs (nsys: 96 dot+reduce
@@ -481,8 +488,12 @@ mod nv27b_probe {
         // NVFP4 mlp + lm_head keep the native direct-import path.
         assert!(src.find_nvfp4_native("blk.0.ffn_gate.weight").is_some());
         assert!(src.find_nvfp4_native("output.weight").is_some());
-        // small SSM tensors stay F32 (norm-class, engine requires Float).
-        assert_eq!(ty("blk.0.ssm_alpha.weight"), GgmlType::F32);
+        // ssm_alpha/beta (<- BF16 in_proj_a/b) are MATMUL-class: the Transform-arm gate re-encodes
+        // them Q8_0 so mixer_in_q8_1_fast holds on every linear layer (the loader law; leaving
+        // them Float unfused EVERY linear-attn mixer onto cuBLAS f32 GEMV pairs).
+        assert_eq!(ty("blk.0.ssm_alpha.weight"), GgmlType::Q8_0);
+        assert_eq!(ty("blk.0.ssm_beta.weight"), GgmlType::Q8_0);
+        // norm-class SSM tensors stay F32 (engine consumes them via float_data()).
         assert_eq!(ty("blk.0.ssm_conv1d.weight"), GgmlType::F32);
         assert_eq!(ty("blk.0.ssm_a"), GgmlType::F32);
     }
@@ -523,6 +534,32 @@ mod nv27b_probe {
         // +1 fold check vs GGUF twin blk.64.nextn.enorm first value 0.4375 (raw bf16 -0.5625).
         let first = f32::from_le_bytes(en.bytes[..4].try_into().unwrap());
         assert!((first - 0.4375).abs() < 1e-3, "enorm +1 fold: got {first}");
+    }
+}
+
+#[cfg(test)]
+mod m3_probe {
+    use super::*;
+
+    /// MiniMax-M3 dtype-routing regression (loadersweep 2026-07-08): the REAP50 ckpt ships lm_head
+    /// as the ONLY BF16 Linear (everything else NVFP4). Before the lm_head gate it surfaced F32 ->
+    /// a 4.9GB GpuTensor::Float whose per-token decode matmul rode cuBLAS f32 GEMV (the loader-law
+    /// Float-poison trap, occurrence #4). Must surface Q8_0. The router (ffn_gate_inp) is the
+    /// AUDITED Float exception: selection-sensitive top-k, llama.cpp keeps every router F32, and it
+    /// sits on no all-or-nothing predicate — it must STAY F32. Skips when the ckpt is absent.
+    #[test]
+    fn minimax_m3_lm_head_q8() {
+        let dir = std::path::Path::new("/data/ai-ml/hf-models/minimax-m3-nvfp4-reap50");
+        if !dir.join("model.safetensors.index.json").exists() { eprintln!("SKIP: ckpt absent"); return; }
+        let src = SafetensorsSource::open(dir).unwrap();
+        // router: deliberately Float (audited exception — see model.rs float_2d_audited).
+        let router = src.find("blk.3.ffn_gate_inp.weight").expect("M3 router unresolved");
+        assert_eq!(router.ggml_type, GgmlType::F32);
+        assert_eq!(router.ne, vec![6144, 64]);
+        // lm_head: BF16 on disk -> must re-encode Q8_0 (matmul-class, hot every decoded token).
+        let head = src.find("output.weight").expect("M3 lm_head unresolved");
+        assert_eq!(head.ggml_type, GgmlType::Q8_0, "BF16 lm_head must surface Q8_0, not Float");
+        assert_eq!(head.ne, vec![6144, 200064]);
     }
 }
 
