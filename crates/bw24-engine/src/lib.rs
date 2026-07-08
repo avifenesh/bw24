@@ -2299,15 +2299,32 @@ impl Engine {
         } else { 1 };
         // A6 rp layout: mr4 has no rp twin (mr4 crashes pre-existing, non-default) -> mr2.
         if rp && qtype == QT_NVFP4 && mr == 4 { mr = 2; }
+        // q5issue lane (2026-07-08): BW24_Q5K_ISSUE swaps the q5_K m=1 mmvq kernels for the
+        // issue-reduced `_il` bodies (uint4 header/qh/qs loads + branchless scale decode —
+        // cuts ~34 LDG.U16 + ~5 LDG.U8 + a warp-divergent scale branch per 32-elem group-row
+        // to 5 LDG.128). Bit-identical per (token,row) to the reference kernels.
+        // `1` = shape-aware policy (N=3 clock-locked micro-bench, mem P0, synthetic real shapes):
+        //   out_f <= 65536 (trunk/frspec regime): il at the default mr — mr2_il -9.5%/-10.5%
+        //     on 4096x4096/4096x8192, -3.1% on the 32768 frspec head vs the mr2-ref default;
+        //   out_f > 65536 (the 248320-row 27B lm_head, already ~97% of the mem wall): mr2_il
+        //     REGRESSES +22% there but mr1_il wins -2.1% vs the mr2-ref default -> force mr=1.
+        // `2` = force il at the current mr for EVERY shape (A/B probe seam). Default OFF.
+        let q5_mode = std::env::var("BW24_Q5K_ISSUE").ok();
+        let q5_force = q5_mode.as_deref() == Some("2");
+        // DEFAULT ON since 2026-07-08 (BW24_Q5K_ISSUE=0 reverts): +1.8% 9B plain e2e N=3
+        // (128.2 -> 130.4), 27B flat (its big head is already at the mem wall), all gates green.
+        let q5_il = qtype == QT_Q5_K && m == 1
+            && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
+        if q5_il && !q5_force && out_f > 65536 { mr = 1; }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
             (QT_NVFP4, 4, false) => "qmatvec_nvfp4_mmvq_mr4",
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
             (QT_Q4_K, 2, _) => "qmatvec_q4_K_mmvq_mr2",
-            (QT_Q5_K, 2, _) => "qmatvec_q5_K_mmvq_mr2",
+            (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq", (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
-            (QT_Q5_K, _, _) => "qmatvec_q5_K_mmvq",
+            (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, 2, _) => "qmatvec_q6_K_mmvq_mr2",
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq", (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
