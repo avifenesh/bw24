@@ -13,11 +13,9 @@ Plain decode runs at or above llama.cpp on the dense models (27B 1.08x, 9B 1.03x
 
 ## Why this project
 
-- Use this as a reference for real sm_120a (consumer Blackwell) kernel work: NVFP4 block-scale decode, int8 `m16n8k16` tensor-core MMA, dp4a matvec, cp.async pipelining — with the measured win/loss record for each attempt.
-- Use this if you want an inference engine whose every optimization is gated on bit-exactness (argmax match + speculative self-consistency) rather than "looks close enough."
-- Use this to run Qwen3.5/3.6 dense (9B/27B, NVFP4 hybrid) and Qwen3.6-35B-A3B MoE from GGUF on a 24 GB card, including MTP speculative decoding and MoE expert caching with VRAM/host/disk spill.
-- Use this to run safetensors checkpoints without GGUF conversion: NVIDIA's official Qwen3.6-27B-NVFP4 (modelopt mixed-precision: NVFP4 MLP, FP8-E4M3 linear attention, BF16 model-trained MTP head — re-encoded to fast-path quants at load) and MiniMax-M3 REAP50 (121 GB sigmoid-routed MoE, streamed through an NVMe disk-tier expert loader).
-- Read `research/tune-data/*.jsonl` if you want a labeled corpus of kernel-tuning experiments (config → measured perf, wins and losses both recorded).
+- Use this as a reference for real sm_120a (consumer Blackwell) kernel work — every optimization ships with its measured win/loss record, not just the winners.
+- Use this if you want an inference engine gated on bit-exactness (argmax + speculative self-consistency) rather than "looks close enough."
+- Use this to run Qwen3.5/3.6 dense and MoE checkpoints on a 24 GB card — from GGUF or straight from HF safetensors, no conversion step — including models far larger than VRAM+RAM.
 
 ## Requirements
 
