@@ -2794,7 +2794,6 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_b8(
     q8_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 
-<<<<<<< HEAD
 // ----- FUSED Q8_0 BATCHED matvec PAIR/TRIPLE (verify t=2-4 trunk launch-fusion, BW24_SPEC_FUSED_T,
 // lane/close35b): the m=1 fused2/fused3 block-offset split applied to the batched weight-resident
 // tier. Blocks [0,nb0) compute tensor 0, [nb0,nb0+nb1) tensor 1 (fused3: a third range). Per
@@ -2864,8 +2863,8 @@ extern "C" __global__ void qmatvec_q8_0_mmvq_fused3_b4(
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
         int in_f, int out0, int out1, int out2, int m, long row_bytes) {
     q8_0_mmvq_fused3_b<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
-||||||| f17e32a
-=======
+}
+
 // ==================== F8-E4M3 (checkpoint-native) warp-per-row MMVQ + batched ====================
 // BW24_ST_E4M3 decode path (lane e4m3dec, 2026-07-08): F8-E4M3-origin safetensors projections keep
 // their RAW checkpoint e4m3 bytes resident ([out_f, in_f] row-major, row_bytes == in_f) instead of
@@ -2995,7 +2994,6 @@ extern "C" __global__ void qmatvec_e4m3_mmvq_b8(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     e4m3_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
->>>>>>> lane/e4m3dec
 }
 
 // ----- Q4_K batched. Per-group reusable: d_sb, dmin_sb, sc, mn, 8 decoded wpack. Per-column: act + dp4a
