@@ -565,3 +565,19 @@ plain sampling (acceptance-invariant/KL on long runs — same-seed streams legit
 llama pairing at matched temp/top-p. Inputs pending: literature survey
 (research/greedy-degeneration-protocol-survey.md, lane running) + rebaseline battery (GPU).
 Spec p3/long-form board cells stay excluded until this lands.
+
+## GPU GATE QUEUE (2026-07-09, owner-ordered parallel-dev mode)
+
+Development proceeds in worktrees while the f8f4 flip battery owns the GPU; everything gates in
+ONE queue when it frees, then the ST-vs-GGUF format decision follows and the loser stops getting
+pushed.
+
+Queue order:
+1. f8f4 default-flip decision (battery table; main thread decides).
+2. BW24_MOE_F8F4 expert-tile gates + pp A/B on the 35B (committed on main, ungated).
+3. feat/sampled-graph-draft (../bw24-sgd): session-gate oracle greedy regression + serve smoke
+   temp 0.7 (per-session seeded reproducibility, text audit) -> merge -> pi sessions unblock.
+4. feat/filtered-spec (../bw24-fspec): filtered rejection sampling (top-k/p/min-p + penalties
+   applied symmetrically to p and q — retires the legacy serve path to a rollback seam). Gates:
+   filter-parity unit checks vs host sampler + serve smoke top-p.
+5. Board move + release with whatever survived.
