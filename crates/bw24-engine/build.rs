@@ -73,7 +73,7 @@ fn main() {
         // kernels for the BW24_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
-                        "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu"] {
+                        "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
