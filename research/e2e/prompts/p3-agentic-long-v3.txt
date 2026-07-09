@@ -1,0 +1,699 @@
+
+=== FILE: Lib/selectors.py ===
+"""Selectors module.
+
+This module allows high-level and efficient I/O multiplexing, built upon the
+`select` module primitives.
+"""
+
+
+from abc import ABCMeta, abstractmethod
+from collections import namedtuple
+from collections.abc import Mapping
+import math
+import select
+import sys
+
+
+# generic events, that must be mapped to implementation-specific ones
+EVENT_READ = (1 << 0)
+EVENT_WRITE = (1 << 1)
+
+
+def _fileobj_to_fd(fileobj):
+    """Return a file descriptor from a file object.
+
+    Parameters:
+    fileobj -- file object or file descriptor
+
+    Returns:
+    corresponding file descriptor
+
+    Raises:
+    ValueError if the object is invalid
+    """
+    if isinstance(fileobj, int):
+        fd = fileobj
+    else:
+        try:
+            fd = int(fileobj.fileno())
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError("Invalid file object: "
+                             "{!r}".format(fileobj)) from None
+    if fd < 0:
+        raise ValueError("Invalid file descriptor: {}".format(fd))
+    return fd
+
+
+SelectorKey = namedtuple('SelectorKey', ['fileobj', 'fd', 'events', 'data'])
+
+SelectorKey.__doc__ = """SelectorKey(fileobj, fd, events, data)
+
+    Object used to associate a file object to its backing
+    file descriptor, selected event mask, and attached data.
+"""
+SelectorKey.fileobj.__doc__ = 'File object registered.'
+SelectorKey.fd.__doc__ = 'Underlying file descriptor.'
+SelectorKey.events.__doc__ = 'Events that must be waited for on this file object.'
+SelectorKey.data.__doc__ = ('''Optional opaque data associated to this file object.
+For example, this could be used to store a per-client session ID.''')
+
+
+class _SelectorMapping(Mapping):
+    """Mapping of file objects to selector keys."""
+
+    def __init__(self, selector):
+        self._selector = selector
+
+    def __len__(self):
+        return len(self._selector._fd_to_key)
+
+    def get(self, fileobj, default=None):
+        fd = self._selector._fileobj_lookup(fileobj)
+        return self._selector._fd_to_key.get(fd, default)
+
+    def __getitem__(self, fileobj):
+        fd = self._selector._fileobj_lookup(fileobj)
+        key = self._selector._fd_to_key.get(fd)
+        if key is None:
+            raise KeyError("{!r} is not registered".format(fileobj))
+        return key
+
+    def __iter__(self):
+        return iter(self._selector._fd_to_key)
+
+
+class BaseSelector(metaclass=ABCMeta):
+    """Selector abstract base class.
+
+    A selector supports registering file objects to be monitored for specific
+    I/O events.
+
+    A file object is a file descriptor or any object with a `fileno()` method.
+    An arbitrary object can be attached to the file object, which can be used
+    for example to store context information, a callback, etc.
+
+    A selector can use various implementations (select(), poll(), epoll()...)
+    depending on the platform. The default `Selector` class uses the most
+    efficient implementation on the current platform.
+    """
+
+    @abstractmethod
+    def register(self, fileobj, events, data=None):
+        """Register a file object.
+
+        Parameters:
+        fileobj -- file object or file descriptor
+        events  -- events to monitor (bitwise mask of EVENT_READ|EVENT_WRITE)
+        data    -- attached data
+
+        Returns:
+        SelectorKey instance
+
+        Raises:
+        ValueError if events is invalid
+        KeyError if fileobj is already registered
+        OSError if fileobj is closed or otherwise is unacceptable to
+                the underlying system call (if a system call is made)
+
+        Note:
+        OSError may or may not be raised
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def unregister(self, fileobj):
+        """Unregister a file object.
+
+        Parameters:
+        fileobj -- file object or file descriptor
+
+        Returns:
+        SelectorKey instance
+
+        Raises:
+        KeyError if fileobj is not registered
+
+        Note:
+        If fileobj is registered but has since been closed this does
+        *not* raise OSError (even if the wrapped syscall does)
+        """
+        raise NotImplementedError
+
+    def modify(self, fileobj, events, data=None):
+        """Change a registered file object monitored events or attached data.
+
+        Parameters:
+        fileobj -- file object or file descriptor
+        events  -- events to monitor (bitwise mask of EVENT_READ|EVENT_WRITE)
+        data    -- attached data
+
+        Returns:
+        SelectorKey instance
+
+        Raises:
+        Anything that unregister() or register() raises
+        """
+        self.unregister(fileobj)
+        return self.register(fileobj, events, data)
+
+    @abstractmethod
+    def select(self, timeout=None):
+        """Perform the actual selection, until some monitored file objects are
+        ready or a timeout expires.
+
+        Parameters:
+        timeout -- if timeout > 0, this specifies the maximum wait time, in
+                   seconds
+                   if timeout <= 0, the select() call won't block, and will
+                   report the currently ready file objects
+                   if timeout is None, select() will block until a monitored
+                   file object becomes ready
+
+        Returns:
+        list of (key, events) for ready file objects
+        `events` is a bitwise mask of EVENT_READ|EVENT_WRITE
+        """
+        raise NotImplementedError
+
+    def close(self):
+        """Close the selector.
+
+        This must be called to make sure that any underlying resource is freed.
+        """
+        pass
+
+    def get_key(self, fileobj):
+        """Return the key associated to a registered file object.
+
+        Returns:
+        SelectorKey for this file object
+        """
+        mapping = self.get_map()
+        if mapping is None:
+            raise RuntimeError('Selector is closed')
+        try:
+            return mapping[fileobj]
+        except KeyError:
+            raise KeyError("{!r} is not registered".format(fileobj)) from None
+
+    @abstractmethod
+    def get_map(self):
+        """Return a mapping of file objects to selector keys."""
+        raise NotImplementedError
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class _BaseSelectorImpl(BaseSelector):
+    """Base selector implementation."""
+
+    def __init__(self):
+        # this maps file descriptors to keys
+        self._fd_to_key = {}
+        # read-only mapping returned by get_map()
+        self._map = _SelectorMapping(self)
+
+    def _fileobj_lookup(self, fileobj):
+        """Return a file descriptor from a file object.
+
+        This wraps _fileobj_to_fd() to do an exhaustive search in case
+        the object is invalid but we still have it in our map.  This
+        is used by unregister() so we can unregister an object that
+        was previously registered even if it is closed.  It is also
+        used by _SelectorMapping.
+        """
+        try:
+            return _fileobj_to_fd(fileobj)
+        except ValueError:
+            # Do an exhaustive search.
+            for key in self._fd_to_key.values():
+                if key.fileobj is fileobj:
+                    return key.fd
+            # Raise ValueError after all.
+            raise
+
+    def register(self, fileobj, events, data=None):
+        if (not events) or (events & ~(EVENT_READ | EVENT_WRITE)):
+            raise ValueError("Invalid events: {!r}".format(events))
+
+        key = SelectorKey(fileobj, self._fileobj_lookup(fileobj), events, data)
+
+        if key.fd in self._fd_to_key:
+            raise KeyError("{!r} (FD {}) is already registered"
+                           .format(fileobj, key.fd))
+
+        self._fd_to_key[key.fd] = key
+        return key
+
+    def unregister(self, fileobj):
+        try:
+            key = self._fd_to_key.pop(self._fileobj_lookup(fileobj))
+        except KeyError:
+            raise KeyError("{!r} is not registered".format(fileobj)) from None
+        return key
+
+    def modify(self, fileobj, events, data=None):
+        try:
+            key = self._fd_to_key[self._fileobj_lookup(fileobj)]
+        except KeyError:
+            raise KeyError("{!r} is not registered".format(fileobj)) from None
+        if events != key.events:
+            self.unregister(fileobj)
+            key = self.register(fileobj, events, data)
+        elif data != key.data:
+            # Use a shortcut to update the data.
+            key = key._replace(data=data)
+            self._fd_to_key[key.fd] = key
+        return key
+
+    def close(self):
+        self._fd_to_key.clear()
+        self._map = None
+
+    def get_map(self):
+        return self._map
+
+
+
+class SelectSelector(_BaseSelectorImpl):
+    """Select-based selector."""
+
+    def __init__(self):
+        super().__init__()
+        self._readers = set()
+        self._writers = set()
+
+    def register(self, fileobj, events, data=None):
+        key = super().register(fileobj, events, data)
+        if events & EVENT_READ:
+            self._readers.add(key.fd)
+        if events & EVENT_WRITE:
+            self._writers.add(key.fd)
+        return key
+
+    def unregister(self, fileobj):
+        key = super().unregister(fileobj)
+        self._readers.discard(key.fd)
+        self._writers.discard(key.fd)
+        return key
+
+    if sys.platform == 'win32':
+        def _select(self, r, w, _, timeout=None):
+            r, w, x = select.select(r, w, w, timeout)
+            return r, w + x, []
+    else:
+        _select = select.select
+
+    def select(self, timeout=None):
+        timeout = None if timeout is None else max(timeout, 0)
+        ready = []
+        try:
+            r, w, _ = self._select(self._readers, self._writers, [], timeout)
+        except InterruptedError:
+            return ready
+        r = frozenset(r)
+        w = frozenset(w)
+        rw = r | w
+        fd_to_key_get = self._fd_to_key.get
+        for fd in rw:
+            key = fd_to_key_get(fd)
+            if key:
+                events = ((fd in r and EVENT_READ)
+                          | (fd in w and EVENT_WRITE))
+                ready.append((key, events & key.events))
+        return ready
+
+
+class _PollLikeSelector(_BaseSelectorImpl):
+    """Base class shared between poll, epoll and devpoll selectors."""
+    _selector_cls = None
+    _EVENT_READ = None
+    _EVENT_WRITE = None
+
+    def __init__(self):
+        super().__init__()
+        self._selector = self._selector_cls()
+
+    def register(self, fileobj, events, data=None):
+        key = super().register(fileobj, events, data)
+        poller_events = ((events & EVENT_READ and self._EVENT_READ)
+                         | (events & EVENT_WRITE and self._EVENT_WRITE) )
+        try:
+            self._selector.register(key.fd, poller_events)
+        except:
+            super().unregister(fileobj)
+            raise
+        return key
+
+    def unregister(self, fileobj):
+        key = super().unregister(fileobj)
+        try:
+            self._selector.unregister(key.fd)
+        except OSError:
+            # This can happen if the FD was closed since it
+            # was registered.
+            pass
+        return key
+
+    def modify(self, fileobj, events, data=None):
+        try:
+            key = self._fd_to_key[self._fileobj_lookup(fileobj)]
+        except KeyError:
+            raise KeyError(f"{fileobj!r} is not registered") from None
+
+        changed = False
+        if events != key.events:
+            selector_events = ((events & EVENT_READ and self._EVENT_READ)
+                               | (events & EVENT_WRITE and self._EVENT_WRITE))
+            try:
+                self._selector.modify(key.fd, selector_events)
+            except:
+                super().unregister(fileobj)
+                raise
+            changed = True
+        if data != key.data:
+            changed = True
+
+        if changed:
+            key = key._replace(events=events, data=data)
+            self._fd_to_key[key.fd] = key
+        return key
+
+    def select(self, timeout=None):
+        # This is shared between poll() and epoll().
+        # epoll() has a different signature and handling of timeout parameter.
+        if timeout is None:
+            timeout = None
+        elif timeout <= 0:
+            timeout = 0
+        else:
+            # poll() has a resolution of 1 millisecond, round away from
+            # zero to wait *at least* timeout seconds.
+            timeout = math.ceil(timeout * 1e3)
+        ready = []
+        try:
+            fd_event_list = self._selector.poll(timeout)
+        except InterruptedError:
+            return ready
+
+        fd_to_key_get = self._fd_to_key.get
+        for fd, event in fd_event_list:
+            key = fd_to_key_get(fd)
+            if key:
+                events = ((event & ~self._EVENT_READ and EVENT_WRITE)
+                           | (event & ~self._EVENT_WRITE and EVENT_READ))
+                ready.append((key, events & key.events))
+        return ready
+
+
+if hasattr(select, 'poll'):
+
+    class PollSelector(_PollLikeSelector):
+        """Poll-based selector."""
+        _selector_cls = select.poll
+        _EVENT_READ = select.POLLIN
+        _EVENT_WRITE = select.POLLOUT
+
+
+if hasattr(select, 'epoll'):
+
+    _NOT_EPOLLIN = ~select.EPOLLIN
+    _NOT_EPOLLOUT = ~select.EPOLLOUT
+
+    class EpollSelector(_PollLikeSelector):
+        """Epoll-based selector."""
+        _selector_cls = select.epoll
+        _EVENT_READ = select.EPOLLIN
+        _EVENT_WRITE = select.EPOLLOUT
+
+        def fileno(self):
+            return self._selector.fileno()
+
+        def select(self, timeout=None):
+            if timeout is None:
+                timeout = -1
+            elif timeout <= 0:
+                timeout = 0
+            else:
+                # epoll_wait() has a resolution of 1 millisecond, round away
+                # from zero to wait *at least* timeout seconds.
+                timeout = math.ceil(timeout * 1e3) * 1e-3
+
+            # epoll_wait() expects `maxevents` to be greater than zero;
+            # we want to make sure that `select()` can be called when no
+            # FD is registered.
+            max_ev = len(self._fd_to_key) or 1
+
+            ready = []
+            try:
+                fd_event_list = self._selector.poll(timeout, max_ev)
+            except InterruptedError:
+                return ready
+
+            fd_to_key = self._fd_to_key
+            for fd, event in fd_event_list:
+                key = fd_to_key.get(fd)
+                if key:
+                    events = ((event & _NOT_EPOLLIN and EVENT_WRITE)
+                              | (event & _NOT_EPOLLOUT and EVENT_READ))
+                    ready.append((key, events & key.events))
+            return ready
+
+        def close(self):
+            self._selector.close()
+            super().close()
+
+
+if hasattr(select, 'devpoll'):
+
+    class DevpollSelector(_PollLikeSelector):
+        """Solaris /dev/poll selector."""
+        _selector_cls = select.devpoll
+        _EVENT_READ = select.POLLIN
+    
+=== FILE: Lib/socketserver.py ===
+"""Generic socket server classes.
+
+This module tries to capture the various aspects of defining a server:
+
+For socket-based servers:
+
+- address family:
+        - AF_INET{,6}: IP (Internet Protocol) sockets (default)
+        - AF_UNIX: Unix domain sockets
+        - others, e.g. AF_DECNET are conceivable (see <socket.h>
+- socket type:
+        - SOCK_STREAM (reliable stream, e.g. TCP)
+        - SOCK_DGRAM (datagrams, e.g. UDP)
+
+For request-based servers (including socket-based):
+
+- client address verification before further looking at the request
+        (This is actually a hook for any processing that needs to look
+         at the request before anything else, e.g. logging)
+- how to handle multiple requests:
+        - synchronous (one request is handled at a time)
+        - forking (each request is handled by a new process)
+        - threading (each request is handled by a new thread)
+
+The classes in this module favor the server type that is simplest to
+write: a synchronous TCP/IP server.  This is bad class design, but
+saves some typing.  (There's also the issue that a deep class hierarchy
+slows down method lookups.)
+
+There are five classes in an inheritance diagram, four of which represent
+synchronous servers of four types:
+
+        +------------+
+        | BaseServer |
+        +------------+
+              |
+              v
+        +-----------+        +------------------+
+        | TCPServer |------->| UnixStreamServer |
+        +-----------+        +------------------+
+              |
+              v
+        +-----------+        +--------------------+
+        | UDPServer |------->| UnixDatagramServer |
+        +-----------+        +--------------------+
+
+Note that UnixDatagramServer derives from UDPServer, not from
+UnixStreamServer -- the only difference between an IP and a Unix
+stream server is the address family, which is simply repeated in both
+unix server classes.
+
+Forking and threading versions of each type of server can be created
+using the ForkingMixIn and ThreadingMixIn mix-in classes.  For
+instance, a threading UDP server class is created as follows:
+
+        class ThreadingUDPServer(ThreadingMixIn, UDPServer): pass
+
+The Mix-in class must come first, since it overrides a method defined
+in UDPServer! Setting the various member variables also changes
+the behavior of the underlying server mechanism.
+
+To implement a service, you must derive a class from
+BaseRequestHandler and redefine its handle() method.  You can then run
+various versions of the service by combining one of the server classes
+with your request handler class.
+
+The request handler class must be different for datagram or stream
+services.  This can be hidden by using the request handler
+subclasses StreamRequestHandler or DatagramRequestHandler.
+
+Of course, you still have to use your head!
+
+For instance, it makes no sense to use a forking server if the service
+contains state in memory that can be modified by requests (since the
+modifications in the child process would never reach the initial state
+kept in the parent process and passed to each child).  In this case,
+you can use a threading server, but you will probably have to use
+locks to avoid two requests that come in nearly simultaneous to apply
+conflicting changes to the server state.
+
+On the other hand, if you are building e.g. an HTTP server, where all
+data is stored externally (e.g. in the file system), a synchronous
+class will essentially render the service "deaf" while one request is
+being handled -- which may be for a very long time if a client is slow
+to read all the data it has requested.  Here a threading or forking
+server is appropriate.
+
+In some cases, it may be appropriate to process part of a request
+synchronously, but to finish processing in a forked child depending on
+the request data.  This can be implemented by using a synchronous
+server and doing an explicit fork in the request handler class
+handle() method.
+
+Another approach to handling multiple simultaneous requests in an
+environment that supports neither threads nor fork (or where these are
+too expensive or inappropriate for the service) is to maintain an
+explicit table of partially finished requests and to use a selector to
+decide which request to work on next (or whether to handle a new
+incoming request).  This is particularly important for stream services
+where each client can potentially be connected for a long time (if
+threads or subprocesses cannot be used).
+
+Future work:
+- Standard classes for Sun RPC (which uses either UDP or TCP)
+- Standard mix-in classes to implement various authentication
+  and encryption schemes
+
+XXX Open problems:
+- What to do with out-of-band data?
+
+BaseServer:
+- split generic "request" functionality out into BaseServer class.
+  Copyright (C) 2000  Luke Kenneth Casson Leighton <lkcl@samba.org>
+
+  example: read entries from a SQL database (requires overriding
+  get_request() to return a table entry from the database).
+  entry is processed by a RequestHandlerClass.
+
+"""
+
+# Author of the BaseServer patch: Luke Kenneth Casson Leighton
+
+import socket
+import selectors
+import os
+import sys
+import threading
+from io import BufferedIOBase
+from time import monotonic as time
+
+__all__ = ["BaseServer", "TCPServer", "UDPServer",
+           "ThreadingUDPServer", "ThreadingTCPServer",
+           "BaseRequestHandler", "StreamRequestHandler",
+           "DatagramRequestHandler", "ThreadingMixIn"]
+if hasattr(os, "fork"):
+    __all__.extend(["ForkingUDPServer","ForkingTCPServer", "ForkingMixIn"])
+if hasattr(socket, "AF_UNIX"):
+    __all__.extend(["UnixStreamServer","UnixDatagramServer",
+                    "ThreadingUnixStreamServer",
+                    "ThreadingUnixDatagramServer"])
+    if hasattr(os, "fork"):
+        __all__.extend(["ForkingUnixStreamServer", "ForkingUnixDatagramServer"])
+
+# poll/select have the advantage of not requiring any extra file descriptor,
+# contrarily to epoll/kqueue (also, they require a single syscall).
+if hasattr(selectors, 'PollSelector'):
+    _ServerSelector = selectors.PollSelector
+else:
+    _ServerSelector = selectors.SelectSelector
+
+
+class BaseServer:
+
+    """Base class for server classes.
+
+    Methods for the caller:
+
+    - __init__(server_address, RequestHandlerClass)
+    - serve_forever(poll_interval=0.5)
+    - shutdown()
+    - handle_request()  # if you do not use serve_forever()
+    - fileno() -> int   # for selector
+
+    Methods that may be overridden:
+
+    - server_bind()
+    - server_activate()
+    - get_request() -> request, client_address
+    - handle_timeout()
+    - verify_request(request, client_address)
+    - server_close()
+    - process_request(request, client_address)
+    - shutdown_request(request)
+    - close_request(request)
+    - service_actions()
+    - handle_error()
+
+    Methods for derived classes:
+
+    - finish_request(request, client_address)
+
+    Class variables that may be overridden by derived classes or
+    instances:
+
+    - timeout
+    - address_family
+    - socket_type
+    - allow_reuse_address
+    - allow_reuse_port
+
+    Instance variables:
+
+    - RequestHandlerClass
+    - socket
+
+    """
+
+    timeout = None
+
+    def __init__(self, server_address, RequestHandlerClass):
+        """Constructor.  May be extended, do not override."""
+        self.server_address = server_address
+        self.RequestHandlerClass = RequestHandlerClass
+        self.__is_shut_down = threading.Event()
+        self.__shutdown_request = False
+
+    def
+
+=== SESSION LOG ===
+$ python serve.py --workers 4
+[worker-2] selector registered fd=11 events=EVENT_READ
+[worker-2] accepted conn from 127.0.0.1:52144
+Traceback (most recent call last):
+  File "serve.py", line 88, in _drive
+    key = self._selector.get_key(fd)
+  File "selectors.py", line 193, in get_key
+    raise KeyError(f"{fileobj!r} is not registered") from None
+KeyError: '11 is not registered'
+
+Diagnose the crash. Walk through the likely cause given the selector registration log right before it, then propose a concrete fix with code. Then list two regression tests you would add.
