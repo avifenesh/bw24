@@ -65,9 +65,14 @@ static double e4m3_val(unsigned char v){
   double x = e ? ldexp(1.0 + m/8.0, e-7) : ldexp(m/8.0, -6);
   return s ? -x : x;
 }
-static double e2m1_val(unsigned char v){                  // low 4 bits used
-  static const double tab[8] = {0,0.5,1,1.5,2,3,4,6};
-  double x = tab[v&7]; return (v&8) ? -x : x;
+// B container truth (probe-derived + CUTLASS mma_traits_sm120.hpp): 6-bit field at bits[5:0],
+// sign bit5, e=bits[4:3] bias 1, m=bits[2:0]; e==0 subnormal (m/8). e2m1 codes are fed
+// SHIFTED LEFT BY 2 ("middle of the eight-bit container" — fp4_shift_A/B in CUTLASS); the
+// shifted code decodes to the identical value, so e2m1 embeds exactly.
+static double b_container_val(unsigned char v){
+  int s=(v>>5)&1, e=(v>>3)&3, m=v&7;
+  double x = e ? ldexp(1.0+m/8.0, e-1) : ldexp(m/8.0, 0);
+  return s?-x:x;
 }
 int main(){
   // ---- rate ----
@@ -90,7 +95,7 @@ int main(){
   // varied-but-exact values: e4m3 patterns from a small exact set, e2m1 cycles all 15 codes
   const unsigned char e4set[6] = {0x38, 0xB8, 0x40, 0x30, 0x44, 0x00}; // 1,-1,2,0.5,3,0
   for(int i=0;i<16*32;i++) hA[i] = e4set[(i*7+i/32)%6];
-  for(int i=0;i<8*32;i++)  hB[i] = (unsigned char)((i*5+i/32)%15);     // e2m1 codes 0..14 low-4bit
+  for(int i=0;i<8*32;i++)  hB[i] = (unsigned char)(((i*5+i/32)%15) << 2); // e2m1 codes, shifted to [5:2]
   unsigned char *dA,*dB; float *dD;
   cudaMalloc(&dA,sizeof hA); cudaMalloc(&dB,sizeof hB); cudaMalloc(&dD,16*8*4);
   cudaMemcpy(dA,hA,sizeof hA,cudaMemcpyHostToDevice);
@@ -102,7 +107,7 @@ int main(){
   double maxd=0; int bad=0;
   for(int i=0;i<16;i++) for(int j=0;j<8;j++){
     double ref=0;
-    for(int k=0;k<32;k++) ref += e4m3_val(hA[i*32+k]) * e2m1_val(hB[j*32+k]);
+    for(int k=0;k<32;k++) ref += e4m3_val(hA[i*32+k]) * b_container_val(hB[j*32+k]);
     double d = fabs(ref - (double)hD[i*8+j]);
     if(d > maxd) maxd = d;
     if(d > 1e-6) bad++;

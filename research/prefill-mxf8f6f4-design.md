@@ -68,7 +68,7 @@ synthetic tile vs f64 reference}. The capabilities doc's microbench harness
 
 | form | verdict |
 |---|---|
-| `m16n8k32 ... .e4m3.e2m1 ... ue8m0` (the mixed form) | **ASSEMBLES** (`probe/mixed_f8f4_probe.cu`; execution + rate + correctness pending GPU) |
+| `m16n8k32 ... .e4m3.e2m1 ... ue8m0` (the mixed form) | **EXECUTES at full 381 TFLOP/s** — zero mixed-form rate penalty — and the full-tile correctness vs f64 is **BIT-EXACT** (maxdiff 0.0, `probe/mixed_f8f4_probe.cu`) |
 | `m16n8k16` mxf8f6f4 (R1' — one NVFP4 scale group per MMA) | **REJECTED** — "Incorrect instruction type for shape m16n8k16". k32-only. R1' dead. |
 | `scale_vec::2X` on mxf8f6f4 (hardware per-16 scales) | **REJECTED** — "Illegal modifier". 1X-only. |
 
@@ -76,6 +76,18 @@ Note (PTX spec, matters for the byte math): mxf8f6f4 requires f4 operands in **8
 containers** — the smem/register byte win over int8 tiles does NOT exist. The wins that remain:
 +74% MMA issue ceiling (381 vs ~219 TF) and no in-mainloop dequant ALU. The tile is pipe-bound
 (w4a8v2: 16.4% warps-active, occupancy-invariant), so the issue ceiling is the real lever.
+
+### Probe 0 CLOSED (2026-07-09) — R-A is GO
+
+- Fragment layout = the standard SM80 m16n8k32 8-bit layout (CUTLASS `mma_traits_sm120.hpp`
+  inherits `SM80_16x8x32_S32S8S8S32_TN`; verified bit-exact empirically).
+- e2m1 element placement: **shifted left 2, bits [5:2]** ("middle of the eight-bit container" —
+  CUTLASS `fp4_shift_A/B`; f6/f8 need no shift). The container decodes as a 6-bit bias-1 field;
+  e2m1 codes embed EXACTLY — no value loss.
+- Scale operand: ue8m0 bias 127, per-thread-quad byte selectors behave as documented.
+- CUTLASS also ships a **plain `kind::f8f6f4`** (no block_scale, no scale regs) — R-A applies
+  scales in the epilogue anyway, so the plain form is the cleaner instruction for the tile.
+- Rate: mixed e4m3×e2m1 = 381 TFLOP/s, identical to e4m3×e4m3. The +74% ceiling is real.
 
 ### Revised route ladder (replaces R1–R4 above)
 
