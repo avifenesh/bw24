@@ -33,7 +33,7 @@
     ]
   },
   "speculative": {
-    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol. ST checkpoints have no GGUF twin llama can load — llama fields its best same-class GGUF (board policy); the llama 9B serve-best is raw decode (no 9B MTP draft exists for it)",
+    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol. ST checkpoints have no GGUF twin llama can load — llama fields its best same-class GGUF (board policy); the llama 9B serve-best is raw decode (no 9B MTP draft exists for it). CAVEAT (2026-07-09 text audit, rig5090 tag p3-degeneration-audit): the long-agentic (third) column's greedy continuations partially degenerate into repetition on both engines symmetrically — ratios stand, absolutes overstate real agentic throughput; prompt replacement pending",
     "rows": [
       {
         "model": "Qwen3.5-9B (K=3 + native trim)",
