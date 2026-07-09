@@ -29,6 +29,8 @@ const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
 const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
 const GEMM_FATBIN_PATH: &str = env!("BW24_GEMM_FATBIN");
 const ROUTER_FATBIN_PATH: &str = env!("BW24_ROUTER_FATBIN");
+/// spec_sample.cu: sampled-spec primitives (Philox Gumbel-max / softmax gather / residual sampler).
+const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
 
 /// TUNE SEAM (tools/sweep): a RUNTIME `BW24_GEMM_FATBIN=<path>` overrides the baked-in
 /// qmatvec_gemm.cu fatbin path (build.rs bakes the same name at COMPILE time via
@@ -223,6 +225,8 @@ pub struct Engine {
     flash: Arc<CudaModule>,
     gemm: Arc<CudaModule>,
     router: Arc<CudaModule>,
+    /// Sampled-spec kernels (research/sampled-spec-impl-map.md piece A).
+    sample: Arc<CudaModule>,
     /// EDGE-1 §B: one shared SLRU expert-residency cache, lazily built on first MoE dispatch under
     /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
     /// memcpy-issue (µs), NOT the GEMM, so streams still overlap. `None` => cache disabled.
@@ -351,6 +355,7 @@ impl Engine {
         let flash = gpu.ctx.load_module(Ptx::from_file(flash_fatbin_path()))?;
         let gemm = gpu.ctx.load_module(Ptx::from_file(gemm_fatbin_path()))?;
         let router = gpu.ctx.load_module(Ptx::from_file(ROUTER_FATBIN_PATH))?;
+        let sample = gpu.ctx.load_module(Ptx::from_file(SAMPLE_FATBIN_PATH))?;
         let copy_stream = gpu.ctx.new_stream()?;
         // DECODE EVENT-TRACKING ELISION — DEFAULT ON (2026-07-05; BW24_EVT=1 = escape hatch).
         // cudarc is in multi-stream mode (main stream +
@@ -374,7 +379,7 @@ impl Engine {
         } else {
             unsafe { gpu.ctx.disable_event_tracking(); }
         }
-        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router,
+        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router, sample,
                   moe_cache: Mutex::new(None), copy_stream,
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
@@ -393,7 +398,67 @@ impl Engine {
             .or_else(|_| self.flash.load_function(name))
             .or_else(|_| self.gemm.load_function(name))
             .or_else(|_| self.router.load_function(name))
+            .or_else(|_| self.sample.load_function(name))
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
+    }
+
+    // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================
+    // Counter-based randomness: every call takes (seed, stream_pos) — the caller owns the
+    // event counter (one per sampled token). temp <= 0 arms are exact greedy limits.
+
+    /// y = x/temp + Gumbel(Philox(seed, stream_pos)) over n logits (then run device argmax on y
+    /// = one categorical sample at temperature `temp`). temp<=0: y = x (pure copy).
+    pub fn gumbel_perturb(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize,
+                          seed: u64, stream_pos: u32, temp: f32)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gumbel_perturb_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// out[pair] = softmax_temp(x[rows[pair]])[ids[pair]] for npair (row, id) pairs; rows index
+    /// into x with `row_stride` f32s per row. temp<=0: out = 1.0 iff id is the row argmax
+    /// (smallest-index tie-break — matches the argmax-gate contract).
+    pub fn softmax_gather(&self, x: &CudaSlice<f32>, row_stride: usize,
+                          ids: &CudaSlice<u32>, rows: &CudaSlice<i32>,
+                          out: &mut CudaSlice<f32>, n: usize, npair: usize, temp: f32)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("softmax_gather_f32");
+        let (ni, rs) = (n as i32, row_stride as i64);
+        let np = npair as i32;
+        let cfg = LaunchConfig { grid_dim: (npair as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&rs).arg(ids).arg(rows).arg(&mut *out).arg(&ni).arg(&np).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Sample token from norm(max(0, softmax_temp(p) - softmax_temp(q))) (q = None -> plain
+    /// categorical from softmax_temp(p)). Row stats (max, sumexp at temp) must be precomputed
+    /// (softmax_gather's pass-1 values; see spec.rs caller). Deterministic fixed-order CDF walk.
+    #[allow(clippy::too_many_arguments)]
+    pub fn residual_sample(&self, p: &CudaSlice<f32>, q: Option<&CudaSlice<f32>>, n: usize,
+                           temp: f32, seed: u64, stream_pos: u32,
+                           p_stats: (f32, f32), q_stats: (f32, f32),
+                           out_tok: &mut CudaSlice<u32>)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("residual_sample_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let nth = 1024u32;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (nth, 1, 1),
+                                 shared_mem_bytes: nth * 4 };
+        let (pm, ps) = p_stats; let (qm, qs) = q_stats;
+        let has_q: i32 = q.is_some() as i32;
+        let qbuf = q.unwrap_or(p);   // dummy when absent; kernel gates on has_q
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(p).arg(qbuf).arg(&has_q).arg(&ni).arg(&temp).arg(&slo).arg(&shi).arg(&stream_pos)
+         .arg(&pm).arg(&ps).arg(&qm).arg(&qs).arg(&mut *out_tok);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// Access the shared MoE residency cache (EDGE-1 §B), building it on first use under
@@ -1604,6 +1669,9 @@ impl Engine {
         Ok(())
     }
     /// Read back a device u32 buffer (the spec accept walk's [t] per-column argmax tokens).
+    pub fn htod_u32_v(&self, v: &[u32]) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        Ok(self.gpu.stream.memcpy_stod(v)?)
+    }
     pub fn dtoh_u32(&self, d: &CudaSlice<u32>) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
         self.gpu.stream.synchronize()?;

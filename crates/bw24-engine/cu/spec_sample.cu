@@ -107,7 +107,7 @@ extern "C" __global__ void softmax_gather_f32(
 // pass A computes chunk partial sums (one per thread, strided chunks of 1024), thread 0 walks
 // chunks then elements — O(n/1024 + 1024) serial work, exact, order-fixed (reproducibility).
 extern "C" __global__ void residual_sample_f32(
-        const float* __restrict__ p, const float* __restrict__ q, int n, float temp,
+        const float* __restrict__ p, const float* __restrict__ q, int has_q, int n, float temp,
         uint32_t seed_lo, uint32_t seed_hi, uint32_t stream_pos,
         float p_max, float p_sumexp, float q_max, float q_sumexp,   // precomputed row stats
         uint32_t* __restrict__ out_tok) {
@@ -117,7 +117,7 @@ extern "C" __global__ void residual_sample_f32(
     const float invT = temp > 0.0f ? 1.0f / temp : 0.0f;
     auto r_at = [&](int i) -> float {
         float pi = __expf((p[i] - p_max) * invT) / p_sumexp;
-        float qi = q ? __expf((q[i] - q_max) * invT) / q_sumexp : 0.0f;
+        float qi = has_q ? __expf((q[i] - q_max) * invT) / q_sumexp : 0.0f;
         float r = pi - qi; return r > 0.0f ? r : 0.0f;
     };
     // chunked layout: thread t owns contiguous chunk [t*len, (t+1)*len) — CDF order == index order.
