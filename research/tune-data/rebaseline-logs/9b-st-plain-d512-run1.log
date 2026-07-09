@@ -1,0 +1,6 @@
+
+thread 'main' (3272789) panicked at crates/bw24-gguf/src/lib.rs:202:9:
+assertion `left == right` failed: bad GGUF magic: 0x2dec0
+  left: 188096
+ right: 1179993927
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

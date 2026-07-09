@@ -1946,8 +1946,14 @@ impl HybridModel {
             if let Some(f) = hdump.as_deref_mut() {
                 use std::io::Write;
                 let host: Vec<f32> = e.dtoh(&vx)?;
-                let mut bytes = Vec::with_capacity(tc * n_embd * 4);
-                for v in &host[..tc * n_embd] { bytes.extend_from_slice(&v.to_le_bytes()); }
+                // bf16 round-to-nearest-even — f32 doubled the disk bill at bulk
+                // extraction scale (20M tokens x 4096 = 320GB f32 vs 160GB bf16).
+                let mut bytes = Vec::with_capacity(tc * n_embd * 2);
+                for v in &host[..tc * n_embd] {
+                    let b = v.to_bits();
+                    let r = b.wrapping_add(0x7FFF + ((b >> 16) & 1));
+                    bytes.extend_from_slice(&((r >> 16) as u16).to_le_bytes());
+                }
                 f.write_all(&bytes)?;
             }
             // 2. TRUE predecessor-paired draft-KV fill for the chunk (row i carries h_{i-1};

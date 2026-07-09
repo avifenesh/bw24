@@ -1,0 +1,46 @@
+=== MODEL C: 27B GGUF plain cells, N=2 each ===
+bw24 @d512 run 1:
+decode tg128 @ctx512: EAGER 48.4 tok/s (20.68 ms/tok)
+bw24 @d512 run 2:
+decode tg128 @ctx512: EAGER 48.3 tok/s (20.73 ms/tok)
+llama @d512 run 1:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       1810.83 ± 0.00 |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |         44.27 ± 0.00 |
+
+build: c818263f2 (9833)
+llama @d512 run 2:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       2512.80 ± 0.00 |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |         45.48 ± 0.00 |
+
+build: c818263f2 (9833)
+bw24 @d6257 run 1:
+decode tg128 @ctx6257: EAGER 45.9 tok/s (21.80 ms/tok)
+bw24 @d6257 run 2:
+decode tg128 @ctx6257: EAGER 45.8 tok/s (21.82 ms/tok)
+llama @d6257 run 1:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       2251.10 ± 0.00 |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |         42.92 ± 0.00 |
+
+build: c818263f2 (9833)
+llama @d6257 run 2:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       2270.00 ± 0.00 |
+| qwen35 27B NVFP4               |  14.62 GiB |    27.32 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |         43.08 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu-final: 1755 MHz, 77

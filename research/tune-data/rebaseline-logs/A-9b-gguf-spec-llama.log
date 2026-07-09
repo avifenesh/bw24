@@ -1,0 +1,4 @@
+=== MODEL A llama spec: NO MTP DRAFT for 9B, plain serving config ===
+Note: llama has no 9B MTP draft on disk, so we run their best serve config (raw decode)
+llama 9B plain @ d512: 126.71/126.74 tok/s (already measured in plain cell)
+llama 9B spec: N/A (no 9B MTP draft exists)

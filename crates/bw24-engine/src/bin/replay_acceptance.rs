@@ -47,14 +47,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let text = std::env::var("BW24_PROMPT_FILE")
-        .map(|f| std::fs::read_to_string(&f).expect("BW24_PROMPT_FILE unreadable"))
-        .expect("replay-acceptance needs BW24_PROMPT_FILE (the corpus text)");
+    let prompt_path = std::env::var("BW24_PROMPT_FILE")
+        .expect("replay-acceptance needs BW24_PROMPT_FILE (corpus text file OR directory)");
     let tok = match &g {
         Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
         None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
             .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
     };
+
+    // DIRECTORY mode (bulk distillation extraction): iterate every file in the dir with ONE
+    // resident model — the per-invocation model load dominated bulk extraction otherwise.
+    // Per file <stem>: hiddens -> $BW24_REPLAY_HDUMP/<stem>.hiddens (+ .meta.json). Draft
+    // chains are usually skipped here via a huge BW24_REPLAY_STRIDE (prefill-speed pass).
+    if std::path::Path::new(&prompt_path).is_dir() {
+        let hdir = std::env::var("BW24_REPLAY_HDUMP")
+            .expect("directory mode needs BW24_REPLAY_HDUMP=<output dir>");
+        std::fs::create_dir_all(&hdir)?;
+        let k = env_usize("BW24_REPLAY_K", 4);
+        let stride = env_usize("BW24_REPLAY_STRIDE", 16);
+        let chunk = env_usize("BW24_REPLAY_CHUNK", 512);
+        let cap = env_usize("BW24_REPLAY_T", 65536);
+        let mut files: Vec<_> = std::fs::read_dir(&prompt_path)?
+            .filter_map(|d| d.ok().map(|d| d.path()))
+            .filter(|p| p.is_file()).collect();
+        files.sort();
+        for fp in files {
+            let stem = fp.file_stem().unwrap().to_string_lossy().to_string();
+            let out = format!("{hdir}/{stem}.hiddens");
+            if std::path::Path::new(&format!("{out}.meta.json")).exists() {
+                println!("skip {stem} (done)");
+                continue;
+            }
+            let text = std::fs::read_to_string(&fp)?;
+            let mut ids = tok.encode(&text, true);
+            if cap > 0 && ids.len() > cap { ids.truncate(cap); }
+            if ids.len() < 64 { println!("skip {stem} (too short)"); continue; }
+            let mut hf = std::fs::File::create(&out)?;
+            let t0 = std::time::Instant::now();
+            let (_rows, bg) = model.replay_acceptance(&e, &ids, k, stride, chunk, Some(&mut hf))?;
+            use std::io::Write;
+            let mut mf = std::fs::File::create(format!("{out}.meta.json"))?;
+            write!(mf, "{{\"n_tokens\":{},\"n_embd\":{},\"dtype\":\"bf16\",\"bg\":{:?}}}",
+                   ids.len(), model.cfg.n_embd, bg)?;
+            println!("extracted {stem}: {} tokens in {:.1}s", ids.len(),
+                     t0.elapsed().as_secs_f64());
+        }
+        println!("DIR-EXTRACT-DONE");
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&prompt_path).expect("BW24_PROMPT_FILE unreadable");
     let mut ids = tok.encode(&text, true);
     let cap = env_usize("BW24_REPLAY_T", 0);
     if cap > 0 && ids.len() > cap { ids.truncate(cap); }
@@ -79,7 +120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         let n_embd = model.cfg.n_embd;
         let mut mf = std::fs::File::create(format!("{p}.meta.json"))?;
-        write!(mf, "{{\"n_tokens\":{},\"n_embd\":{},\"bg\":{:?}}}", ids.len(), n_embd, bg)?;
+        write!(mf, "{{\"n_tokens\":{},\"n_embd\":{},\"dtype\":\"bf16\",\"bg\":{:?}}}",
+               ids.len(), n_embd, bg)?;
         println!("hdump: {} tokens x {} f32 -> {p} (+.meta.json)", ids.len(), n_embd);
     }
     println!("replay: {} eval positions in {dt:.1}s ({:.1} corpus tok/s incl. chains)",

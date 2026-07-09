@@ -1,0 +1,27 @@
+=== MODEL A: 9B GGUF plain tg128 @d512, N=2 ===
+bw24 run 1:
+decode tg128 @ctx512: EAGER 136.1 tok/s (7.35 ms/tok)
+gpu-post-bw24-r1: 2122 MHz, 65, 171.92 W
+bw24 run 2:
+decode tg128 @ctx512: EAGER 135.3 tok/s (7.39 ms/tok)
+gpu-post-bw24-r2: 2092 MHz, 68, 171.96 W
+llama run 1:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       6542.26 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        126.71 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu-post-llama-r1: 1800 MHz, 62, 156.41 W
+llama run 2:
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       6503.85 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        126.74 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu-post-llama-r2: 1845 MHz, 67, 168.35 W
