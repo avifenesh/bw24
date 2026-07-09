@@ -975,3 +975,281 @@ int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, floa
 }
 
 } // extern "C"
+
+// ======================================================================================
+// W4A8-FP8 (R-B route, research/prefill-mxf8f6f4-design.md): e4m3 weights x e4m3 acts on
+// the 381-TF kind::f8f6f4 MMA — NVFP4 per-16 scales FOLD into the weight VALUES at tile
+// load (per-sub 16-byte e4m3 LUT built with cvt.e4m3x2, then the SAME byte-perm gather as
+// the int8 path). No x scale plane; epilogue = activation d4 only. Plain path only (pipe
+// variants after the A/B proves the win). Seam: BW24_MMQ_F8F4=1 (mmq_ffi.rs dispatch).
+// ======================================================================================
+#define MMQ_MMA_TILE_X_K_F8F4 (2 * MMQ_TILE_NE_K + 4)   // 68 ints: 64 value-ints + pad (%8==4)
+
+// f32x2 -> packed e4m3x2 (round-to-nearest, saturate) — same op as the activation quantizer.
+static __device__ __forceinline__ uint16_t bw24_cvt_e4m3x2(float lo, float hi) {
+    uint16_t r;
+    asm("{\n\t.reg .b16 t;\n\tcvt.rn.satfinite.e4m3x2.f32 t, %2, %1;\n\tmov.b16 %0, t;\n}"
+        : "=h"(r) : "f"(lo), "f"(hi));
+    return r;
+}
+
+// e2m1 value table as f32 (kvalues_mxfp4 is the int8-scaled variant; this is the raw grid).
+static __constant__ float bw24_e2m1_f32[16] =
+    {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
+
+// plain-kind f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). A = 4 regs (one
+// tile_A_8 ldmatrix load), B = the two k16 sub-fragments the int8 path already loads.
+static __device__ __forceinline__ void bw24_mma_f8f4(
+        float * __restrict__ c, const int * __restrict__ a, const int b0, const int b1) {
+    asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+// Loader: same addressing as load_tiles_nvfp4_w4a8; per 16-value sub-block build the
+// scale-folded e4m3 LUT (16 bytes) and gather nibbles through it. No x_df writes.
+template <int mmq_y, bool need_check, bool is_rp>
+static __device__ __forceinline__ void load_tiles_nvfp4_f8f4(
+        const char * __restrict__ x, const char * __restrict__ x_sc, int * __restrict__ x_tile,
+        const int kb0, const int i_max, const int stride) {
+    constexpr int nwarps = mmq_y / 16;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+    int * x_qs = x_tile;
+
+    constexpr int threads_per_row = MMQ_ITER_K / QK_NVFP4;      // 4
+    constexpr int rows_per_warp = warp_size / threads_per_row;  // 8
+    const int kbx = threadIdx.x % threads_per_row;
+    const int row_in_warp = threadIdx.x / threads_per_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += rows_per_warp * nwarps) {
+        int i = i0 + threadIdx.y * rows_per_warp + row_in_warp;
+        if constexpr (need_check) { i = min(i, i_max); }
+
+        const int ib = kb0 + i * stride + kbx;
+        const uint32_t * __restrict__ src_qs;
+        const uint8_t  * __restrict__ src_d;
+        if constexpr (is_rp) {
+            src_qs = reinterpret_cast<const uint32_t *>(x    + (size_t) ib * 32);
+            src_d  = reinterpret_cast<const uint8_t  *>(x_sc + (size_t) ib * 4);
+        } else {
+            const block_nvfp4 * bxi = (const block_nvfp4 *) x + ib;
+            src_qs = reinterpret_cast<const uint32_t *>(bxi->qs);
+            src_d  = bxi->d;
+        }
+        const int kqs = 16 * kbx;
+
+#pragma unroll
+        for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
+            const float s = ggml_cuda_ue4m3_to_fp32(src_d[sub]);
+            // scale-folded e4m3 LUT: lut[c] = e4m3(e2m1[c] * s), 16 bytes in 4 ints
+            int lut[4];
+#pragma unroll
+            for (int w = 0; w < 4; ++w) {
+                const uint16_t p0 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+0] * s, bw24_e2m1_f32[4*w+1] * s);
+                const uint16_t p1 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+2] * s, bw24_e2m1_f32[4*w+3] * s);
+                lut[w] = (int) ((uint32_t) p0 | ((uint32_t) p1 << 16));
+            }
+            const int2 q0 = get_int_from_table_16(src_qs[2 * sub + 0], (const int8_t *) lut);
+            const int2 q1 = get_int_from_table_16(src_qs[2 * sub + 1], (const int8_t *) lut);
+            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 0] = q0.x;
+            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 1] = q1.x;
+            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 2] = q0.y;
+            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 3] = q1.y;
+        }
+    }
+}
+
+// vec_dot: ONE k32 f8f6f4 MMA per 8-int step (the int8 path issues two k16 imma there),
+// f32 accumulators direct, epilogue = dB only (weight scales folded into the values).
+template <int mmq_x, int mmq_y>
+static __device__ __forceinline__ void vec_dot_nvfp4_f8f4_mma(
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+    typedef tile<16, 8, int> tile_A_8;
+    typedef tile< 8, 4, int> tile_B;
+    typedef tile<16, 8, int> tile_C;
+
+    constexpr int granularity = mmq_get_granularity_device(mmq_x);
+    constexpr int rows_per_warp = 2 * granularity;
+    constexpr int ntx = rows_per_warp / tile_C::I;
+
+    y += (threadIdx.y % ntx) * (tile_C::J * MMQ_TILE_Y_K);
+
+    const int   * x_qs = (const int   *) x;
+    const int   * y_qs = (const int   *) y + 4;
+    const float * y_df = (const float *) y;
+
+    const int i0 = (threadIdx.y / ntx) * (ntx * tile_A_8::I);
+
+    tile_A_8 A[ntx][4];
+#pragma unroll
+    for (int n = 0; n < ntx; ++n) {
+#pragma unroll
+        for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += 8) {
+            const int k0 = k00 + k01;
+            load_ldmatrix(A[n][k01 / 8], x_qs + (i0 + n * tile_A_8::I) * MMQ_MMA_TILE_X_K_F8F4 + k0,
+                          MMQ_MMA_TILE_X_K_F8F4);
+        }
+    }
+
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += ntx * tile_C::J) {
+#pragma unroll
+        for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += 8) {
+            tile_B B[2];
+            float dB[tile_C::ne / 2];
+            load_generic(B[0], y_qs + j0 * MMQ_TILE_Y_K + (k01 + 0),         MMQ_TILE_Y_K);
+            load_generic(B[1], y_qs + j0 * MMQ_TILE_Y_K + (k01 + tile_B::J), MMQ_TILE_Y_K);
+#pragma unroll
+            for (int l = 0; l < tile_C::ne / 2; ++l) {
+                const int j = j0 + tile_C::get_j(l);
+                dB[l] = y_df[j * MMQ_TILE_Y_K + k01 / QI8_1];
+            }
+#pragma unroll
+            for (int n = 0; n < ntx; ++n) {
+                float C[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                bw24_mma_f8f4(C, A[n][k01 / 8].x, B[0].x[0], B[1].x[0]);
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    sum[(j0 / tile_C::J + n) * tile_C::ne + l] += dB[l % 2] * C[l];
+                }
+            }
+        }
+    }
+}
+
+// process_tile (plain): identical skeleton to mul_mat_q_process_tile_nvfp4_w4a8.
+template <int mmq_x, int mmq_y, bool need_check, bool is_rp>
+static __device__ __forceinline__ void mul_mat_q_process_tile_nvfp4_f8f4(
+        const char * __restrict__ x, const char * __restrict__ x_sc, const int offset_x,
+        const int * __restrict__ y,
+        const int * __restrict__ ids_dst, float * __restrict__ dst,
+        const int stride_row_x, const int ncols_y, const int stride_col_dst,
+        const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop,
+        const float out_scale) {
+    constexpr int warp_size = MMQ_WARP_SIZE;
+    constexpr int nwarps    = mmq_y / 16;
+    constexpr int qk        = QK_NVFP4;
+
+    extern __shared__ int data_mul_mat_q[];
+    int * tile_y = data_mul_mat_q + mmq_x;
+    int * tile_x = tile_y + GGML_PAD(mmq_x * MMQ_TILE_Y_K, nwarps * warp_size);
+
+    constexpr int ne_block        = 4 * QK8_1;
+    constexpr int blocks_per_iter = MMQ_ITER_K / qk;
+
+    float sum[mmq_x * mmq_y / (nwarps * warp_size)] = {0.0f};
+    constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
+
+    for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        load_tiles_nvfp4_f8f4<mmq_y, need_check, is_rp>(x, x_sc, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+        {
+            const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
+#pragma unroll
+            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                int l = l0 + threadIdx.y * warp_size + threadIdx.x;
+                tile_y[l] = by0[l];
+            }
+        }
+        __syncthreads();
+        vec_dot_nvfp4_f8f4_mma<mmq_x, mmq_y>(tile_x, tile_y, sum, 0);
+        __syncthreads();
+        {
+            const int * by0 = y + ncols_y * ((kb0 * qk / ne_block) * sz + sz);
+#pragma unroll
+            for (int l0 = 0; l0 < mmq_x * MMQ_TILE_Y_K; l0 += nwarps * warp_size) {
+                int l = l0 + threadIdx.y * warp_size + threadIdx.x;
+                tile_y[l] = by0[l];
+            }
+        }
+        __syncthreads();
+        vec_dot_nvfp4_f8f4_mma<mmq_x, mmq_y>(tile_x, tile_y, sum, MMQ_TILE_NE_K);
+        __syncthreads();
+    }
+
+    mmq_write_back_nvfp4_w4a8<mmq_x, mmq_y, need_check>(
+        sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j, out_scale);
+}
+
+template <int mmq_x, int mmq_y, bool need_check, bool is_rp>
+static __global__ void mul_mat_q_nvfp4_f8f4(
+        const char * __restrict__ x, const char * __restrict__ x_sc,
+        const int * __restrict__ y, float * __restrict__ dst,
+        const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y,
+        const int stride_col_dst, const int blocks_per_ne00, const float out_scale) {
+    constexpr int nwarps = mmq_y / 16;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+
+    extern __shared__ int ids_dst_shared[];
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += nwarps * warp_size) {
+        const int j = j0 + threadIdx.y * warp_size + threadIdx.x;
+        if (j0 + nwarps * warp_size > mmq_x && j >= mmq_x) { break; }
+        ids_dst_shared[j] = j;
+    }
+    __syncthreads();
+
+    const int jt = blockIdx.y;
+    const int it = blockIdx.x;
+
+    const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
+    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+    const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
+    const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
+    const int offset_x = it * mmq_y * stride_row_x;
+
+    mul_mat_q_process_tile_nvfp4_f8f4<mmq_x, mmq_y, need_check, is_rp>(
+        x, x_sc, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, stride_row_x, ncols_y,
+        stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00, out_scale);
+}
+
+extern "C" {
+// activation quantizer lives in mmq_nvfp4_f8f4.cu (block_e4m3_mmq is footprint-identical to
+// block_q8_1_mmq, so all smem/stride math here reuses the q8_1 constants).
+void bw24_mmq_nvfp4_f8f4_quantize_act(const float * x, void * vy, int in_f, int n_tokens,
+                                      int64_t s01, cudaStream_t st);
+
+int bw24_mmq_nvfp4_f8f4(const void * W_nvfp4_blocks, const float * act_f32, float * y,
+                        int in_f, int out_f, int n_tokens, void * act_scratch, void * stream,
+                        float out_scale, int rp) {
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+
+    bw24_mmq_nvfp4_f8f4_quantize_act(act_f32, act_scratch, in_f, n_tokens, in_f, st);
+    { cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) { return 1000 + (int) e; } }
+
+    const int stride_row_x    = in_f / QK_NVFP4;
+    const int blocks_per_ne00 = in_f / QK_NVFP4;
+    const int stride_col_dst  = out_f;
+    const int ncols_y         = n_tokens;
+
+    const int nty = (out_f    + MMQ_Y - 1) / MMQ_Y;
+    const int ntx = (n_tokens + MMQ_X - 1) / MMQ_X;
+    const dim3 grid((unsigned) nty, (unsigned) ntx, 1);
+    const dim3 block(MMQ_WARP_SIZE, MMQ_Y / 16, 1);
+    const size_t smem = (size_t) MMQ_X * sizeof(int)
+                      + (size_t) GGML_PAD(MMQ_X * MMQ_TILE_Y_K, (MMQ_Y / 16) * MMQ_WARP_SIZE) * sizeof(int)
+                      + (size_t) MMQ_Y * MMQ_MMA_TILE_X_K_F8F4 * sizeof(int);
+
+    const bool need_check = (out_f % MMQ_Y) != 0;
+    const int * y_q = (const int *) act_scratch;
+    const char * W  = (const char *) W_nvfp4_blocks;
+    const char * W_sc = W + (size_t) out_f * (in_f / QK_NVFP4) * 32;
+
+    #define BW24_F8F4_LAUNCH(NC, RP) do {                                                                \
+        cudaFuncSetAttribute(mul_mat_q_nvfp4_f8f4<MMQ_X, MMQ_Y, NC, RP>,                                 \
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem);                         \
+        mul_mat_q_nvfp4_f8f4<MMQ_X, MMQ_Y, NC, RP><<<grid, block, smem, st>>>(                           \
+            W, W_sc, y_q, y, out_f, n_tokens, stride_row_x, ncols_y, stride_col_dst, blocks_per_ne00,    \
+            out_scale);                                                                                  \
+    } while (0)
+    if (rp) { if (need_check) { BW24_F8F4_LAUNCH(true, true);  } else { BW24_F8F4_LAUNCH(false, true);  } }
+    else    { if (need_check) { BW24_F8F4_LAUNCH(true, false); } else { BW24_F8F4_LAUNCH(false, false); } }
+    #undef BW24_F8F4_LAUNCH
+
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { return 2000 + (int) e; }
+    return 0;
+}
+} // extern "C"

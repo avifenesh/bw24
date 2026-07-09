@@ -1,0 +1,7 @@
+=== llama 9B p3 SAMPLED (chat temp=0.7) ===
+run 1:
+gen: 256 tok @ 118.73 tok/s
+gpu: 1882 MHz, 66
+run 2:
+gen: 256 tok @ 119.76 tok/s
+gpu: 1890 MHz, 65

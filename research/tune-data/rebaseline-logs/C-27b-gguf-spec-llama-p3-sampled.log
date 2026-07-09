@@ -1,0 +1,6 @@
+=== llama 27B p3 SAMPLED (chat, temp=0.7, max_tokens=256) run 1 ===
+gen: 256 tok @ 89.89 tok/s
+gpu: 1747 MHz, 66, 169.98 W
+=== run 2 ===
+gen: 256 tok @ 96.88 tok/s
+gpu: 1732 MHz, 67, 170.29 W

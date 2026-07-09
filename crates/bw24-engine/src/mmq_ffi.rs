@@ -52,6 +52,23 @@ unsafe extern "C" {
         out_scale: f32,
         rp: i32,
     ) -> i32;
+    /// Bytes for the block_e4m3_mmq activation scratch (footprint-identical to block_q8_1_mmq).
+    pub fn bw24_mmq_nvfp4_f8f4_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// R-B W4A8-FP8 MMQ prefill GEMM (research/prefill-mxf8f6f4-design.md): NVFP4 per-16 scales
+    /// fold into e4m3 weight VALUES at tile load; e4m3 activations; ONE kind::f8f6f4 m16n8k32
+    /// MMA (381-TF class) where the int8 path issues two imma k16. NEW NUMERIC CONFIG — own
+    /// battery. Same contract/rp semantics as bw24_mmq_nvfp4_w4a8. Returns 0 / 1000+cudaError /
+    /// 2000+cudaError.
+    pub fn bw24_mmq_nvfp4_f8f4(
+        w_nvfp4_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32, out_f: i32, n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+        rp: i32,
+    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the Q4_K W4A8 MMQ prefill GEMM. Same contract as bw24_mmq_nvfp4 (raw ggml block_q4_K
@@ -343,19 +360,36 @@ impl Engine {
             let (x_p, _gx) = x.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
             let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            // BW24_MMQ_F8F4=1: the R-B W4A8-FP8 tile (own numeric config; battery-gated seam).
+            // Scratch layouts are footprint-identical, so only the entry point swaps.
+            static F8F4: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let f8f4 = *F8F4.get_or_init(|| std::env::var("BW24_MMQ_F8F4").as_deref() == Ok("1"));
             let rc = unsafe {
-                bw24_mmq_nvfp4_w4a8(
-                    w_p as *const core::ffi::c_void,
-                    x_p as *const f32,
-                    y_p as *mut f32,
-                    in_f as i32, out_f as i32, m as i32,
-                    s_p as *mut core::ffi::c_void,
-                    stream.cu_stream() as *mut core::ffi::c_void,
-                    scale,
-                    rp as i32,
-                )
+                if f8f4 {
+                    bw24_mmq_nvfp4_f8f4(
+                        w_p as *const core::ffi::c_void,
+                        x_p as *const f32,
+                        y_p as *mut f32,
+                        in_f as i32, out_f as i32, m as i32,
+                        s_p as *mut core::ffi::c_void,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                        scale,
+                        rp as i32,
+                    )
+                } else {
+                    bw24_mmq_nvfp4_w4a8(
+                        w_p as *const core::ffi::c_void,
+                        x_p as *const f32,
+                        y_p as *mut f32,
+                        in_f as i32, out_f as i32, m as i32,
+                        s_p as *mut core::ffi::c_void,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                        scale,
+                        rp as i32,
+                    )
+                }
             };
-            if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8 rc={rc}").into()); }
+            if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8(f8f4={f8f4}) rc={rc}").into()); }
         }
         Ok(y)
     }
