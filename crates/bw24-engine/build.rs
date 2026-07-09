@@ -8,7 +8,8 @@ fn main() {
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
                        ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN"),
-                       ("cu/qmatvec_gemm.cu", "BW24_GEMM_FATBIN"), ("cu/moe_router.cu", "BW24_ROUTER_FATBIN")] {
+                       ("cu/qmatvec_gemm.cu", "BW24_GEMM_FATBIN"), ("cu/moe_router.cu", "BW24_ROUTER_FATBIN"),
+                       ("cu/spec_sample.cu", "BW24_SAMPLE_FATBIN")] {
         println!("cargo:rerun-if-changed={src}");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));
