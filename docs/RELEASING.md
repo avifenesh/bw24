@@ -4,13 +4,13 @@ Every board-moving or user-facing change gets a tagged release — that's the pu
 
 ## Version scheme
 
-- **minor** (v0.X.0): a new mechanism or a board move — kernel defaults changed, a model lane landed, a published number moved.
+- **minor** (v0.X.0): new mechanism or board move — kernel defaults changed, model lane landed, published number moved.
 - **patch** (v0.x.Y): fixes, docs, tooling.
-- No retirement notes or migration prose in release notes — state current truth plainly.
+- No retirement notes or migration prose — state current truth plainly.
 
 ## The gate (on the rig, before tagging)
 
-GitHub CI is compile-only (no GPU on runners). The release gate runs locally and must be green on the tagged commit:
+GitHub CI is compile-only (no GPU). The release gate runs locally and must be green on the tagged commit:
 
 ```bash
 ./target/release/kernel-check <27B.gguf>          # ALL GREEN
@@ -27,7 +27,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-That's it. The `release` workflow builds, drafts the changelog from conventional commits since the previous tag (`tools/changelog.sh` — `perf:`/`feat:`/`fix:`/`config:`/`docs:` grouped; `data:`/`chore:` dropped as research-log noise), and publishes the GitHub release. Edit the notes on GitHub afterwards if the draft needs a headline or context — the draft is a floor, not a ceiling.
+That's it. The `release` workflow builds, drafts changelog from conventional commits since previous tag (`tools/changelog.sh` — `perf:`/`feat:`/`fix:`/`config:`/`docs:` grouped; `data:`/`chore:` dropped as research-log noise), and publishes GitHub release. Edit notes on GitHub afterwards if the draft needs headline or context — draft is floor, not ceiling.
 
 Preview the draft locally before tagging:
 

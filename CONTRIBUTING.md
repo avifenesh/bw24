@@ -1,25 +1,12 @@
 # Contributing to bw24
 
-Issues are welcome anytime. PRs are welcome **only when they carry proof**, per the rules below —
-this project has no CI runner on sm_120a hardware, so a human reviewer is the only gate standing
-between a claim and merged code. Unproven PRs (no gates run, no numbers, "should be faster",
-AI-generated diffs with no on-device verification) will be closed, not debated. This is not
-gatekeeping for its own sake: every accepted kernel becomes a load-bearing part of a correctness
-contract (see [Correctness discipline](README.md#correctness-discipline)), and reverting a bad
-merge after the fact costs far more than rejecting an unproven one up front.
+Issues welcome anytime. PRs welcome **only when they carry proof**, per the rules below — no CI runner on sm_120a hardware, so a human reviewer is the only gate between claim and merged code. Unproven PRs (no gates run, no numbers, "should be faster", AI-generated diffs with no on-device verification) will be closed, not debated. This is not gatekeeping: every accepted kernel becomes load-bearing in a correctness contract (see [Correctness discipline](README.md#correctness-discipline)), and reverting a bad merge costs far more than rejecting an unproven one.
 
 ## Before you write code
 
-1. Read [`research/tune-data/*.jsonl`](research/tune-data/) for your target kernel/model. This is
-   a labeled corpus of *every* prior tuning attempt, wins and losses both — if your idea was
-   already tried and rejected, the record says why. Re-proposing a measured loss without new
-   evidence is spam.
-2. Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the sm_120a hardware ledger — several plausible
-   optimizations (e.g. NVFP4 grouped/MoE GEMM, sm_90/sm_100 kernel ports) are already known
-   infeasible on this silicon; check before spending effort there.
-3. Have access to an sm_120a (consumer Blackwell) GPU. If you don't, open an issue describing the
-   idea instead of a PR — someone with the hardware can implement and measure it, crediting you.
-   PRs that cannot be run and gated on the target hardware will not be merged sight-unseen.
+1. Read [`research/tune-data/*.jsonl`](research/tune-data/) for your target kernel/model. Labeled corpus of *every* prior tuning attempt, wins and losses both — if your idea was already tried and rejected, the record says why. Re-proposing a measured loss without new evidence is spam.
+2. Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the sm_120a hardware ledger — several plausible optimizations (e.g. NVFP4 grouped/MoE GEMM, sm_90/sm_100 kernel ports) are already known infeasible on this silicon; check before spending effort.
+3. Have access to an sm_120a (consumer Blackwell) GPU. If you don't, open an issue describing the idea instead of a PR — someone with the hardware can implement and measure it, crediting you. PRs that cannot be run and gated on target hardware will not be merged sight-unseen.
 
 ## Required proof, in order
 
@@ -35,15 +22,11 @@ one of these is incomplete, not "mostly done" — do not open it yet.
 ./target/release/run-spec ...          # K=1..8 self-consistency: every K token-identical to plain decode
 ```
 
-Paste the actual pass/fail output (or the relevant tail of it), not "gates pass." A kernel that
-reduces in a different floating-point order than the one it replaces can flip an argmax at a tight
-logit margin — this has silently broken "faster" kernels before (`research/tune-data/`) — so a
-green run *right now, on your branch* is required, not an assumption that it still passes.
+Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
 
 ### 2. Performance: prefill AND decode, both, never just one
 
-A kernel that helps decode and quietly regresses prefill (or vice versa) is a net loss, not a win —
-report both every time, even if your change nominally targets only one:
+A kernel that helps decode and quietly regresses prefill (or vice versa) is net loss, not win — report both every time, even if your change nominally targets only one:
 
 | Metric | Baseline (main) | Your branch | Ratio |
 |---|---|---|---|
@@ -51,16 +34,11 @@ report both every time, even if your change nominally targets only one:
 | pp2048 (prefill, tok/s) | | | |
 | tg128 @ 512-ctx (decode, tok/s) | | | |
 
-Use the exact protocol in [`research/benchmarks.md`](research/benchmarks.md): **N≥3 medians**,
-`gpu-full-power on` verified beforehand, and baseline + branch measured **interleaved in the same
-session** (sequential cross-session runs have been measured to drift up to ~10% from clock/thermal
-state alone — a same-session-only number is not evidence of anything).
+Use exact protocol in [`research/benchmarks.md`](research/benchmarks.md): **N≥3 medians**, `gpu-full-power on` verified beforehand, and baseline + branch measured **interleaved in same session** (sequential cross-session runs drift up to ~10% from clock/thermal state — same-session-only number is not evidence).
 
 ### 3. Main runners exercised, not just the micro-kernel
 
-Benchmark binaries alone (`decode-bench`, `mvq-msweep`, etc.) prove a kernel is fast in isolation;
-they do not prove the engine still works. Every PR must also show a clean run through the actual
-model-serving paths your change touches:
+Benchmark binaries alone (`decode-bench`, `mvq-msweep`) prove a kernel is fast in isolation; they do not prove the engine still works. Every PR must also show clean run through actual model-serving paths your change touches:
 
 - `run-gen` — end-to-end generation on at least one real model (not a synthetic/random-weight
   smoke test), full output shown, prefill/decode argmax line included.

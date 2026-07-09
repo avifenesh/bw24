@@ -1,17 +1,10 @@
-# COMPETITOR-SETUP.md — peak single-stream setups on RTX 5090 Laptop (sm_120, 24 GB)
+# COMPETITOR-SETUP.md — peak single-stream setups on RTX 5090 Laptop
 
-Beat-target reference for the bw24 benchmark. Every competitor is tuned to its **best** runnable
-single-stream config on THIS box (consumer Blackwell GB203, cap 12.0, CUDA 13.1, 858 GB/s measured
-read wall, 82 SMs, thermal-bound). We beat them at their PEAK, not their defaults.
+Beat-target reference for the bw24 benchmark. Every competitor is tuned to its **best** runnable single-stream config on this box (consumer Blackwell GB203, sm_120, 24 GB, 858 GB/s measured read wall, 82 SMs, thermal-bound). We beat them at their peak, not their defaults.
 
-_Measured tok/s values quoted in this file are point-in-time records from the session that tuned
-that config — both engines move. The current authoritative board lives in the README performance
-section and `research/tune-data/rig5090.jsonl`; this file's job is the CONFIGS (build flags, serve
-lines, model files), which change rarely._
+_Measured tok/s values are point-in-time records from the tuning session — both engines move. The current board lives in the README performance section and `research/tune-data/rig5090.jsonl`; this file documents configs (build flags, serve lines, model files), which change rarely._
 
-Daily models in scope here: **Qwen3.5-9B** and **Qwen3.6-27B** (hybrid GDN: gated-deltanet
-linear-attn + periodic full-attn + MTP). The 35B-A3B MoE setups live in the per-engine sections of
-the research dump; this file is the 9B + 27B copy-paste reference per the task.
+Daily models: **Qwen3.5-9B** and **Qwen3.6-27B** (hybrid GDN: gated-deltanet linear-attn + periodic full-attn + MTP). The 35B-A3B MoE setups live in per-engine sections of the research dump; this is the 9B + 27B copy-paste reference.
 
 Box prep (run once per session, before any engine):
 ```bash
@@ -37,9 +30,7 @@ Hard non-starters on 24 GB (all engines): 27B bf16 (~54 GB), 27B FP8 (~27 GB), 3
 
 ## 1. llama.cpp — PEAK (this is the primary beat-target; numbers MEASURED on this box)
 
-Build: b9743 (c57607016), `arch = sm_120a` SASS, CUDA 13.1, `GGML_CUDA_FA=ON
-GGML_CUDA_GRAPHS=ON GGML_CUDA_FA_ALL_QUANTS=ON`, `FORCE_MMQ=OFF`. Bins under
-`/home/avifenesh/projects/llama.cpp/build/bin/`. **Set `GGML_CUDA_GRAPH_OPT=1` before every run.**
+Build: b9743 (c57607016), `arch = sm_120a` SASS, CUDA 13.1, compile flags `GGML_CUDA_FA=ON GGML_CUDA_GRAPHS=ON GGML_CUDA_FA_ALL_QUANTS=ON`, `FORCE_MMQ=OFF`. Bins: `/home/avifenesh/projects/llama.cpp/build/bin/`. **Set `GGML_CUDA_GRAPH_OPT=1` before every run.**
 
 ### 1a. llama-bench — RAW pp/tg (fair, kernel-speed apples-to-apples; CANNOT do MTP)
 ```bash
@@ -76,15 +67,14 @@ $LS -m /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
   -ngl 999 -fa on -ctk q8_0 -ctv q5_1 -c 65536 --parallel 1 \
   --jinja --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8099
 ```
-- **Format/quant:** NVFP4 GGUF (native sm_120a FP4 tensor cores). Fastest + smallest. 9B=5.7 GB, 27B=16 GB.
-- **Attention:** `-fa on` (llama.cpp's own ggml FA kernel, sm_120a SASS — NOT FlashInfer/FA3/FA4).
-- **KV quant:** `-ctk q8_0 -ctv q5_1` (~2% decode cost, lets 64k ctx fit). MTP draft ctx is f16 regardless.
-- **Graphs:** ON (compiled-in), plus `GGML_CUDA_GRAPH_OPT=1`. No enforce-eager penalty here.
-- **Spec:** `--spec-type draft-mtp` (b9743 token; NOT old `mtp`). `--spec-draft-n-max 3` is the sweet spot.
+- **Format/quant:** NVFP4 GGUF (native sm_120a FP4 tensor cores). Fastest + smallest. 9B = 5.7 GB, 27B = 16 GB.
+- **Attention:** `-fa on` (llama.cpp's ggml FA kernel, sm_120a SASS — not FlashInfer/FA3/FA4).
+- **KV quant:** `-ctk q8_0 -ctv q5_1` (~2% decode cost, lets 64k ctx fit). MTP draft ctx is f16.
+- **Graphs:** ON (compiled-in), plus `GGML_CUDA_GRAPH_OPT=1`. No enforce-eager penalty.
+- **Spec:** `--spec-type draft-mtp` (b9743 token; not old `mtp`). `--spec-draft-n-max 3` sweet spot.
 
 ### Fits-24 GB note (llama.cpp)
-9B NVFP4 5.7 GB: trivial. 27B NVFP4 16 GB + MTP draft 5.9 GB → peaks 19.5 GiB @ 8K ctx, fits with room
-at 64k with q8_0/q5_1 KV. 27B bf16 (~54 GB) and 35B Q6_K_XL (~31 GB) do NOT fit.
+9B NVFP4 (5.7 GB): trivial. 27B NVFP4 (16 GB) + MTP draft (5.9 GB) peaks 19.5 GiB @ 8K ctx, fits with room at 64k with q8_0/q5_1 KV. 27B bf16 (~54 GB) and 35B Q6_K_XL (~31 GB) do not fit.
 
 ---
 
@@ -140,10 +130,7 @@ For the **honest no-spec decode number**, drop `--speculative-config`; re-add it
 - **Spec:** `{"method":"qwen3_5_mtp","num_speculative_tokens":3}` (auto-normalizes to mtp; n=3 sweet spot).
 
 ### Fits-24 GB note (vLLM)
-9B NVFP4 ~5.3 GB ✅ (huge headroom). 27B NVFP4 ~14–15 GB + fp8 KV ✅ (cap `--gpu-memory-utilization
-0.92`; subtract 1–3 GB if a display/compositor is attached). 27B FP8 ~27 GB ❌, 27B bf16 ~54 GB ❌.
-Keep `--max-num-seqs 1` for the fair single-stream bench (vLLM actually peaks at 2 concurrent on the 5090,
-but we hold single-stream identical across engines).
+9B NVFP4 ~5.3 GB ✅ (huge headroom). 27B NVFP4 ~14–15 GB + fp8 KV ✅ (cap `--gpu-memory-utilization 0.92`; subtract 1–3 GB if display/compositor attached). 27B FP8 ~27 GB ❌, 27B bf16 ~54 GB ❌. Keep `--max-num-seqs 1` for fair single-stream bench (vLLM peaks at 2 concurrent on the 5090, but we hold single-stream across engines).
 
 ---
 
@@ -201,8 +188,7 @@ python -m sglang.launch_server \
   MTP head is embedded in the checkpoint — no separate draft path.
 
 ### Fits-24 GB note (SGLang)
-9B FP8 ~9–10 GB ✅. **27B FP8 ~27 GB ❌ — must use NVFP4 modelopt_fp4 (~14–15 GB) ✅.** Trim
-`--mem-fraction-static` to 0.80 and `--cuda-graph-max-bs` to 4 if OOM at load with fp8 KV + long ctx.
+9B FP8 ~9–10 GB ✅. **27B FP8 ~27 GB ❌ — must use NVFP4 modelopt_fp4 (~14–15 GB) ✅.** Trim `--mem-fraction-static` to 0.80 and `--cuda-graph-max-bs` to 4 if OOM at load with fp8 KV + long ctx.
 
 ---
 
@@ -225,9 +211,7 @@ python -m sglang.launch_server \
 
 ## 5. FAIR BENCHMARK PROTOCOL (identical across all 4 engines incl bw24)
 
-The benchmark is only fair if every engine sees the **same prompt, same generation length,
-single-stream, with warmup, N=5 medians, gpu-full-power on**, and prefill/decode tok/s are extracted
-the same way. Driver: `tools/bench.sh`.
+Fair benchmark requires: **same prompt, same generation length, single-stream, with warmup, N=5 medians, gpu-full-power on**, and prefill/decode tok/s extracted identically. Driver: `tools/bench.sh`.
 
 ### 5.1 Invariants (held identical for all 4)
 - **Hardware state:** `gpu-full-power on`; `--prio 3` where supported; GPU otherwise idle (serial).
