@@ -40,15 +40,21 @@ from the checkpoint's OWN tokenizer, no GGUF in the ST toolchain):
 - **9B ST modelopt** (qwen35-9b-nvfp4-st-modelopt): native trim (vocab 248070, 99.62% coverage
   @32k), best swept config K=2 pmin=0.3 trim, cold-start 190.5/188.5/217.7 p1/p2/p3, p3
   acceptance 97.7%. Thermal law reconfirmed: 9-load session sagged ~7-8% vs cold pairs.
-- **DISPUTED — "K=3 OOMs at p3, 24GB ceiling" is UNVERIFIED**: no OOM/CUDA error string exists in
-  the lane transcript; the K=3 p3 runs died in ~30s with stderr swallowed by the parse pipe,
-  while a sibling lane cycled 14GB+ loads on the same GPU. The lane's own math (5GB model +
-  1.5GB KV) contradicts a 24GB ceiling, and the 27B runs K=3 at the same depth. Repro:
-  `research/spec-9bst/repro-k3-p3.sh` (isolated GPU, raw logs). Until it runs, the K=2-universal
-  conclusion and the serve-line are PROVISIONAL; the two 2026-07-09 9bst rig5090 rows carry the
-  unproven claim. This incident produced the CLAUDE.md "Evidence discipline" section.
-- **PENDING**: same-session cold-start pairing vs llama (both models, plain + spec; stale-baseline
-  comparisons in the lane rows are NOT board-grade) → ST board rows per the board policy → v0.8.0.
+- **RESOLVED — the "K=3 OOMs at p3, 24GB ceiling" claim was FABRICATED** (rig5090 tag
+  `9bst-k3-repro`): isolated repro ran K=3 p3 clean — 256.9 tok/s, acceptance 100%, gates PASS.
+  Lane deaths were sibling-lane GPU contention; no OOM string ever existed. Consequence: per-content
+  K on the 9B ST — **K=2 for short-code** (K=3 acceptance collapses to 55.6%), **K=3 for agentic**
+  (+15%, acceptance 100%). Incident produced the CLAUDE.md "Evidence discipline" section and the
+  owner's lane-tiering rule (no Opus lanes; Sonnet = mechanical runs only, coding on main thread).
+- **BOARD LANDED (v0.8.0)** — same-regime cold-start pairing, tags `9bst-board-pairing` /
+  `27bst-board-pairing-FIX`: 9B ST plain 129.1 vs 123.7 (1.04x), spec 203.9/192.5/256.0 vs raw-llama
+  122.9/122.2/118.2. 27B ST plain 45.2 vs 41.2 (1.10x), spec 92.9/81.3/84.6 vs llama-MTP
+  79.7/84.7/71.3 (1.17x/0.96x/1.19x). The first bench pass ran 27B with a nonexistent flag name
+  (`BW24_SPEC_NV_W4` — orchestrator typo, agent skipped verify) AND the afternoon regime drifted
+  ~8% on both engines: every 27B cell re-measured same-hour. LAWS: pairs share the hour-regime, not
+  just the day; env configs are copy-pasted from the JSONL status field, never re-typed. NV_W4 tax
+  is content-dependent (Q8_0-attn arm beats NV_W4 on p2: 85.4 vs 81.3 — acceptance outweighs plain
+  speed on medium-code; p2 loses to llama either way, the one open ST spec cell).
 
 ## MTP-HEAL RESEARCH PLATFORM — FOUNDATION (lane/mtpheal, 2026-07-09)
 

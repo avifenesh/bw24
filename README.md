@@ -92,6 +92,8 @@ Measured 2026-07-09 on the target rig (RTX 5090 Laptop, N≥2 medians, both engi
 | Qwen3.6-27B NVFP4 | 44.8 | 40.3 | **1.11x** |
 | Qwen3.5-9B NVFP4 | 128.1 | 113.9 | **1.12x** |
 | Qwen3.6-35B-A3B MoE | 170.7 | 159.6 | **1.07x** |
+| Qwen3.5-9B NVFP4 ST (safetensors, modelopt) | 129.1 | 123.7 | 1.04x |
+| Qwen3.6-27B NVFP4 ST (NVIDIA official) | 45.2 | 41.2 | **1.10x** |
 <!-- PERF-PLAIN:END -->
 
 Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x) except the 35B at 0.99x. Every attention/split change validates across the depth axis, not just one point.
@@ -104,6 +106,8 @@ Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x)
 | Qwen3.5-9B (K=3 + native trim) | 246 / 206 / 172 | 186 / 158 / 155 | **1.32x** / **1.30x** / **1.11x** |
 | Qwen3.6-27B (K=3 + generic trim) | 109 / 100 / 78.8 | 86.4 / 89.9 / 73.2 | **1.26x** / **1.11x** / **1.08x** |
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 251 / 232 / 193 | 215 / 208.5 / 201.7 | **1.17x** / **1.11x** / 0.96x |
+| Qwen3.5-9B ST (K=2-3 per-content + native trim) | 203.9 / 192.5 / 256.0 | 122.9 / 122.2 / 118.2 | **1.66x** / **1.58x** / **2.17x** |
+| Qwen3.6-27B ST (K=3 + HPOST + own-head trim) | 92.9 / 81.3 / 84.6 | 79.7 / 84.7 / 71.3 | **1.17x** / 0.96x / **1.19x** |
 <!-- PERF-SPEC:END -->
 
 The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at serve-best config. Optimal config is content-class dependent. The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).

@@ -73,3 +73,23 @@ Inline plain-gen references from the same spec runs ([generate] line, N=2):
   9B draft — its serve-best is raw).
 - **27B ST: mixed.** Spec p1 above (1.04x), p2/p3 6–7% behind llama's MTP serve; plain 0.91x
   (the GGUF-27B plain parity does not yet transfer to the ST NV_W4 decode path).
+
+---
+
+## CORRECTION (same day, tag `27bst-board-pairing-FIX`)
+
+Every bw24 27B cell above ran with `BW24_SPEC_NV_W4=1` — a nonexistent flag (real: `BW24_NV_W4`);
+the attention requant never engaged. Additionally the afternoon regime drifted ~8% on both engines
+(llama plain 44.9 → 41.2 between hours), so cross-hour ratios were invalid. All 27B cells
+(bw24 AND llama) re-measured in one hour-regime; raw logs: `st-pairing-logs/27bst-*-fix-*`,
+`27b-llama-spec-fix-*`.
+
+| cell | bw24 | llama | ratio |
+|---|---|---|---|
+| 27B plain tg128@d512 (BW24_NV_W4=1) | 45.2 (46.3/45.2/45.0) | 41.2 (41.28/41.14) | **1.10x** |
+| 27B spec p1 | 92.9 (95.6/90.3) | 79.7 (80.8/78.6) | **1.17x** |
+| 27B spec p2 | 81.3 (81.7/81.0) | 84.7 (85.9/83.5) | 0.96x |
+| 27B spec p3 | 84.6 (84.8/84.3) | 71.3 (72.5/70.1) | **1.19x** |
+
+9B cells above remain valid (internally paired, correct flags). 9B addition: per-content K
+(`9bst-k3-repro`) — p3 at K=3 = 256.0 (acceptance 100%), replacing K=2's 223.7 on the board.

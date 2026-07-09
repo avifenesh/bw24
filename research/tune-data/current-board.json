@@ -19,11 +19,21 @@
         "model": "Qwen3.6-35B-A3B MoE",
         "bw24": 170.7,
         "llama": 159.6
+      },
+      {
+        "model": "Qwen3.5-9B NVFP4 ST (safetensors, modelopt)",
+        "bw24": 129.1,
+        "llama": 123.7
+      },
+      {
+        "model": "Qwen3.6-27B NVFP4 ST (NVIDIA official)",
+        "bw24": 45.2,
+        "llama": 41.2
       }
     ]
   },
   "speculative": {
-    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol",
+    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol. ST checkpoints have no GGUF twin llama can load — llama fields its best same-class GGUF (board policy); the llama 9B serve-best is raw decode (no 9B MTP draft exists for it)",
     "rows": [
       {
         "model": "Qwen3.5-9B (K=3 + native trim)",
@@ -62,6 +72,32 @@
           215,
           208.5,
           201.7
+        ]
+      },
+      {
+        "model": "Qwen3.5-9B ST (K=2-3 per-content + native trim)",
+        "bw24": [
+          203.9,
+          192.5,
+          256.0
+        ],
+        "llama": [
+          122.9,
+          122.2,
+          118.2
+        ]
+      },
+      {
+        "model": "Qwen3.6-27B ST (K=3 + HPOST + own-head trim)",
+        "bw24": [
+          92.9,
+          81.3,
+          84.6
+        ],
+        "llama": [
+          79.7,
+          84.7,
+          71.3
         ]
       }
     ]
