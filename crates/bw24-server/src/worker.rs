@@ -161,17 +161,35 @@ pub fn run(
     let mut order: Vec<String> = Vec::new();
     for (name, path) in &models {
         eprintln!("[worker] loading model {name:?} <- {path}");
-        let g = match GgufFile::open(path) {
-            Ok(g) => g,
-            Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
-        };
-        let model = match HybridModel::load(&engine, &g) {
-            Ok(m) => m,
-            Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
-        };
-        let tok = match Tokenizer::from_gguf(&g) {
-            Ok(t) => t,
-            Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
+        // DIRECTORY path = safetensors HF checkpoint (same dispatch as run_spec); file = GGUF.
+        let (model, tok) = if std::path::Path::new(path).is_dir() {
+            let st = match bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(path)) {
+                Ok(s) => s,
+                Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+            };
+            let model = match HybridModel::load_from_source(&engine, &st) {
+                Ok(m) => m,
+                Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
+            };
+            let tok = match Tokenizer::from_hf_dir(std::path::Path::new(path)) {
+                Ok(t) => t,
+                Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
+            };
+            (model, tok)
+        } else {
+            let g = match GgufFile::open(path) {
+                Ok(g) => g,
+                Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+            };
+            let model = match HybridModel::load(&engine, &g) {
+                Ok(m) => m,
+                Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
+            };
+            let tok = match Tokenizer::from_gguf(&g) {
+                Ok(t) => t,
+                Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
+            };
+            (model, tok)
         };
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
