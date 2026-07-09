@@ -1,125 +1,135 @@
 {
   "updated": "2026-07-09",
   "rig": "RTX 5090 Laptop",
-  "protocol": "N≥2 medians, both engines measured in the SAME session and thermal regime, no flags (tuned paths are defaults)",
+  "protocol": "N=2 medians, engines interleaved per model in the same hour-regime, idle-gated cold starts, no flags (tuned paths are defaults); rebaseline2 campaign, raw logs in research/tune-data/rebaseline-logs/",
   "plain_decode": {
     "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
     "rows": [
       {
-        "model": "Qwen3.6-27B NVFP4",
-        "bw24": 44.8,
-        "llama": 40.3
+        "model": "Qwen3.5-9B NVFP4 (GGUF)",
+        "bw24": 135.7,
+        "llama": 126.7
       },
       {
-        "model": "Qwen3.5-9B NVFP4",
-        "bw24": 128.1,
-        "llama": 113.9
+        "model": "Qwen3.5-9B NVFP4 ST (safetensors)",
+        "bw24": 132.0,
+        "llama": 126.5
       },
       {
-        "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 170.7,
-        "llama": 159.6
-      },
-      {
-        "model": "Qwen3.5-9B NVFP4 ST (safetensors, modelopt)",
-        "bw24": 129.1,
-        "llama": 123.7
+        "model": "Qwen3.6-27B NVFP4 (GGUF)",
+        "bw24": 48.4,
+        "llama": 44.9
       },
       {
         "model": "Qwen3.6-27B NVFP4 ST (NVIDIA official)",
-        "bw24": 45.2,
-        "llama": 41.2
+        "bw24": 48.9,
+        "llama": 44.5
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+        "bw24": 178.2,
+        "llama": 167.8
       }
     ]
   },
   "speculative": {
-    "context": "MTP head, both engines at their measured best config, raw-prompt continuation protocol. ST checkpoints have no GGUF twin llama can load — llama fields its best same-class GGUF (board policy); the llama 9B serve-best is raw decode (no 9B MTP draft exists for it). CAVEAT (2026-07-09 text audit, rig5090 tag p3-degeneration-audit): the long-agentic (third) column's greedy continuations partially degenerate into repetition on both engines symmetrically — ratios stand, absolutes overstate real agentic throughput; prompt replacement pending",
+    "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed v3 prompt — rejection-sampling spec decode, distribution-exact; llama at matched temperature). ST rows: llama fields its best same-class GGUF (it cannot load these checkpoints).",
     "rows": [
       {
         "model": "Qwen3.5-9B (K=3 + native trim)",
         "bw24": [
-          246,
-          206,
-          172
+          238.9,
+          210.2,
+          212.0
         ],
         "llama": [
-          186,
-          158,
-          155
+          123.6,
+          122.6,
+          119.2
         ]
       },
       {
-        "model": "Qwen3.6-27B (K=3 + generic trim)",
+        "model": "Qwen3.5-9B ST (K=2 + native trim)",
         "bw24": [
-          109,
-          100,
-          78.8
+          193.8,
+          193.0,
+          158.7
+        ],
+        "llama": [
+          123.6,
+          122.6,
+          119.2
+        ]
+      },
+      {
+        "model": "Qwen3.6-27B (K=3 + draft + code75 trim)",
+        "bw24": [
+          104.1,
+          88.8,
+          103.5
+        ],
+        "llama": [
+          88.7,
+          93.8,
+          93.4
+        ]
+      },
+      {
+        "model": "Qwen3.6-27B ST (K=3 + HPOST + own-head trim)",
+        "bw24": [
+          98.7,
+          89.8,
+          83.8
         ],
         "llama": [
           86.4,
-          89.9,
-          73.2
+          91.7,
+          99.3
         ]
       },
       {
         "model": "Qwen3.6-35B-A3B (K=3 + trim + zero-draft)",
         "bw24": [
-          251,
-          232,
-          193
+          280.4,
+          226.0,
+          255.7
         ],
         "llama": [
-          215,
-          208.5,
-          201.7
-        ]
-      },
-      {
-        "model": "Qwen3.5-9B ST (K=2-3 per-content + native trim)",
-        "bw24": [
-          203.9,
-          192.5,
-          256.0
-        ],
-        "llama": [
-          122.9,
-          122.2,
-          118.2
-        ]
-      },
-      {
-        "model": "Qwen3.6-27B ST (K=3 + HPOST + own-head trim, per-content pmin)",
-        "bw24": [
-          92.9,
-          88.1,
-          84.6
-        ],
-        "llama": [
-          79.7,
-          84.7,
-          71.3
+          251.9,
+          221.4,
+          248.9
         ]
       }
     ]
   },
   "bold_ratio_threshold": 1.05,
   "plain_decode_depth": {
-    "context": "tg128 at 6257-token context (same session)",
+    "context": "tg128 at 6257-token context (same session/hour-regime)",
     "rows": [
       {
-        "model": "Qwen3.6-27B NVFP4",
-        "bw24": 42.4,
-        "llama": 38.7
+        "model": "Qwen3.5-9B NVFP4 (GGUF)",
+        "bw24": 127.2,
+        "llama": 120.0
       },
       {
-        "model": "Qwen3.5-9B NVFP4",
-        "bw24": 117.1,
-        "llama": 109.1
+        "model": "Qwen3.5-9B NVFP4 ST (safetensors)",
+        "bw24": 124.0,
+        "llama": 120.4
       },
       {
-        "model": "Qwen3.6-35B-A3B MoE",
-        "bw24": 154.1,
-        "llama": 151.2
+        "model": "Qwen3.6-27B NVFP4 (GGUF)",
+        "bw24": 45.9,
+        "llama": 43.0
+      },
+      {
+        "model": "Qwen3.6-27B NVFP4 ST (NVIDIA official)",
+        "bw24": 46.6,
+        "llama": 42.9
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+        "bw24": 163.7,
+        "llama": 160.9
       }
     ]
   }
