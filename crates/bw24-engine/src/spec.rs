@@ -1956,6 +1956,16 @@ impl HybridModel {
                 }
                 f.write_all(&bytes)?;
             }
+            // CHAINLESS extraction (stride > corpus, the bulk-hdump mode): no chunk ever
+            // drafts, so the draft-KV fills are pure waste — skip them (2 MTP-block passes
+            // per token saved; the forced trunk pass + hdump is all the mode needs).
+            let chainless = stride > t_total;
+            if chainless {
+                e.copy_view_into(&mut prev_last_h, 0,
+                                 &vx.slice((tc - 1) * n_embd..tc * n_embd), n_embd)?;
+                s = cend;
+                continue;
+            }
             // 2. TRUE predecessor-paired draft-KV fill for the chunk (row i carries h_{i-1};
             //    row s reads the previous chunk's last true hidden, zeros at corpus start).
             let mut vxs = e.zeros(tc * n_embd)?;
