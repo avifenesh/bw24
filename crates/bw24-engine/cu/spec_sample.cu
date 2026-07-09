@@ -109,11 +109,40 @@ extern "C" __global__ void softmax_gather_f32(
 extern "C" __global__ void residual_sample_f32(
         const float* __restrict__ p, const float* __restrict__ q, int has_q, int n, float temp,
         uint32_t seed_lo, uint32_t seed_hi, uint32_t stream_pos,
-        float p_max, float p_sumexp, float q_max, float q_sumexp,   // precomputed row stats
         uint32_t* __restrict__ out_tok) {
+    // Self-contained row stats (max + sumexp for p and q) — the reject event is rare (<=1/round),
+    // two extra vocab passes cost nothing measurable and keep the call-site API stats-free.
+    const int tid0 = threadIdx.x, nth0 = blockDim.x;
+    __shared__ float sred[1024];
+    float p_max, p_sumexp, q_max = 0.0f, q_sumexp = 1.0f;
+    const float invT0 = temp > 0.0f ? 1.0f / temp : 0.0f;
+    {
+        float m = -3.4e38f;
+        for (int i = tid0; i < n; i += nth0) m = fmaxf(m, p[i]);
+        sred[tid0] = m; __syncthreads();
+        if (tid0 == 0) { for (int t = 1; t < nth0; ++t) m = fmaxf(m, sred[t]); sred[0] = m; }
+        __syncthreads(); p_max = sred[0]; __syncthreads();
+        float su = 0.0f;
+        for (int i = tid0; i < n; i += nth0) su += __expf((p[i] - p_max) * invT0);
+        sred[tid0] = su; __syncthreads();
+        if (tid0 == 0) { for (int t = 1; t < nth0; ++t) su += sred[t]; sred[0] = su; }
+        __syncthreads(); p_sumexp = sred[0]; __syncthreads();
+    }
+    if (has_q) {
+        float m = -3.4e38f;
+        for (int i = tid0; i < n; i += nth0) m = fmaxf(m, q[i]);
+        sred[tid0] = m; __syncthreads();
+        if (tid0 == 0) { for (int t = 1; t < nth0; ++t) m = fmaxf(m, sred[t]); sred[0] = m; }
+        __syncthreads(); q_max = sred[0]; __syncthreads();
+        float su = 0.0f;
+        for (int i = tid0; i < n; i += nth0) su += __expf((q[i] - q_max) * invT0);
+        sred[tid0] = su; __syncthreads();
+        if (tid0 == 0) { for (int t = 1; t < nth0; ++t) su += sred[t]; sred[0] = su; }
+        __syncthreads(); q_sumexp = sred[0]; __syncthreads();
+    }
     // r_i evaluated on the fly: pi = exp((p[i]-p_max)/T)/p_sumexp ; qi likewise (q may be null).
     const int tid = threadIdx.x, nth = blockDim.x;
-    extern __shared__ float chunk_sum[];                 // nth entries
+    float* chunk_sum = sred;                             // reuse the stats reduction buffer
     const float invT = temp > 0.0f ? 1.0f / temp : 0.0f;
     auto r_at = [&](int i) -> float {
         float pi = __expf((p[i] - p_max) * invT) / p_sumexp;

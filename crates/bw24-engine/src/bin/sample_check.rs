@@ -73,12 +73,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let q: Vec<f32> = (0..nv).map(|i| ((i * 104729) % 100) as f32 / 25.0).collect();
     let pd = e.htod(&p)?; let qd = e.htod(&q)?;
     let t = 0.9f32;
-    let stats = |v: &[f32]| -> (f32, f32) {
-        let m = v.iter().cloned().fold(f32::MIN, f32::max);
-        let s: f32 = v.iter().map(|&x| ((x - m) / t).exp()).sum();
-        (m, s)
-    };
-    let (pm, ps) = stats(&p); let (qm, qs) = stats(&q);
     // CPU residual probabilities
     let sp = cpu_softmax(&p, t); let sq = cpu_softmax(&q, t);
     let mut r: Vec<f64> = sp.iter().zip(&sq).map(|(a, b)| (a - b).max(0.0)).collect();
@@ -86,24 +80,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for v in &mut r { *v /= rs; }
     // determinism + empirical distribution (10k draws over distinct stream positions)
     let mut tokd = e.alloc_u32_zeroed(1)?;
-    e.residual_sample(&pd, Some(&qd), nv, t, 42, 0, (pm, ps), (qm, qs), &mut tokd)?;
+    e.residual_sample(&pd, Some(&qd), nv, t, 42, 0, &mut tokd)?;
     let t0 = e.dtoh_u32(&tokd)?[0];
-    e.residual_sample(&pd, Some(&qd), nv, t, 42, 0, (pm, ps), (qm, qs), &mut tokd)?;
+    e.residual_sample(&pd, Some(&qd), nv, t, 42, 0, &mut tokd)?;
     let t0b = e.dtoh_u32(&tokd)?[0];
     let ok = t0 == t0b;
     println!("residual determinism: {}", if ok { "OK" } else { fails += 1; "FAIL" });
     let draws = 10000usize;
     let mut freq = vec![0f64; nv];
     for i in 0..draws {
-        e.residual_sample(&pd, Some(&qd), nv, t, 42, i as u32, (pm, ps), (qm, qs), &mut tokd)?;
+        e.residual_sample(&pd, Some(&qd), nv, t, 42, i as u32, &mut tokd)?;
         freq[e.dtoh_u32(&tokd)?[0] as usize] += 1.0 / draws as f64;
     }
     let maxerr = freq.iter().zip(&r).map(|(f, p)| (f - p).abs()).fold(0.0, f64::max);
     let ok = maxerr < 0.02;
     println!("residual empirical vs CPU (10k draws): maxerr={maxerr:.4} {}", if ok { "OK" } else { fails += 1; "FAIL" });
     // temp->0 fallback: p == q -> argmax(p)
-    let (pm0, ps0) = (pm, ps);
-    e.residual_sample(&pd, Some(&pd), nv, t, 42, 5, (pm0, ps0), (pm0, ps0), &mut tokd)?;
+    e.residual_sample(&pd, Some(&pd), nv, t, 42, 5, &mut tokd)?;
     let am = p.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap().then(b.0.cmp(&a.0))).unwrap().0 as u32;
     let got = e.dtoh_u32(&tokd)?[0];
     let ok = got == am;

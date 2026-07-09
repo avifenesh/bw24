@@ -64,9 +64,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("corpus: {} chars -> {} tokens | K={k} stride={stride} chunk={chunk} full_prec={}",
              text.len(), ids.len(), std::env::var("BW24_FULL_PREC").is_ok());
 
+    // BW24_REPLAY_HDUMP=<path>: stream every position's pre-norm trunk hidden (f32 LE,
+    // [n_tokens, n_embd]) + write <path>.meta.json {n_tokens, n_embd, bg} — the distillation
+    // training extraction (engine = source of truth for hiddens).
+    let hdump_path = std::env::var("BW24_REPLAY_HDUMP").ok();
+    let mut hdump_file = match &hdump_path {
+        Some(p) => Some(std::fs::File::create(p)?),
+        None => None,
+    };
     let t0 = std::time::Instant::now();
-    let (rows, bg) = model.replay_acceptance(&e, &ids, k, stride, chunk)?;
+    let (rows, bg) = model.replay_acceptance(&e, &ids, k, stride, chunk, hdump_file.as_mut())?;
     let dt = t0.elapsed().as_secs_f64();
+    if let Some(p) = &hdump_path {
+        use std::io::Write;
+        let n_embd = model.cfg.n_embd;
+        let mut mf = std::fs::File::create(format!("{p}.meta.json"))?;
+        write!(mf, "{{\"n_tokens\":{},\"n_embd\":{},\"bg\":{:?}}}", ids.len(), n_embd, bg)?;
+        println!("hdump: {} tokens x {} f32 -> {p} (+.meta.json)", ids.len(), n_embd);
+    }
     println!("replay: {} eval positions in {dt:.1}s ({:.1} corpus tok/s incl. chains)",
              rows.len(), ids.len() as f64 / dt);
 
@@ -77,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // allow <=1% slot disagreement and report it. Cross-arm runs must use ONE chunk size.
     if std::env::var("BW24_REPLAY_GATE").is_ok() {
         let n_gate = 2048.min(ids.len());
-        let (rows_g, bg_g) = model.replay_acceptance(&e, &ids[..n_gate], k, stride, 64)?;
+        let (rows_g, bg_g) = model.replay_acceptance(&e, &ids[..n_gate], k, stride, 64, None)?;
         let mut bg_bad = 0usize;
         for i in 1..n_gate.saturating_sub(1) {
             if bg[i] != bg_g[i] { bg_bad += 1; if bg_bad <= 3 {

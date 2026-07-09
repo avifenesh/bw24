@@ -440,23 +440,19 @@ impl Engine {
     /// Sample token from norm(max(0, softmax_temp(p) - softmax_temp(q))) (q = None -> plain
     /// categorical from softmax_temp(p)). Row stats (max, sumexp at temp) must be precomputed
     /// (softmax_gather's pass-1 values; see spec.rs caller). Deterministic fixed-order CDF walk.
-    #[allow(clippy::too_many_arguments)]
     pub fn residual_sample(&self, p: &CudaSlice<f32>, q: Option<&CudaSlice<f32>>, n: usize,
                            temp: f32, seed: u64, stream_pos: u32,
-                           p_stats: (f32, f32), q_stats: (f32, f32),
                            out_tok: &mut CudaSlice<u32>)
                            -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("residual_sample_f32");
         let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
         let nth = 1024u32;
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (nth, 1, 1),
-                                 shared_mem_bytes: nth * 4 };
-        let (pm, ps) = p_stats; let (qm, qs) = q_stats;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (nth, 1, 1), shared_mem_bytes: 0 };
         let has_q: i32 = q.is_some() as i32;
         let qbuf = q.unwrap_or(p);   // dummy when absent; kernel gates on has_q
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(p).arg(qbuf).arg(&has_q).arg(&ni).arg(&temp).arg(&slo).arg(&shi).arg(&stream_pos)
-         .arg(&pm).arg(&ps).arg(&qm).arg(&qs).arg(&mut *out_tok);
+         .arg(&mut *out_tok);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

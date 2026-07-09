@@ -122,12 +122,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let spec_tps = (n_new - 1) as f64 / spec_dt;
         let acc_rate = if drafted > 0 { accepted as f64 / drafted as f64 } else { 0.0 };
 
-        let pass = first_divergence(&gold, &spec).is_none();
+        // SAMPLED MODE (BW24_SPEC_TEMP>0): the greedy-identity gate is undefined (spec and
+        // plain sampling consume randomness differently — Leviathan/Chen guarantee equality of
+        // DISTRIBUTION, not streams). Its gate = seeded REPRODUCIBILITY: the same
+        // (seed, prompt, K) must reproduce the identical token stream on a second run.
+        let sampled = std::env::var("BW24_SPEC_TEMP").ok()
+            .and_then(|v| v.parse::<f32>().ok()).map(|t| t > 0.0).unwrap_or(false);
+        let pass = if sampled {
+            let (spec2, _, _) = model.generate_spec(&e, &prompt, n_new, k)?;
+            e.stream().synchronize()?;
+            first_divergence(&spec, &spec2).is_none()
+        } else {
+            first_divergence(&gold, &spec).is_none()
+        };
         all_pass &= pass;
         println!("\n[generate_spec K={k}] {n_new} tok in {spec_dt:.3}s = {spec_tps:.2} tok/s \
                   ({:.2}x vs generate; this run's prime {spec_prime:.3}s)", spec_tps / gen_tps);
         println!("  acceptance: {accepted}/{drafted} = {:.1}%   self-consistency: {}",
-                 acc_rate * 100.0, if pass { "PASS (identical to generate)" } else { "FAIL" });
+                 acc_rate * 100.0,
+                 if pass { if sampled { "PASS (seeded rerun identical)" } else { "PASS (identical to generate)" } } else { "FAIL" });
         if !pass {
             let idx = first_divergence(&gold, &spec).unwrap();
             println!("  FIRST DIVERGENCE at index {idx}:");
