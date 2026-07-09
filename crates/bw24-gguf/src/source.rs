@@ -424,11 +424,14 @@ impl SafetensorsSource {
         Some((crate::dequant::dequantize(info.ggml_type(), bytes, n as usize), ne))
     }
 
-    /// Detect an HF NVFP4 quantized Linear under EITHER on-disk encoding and return everything the
-    /// repack needs: `(out_f, in_f, packed_bytes, per16_fp8_scale_bytes, macro_scale)`. Both encodings
+    /// Detect an HF NVFP4 quantized Linear under ANY on-disk encoding and return everything the
+    /// repack needs: `(out_f, in_f, packed_bytes, per16_fp8_scale_bytes, macro_scale)`. All encodings
     /// store the SAME e2m1 weights + per-16 FP8(e4m3) scales — only names + macro-scale differ:
     ///   * modelopt: `<name>.weight`(U8 packed) + `<name>.weight_scale`(F8_E4M3) +
     ///     `<name>.weight_scale_2`(F32 per-tensor macro, default 1.0).
+    ///   * compressed-tensors (llm-compressor): `<name>.weight_packed`(U8) +
+    ///     `<name>.weight_scale`(F8_E4M3 per-16) + `<name>.weight_global_scale`(F32 per-tensor macro).
+    ///     The plain `<name>.weight` coexists as a BF16 tensor (unused by us when packed is present).
     ///   * Reza "custom_nvfp4_e2m1_e4m3_scales": `<name>.weight.nvfp4_packed`(U8) +
     ///     `<name>.weight.nvfp4_scale_e4m3`(U8/FP8 bytes), NO macro-scale (=> 1.0).
     /// `out_f`/`in_f` are the logical [out, in] dims (packed weight is [out, in/2] U8). `None` for a
@@ -444,6 +447,37 @@ impl SafetensorsSource {
                         let in_f = (winfo.shape[1] as usize) * 2; // U8 packs 2 codes/byte
                         let macro_s = match self.lookup(&format!("{stem}.weight_scale_2")) {
                             Some((_, b)) if b.len() >= 4 => f32::from_le_bytes(b[..4].try_into().unwrap()),
+                            _ => 1.0,
+                        };
+                        return Some((out_f, in_f, wbytes, sbytes, macro_s));
+                    }
+                }
+            }
+        }
+        // compressed-tensors (llm-compressor): `<name>.weight_packed` (U8) + `<name>.weight_scale`
+        // (F8_E4M3 per-16) + `<name>.weight_global_scale` (F32 per-tensor). The plain
+        // `<name>.weight` (BF16) coexists but is UNUSED when the packed sibling is present —
+        // the packed representation IS the quantized model output. CRITICAL SEMANTICS DIFFERENCE:
+        // compressed-tensors' `weight_global_scale` is a DIVISOR (dequant = code * micro / global),
+        // whereas modelopt's `weight_scale_2` is a MULTIPLIER (dequant = code * micro * scale_2).
+        // The packed bytes + micro scales are byte-identical between the two formats (verified on
+        // the AxionML vs apolo13x pair), only the macro-scale semantics differ. We invert here so
+        // the engine's post-matmul multiply stays unchanged.
+        //   compressed-tensors: elem = e2m1_code * ue4m3_scale_per16 / weight_global_scale
+        //   modelopt:           elem = e2m1_code * ue4m3_scale_per16 * weight_scale_2
+        //   => macro_s = 1.0 / weight_global_scale
+        let stem = hf_weight.strip_suffix(".weight")?;
+        if let Some((winfo, wbytes)) = self.lookup(&format!("{stem}.weight_packed")) {
+            if winfo.dtype == "U8" && winfo.shape.len() == 2 {
+                if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
+                    if sinfo.dtype == "F8_E4M3" {
+                        let out_f = winfo.shape[0] as usize;
+                        let in_f = (winfo.shape[1] as usize) * 2;
+                        let macro_s = match self.lookup(&format!("{stem}.weight_global_scale")) {
+                            Some((_, b)) if b.len() >= 4 => {
+                                let gs = f32::from_le_bytes(b[..4].try_into().unwrap());
+                                if gs > 0.0 && gs.is_finite() { 1.0 / gs } else { 1.0 }
+                            }
                             _ => 1.0,
                         };
                         return Some((out_f, in_f, wbytes, sbytes, macro_s));
@@ -531,22 +565,36 @@ impl TensorSource for SafetensorsSource {
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         use crate::hf_mapping::{HfTarget, resolve_ggml};
         // NVFP4 per-tensor macro-scale sibling: the engine asks for `<stem>.scale` (model.rs) and
-        // expects an F32 scalar. Map `<stem>.scale` -> the modelopt `<hf>.weight_scale_2`. Returns
-        // None for non-quantized weights (then the engine defaults the macro-scale to 1.0).
+        // expects an F32 scalar. Map `<stem>.scale` -> modelopt `<hf>.weight_scale_2` OR
+        // compressed-tensors `<hf>.weight_global_scale`. Returns None for non-quantized weights
+        // (then the engine defaults the macro-scale to 1.0). Reza has no macro-scale at all.
         if let Some(stem) = ggml_name.strip_suffix(".scale") {
             let hf_weight = match resolve_ggml(&format!("{stem}.weight"), &self.cfg)? {
                 HfTarget::Plain(hf) | HfTarget::Transform { hf, .. } => hf,
             };
-            // Only the modelopt encoding carries a per-tensor `weight_scale_2`. Reza has no macro-scale,
-            // so its `.scale` lookup returns None and the engine defaults the macro-scale to 1.0.
-            let s2 = format!("{}.weight_scale_2", hf_weight.strip_suffix(".weight")?);
-            let (info, bytes) = self.lookup(&s2)?;
-            // weight_scale_2 is a 0-dim F32 scalar (4 bytes); surface it as ne=[1] F32.
-            return Some(TensorView {
-                bytes: Cow::Borrowed(bytes),
-                ggml_type: info.ggml_type(),
-                ne: vec![1],
-            });
+            let hf_stem = hf_weight.strip_suffix(".weight")?;
+            // Try modelopt `weight_scale_2` first (direct multiplier, borrow zero-copy).
+            if let Some((info, bytes)) = self.lookup(&format!("{hf_stem}.weight_scale_2")) {
+                return Some(TensorView {
+                    bytes: Cow::Borrowed(bytes),
+                    ggml_type: info.ggml_type(),
+                    ne: vec![1],
+                });
+            }
+            // compressed-tensors `weight_global_scale`: DIVISOR semantics, must INVERT to match
+            // the engine's multiplier convention (engine does: result *= macro_scale).
+            if let Some((_, bytes)) = self.lookup(&format!("{hf_stem}.weight_global_scale")) {
+                if bytes.len() >= 4 {
+                    let gs = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+                    let inv = if gs > 0.0 && gs.is_finite() { 1.0 / gs } else { 1.0 };
+                    return Some(TensorView {
+                        bytes: Cow::Owned(inv.to_le_bytes().to_vec()),
+                        ggml_type: GgmlType::F32,
+                        ne: vec![1],
+                    });
+                }
+            }
+            return None;
         }
         match resolve_ggml(ggml_name, &self.cfg)? {
             // Zero-copy: a plain rename (dense path + most SSM matrices), borrow the mmap directly.
@@ -570,27 +618,21 @@ impl TensorSource for SafetensorsSource {
                 // source is 4-mantissa-bit FP8 with ONE per-tensor scale; per-32 q8 re-quant is a
                 // FINER grid — class-equal or better. FP8-native matvec = later perf rung.
                 if let Some((info, bytes)) = self.lookup(&hf) {
-                    // Large BF16 2D matrices (NVIDIA 27B mtp.* block, ~2GB as f32): re-encode to
-                    // Q8_0 like the F8 arm below — the MTP head is a draft (acceptance-gated, never
-                    // exactness-bearing), and q8 is the same class the GGUF MTP drafts already use.
-                    // ... and the token-embedding table: the spec/graph decode paths gather rows
-                    // ON DEVICE (embed_gather kernel), which has no BF16 arm — and 2.5GB BF16 vs
-                    // 1.35GB Q8_0 matters on the 24GB card. Q8_0 is FINER than the GGUF twin's own
-                    // Q5_K embed class. Host-side row gather dequants Q8_0 identically.
-                    // ... and lm_head (loadersweep 2026-07-08, LOADER LAW): MiniMax-M3 ships a BF16
-                    // lm_head [200064,6144] while every other Linear is NVFP4 — falling through to
-                    // the F32 surface made the head a 4.9GB GpuTensor::Float riding cuBLAS f32 GEMV
-                    // EVERY decoded token (the 4th occurrence of the Float-poison trap: any F32/BF16
-                    // 2D matmul tensor fails uses_q8_1_fast and rides dot_kernel+reduce_1Block
-                    // pairs). Q8_0 is FINER than the Q5_K/Q6_K lm_heads every GGUF twin ships.
-                    // BW24_FULL_PREC (MTP-heal): surface raw BF16 — the engine keeps large 2D bf16
-                    // matmul weights bf16-resident (GpuTensor::FloatBf16, dequant-on-use). This
-                    // re-encode is exactly the loader law the full-precision mode must bypass.
+                    // Large BF16 2D matrices -> Q8_0 re-encode (LOADER LAW, 2026-07-08):
+                    // ANY BF16 2D weight >= 1M elements that reaches the engine as Float/FloatBf16
+                    // fails `uses_q8_1_fast` and rides the slow dot_kernel+reduce_1Block cuBLAS f32
+                    // GEMV pairs (the "Float-poison" trap, occurrences 1-5). Q8_0 per-32 fp16 scale
+                    // + int8 is a FINER grid than BF16 (7-bit mantissa int8*scale vs bf16's 7-bit
+                    // significand) — same class, strictly no worse accuracy — and puts every tensor
+                    // on the proven q8-fast/MMVQ/fused3 path. Covers: mtp.* (draft, same class as
+                    // the GGUF Q8_0 twin), lm_head, embed_tokens, AND any unquantized attention
+                    // projections in checkpoints where they remain BF16 (compressed-tensors/apolo:
+                    // linear_attn.in_proj_qkv/z/out_proj + self_attn.q/k/v/o_proj, per recipe.yaml
+                    // ignore list). BW24_FULL_PREC=1 bypasses this to surface raw BF16 (the engine
+                    // keeps them FloatBf16-resident for the MTP-heal protocol).
                     let full_prec = std::env::var("BW24_FULL_PREC").as_deref() == Ok("1");
                     if !full_prec && info.dtype == "BF16" && info.shape.len() == 2
-                        && info.shape.iter().product::<u64>() >= 1_000_000
-                        && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight"
-                            || hf == "lm_head.weight") {
+                        && info.shape.iter().product::<u64>() >= 1_000_000 {
                         let ne = info.ne();
                         if (bytes.len() / 2) % 32 == 0 {
                             let data: Vec<f32> = bytes.chunks_exact(2)
@@ -663,9 +705,16 @@ impl TensorSource for SafetensorsSource {
                 // linear layer -> unfused norm path + cuBLAS f32 GEMV pairs (nsys: 96 dot+reduce
                 // launches/pass + rms_norm_f32 at 12.5us vs 1.8us fused). Q8_0 puts them on the
                 // fused2/dual q8-fast chain like the GGUF twin's quantized a/b.
+                // BF16-sourced LARGE 2D projections (compressed-tensors: in_proj_qkv/z/out_proj +
+                // self_attn q/k/v/o_proj ALL BF16): same Float-poison loader law as the Plain arm.
+                // Q8_0 per-32 is FINER than BF16's 7-bit significand. The in_proj_a/b gate below
+                // catches the small-but-matmul-class a/b (below the 1M-element gate but still must
+                // ride q8-fast for mixer_in_q8_1_fast). BW24_FULL_PREC=1 bypasses both.
+                let full_prec = std::env::var("BW24_FULL_PREC").as_deref() == Ok("1");
                 let is_bf16 = self.lookup(&hf).is_some_and(|(i, _)| i.dtype == "BF16");
-                if is_bf16 && ne.len() == 2 && ne[0] % 32 == 0
-                    && (hf.ends_with("in_proj_a.weight") || hf.ends_with("in_proj_b.weight")) {
+                if !full_prec && is_bf16 && ne.len() == 2 && ne[0] % 32 == 0
+                    && (ne.iter().product::<u64>() >= 1_000_000
+                        || hf.ends_with("in_proj_a.weight") || hf.ends_with("in_proj_b.weight")) {
                     let f32s: Vec<f32> = bytes.chunks_exact(4)
                         .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
                     let out = crate::nvfp4_repack::f32_to_q8_0(&f32s);
@@ -1014,5 +1063,183 @@ mod nv27b_twin_parity {
             assert!(md <= tol, "{name}: maxdiff {md} > tol {tol}");
             eprintln!("{name:40} n={n:6} maxdiff={md:.1e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod compressed_tensors_roundtrip {
+    use super::*;
+
+    /// CPU roundtrip: build a synthetic compressed-tensors safetensors (weight_packed U8 +
+    /// weight_scale F8_E4M3 + weight_global_scale F32 DIVISOR), open via SafetensorsSource, and
+    /// verify: (1) nvfp4_quant returns macro_s = 1/global_scale, (2) the .scale sibling lookup
+    /// returns the INVERTED value (multiplier, not divisor), (3) the repacked GGUF blocks
+    /// dequantize to the correct magnitude range.
+    #[test]
+    fn ct_global_scale_inversion() {
+        let dir = std::env::temp_dir().join(format!("bw24_ct_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Shape: one layer, out_f=2, in_f=64 (minimum for NVFP4 64-elem blocks)
+        let out_f: usize = 2;
+        let in_f: usize = 64;
+        let packed_bytes = out_f * in_f / 2; // 64 bytes (U8 [2,32])
+        let scale_bytes = out_f * in_f / 16; // 8 bytes (F8_E4M3 [2,4])
+        let global_scale: f32 = 9408.0; // typical DIVISOR value from real checkpoint
+
+        // Fill packed with non-zero e2m1 codes (code=3 in each nibble -> magnitude 1.5)
+        let weight_packed = vec![0x33u8; packed_bytes]; // code 3 in both nibbles
+        // Fill scales with a known UE4M3 value (0x38 = exp=7 man=0 -> (1.0+0)*2^0 = 1.0 raw, *0.5 = 0.5)
+        let weight_scale = vec![0x38u8; scale_bytes];
+        // global_scale as F32 scalar
+        let gs_bytes = global_scale.to_le_bytes();
+
+        // Also need a BF16 placeholder for the ".weight" tensor (compressed-tensors has both).
+        // We use shape [2,64] BF16 (256 bytes) but it should be IGNORED by the NVFP4 path.
+        let bf16_weight = vec![0u8; out_f * in_f * 2]; // zeros
+
+        // Build safetensors file:
+        // tensors: model.layers.0.self_attn.q_proj.weight (BF16 [2,64])
+        //          model.layers.0.self_attn.q_proj.weight_packed (U8 [2,32])
+        //          model.layers.0.self_attn.q_proj.weight_scale (F8_E4M3 [2,4])
+        //          model.layers.0.self_attn.q_proj.weight_global_scale (F32 [1])
+        let data_len = bf16_weight.len() + weight_packed.len() + weight_scale.len() + gs_bytes.len();
+        let mut off = 0usize;
+        let bf16_start = off; off += bf16_weight.len();
+        let packed_start = off; off += weight_packed.len();
+        let scale_start = off; off += weight_scale.len();
+        let gs_start = off; off += gs_bytes.len();
+        assert_eq!(off, data_len);
+
+        let json = format!(
+            concat!(
+                "{{",
+                "\"model.layers.0.self_attn.q_proj.weight\":{{\"dtype\":\"BF16\",\"shape\":[2,64],\"data_offsets\":[{},{}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_packed\":{{\"dtype\":\"U8\",\"shape\":[2,32],\"data_offsets\":[{},{}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale\":{{\"dtype\":\"F8_E4M3\",\"shape\":[2,4],\"data_offsets\":[{},{}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_global_scale\":{{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[{},{}]}}",
+                "}}"
+            ),
+            bf16_start, bf16_start + bf16_weight.len(),
+            packed_start, packed_start + weight_packed.len(),
+            scale_start, scale_start + weight_scale.len(),
+            gs_start, gs_start + gs_bytes.len(),
+        );
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        buf.extend_from_slice(&bf16_weight);
+        buf.extend_from_slice(&weight_packed);
+        buf.extend_from_slice(&weight_scale);
+        buf.extend_from_slice(&gs_bytes);
+        std::fs::write(dir.join("model.safetensors"), &buf).unwrap();
+
+        let cfg_json = r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":64,"num_attention_heads":2,"intermediate_size":128,"vocab_size":10,"max_position_embeddings":128,"num_key_value_heads":2,"head_dim":32}"#;
+        std::fs::write(dir.join("config.json"), cfg_json).unwrap();
+
+        let src = SafetensorsSource::open(&dir).unwrap();
+
+        // Test 1: nvfp4_quant returns correct inverted macro_s
+        let hf_name = "model.layers.0.self_attn.q_proj.weight";
+        let (o, i, _packed, _scales, macro_s) = src.nvfp4_quant(hf_name)
+            .expect("nvfp4_quant must detect compressed-tensors format");
+        assert_eq!(o, out_f);
+        assert_eq!(i, in_f);
+        let expected_macro = 1.0 / global_scale;
+        assert!(
+            (macro_s - expected_macro).abs() < 1e-10,
+            "macro_s should be 1/global_scale = {expected_macro}, got {macro_s}"
+        );
+
+        // Test 2: the .scale sibling lookup returns the INVERTED value
+        let scale_view = src.find("blk.0.attn_q.scale")
+            .expect(".scale sibling must resolve for NVFP4 tensors");
+        assert_eq!(scale_view.ggml_type, GgmlType::F32);
+        assert_eq!(scale_view.ne, vec![1]);
+        let returned_scale = f32::from_le_bytes(scale_view.bytes[..4].try_into().unwrap());
+        assert!(
+            (returned_scale - expected_macro).abs() < 1e-10,
+            ".scale lookup should return 1/global_scale = {expected_macro}, got {returned_scale}"
+        );
+
+        // Test 3: the returned bytes are Owned (not borrowed raw divisor)
+        assert!(
+            matches!(scale_view.bytes, std::borrow::Cow::Owned(_)),
+            ".scale for compressed-tensors must be Cow::Owned (inverted value)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Verify modelopt arm still borrows the raw weight_scale_2 (no inversion).
+    #[test]
+    fn modelopt_scale2_direct_borrow() {
+        let dir = std::env::temp_dir().join(format!("bw24_mo_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let out_f: usize = 2;
+        let in_f: usize = 64;
+        let packed_bytes = out_f * in_f / 2;
+        let scale_bytes = out_f * in_f / 16;
+        let scale_2: f32 = 0.000106; // typical MULTIPLIER
+
+        let weight = vec![0x33u8; packed_bytes];
+        let wscale = vec![0x38u8; scale_bytes];
+        let s2_bytes = scale_2.to_le_bytes();
+
+        let mut off = 0usize;
+        let w_start = off; off += weight.len();
+        let s_start = off; off += wscale.len();
+        let s2_start = off; off += s2_bytes.len();
+
+        let json = format!(
+            concat!(
+                "{{",
+                "\"model.layers.0.self_attn.q_proj.weight\":{{\"dtype\":\"U8\",\"shape\":[2,32],\"data_offsets\":[{},{}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale\":{{\"dtype\":\"F8_E4M3\",\"shape\":[2,4],\"data_offsets\":[{},{}]}},",
+                "\"model.layers.0.self_attn.q_proj.weight_scale_2\":{{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[{},{}]}}",
+                "}}"
+            ),
+            w_start, w_start + weight.len(),
+            s_start, s_start + wscale.len(),
+            s2_start, s2_start + s2_bytes.len(),
+        );
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        buf.extend_from_slice(&weight);
+        buf.extend_from_slice(&wscale);
+        buf.extend_from_slice(&s2_bytes);
+        std::fs::write(dir.join("model.safetensors"), &buf).unwrap();
+
+        let cfg_json = r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":64,"num_attention_heads":2,"intermediate_size":128,"vocab_size":10,"max_position_embeddings":128,"num_key_value_heads":2,"head_dim":32}"#;
+        std::fs::write(dir.join("config.json"), cfg_json).unwrap();
+
+        let src = SafetensorsSource::open(&dir).unwrap();
+
+        // nvfp4_quant: macro_s should be the raw scale_2 value (direct multiplier)
+        let (_, _, _, _, macro_s) = src.nvfp4_quant("model.layers.0.self_attn.q_proj.weight")
+            .expect("nvfp4_quant must detect modelopt format");
+        assert!(
+            (macro_s - scale_2).abs() < 1e-10,
+            "modelopt macro_s should be scale_2 directly = {scale_2}, got {macro_s}"
+        );
+
+        // .scale sibling: borrowed directly, value == scale_2
+        let sv = src.find("blk.0.attn_q.scale")
+            .expect(".scale sibling must resolve for modelopt NVFP4");
+        let v = f32::from_le_bytes(sv.bytes[..4].try_into().unwrap());
+        assert!(
+            (v - scale_2).abs() < 1e-10,
+            "modelopt .scale should be raw scale_2 = {scale_2}, got {v}"
+        );
+        assert!(
+            matches!(sv.bytes, std::borrow::Cow::Borrowed(_)),
+            "modelopt .scale should be Cow::Borrowed (zero-copy)"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
