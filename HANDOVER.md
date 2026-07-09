@@ -26,6 +26,14 @@ OPEN FRONTS (priority order, 2026-07-08 evening): (1) PREFILL — the #1 plain g
 
 LAWS HARDENED THIS CYCLE: power boost (+25W) silently resets — verify before EVERY bench session (cost two false boards). FA/split geometry validates across the DEPTH axis (3 depths minimum). bpw equality ≠ quality-class equality across asymmetric/symmetric quant families (Q4_K→NVFP4 taxes acceptance despite equal bits). Float-poison tripwire now in the loader (occurrence #4 was M3's 4.9GB BF16 lm_head). Dynamic activation quant = immune to the uncalibrated-tail-expert checkpoint trap. Kernel-efficiency claims need LOCKED-CLOCK or clock-recorded runs — DVFS converts instruction wins into clock wins and hides them at fixed clock (q6issue lane, refuted its own premise). Mem P-state check before ANY bandwidth claim — idle-cold P8 reads 64% of P0 bandwidth and fabricated the '61%-of-wall k-quant' figure. Competitor baselines rot: re-baseline llama in the SAME session as any board claim (the 9B '1.59x' survived 2 days against a stale llama arm).
 
+## MEASUREMENT PROTOCOL SHIFT (owner, 2026-07-09, post-v0.8.0)
+
+The llama win is MARKED for the Qwen models (9B/27B/35B, GGUF + ST rows published v0.8.0).
+From now on these models measure BETWEEN OUR OWN VERSIONS: config A/B and regression tracking
+against our standing best (the rig5090.jsonl standings are the baseline to beat). No more
+llama re-pairing sessions for them — llama board numbers stand as the marked win. llama
+pairing returns only for NEW models (Gemma-4, Hy3) when their rows first land.
+
 ## ST (SAFETENSORS) SPEC LANES — MERGED 2026-07-09, BOARD PENDING
 
 Both NVFP4 ST checkpoints now have tuned spec configs (frspec_rank accepts HF dirs — trims derive
