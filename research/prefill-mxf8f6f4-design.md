@@ -158,3 +158,14 @@ ring, write-back). File: `mmq_nvfp4_f8f4.cu`, seam `BW24_MMQ_F8F4=1` (default OF
    the fast path most of the time.
 
 Expected: +30-50% pp on 9B/27B dense prefill; 35B expert MMQ inherits after (MOE_MMA twin).
+
+### Route decision (2026-07-09): R-B PRIMARY, R-A fallback
+
+Measured on the real NV-27B ST scale planes (4.19M adjacent per-16 pairs sampled): only **8.5%**
+of pairs share a scale — R-A's exact fast path is rare; 91.5% of values would take the
+cvt-recode anyway, at the same ~2^-4 rounding class as R-B's fold. Given equal rounding cost,
+R-B dominates: per-16 granularity KEPT (no s32 max-fold), no weight-scale smem plane, no pair
+logic in the loader (`byte = cvt.rn.satfinite.e4m3x2.f32(kvalue[nibble] × s16)`), epilogue needs
+only the activation scale, and the MMA is the already-benched e4m3×e4m3 form. Range check:
+v×s16 ≈ original weight magnitude — fits e4m3 (±448) with the sub-2^-9 tail in the same class
+the ST_E4M3 lineage already gates green. R-A remains the fallback if the fold taxes acceptance.
