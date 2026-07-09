@@ -18,6 +18,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <cstdlib>
+#include <cuda_fp8.h>
 
 #define WARP_SIZE 32
 #define GGML_PAD(x,n) (((x)+(n)-1)/(n)*(n))
@@ -43,6 +44,50 @@
 
 __device__ __forceinline__ float half_to_float(uint16_t h){ return __half2float(*reinterpret_cast<const __half*>(&h)); }
 __constant__ signed char kvalues_iq4nl_d[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+// BW24_MOE_F8F4 (f8f4 expert tile, research/prefill-mxf8f6f4-design.md): int8 codebook value ->
+// e4m3 byte of the SAME numeric value (host-built once, exact for |v|<=15 grids, <=0.9% rounding
+// on the +-127/113 IQ4_XS extremes). Scales/epilogue identical to the int8 path — only the value
+// container and the MMA kind change.
+__constant__ unsigned char bw24_i8_to_e4m3_d[256];
+static __device__ __forceinline__ void bw24_moe_mma_f8f4(
+        float* __restrict__ c, const int* __restrict__ a, const int b0, const int b1) {
+    asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+static __device__ __forceinline__ int bw24_map_i8x4_e4m3(int w) {
+    const unsigned char b0 = bw24_i8_to_e4m3_d[(unsigned char)( w        & 0xff)];
+    const unsigned char b1 = bw24_i8_to_e4m3_d[(unsigned char)((w >> 8)  & 0xff)];
+    const unsigned char b2 = bw24_i8_to_e4m3_d[(unsigned char)((w >> 16) & 0xff)];
+    const unsigned char b3 = bw24_i8_to_e4m3_d[(unsigned char)((w >> 24) & 0xff)];
+    return (int)((unsigned)b0 | ((unsigned)b1 << 8) | ((unsigned)b2 << 16) | ((unsigned)b3 << 24));
+}
+
+// BW24_MOE_F8F4=1: expert tile on the e4m3 f8f6f4 MMA (values via the i8->e4m3 map; acts via
+// the e4m3 quantizer from the f8f4 TU). Cached once; map uploaded to constant memory on first use.
+static int bw24_moe_f8f4_mode() {
+    static const int mode = [] {
+        const char * v = std::getenv("BW24_MOE_F8F4");
+        return (v != nullptr && v[0] == '1') ? 1 : 0;
+    }();
+    return mode;
+}
+extern "C" void bw24_mmq_nvfp4_f8f4_quantize_act(const float*, void*, int, int, int64_t, cudaStream_t);
+static void bw24_moe_f8f4_map_init() {
+    static bool done = [] {
+        unsigned char m[256];
+        for (int i = 0; i < 256; ++i) {
+            const float v = (float)(signed char)i;
+            const __nv_fp8_e4m3 f8 = __nv_fp8_e4m3(v);   // host-side rn/sat convert
+            m[i] = *reinterpret_cast<const unsigned char*>(&f8);
+        }
+        cudaMemcpyToSymbol(bw24_i8_to_e4m3_d, m, 256);
+        return true;
+    }();
+    (void)done;
+}
+
 
 // IQ3_S grid: 512 u32 (from qmatvec.cu, verbatim ggml-common.h:1042).
 __device__ __constant__ unsigned int iq3s_grid_const[512] = {
@@ -153,8 +198,8 @@ static constexpr __device__ int mmq_get_granularity_device(int mmq_x){ return mm
 // x_qs int-column c (0..63) holds 4 int8 for values [4c..4c+4). Per-32 scale (group c>>3) replicated
 // into the 2 per-16 x_df slots of that group. Both IQ4_XS and IQ3_S emit weights in NATURAL k-order
 // (matching the q8_1 activation int order + ldmatrix contiguity). Proven vs dp4a in iq4xs_mma_test.cu.
-template<int mmq_y, bool nc>
-static __device__ __forceinline__ void load_tiles_iq4xs(const uint8_t* __restrict__ W, int* __restrict__ x_tile,
+template<int mmq_y, bool nc, bool f8f4>
+static __device__ __forceinline__ void load_tiles_iq4xs_t(const uint8_t* __restrict__ W, int* __restrict__ x_tile,
         int kb0, int i_max, long row_bytes){
     int* x_qs = x_tile;
     float* x_df = (float*)(x_qs + MMQ_TILE_NE_K*2);
@@ -172,7 +217,9 @@ static __device__ __forceinline__ void load_tiles_iq4xs(const uint8_t* __restric
             #pragma unroll
             for(int r=0;r<4;r++){ int v=lc*4+r; int code=(v<16)?(gqs[v]&0xf):(gqs[v-16]>>4);
                 int wv=kvalues_iq4nl_d[code]; if(r==0)w0=wv;else if(r==1)w1=wv;else if(r==2)w2=wv;else w3=wv; }
-            x_qs[i*MMQ_MMA_TILE_X_K + c] = (w0&0xff)|((w1&0xff)<<8)|((w2&0xff)<<16)|((w3&0xff)<<24);
+            int packed = (w0&0xff)|((w1&0xff)<<8)|((w2&0xff)<<16)|((w3&0xff)<<24);
+            if constexpr (f8f4) packed = bw24_map_i8x4_e4m3(packed);
+            x_qs[i*MMQ_MMA_TILE_X_K + c] = packed;
         }
         if(threadIdx.x<16){ int s=threadIdx.x; int g=s>>1;
             int ls = ((sl[g>>1]>>(4*(g&1)))&0xf) | (((sh>>(2*g))&3)<<4);
@@ -184,8 +231,8 @@ static __device__ __forceinline__ void load_tiles_iq4xs(const uint8_t* __restric
 // IQ3_S: 110B block / 256 vals: d(2) qs[64](2..66) qh[8](66..74) signs[32](74..106) scales[4](106..110).
 // Decode uses the iq3s_grid + sign trick (expert_decode_iq3s_g). db = d*(1+2*sc_nib), applied as the
 // per-32 float scale (iscale==1 there). Natural k-order: group g (0..7) = 32 values = 8 int-cols.
-template<int mmq_y, bool nc>
-static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict__ W, int* __restrict__ x_tile,
+template<int mmq_y, bool nc, bool f8f4>
+static __device__ __forceinline__ void load_tiles_iq3s_t(const uint8_t* __restrict__ W, int* __restrict__ x_tile,
         int kb0, int i_max, long row_bytes){
     int* x_qs = x_tile;
     float* x_df = (float*)(x_qs + MMQ_TILE_NE_K*2);
@@ -214,7 +261,9 @@ static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict
             int signs1 = __vcmpne4(((sb&0x30)<<3)|((sb&0xC0)<<17), 0);
             int grid_l = __vsub4(gl ^ signs0, signs0);
             int grid_h = __vsub4(gh ^ signs1, signs1);
-            x_qs[i*MMQ_MMA_TILE_X_K + c] = (lc&1) ? grid_h : grid_l;
+            int packed = (lc&1) ? grid_h : grid_l;
+            if constexpr (f8f4) packed = bw24_map_i8x4_e4m3(packed);
+            x_qs[i*MMQ_MMA_TILE_X_K + c] = packed;
         }
         if(threadIdx.x<16){ int s=threadIdx.x; int ib32=s>>1;
             int sc_nib = (ib32&1) ? (scales[ib32/2]>>4) : (scales[ib32/2]&0xf);
@@ -224,8 +273,8 @@ static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict
 }
 
 // ======================= vec_dot (nvfp4_w4a8 machinery, verbatim) =======================
-template<int mmq_x, int mmq_y>
-static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00){
+template<int mmq_x, int mmq_y, bool f8f4>
+static __device__ __forceinline__ void vec_dot_mma_t(const int* x, const int* y, float* sum, int k00){
     typedef tile<16,4,int> tA; typedef tile<16,8,int> tA8; typedef tile<8,4,int> tB; typedef tile<16,8,int> tC;
     constexpr int g=mmq_get_granularity_device(mmq_x); constexpr int rpw=2*g; constexpr int ntx=rpw/tC::I;
     y += (threadIdx.y%ntx)*(tC::J*MMQ_TILE_Y_K);
@@ -256,12 +305,22 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
             for(int l=0;l<tC::ne/2;l++){ int j=j0+tC::get_j(l); dB[l]=y_df[j*MMQ_TILE_Y_K+k01/QI8_1]; }
             #pragma unroll
             for(int n=0;n<ntx;n++){
-                tC C[2];
-                mma(C[0],A[n][k01/4+0],B[0]);
-                mma(C[1],A[n][k01/4+1],B[1]);
-                #pragma unroll
-                for(int l=0;l<tC::ne;l++)
-                    sum[(j0/tC::J+n)*tC::ne+l] += dB[l%2]*(C[0].x[l]*dA[n][l/2][k01/4+0]+C[1].x[l]*dA[n][l/2][k01/4+1]);
+                if constexpr (f8f4) {
+                    // one k32 f8f6f4 MMA; IQ per-16 x_df entries are duplicated per 32-value
+                    // group (loader writes pairs) -> the even entry IS the per-32 scale, exact.
+                    float C[4] = {0.0f,0.0f,0.0f,0.0f};
+                    bw24_moe_mma_f8f4(C, ((const tA8*)A[n])[k01/8].x, B[0].x[0], B[1].x[0]);
+                    #pragma unroll
+                    for(int l=0;l<tC::ne;l++)
+                        sum[(j0/tC::J+n)*tC::ne+l] += dB[l%2]*C[l]*dA[n][l/2][k01/4+0];
+                } else {
+                    tC C[2];
+                    mma(C[0],A[n][k01/4+0],B[0]);
+                    mma(C[1],A[n][k01/4+1],B[1]);
+                    #pragma unroll
+                    for(int l=0;l<tC::ne;l++)
+                        sum[(j0/tC::J+n)*tC::ne+l] += dB[l%2]*(C[0].x[l]*dA[n][l/2][k01/4+0]+C[1].x[l]*dA[n][l/2][k01/4+1]);
+                }
             }
         }
     }
@@ -272,7 +331,7 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
 // group (ex_off[seg]..ex_off[seg+1]) in 128-token tiles. Activation is GATHERED per token via
 // pair_tok[ex_pairs[base+j]] from the pre-quantized token-major q8_1_mmq buffer. Output row = the
 // pair id (pair-major y, [n_pairs, out_f]) — matches moe_pairs_matvec_q8_dec's y layout.
-template<int mmq_x, bool nc>
+template<int mmq_x, bool nc, bool f8f4>
 __global__ void __launch_bounds__(MMQ_WARP_SIZE*MMQ_NWARPS,1)
 mmq_iq_experts_kernel(
         const unsigned long long* __restrict__ table, int proj, int n_expert,
@@ -307,8 +366,8 @@ mmq_iq_experts_kernel(
         __syncthreads();
         float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
         for(int kb=0;kb<nsblk;kb++){
-            if(qtype==QT_IQ4_XS) load_tiles_iq4xs<mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
-            else                 load_tiles_iq3s <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            if(qtype==QT_IQ4_XS) load_tiles_iq4xs_t<mmq_y,nc,f8f4>(W, tile_x, kb, i_max, row_bytes);
+            else                 load_tiles_iq3s_t <mmq_y,nc,f8f4>(W, tile_x, kb, i_max, row_bytes);
             #pragma unroll
             for(int half=0;half<2;half++){
                 int blockk = kb*2 + half;              // 128-value chunk index (block_q8_1_mmq)
@@ -320,7 +379,7 @@ mmq_iq_experts_kernel(
                     tile_y[l] = Yq[((size_t)blockk*n_tokens + src_tok)*sz + ii];
                 }
                 __syncthreads();
-                vec_dot_mma<mmq_x,mmq_y>(tile_x, tile_y, sum, half*MMQ_TILE_NE_K);
+                vec_dot_mma_t<mmq_x,mmq_y,f8f4>(tile_x, tile_y, sum, half*MMQ_TILE_NE_K);
                 __syncthreads();
             }
         }
@@ -379,6 +438,11 @@ int bw24_mmq_iq_quantize_act(const float* act_f32, void* act_scratch, int in_f, 
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
     int64_t ne10 = in_f, nep = GGML_PAD(ne10, MATRIX_ROW_PADDING);
     int64_t bny = (nep + 4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1)/(4*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
+    if (bw24_moe_f8f4_mode()) {
+        // e4m3 activation blocks (footprint-identical to q8_1_mmq; same padding contract).
+        bw24_mmq_nvfp4_f8f4_quantize_act(act_f32, act_scratch, in_f, n_tokens, in_f, st);
+        cudaError_t e0=cudaGetLastError(); return e0?1000+(int)e0:0;
+    }
     dim3 blk(CUDA_QUANTIZE_BLOCK_SIZE_MMQ,1,1), grid((unsigned)n_tokens,(unsigned)bny,1);
     quantize_mmq_q8_1_d4_kernel<<<grid,blk,0,st>>>(act_f32, act_scratch, ne10, in_f, nep, n_tokens);
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
@@ -399,13 +463,15 @@ int bw24_mmq_iq_experts(const unsigned long long* table, int proj, int n_expert,
         + (size_t)MMQ_Y*MMQ_MMA_TILE_X_K*sizeof(int);
     const int* Yq = (const int*)act_scratch;
     const bool nc = (out_f % MMQ_Y) != 0;
-    if(nc){
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,true>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,true><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
-    } else {
-        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,false>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
-        mmq_iq_experts_kernel<MMQ_X,false><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens);
-    }
+    const int f8 = bw24_moe_f8f4_mode();
+    if (f8) bw24_moe_f8f4_map_init();
+    #define BW24_IQ_LAUNCH(NC, F8) do {                                                                   \
+        cudaFuncSetAttribute(mmq_iq_experts_kernel<MMQ_X,NC,F8>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+        mmq_iq_experts_kernel<MMQ_X,NC,F8><<<grid,block,smem,st>>>(table,proj,n_expert,ex_ids,ex_off,ex_pairs,pair_tok,Yq,y,in_f,out_f,n_active,qtype,row_bytes,n_tokens); \
+    } while (0)
+    if (f8) { if (nc) BW24_IQ_LAUNCH(true, true);  else BW24_IQ_LAUNCH(false, true);  }
+    else    { if (nc) BW24_IQ_LAUNCH(true, false); else BW24_IQ_LAUNCH(false, false); }
+    #undef BW24_IQ_LAUNCH
     cudaError_t e=cudaGetLastError(); return e?1000+(int)e:0;
 }
 
