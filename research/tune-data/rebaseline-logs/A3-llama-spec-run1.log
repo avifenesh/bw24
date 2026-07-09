@@ -1,0 +1,11 @@
+### llama 9b spec round 2026-07-09T18:35:32+03:00
+gpu-pre: 1620 MHz, 60, 35.97 W
+=== llama 9b p1-code-short ===
+prompt: 28 tok @ 131.9 tok/s | gen: 256 tok @ 121.37 tok/s
+gpu: 1950 MHz, 69, 169.27 W
+=== llama 9b p2-code-medium ===
+prompt: 1845 tok @ 5987.2 tok/s | gen: 256 tok @ 121.36 tok/s
+gpu: 1837 MHz, 70, 170.04 W
+=== llama 9b p3-agentic-long ===
+prompt: 6257 tok @ 5943.6 tok/s | gen: 256 tok @ 117.58 tok/s
+gpu: 1830 MHz, 71, 169.62 W

@@ -1,0 +1,120 @@
+=== REBASELINE 2026-07-09 START: 2026-07-09T18:32:29+03:00 ===
+RAM check: 32GB available
+
+############### MODEL A: 9B GGUF ###############
+[18:32:29] Waiting for GPU idle (<1000 MHz)...
+[18:32:29] GPU idle at 225 MHz
+[A1-bw24-1] plain d512 - pre: 225, 50, 13.11
+decode tg128 @ctx512: EAGER 135.7 tok/s (7.37 ms/tok)
+[A1-bw24-1] post: 2152, 62, 171.90
+[18:32:34] Waiting for GPU idle (<1000 MHz)...
+[18:32:39] GPU idle at 195 MHz
+[A1-bw24-2] plain d512 - pre: 195, 52, 19.73
+decode tg128 @ctx512: EAGER 135.4 tok/s (7.38 ms/tok)
+[A1-bw24-2] post: 2160, 61, 165.40
+[18:32:45] Waiting for GPU idle (<1000 MHz)...
+[18:32:50] GPU idle at 225 MHz
+[A1-llama-1] plain d512 - pre: 225, 54, 12.93
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       6552.55 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        125.66 ± 0.00 |
+
+build: c818263f2 (9833)
+[A1-llama-1] post: 1860, 61, 165.67
+[18:32:53] Waiting for GPU idle (<1000 MHz)...
+[18:32:58] GPU idle at 240 MHz
+[A1-llama-2] plain d512 - pre: 240, 54, 18.27
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       6574.40 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        125.94 ± 0.00 |
+
+build: c818263f2 (9833)
+[A1-llama-2] post: 1860, 61, 167.15
+[18:33:00] Waiting for GPU idle (<1000 MHz)...
+[18:33:05] GPU idle at 225 MHz
+[A2-bw24-1] plain d6257 - pre: 225, 54, 13.05
+decode tg128 @ctx6257: EAGER 127.1 tok/s (7.87 ms/tok)
+[A2-bw24-1] post: 2092, 76, 171.63
+[18:33:55] Waiting for GPU idle (<1000 MHz)...
+[18:34:00] GPU idle at 217 MHz
+[A2-bw24-2] plain d6257 - pre: 217, 64, 19.23
+decode tg128 @ctx6257: EAGER 127.0 tok/s (7.88 ms/tok)
+[A2-bw24-2] post: 2055, 78, 171.79
+[18:34:49] Waiting for GPU idle (<1000 MHz)...
+[18:34:54] GPU idle at 322 MHz
+[A2-llama-1] plain d6257 - pre: 322, 66, 15.47
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       6070.67 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |        120.03 ± 0.00 |
+
+build: c818263f2 (9833)
+[A2-llama-1] post: 1800, 74, 168.69
+[18:34:58] Waiting for GPU idle (<1000 MHz)...
+[18:35:03] GPU idle at 210 MHz
+[A2-llama-2] plain d6257 - pre: 210, 63, 17.96
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       6175.46 ± 0.00 |
+| qwen35 9B NVFP4                |   5.26 GiB |     9.20 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |        120.48 ± 0.00 |
+
+build: c818263f2 (9833)
+[A2-llama-2] post: 1792, 72, 161.13
+[18:35:06] Waiting for GPU idle (<1000 MHz)...
+[18:35:11] GPU idle at 217 MHz
+[A3-bw24-p1-1] spec K=3 p1 - pre: 217, 61, 17.89
+[frspec-trim] self-trimmed head: 32768 rows of main output.weight (Q6_K)
+loaded qwen35 (33 layers, nextn=1)
+text prompt (146 chars) -> 28 tokens
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+
+[generate]   255 tok in 1.910s = 133.51 tok/s (gen-only; this run's prime 0.034s)
+  tokens: [12237, 271, 1445, 18904, 1120, 1697, 11, 11906, 11, 5586, 1358, 1005, 5829, 25, 198, 262, 687, 1259, 2251, 3676, 701, 11, 795, 25, 5586, 1590, 198, 285, 638, 2127, 283, 795, 198, 285, 638, 28044, 25, 11906, 659, 1888, 642, 283, 2168, 198, 285, 638, 4381, 25, 11906, 659, 1888, 642, 283, 2168, 1358, 1005, 53019, 391, 32794, 25, 198, 262, 687, 1259, 2251, 3676, 701, 1590, 198, 285, 638, 15569, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 37429, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 2406, 25, 514, 283, 220, 15, 271, 262, 687, 5479, 1153, 11, 795, 25, 5586, 11, 1097, 25, 514, 8, 1411, 2168, 25, 198, 285, 4071, 198, 285, 16598, 264, 491, 2357, 440, 279, 2574, 795, 506, 279, 5024, 2234, 13, 198, 1726, 285, 17167, 25, 198, 309, 795, 25, 561, 795, 310, 5479, 13, 198, 309, 1097, 25, 561, 2234, 310, 5479, 318, 15, 5792, 1857, 553, 198, 1726, 285, 58276, 25, 198, 309, 58173, 25, 1368, 1097, 369, 680, 314, 13854, 13, 198, 285, 4071, 198, 285, 413, 1097, 361, 220, 15, 466, 1097, 835, 638, 2406, 25, 198, 309, 4673, 58173, 437, 3684, 680, 314, 13854, 871, 198, 1726, 285, 491, 4922, 283, 5829, 2507, 8, 198, 1726, 285, 413, 1097, 606, 220, 15, 25, 198, 309, 491, 4922, 4381, 283, 638, 15569, 198, 309, 413, 638, 15569, 25, 198, 388, 638, 15569, 28044, 283, 491, 4922, 198, 309, 638, 15569, 283, 491, 4922, 198, 309, 413, 638, 2406, 606]
+[spec-stats] rounds=87 full_accept=40 len_hist=[0, 2, 6, 79] per_slot=[75/87=0.862 59/85=0.694 36/79=0.456] total=170/251=0.677 tok_per_round=2.954
+
+[generate_spec K=3] 256 tok in 1.076s = 236.89 tok/s (1.77x vs generate; this run's prime 0.038s)
+  acceptance: 170/251 = 67.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[A3-bw24-p1-1] post: 1935, 71, 163.00
+[18:35:16] Waiting for GPU idle (<1000 MHz)...
+[18:35:21] GPU idle at 240 MHz
+[A3-bw24-p1-2] spec K=3 p1 - pre: 240, 60, 19.90
+[frspec-trim] self-trimmed head: 32768 rows of main output.weight (Q6_K)
+loaded qwen35 (33 layers, nextn=1)
+text prompt (146 chars) -> 28 tokens
+prompt tokens: [7734, 264, 12654, 709, 421, 5004, 264, 90651, 52589, 1103, 440, 5479, 11, 3572, 11, 321, 9637, 7289, 13, 28763, 2400, 913, 29642, 321, 4479, 18034, 13, 198]
+
+[generate]   255 tok in 1.919s = 132.89 tok/s (gen-only; this run's prime 0.033s)
+  tokens: [12237, 271, 1445, 18904, 1120, 1697, 11, 11906, 11, 5586, 1358, 1005, 5829, 25, 198, 262, 687, 1259, 2251, 3676, 701, 11, 795, 25, 5586, 1590, 198, 285, 638, 2127, 283, 795, 198, 285, 638, 28044, 25, 11906, 659, 1888, 642, 283, 2168, 198, 285, 638, 4381, 25, 11906, 659, 1888, 642, 283, 2168, 1358, 1005, 53019, 391, 32794, 25, 198, 262, 687, 1259, 2251, 3676, 701, 1590, 198, 285, 638, 15569, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 37429, 25, 11906, 58, 1888, 60, 283, 2168, 198, 285, 638, 2406, 25, 514, 283, 220, 15, 271, 262, 687, 5479, 1153, 11, 795, 25, 5586, 11, 1097, 25, 514, 8, 1411, 2168, 25, 198, 285, 4071, 198, 285, 16598, 264, 491, 2357, 440, 279, 2574, 795, 506, 279, 5024, 2234, 13, 198, 1726, 285, 17167, 25, 198, 309, 795, 25, 561, 795, 310, 5479, 13, 198, 309, 1097, 25, 561, 2234, 310, 5479, 318, 15, 5792, 1857, 553, 198, 1726, 285, 58276, 25, 198, 309, 58173, 25, 1368, 1097, 369, 680, 314, 13854, 13, 198, 285, 4071, 198, 285, 413, 1097, 361, 220, 15, 466, 1097, 835, 638, 2406, 25, 198, 309, 4673, 58173, 437, 3684, 680, 314, 13854, 871, 198, 1726, 285, 491, 4922, 283, 5829, 2507, 8, 198, 1726, 285, 413, 1097, 606, 220, 15, 25, 198, 309, 491, 4922, 4381, 283, 638, 15569, 198, 309, 413, 638, 15569, 25, 198, 388, 638, 15569, 28044, 283, 491, 4922, 198, 309, 638, 15569, 283, 491, 4922, 198, 309, 413, 638, 2406, 606]
+[spec-stats] rounds=87 full_accept=40 len_hist=[0, 2, 6, 79] per_slot=[75/87=0.862 59/85=0.694 36/79=0.456] total=170/251=0.677 tok_per_round=2.954
+
+[generate_spec K=3] 256 tok in 1.078s = 236.50 tok/s (1.78x vs generate; this run's prime 0.040s)
+  acceptance: 170/251 = 67.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[A3-bw24-p1-2] post: 1950, 70, 162.91
+[18:35:25] Waiting for GPU idle (<1000 MHz)...
+[18:35:30] GPU idle at 270 MHz
+[A3-llama-p1-1] spec p1 - pre: 270, 59, 18.57
+### llama 9b spec round 2026-07-09T18:35:32+03:00
+gpu-pre: 1620 MHz, 60, 35.97 W
+=== llama 9b p1-code-short ===
+prompt: 28 tok @ 131.9 tok/s | gen: 256 tok @ 121.37 tok/s
+gpu: 1950 MHz, 69, 169.27 W
+=== llama 9b p2-code-medium ===
+prompt: 1845 tok @ 5987.2 tok/s | gen: 256 tok @ 121.36 tok/s
+gpu: 1837 MHz, 70, 170.04 W
+=== llama 9b p3-agentic-long ===
+prompt: 6257 tok @ 5943.6 tok/s | gen: 256 tok @ 117.58 tok/s
+gpu: 1830 MHz, 71, 169.62 W
