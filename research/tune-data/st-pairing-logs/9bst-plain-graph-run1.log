@@ -1,0 +1,1 @@
+decode tg128 @ctx512: EAGER 128.9 tok/s (7.76 ms/tok) | GRAPH 97.6 tok/s (10.25 ms/tok) [recaptures=16] | speedup 0.757x
