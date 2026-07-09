@@ -1,0 +1,22 @@
+### bw24 27b ST spec round (K=3, BW24_SPEC_HPOST=1 BW24_SPEC_PMIN=0.4 BW24_SPEC_NV_W4=1 BW24_FRSPEC_TRIM=/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4/frspec-corpus-32768.gguf) 2026-07-09T14:44:31+03:00
+=== bw24 27b ST p1-code-short (K=3) ===
+gpu-pre: 510 MHz, 55, 16.74 W
+text prompt (145 chars) -> 27 tokens
+[generate]   255 tok in 6.318s = 40.36 tok/s (gen-only; this run's prime 0.092s)
+[generate_spec K=3] 256 tok in 2.865s = 89.01 tok/s (2.21x vs generate; this run's prime 0.096s)
+gpu-post: 1860 MHz, 70, 169.72 W
+=== bw24 27b ST p2-code-medium (K=3) ===
+gpu-pre: 210 MHz, 60, 20.10 W
+text prompt (6257 chars) -> 1845 tokens
+[generate]   255 tok in 6.422s = 39.71 tok/s (gen-only; this run's prime 1.292s)
+[generate_spec K=3] 256 tok in 2.992s = 85.23 tok/s (2.15x vs generate; this run's prime 1.306s)
+gpu-post: 1882 MHz, 69, 169.47 W
+=== bw24 27b ST p3-agentic-long (K=3) ===
+gpu-pre: 180 MHz, 59, 24.00 W
+## p3 round2 killed by harness shell timeout 2026-07-09T14:54:51+03:00; compute-apps at recovery: 293077, 260 MiB;
+=== bw24 27b ST p3-agentic-long (K=3) RERUN ===
+gpu-pre: 180 MHz, 50, 11.81 W
+text prompt (22822 chars) -> 6257 tokens
+[generate]   255 tok in 6.517s = 39.13 tok/s (gen-only; this run's prime 4.469s)
+[generate_spec K=3] 256 tok in 3.568s = 71.47 tok/s (1.83x vs generate; this run's prime 4.499s)
+gpu-post: 1785 MHz, 69, 146.45 W

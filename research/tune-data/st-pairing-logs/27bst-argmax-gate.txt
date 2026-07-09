@@ -1,0 +1,4 @@
+# 27B ST argmax gate, session 2026-07-09 13:34, console-captured
+loaded Qwen35 from safetensors (65 layers)
+prompt tokens: [55]
+verify-prefill argmax=1178  decode argmax=1178  logit maxdiff=0.000e0  MATCH

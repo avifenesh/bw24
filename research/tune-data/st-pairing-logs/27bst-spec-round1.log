@@ -1,0 +1,19 @@
+### bw24 27b ST spec round (K=3, BW24_SPEC_HPOST=1 BW24_SPEC_PMIN=0.4 BW24_SPEC_NV_W4=1 BW24_FRSPEC_TRIM=/data/ai-ml/hf-models/nvidia-qwen36-27b-nvfp4/frspec-corpus-32768.gguf) 2026-07-09T14:29:34+03:00
+=== bw24 27b ST p1-code-short (K=3) ===
+gpu-pre: 180 MHz, 57, 11.25 W
+text prompt (145 chars) -> 27 tokens
+[generate]   255 tok in 6.305s = 40.44 tok/s (gen-only; this run's prime 0.092s)
+[generate_spec K=3] 256 tok in 2.846s = 89.59 tok/s (2.22x vs generate; this run's prime 0.096s)
+gpu-post: 1867 MHz, 70, 169.72 W
+=== bw24 27b ST p2-code-medium (K=3) ===
+gpu-pre: 180 MHz, 60, 18.69 W
+text prompt (6257 chars) -> 1845 tokens
+[generate]   255 tok in 6.412s = 39.77 tok/s (gen-only; this run's prime 1.296s)
+[generate_spec K=3] 256 tok in 2.978s = 85.64 tok/s (2.15x vs generate; this run's prime 1.306s)
+gpu-post: 1875 MHz, 70, 169.62 W
+=== bw24 27b ST p3-agentic-long (K=3) ===
+gpu-pre: 180 MHz, 59, 18.79 W
+text prompt (22822 chars) -> 6257 tokens
+[generate]   255 tok in 6.503s = 39.21 tok/s (gen-only; this run's prime 4.453s)
+[generate_spec K=3] 256 tok in 3.557s = 71.69 tok/s (1.83x vs generate; this run's prime 4.482s)
+gpu-post: 1867 MHz, 73, 169.86 W

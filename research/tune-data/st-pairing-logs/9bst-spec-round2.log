@@ -1,0 +1,19 @@
+### bw24 9b ST spec round (K=2, BW24_SPEC_PMIN=0.3 BW24_FRSPEC_TRIM=/data/ai-ml/hf-models/qwen35-9b-nvfp4-st-modelopt/frspec-9bst-modelopt-32768.gguf) 2026-07-09T14:26:23+03:00
+=== bw24 9b ST p1-code-short (K=2) ===
+gpu-pre: 180 MHz, 54, 12.00 W
+text prompt (145 chars) -> 27 tokens
+[generate]   255 tok in 1.964s = 129.81 tok/s (gen-only; this run's prime 0.035s)
+[generate_spec K=2] 256 tok in 1.245s = 204.88 tok/s (1.58x vs generate; this run's prime 0.038s)
+gpu-post: 2145 MHz, 66, 164.66 W
+=== bw24 9b ST p2-code-medium (K=2) ===
+gpu-pre: 180 MHz, 57, 18.72 W
+text prompt (6257 chars) -> 1845 tokens
+[generate]   255 tok in 2.023s = 126.03 tok/s (gen-only; this run's prime 0.385s)
+[generate_spec K=2] 256 tok in 1.317s = 193.60 tok/s (1.54x vs generate; this run's prime 0.409s)
+gpu-post: 2077 MHz, 68, 170.64 W
+=== bw24 9b ST p3-agentic-long (K=2) ===
+gpu-pre: 180 MHz, 58, 18.33 W
+text prompt (22822 chars) -> 6257 tokens
+[generate]   255 tok in 2.055s = 124.10 tok/s (gen-only; this run's prime 1.392s)
+[generate_spec K=2] 256 tok in 1.140s = 223.77 tok/s (1.80x vs generate; this run's prime 1.404s)
+gpu-post: 2070 MHz, 70, 163.44 W

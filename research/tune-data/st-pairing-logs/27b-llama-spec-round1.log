@@ -1,0 +1,11 @@
+### llama 27b spec round 2026-07-09T14:44:07+03:00
+gpu-pre: 1590 MHz, 51, 35.20 W
+=== llama 27b p1-code-short ===
+prompt: 28 tok @ 157.3 tok/s | gen: 256 tok @ 86.41 tok/s
+gpu: 1777 MHz, 61, 168.07 W
+=== llama 27b p2-code-medium ===
+prompt: 1845 tok @ 1859.7 tok/s | gen: 256 tok @ 91.65 tok/s
+gpu: 1777 MHz, 64, 169.47 W
+=== llama 27b p3-agentic-long ===
+prompt: 6257 tok @ 2065.6 tok/s | gen: 256 tok @ 77.14 tok/s
+gpu: 1725 MHz, 67, 170.41 W

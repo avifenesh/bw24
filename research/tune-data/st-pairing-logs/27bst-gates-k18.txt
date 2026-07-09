@@ -1,0 +1,32 @@
+=== K=1 ===
+[generate_spec K=1] 32 tok in 0.588s = 52.76 tok/s (1.34x vs generate; this run's prime 0.029s)
+  acceptance: 15/16 = 93.8%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=2 ===
+[generate_spec K=2] 32 tok in 0.628s = 49.33 tok/s (1.26x vs generate; this run's prime 0.029s)
+  acceptance: 16/30 = 53.3%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=3 ===
+[generate_spec K=3] 32 tok in 0.471s = 65.85 tok/s (1.68x vs generate; this run's prime 0.028s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=4 ===
+[generate_spec K=4] 32 tok in 0.465s = 66.70 tok/s (1.69x vs generate; this run's prime 0.028s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=5 ===
+[generate_spec K=5] 32 tok in 0.457s = 67.87 tok/s (1.74x vs generate; this run's prime 0.029s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=6 ===
+[generate_spec K=6] 32 tok in 0.462s = 67.15 tok/s (1.74x vs generate; this run's prime 0.027s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=7 ===
+[generate_spec K=7] 32 tok in 0.456s = 68.00 tok/s (1.76x vs generate; this run's prime 0.029s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=8 ===
+[generate_spec K=8] 32 tok in 0.462s = 67.11 tok/s (1.73x vs generate; this run's prime 0.029s)
+  acceptance: 23/25 = 92.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===

@@ -1,0 +1,39 @@
+# 9B ST gates, session 2026-07-09 (~13:25-13:35), console-captured (run before any numbers)
+# argmax gate: ./target/release/run-gen /data/ai-ml/hf-models/qwen35-9b-nvfp4-st-modelopt argmax
+loaded Qwen35 from safetensors (33 layers)
+prompt tokens: [55]
+verify-prefill argmax=268  decode argmax=268  logit maxdiff=0.000e0  MATCH
+
+# spec self-consistency: BW24_SPEC_K=$K BW24_SPEC_PMIN=0.3 BW24_FRSPEC_TRIM=.../frspec-9bst-modelopt-32768.gguf run-spec <dir> check
+=== K=1 ===
+[generate_spec K=1] 32 tok in 0.303s = 102.24 tok/s (0.83x vs generate; this run's prime 0.008s)
+  acceptance: 11/20 = 55.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=2 ===
+[generate_spec K=2] 32 tok in 0.294s = 105.52 tok/s (0.87x vs generate; this run's prime 0.007s)
+  acceptance: 14/29 = 48.3%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=3 ===
+[generate_spec K=3] 32 tok in 0.304s = 101.86 tok/s (0.84x vs generate; this run's prime 0.008s)
+  acceptance: 14/36 = 38.9%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=4 ===
+[generate_spec K=4] 32 tok in 0.310s = 100.10 tok/s (0.82x vs generate; this run's prime 0.008s)
+  acceptance: 14/40 = 35.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=5 ===
+[generate_spec K=5] 32 tok in 0.316s = 98.15 tok/s (0.81x vs generate; this run's prime 0.008s)
+  acceptance: 14/43 = 32.6%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=6 ===
+[generate_spec K=6] 32 tok in 0.318s = 97.53 tok/s (0.82x vs generate; this run's prime 0.007s)
+  acceptance: 14/44 = 31.8%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=7 ===
+[generate_spec K=7] 32 tok in 0.324s = 95.67 tok/s (0.78x vs generate; this run's prime 0.007s)
+  acceptance: 14/44 = 31.8%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+=== K=8 ===
+[generate_spec K=8] 32 tok in 0.330s = 93.93 tok/s (0.78x vs generate; this run's prime 0.007s)
+  acceptance: 14/44 = 31.8%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
