@@ -15,6 +15,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("GPU: {}", e.ctx().name()?);
     let mut fails = 0;
 
+    // Weight-oracle sections mmap real GGUF tensors; an HF safetensors dir has none, so those
+    // sections skip (the synthetic checks above them cover the kernel math either way).
+    let gguf_arg: Option<String> = std::env::args().nth(1).filter(|p| {
+        let is_dir = std::path::Path::new(p).is_dir();
+        if is_dir {
+            println!("(arg is an HF safetensors dir — GGUF weight-oracle sections will be skipped; \
+                      pass a GGUF path to run them)");
+        }
+        !is_dir
+    });
+
     // --- RMSNorm ---
     {
         let (ncols, nrows) = (320usize, 4usize);
@@ -414,7 +425,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- qmatvec (resident-quant GEMM) vs cpu_linear(dequant(W)) on real GGUF weights ---
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType, dequant};
         use bw24_runtime::cpu_linear;
         let g = GgufFile::open(&path)?;
@@ -456,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // --- Stage-B fast Q8_0 dp4a vs Stage-A f32 qmatvec (int8-activation quant => looser tol) ---
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         if let Some(t) = g.find("blk.0.ffn_gate.weight").filter(|t| t.ggml_type == GgmlType::Q8_0) {
@@ -570,7 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- GEMM (tensor-core int8) vs dp4a matvec: BIT-EQUIVALENCE gate (the prefill root fix). ---
     // s32 accumulate is exact vs dp4a; only the final f32 block-scale rounding differs -> rel<1e-3.
     // Runs T in {16,64,128,512} per dtype on REAL GGUF tensors. Needs a model path arg.
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         // (tensor, GEMM qt, dp4a-fast selector). Each is validated if present with the right type.
@@ -880,7 +891,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // reduction (warp-only shfl) change -> int sumi identical, only f32 reduction-order rounding
     // differs. Require rel < 1e-3. m=1 (decode regime) across in_f ∈ {model shapes} and out_f
     // small + 4096. Q8_0/Q4_K/Q6_K on the model-path arg; NVFP4 on the 9B model below.
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         let mmvq_cases: [(&str, i32, &str); 5] = [
@@ -927,7 +938,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // grid split changed -> outputs must be BIT-IDENTICAL (rel == 0.0) to separate m=1 launches.
     // Uses the model's real Q8_0 tensors when >=2 same-in_f ones exist (35B: attn_qkv+attn_gate
     // uneven pair + wq/wk/wv triple; other GGUFs: any same-in_f q8_0 pair). ---
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         // candidate name sets, first (pair) and (triple) that fully resolve as Q8_0 win.
@@ -1152,7 +1163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // nest (weight loaded once, reused across m token columns) so per-(token,row) it MUST be
     // bit-identical to qmatvec_mmvq_raw (grid.y=m). m∈{2..8}; mcols=2/4/8 tiers (b8 = the K=4..7
     // spec verify T=5..8 fix; masked columns c>=m must not perturb c<m). rel<1e-3 + bit-exact. ---
-    if let Some(path) = std::env::args().nth(1) {
+    if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType};
         let g = GgufFile::open(&path)?;
         // pick ONE 2D tensor per daily dtype (so Q8_0/Q5_K get covered regardless of model naming).
@@ -1219,7 +1230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf";
         let path9 = if std::path::Path::new(GGUF_9B).exists() { Some(GGUF_9B.to_string()) } else { None };
         // prefer the model under test if it has NVFP4 tensors; else the 9B.
-        let srcs: Vec<String> = std::env::args().nth(1).into_iter().chain(path9).collect();
+        let srcs: Vec<String> = gguf_arg.clone().into_iter().chain(path9).collect();
         let mut done = false;
         for path in srcs {
             if done { break; }
