@@ -1,0 +1,26 @@
+[bw24] KV cache format: K=fp8 V=q5_1 (non-default — new numeric config)
+loaded safetensors (65 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   31 tok in 0.657s = 47.18 tok/s (gen-only; this run's prime 0.020s)
+  tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]
+
+[generate_spec K=1] 32 tok in 0.537s = 57.76 tok/s (1.22x vs generate; this run's prime 0.020s)
+  acceptance: 15/16 = 93.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.407s = 76.20 tok/s (1.62x vs generate; this run's prime 0.020s)
+  acceptance: 19/26 = 73.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.322s = 96.40 tok/s (2.04x vs generate; this run's prime 0.020s)
+  acceptance: 24/27 = 88.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.342s = 90.52 tok/s (1.92x vs generate; this run's prime 0.020s)
+  acceptance: 25/32 = 78.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.369s = 83.91 tok/s (1.78x vs generate; this run's prime 0.020s)
+  acceptance: 27/42 = 64.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.595s = 52.10 tok/s (1.10x vs generate; this run's prime 0.020s)
+  acceptance: 33/48 = 68.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

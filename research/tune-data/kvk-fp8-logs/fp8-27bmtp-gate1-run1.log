@@ -1,0 +1,6 @@
+[bw24] KV cache format: K=fp8 V=q5_1 (non-default — new numeric config)
+loaded qwen35 (65 layers)
+prompt tokens: [55]
+prefill argmax=1178  decode argmax=1178  logit maxdiff=3.940e-1  MATCH
+generated 16 tokens in 0.328s = 48.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.020s) [stop: MaxNew]
+tokens: [1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55, 1178, 101696, 198, 55]

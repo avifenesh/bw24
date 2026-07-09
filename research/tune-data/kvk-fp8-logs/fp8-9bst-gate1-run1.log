@@ -1,0 +1,4 @@
+[bw24] KV cache format: K=fp8 V=q5_1 (non-default — new numeric config)
+loaded Qwen35 from safetensors (33 layers)
+prompt tokens: [55]
+verify-prefill argmax=268  decode argmax=268  logit maxdiff=0.000e0  MATCH

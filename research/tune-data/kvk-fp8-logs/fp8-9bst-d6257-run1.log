@@ -1,0 +1,2 @@
+[bw24] KV cache format: K=fp8 V=q5_1 (non-default — new numeric config)
+decode tg128 @ctx6257: EAGER 122.1 tok/s (8.19 ms/tok)
