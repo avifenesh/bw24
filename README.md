@@ -107,10 +107,10 @@ Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x)
 | Qwen3.6-27B (K=3 + generic trim) | 109 / 100 / 78.8 | 86.4 / 89.9 / 73.2 | **1.26x** / **1.11x** / **1.08x** |
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 251 / 232 / 193 | 215 / 208.5 / 201.7 | **1.17x** / **1.11x** / 0.96x |
 | Qwen3.5-9B ST (K=2-3 per-content + native trim) | 203.9 / 192.5 / 256.0 | 122.9 / 122.2 / 118.2 | **1.66x** / **1.58x** / **2.17x** |
-| Qwen3.6-27B ST (K=3 + HPOST + own-head trim) | 92.9 / 81.3 / 84.6 | 79.7 / 84.7 / 71.3 | **1.17x** / 0.96x / **1.19x** |
+| Qwen3.6-27B ST (K=3 + HPOST + own-head trim, per-content pmin) | 92.9 / 88.1 / 84.6 | 79.7 / 84.7 / 71.3 | **1.17x** / 1.04x / **1.19x** |
 <!-- PERF-SPEC:END -->
 
-The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at serve-best config. Optimal config is content-class dependent. The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).
+The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at serve-best config. Optimal config is content-class dependent. Caveat on the long-agentic column: a text audit found the greedy continuations there partially degenerate into repetition on both engines symmetrically — ratios stand, absolutes overstate real agentic throughput (`rig5090.jsonl` tag `p3-degeneration-audit`; prompt replacement pending). The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).
 
 **Reproducing:** every artifact is public — trimmed draft-head GGUFs, exact prompts, and full configs at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). llama.cpp build/serve flags are in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); the harness is `research/e2e/run-e2e.sh`.
 

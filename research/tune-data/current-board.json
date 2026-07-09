@@ -88,10 +88,10 @@
         ]
       },
       {
-        "model": "Qwen3.6-27B ST (K=3 + HPOST + own-head trim)",
+        "model": "Qwen3.6-27B ST (K=3 + HPOST + own-head trim, per-content pmin)",
         "bw24": [
           92.9,
-          81.3,
+          88.1,
           84.6
         ],
         "llama": [
