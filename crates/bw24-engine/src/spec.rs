@@ -1954,6 +1954,8 @@ impl HybridModel {
         let mut prev_last_h = e.zeros(n_embd)?;   // predecessor hidden entering the chunk
         let mut seed_buf = e.zeros(n_embd)?;
         let mut preds_d = e.alloc_u32_zeroed(chunk)?;
+        let nll_on = std::env::var("BW24_REPLAY_NLL").as_deref() == Ok("1");
+        let (mut nll_sum, mut nll_cnt) = (0f64, 0u64);
         let mut s = 0usize;
         while s < t_total {
             let cend = (s + chunk).min(t_total);
@@ -1966,6 +1968,23 @@ impl HybridModel {
             for j in 0..tc { e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?; }
             let preds = e.dtoh_u32(&preds_d)?;
             for j in 0..tc { bg[s + j + 1] = preds[j]; }
+            // BW24_REPLAY_NLL=1: teacher-forced NLL/perplexity over the same forced pass — the
+            // checkpoint-quality metric (position j's logits score the GOLD next token).
+            if nll_on {
+                let jmax = if cend < t_total { tc } else { tc - 1 };  // last pos has no gold next
+                if jmax > 0 {
+                    let ids: Vec<u32> = (0..jmax).map(|j| tokens[s + j + 1]).collect();
+                    let rows: Vec<i32> = (0..jmax as i32).collect();
+                    let idsd = e.htod_u32_v(&ids)?;
+                    let rowsd = e.htod_i32(&rows)?;
+                    let mut outd = e.zeros(jmax)?;
+                    e.softmax_gather(&tl_d, n_vocab, &idsd, &rowsd, &mut outd, n_vocab, jmax, 1.0)?;
+                    for pr in e.dtoh(&outd)? {
+                        nll_sum += -((pr.max(1e-30)) as f64).ln();
+                        nll_cnt += 1;
+                    }
+                }
+            }
             if let Some(f) = hdump.as_deref_mut() {
                 use std::io::Write;
                 let host: Vec<f32> = e.dtoh(&vx)?;
@@ -2040,6 +2059,10 @@ impl HybridModel {
             for j in 0..drafts.len() { targets.push(bg[*p + 1 + j]); }
         }
         rows.sort_by_key(|r| r.0);
+        if nll_cnt > 0 {
+            let mean = nll_sum / nll_cnt as f64;
+            println!("[replay-nll] tokens={nll_cnt} nll/token={mean:.5} ppl={:.4}", mean.exp());
+        }
         Ok((rows, bg))
     }
 }
