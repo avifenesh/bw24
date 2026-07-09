@@ -59,8 +59,10 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
     let p = |s: &str| format!("blk.{il}.{s}");
     // MiniMax-M3: moe_layer_freq[il]==0 -> this layer is a DENSE-FFN layer (layers 0..2) even
     // though the arch is MoE; force the Dense arm (its mlp.{p}_proj names map via ggml_to_hf).
+    // Hy3: `first_k_dense_replace` leading layers are dense-FFN (REAP50: layer 0 only).
     let dense_override = cfg.m3.as_ref()
-        .is_some_and(|m| m.moe_layer_freq.get(il as usize).copied() == Some(0));
+        .is_some_and(|m| m.moe_layer_freq.get(il as usize).copied() == Some(0))
+        || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace);
     Ok(if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
         let n_expert = moe.expert_count as usize;
         // Expert loader. `spill` carries an optional (GgufFile, SpillCtx) — only the GGUF on-disk

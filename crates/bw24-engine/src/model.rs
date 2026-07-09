@@ -684,6 +684,40 @@ impl HostExps {
                                     -> Result<Self, Box<dyn std::error::Error>> {
         let t = src.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
         assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
+        // MMAP-BACKED SPILL TIER (Hy3 repack dir, 2026-07-09): when the source's on-disk layout IS
+        // already the engine's expert layout (one expert-axis-slowest slab file per (layer, proj),
+        // the transcoder's contract), back the HostExps with `HostBuf::Mmap` directly — ZERO host
+        // copy. The default copy path below would pin/allocate the WHOLE stacked slab (80.5 GB for
+        // Hy3-REAP50 on a 60 GB host = the M3 first-load OOM class); the mmap tier instead lets the
+        // page cache carry the hot expert mass (RAM tier) and demand-faults the overflow from NVMe,
+        // exactly like the proven M3 `.bw24-repack` path (model.rs NVFP4 disk arm). Bit-identity:
+        // `expert_bytes(e)` slices the same on-disk bytes the copy would have staged. The SLRU VRAM
+        // cache stacks on top unchanged. MADV_RANDOM is applied by the source at open.
+        if let Some((map, off, len)) = src.find_expert_mmap(name) {
+            let qtype = match t.ggml_type {
+                GgmlType::Q8_0 => QT_Q8_0,
+                GgmlType::Q4_K => QT_Q4_K,
+                GgmlType::Q6_K => QT_Q6_K,
+                GgmlType::Q5_K => QT_Q5_K,
+                GgmlType::Q3_K => QT_Q3_K,
+                GgmlType::IQ4_XS => QT_IQ4_XS,
+                GgmlType::IQ3_S => QT_IQ3_S,
+                GgmlType::NVFP4 => QT_NVFP4,
+                other => panic!("exps {name} unsupported quant {other:?}"),
+            };
+            let in_f = t.ne[0] as usize;
+            let out_f = t.ne[1] as usize;
+            let n_expert = t.ne[2] as usize;
+            let expert_stride = len / n_expert;
+            let row_bytes = len / (out_f * n_expert);
+            assert_eq!(expert_stride, out_f * row_bytes,
+                "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
+            assert_eq!(len, n_expert * expert_stride, "{name} mmap len != n_expert*stride");
+            return Ok(HostExps {
+                bytes: HostBuf::Mmap { map, off, len },
+                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None,
+            });
+        }
         let raw: &[u8] = &t.bytes;
         // All quant types the staged-expert qmatvec can decode (dp4a-fast or Stage-A f32).
         let qtype = match t.ggml_type {

@@ -678,8 +678,8 @@ impl HybridModel {
         } else {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
-        // M3 has no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.m3.is_none();
+        // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
+        let gated = self.cfg.attn_out_gate();
         let (mut q, gate) = if gated {
             let mut q = e.uninit(n_head * head_dim)?;
             let mut gate = e.uninit(n_head * head_dim)?;
@@ -879,8 +879,8 @@ impl HybridModel {
             (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
         };
         // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
-        // M3 has no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.m3.is_none();
+        // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
+        let gated = self.cfg.attn_out_gate();
         let (mut q, gate) = if gated {
             let mut q = e.uninit(n_head * head_dim)?;
             let mut gate = e.uninit(n_head * head_dim)?;

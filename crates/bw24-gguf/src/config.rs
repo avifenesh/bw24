@@ -50,10 +50,13 @@ impl Arch {
         };
         Arch::parse(ggml)
     }
-    /// Arches the HybridModel loader/forward handles. MinimaxM3 qualifies as the degenerate
+    /// Arches the HybridModel loader/forward handles. MinimaxM3 and Hy3 qualify as the degenerate
     /// hybrid: full_attention_interval=0 -> every layer Mixer::Full, no SSM state, MoE FFN.
+    /// (Hy3 joined 2026-07-09: the decode/KV/spec machinery lives on HybridModel only — the dense
+    /// `Model` has no decode path — and M3 already proved the dense-attention-MoE-as-degenerate-
+    /// hybrid shape end to end. "Not qwen35 hybrid" holds where it matters: zero SSM/linear layers.)
     pub fn is_hybrid(&self) -> bool {
-        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3)
+        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3)
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
@@ -357,6 +360,29 @@ impl ModelConfig {
     /// Count of full-attention layers (the ones that carry a growing KV cache).
     pub fn n_full_attn_layers(&self) -> u32 {
         (0..self.n_layer).filter(|&il| self.layer_kind(il) == LayerKind::FullAttention).count() as u32
+    }
+
+    /// qwen35-class fused [q|gate] attention output gate: wq packs q AND a per-head sigmoid gate
+    /// (out = 2*n_head*head_dim) that `q_gate_split` separates. M3 and Hy3 have NO output gate —
+    /// their wq out is exactly n_head*head_dim, and running the split would read 2x out of bounds.
+    /// One predicate so every full-attn site (prefill/prime/decode/dc/spec) agrees.
+    pub fn attn_out_gate(&self) -> bool {
+        self.m3.is_none() && self.hy3.is_none()
+    }
+
+    /// DeepSeek-V3-class sigmoid routing knobs, arch-agnostic: `Some((scaling_factor, route_norm))`
+    /// when the router scores with sigmoid (+ optional selection bias via `exp_probs_b`), `None`
+    /// for the softmax archs. route_norm: sum-normalize the selected weights before scaling
+    /// (true for M3 — its modeling code always normalizes — and for Hy3's `route_norm=true`).
+    /// Sites that must NOT enter the fused SOFTMAX device-router arms key off `is_some()`.
+    pub fn sigmoid_router(&self) -> Option<(f32, bool)> {
+        if let Some(m3) = self.m3.as_ref() {
+            if m3.sigmoid_routing { return Some((m3.routed_scaling_factor, true)); }
+        }
+        if let Some(hy3) = self.hy3.as_ref() {
+            if hy3.sigmoid_routing { return Some((hy3.router_scaling_factor, hy3.route_norm)); }
+        }
+        None
     }
 }
 
@@ -879,7 +905,13 @@ mod hf_tests {
         let mc = ModelConfig::from_hf(&c);
         assert_eq!(mc.arch, Arch::Hy3);
         assert!(mc.arch.is_moe());
-        assert!(!mc.arch.is_hybrid());
+        // Degenerate hybrid (the M3 class): rides HybridModel with every layer full-attention.
+        assert!(mc.arch.is_hybrid());
+        assert_eq!(mc.full_attention_interval, 0, "Hy3 has no linear-attention layers");
+        assert!(!mc.attn_out_gate(), "Hy3 wq has no fused [q|gate] output gate");
+        let (sf, norm) = mc.sigmoid_router().expect("Hy3 routes with sigmoid");
+        assert!((sf - 2.826).abs() < 1e-6);
+        assert!(norm);
         assert_eq!(mc.n_layer, 81, "HF config convention includes the appended MTP block");
         assert_eq!(mc.nextn_predict_layers, 1);
         assert_eq!(mc.n_embd, 4096);

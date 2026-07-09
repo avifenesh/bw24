@@ -77,6 +77,14 @@ pub trait TensorSource {
     /// The checkpoint directory, if this source is a safetensors HF dir (None for GGUF). Used by
     /// the ST expert disk-tier to place its repack cache next to the shards.
     fn st_dir(&self) -> Option<&std::path::Path> { None }
+    /// Zero-copy mmap window for a STACKED 3D expert tensor (the disk-spill tier's byte source):
+    /// `(shared file mmap, byte offset of expert 0, total expert bytes)`. `Some` only when the
+    /// source's on-disk layout IS already the engine's expert layout (expert-axis-slowest,
+    /// contiguous strides) — the Hy3 Q4_K repack dir. The engine then backs `HostExps` with
+    /// `HostBuf::Mmap` directly (page cache = the RAM tier, faults = the NVMe tier) instead of
+    /// copying an 80 GB expert set into RAM/pinned. None everywhere else (GGUF spill has its own
+    /// file-mmap path; safetensors gathers/repacks).
+    fn find_expert_mmap(&self, _ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> { None }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -115,8 +123,11 @@ struct RepackTensor {
 pub struct Hy3RepackSource {
     cfg: ModelConfig,
     dir: PathBuf,
+    source_dir: Option<PathBuf>,
     tensors: BTreeMap<String, RepackTensor>,
-    files: BTreeMap<PathBuf, Mmap>,
+    // Arc so stacked expert slabs can be handed to the engine's HostBuf::Mmap tier zero-copy
+    // (find_expert_mmap) while `find` keeps borrowing the same mapping.
+    files: BTreeMap<PathBuf, std::sync::Arc<Mmap>>,
 }
 
 impl Hy3RepackSource {
@@ -147,8 +158,8 @@ impl Hy3RepackSource {
             });
         }
 
-        let cfg_path = top.string("source_dir")
-            .map(PathBuf::from)
+        let source_dir = top.string("source_dir").map(PathBuf::from);
+        let cfg_path = source_dir.clone()
             .map(|p| p.join("config.json"))
             .filter(|p| p.exists())
             .unwrap_or_else(|| dir.join("config.json"));
@@ -162,7 +173,16 @@ impl Hy3RepackSource {
             let p = dir.join(&t.file);
             let f = std::fs::File::open(&p)?;
             let map = unsafe { Mmap::map(&f)? };
-            files.insert(t.file.clone(), map);
+            // Expert slab files back the disk-spill tier (routing-driven random access):
+            // MADV_RANDOM kills readahead waste, same as the GGUF/M3 spill mmaps.
+            #[cfg(target_os = "linux")]
+            if t.expert_stride.is_some() {
+                unsafe {
+                    unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
+                    let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
+                }
+            }
+            files.insert(t.file.clone(), std::sync::Arc::new(map));
         }
         for (name, t) in &tensors {
             let len = files.get(&t.file)
@@ -176,11 +196,17 @@ impl Hy3RepackSource {
             }
         }
 
-        Ok(Self { cfg, dir, tensors, files })
+        Ok(Self { cfg, dir, source_dir, tensors, files })
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The original HF checkpoint dir recorded by the transcoder (tokenizer files live there —
+    /// the repack dir carries only weights + manifest).
+    pub fn source_dir(&self) -> Option<&Path> {
+        self.source_dir.as_deref()
     }
 
     pub fn tensor_count(&self) -> usize {
@@ -219,6 +245,16 @@ impl TensorSource for Hy3RepackSource {
             ggml_type: t.ggml_type,
             ne: t.ne.clone(),
         })
+    }
+
+    /// Stacked expert slabs live one-per-file with expert 0 at byte 0 (the transcoder's layout);
+    /// hand the engine the shared mmap so `HostExps` can be mmap-backed with ZERO copy — the
+    /// spill-tier contract for the 80 GB Hy3 expert set (page cache = RAM tier, faults = NVMe).
+    fn find_expert_mmap(&self, ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> {
+        let t = self.tensors.get(ggml_name)?;
+        t.expert_stride?;
+        let map = self.files.get(&t.file)?;
+        Some((map.clone(), 0, t.bytes))
     }
 }
 

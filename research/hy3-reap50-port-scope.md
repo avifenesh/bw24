@@ -1,8 +1,54 @@
 # Hy3 REAP50 port scope
 
-Status as of 2026-07-09T01:02:05+03:00: CPU/disk-only preparation lane. No GPU loads, kernel checks,
-or target-rig quality gates were run here. All quality and performance statements in this dossier are
-unverified — pending target-rig gates.
+Status as of 2026-07-09T05:41:59+03:00: **PHASE-1 COMPLETE — ALL GATES GREEN.**
+
+Target-rig GPU gates passed (lane/hy3port e47a118). Full forward validation of the 80-layer
+Hy3-REAP50 Q4_K repack through the bw24 engine on RTX 5090 Laptop. Phase-1 = plain-decode
+correctness + first-light perf characterization. Phase-2 (spec-decode with MTP-192 head) pending.
+
+### Phase-1 gate summary (2026-07-09)
+
+| Gate | Result | Detail |
+|------|--------|--------|
+| Argmax chat-sky (628) | PASS | maxdiff=1.342e0 |
+| Argmax chat-haiku (35) | PASS | maxdiff=1.875e0 |
+| Argmax chat-math (31753) | PASS | maxdiff=1.700e0 |
+| Argmax raw-id (13847) | PASS | (prior run) |
+| Argmax perf-d512 (48813) | PASS | maxdiff=2.241e0 |
+| Coherent-text x3 | PASS | sky, haiku, 17*23=391 |
+| Determinism x2 (byte-identical) | PASS | smoke1b vs smoke1c filtered |
+| Kernel-check 27B NVFP4-MTP | ALL GREEN | 33 kernels + FA + KVQ + MoE |
+| 35B argmax gate (198) | PASS | maxdiff=7.315e-1, 141 tok/s resident |
+| cargo test -p bw24-gguf | PASS | 44 passed, 0 failed |
+
+### First-light performance (tg64@d512, ST greedy, no spec)
+
+- 0.15 tok/s (64 tokens in 434.6s)
+- MoE SLRU cache: 4417 slots, hit-rate 56.9% (warming: 39.9 -> 45.2 -> 53.0 -> 56.9%)
+- Staged H2D: 3073.73 GB total for 64 tokens (~48 GB/token average)
+- VRAM: 20.4 GB / 24 GB (model 81.5 GB, budget 19.2 GB -> SLRU cache + mmap spill)
+- RAM: 23 GB / 60 GB
+
+### Logit-maxdiff observation (M3-law class)
+
+Chat prompts show 1.3-1.9e0 maxdiff (short context), d512 raw shows 2.24e0 (long context).
+All argmax-safe. The magnitude comes from sigmoid near-tie expert flips in the MoE router:
+two experts with near-equal routing weight swap rank across prefill/decode FP-order differences.
+The winning token is unchanged — this is NOT a correctness concern at the argmax level.
+Documented in vLLM issue #47777 as a known property of Hy3's expert_bias precision sensitivity.
+
+### Dead ends
+
+1. Plain ST decode at 0.15 tok/s is bandwidth-starved (expert spill dominates: 48 GB/token H2D).
+   Interactive use requires spec-decode with the MTP head — plain decode is only useful for
+   correctness validation and cache-warming characterization.
+2. smoke1a was an incomplete initial run (no NGEN set, produced only a token log without generation).
+
+### Next: phase-2
+
+Spec-decode integration with the transcoded MTP-192 head (lane/hy3-mtp asset at
+/data/ai-ml/hf-models/hy3-reap50-q4k-bw24/mtp, 2.11 GB, 192 experts). Expected to bring
+interactive decode into the 5-15 tok/s range depending on acceptance rate and K choice.
 
 ## Scope law
 

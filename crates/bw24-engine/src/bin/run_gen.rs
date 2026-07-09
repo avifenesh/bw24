@@ -18,13 +18,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .expect("usage: run-gen <model.gguf|hf_dir> [tok ids...] | --prompt \"text\"");
     let e = Engine::new(0)?;
-    // DIRECTORY path = safetensors HF checkpoint (MiniMax-M3 first-load path; GGUF stays the
-    // dense-model norm). Tokenizer/chat paths below still need GGUF — ST runs raw-id only for now.
+    // DIRECTORY path = safetensors HF checkpoint (MiniMax-M3 first-load path) OR a bw24 repack
+    // dir (Hy3 Q4_K transcode: manifest.json + tensors/ + experts/). GGUF stays the dense norm.
     if std::path::Path::new(&path).is_dir() {
         let dir = std::path::Path::new(&path);
-        let st = bw24_gguf::source::SafetensorsSource::open(dir)?;
-        let model = HybridModel::load_from_source(&e, &st)?;
-        println!("loaded {:?} from safetensors ({} layers)", model.cfg.arch, model.cfg.n_layer);
+        // Repack dirs carry only weights; tokenizer files live in the manifest's source_dir.
+        let is_repack = dir.join("manifest.json").exists();
+        let (src, tok_dir): (Box<dyn bw24_gguf::source::TensorSource>, std::path::PathBuf) =
+            if is_repack {
+                let rs = bw24_gguf::source::Hy3RepackSource::open(dir)?;
+                let td = rs.source_dir()
+                    .filter(|d| d.join("tokenizer.json").exists())
+                    .unwrap_or(dir).to_path_buf();
+                (Box::new(rs), td)
+            } else {
+                (Box::new(bw24_gguf::source::SafetensorsSource::open(dir)?), dir.to_path_buf())
+            };
+        let model = HybridModel::load_from_source(&e, src.as_ref())?;
+        println!("loaded {:?} from {} ({} layers)", model.cfg.arch,
+                 if is_repack { "bw24 repack dir" } else { "safetensors" }, model.cfg.n_layer);
 
         // --- prompt: TEXT path (--prompt / BW24_PROMPT_FILE / BW24_PROMPT, tokenizer from the
         //     HF dir's tokenizer.json) or raw u32 ids (back-compat, the validation-gate path) ---
@@ -38,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .or_else(|| std::env::var("BW24_PROMPT").ok());
         let mut tokenizer: Option<Tokenizer> = None;
         let prompt: Vec<u32> = if let Some(text) = &prompt_text {
-            let tok = Tokenizer::from_hf_dir(dir)
+            let tok = Tokenizer::from_hf_dir(&tok_dir)
                 .map_err(|err| format!("HF tokenizer init failed: {err}"))?;
             let to_encode = if std::env::var("BW24_CHAT").is_ok() {
                 let rendered = tok.apply_chat_template(&[("user", text)], true);
@@ -93,11 +105,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the M3 serving path, and its KV-precision delta amplifies through the sigmoid router's
         // discontinuous top-k (expert flips) into false MISMATCHes (t2probe 2026-07-06: decode ==
         // verify EXACT all 60 layers; forward-vs-decode drifts 5e-2 -> >1 by L2 via routing flips).
-        let mut vcache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+        // n_new read up-front so the gate's decode cache is already sized for the generation
+        // that follows (no tokenwise re-prime — an 80-layer spilled MoE pays minutes per pass).
+        let n_new: usize = std::env::var("BW24_NGEN").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(16);
+        let max_ctx = prompt.len() + n_new.max(64) + 8;
+        let mut vcache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
         let n_vocab = model.output.out_features();
         let prefill_last = &prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab];
-        let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
+        let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let mut dec = Vec::new();
         for &t in &prompt { dec = model.decode_step(&e, t, &mut cache)?; }
         let (ap, ad) = (argmax(prefill_last), argmax(&dec));
@@ -108,19 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // --- TEXT path: greedy-generate BW24_NGEN tokens on the (already primed) decode cache
         //     and DETOKENIZE (mirrors the GGUF text path; raw-id runs keep the gate-only exit).
         if let Some(tok) = &tokenizer {
-            let n_new: usize = std::env::var("BW24_NGEN").ok()
-                .and_then(|s| s.parse().ok()).unwrap_or(16);
             let eos = tok.eos_id();
-            // grow-proof: the gate cache above was sized prompt+64; re-prime a cache sized for
-            // the requested generation length when it wouldn't fit.
-            let (mut gcache, mut logits) = if prompt.len() + n_new + 1 <= prompt.len() + 64 {
-                (cache, dec)
-            } else {
-                let mut c = bw24_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + n_new + 8)?;
-                let mut l = Vec::new();
-                for &t in &prompt { l = model.decode_step(&e, t, &mut c)?; }
-                (c, l)
-            };
+            let (mut gcache, mut logits) = (cache, dec);
             let mut out: Vec<u32> = Vec::new();
             e.stream().synchronize()?;
             let t0 = std::time::Instant::now();
@@ -135,6 +141,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("generated {} tokens in {dt:.3}s = {:.2} tok/s (ST greedy decode)",
                      out.len(), out.len() as f64 / dt);
             println!("tokens: {out:?}");
+            // MoE residency-cache report (hit-rate + PCIe) — the spill-tier health signal.
+            if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {
+                let total = hits + misses;
+                println!("MoE cache: {n_slots} slots | cumulative hits={hits} misses={misses} \
+                          (hit-rate={:.1}%) | staged {:.2} GB H2D",
+                         if total > 0 { hits as f64 / total as f64 * 100.0 } else { 0.0 },
+                         staged as f64 / 1e9);
+            }
             let text_ids: Vec<u32> = out.iter().copied().filter(|&id| id != eos).collect();
             let text = tok.decode(&text_ids);
             println!("OUTPUT TEXT: {text:?}");
