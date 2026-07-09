@@ -402,6 +402,25 @@ impl Engine {
             .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
     }
 
+    /// Scatter trimmed draft logits into full-vocab space: dst = -inf everywhere, then
+    /// dst[d2t[i]] = src[i]. Two launches (fill, scatter) — no grid-wide sync needed.
+    pub fn scatter_trim_logits(&self, src: &CudaSlice<f32>, d2t: &CudaSlice<u32>,
+                               dst: &mut CudaSlice<f32>, d_vocab: usize, n_vocab: usize)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let f1 = self.func("scatter_trim_logits_f32");
+        let f2 = self.func("scatter_trim_logits_pass2_f32");
+        let (dv, nv) = (d_vocab as i32, n_vocab as i32);
+        let cfg1 = LaunchConfig { grid_dim: (256, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(src).arg(d2t).arg(&mut *dst).arg(&dv).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let cfg2 = LaunchConfig { grid_dim: (d_vocab.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(src).arg(d2t).arg(&mut *dst).arg(&dv);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================
     // Counter-based randomness: every call takes (seed, stream_pos) — the caller owns the
     // event counter (one per sampled token). temp <= 0 arms are exact greedy limits.

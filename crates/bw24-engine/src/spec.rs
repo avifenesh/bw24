@@ -1317,9 +1317,13 @@ impl HybridModel {
         let sp_temp: f32 = std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
         let sampled = sp_temp > 0.0;
         let sp_seed: u64 = std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42);
-        if sampled && mtp.d2t.is_some() {
-            return Err("BW24_SPEC_TEMP: BW24_FRSPEC_TRIM unsupported in sampled mode (residual scatter across d2t pending)".into());
-        }
+        // Trimmed heads: q lives on the trimmed vocab; accept gathers use the TRIMMED index and
+        // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
+        // those, so their residual mass is p(x), correct by construction).
+        let d2t_dev: Option<CudaSlice<u32>> = if sampled {
+            match &mtp.d2t { Some(map) => Some(e.htod_u32_v(map)?), None => None }
+        } else { None };
+        let mut q_full_buf: Option<CudaSlice<f32>> = None;
         let mut sctr: u32 = 0;              // device sampling-event counter (gumbel streams)
         let mut uctr: u32 = 0;              // host uniform counter (accept tests)
         // host Philox4x32-10 (mirrors spec_sample.cu; independent stream via ctr_lo tag)
@@ -1493,6 +1497,7 @@ impl HybridModel {
             scratch.set_len(e, pos + base0 - 1)?;
             let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
+            let mut draft_idx: Vec<u32> = Vec::with_capacity(k);   // trimmed-vocab ids (== draft when untrimmed)
             if sampled { draft_logits.clear(); }
             if let (false, Some(gr)) = (sampled, &draft_graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
@@ -1538,6 +1543,7 @@ impl HybridModel {
                     };
                     let idx = e.dtoh_u32_one(&tok_d)?;
                     let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    if sampled { draft_idx.push(idx); }
                     if p_min > 0.0 {
                         let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
                         let p = e.dtoh(&p_d)?[0];
@@ -1621,7 +1627,7 @@ impl HybridModel {
                 }
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
-                    let idsd = e.htod_u32_v(&[draft[j]])?;
+                    let idsd = e.htod_u32_v(&[draft_idx[j]])?;
                     let rowsd = e.htod_i32(&[0])?;
                     let mut outd = e.zeros(1)?;
                     e.softmax_gather(&draft_logits[j], d_vocab, &idsd, &rowsd, &mut outd, d_vocab, 1, sp_temp)?;
@@ -1653,7 +1659,15 @@ impl HybridModel {
                     }
                     let cb2 = col_buf.as_ref().unwrap();
                     let sc = sctr; sctr += 1;
-                    e.residual_sample(cb2, Some(&draft_logits[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                    if let Some(map) = &d2t_dev {
+                        if q_full_buf.is_none() { q_full_buf = Some(e.zeros(n_vocab)?); }
+                        let qf = q_full_buf.as_mut().unwrap();
+                        e.scatter_trim_logits(&draft_logits[n_acc], map, qf, d_vocab, n_vocab)?;
+                        let qf2 = q_full_buf.as_ref().unwrap();
+                        e.residual_sample(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                    } else {
+                        e.residual_sample(cb2, Some(&draft_logits[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                    }
                     e.dtoh_u32(&sample_tok)?[0]
                 };
                 (n_acc, bonus)

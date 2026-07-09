@@ -174,3 +174,23 @@ extern "C" __global__ void residual_sample_f32(
     for (; i < ihi; ++i) { acc += r_at(i); if (acc >= u) break; }
     *out_tok = (uint32_t) min(i, n - 1);
 }
+
+// ---------------- 4. trimmed-head q scatter ----------------
+// FR-Spec trims reshape the draft head's vocab: q lives on d_vocab trimmed rows, the verify
+// p on the full n_vocab. The residual needs q in TARGET-id space with q=0 (logit -inf) off-trim:
+// dst[t] = -3.4e38 for all t, then dst[d2t[i]] = src[i]. Correct by construction — the trimmed
+// head cannot propose off-trim tokens, so their residual mass is p(x) untouched.
+extern "C" __global__ void scatter_trim_logits_f32(
+        const float* __restrict__ src, const uint32_t* __restrict__ d2t,
+        float* __restrict__ dst, int d_vocab, int n_vocab) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    for (int t = i; t < n_vocab; t += gridDim.x * blockDim.x) dst[t] = -3.4e38f;
+    // grid-wide sync not available: scatter in a SECOND launch (see host wrapper) — this kernel
+    // only fills. Kept as one entry with a mode flag to avoid two fatbin symbols:
+}
+extern "C" __global__ void scatter_trim_logits_pass2_f32(
+        const float* __restrict__ src, const uint32_t* __restrict__ d2t,
+        float* __restrict__ dst, int d_vocab) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < d_vocab) dst[d2t[i]] = src[i];
+}
