@@ -26,6 +26,30 @@ OPEN FRONTS (priority order, 2026-07-08 evening): (1) PREFILL — the #1 plain g
 
 LAWS HARDENED THIS CYCLE: power boost (+25W) silently resets — verify before EVERY bench session (cost two false boards). FA/split geometry validates across the DEPTH axis (3 depths minimum). bpw equality ≠ quality-class equality across asymmetric/symmetric quant families (Q4_K→NVFP4 taxes acceptance despite equal bits). Float-poison tripwire now in the loader (occurrence #4 was M3's 4.9GB BF16 lm_head). Dynamic activation quant = immune to the uncalibrated-tail-expert checkpoint trap. Kernel-efficiency claims need LOCKED-CLOCK or clock-recorded runs — DVFS converts instruction wins into clock wins and hides them at fixed clock (q6issue lane, refuted its own premise). Mem P-state check before ANY bandwidth claim — idle-cold P8 reads 64% of P0 bandwidth and fabricated the '61%-of-wall k-quant' figure. Competitor baselines rot: re-baseline llama in the SAME session as any board claim (the 9B '1.59x' survived 2 days against a stale llama arm).
 
+## ST (SAFETENSORS) SPEC LANES — MERGED 2026-07-09, BOARD PENDING
+
+Both NVFP4 ST checkpoints now have tuned spec configs (frspec_rank accepts HF dirs — trims derive
+from the checkpoint's OWN tokenizer, no GGUF in the ST toolchain):
+
+- **NV-27B ST** (nvidia-qwen36-27b-nvfp4): best = own-head K=3 HPOST=1 pmin=0.4 NV_W4=1 + corpus
+  trim = **95.4 tok/s** N=3 (2.01x plain 47.5; acceptance 70.7% deterministic; beats the 92.5
+  house-head standing without an external draft GGUF). PMIN0 negative (-5%), pmin=0.5 negative,
+  trim marginal on the BF16 head (+0.5% — head read is ~3% of a draft round). House GGUF draft
+  still faster (103.7) but needs the external file. p2 64.0 / p3 63.8 are SINGLE RUNS — board
+  bench re-measures. pp1855: 1341 default / 1480 ST_E4M3.
+- **9B ST modelopt** (qwen35-9b-nvfp4-st-modelopt): native trim (vocab 248070, 99.62% coverage
+  @32k), best swept config K=2 pmin=0.3 trim, cold-start 190.5/188.5/217.7 p1/p2/p3, p3
+  acceptance 97.7%. Thermal law reconfirmed: 9-load session sagged ~7-8% vs cold pairs.
+- **DISPUTED — "K=3 OOMs at p3, 24GB ceiling" is UNVERIFIED**: no OOM/CUDA error string exists in
+  the lane transcript; the K=3 p3 runs died in ~30s with stderr swallowed by the parse pipe,
+  while a sibling lane cycled 14GB+ loads on the same GPU. The lane's own math (5GB model +
+  1.5GB KV) contradicts a 24GB ceiling, and the 27B runs K=3 at the same depth. Repro:
+  `research/spec-9bst/repro-k3-p3.sh` (isolated GPU, raw logs). Until it runs, the K=2-universal
+  conclusion and the serve-line are PROVISIONAL; the two 2026-07-09 9bst rig5090 rows carry the
+  unproven claim. This incident produced the CLAUDE.md "Evidence discipline" section.
+- **PENDING**: same-session cold-start pairing vs llama (both models, plain + spec; stale-baseline
+  comparisons in the lane rows are NOT board-grade) → ST board rows per the board policy → v0.8.0.
+
 ## MTP-HEAL RESEARCH PLATFORM — FOUNDATION (lane/mtpheal, 2026-07-09)
 
 Shape 2 = research platform; first protocol = MTP-heal step 1-2 (measure MTP draft-head acceptance
