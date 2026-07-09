@@ -104,6 +104,16 @@ fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Erro
 /// suffix (chunked continuation prime over the quantized past) and mtp_kv_fill's its suffix rows,
 /// then the round loop runs unchanged. `last_h` carries the pre-output_norm hidden of the last
 /// committed row across turns (the predecessor-pairing seed + fill anchor).
+/// Per-request sampling config for the sampled-spec serve path.
+#[derive(Clone, Copy, Debug)]
+pub struct SpecSampling {
+    pub temp: f32,
+    pub seed: u64,
+    pub top_k: i32,   // 0 = off
+    pub top_p: f32,   // 1.0 = off
+    pub min_p: f32,   // 0.0 = off
+}
+
 pub struct SpecSession {
     pub(crate) cache: Cache,
     pub(crate) scratch: MtpScratch,
@@ -1147,11 +1157,12 @@ impl HybridModel {
         self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None)
     }
 
-    /// Serve-path sampled spec: `sampling` = Some((temperature, seed)) routes the burst through
-    /// the rejection-sampling verify with per-SESSION Philox continuity (sess.sctr/uctr).
-    /// None = env-driven (BW24_SPEC_TEMP, the CLI contract) or greedy.
+    /// Serve-path sampled spec: routes the burst through the rejection-sampling verify with
+    /// per-SESSION Philox continuity (sess.sctr/uctr). None = env-driven (CLI) or greedy.
+    /// Filters (top-k/p/min-p) apply SYMMETRICALLY to draft q and verify p — distribution-exact
+    /// for the filtered target (feat/filtered-spec).
     pub fn generate_spec_session_sampled(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
-                                 max_new: usize, k: usize, sampling: Option<(f32, u64)>)
+                                 max_new: usize, k: usize, sampling: Option<SpecSampling>)
                                  -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         let mtp_dense = self.mtp.as_ref()
             .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
@@ -1192,7 +1203,7 @@ impl HybridModel {
 
     fn generate_spec_inner2(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
                            graph_draft: bool, mut sess: Option<&mut SpecSession>,
-                           sampling: Option<(f32, u64)>)
+                           sampling: Option<SpecSampling>)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
@@ -1330,11 +1341,14 @@ impl HybridModel {
         // sampling verify (Leviathan/Chen) — accept draft x at u < p(x)/q(x), resample from
         // norm(max(0,p-q)) on reject, bonus sampled from p on full accept. Counter-based Philox
         // everywhere (seed, event) -> reproducible. temp==0/unset = the greedy path, untouched.
-        let (sp_temp, sp_seed): (f32, u64) = match sampling {
-            Some((t, sd)) => (t, sd),
-            None => (std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                     std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42)),
-        };
+        let sp = sampling.unwrap_or_else(|| SpecSampling {
+            temp: std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            seed: std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42),
+            top_k: std::env::var("BW24_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            top_p: std::env::var("BW24_TOP_P").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+            min_p: std::env::var("BW24_MIN_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        });
+        let (sp_temp, sp_seed) = (sp.temp, sp.seed);
         let sampled = sp_temp > 0.0;
         // Trimmed heads: q lives on the trimmed vocab; accept gathers use the TRIMMED index and
         // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
@@ -1362,6 +1376,7 @@ impl HybridModel {
             (c0 as f32 + 1.0) * (1.0 / 4294967296.0)
         };
         let mut draft_logits: Vec<CudaSlice<f32>> = Vec::new();   // retained head logits (q), per slot
+        let mut draft_stats: Vec<(f32, f32, f32)> = Vec::new();   // (row_max, th_e, z_e) per slot
         let mut perturb_buf: Option<CudaSlice<f32>> = None;       // gumbel scratch (max(n_vocab,d_vocab))
         let mut sample_tok = e.alloc_u32_zeroed(1)?;              // residual/bonus sample out
         let mut col_buf: Option<CudaSlice<f32>> = None;           // materialized verify column
@@ -1369,6 +1384,7 @@ impl HybridModel {
         let mut last_pred = argmax(&init_logits) as u32;
         // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
         let mut last_col_logits: Option<CudaSlice<f32>> = if sampled { Some(e.htod(&init_logits)?) } else { None };
+        let mut last_col_stats: Option<(f32, f32, f32)> = None;
         // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
         // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
         // stable pointer for the graph-draft round-start copy.
@@ -1519,7 +1535,7 @@ impl HybridModel {
             let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             let mut draft_idx: Vec<u32> = Vec::with_capacity(k);   // trimmed-vocab ids (== draft when untrimmed)
-            if sampled { draft_logits.clear(); }
+            if sampled { draft_logits.clear(); draft_stats.clear(); }
             if let (false, Some(gr)) = (sampled, &draft_graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
@@ -1552,12 +1568,19 @@ impl HybridModel {
                     let mtp_pos = pos + base0 + j;
                     let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut *scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
                     let tok_d = if sampled {
-                        // Gumbel-max: argmax(logits/T + G) == one categorical sample at T.
+                        // FILTERED Gumbel-max: stats -> masked perturb -> argmax = one draw from
+                        // the filtered softmax (filters off => th=0, exact v1 semantics).
                         if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        e.filter_stats(&dl_d, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        let (th, z, mx) = (e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0], e.dtoh(&mx_d)?[0]);
                         let pb = perturb_buf.as_mut().unwrap();
-                        e.gumbel_perturb(&dl_d, pb, d_vocab, sp_seed, sctr, sp_temp)?;
+                        e.gumbel_perturb_filtered(&dl_d, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th)?;
                         sctr += 1;
                         draft_logits.push(e.clone_dtod(&dl_d)?);   // retain q for accept/residual
+                        draft_stats.push((mx, th, z));
                         e.argmax_token_device(pb, d_vocab)?
                     } else {
                         e.argmax_token_device(&dl_d, d_vocab)?
@@ -1620,8 +1643,10 @@ impl HybridModel {
             } else {
                 // --- SAMPLED ACCEPT (rejection sampling): u_j < p_j(x_j)/q_j(x_j) walk ---
                 if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
-                // p_j: verify columns in ONE gather (col base+j-1); j==0&&base==0 from last_col.
+                // FILTERED p_j: per-verify-col stats (one batched filter_stats call), then the
+                // filtered gather. j==0&&base==0 reads last_col (its own stats row appended).
                 let mut pj = vec![0f32; k_round.max(1)];
+                let mut col_stats: Vec<(f32, f32, f32)> = Vec::new();  // (max, th, z) per verify col used
                 if k_round > 0 {
                     let mut ids: Vec<u32> = Vec::new();
                     let mut rows: Vec<i32> = Vec::new();
@@ -1629,42 +1654,70 @@ impl HybridModel {
                         if j > 0 || base == 1 { ids.push(draft[j]); rows.push((base + j) as i32 - 1); }
                     }
                     if !ids.is_empty() {
-                        let idsd = e.htod_u32_v(&ids)?;
                         let rowsd = e.htod_i32(&rows)?;
-                        let mut outd = e.zeros(ids.len())?;
-                        e.softmax_gather(&tlogits_d, n_vocab, &idsd, &rowsd, &mut outd, n_vocab, ids.len(), sp_temp)?;
+                        let nr = rows.len();
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
+                        e.filter_stats(&tlogits_d, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, nr, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        let idsd = e.htod_u32_v(&ids)?;
+                        let mut outd = e.zeros(nr)?;
+                        e.softmax_gather_filtered(&tlogits_d, n_vocab, &idsd, &rowsd, &th_d, &z_d,
+                                                  &mut outd, n_vocab, nr, sp_temp)?;
                         let outv = e.dtoh(&outd)?;
+                        let (thv, zv, mxv) = (e.dtoh(&th_d)?, e.dtoh(&z_d)?, e.dtoh(&mx_d)?);
                         let mut oi = 0usize;
                         for j in 0..k_round { if j > 0 || base == 1 { pj[j] = outv[oi]; oi += 1; } }
+                        col_stats = (0..nr).map(|i| (mxv[i], thv[i], zv[i])).collect();
                     }
                     if base == 0 {
                         let lc = last_col_logits.as_ref().expect("sampled: last_col_logits unset");
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        e.filter_stats(lc, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
                         let idsd = e.htod_u32_v(&[draft[0]])?;
-                        let rowsd = e.htod_i32(&[0])?;
                         let mut outd = e.zeros(1)?;
-                        e.softmax_gather(lc, n_vocab, &idsd, &rowsd, &mut outd, n_vocab, 1, sp_temp)?;
+                        e.softmax_gather_filtered(lc, n_vocab, &idsd, &rows0, &th_d, &z_d,
+                                                  &mut outd, n_vocab, 1, sp_temp)?;
                         pj[0] = e.dtoh(&outd)?[0];
+                        last_col_stats = Some((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
                     }
                 }
+                // FILTERED q_j: stats retained from the draft chain (draft_stats).
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
+                    let (qmx, qth, qz) = draft_stats[j];
                     let idsd = e.htod_u32_v(&[draft_idx[j]])?;
                     let rowsd = e.htod_i32(&[0])?;
+                    let thd = e.htod(&[qth])?; let zd = e.htod(&[qz])?;
+                    let _ = qmx;
                     let mut outd = e.zeros(1)?;
-                    e.softmax_gather(&draft_logits[j], d_vocab, &idsd, &rowsd, &mut outd, d_vocab, 1, sp_temp)?;
+                    e.softmax_gather_filtered(&draft_logits[j], d_vocab, &idsd, &rowsd, &thd, &zd,
+                                              &mut outd, d_vocab, 1, sp_temp)?;
                     let qj = e.dtoh(&outd)?[0];
                     let u = host_u01(sp_seed, uctr); uctr += 1;
                     if (u as f64) * (qj as f64) < pj[j] as f64 { n_acc += 1; } else { break; }
                 }
                 let bonus = if n_acc == k_round {
-                    // FULL ACCEPT: bonus ~ softmax_T(p) at the last verify column (gumbel-max).
+                    // FULL ACCEPT: bonus ~ FILTERED softmax at the last verify column.
                     let col = base + k_round - 1;
                     let cb = col_buf.as_mut().unwrap();
                     e.copy_view_into(cb, 0, &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab), n_vocab)?;
                     if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                    // stats for the last used col: reuse col_stats when it covers it, else compute.
+                    let (mx, th, _z) = if !col_stats.is_empty() {
+                        *col_stats.last().unwrap()
+                    } else {
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        let cb0 = col_buf.as_ref().unwrap();
+                        e.filter_stats(cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0])
+                    };
                     let pb = perturb_buf.as_mut().unwrap();
                     let cb2 = col_buf.as_ref().unwrap();
-                    e.gumbel_perturb(cb2, pb, n_vocab, sp_seed, sctr, sp_temp)?;
+                    e.gumbel_perturb_filtered(cb2, pb, n_vocab, sp_seed, sctr, sp_temp, mx, th)?;
                     sctr += 1;
                     let td = e.argmax_token_device(pb, n_vocab)?;
                     e.dtoh_u32_one(&td)?
@@ -1680,14 +1733,26 @@ impl HybridModel {
                     }
                     let cb2 = col_buf.as_ref().unwrap();
                     let sc = sctr; sctr += 1;
+                    // p-stats for the reject column: from col_stats when the col was gathered,
+                    // else (j==0&&base==0) from last_col_stats.
+                    let p_stats = if n_acc > 0 || base == 1 {
+                        // col index within the gathered set == number of gathered cols before n_acc
+                        let gi = if base == 1 { n_acc } else { n_acc - 1 };
+                        col_stats.get(gi).copied().unwrap_or_else(|| {
+                            (0.0, 0.0, 1.0) // unreachable: gathered cols always cover the reject slot
+                        })
+                    } else {
+                        last_col_stats.expect("sampled: last_col_stats unset at reject")
+                    };
+                    let q_stats = draft_stats[n_acc];
                     if let Some(map) = &d2t_dev {
                         if q_full_buf.is_none() { q_full_buf = Some(e.zeros(n_vocab)?); }
                         let qf = q_full_buf.as_mut().unwrap();
                         e.scatter_trim_logits(&draft_logits[n_acc], map, qf, d_vocab, n_vocab)?;
                         let qf2 = q_full_buf.as_ref().unwrap();
-                        e.residual_sample(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                        e.residual_sample_filtered(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
                     } else {
-                        e.residual_sample(cb2, Some(&draft_logits[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                        e.residual_sample_filtered(cb2, Some(&draft_logits[n_acc]), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
                     }
                     e.dtoh_u32(&sample_tok)?[0]
                 };

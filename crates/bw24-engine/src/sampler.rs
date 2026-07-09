@@ -44,15 +44,17 @@ impl Sampler {
     }
 
     pub fn is_greedy(&self) -> bool { self.cfg.temperature <= 0.0 }
-    /// Temperature-only sampling: eligible for the sampled-spec serve path (rejection sampling
-    /// is distribution-exact only when p and q see the same transform — truncation filters and
-    /// penalties are not wired into the spec verify, so those requests take the legacy path).
-    pub fn is_temp_only(&self) -> bool {
+    /// Spec-eligible sampling: temperature (+ optional top-k/top-p/min-p — the filtered
+    /// rejection-sampling verify applies the SAME transform to p and q, distribution-exact).
+    /// Penalties are NOT yet wired into the spec verify: penalized requests take the legacy path.
+    pub fn is_spec_sampling(&self) -> bool {
         self.cfg.temperature > 0.0
-            && self.cfg.top_k == 0 && self.cfg.top_p >= 1.0 && self.cfg.min_p <= 0.0
             && self.cfg.penalty_repeat == 1.0 && self.cfg.penalty_freq == 0.0
             && self.cfg.penalty_present == 0.0
     }
+    pub fn top_k(&self) -> usize { self.cfg.top_k }
+    pub fn top_p(&self) -> f32 { self.cfg.top_p }
+    pub fn min_p(&self) -> f32 { self.cfg.min_p }
     pub fn temperature(&self) -> f32 { self.cfg.temperature }
     pub fn seed(&self) -> u64 { self.cfg.seed }
 
