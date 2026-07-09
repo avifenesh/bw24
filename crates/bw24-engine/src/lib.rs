@@ -2072,6 +2072,12 @@ impl Engine {
                              if *rp && *qtype == QT_NVFP4 { QT_NVFP4_RP } else { *qtype },
                              *row_bytes)?,
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f)?,
+            // BW24_FULL_PREC bf16-resident weight: dequant-on-use to f32 scratch, then the same
+            // cuBLASLt f32 GEMV as the Float arm.
+            GpuTensor::FloatBf16 { data, .. } => {
+                let wf32 = self.bf16_to_f32(data, in_f * out_f)?;
+                self.linear(x, &wf32, m, in_f, out_f)?
+            }
         };
         // NVFP4 per-tensor macro-scale (post-matmul). scale==1.0 for all other quants/float -> no-op.
         if let GpuTensor::Quant { scale, .. } = w {
@@ -2089,7 +2095,7 @@ impl Engine {
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
                 QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3)
                 || (*qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok()),
-            GpuTensor::Float { .. } => false,
+            GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
     }
 
@@ -2198,6 +2204,13 @@ impl Engine {
         // m<=10 here (K+2 verify tier), so the extra launches are a handful of 4us gemvs.
         if let GpuTensor::Float { data, .. } = w {
             return self.linear_decode_exact(x, data, m, w.in_features(), w.out_features());
+        }
+        // BW24_FULL_PREC bf16-resident weight: dequant-on-use, then the per-column decode-exact
+        // float linear (same n-independent reduction contract as the Float arm above).
+        if let GpuTensor::FloatBf16 { data, .. } = w {
+            let (in_f, out_f) = (w.in_features(), w.out_features());
+            let wf32 = self.bf16_to_f32(data, in_f * out_f)?;
+            return self.linear_decode_exact(x, &wf32, m, in_f, out_f);
         }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
         let in_f = w.in_features();
@@ -2999,7 +3012,7 @@ impl Engine {
             GpuTensor::Quant { qtype, .. } =>
                 matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K)
                 || (*qtype == QT_NVFP4 && w.in_features() % 64 == 0),
-            GpuTensor::Float { .. } => false,
+            GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
     }
 
@@ -3097,6 +3110,22 @@ impl Engine {
         b.arg(y).arg(&sf).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
+    }
+
+    /// BW24_FULL_PREC dequant-on-use: expand a bf16-resident weight (`GpuTensor::FloatBf16`, raw
+    /// bf16 bytes) to a transient f32 scratch of `n` elements, which then feeds the existing f32
+    /// cuBLASLt GEMV. The scratch is freed when the caller drops it, so peak VRAM = resident bf16
+    /// weights + ONE (largest) weight's f32 expansion + activations. SLOW IS FINE (research mode).
+    pub fn bf16_to_f32(&self, data: &CudaSlice<u8>, n: usize)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut out = self.alloc_uninit::<f32>(n)?;
+        let f = self.func("bf16_to_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(data).arg(&mut out).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(out)
     }
 
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).

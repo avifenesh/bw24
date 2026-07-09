@@ -537,6 +537,15 @@ extern "C" __global__ void scale_f32(float* __restrict__ y, float s, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] *= s;
 }
+// BW24_FULL_PREC dequant-on-use: expand a bf16-resident matmul weight (u16 LE, upper 16 bits of
+// f32) to a transient f32 scratch that feeds the SAME cuBLASLt f32 GEMV the Float arm uses. This is
+// bit-identical to the load-time bf16->f32 dequant (dequant::bf16_to_f32), just deferred to keep
+// VRAM at 2 B/w resident instead of 4.
+extern "C" __global__ void bf16_to_f32(const unsigned short* __restrict__ in,
+                                       float* __restrict__ out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = __uint_as_float(((unsigned int)in[i]) << 16);
+}
 extern "C" __global__ void mul_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;

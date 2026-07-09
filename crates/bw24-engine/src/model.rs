@@ -36,6 +36,13 @@ pub enum GpuTensor {
         fp8: Option<Fp8Weight>,
     },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
+    /// BF16-RESIDENT full-precision matmul weight (BW24_FULL_PREC only). Holds the checkpoint's raw
+    /// bf16 bytes (`u8`, little-endian u16 pairs) — 2 B/w vs the 4 B/w a `Float` f32 materialization
+    /// would cost, so the 9B trunk stays ~18GB in VRAM instead of ~36GB. Consumed via dequant-on-use:
+    /// each matmul expands this to a transient f32 scratch and rides the SAME cuBLASLt f32 GEMV the
+    /// `Float` arm uses (bit-identical to a load-time bf16->f32 dequant, just deferred). Never a norm
+    /// (norms stay `Float` f32); never on a fast/GEMM/MMQ path (uses_q8_1_fast/gemm_supports = false).
+    FloatBf16 { data: CudaSlice<u8>, ne: Vec<u64> },
 }
 
 /// FP8-native prefill operand: raw checkpoint e4m3 codes `[out_f, in_f]` row-major (EXACT — the
@@ -89,6 +96,19 @@ pub fn rp_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_RP").map(|v| v != "0").unwrap_or(true))
 }
 
+/// FULL-PRECISION LOADER MODE (BW24_FULL_PREC=1, default OFF — MTP-heal research platform).
+/// Bypasses the standing loader law (large BF16/F8 -> Q8_0/NVFP4 re-encode, the "Float-poison"
+/// tripwire). Under this flag every weight loads as Float and compute rides the Stage-A f32 oracle
+/// path end to end — SLOW IS FINE, this mode exists for exactness (the MTP acceptance CEILING at
+/// full precision), not speed. Large 2D matmul weights stay bf16-resident (`GpuTensor::FloatBf16`)
+/// with dequant-on-use so the 9B (~18GB bf16) + f32 activations fit 24GB instead of blowing to
+/// ~38GB as an all-f32 materialization. The Float-poison tripwire warnings are CORRECT behavior
+/// here and are suppressed. See docs/FLAGS.md and HANDOVER "BW24 DUAL-SHAPE".
+pub fn full_prec_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FULL_PREC").map(|v| v == "1").unwrap_or(false))
+}
+
 /// LOADER-LAW allowlist (loadersweep audit 2026-07-08): 2D Float tensors that are DELIBERATELY
 /// Float despite being matmul-class. Every entry needs an audit rationale — this list silences
 /// the tripwire below, so an unjustified entry re-opens the trap.
@@ -132,12 +152,12 @@ pub struct CutlassWeight {
 }
 
 impl GpuTensor {
-    pub fn ne(&self) -> &[u64] { match self { GpuTensor::Quant { ne, .. } => ne, GpuTensor::Float { ne, .. } => ne } }
+    pub fn ne(&self) -> &[u64] { match self { GpuTensor::Quant { ne, .. } => ne, GpuTensor::Float { ne, .. } => ne, GpuTensor::FloatBf16 { ne, .. } => ne } }
     pub fn in_features(&self) -> usize { self.ne()[0] as usize }
     pub fn out_features(&self) -> usize { self.ne()[1] as usize }
     /// Per-tensor post-matmul macro-scale (NVFP4 carries scale != 1.0; all others -> 1.0, a no-op).
     /// Used by the fused SwiGLU epilogue to fold the gate/up scale into one kernel.
-    pub fn scale(&self) -> f32 { match self { GpuTensor::Quant { scale, .. } => *scale, GpuTensor::Float { .. } => 1.0 } }
+    pub fn scale(&self) -> f32 { match self { GpuTensor::Quant { scale, .. } => *scale, GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => 1.0 } }
 
     /// Load a tensor, keeping quant types packed and float types as f32. (GGUF entry point —
     /// thin wrapper over the source-agnostic `load_from_source`; behavior is unchanged.)
@@ -327,6 +347,23 @@ impl GpuTensor {
             }
             None => {
                 let n: u64 = v.ne.iter().product();
+                // FULL-PRECISION MODE (BW24_FULL_PREC): NO re-encodes. Large 2D bf16 matmul weights
+                // stay bf16-resident (FloatBf16, dequant-on-use) so the trunk fits VRAM; everything
+                // else (small 2D, 1D norms, F16/F32) rides the exact f32 Float path below. The ssm
+                // Q8_0 re-encode and the Float-poison tripwire are BYPASSED here (both are the loader
+                // law this mode exists to suspend — the warnings would be correct but noise).
+                if full_prec_enabled() {
+                    // Only bf16 sources take the resident-bf16 arm; F16/F32 fall through to f32 Float
+                    // (exact, and tiny/absent in the bf16 ST checkpoints this mode targets). The 1M
+                    // threshold keeps small tensors (norms, gate_inp) on the proven f32 path — only
+                    // the big trunk matrices need the 2 B/w VRAM saving.
+                    if v.ggml_type == GgmlType::BF16 && v.ne.len() == 2 && n >= 1_000_000 {
+                        let data = e.htod_bytes(&v.bytes)?; // raw bf16 bytes, u16 LE pairs
+                        return Ok(GpuTensor::FloatBf16 { data, ne: v.ne.clone() });
+                    }
+                    let f32v = dequant::dequantize(v.ggml_type, &v.bytes, n as usize);
+                    return Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne: v.ne.clone() });
+                }
                 let f32v = dequant::dequantize(v.ggml_type, &v.bytes, n as usize);
                 // ssm_beta/ssm_alpha stored F32 (the 35B GGUF): Q8_0-encode at load. F32 here
                 // fails `mixer_in_q8_1_fast` for the whole linear-attn mixer -> every linear
@@ -392,7 +429,9 @@ impl GpuTensor {
 
     /// Accessor for tensors that MUST be f32 (norm weights). Panics if quantized.
     pub fn float_data(&self) -> &CudaSlice<f32> {
-        match self { GpuTensor::Float { data, .. } => data, GpuTensor::Quant { .. } => panic!("expected float tensor (norm), got quantized") }
+        match self { GpuTensor::Float { data, .. } => data,
+            GpuTensor::Quant { .. } => panic!("expected float tensor (norm), got quantized"),
+            GpuTensor::FloatBf16 { .. } => panic!("expected f32 float tensor (norm), got bf16-resident matmul weight") }
     }
 }
 

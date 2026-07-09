@@ -191,6 +191,36 @@ winner; the seam is the documented way back.
 
 ---
 
+## 6. Research platform (MTP-heal, dual-shape)
+
+bw24's second shape is a research platform. The first protocol (MTP-heal) measures MTP draft-head
+acceptance at FULL PRECISION as the ceiling, then on the NVFP4 daily GGUF — the delta is the quant
+hit on drafting. See HANDOVER "BW24 DUAL-SHAPE".
+
+| flag | what it does |
+|---|---|
+| `BW24_FULL_PREC=1` | FULL-PRECISION LOADER MODE (default OFF). Bypasses the standing loader law (large BF16/F8 → Q8_0/NVFP4 re-encode, the "Float-poison" tripwire — the very re-encodes this mode must NOT do). Everything loads Float; large 2D bf16 matmul weights stay **bf16-resident** (`GpuTensor::FloatBf16`) with dequant-on-use, so the 9B (~18GB bf16) + f32 activations fit 24GB instead of blowing to ~38GB as an all-f32 materialization. Compute rides the Stage-A f32 oracle path end to end (`BW24_FAST=0`-class). **SLOW IS FINE** — this mode is for the exactness ceiling, not speed. Also forces the EAGER spec draft (CUDA-graph capture can't enclose cuBLASLt f32 GEMV or the dequant alloc) and disables `BW24_FRSPEC_TRIM` (the ceiling wants the model's natural full head; the trim gather is Quant-only anyway). The Float-poison tripwire warnings are correct here and are suppressed. |
+
+Per-slot acceptance for this protocol comes from the existing **`BW24_SPEC_STATS=1`** (§4) — its
+`per_slot=[...]` line is the deep-K decay profile; no separate flag was needed.
+
+**Acceptance battery harness** (`tools/`, no GPU-free CI — runs on the rig):
+- `acceptance_battery.sh <model> <out.jsonl>` — fixed prompt set (p1/p2/p3) + the 8-turn agent loop, N≥3, one JSONL row per (prompt,K,run). `FULL_PREC=1` for the bf16 ceiling arm, plain for the NVFP4 arm.
+- `agent_loop_acceptance.sh <model> <out.jsonl> <arm>` — the 8-turn accumulative agent-loop protocol (recreated in-repo; feeds each turn's output forward).
+- `acceptance_parse.py` — one run-spec invocation (merged stdout+stderr, `BW24_SPEC_K=<k>` + `BW24_SPEC_STATS=1`) → one JSONL row.
+- `acceptance_delta.py <bf16.jsonl> <nvfp4.jsonl>` — the deliverable delta table: per-(prompt,K) median acceptance, ceiling vs quant, and the hit.
+
+```
+# bf16 ceiling:
+FULL_PREC=1 tools/acceptance_battery.sh /data/ai-ml/hf-models/qwen35-9b-hf out-bf16.jsonl
+# NVFP4 hit:
+tools/acceptance_battery.sh /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf out-nvfp4.jsonl
+# delta:
+tools/acceptance_delta.py out-bf16.jsonl out-nvfp4.jsonl --json summary.json
+```
+
+---
+
 ## Removed in the 2026-07-08 flag audit (concluded flags — JSONL rows are the record)
 
 | flag | verdict | record |
