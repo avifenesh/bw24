@@ -26,7 +26,7 @@ pub(crate) fn spec_hpost() -> bool {
     *H.get_or_init(|| std::env::var("BW24_SPEC_HPOST").map(|v| v != "0").unwrap_or(false))
 }
 
-/// LEAN VERIFY (BW24_SPEC_LEAN=1, default OFF — close35 lane, 2026-07-08): the verify m-scaling
+/// LEAN VERIFY (default ON since 2026-07-08; BW24_SPEC_LEAN=0 reverts — close35 lane): the verify m-scaling
 /// probe + nsys diff showed the verify t-path pays ~1.0ms/call at m=1 over eager decode on the
 /// 35B, and the kernels are NOT the cause (dev-MoE identical, kernel-time delta only +179us).
 /// The overhead is (a) ~250 extra cuMemsetD8Async/call from `e.zeros()` on buffers every kernel
@@ -43,7 +43,7 @@ pub(crate) fn spec_lean() -> bool {
     *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(true))
 }
 
-/// SMALL-M BATCHED VERIFY (BW24_SPEC_M2=1, default OFF — lane/spec-m2 2026-07-08): extend the
+/// SMALL-M BATCHED VERIFY (default ON since 2026-07-09; BW24_SPEC_M2=0 reverts — lane/spec-m2): extend the
 /// batched linear-attn verify arm down to t=2 and batch the MoE dev token loop over a
 /// grid.z=token axis at every verify t. The close35 m-scaling probe put the m=2 verify tier at
 /// x1.54 of m=1 (llama x1.14); the per-column linear chain (t<3) and the serial MoE dev token
@@ -64,7 +64,7 @@ pub(crate) fn spec_m2() -> bool {
     *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
 }
 
-/// VERIFY-TIER TRUNK LAUNCH-FUSION (BW24_SPEC_FUSED_T=1, default OFF — lane/close35b): extend
+/// VERIFY-TIER TRUNK LAUNCH-FUSION (default ON since 2026-07-09; BW24_SPEC_FUSED_T=0 reverts — lane/close35b): extend
 /// the t=1 fused2/fused3 Q8_0 trunk launches to the batched verify tier (t=2-4, the K=1..3
 /// verify shapes). At t>1 the trunk pairs/triples (35B wqkv+wqkv_gate, wq/wk/wv,
 /// gate_shexp+up_shexp) each run a separate `matmul_decode_exact` — one q8_1 re-quantize of the

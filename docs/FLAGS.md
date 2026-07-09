@@ -118,6 +118,9 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FA_V2=0` | per-key online-softmax FA twins (v2 = tile-batched, own numeric config) | default-on 2026-07-08, the depth-slope fix |
 | `BW24_FA_ROWS_OFF=1` | per-row verify FA loop instead of the fused rows kernel | rows landed 2026-07-03 (+13.8% 9B p2) |
 | `BW24_SPEC_LEAN=0` | zeroed verify buffers + rows dispatch at t=1 | default-on 2026-07-08 (+1.5–2.4% 35B) |
+| `BW24_SPEC_M2=0` | per-m grid.y=m verify dispatch at t=2 (no small-m batched twin) | default-on 2026-07-09 (flattened the 35B verify K-curve; K=4 within 1–3% of K=3) |
+| `BW24_SPEC_FUSED_T=0` | per-tensor decode-exact verify trunk calls (no t=2-4 launch fusion) | default-on 2026-07-09; bit-identical per (tensor,token,row) by construction (kernel-check Q8-FUSED2-B/FUSED3-B gates) |
+| `BW24_FA_V3=0` | FA v2 decode twins (v3 = dp4a-K hybrid, own numeric config — int8 Q quantization) | default-on 2026-07-09 after full battery green (kernel-check + run-gen MATCH 35B/9B + run-spec PASS + graph gate bit-identical); requires default q8_0/q5_1 KV + hd%128==0 (host-gated, auto-falls back to v2) |
 | `BW24_SPEC_REPLAY=1` | legacy rollback+replay partial accept (also the j==0 fallback) | replay-free default 2026-07-03 (+10–32%) |
 | `BW24_SPEC_NOREFRESH=1` | chain-approximate draft-KV entries (no true-hidden refresh) | refresh default 2026-07-03 (+4–6% acc) |
 | `BW24_SPEC_NOGRAPH=1` | eager draft chain (no CUDA-graph draft) | graph draft 2026-07-03 |
@@ -180,8 +183,6 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_MMA_T=<n>` | MMA t-floor override (bisect seam; <16 puts spec verify on MMA) | verify must stay dp4a (dispatch-parity law) — measurement only |
 | `BW24_IQ_FAST` | opt-in IQ4_XS fast matvec (non-expert path) | UNCLEAR — no concluding JSONL row found; left untouched by the audit |
 | `BW24_EAGLE` / `BW24_EAGLE_ALIGN=0` | EAGLE draft lane (run-eagle bin; ALIGN=0 = un-shifted MTP-style pairing A/B) | experimental lane, not on the daily path |
-| `BW24_SPEC_FUSED_T=1` | verify-tier trunk launch-fusion (lane/close35b): fused2/fused3 Q8_0 batched twins at verify t=2-4 — one shared quantize + one launch per same-input pair/triple (35B wqkv+gate, wq/wk/wv, shexp gate+up; 9B beta/alpha) instead of per-tensor decode-exact calls | bit-identical per (tensor,token,row) by construction (kernel-check Q8-FUSED2-B/FUSED3-B gates); default-flip candidate after board soak |
-| `BW24_FA_V3=1` | dp4a-K hybrid FA decode twins (lane/fav3, research/fa/fa_v3_design.md): llama's int8-dp4a K.Q with register-quantized Q + our staged-V/split/combine frame; funnel-shift aligned K words + paired B3 smem reads. Micro at 35B shape: 46.9/74.5 us vs v2 59.7/97.0 @6257/12288 (-21/-23%); in-context fa kernel 1669->1487 us/tok @d6257 | NEW NUMERIC CONFIG (int8 Q quantization) — own argmax baseline; full battery green 2026-07-09 (kernel-check incl v3-vs-CPU + rows bitdiff=0, run-gen MATCH 35B/9B, run-spec K sweep PASS both, graph gate BIT-IDENTICAL both). Default OFF: e2e 35B d6257 1.017x, d512/2048 flat, 9B e2e unsettled (noise-bound) — default-flip candidate after board soak. Requires default q8_0/q5_1 KV + hd%128==0 (host-gated) |
 
 ---
 

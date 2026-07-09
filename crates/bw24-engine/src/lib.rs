@@ -275,14 +275,13 @@ fn fa_v2_on() -> bool {
     std::env::var("BW24_FA_V2").map(|v| v != "0").unwrap_or(true)
 }
 
-/// FA v3 lane env gate (2026-07-09, research/fa/fa_v3_design.md): BW24_FA_V3=1 dispatches the
+/// FA v3 gate (default ON since 2026-07-09; BW24_FA_V3=0 reverts to v2 — research/fa/fa_v3_design.md):
 /// HYBRID decode twins (fa_decode_vec_q_v3 / _rows_v3 / _v3_dc): llama's int8-dp4a K.Q with
 /// register-quantized Q (no K dequant, no K smem) + OUR CTA-shared staged bf16 V tile + OUR
 /// split partition/combine. NEW NUMERIC CONFIG (int8 Q quantization changes the K.Q accumulation
 /// vs the bf16-roundtrip FMA chain) — own argmax baseline; eager decode, the spec-verify rows
-/// path AND the graph _dc path switch TOGETHER (the spec-exactness law). Default OFF. Read per
-/// call so the gate battery can A/B within one process (the BW24_FA_V2 pattern). Takes
-/// precedence over the default-on v2 when set.
+/// path AND the graph _dc path switch TOGETHER (the spec-exactness law). Read per call so the
+/// gate battery can A/B within one process (the BW24_FA_V2 pattern).
 fn fa_v3_on() -> bool {
     // DEFAULT ON since 2026-07-09 (BW24_FA_V3=0 reverts to v2): dp4a-K hybrid FA decode —
     // fa kernel -21-23% at depth (micro), 35B spec p3 +5% (190->200, the last spec cell),

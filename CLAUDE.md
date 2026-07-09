@@ -35,6 +35,20 @@ Same three gates as CONTRIBUTING.md: `kernel-check`, the `run-gen` argmax gate, 
 K=1..8 self-consistency. A kernel change without before/after numbers measured per
 `research/benchmarks.md` isn't done.
 
+## Evidence discipline (measurement lanes)
+
+- Raw sweep output is part of the deliverable: commit the per-run JSONL/log next to the summary
+  row (`research/<lane>/`), never summary-only. A claim whose raw runs exist nowhere in the repo
+  is not evidence.
+- Never let a pipe swallow error output: `run-* 2>&1 | parser` loses the failure text. Always
+  `tee` a raw log first, parse the log second.
+- Failure causes are quoted, never inferred: "OOM" means a captured `out of memory` /
+  `CUDA_ERROR_OUT_OF_MEMORY` line, with the concurrent-GPU state recorded (`nvidia-smi`
+  compute-apps at failure time). A run that died without captured stderr is "died, cause
+  unknown — repro needed", and no conclusion may be built on it.
+- Every published median states its N and its thermal regime; single runs are labeled single
+  runs.
+
 ## Releases: every board-moving or user-facing change
 
 Tag it — `git tag vX.Y.Z && git push origin vX.Y.Z`. The `release` workflow compiles, drafts the
