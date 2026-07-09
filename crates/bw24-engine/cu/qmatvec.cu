@@ -337,7 +337,9 @@ enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              // per-32 scales — the per-tensor f32 weight_scale rides the host GpuTensor `scale`
              // (fused at the mmvq write, like the NVFP4 macro-scale). Weight side is EXACT
              // (the checkpoint's own precision; the Q8_0 re-encode this replaces was lossy).
-             QT_F8_E4M3 = 10 };
+             QT_F8_E4M3 = 10,
+             // Raw BF16 row (FULL_PREC embed gather): 2 B/elem; f32 = bits << 16, exact.
+             QT_BF16 = 11 };
 
 // e4m3 (OCP FP8, signed, bias 7) -> f32 via the native sm_89+ cvt (e4m3x2 -> f16x2 -> f32x2;
 // every e4m3 value is exactly representable in f16, and f16 -> f32 is exact, so this chain is
@@ -368,6 +370,12 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
         // Checkpoint-native e4m3 (BW24_ST_E4M3): 1 byte/element, row_bytes == in_f. The per-tensor
         // weight_scale is applied POST-matmul by the host (scale_inplace), like the NVFP4 macro-scale.
         case QT_F8_E4M3: return e4m3_to_f32_d(row[j]);
+        // Raw bf16 (FULL_PREC embed): exact expansion, bit-identical to the host
+        // f32::from_bits((bits as u32) << 16) contract.
+        case QT_BF16: {
+            unsigned int bits = ((const unsigned short*)row)[j];
+            return __uint_as_float(bits << 16);
+        }
     }
     return 0.0f;
 }

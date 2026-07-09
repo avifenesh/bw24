@@ -212,6 +212,7 @@ pub const QT_F8_E4M3: i32 = 10;
 pub const QT_NVFP4_RP: i32 = 9;
 /// Unquantized f32 weight (safetensors MoE Path A: experts dequantized to f32 host-resident).
 pub const QT_F32: i32 = 8;
+pub const QT_BF16: i32 = 11;   // raw bf16 rows (FULL_PREC embed gather; exact bits<<16 in-kernel)
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
@@ -2074,10 +2075,8 @@ impl Engine {
             GpuTensor::Float { data, .. } => self.linear(x, data, m, in_f, out_f)?,
             // BW24_FULL_PREC bf16-resident weight: dequant-on-use to f32 scratch, then the same
             // cuBLASLt f32 GEMV as the Float arm.
-            GpuTensor::FloatBf16 { data, .. } => {
-                let wf32 = self.bf16_to_f32(data, in_f * out_f)?;
-                self.linear(x, &wf32, m, in_f, out_f)?
-            }
+            GpuTensor::FloatBf16 { data, .. } =>
+                self.linear_bf16_chunked(x, data, m, in_f, out_f, false)?,
         };
         // NVFP4 per-tensor macro-scale (post-matmul). scale==1.0 for all other quants/float -> no-op.
         if let GpuTensor::Quant { scale, .. } = w {
@@ -2209,8 +2208,7 @@ impl Engine {
         // float linear (same n-independent reduction contract as the Float arm above).
         if let GpuTensor::FloatBf16 { data, .. } = w {
             let (in_f, out_f) = (w.in_features(), w.out_features());
-            let wf32 = self.bf16_to_f32(data, in_f * out_f)?;
-            return self.linear_decode_exact(x, &wf32, m, in_f, out_f);
+            return self.linear_bf16_chunked(x, data, m, in_f, out_f, true);
         }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x, m); }
         let in_f = w.in_features();
@@ -3116,7 +3114,7 @@ impl Engine {
     /// bf16 bytes) to a transient f32 scratch of `n` elements, which then feeds the existing f32
     /// cuBLASLt GEMV. The scratch is freed when the caller drops it, so peak VRAM = resident bf16
     /// weights + ONE (largest) weight's f32 expansion + activations. SLOW IS FINE (research mode).
-    pub fn bf16_to_f32(&self, data: &CudaSlice<u8>, n: usize)
+    pub fn bf16_to_f32(&self, data: &cudarc::driver::CudaView<'_, u8>, n: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let mut out = self.alloc_uninit::<f32>(n)?;
         let f = self.func("bf16_to_f32");
@@ -3126,6 +3124,41 @@ impl Engine {
         b.arg(data).arg(&mut out).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(out)
+    }
+
+    /// Chunked bf16 linear (BW24_FULL_PREC): y[m,out] = x @ W_bf16^T with the f32 dequant scratch
+    /// bounded to CHUNK_ROWS rows (256MB at in_f=4096) instead of the whole weight — the 4GB
+    /// lm_head expansion OOM'd the 24GB budget. Row-chunking partitions OUTPUT rows; each row's
+    /// dot is computed by the identical kernel on identical bytes, so per-(token,row) results are
+    /// bit-identical to the unchunked form. `exact` selects linear_decode_exact (per-column m=1
+    /// calls, the spec-verify contract) vs plain linear.
+    fn linear_bf16_chunked(&self, x: &CudaSlice<f32>, data: &CudaSlice<u8>, m: usize,
+                           in_f: usize, out_f: usize, exact: bool)
+                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const CHUNK_BYTES: usize = 256 << 20;
+        let chunk_rows = (CHUNK_BYTES / (in_f * 4)).max(1).min(out_f);
+        if chunk_rows >= out_f {
+            let wf32 = self.bf16_to_f32(&data.slice(0..in_f * out_f * 2), in_f * out_f)?;
+            return if exact { self.linear_decode_exact(x, &wf32, m, in_f, out_f) }
+                   else { self.linear(x, &wf32, m, in_f, out_f) };
+        }
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let mut r0 = 0usize;
+        while r0 < out_f {
+            let rows = chunk_rows.min(out_f - r0);
+            let wslice = data.slice(r0 * in_f * 2..(r0 + rows) * in_f * 2);
+            let wf32 = self.bf16_to_f32(&wslice, in_f * rows)?;
+            let yc = if exact { self.linear_decode_exact(x, &wf32, m, in_f, rows)? }
+                     else { self.linear(x, &wf32, m, in_f, rows)? };
+            // scatter [m, rows] into y[m, out_f] at column offset r0 (m is tiny in decode/verify)
+            for mi in 0..m {
+                let src = yc.slice(mi * rows..(mi + 1) * rows);
+                let mut dst = y.slice_mut(mi * out_f + r0..mi * out_f + r0 + rows);
+                self.gpu.stream.memcpy_dtod(&src, &mut dst)?;
+            }
+            r0 += rows;
+        }
+        Ok(y)
     }
 
     /// On-device linear: y[m,out] = x[m,in] @ W[out,in]^T, weights row-major [out,in] (ggml).

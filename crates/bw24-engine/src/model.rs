@@ -7,7 +7,7 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
 use bw24_gguf::source::{TensorSource, GgufSource};
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32};
+use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32, QT_BF16};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -468,6 +468,9 @@ impl EmbedHost {
             GgmlType::Q8_0 => QT_Q8_0, GgmlType::Q4_K => QT_Q4_K, GgmlType::Q6_K => QT_Q6_K,
             GgmlType::Q5_K => QT_Q5_K, GgmlType::Q3_K => QT_Q3_K, GgmlType::IQ4_XS => QT_IQ4_XS,
             GgmlType::IQ3_S => QT_IQ3_S, GgmlType::NVFP4 => QT_NVFP4, GgmlType::F32 => QT_F32,
+            // BF16 embed table (FULL_PREC research mode: qwen35-9b-hf) — device gather does the
+            // exact bits<<16 expansion; 2 B/elem resident instead of an f32-doubled table.
+            GgmlType::BF16 => QT_BF16,
             other => panic!("embed_gather: unsupported dtype {other:?}"),
         };
         (qt, row_bytes)
