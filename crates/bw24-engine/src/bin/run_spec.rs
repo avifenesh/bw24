@@ -52,8 +52,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
                 .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
         };
-        let ids = tok.encode(&text, true);
-        println!("text prompt ({} chars) -> {} tokens", text.len(), ids.len());
+        // BW24_CHAT=1 wraps the prompt in the model's chat template (single user turn +
+        // assistant generation prompt) — the run-gen contract. Raw continuation stays default.
+        let to_encode = if std::env::var("BW24_CHAT").is_ok() {
+            tok.apply_chat_template(&[("user", &text)], true)
+        } else {
+            text.clone()
+        };
+        let ids = tok.encode(&to_encode, true);
+        println!("text prompt ({} chars{}) -> {} tokens", text.len(),
+                 if to_encode.len() != text.len() { ", chat-templated" } else { "" }, ids.len());
         ids
     } else {
         let p: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
