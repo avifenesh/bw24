@@ -1749,4 +1749,111 @@ impl HybridModel {
         out.truncate(max_new);
         Ok((out, total_drafted, total_accepted))
     }
+
+    /// TEACHER-FORCED REPLAY ACCEPTANCE (hqmtp MTP-heal protocol): walk a FIXED token
+    /// sequence and, at sampled positions, compare the MTP head's K-token draft chain against
+    /// the trunk's own teacher-forced greedy predictions. Nothing is generated — the context is
+    /// the corpus text itself, so (a) degenerate self-generated loops cannot inflate acceptance
+    /// and (b) two arms (bf16 ceiling vs NVFP4) score on IDENTICAL contexts, isolating the
+    /// quant-induced head/hidden-state mismatch from text drift.
+    ///
+    /// Per eval position p (context = tokens[0..=p], predecessor pairing as in spec decode):
+    ///   draft_j  = chain token j from (tokens[p], h_{p-1}), then its own drafts — the exact
+    ///              eager spec-decode chain (same mtp_head_forward_dev, same rope positions).
+    ///   target_j = teacher-forced greedy pick for position p+1+j (argmax of the trunk logits
+    ///              at forced context tokens[0..p+j]). For j==0 this equals live spec
+    ///              acceptance; for j>=1 live verify would condition on the drafts, here it
+    ///              conditions on the corpus — deterministic and arm-comparable by design.
+    ///
+    /// Returns (rows, bg): one (p, drafts[k], targets[k]) row per eval position (ascending p),
+    /// plus the full teacher-forced greedy track bg (bg[i] = greedy pick for position i, i>=1)
+    /// so harnesses can cross-check runs (e.g. different chunk sizes must give identical bg).
+    pub fn replay_acceptance(&self, e: &Engine, tokens: &[u32], k: usize, stride: usize,
+                             chunk: usize)
+        -> Result<(Vec<(usize, Vec<u32>, Vec<u32>)>, Vec<u32>), Box<dyn std::error::Error>> {
+        assert!(k >= 1 && stride >= 1 && chunk >= 2);
+        let mtp = self.mtp.as_ref().expect("replay_acceptance requires an MTP head");
+        let n_vocab = self.output.out_features();
+        let d_vocab = mtp.shared_head_head.as_ref().unwrap_or(&self.output).out_features();
+        let n_embd = self.cfg.n_embd as usize;
+        let t_total = tokens.len();
+        assert!(t_total >= 8, "corpus too short ({t_total} tokens)");
+        let mut cache = Cache::new(e, &self.cfg, t_total + k + 8)?;
+        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8)?;
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
+
+        // bg[i] = the trunk's greedy pick for position i under the forced context (i >= 1).
+        let mut bg: Vec<u32> = vec![0; t_total + 1];
+        let mut rows: Vec<(usize, Vec<u32>, Vec<u32>)> = Vec::new();
+        let mut prev_last_h = e.zeros(n_embd)?;   // predecessor hidden entering the chunk
+        let mut seed_buf = e.zeros(n_embd)?;
+        let mut preds_d = e.alloc_u32_zeroed(chunk)?;
+        let mut s = 0usize;
+        while s < t_total {
+            let cend = (s + chunk).min(t_total);
+            let tc = cend - s;
+            let ch = &tokens[s..cend];
+            // 1. forced trunk pass — verify path (decode-exact contract): all-column logits +
+            //    the chunk's true hiddens.
+            let (tl_d, vx) = self.decode_step_t_core(e, ch, s, &mut cache,
+                                                     Some((embd_gpu, embd_qt, embd_rb)), None)?;
+            for j in 0..tc { e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?; }
+            let preds = e.dtoh_u32(&preds_d)?;
+            for j in 0..tc { bg[s + j + 1] = preds[j]; }
+            // 2. TRUE predecessor-paired draft-KV fill for the chunk (row i carries h_{i-1};
+            //    row s reads the previous chunk's last true hidden, zeros at corpus start).
+            let mut vxs = e.zeros(tc * n_embd)?;
+            e.copy_into(&mut vxs, 0, &prev_last_h, n_embd)?;
+            if tc > 1 {
+                e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(tc - 1) * n_embd),
+                                 (tc - 1) * n_embd)?;
+            }
+            scratch.set_len(e, s)?;
+            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
+            // 3. draft chains at sampled positions, DESCENDING: a chain reads only slots
+            //    [0..p) (true fills) and appends at >= p; the next (smaller-p) chain's set_len
+            //    truncates those approximate appends before they can ever be read.
+            let ps: Vec<usize> = (s..cend)
+                .filter(|p| *p >= 1 && *p % stride == 0 && *p + k <= t_total).collect();
+            for &p in ps.iter().rev() {
+                scratch.set_len(e, p)?;
+                if p == s { e.copy_into(&mut seed_buf, 0, &prev_last_h, n_embd)?; }
+                else {
+                    e.copy_view_into(&mut seed_buf, 0,
+                                     &vx.slice((p - 1 - s) * n_embd..(p - s) * n_embd), n_embd)?;
+                }
+                let mut e_tok = tokens[p];
+                let mut d_seed = e.clone_dtod(&seed_buf)?;
+                let mut drafts: Vec<u32> = Vec::with_capacity(k);
+                for j in 0..k {
+                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(
+                        e, mtp, e_tok, &d_seed, &mut scratch, p + 1 + j,
+                        embd_gpu, embd_qt, embd_rb)?;
+                    let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
+                    let idx = e.dtoh_u32_one(&tok_d)?;
+                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    drafts.push(d);
+                    e_tok = d;
+                    d_seed = h_nextn;
+                }
+                // targets may live in a LATER chunk's bg — resolved after the walk.
+                rows.push((p, drafts, Vec::new()));
+            }
+            // 4. restore TRUE entries for the whole chunk (the next chunk's chains and fills
+            //    expect scratch.len == cend with exact rows).
+            scratch.set_len(e, s)?;
+            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
+            e.copy_view_into(&mut prev_last_h, 0, &vx.slice((tc - 1) * n_embd..tc * n_embd),
+                             n_embd)?;
+            s = cend;
+        }
+        for (p, drafts, targets) in rows.iter_mut() {
+            for j in 0..drafts.len() { targets.push(bg[*p + 1 + j]); }
+        }
+        rows.sort_by_key(|r| r.0);
+        Ok((rows, bg))
+    }
 }
