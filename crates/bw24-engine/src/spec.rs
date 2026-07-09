@@ -117,6 +117,10 @@ pub struct SpecSession {
     /// logits). Fuels empty-suffix continuation bursts (serve): the next turn emits this token
     /// first, feeds it, and the round loop resumes without any prime. None before the first turn.
     pub next_pred: Option<u32>,
+    /// SAMPLED-SPEC stream continuity across bursts: Philox event counters persist here so a
+    /// session's randomness never repeats between generate_spec_session calls. (0,0) at admit.
+    pub sctr: u32,
+    pub uctr: u32,
 }
 impl SpecSession {
     /// Context capacity of the session's caches (the server's ContextFull guard).
@@ -1129,6 +1133,8 @@ impl HybridModel {
             committed: Vec::new(),
             last_h: None,
             next_pred: None,
+            sctr: 0,
+            uctr: 0,
         })
     }
 
@@ -1137,6 +1143,15 @@ impl HybridModel {
     /// drafted, accepted); session.committed grows by suffix + emitted.
     pub fn generate_spec_session(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
                                  max_new: usize, k: usize)
+                                 -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None)
+    }
+
+    /// Serve-path sampled spec: `sampling` = Some((temperature, seed)) routes the burst through
+    /// the rejection-sampling verify with per-SESSION Philox continuity (sess.sctr/uctr).
+    /// None = env-driven (BW24_SPEC_TEMP, the CLI contract) or greedy.
+    pub fn generate_spec_session_sampled(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
+                                 max_new: usize, k: usize, sampling: Option<(f32, u64)>)
                                  -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         let mtp_dense = self.mtp.as_ref()
             .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
@@ -1149,7 +1164,7 @@ impl HybridModel {
             && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
         let was_tracking = e.ctx().is_event_tracking();
         if graph_draft && was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
-        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess));
+        let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling);
         if graph_draft && was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
         let (out, d, a) = r?;
         Ok((out, d, a))
@@ -1166,17 +1181,18 @@ impl HybridModel {
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
             && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
         if !graph_draft {
-            return self.generate_spec_inner2(e, prompt, max_new, k, false, None);
+            return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
         if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
-        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None);
+        let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None);
         if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
         r
     }
 
     fn generate_spec_inner2(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
-                           graph_draft: bool, mut sess: Option<&mut SpecSession>)
+                           graph_draft: bool, mut sess: Option<&mut SpecSession>,
+                           sampling: Option<(f32, u64)>)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
@@ -1197,11 +1213,11 @@ impl HybridModel {
         let mut own_scratch;
         let (cache, scratch, mut sess_tail): (&mut Cache, &mut MtpScratch,
                                               Option<(&mut Vec<u32>, &mut Option<CudaSlice<f32>>,
-                                                      &mut Option<u32>)>) =
+                                                      &mut Option<u32>, &mut u32, &mut u32)>) =
             match sess.take() {
                 Some(sr) => {
-                    let SpecSession { cache, scratch, committed, last_h, next_pred } = sr;
-                    (cache, scratch, Some((committed, last_h, next_pred)))
+                    let SpecSession { cache, scratch, committed, last_h, next_pred, sctr: s_sctr, uctr: s_uctr } = sr;
+                    (cache, scratch, Some((committed, last_h, next_pred, s_sctr, s_uctr)))
                 }
                 None => {
                     own_cache = Cache::new(e, &self.cfg, max_ctx)?;
@@ -1252,7 +1268,7 @@ impl HybridModel {
         let continuation = prompt.is_empty();
         if continuation {
             assert!(session_mode, "empty prompt requires a session");
-            assert!(sess_tail.as_ref().map_or(false, |(c, lh, np)|
+            assert!(sess_tail.as_ref().map_or(false, |(c, lh, np, _, _)|
                 !c.is_empty() && lh.is_some() && np.is_some()),
                 "empty-suffix continuation needs a primed session (committed + last_h + next_pred)");
         }
@@ -1314,9 +1330,12 @@ impl HybridModel {
         // sampling verify (Leviathan/Chen) — accept draft x at u < p(x)/q(x), resample from
         // norm(max(0,p-q)) on reject, bonus sampled from p on full accept. Counter-based Philox
         // everywhere (seed, event) -> reproducible. temp==0/unset = the greedy path, untouched.
-        let sp_temp: f32 = std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let (sp_temp, sp_seed): (f32, u64) = match sampling {
+            Some((t, sd)) => (t, sd),
+            None => (std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                     std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42)),
+        };
         let sampled = sp_temp > 0.0;
-        let sp_seed: u64 = std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42);
         // Trimmed heads: q lives on the trimmed vocab; accept gathers use the TRIMMED index and
         // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
         // those, so their residual mass is p(x), correct by construction).
@@ -1324,8 +1343,10 @@ impl HybridModel {
             match &mtp.d2t { Some(map) => Some(e.htod_u32_v(map)?), None => None }
         } else { None };
         let mut q_full_buf: Option<CudaSlice<f32>> = None;
-        let mut sctr: u32 = 0;              // device sampling-event counter (gumbel streams)
-        let mut uctr: u32 = 0;              // host uniform counter (accept tests)
+        // Counters resume from the session (burst continuity: randomness must never repeat
+        // across generate_spec_session calls); one-shot callers start at (0,0).
+        let mut sctr: u32 = sess.as_ref().map(|s| s.sctr).unwrap_or(0);
+        let mut uctr: u32 = sess.as_ref().map(|s| s.uctr).unwrap_or(0);
         // host Philox4x32-10 (mirrors spec_sample.cu; independent stream via ctr_lo tag)
         let host_u01 = |seed: u64, ctr: u32| -> f32 {
             let (m0, m1) = (0xD2511F53u32, 0xCD9E8D57u32);
@@ -1365,7 +1386,7 @@ impl HybridModel {
                 e.copy_view_into(&mut h_seed_buf, 0, &ph.slice((np - 1) * n_embd..np * n_embd),
                                  n_embd)?;
             } else if continuation {
-                if let Some((_, lh, _)) = sess_tail.as_ref() {
+                if let Some((_, lh, _, _, _)) = sess_tail.as_ref() {
                     if let Some(lh) = lh.as_ref() { e.copy_into(&mut h_seed_buf, 0, lh, n_embd)?; }
                 }
             }
@@ -1451,7 +1472,7 @@ impl HybridModel {
                     let (src_lo, dst_off) = if start == 0 { (0, n_embd) } else { ((start - 1) * n_embd, 0) };
                     let n_copy = if start == 0 { (tc - 1) * n_embd } else { tc * n_embd };
                     if start == 0 {
-                        if let Some((_, lh, _)) = sess_tail.as_ref() {
+                        if let Some((_, lh, _, _, _)) = sess_tail.as_ref() {
                             if let Some(lh) = lh.as_ref() {
                                 e.copy_into(&mut phs, 0, lh, n_embd)?;
                             }
@@ -1854,7 +1875,9 @@ impl HybridModel {
         }
         // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
         // expects — every row in `committed` has trunk KV/recur state AND an exact draft-KV row.
-        if let Some((committed, last_h, next_pred_slot)) = sess_tail.take() {
+        if let Some((committed, last_h, next_pred_slot, sctr_slot, uctr_slot)) = sess_tail.take() {
+            *sctr_slot = sctr;
+            *uctr_slot = uctr;
             *next_pred_slot = Some(last_pred);
             if let Some(b) = pending.take() {
                 // pending bonus: in `out` but NOT in the caches — commit it (one T=1 pass) and
