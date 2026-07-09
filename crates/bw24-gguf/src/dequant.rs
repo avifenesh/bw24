@@ -478,6 +478,21 @@ mod tests {
     }
 
     #[test]
+    fn bf16_dequant_on_use_kernel_contract() {
+        // BW24_FULL_PREC FloatBf16 dequant-on-use (kernels.cu `bf16_to_f32`) computes
+        //   out = __uint_as_float((uint)in << 16)
+        // which MUST be bit-identical to this host reference (the load-time bf16->f32 dequant the
+        // plain Float path already does). If these ever diverge, the full-precision oracle path
+        // stops being exact. Pin the formula equivalence here (host-only; the device run is a
+        // GPU gate, deferred).
+        for b in [0u16, 0x3f80, 0x4000, 0xbf80, 0x7f7f, 0x8000, 0x0001, 0xffff, 0x3c00] {
+            let host = bf16_to_f32(b);
+            let kernel_formula = f32::from_bits((b as u32) << 16);
+            assert_eq!(host.to_bits(), kernel_formula.to_bits(), "bf16 {b:#06x} host vs kernel");
+        }
+    }
+
+    #[test]
     fn q8_0_roundtrip_simple() {
         // one block: d=0.5 (fp16 0x3800), qs = 0,2,4,... => values 0,1,2,...
         let mut raw = vec![0u8; 34];

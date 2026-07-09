@@ -426,7 +426,15 @@ impl HybridModel {
         // block, norms, and head quant all stay main-model, so there is no cross-file quality
         // mismatch (the external Q4_K draft file measured -15pts acceptance vs the native block).
         // Draft lm_head reads drop vocab/32768-fold; verify stays full-vocab -> exactness unchanged.
-        let mtp = match (std::env::var("BW24_FRSPEC_TRIM"), mtp) {
+        // FULL_PREC (MTP-heal ceiling): the self-trim gathers rows into `from_quant_bytes` (Quant
+        // only) and, more to the point, the full-precision ceiling wants the model's NATURAL full
+        // head — trimming the draft vocab is a speed lever, not part of the exactness measurement.
+        // Disable trim under the flag (documented resolution, §item 2).
+        let trim_env = std::env::var("BW24_FRSPEC_TRIM");
+        if crate::model::full_prec_enabled() && trim_env.as_deref().map(|p| !p.is_empty()).unwrap_or(false) {
+            eprintln!("[frspec-trim] DISABLED under BW24_FULL_PREC — using the natural full MTP head");
+        }
+        let mtp = match (if crate::model::full_prec_enabled() { Err(std::env::VarError::NotPresent) } else { trim_env }, mtp) {
             (Ok(path), Some(mut head)) if !path.is_empty() => {
                 let tg = GgufFile::open(&path)?;
                 let d2t_t = tg.find("d2t").expect("BW24_FRSPEC_TRIM file has no d2t tensor");

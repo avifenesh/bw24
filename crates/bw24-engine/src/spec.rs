@@ -1142,8 +1142,11 @@ impl HybridModel {
             .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
         let trunk_dense = self.layers.iter()
             .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
+        // FULL_PREC forces the EAGER draft: the graph capture would enclose cuBLASLt f32 GEMV
+        // (the FloatBf16 else-branches) and a bf16_to_f32 dequant alloc — neither is stream-capture
+        // safe. Eager rides matmul/matmul_decode_exact, which dequant FloatBf16 on use. (§item 2.)
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
-            && mtp_dense && trunk_dense && k + 2 < 96;
+            && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
         let was_tracking = e.ctx().is_event_tracking();
         if graph_draft && was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
         let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess));
@@ -1158,8 +1161,10 @@ impl HybridModel {
             .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
         let trunk_dense = self.layers.iter()
             .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
+        // FULL_PREC forces eager (see generate_spec_session note): CUDA graph capture cannot
+        // enclose cuBLASLt f32 GEMV or the bf16_to_f32 dequant alloc the FloatBf16 path needs.
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
-            && mtp_dense && trunk_dense && k + 2 < 96;
+            && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
         if !graph_draft {
             return self.generate_spec_inner2(e, prompt, max_new, k, false, None);
         }

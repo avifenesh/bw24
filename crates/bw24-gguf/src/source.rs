@@ -547,7 +547,11 @@ impl TensorSource for SafetensorsSource {
                     // EVERY decoded token (the 4th occurrence of the Float-poison trap: any F32/BF16
                     // 2D matmul tensor fails uses_q8_1_fast and rides dot_kernel+reduce_1Block
                     // pairs). Q8_0 is FINER than the Q5_K/Q6_K lm_heads every GGUF twin ships.
-                    if info.dtype == "BF16" && info.shape.len() == 2
+                    // BW24_FULL_PREC (MTP-heal): surface raw BF16 — the engine keeps large 2D bf16
+                    // matmul weights bf16-resident (GpuTensor::FloatBf16, dequant-on-use). This
+                    // re-encode is exactly the loader law the full-precision mode must bypass.
+                    let full_prec = std::env::var("BW24_FULL_PREC").as_deref() == Ok("1");
+                    if !full_prec && info.dtype == "BF16" && info.shape.len() == 2
                         && info.shape.iter().product::<u64>() >= 1_000_000
                         && (hf.starts_with("mtp.") || hf == "model.embed_tokens.weight"
                             || hf == "lm_head.weight") {

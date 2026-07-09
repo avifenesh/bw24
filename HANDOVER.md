@@ -22,6 +22,38 @@ OPEN FRONTS (priority order, 2026-07-08 evening): (1) PREFILL — the #1 plain g
 
 LAWS HARDENED THIS CYCLE: power boost (+25W) silently resets — verify before EVERY bench session (cost two false boards). FA/split geometry validates across the DEPTH axis (3 depths minimum). bpw equality ≠ quality-class equality across asymmetric/symmetric quant families (Q4_K→NVFP4 taxes acceptance despite equal bits). Float-poison tripwire now in the loader (occurrence #4 was M3's 4.9GB BF16 lm_head). Dynamic activation quant = immune to the uncalibrated-tail-expert checkpoint trap. Kernel-efficiency claims need LOCKED-CLOCK or clock-recorded runs — DVFS converts instruction wins into clock wins and hides them at fixed clock (q6issue lane, refuted its own premise). Mem P-state check before ANY bandwidth claim — idle-cold P8 reads 64% of P0 bandwidth and fabricated the '61%-of-wall k-quant' figure. Competitor baselines rot: re-baseline llama in the SAME session as any board claim (the 9B '1.59x' survived 2 days against a stale llama arm).
 
+## MTP-HEAL RESEARCH PLATFORM — FOUNDATION (lane/mtpheal, 2026-07-09)
+
+Shape 2 = research platform; first protocol = MTP-heal step 1-2 (measure MTP draft-head acceptance
+at full precision as the CEILING, then on NVFP4 → delta = the quant hit on drafting). This lane laid
+the RIG-SIDE FOUNDATION (measurement runs come later, on the GPU):
+
+- **`BW24_FULL_PREC=1` loader mode** (default OFF): NO re-encodes — bypasses the BF16→Q8_0 loader law
+  and the Float-poison tripwire (both suppressed; correct behavior under the flag). New enum variant
+  `GpuTensor::FloatBf16` keeps large 2D bf16 matmul weights **bf16-resident** (2 B/w) with
+  dequant-on-use (new `bf16_to_f32` kernel → transient f32 scratch → the existing cuBLASLt f32 GEMV;
+  bit-identical to a load-time dequant, pinned by `bf16_dequant_on_use_kernel_contract` test). VRAM:
+  9B ~18GB bf16 + ≤4GB largest-weight f32 scratch + activations fits 24GB (an all-f32 materialization
+  would be ~38GB — the reason bf16-resident is mandatory, not optional). Small/1D/norm tensors stay
+  f32 Float. source.rs guards the BF16→Q8_0 arm; model.rs routes the `None` arm.
+- **Oracle-path spec decode** under the flag: EAGER draft forced (`graph_draft && !full_prec`) — CUDA
+  graph capture can't enclose cuBLASLt f32 GEMV or the dequant alloc. Eager already routes FloatBf16
+  through `matmul`/`matmul_decode_exact` (dequant-on-use). `BW24_FRSPEC_TRIM` disabled under the flag
+  (the ceiling wants the natural full head; trim gather is Quant-only). Per-slot decay = the existing
+  `BW24_SPEC_STATS=1` (no new seam needed).
+- **Acceptance battery** (`tools/`): `acceptance_battery.sh` (p1/p2/p3 + 8-turn agent loop, N≥3,
+  JSONL) → `acceptance_delta.py` (bf16-vs-NVFP4 delta table). `agent_loop_acceptance.sh` recreates the
+  ephemeral /tmp/w4a4-loop.sh 8-turn accumulative protocol in-repo. `acceptance_parse.py` scrapes one
+  `BW24_SPEC_K=<k>` + `BW24_SPEC_STATS=1` run-spec invocation into a JSONL row. Flags/usage: docs/FLAGS.md §6.
+  ```
+  FULL_PREC=1 tools/acceptance_battery.sh /data/ai-ml/hf-models/qwen35-9b-hf out-bf16.jsonl
+  tools/acceptance_battery.sh /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf out-nvfp4.jsonl
+  tools/acceptance_delta.py out-bf16.jsonl out-nvfp4.jsonl --json summary.json
+  ```
+- **GPU-DEFERRED** (another lane owned the GPU; run-gen 19.9GB resident): the actual full-prec load +
+  run-spec K=1..8 self-consistency on the 9B ST, the VRAM-fit confirmation, and the first real JSONL
+  rows. Compile-clean (full `--bins` build incl the new fatbin kernel) + host tests green.
+
 ## MINIMAX-M3 LANE (merged to main ba94a30, 2026-07-07)
 
 121GB NVFP4 REAP50 runs on this 24GB/60GB rig: ST disk-tier loader (stream-repack to .bw24-repack cache, ~5GB RSS), sigmoid routing + e_score_correction_bias, swigluoai via the unified ffn_act seam, gate-optional attention, dense-layer override. **T=1..4 bit-exact (gate maxdiff 0.0, verify-referenced)**. LAW: sigmoid-router MoE gates must reference the SERVING path — f32 KV oracles amplify through discontinuous top-k. Chat gen CORRECT (merge_sorted_lists w/ reasoning), ~1.5 tok/s PCIe/NVMe-bound.
