@@ -122,3 +122,39 @@ parity-to-above WITHOUT touching the exactness contract. 9B (0.74x, 4631 vs 6287
 Risks: PTX operand-form fight (time sink — capped by Probe 0), k16 issue-rate cliff, e4m3 act
 grid argmax forks at depth (precedent says no, contract says verify), scale-plane register
 pressure in the mainloop.
+
+## R-A implementation spec (2026-07-09, post-Probe-0 deep-dive on the W4A8 tile)
+
+Twin of `mmq_nvfp4_w4a8.cu` (977 lines; reuse its skeleton verbatim — tiling, cp.async PP_PIPE
+ring, write-back). File: `mmq_nvfp4_f8f4.cu`, seam `BW24_MMQ_F8F4=1` (default OFF until battery).
+
+1. **VRAM law binds**: weights stay packed-nibble resident (4-bit planes). The 8-bit containers
+   exist only in smem tiles, built in-loop by the loader (the CUTLASS-door resident-8bit repack
+   OOMs the 27B — measured, docs/FLAGS.md §5).
+2. **Loader** (`load_tiles_nvfp4_f8f4`, twin of `load_tiles_nvfp4_w4a8`): per 16-group with
+   scales s1,s2 per 32-pair: s32 = max(s1,s2); ratio r_i = s_i/s32 ∈ (0,1].
+   - r == 1 (s_i == s32): pure bit-op — nibble<<2 into byte (the CUTLASS middle placement). No
+     value change, EXACT.
+   - r < 1: recode v' = round_e2m3(kvalue[nibble] × r) via f32 mul + `cvt.rn.satfinite.e2m3x2.f32`
+     (2 vals/cvt, Blackwell FP6 convert). Error ≤ ~2^-4 rel (2 extra mantissa bits vs e2m1).
+   - smem x_tile: 64 bytes/row/blk64 (containers) + 2 f32 per-32 scales; adapt
+     MMQ_MMA_TILE_X_K accordingly. ALU cost rides the 83%-idle warp slots (tile is tensor-pipe
+     bound — w4a8v2).
+3. **Activations**: e4m3 quantize twin of `quantize_q8_1_mmq` — f32 → e4m3 byte
+   (`cvt.rn.satfinite.e4m3x2.f32`) + f32 amax-scale per 32 (D4 layout kept so the epilogue shape
+   is unchanged).
+4. **MMA**: `mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e2m1.e4m3.f32` — A=weights
+   (e2m1-in-container), B=acts (e4m3), PLAIN kind (no scale regs; CUTLASS SM120_16x8x32_TN
+   form). f32 accumulator replaces the int32 of the int8 path — epilogue becomes
+   sum_f32 × (s32_w × d_act) FMA, same structure, one fewer convert.
+   k-iter covers 32 (vs 16) — halve the inner-loop trip count, keep MMQ_ITER_K=256.
+5. **Gates**: new kernel-check section (f8f4 tile vs Stage-A f32 oracle, int8-act-class rel
+   tolerance ~3e-2); then run-gen argmax in-config, run-spec K=1..8, agent-loop text audit
+   (PRINT_TEXT), A/B vs W4A8 same-hour, depth axis 3 points. Acceptance parity on the spec
+   configs is the flip-blocker to watch (KQ_NVFP4 precedent).
+6. **Measure r==1 frequency** on real checkpoints first (host-side scan of the scale planes,
+   trivial script) — if adjacent-scale equality is rare AND the recode tax shows up in gates,
+   R-B (whole-plane fold to e4m3, granularity kept) is the fallback; if it's common, R-A rides
+   the fast path most of the time.
+
+Expected: +30-50% pp on 9B/27B dense prefill; 35B expert MMQ inherits after (MOE_MMA twin).
