@@ -194,3 +194,173 @@ extern "C" __global__ void scatter_trim_logits_pass2_f32(
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < d_vocab) dst[d2t[i]] = src[i];
 }
+
+// ---------------- 6. filtered rejection sampling (feat/filtered-spec) ----------------
+// Truncation filters make the TARGET distribution the filtered one; rejection sampling stays
+// distribution-exact iff p and q see the SAME transform. These kernels compute, per logits row,
+// the PROB THRESHOLD th and renormalization mass Z of the filtered softmax:
+//   top_k>0:   th = prob of the k-th largest element (binary search on count)
+//   top_p<1:   smallest set of highest probs with mass >= top_p (binary search on mass)
+//   min_p>0:   th = max(th, min_p * p_max)
+// Downstream, filtered_prob(x) = (p(x) >= th) ? p(x)/Z : 0 — used by the gather and residual.
+// One block per row; the binary search runs block-internally (no host round trips). Bit-stable:
+// thresholds derive from reductions in a fixed order.
+extern "C" __global__ void filter_stats_f32(
+        const float* __restrict__ x, const int64_t row_stride, const int* __restrict__ rows,
+        float* __restrict__ out_th, float* __restrict__ out_z, float* __restrict__ out_max,
+        int n, int nrow, float temp, int top_k, float top_p, float min_p) {
+    const int r = blockIdx.x;
+    if (r >= nrow) return;
+    const float* xr = x + (int64_t) rows[r] * row_stride;
+    const int tid = threadIdx.x, nth = blockDim.x;
+    __shared__ float sred[1024];
+    __shared__ float s_max, s_sum, s_th;
+    const float invT = temp > 0.0f ? 1.0f / temp : 1.0f;
+
+    // pass 1: max + sumexp (full softmax denom)
+    float m = -3.4e38f;
+    for (int i = tid; i < n; i += nth) m = fmaxf(m, xr[i]);
+    sred[tid] = m; __syncthreads();
+    if (tid == 0) { for (int t = 1; t < nth; ++t) m = fmaxf(m, sred[t]); s_max = m; }
+    __syncthreads(); m = s_max;
+    float su = 0.0f;
+    for (int i = tid; i < n; i += nth) su += __expf((xr[i] - m) * invT);
+    sred[tid] = su; __syncthreads();
+    if (tid == 0) { float t2 = 0.0f; for (int t = 0; t < nth; ++t) t2 += sred[t]; s_sum = t2; }
+    __syncthreads();
+    const float denom = s_sum;                    // full softmax sum (unfiltered)
+
+    // binary search on the UNNORMALIZED exp value e = exp((x-m)/T), th_e in [0, 1] (e_max = 1).
+    // predicate for top_k: count(e >= th_e) >= top_k ; for top_p: mass(e >= th_e)/denom >= top_p.
+    float lo = 0.0f, hi = 1.0f;
+    if (top_k > 0 || top_p < 1.0f) {
+        for (int it = 0; it < 24; ++it) {
+            const float mid = 0.5f * (lo + hi);
+            float cnt = 0.0f, mass = 0.0f;
+            for (int i = tid; i < n; i += nth) {
+                const float e0 = __expf((xr[i] - m) * invT);
+                if (e0 >= mid) { cnt += 1.0f; mass += e0; }
+            }
+            sred[tid] = cnt; __syncthreads();
+            if (tid == 0) { float c = 0.0f; for (int t = 0; t < nth; ++t) c += sred[t]; sred[0] = c; }
+            __syncthreads(); const float tot_cnt = sred[0]; __syncthreads();
+            sred[tid] = mass; __syncthreads();
+            if (tid == 0) { float z = 0.0f; for (int t = 0; t < nth; ++t) z += sred[t]; sred[0] = z; }
+            __syncthreads(); const float tot_mass = sred[0]; __syncthreads();
+            bool keep_more = false;   // does the set at `mid` still satisfy the constraint?
+            if (top_k > 0 && tot_cnt >= (float) top_k) keep_more = true;
+            if (top_p < 1.0f && tot_mass / denom >= top_p) keep_more = true;
+            if (keep_more) lo = mid; else hi = mid;
+        }
+    }
+    if (tid == 0) {
+        float th_e = (top_k > 0 || top_p < 1.0f) ? lo : 0.0f;
+        // min_p: threshold on prob relative to max prob: e >= min_p (since e_max == 1).
+        if (min_p > 0.0f) th_e = fmaxf(th_e, min_p);
+        s_th = th_e;
+    }
+    __syncthreads();
+    // final Z: mass of the kept set (e >= th, with th chosen so the set INCLUDES the boundary).
+    const float th = s_th;
+    float z = 0.0f;
+    for (int i = tid; i < n; i += nth) {
+        const float e0 = __expf((xr[i] - m) * invT);
+        if (e0 >= th) z += e0;
+    }
+    sred[tid] = z; __syncthreads();
+    if (tid == 0) {
+        float zt = 0.0f; for (int t = 0; t < nth; ++t) zt += sred[t];
+        out_th[r]  = th;       // threshold in e-units (e_max == 1 at the row max)
+        out_z[r]   = zt;       // filtered renorm mass (e-units)
+        out_max[r] = s_max;    // row max (the residual kernel needs it to reconstruct e-units)
+    }
+}
+
+// filtered prob gather: out = (e(id) >= th) ? e(id)/Z : 0  — the filtered-softmax probability.
+extern "C" __global__ void softmax_gather_filtered_f32(
+        const float* __restrict__ x, const int64_t row_stride, const uint32_t* __restrict__ ids,
+        const int* __restrict__ rows, const float* __restrict__ th, const float* __restrict__ z,
+        float* __restrict__ out, int n, int npair, float temp) {
+    const int pair = blockIdx.x;
+    if (pair >= npair) return;
+    const float* xr = x + (int64_t) rows[pair] * row_stride;
+    const int tid = threadIdx.x, nth = blockDim.x;
+    __shared__ float sred[32];
+    const float invT = temp > 0.0f ? 1.0f / temp : 1.0f;
+    float m = -3.4e38f;
+    for (int i = tid; i < n; i += nth) m = fmaxf(m, xr[i]);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) m = fmaxf(m, __shfl_down_sync(0xFFFFFFFF, m, off));
+    if ((tid & 31) == 0) sred[tid >> 5] = m;
+    __syncthreads();
+    if (tid == 0) {
+        for (int w = 1; w < (nth + 31) / 32; ++w) m = fmaxf(m, sred[w]);
+        const float e0 = __expf((xr[ids[pair]] - m) * invT);
+        out[pair] = (e0 >= th[pair]) ? e0 / z[pair] : 0.0f;
+    }
+}
+
+// filtered residual sample: r_i = max(0, fp(p,i) - fq(q,i)) with fp/fq the FILTERED softmaxes
+// (thresholds/masses precomputed by filter_stats). Same fixed-order CDF walk as kernel 3.
+extern "C" __global__ void residual_sample_filtered_f32(
+        const float* __restrict__ p, const float* __restrict__ q, int has_q, int n, float temp,
+        uint32_t seed_lo, uint32_t seed_hi, uint32_t stream_pos,
+        float p_max, float p_th, float p_z, float q_max, float q_th, float q_z,
+        uint32_t* __restrict__ out_tok) {
+    const int tid = threadIdx.x, nth = blockDim.x;
+    __shared__ float chunk_sum[1024];
+    const float invT = temp > 0.0f ? 1.0f / temp : 1.0f;
+    auto r_at = [&](int i) -> float {
+        const float ep = __expf((p[i] - p_max) * invT);
+        const float pi = (ep >= p_th) ? ep / p_z : 0.0f;
+        float qi = 0.0f;
+        if (has_q) {
+            const float eq = __expf((q[i] - q_max) * invT);
+            qi = (eq >= q_th) ? eq / q_z : 0.0f;
+        }
+        const float r = pi - qi; return r > 0.0f ? r : 0.0f;
+    };
+    const int len = (n + nth - 1) / nth;
+    const int lo = tid * len, hi = min(lo + len, n);
+    float s = 0.0f;
+    for (int i = lo; i < hi; ++i) s += r_at(i);
+    chunk_sum[tid] = s;
+    __syncthreads();
+    if (tid != 0) return;
+    float total = 0.0f;
+    for (int t = 0; t < nth; ++t) total += chunk_sum[t];
+    if (total <= 0.0f) {
+        float m2 = -3.4e38f; int am = 0;
+        for (int i = 0; i < n; ++i) if (p[i] > m2) { m2 = p[i]; am = i; }
+        *out_tok = (uint32_t) am; return;
+    }
+    uint4 rv = philox4(seed_lo, seed_hi, 0xFFFFFFFDu, stream_pos);
+    float u = u01(rv.x) * total;
+    float acc = 0.0f; int t = 0;
+    for (; t < nth; ++t) { if (acc + chunk_sum[t] >= u) break; acc += chunk_sum[t]; }
+    if (t == nth) t = nth - 1;
+    int i = t * len, ihi = min(i + len, n);
+    for (; i < ihi; ++i) { acc += r_at(i); if (acc >= u) break; }
+    *out_tok = (uint32_t) min(i, n - 1);
+}
+
+// Keskar-style repetition/frequency/presence penalties applied IN PLACE to a logits copy —
+// history-dependent, so both the verify column (p) and the draft head (q) get the SAME pass
+// before filtering (symmetry keeps rejection sampling exact for the penalized+filtered target).
+// hist holds the last `n_hist` generated ids; counts computed on the fly (n_hist is small).
+extern "C" __global__ void penalize_logits_f32(
+        float* __restrict__ x, const uint32_t* __restrict__ hist, int n_hist,
+        float rep, float freq, float present, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_hist) return;
+    const uint32_t id = hist[i];
+    if (id >= (uint32_t) n) return;
+    // first occurrence in hist does the whole adjustment (dedup without atomics)
+    for (int j = 0; j < i; ++j) if (hist[j] == id) return;
+    int cnt = 1;
+    for (int j = i + 1; j < n_hist; ++j) if (hist[j] == id) ++cnt;
+    float v = x[id];
+    if (rep != 1.0f) v = v > 0.0f ? v / rep : v * rep;
+    v -= freq * (float) cnt + present;
+    x[id] = v;
+}
