@@ -1,0 +1,57 @@
+=== MODEL E: 35B plain cells interleaved 2026-07-09T22:01:02+03:00 ===
+--- bw24 d512 run 1 ---
+[moe] resident-experts decision: per-layer 373MB x 41 layers = 15.3GB vs budget 19.2GB -> RESIDENT
+decode tg128 @ctx512: EAGER 178.3 tok/s (5.61 ms/tok)
+gpu: 1590 MHz, 58
+--- llama d512 run 1 ---
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       3151.65 ± 0.00 |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        165.72 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu: 2317 MHz, 63
+--- bw24 d512 run 2 ---
+[moe] resident-experts decision: per-layer 373MB x 41 layers = 15.3GB vs budget 19.2GB -> RESIDENT
+decode tg128 @ctx512: EAGER 178.0 tok/s (5.62 ms/tok)
+gpu: 1590 MHz, 59
+--- llama d512 run 2 ---
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    pp512 @ d512 |       4234.36 ± 0.00 |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |    tg128 @ d512 |        169.86 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu: 2317 MHz, 67
+--- bw24 d6257 run 1 ---
+[moe] resident-experts decision: per-layer 373MB x 41 layers = 15.3GB vs budget 19.2GB -> RESIDENT
+decode tg128 @ctx6257: EAGER 163.4 tok/s (6.12 ms/tok)
+gpu: 1582 MHz, 69
+--- llama d6257 run 1 ---
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       3923.11 ± 0.00 |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |        160.65 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu: 2205 MHz, 74
+--- bw24 d6257 run 2 ---
+[moe] resident-experts decision: per-layer 373MB x 41 layers = 15.3GB vs budget 19.2GB -> RESIDENT
+decode tg128 @ctx6257: EAGER 163.9 tok/s (6.10 ms/tok)
+gpu: 1582 MHz, 68
+--- llama d6257 run 2 ---
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 23983 MiB):
+  Device 0: NVIDIA GeForce RTX 5090 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 23983 MiB
+| model                          |       size |     params | backend    | ngl | type_k | type_v |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | -----: | -----: | --: | --------------: | -------------------: |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   pp512 @ d6257 |       3930.35 ± 0.00 |
+| qwen35moe 35B.A3B IQ4_XS - 4.25 bpw |  16.95 GiB |    35.51 B | CUDA       | 999 |   q8_0 |   q5_1 |   1 |   tg128 @ d6257 |        161.16 ± 0.00 |
+
+build: c818263f2 (9833)
+gpu: 2130 MHz, 66

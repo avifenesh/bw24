@@ -1,0 +1,7 @@
+=== D-pair llama 27B p3 SAMPLED 2026-07-09T22:00:12+03:00 ===
+run 1:
+gen: 256 tok @ 96.41 tok/s
+gpu: 1740 MHz, 68
+run 2:
+gen: 256 tok @ 102.10 tok/s
+gpu: 1747 MHz, 69

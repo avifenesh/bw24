@@ -1,0 +1,15 @@
+=== E llama 35B self-MTP (no -md, embedded NextN; n-max 2 p-min 0.1) 2026-07-09T22:08:42+03:00 ===
+MTP ENGAGED check: p2 run1 draft_n=202 draft_n_accepted=153 gen 219.40 tok/s (raw /tmp/p2-resp.json)
+--- p2 run 2 ---
+gen: 256 tok @ 223.31 tok/s draft_n=202 acc=153
+--- p1 run 1 (ignore_eos=true, raw-prompt EOS workaround) ---
+gen: 256 tok @ 250.43 tok/s draft_n=181 acc=164
+--- p1 run 2 (ignore_eos=true, raw-prompt EOS workaround) ---
+gen: 256 tok @ 253.27 tok/s draft_n=181 acc=164
+--- p3 SAMPLED run 1 (chat temp=0.7) ---
+gen: 256 tok @ 249.96 tok/s draft_n=176 acc=167
+gpu: 2197 MHz, 66
+--- p3 SAMPLED run 2 (chat temp=0.7) ---
+gen: 256 tok @ 247.77 tok/s draft_n=176 acc=166
+gpu: 2175 MHz, 65
+E-LLAMA-DONE
