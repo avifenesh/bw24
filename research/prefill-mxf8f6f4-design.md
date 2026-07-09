@@ -64,6 +64,33 @@ form if it assembles, epilogue-FMA-per-k16 variant} × {measured TF, correct sca
 synthetic tile vs f64 reference}. The capabilities doc's microbench harness
 (`bw24-probe`) is the vehicle. This decides R1' vs R3 vs abandon in <1 day of work.
 
+### Probe 0 form-matrix results (2026-07-09, compile/assemble level)
+
+| form | verdict |
+|---|---|
+| `m16n8k32 ... .e4m3.e2m1 ... ue8m0` (the mixed form) | **ASSEMBLES** (`probe/mixed_f8f4_probe.cu`; execution + rate + correctness pending GPU) |
+| `m16n8k16` mxf8f6f4 (R1' — one NVFP4 scale group per MMA) | **REJECTED** — "Incorrect instruction type for shape m16n8k16". k32-only. R1' dead. |
+| `scale_vec::2X` on mxf8f6f4 (hardware per-16 scales) | **REJECTED** — "Illegal modifier". 1X-only. |
+
+Note (PTX spec, matters for the byte math): mxf8f6f4 requires f4 operands in **8-bit
+containers** — the smem/register byte win over int8 tiles does NOT exist. The wins that remain:
++74% MMA issue ceiling (381 vs ~219 TF) and no in-mainloop dequant ALU. The tile is pipe-bound
+(w4a8v2: 16.4% warps-active, occupancy-invariant), so the issue ceiling is the real lever.
+
+### Revised route ladder (replaces R1–R4 above)
+
+- **R-A — mixed e4m3×e2m1, per-32 scale requant, epilogue FMA.** MMA runs with scale=2^0;
+  NVFP4's per-16 e4m3 scales requant to per-32 (shared across the k32 the MMA spans) and apply
+  in the per-block epilogue exactly like the existing q8_1 scale FMA — same tile skeleton as
+  today's W4A8. Weight VALUES stay exact e2m1; the tax is scale GRANULARITY (16→32).
+- **R-B — fold per-16 scales into values → pure e4m3×e4m3** (form already measured 381 TF).
+  round(e2m1 × scale16 → e4m3): values re-round (~2^-4 rel), granularity kept. ST_E4M3
+  precedent says pure-e4m3 weights pass gates on F8-origin lineage; NVFP4-origin fold is a new
+  lineage — gate decides.
+- Order: probe correctness → build R-A (values-exact is the better first bet under the exactness
+  contract) → battery → if scale-granularity forks argmax, try R-B → if both fork, the arc
+  closes NEGATIVE with the JSONL row as the record.
+
 ## Ceiling math (what winning looks like)
 
 pp1855 27B ST today: 1341 (NV_W4 decode config) / 1480 (ST_E4M3). llama 27B GGUF: ~1900-2350
