@@ -1,11 +1,6 @@
 # Environment flags — the audited catalog
 
-Doctrine (CLAUDE.md): **winners are defaults** — naked commands run the tuned path. A flag exists
-only when it is (a) a runtime parameter, (b) machine-specific config, (c) a documented rollback
-seam back to a reference path, (d) a diagnostic, or (e) an explicitly-blocked experimental door.
-When an experiment concludes negative or flat, the flag and its dispatch arm are DELETED — the
-`research/tune-data/*.jsonl` row is the record, not dead code. The 2026-07-08 flag audit enforced
-this repo-wide; the removed-flag ledger is at the bottom.
+Doctrine (CLAUDE.md): **winners are defaults** — naked commands run the tuned path. A flag exists only when it is (a) runtime parameter, (b) machine-specific config, (c) documented rollback seam, (d) diagnostic, or (e) explicitly-blocked experimental door. When an experiment concludes negative or flat, the flag and dispatch arm are deleted — the `research/tune-data/*.jsonl` row is the record, not dead code. The 2026-07-08 flag audit enforced this repo-wide; removed-flag ledger at bottom.
 
 Provenance dates refer to `research/tune-data/rig5090.jsonl` / `g7e-rtx6000.jsonl` rows and
 HANDOVER.md sections from that date.
@@ -110,10 +105,9 @@ is a compile-time `#define` in qmatvec.cu, not an env var.
 
 ---
 
-## 3. Rollback seams (default ON — `=0`/set reverts to the reference path)
+## 3. Rollback seams (default ON — `=0`/set reverts to reference path)
 
-These exist because the correctness discipline needs a same-binary oracle. Each is a measured
-winner; the seam is the documented way back.
+These exist because correctness discipline needs a same-binary oracle. Each is a measured winner; the seam is the documented way back.
 
 | flag | revert semantics | provenance |
 |---|---|---|

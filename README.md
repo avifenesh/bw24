@@ -9,13 +9,13 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-It beats llama.cpp's plain decode on all three target models and leads most speculative-decoding cells — the card above and the [Performance](#performance) tables are the single source of numbers, measured same-session against llama.cpp's best config on this machine. It also loads HF safetensors checkpoints directly (no GGUF conversion) and runs a 121 GB MoE on the 24 GB card.
+The [Performance](#performance) section and card above show same-session measurements against llama.cpp's best config. It also loads HF safetensors checkpoints directly (no GGUF conversion) and runs a 121 GB MoE on this 24 GB card.
 
 ## Why this project
 
-- Use this as a real, running inference engine on sm_120a (consumer Blackwell), with every shipped optimization backed by its measured win/loss record.
-- Use this if you want an inference engine gated on bit-exactness — argmax match and speculative self-consistency, verified on every kernel change.
-- Use this to run Qwen3.5/3.6 dense and MoE checkpoints on a 24 GB card — from GGUF or straight from HF safetensors, no conversion step — including models far larger than VRAM+RAM.
+- Real, running inference on sm_120a (consumer Blackwell), with every shipped optimization backed by its measured win/loss record.
+- Gated on bit-exactness — argmax match and speculative self-consistency, verified on every kernel change.
+- Runs Qwen3.5/3.6 dense and MoE checkpoints on 24 GB — from GGUF or straight from HF safetensors, no conversion — including models far larger than VRAM+RAM.
 
 ## Requirements
 
@@ -94,7 +94,7 @@ Measured 2026-07-09 on the target rig (RTX 5090 Laptop, N≥2 medians, both engi
 | Qwen3.6-35B-A3B MoE | 170.7 | 159.6 | **1.07x** |
 <!-- PERF-PLAIN:END -->
 
-Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x) except the 35B at 0.99x. Every attention/split change is validated across the depth axis, not just the short-context point.
+Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x) except the 35B at 0.99x. Every attention/split change validates across the depth axis, not just one point.
 
 **Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
 
@@ -106,26 +106,20 @@ Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x)
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 251 / 232 / 193 | 215 / 208.5 / 201.7 | **1.17x** / **1.11x** / 0.96x |
 <!-- PERF-SPEC:END -->
 
-The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at its serve-best speculative config. Optimal config is content-class dependent; every configuration is documented in the published artifacts.
+The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at serve-best config. Optimal config is content-class dependent. The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).
 
-The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).
+**Reproducing:** every artifact is public — trimmed draft-head GGUFs, exact prompts, and full configs at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). llama.cpp build/serve flags are in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); the harness is `research/e2e/run-e2e.sh`.
 
-**Reproducing these numbers:** every artifact the claims depend on is public — trimmed draft-head
-GGUFs, exact prompts, and full configs at
-[huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench). llama.cpp
-build/serve flags are in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); the harness is
-`research/e2e/run-e2e.sh`.
+**Known gaps** (tracked and diagnosed in `research/tune-data/`): prefill trails llama.cpp at 0.55-0.76x (decomposed — the residual is int8-vs-native-FP4 tensor-core ceiling under the exactness contract), the 35B loses two cells narrowly, and vLLM's batched MTP wins on big-VRAM boxes.
 
-**Known gaps** (tracked and diagnosed in `research/tune-data/`, not hidden): prefill trails llama.cpp at 0.55-0.76x (decomposed — the residual is the int8-vs-native-FP4 tensor-core ceiling under the exactness contract), the 35B loses two cells narrowly (deep-context plain, long-agentic speculative), and vLLM's batched MTP wins on big-VRAM boxes.
-
-Beyond the llama.cpp comparison, the safetensors path runs checkpoints llama.cpp cannot: NVIDIA's official Qwen3.6-27B-NVFP4 (2.3x the tuned local vLLM reference) and giant spilled MoEs — MiniMax-M3 REAP50 (121 GB) and Hy3-REAP50 (82 GB) both generate gated, correct text on this 24 GB / 60 GB machine through the VRAM→RAM→NVMe expert tier. Numbers and diagnosis in [`HANDOVER.md`](HANDOVER.md).
+Beyond llama.cpp: the safetensors path runs checkpoints llama.cpp cannot — NVIDIA's official Qwen3.6-27B-NVFP4 (2.3x the tuned local vLLM reference) and giant spilled MoEs: MiniMax-M3 REAP50 (121 GB) and Hy3-REAP50 (82 GB) both generate correct text on this 24 GB / 60 GB machine through VRAM→RAM→NVMe expert tiers. Details in [`HANDOVER.md`](HANDOVER.md).
 
 ## Limitations
 
-- Built for sm_120a only; the tuning choices assume this exact memory/compute ratio.
-- Model coverage is what's listed above — this is not a general GGUF runner.
+- Built for sm_120a only; tuning choices assume this exact memory/compute ratio.
+- Model coverage: Qwen3.5/3.6 dense and MoE, MiniMax-M3, Hy3 — not a general GGUF runner.
 - Single GPU, single stream. No tensor parallelism, no continuous batching.
-- APIs and env flags change without notice; this is a moving research codebase.
+- APIs and flags change without notice; moving research codebase.
 
 ## Docs
 
