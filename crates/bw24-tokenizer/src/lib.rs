@@ -302,6 +302,13 @@ impl Tokenizer {
             token_to_id.entry(content.to_string()).or_insert(id);
             if a.get("special").and_then(|v| v.as_bool()).unwrap_or(false) {
                 attrs[id as usize] = TokAttr::Control;
+            } else {
+                // HF's AddedVocabulary matches EVERY added token whole (special or not) before
+                // the BPE model runs; `special` only controls skip_special_tokens on decode.
+                // UserDefined = split whole before BPE but NOT hidden on decode — exactly the
+                // HF non-special class (Hy3's `<think:opensource>`/`<｜reasoning_mode…｜>` chat
+                // tokens are special=false and MUST encode as single ids, 2026-07-09).
+                attrs[id as usize] = TokAttr::UserDefined;
             }
         }
 

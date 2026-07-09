@@ -25,6 +25,11 @@ pub fn apply_chat_template_str(
     messages: &[(&str, &str)],
     add_generation_prompt: bool,
 ) -> String {
+    // Tencent Hy3 (`hy_v3`): a completely different special-token dialect (no ChatML).
+    // Detected by its `hy_User` token literal; rendered by the dedicated arm below.
+    if template.is_some_and(|t| t.contains("hy_User")) {
+        return apply_hy3_template(messages, add_generation_prompt);
+    }
     // qwen3.5 template emits a `<think>\n` tail on the generation prompt by default.
     let qwen_think = template
         .map(|t| t.contains("<think>") && t.contains("add_generation_prompt"))
@@ -70,6 +75,57 @@ pub fn apply_chat_template_str(
         }
     }
 
+    out
+}
+
+/// Text-only reproduction of the Hy3 `chat_template.jinja` default path (no tools, no
+/// `is_training`, `reasoning_effort` undefined => template defaults it to `'no_think'`):
+///   - `{bos}{system…}<｜reasoning_mode:opensource｜>reasoning_effort:no_think` header
+///     (system turns concatenate into the header, before any user turn);
+///   - `user`      -> `<｜hy_User:opensource｜>{content}`
+///   - `assistant` -> `<｜hy_Assistant:opensource｜><think:opensource></think:opensource>{content}<｜hy_eos:opensource｜>`
+///     (non-last turns; thinking is not preserved on the text path);
+///   - generation prompt (no_think): `<｜hy_Assistant:opensource｜><think:opensource></think:opensource>`.
+/// Content is NOT trimmed (the Hy3 template applies no `|trim`).
+fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool) -> String {
+    const BOS: &str = "<\u{ff5c}hy_begin_of_sentence:opensource\u{ff5c}>";
+    const USER: &str = "<\u{ff5c}hy_User:opensource\u{ff5c}>";
+    const ASSISTANT: &str = "<\u{ff5c}hy_Assistant:opensource\u{ff5c}>";
+    const EOS: &str = "<\u{ff5c}hy_eos:opensource\u{ff5c}>";
+    const REASONING: &str = "<\u{ff5c}reasoning_mode:opensource\u{ff5c}>";
+    const THINK_BEGIN: &str = "<think:opensource>";
+    const THINK_END: &str = "</think:opensource>";
+
+    let mut out = String::from(BOS);
+    for (role, content) in messages.iter().filter(|(r, _)| *r == "system") {
+        let _ = role;
+        out.push_str(content);
+    }
+    out.push_str(REASONING);
+    out.push_str("reasoning_effort:no_think");
+
+    let mut last_is_assistant = false;
+    let n = messages.len();
+    for (i, (role, content)) in messages.iter().enumerate() {
+        last_is_assistant = false;
+        match *role {
+            "user" => { out.push_str(USER); out.push_str(content); }
+            "assistant" => {
+                out.push_str(ASSISTANT);
+                out.push_str(THINK_BEGIN);
+                out.push_str(THINK_END);
+                out.push_str(content);
+                if i + 1 < n { out.push_str(EOS); }   // template: `not loop.last` gets eos
+                last_is_assistant = true;
+            }
+            _ => {} // system handled in the header; tool turns are out of scope here
+        }
+    }
+    if add_generation_prompt && !last_is_assistant {
+        out.push_str(ASSISTANT);
+        out.push_str(THINK_BEGIN);
+        out.push_str(THINK_END);
+    }
     out
 }
 

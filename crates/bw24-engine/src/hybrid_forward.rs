@@ -317,10 +317,10 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        // qwen35 fuses [q|gate] per head in wq (2*head_dim stride); M3 has NO output gate
+        // qwen35 fuses [q|gate] per head in wq (2*head_dim stride); M3/Hy3 have NO output gate
         // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
         // would read 2x out of bounds. `gated` keys both the split and the sigmoid epilogue.
-        let gated = cfg.m3.is_none();
+        let gated = cfg.attn_out_gate();
         let qf = e.matmul(&fa.wq, h, t)?;
         let (mut q, gate) = if gated {
             let mut q = e.zeros(t * n_head * head_dim)?;
@@ -488,9 +488,9 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        // qwen35: wq output = head_dim*2*n_head (fused [q|gate] per head). M3: NO output gate —
-        // wq out = n_head*head_dim, no split (see prime-path note).
-        let gated = cfg.m3.is_none();
+        // qwen35: wq output = head_dim*2*n_head (fused [q|gate] per head). M3/Hy3: NO output
+        // gate — wq out = n_head*head_dim, no split (see prime-path note).
+        let gated = cfg.attn_out_gate();
         let qf = e.matmul(&fa.wq, h, t)?;
         let (mut q, gate) = if gated {
             let mut q = e.zeros(t * n_head * head_dim)?;
@@ -759,7 +759,11 @@ impl HybridModel {
         // "verify must be kernel-DISPATCH-identical to decode" lesson, MoE edition). Small-t
         // now rides the dev loop below (same kernels per token as decode); pairs serves real
         // prefill (t >= 16, where spec never verifies).
-        if cfg.m3.is_none() && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
+        // sigmoid-router archs (M3, Hy3) must NOT enter the pairs/dev arms: those route via the
+        // fused SOFTMAX device router (moe_router_topk) — silently wrong experts (the M3
+        // gate-MISMATCH 74602-vs-92 lesson, 2026-07-07). Host sigmoid routing below is correct.
+        if cfg.sigmoid_router().is_none() && cfg.m3.is_none() && cfg.hy3.is_none()
+            && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype)
             && std::env::var("BW24_MOE_PAIRS").map(|v| v != "0").unwrap_or(true)
@@ -770,11 +774,11 @@ impl HybridModel {
         // t < PRIME_MIN_T: moe_ffn_dev loops tokens serially (1 launch-pair per token) — the
         // decode path AND the spec-verify path (dispatch parity = exactness; see pairs gate
         // above). Serial launches are fine at t<=10 (K+2); real prefill never lands here.
-        // moe_ffn_dev routes via the FUSED SOFTMAX device router (moe_router_topk) — M3's
-        // sigmoid routing (+e_score_correction_bias) has no device kernel yet, so M3 must NOT
-        // enter the dev arms: with MOE_CACHE=1 it silently routed softmax = wrong experts
+        // moe_ffn_dev routes via the FUSED SOFTMAX device router (moe_router_topk) — sigmoid
+        // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
+        // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = cfg.m3.is_none();
+        let dev_ok = cfg.m3.is_none() && cfg.hy3.is_none();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
@@ -790,10 +794,10 @@ impl HybridModel {
             }
         }
 
-        // Per-token (sel[8], w[8]) — either fused-router (device top-k) or host softmax+sort.
-        let (sel_all, w_all) = if let Some(m3) = cfg.m3.as_ref().filter(|m| m.sigmoid_routing) {
+        // Per-token (sel[8], w[8]) — sigmoid host oracle (M3/Hy3), else fused-router/softmax.
+        let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(m3.routed_scaling_factor))?
+                                m.exp_probs_b.as_deref(), Some(sig))?
         } else {
             Self::moe_route(e, &logits, t, n_expert, n_used)?
         };
@@ -1091,15 +1095,18 @@ impl HybridModel {
         Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None)
     }
 
-    /// MiniMax-M3 (DeepSeek-V3-style) sigmoid routing, host oracle. Reference:
-    /// M3 modeling code — scores = sigmoid(logits); selection over scores + e_score_correction_bias;
-    /// weights = un-biased scores of the selected experts, sum-normalized, x routed_scaling_factor.
-    /// `m3` = (bias, routed_scaling_factor). Softmax arch passes None -> the qwen35moe/OLMoE path.
+    /// DeepSeek-V3-class sigmoid routing (MiniMax-M3, Hy3), host oracle. Reference:
+    /// M3/Hy3 modeling code — scores = sigmoid(logits); selection over scores + expert bias
+    /// (M3 `e_score_correction_bias` / Hy3 `expert_bias`, both surfaced as `exp_probs_b`);
+    /// weights = un-biased scores of the selected experts, sum-normalized when `route_norm`,
+    /// x scaling factor (M3 routed_scaling_factor 2.0 / Hy3 router_scaling_factor 2.826).
+    /// `sig` = (scaling_factor, route_norm) from `cfg.sigmoid_router()`; softmax archs pass
+    /// None -> the qwen35moe/OLMoE path below.
     fn moe_route_cfg(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize,
-                     bias: Option<&[f32]>, scale: Option<f32>)
+                     bias: Option<&[f32]>, sig: Option<(f32, bool)>)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
-        if let Some(sf) = scale {
-            // sigmoid routing (M3). Host path only for now (fused-router kernel is softmax-top-k).
+        if let Some((sf, route_norm)) = sig {
+            // sigmoid routing. Host path only for now (fused-router kernel is softmax-top-k).
             let lg = e.dtoh(logits)?;
             let mut sel = vec![0u32; t * n_used];
             let mut w_out = vec![0f32; t * n_used];
@@ -1115,8 +1122,12 @@ impl HybridModel {
                 idx.sort_by(|&a, &b| selsc[b].total_cmp(&selsc[a]).then(a.cmp(&b)));
                 let sl = &idx[..n_used];
                 let mut wv: Vec<f32> = sl.iter().map(|&i| scores[i]).collect();
-                let ws: f32 = wv.iter().sum::<f32>().max(1e-20);
-                for x in wv.iter_mut() { *x = *x / ws * sf; }
+                if route_norm {
+                    let ws: f32 = wv.iter().sum::<f32>().max(1e-20);
+                    for x in wv.iter_mut() { *x = *x / ws * sf; }
+                } else {
+                    for x in wv.iter_mut() { *x *= sf; }
+                }
                 for j in 0..n_used {
                     sel[tok * n_used + j] = sl[j] as u32;
                     w_out[tok * n_used + j] = wv[j];
@@ -1682,9 +1693,9 @@ impl HybridModel {
 
         // 1. ROUTER (identical to moe_ffn).
         let logits = e.matmul(&m.gate_inp, z, t)?;
-        let (sel_all, w_all) = if let Some(m3) = cfg.m3.as_ref().filter(|m| m.sigmoid_routing) {
+        let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(m3.routed_scaling_factor))?
+                                m.exp_probs_b.as_deref(), Some(sig))?
         } else {
             Self::moe_route(e, &logits, t, n_expert, n_used)?
         };
