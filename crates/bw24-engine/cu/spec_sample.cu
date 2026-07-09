@@ -194,3 +194,20 @@ extern "C" __global__ void scatter_trim_logits_pass2_f32(
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < d_vocab) dst[d2t[i]] = src[i];
 }
+
+// ---------------- 5. graph-capturable gumbel (device counter) ----------------
+// The graph-draft chain replays with fixed kernel args — the sampling event counter must live
+// in DEVICE memory and advance in-graph. bw24_sctr_inc bumps it; gumbel_perturb_ctr_f32 reads it.
+extern "C" __global__ void bw24_sctr_inc(uint32_t* __restrict__ ctr) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) ctr[0] += 1;
+}
+extern "C" __global__ void gumbel_perturb_ctr_f32(
+        const float* __restrict__ x, float* __restrict__ y, int n,
+        uint32_t seed_lo, uint32_t seed_hi, const uint32_t* __restrict__ ctr, float temp) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    if (temp <= 0.0f) { y[i] = x[i]; return; }
+    uint4 r = philox4(seed_lo, seed_hi, (uint32_t) (i >> 2), ctr[0]);
+    uint32_t v = (i & 3) == 0 ? r.x : (i & 3) == 1 ? r.y : (i & 3) == 2 ? r.z : r.w;
+    y[i] = x[i] / temp + (-__logf(-__logf(u01(v))));
+}

@@ -375,7 +375,9 @@ fn admit(
     let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut spec_resumed = 0usize;
     let mut text_suffix: Option<Vec<u32>> = None;
-    let spec = if serve_spec && sampler.is_greedy() && lm.model.mtp.is_some()
+    // Sampled-spec serve (feat/sampled-graph-draft): temp-only sampling rides the rejection-
+    // sampling spec path (distribution-exact); filtered/penalized requests keep the legacy path.
+    let spec = if serve_spec && (sampler.is_greedy() || sampler.is_temp_only()) && lm.model.mtp.is_some()
         && seed_fed.is_empty() {
         // POOL RESUME: a parked spec session whose committed sequence exactly prefixes this
         // prompt (with cache room) resumes — only the suffix primes; equal-length = pure burst.
@@ -507,7 +509,10 @@ fn step_session(
             // nothing primed and nothing to prime — shouldn't happen (admit rejects empty prompts)
             finish(s, StopReason::MaxNew); return Ok(false);
         }
-        let (burst, d, a) = lm.model.generate_spec_session(engine, spec, &suffix, room, k)?;
+        let sampling = if s.sampler.is_temp_only() {
+            Some((s.sampler.temperature(), s.sampler.seed()))
+        } else { None };
+        let (burst, d, a) = lm.model.generate_spec_session_sampled(engine, spec, &suffix, room, k, sampling)?;
         s.spec_drafted += d;
         s.spec_accepted += a;
         if d > 0 {
