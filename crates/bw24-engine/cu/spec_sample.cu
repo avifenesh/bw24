@@ -364,3 +364,38 @@ extern "C" __global__ void penalize_logits_f32(
     v -= freq * (float) cnt + present;
     x[id] = v;
 }
+
+// ---------------- 5. graph-capturable gumbel (device counter) ----------------
+// The graph-draft chain replays with fixed kernel args — the sampling event counter must live
+// in DEVICE memory and advance in-graph. bw24_sctr_inc bumps it; gumbel_perturb_ctr_f32 reads it.
+extern "C" __global__ void bw24_sctr_inc(uint32_t* __restrict__ ctr) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) ctr[0] += 1;
+}
+extern "C" __global__ void gumbel_perturb_ctr_f32(
+        const float* __restrict__ x, float* __restrict__ y, int n,
+        uint32_t seed_lo, uint32_t seed_hi, const uint32_t* __restrict__ ctr, float temp) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    if (temp <= 0.0f) { y[i] = x[i]; return; }
+    uint4 r = philox4(seed_lo, seed_hi, (uint32_t) (i >> 2), ctr[0]);
+    uint32_t v = (i & 3) == 0 ? r.x : (i & 3) == 1 ? r.y : (i & 3) == 2 ? r.z : r.w;
+    y[i] = x[i] / temp + (-__logf(-__logf(u01(v))));
+}
+
+// Gumbel-max over the FILTERED distribution: y[i] = (e(x_i) >= th) ? x_i/T + G_i : -inf.
+// Sampling argmax(y) == one draw from the filtered softmax — the draft must propose from
+// the SAME filtered q the acceptance test uses (th from filter_stats on this row).
+extern "C" __global__ void gumbel_perturb_filtered_f32(
+        const float* __restrict__ x, float* __restrict__ y, int n,
+        uint32_t seed_lo, uint32_t seed_hi, uint32_t stream_pos, float temp,
+        float row_max, float th) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float invT = temp > 0.0f ? 1.0f / temp : 1.0f;
+    const float e0 = __expf((x[i] - row_max) * invT);
+    if (e0 < th) { y[i] = -3.4e38f; return; }
+    if (temp <= 0.0f) { y[i] = x[i]; return; }
+    uint4 r = philox4(seed_lo, seed_hi, (uint32_t) (i >> 2), stream_pos);
+    uint32_t v = (i & 3) == 0 ? r.x : (i & 3) == 1 ? r.y : (i & 3) == 2 ? r.z : r.w;
+    y[i] = x[i] / temp + (-__logf(-__logf(u01(v))));
+}
