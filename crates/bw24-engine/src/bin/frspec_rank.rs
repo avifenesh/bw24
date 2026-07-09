@@ -3,7 +3,10 @@
 //! BW24_MTP_DRAFT consume. Needed because trim files are VOCAB artifacts — the published Qwen3.6
 //! rankings (151936-vocab) cannot transfer to the Qwen3.5-9B (248320-vocab).
 //!
-//! usage: frspec-rank <model.gguf> <out.gguf> <topN> <corpus file/dir>...
+//! usage: frspec-rank <model.gguf|hf_dir> <out.gguf> <topN> <corpus file/dir>...
+//!
+//! Accepts either a GGUF file (tokenizer from GGUF metadata) or an HF directory containing
+//! tokenizer.json (safetensors checkpoints). ST artifacts derive from ST inputs.
 use bw24_gguf::GgufFile;
 use bw24_tokenizer::Tokenizer;
 use std::io::Write;
@@ -26,11 +29,19 @@ fn collect_files(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
-        eprintln!("usage: frspec-rank <model.gguf> <out.gguf> <topN> <corpus>...");
+        eprintln!("usage: frspec-rank <model.gguf|hf_dir> <out.gguf> <topN> <corpus>...");
         std::process::exit(1);
     }
-    let g = GgufFile::open(&args[1])?;
-    let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e}"))?;
+    let model_path = std::path::Path::new(&args[1]);
+    let tok = if model_path.is_dir() {
+        // HF directory with tokenizer.json (safetensors checkpoints)
+        Tokenizer::from_hf_dir(model_path)
+            .map_err(|e| format!("HF tokenizer from {}: {e}", args[1]))?
+    } else {
+        // GGUF file
+        let g = GgufFile::open(&args[1])?;
+        Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e}"))?
+    };
     let top_n: usize = args[3].parse()?;
     let vocab = tok.vocab_size();
 
