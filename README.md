@@ -9,7 +9,7 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB, 175 W with dynamic boost). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-Plain decode beats llama.cpp on all three models at short context (27B 1.10x, 9B 1.07x, 35B MoE 1.02x); with MTP speculative decoding it leads 9B 1.31x/1.23x and 27B up to 1.25x at the same raw-prompt protocol — every number measured on-device against llama.cpp's serve-best config on the same machine, N=3 medians, both engines re-baselined the same day (see `research/tune-data/`). It also loads NVIDIA's official safetensors checkpoints directly (mixed NVFP4 + FP8 + BF16 MTP head) and runs a 121 GB MoE on the 24 GB card.
+It beats llama.cpp's plain decode on all three target models and leads most speculative-decoding cells — the card above and the [Performance](#performance) tables are the single source of numbers, measured same-session against llama.cpp's best config on this machine. It also loads HF safetensors checkpoints directly (no GGUF conversion) and runs a 121 GB MoE on the 24 GB card.
 
 ## Why this project
 
@@ -22,7 +22,7 @@ Plain decode beats llama.cpp on all three models at short context (27B 1.10x, 9B
 - NVIDIA Blackwell consumer GPU (sm_120a). Primary target: RTX 5090 Laptop.
 - CUDA toolkit 13.1 (the build default — `crates/bw24-engine/build.rs` uses `/usr/local/cuda-13.1/bin/nvcc`; override with `BW24_NVCC=/path/to/nvcc`).
 - Rust (edition 2024), [cudarc](https://github.com/coreylowman/cudarc) 0.19 with dynamic loading.
-- A model. GGUF tested: Qwen3.5-9B / Qwen3.6-27B (NVFP4 + Q5_K hybrid), Qwen3.6-35B-A3B (IQ4_XS MoE), plus Q4_K/Q5_K/Q6_K/Q8_0 k-quant variants. Safetensors (HF dir) tested: nvidia/Qwen3.6-27B-NVFP4, MiniMax-M3 REAP50 NVFP4 — pass the directory instead of a .gguf path.
+- A model — GGUF or an HF safetensors directory (pass either path). Tested: Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (common quants), nvidia/Qwen3.6-27B-NVFP4, MiniMax-M3 REAP50, Hy3-REAP50.
 
 ## Quick start
 
@@ -94,7 +94,7 @@ Measured 2026-07-09 on the target rig (RTX 5090 Laptop, N≥2 medians, both engi
 | Qwen3.6-35B-A3B MoE | 170.7 | 159.6 | **1.07x** |
 <!-- PERF-PLAIN:END -->
 
-Depth behavior is part of the comparison — at 6.3k-token context (same protocol): 9B 124.5 vs 119.6 (1.04x), 27B 44.9 vs 42.0 (**1.07x**), 35B 158.5 vs 159.9 (0.99x). The engine-wide depth slope was closed by the FA_V2 tile-batched online softmax (vendored mechanism study: llama's depth flatness was never a faster attention core — measured, their kernel+combine costs more than ours at depth); every FA/split geometry change is validated across the depth axis, not just the short-context point.
+Depth is part of the contract: at 6.3k-token context the leads hold (1.04-1.07x) except the 35B at 0.99x. Every attention/split change is validated across the depth axis, not just the short-context point.
 
 **Speculative decoding** (MTP head, both engines at their measured best config) as the bonus layer on top:
 
@@ -106,12 +106,9 @@ Depth behavior is part of the comparison — at 6.3k-token context (same protoco
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 251 / 232 / 193 | 215 / 208.5 / 201.7 | **1.17x** / **1.11x** / 0.96x |
 <!-- PERF-SPEC:END -->
 
-All rows are the raw-prompt continuation protocol (llama.cpp measured through llama-server at its serve-best speculative config on the same machine, N=3 medians, full power verified). Config is content-class dependent — the chat protocol shifts both the optimal draft depth and the trim choice (chat short-code runs K=7 at 122 tok/s on the 27B); the published HF artifacts document every configuration.
+The three columns are short-code / medium-code / long-agentic prompts, raw-continuation protocol, llama.cpp at its serve-best speculative config. Optimal config is content-class dependent; every configuration is documented in the published artifacts.
 
-Three speculative mechanisms drive these numbers — FR-Spec vocabulary trims, whole-round
-confidence gating for unpredictable stretches, and per-content-class draft depth — mechanism and
-measurement detail in [`HANDOVER.md`](HANDOVER.md) (see the SPEC SCOREBOARD sections) and
-[`research/tune-data/`](research/tune-data/).
+The speculative edge comes from three mechanisms — FR-Spec vocabulary trims, whole-round confidence gating, and per-content-class draft depth — detailed in [`HANDOVER.md`](HANDOVER.md).
 
 **Reproducing these numbers:** every artifact the claims depend on is public — trimmed draft-head
 GGUFs, exact prompts, and full configs at
@@ -119,13 +116,9 @@ GGUFs, exact prompts, and full configs at
 build/serve flags are in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); the harness is
 `research/e2e/run-e2e.sh`.
 
-Safetensors checkpoints load and run directly (no GGUF conversion) — NVIDIA's official
-Qwen3.6-27B-NVFP4 and MiniMax-M3 REAP50 (121 GB MoE) both measured on this 24 GB card; numbers and
-the same-silicon vLLM comparison are in [`HANDOVER.md`](HANDOVER.md) (see the NVIDIA-OFFICIAL and
-MINIMAX-M3 lane sections).
-- **MiniMax-M3 REAP50 NVFP4** (121 GB, 60 layers, sigmoid routing) — loads and generates correct text on this 24 GB / 60 GB-RAM machine via an NVMe disk-tier expert loader (~1.5 tok/s, I/O-bound: measured routing locality shows 77% of experts get touched with weak reuse, so capacity — not caching policy — is the binding constraint). On a 96 GB RTX PRO 6000 the same code reaches ~6 tok/s and climbing with an 80 GB expert cache.
+**Known gaps** (tracked and diagnosed in `research/tune-data/`, not hidden): prefill trails llama.cpp at 0.55-0.76x (decomposed — the residual is the int8-vs-native-FP4 tensor-core ceiling under the exactness contract), the 35B loses two cells narrowly (deep-context plain, long-agentic speculative), and vLLM's batched MTP wins on big-VRAM boxes.
 
-Speculative output is bit-exact: a K=1..8 self-consistency gate pins it token-identical to plain greedy decode. Where bw24 is still behind, the gap and its diagnosis are tracked in the tune-data records, not hidden — currently: **prefill** (pp1845 same-day board: 9B 4631 vs 6287 = 0.74x, 27B 1297 vs 2348 = 0.55x, 35B 2387 vs 3981 = 0.60x — decomposed: 90%+ already rides tensor-core GEMMs and the residual is the int8-vs-native-FP4 precision ceiling; the exactness-safe levers are a cp.async pipeline for the W4A8 GEMM and vendoring llama's q8_0 MMQ tile), the 35B deep-context decode residual (158.5 vs 159.9 at 6.3k), and vLLM's batched MTP on big-VRAM boxes.
+Beyond the llama.cpp comparison, the safetensors path runs checkpoints llama.cpp cannot: NVIDIA's official Qwen3.6-27B-NVFP4 (2.3x the tuned local vLLM reference) and giant spilled MoEs — MiniMax-M3 REAP50 (121 GB) and Hy3-REAP50 (82 GB) both generate gated, correct text on this 24 GB / 60 GB machine through the VRAM→RAM→NVMe expert tier. Numbers and diagnosis in [`HANDOVER.md`](HANDOVER.md).
 
 ## Limitations
 
