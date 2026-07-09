@@ -169,3 +169,20 @@ logic in the loader (`byte = cvt.rn.satfinite.e4m3x2.f32(kvalue[nibble] × s16)`
 only the activation scale, and the MMA is the already-benched e4m3×e4m3 form. Range check:
 v×s16 ≈ original weight magnitude — fits e4m3 (±448) with the sub-2^-9 tail in the same class
 the ST_E4M3 lineage already gates green. R-A remains the fallback if the fold taxes acceptance.
+
+### Piece-2 vec_dot analysis (from w4a8 vec_dot_nvfp4_w4a8_mma, lines 422-497)
+
+- int8 path: k01 loop steps 8 ints (=32 vals), TWO m16n8k16 MMAs per step, epilogue
+  `sum += dB[l%2] * (C0*dA[..k+0] + C1*dA[..k+1])` — per-16 x scales via dA, per-32 y via dB.
+- R-B twin: x_df/dA DELETED (scale folded into e4m3 values). Same k01 structure but ONE
+  m16n8k32 MMA per 8-int step (tile_A_8 = tile<16,8,int> fragment already exists; load_ldmatrix
+  path unchanged — 4 regs A, 2 regs B via load_generic). C becomes tile<16,8,float>
+  (f32 accumulator regs from the MMA directly). Epilogue: `sum += dB[l%2] * C.x[l]`.
+  Half the MMA instructions at the 381-TF class; y-tile side identical to w4a8
+  (block_e4m3_mmq is footprint-compatible with block_q8_1_mmq by design).
+- Loader twin (load_tiles): replace get_int_from_table_16 int8-LUT with
+  f32 kvalue LUT × ue4m3(s16) → cvt_e4m3x2 pairs → x_qs bytes; drop x_df writes; smem row
+  stride shrinks from MMQ_MMA_TILE_X_K_NVFP4 (84) to 64 bytes/row + pad (no scale plane).
+- Still to port: mul_mat_q body (lines ~560-812: xy tiling, need_check arms, PP_PIPE ring),
+  mmq_write_back (drop out_scale? keep — it's the global alpha), host launcher ABI
+  (bw24_mmq_nvfp4_f8f4 entry, mirror w4a8's, plus fold needs the ue4m3->f32 LUT constant).
