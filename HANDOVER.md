@@ -549,3 +549,19 @@ gates green. Harness-agent's lib.rs/qmatvec_gemm.cu tune-seam WIP was committed 
 
 ## RIG FACTS (sm_120a)
 block-FP4/FP8 762/381 TFLOPS, NO wgmma/tcgen05, 847 GB/s mem wall, `compute_120a` trap (must use `120a` not `120`). Laptop 5090 = 24GB (not desktop 32GB), Intel Core Ultra, 60GB system RAM. Shares RAM with local LLM servers — check `free` before write-heavy benches.
+
+## SAMPLED-SPEC ARC — OWNER DECISION (2026-07-09)
+
+Owner: "its a prod project, we should go with the real solution." Greedy loop-handling ships as
+REJECTION-SAMPLING SPECULATIVE DECODING (Leviathan/Chen rule: accept draft x at min(1, p(x)/q(x)),
+resample norm(max(0,p−q)) on reject; bonus token from p) — distribution-exact by theorem, loops
+broken by sampling, matches production serving. Penalized-greedy rejected as board protocol.
+Engine scope (main-thread coding): seeded counter-based device RNG (Philox; graph-replay-safe,
+no recapture), draft q(x) from the existing pmin softmax path, device sampling kernel
+(argmax-swap), plain-sampled decode in run-spec for A/B. NEW GATE CLASS: (a) seeded
+reproducibility run-to-run; (b) temp→0 continuity = token-identical to today's greedy spec
+(the existing K=1..8 gate survives as the temp-0 limit); (c) aggregate distribution equality vs
+plain sampling (acceptance-invariant/KL on long runs — same-seed streams legitimately diverge).
+llama pairing at matched temp/top-p. Inputs pending: literature survey
+(research/greedy-degeneration-protocol-survey.md, lane running) + rebaseline battery (GPU).
+Spec p3/long-form board cells stay excluded until this lands.
