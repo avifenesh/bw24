@@ -116,6 +116,10 @@ struct Session {
     /// allocation on this path (kept to avoid restructuring admit; ~small VRAM overhead until
     /// a follow-up drops it). committed == every token whose state the spec caches hold.
     spec: Option<bw24_engine::spec::SpecSession>,
+    /// Live acceptance telemetry (hqmtp axis-D): cumulative drafted/accepted across the
+    /// session's bursts, logged per burst so serve-regime acceptance-vs-context is measurable.
+    spec_drafted: usize,
+    spec_accepted: usize,
     sampler: Sampler,
     last_logits: Vec<f32>,
     /// Every token actually FED to decode_step, in order (prompt prime + generated feedback).
@@ -435,6 +439,8 @@ fn admit(
         cache,
         sampler,
         spec,
+        spec_drafted: 0,
+        spec_accepted: 0,
         last_logits: seed_logits,
         fed: seed_fed,
         prefill_queue: if let Some(ts) = text_suffix { ts.into_iter().collect() }
@@ -483,7 +489,14 @@ fn step_session(
             // nothing primed and nothing to prime — shouldn't happen (admit rejects empty prompts)
             finish(s, StopReason::MaxNew); return Ok(false);
         }
-        let (burst, _d, _a) = lm.model.generate_spec_session(engine, spec, &suffix, room, k)?;
+        let (burst, d, a) = lm.model.generate_spec_session(engine, spec, &suffix, room, k)?;
+        s.spec_drafted += d;
+        s.spec_accepted += a;
+        if d > 0 {
+            eprintln!("[spec-acc] ctx={} burst={}/{} cum={}/{}={:.3}",
+                      s.fed.len() + suffix.len(), a, d, s.spec_accepted, s.spec_drafted,
+                      s.spec_accepted as f64 / s.spec_drafted.max(1) as f64);
+        }
         for &tok in &suffix { s.fed.push(tok); s.sampler.accept(tok); }
         let mut stop: Option<StopReason> = None;
         for &tok in &burst {
