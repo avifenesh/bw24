@@ -983,7 +983,7 @@ int bw24_mmq_nvfp4_w4a8(const void * W_nvfp4_blocks, const float * act_f32, floa
 // the int8 path). No x scale plane; epilogue = activation d4 only. Plain path only (pipe
 // variants after the A/B proves the win). Seam: BW24_MMQ_F8F4=1 (mmq_ffi.rs dispatch).
 // ======================================================================================
-#define MMQ_MMA_TILE_X_K_F8F4 (2 * MMQ_TILE_NE_K + 4)   // 68 ints: 64 value-ints + pad (%8==4)
+#define MMQ_MMA_TILE_X_K_F8F4 (2 * MMQ_TILE_NE_K + MMQ_TILE_NE_K / 4 + 4)   // 76: 64 value-ints + 8 per-32 f32 scales + pad
 
 // f32x2 -> packed e4m3x2 (round-to-nearest, saturate) — same op as the activation quantizer.
 static __device__ __forceinline__ uint16_t bw24_cvt_e4m3x2(float lo, float hi) {
@@ -993,10 +993,12 @@ static __device__ __forceinline__ uint16_t bw24_cvt_e4m3x2(float lo, float hi) {
     return r;
 }
 
-// e2m1 value table as f32 (kvalues_mxfp4 is the int8-scaled variant; this is the raw grid).
+// e2m1 x2 value table (the kvalues_mxfp4 convention: values doubled to integers, compensated
+// by ue4m3_to_fp32's /2 — both loaders must agree on this pairing; the raw-grid variant paired
+// with the halved scale cost an exact x0.5 on every element, caught by synth_f8f4).
 static __constant__ float bw24_e2m1_f32[16] =
-    {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};
+    {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f,
+     -0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -6.0f, -8.0f, -12.0f};
 
 // plain-kind f8f6f4 MMA: D(f32 16x8) += A(e4m3 16x32) * B(e4m3 32x8). A = 4 regs (one
 // tile_A_8 ldmatrix load), B = the two k16 sub-fragments the int8 path already loads.
@@ -1008,8 +1010,12 @@ static __device__ __forceinline__ void bw24_mma_f8f4(
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-// Loader: same addressing as load_tiles_nvfp4_w4a8; per 16-value sub-block build the
-// scale-folded e4m3 LUT (16 bytes) and gather nibbles through it. No x_df writes.
+// Loader: same addressing as load_tiles_nvfp4_w4a8. R-A' fold: per PAIR of 16-value
+// sub-blocks, s32 = max(s_a, s_b) goes to the x_df scale plane (per-32, matching the ONE
+// k32 MMA the vec_dot issues) and each sub's LUT folds only the RATIO s_sub/s32 in (0,1]
+// into the e4m3 values — range stays 0.25..6 (no e4m3 subnormal underflow; the naive full
+// fold s*v underflowed whole small-amax blocks below 2^-9 and failed f8f4-check at ~0.5 rel).
+// Ratio==1 subs (8.5% measured) re-code exactly.
 template <int mmq_y, bool need_check, bool is_rp>
 static __device__ __forceinline__ void load_tiles_nvfp4_f8f4(
         const char * __restrict__ x, const char * __restrict__ x_sc, int * __restrict__ x_tile,
@@ -1040,24 +1046,32 @@ static __device__ __forceinline__ void load_tiles_nvfp4_f8f4(
             src_d  = bxi->d;
         }
         const int kqs = 16 * kbx;
+        float * x_df = (float *) (x_qs + 2 * MMQ_TILE_NE_K);
 
 #pragma unroll
-        for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
-            const float s = ggml_cuda_ue4m3_to_fp32(src_d[sub]);
-            // scale-folded e4m3 LUT: lut[c] = e4m3(e2m1[c] * s), 16 bytes in 4 ints
-            int lut[4];
+        for (int pair = 0; pair < 2; ++pair) {
+            const float sa = ggml_cuda_ue4m3_to_fp32(src_d[2 * pair + 0]);
+            const float sb = ggml_cuda_ue4m3_to_fp32(src_d[2 * pair + 1]);
+            const float s32 = fmaxf(fmaxf(sa, sb), 1e-30f);
+            x_df[i * MMQ_MMA_TILE_X_K_F8F4 + 2 * kbx + pair] = s32;
 #pragma unroll
-            for (int w = 0; w < 4; ++w) {
-                const uint16_t p0 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+0] * s, bw24_e2m1_f32[4*w+1] * s);
-                const uint16_t p1 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+2] * s, bw24_e2m1_f32[4*w+3] * s);
-                lut[w] = (int) ((uint32_t) p0 | ((uint32_t) p1 << 16));
+            for (int half = 0; half < 2; ++half) {
+                const int sub = 2 * pair + half;
+                const float r = (half == 0 ? sa : sb) / s32;   // in (0, 1]
+                int lut[4];
+#pragma unroll
+                for (int w = 0; w < 4; ++w) {
+                    const uint16_t p0 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+0] * r, bw24_e2m1_f32[4*w+1] * r);
+                    const uint16_t p1 = bw24_cvt_e4m3x2(bw24_e2m1_f32[4*w+2] * r, bw24_e2m1_f32[4*w+3] * r);
+                    lut[w] = (int) ((uint32_t) p0 | ((uint32_t) p1 << 16));
+                }
+                const int2 q0 = get_int_from_table_16(src_qs[2 * sub + 0], (const int8_t *) lut);
+                const int2 q1 = get_int_from_table_16(src_qs[2 * sub + 1], (const int8_t *) lut);
+                x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 0] = q0.x;
+                x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 1] = q1.x;
+                x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 2] = q0.y;
+                x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 3] = q1.y;
             }
-            const int2 q0 = get_int_from_table_16(src_qs[2 * sub + 0], (const int8_t *) lut);
-            const int2 q1 = get_int_from_table_16(src_qs[2 * sub + 1], (const int8_t *) lut);
-            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 0] = q0.x;
-            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 1] = q1.x;
-            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 2] = q0.y;
-            x_qs[i * MMQ_MMA_TILE_X_K_F8F4 + kqs + 4 * sub + 3] = q1.y;
         }
     }
 }
@@ -1078,12 +1092,14 @@ static __device__ __forceinline__ void vec_dot_nvfp4_f8f4_mma(
     y += (threadIdx.y % ntx) * (tile_C::J * MMQ_TILE_Y_K);
 
     const int   * x_qs = (const int   *) x;
+    const float * x_df = (const float *) (x_qs + 2 * MMQ_TILE_NE_K);
     const int   * y_qs = (const int   *) y + 4;
     const float * y_df = (const float *) y;
 
     const int i0 = (threadIdx.y / ntx) * (ntx * tile_A_8::I);
 
     tile_A_8 A[ntx][4];
+    float dA[16 / 4][2][4];   // [ntx<=4][row-half l/2][k32-step] per-32 weight scales
 #pragma unroll
     for (int n = 0; n < ntx; ++n) {
 #pragma unroll
@@ -1091,6 +1107,14 @@ static __device__ __forceinline__ void vec_dot_nvfp4_f8f4_mma(
             const int k0 = k00 + k01;
             load_ldmatrix(A[n][k01 / 8], x_qs + (i0 + n * tile_A_8::I) * MMQ_MMA_TILE_X_K_F8F4 + k0,
                           MMQ_MMA_TILE_X_K_F8F4);
+        }
+#pragma unroll
+        for (int l = 0; l < tile_C::ne / 2; ++l) {
+            const int i = i0 + n * tile_C::I + tile_C::get_i(2 * l);
+#pragma unroll
+            for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += 8) {
+                dA[n][l][k01 / 8] = x_df[i * MMQ_MMA_TILE_X_K_F8F4 + (k00 + k01) / 8];
+            }
         }
     }
 
@@ -1113,7 +1137,7 @@ static __device__ __forceinline__ void vec_dot_nvfp4_f8f4_mma(
                 bw24_mma_f8f4(C, A[n][k01 / 8].x, B[0].x[0], B[1].x[0]);
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
-                    sum[(j0 / tile_C::J + n) * tile_C::ne + l] += dB[l % 2] * C[l];
+                    sum[(j0 / tile_C::J + n) * tile_C::ne + l] += dA[n][l / 2][k01 / 8] * dB[l % 2] * C[l];
                 }
             }
         }

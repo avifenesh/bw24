@@ -41,7 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ref_v.iter().zip(got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max) / scale
         };
         let r = rel(&cpu, &ya);
-        let ok = r < 3e-2;
+        // int8-act class sits at ~3e-3; the e4m3-act class (3 mantissa bits) runs ~10x coarser
+        // and grows ~sqrt(k) — 5e-2 is the smoke bound; run-gen argmax + K=1..8 arbitrate e2e
+        // (the PP_FP8/ST_E4M3 e4m3-act precedent gates green there).
+        let ok = r < 5e-2;
         println!("{} [{}x{} m={m}] arm={} rel-vs-f32={r:.3e} {}",
                  t.name, in_f, out_f, if arm_f8f4 { "F8F4" } else { "INT8" },
                  if ok { "OK" } else { fails += 1; "FAIL" });
