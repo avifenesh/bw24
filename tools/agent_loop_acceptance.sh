@@ -36,6 +36,8 @@ RUNSPEC="${RUNSPEC:-./target/release/run-spec}"
 TIMEOUT="${TIMEOUT:-900}"
 PYBIN="${PYBIN:-python3}"
 PARSE="$ROOT/tools/acceptance_parse.py"
+CORPUS_DIR="${CORPUS_DIR:-}"
+[ -n "$CORPUS_DIR" ] && mkdir -p "$CORPUS_DIR"
 
 TURNS=(
  "Review this code and list its three biggest problems."
@@ -57,6 +59,8 @@ echo "[agent-loop] arm=$ARM model=$MODEL K=$K ngen=$NGEN full_prec=$FULL_PREC tu
 for i in "${!TURNS[@]}"; do
   turn=$((i + 1))
   printf '\n\n### USER TURN %d: %s\n### ASSISTANT:\n' "$turn" "${TURNS[$i]}" >> "$W"
+  # snapshot the exact prompt payload this turn sends (corpus for head retraining)
+  [ -n "$CORPUS_DIR" ] && cp "$W" "$CORPUS_DIR/${ARM}-agentloop-t${turn}-prompt.txt"
   OUTLOG="$(env "${EXTRA_ENV[@]}" \
       ${FULL_PREC:+BW24_FULL_PREC=$FULL_PREC} \
       BW24_NGEN="$NGEN" BW24_SPEC_K="$K" BW24_SPEC_STATS=1 BW24_SPEC_HPOST=1 \

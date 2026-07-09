@@ -23,6 +23,7 @@
 #   PROMPTS="p1 p2 p3"       which fixed prompts (files research/e2e/prompts/<id>-*.txt)
 #   RUN_AGENTLOOP=1          also run the 8-turn accumulative agent loop (default 1)
 #   EXTRA_ENV="..."          extra env words passed to run-spec (e.g. "BW24_SPEC_HPOST=1")
+#   CORPUS_DIR=<dir>         save a copy of every prompt payload sent to the model (corpus for head retraining)
 #   RUNSPEC=./target/release/run-spec   TIMEOUT=1800   PYBIN=python3
 set -euo pipefail
 
@@ -44,6 +45,8 @@ RUNSPEC="${RUNSPEC:-./target/release/run-spec}"
 TIMEOUT="${TIMEOUT:-1800}"
 PYBIN="${PYBIN:-python3}"
 PARSE="$ROOT/tools/acceptance_parse.py"
+CORPUS_DIR="${CORPUS_DIR:-}"
+[ -n "$CORPUS_DIR" ] && mkdir -p "$CORPUS_DIR"
 
 # shellcheck disable=SC2206
 EXTRA_ENV_ARR=($EXTRA_ENV)
@@ -65,6 +68,7 @@ echo "[battery] arm=$ARM model=$MODEL full_prec=$FULL_PREC N=$N KS=($KS) ngen=$N
 for pid in $PROMPTS; do
   PF="$(prompt_file "$pid")"
   echo "[battery] prompt=$pid file=$PF"
+  [ -n "$CORPUS_DIR" ] && cp "$PF" "$CORPUS_DIR/${ARM}-${pid}.txt"
   for k in $KS; do
     for run in $(seq 1 "$N"); do
       echo "[battery]   $ARM $pid K=$k run=$run/$N ..."
@@ -84,7 +88,7 @@ done
 
 if [ "$RUN_AGENTLOOP" = "1" ]; then
   echo "[battery] agent-loop (8 turns, accumulative) ..."
-  FULL_PREC="$FULL_PREC" K="$(echo $KS | awk '{print $NF==8?3:$1}')" NGEN="256" \
+  FULL_PREC="$FULL_PREC" K="$(echo $KS | awk '{print $NF==8?3:$1}')" NGEN="256" CORPUS_DIR="$CORPUS_DIR" \
     tools/agent_loop_acceptance.sh "$MODEL" "$OUT" "$ARM" "${EXTRA_ENV_ARR[@]}"
 fi
 
