@@ -148,6 +148,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    generate_spec[..]: {:?}", &spec[idx.saturating_sub(2)..(idx + 3).min(spec.len())]);
             println!("    spec tokens: {spec:?}");
         }
+        if sampled && std::env::var("BW24_PRINT_TEXT").as_deref() == Ok("1") {
+            let tok = match &g {
+                Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
+                None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
+                    .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
+            };
+            println!("--- sampled text (K={k}) ---\n{}\n--- end ---", tok.decode(&spec));
+        }
         // acceptance>0 is the SECOND gate (a wrong head passes self-consistency via the bonus token
         // but accepts nothing). Report it; the assert below covers the exactness gate.
         if pass && accepted == 0 {
