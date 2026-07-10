@@ -1,3 +1,10 @@
+# E4B — FIRST LIGHT PASSED (2026-07-11)
+
+Loads + coherent chat + id-prompt argmax MATCH (" Paris"). 154.8 tok/s eager (unoptimized).
+Cross-mode (prefill-vs-decode) logit maxdiff runs 20-30 — 5-10x the 26B's — noise-amplification
+signature (smooth growth from layer ~6), argmax gates MATCH; treat as the E4B baseline, re-check
+after perf lanes land.
+
 # E4B bring-up — fork-lane status (2026-07-11, forward wired)
 
 FILES: main QAT 5.2GB + assistant drafters (F16/Q8_0) at

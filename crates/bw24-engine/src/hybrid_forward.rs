@@ -2528,6 +2528,9 @@ impl HybridModel {
     /// R4: final logits softcapped 30*tanh(l/30) on host (monotonic — argmax unaffected).
     fn gemma4_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
                       -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // E4B routes to its own forward regardless of the caller's entry point (forward /
+        // forward_last / prime paths all funnel here for gemma4).
+        if self.is_gemma4_e4b() { return self.gemma4_e4b_forward(e, tokens, last_only); }
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
         let pos: Vec<i32> = (0..t as i32).collect();
