@@ -84,17 +84,13 @@ pub struct SpillCtx {
 
 impl SpillCtx {
     /// Open a `MAP_SHARED` mmap of the GGUF and seed the pinned budget from a live `MemBudget` probe.
-    /// `posix_fadvise(POSIX_FADV_RANDOM)` hints the kernel that expert access is random, not
-    /// sequential (so it does not waste readahead on cold pages). SPILLING-PLAN §1.
+    /// The whole-map expert advice defaults to random (the historical behavior); setting
+    /// `BW24_MOE_MMAP_ADVICE=normal` restores ordinary Linux readahead. SPILLING-PLAN §1.
     pub fn open(path: &std::path::Path, budget: &MemBudget) -> Result<Self, Box<dyn std::error::Error>> {
         let file = std::fs::File::open(path)?;
         // MAP_SHARED, no MAP_POPULATE (memmap2's default Mmap::map): zero upfront copy, demand-fault.
         let map = unsafe { Mmap::map(&file)? };
-        // Expert access is random — advise the kernel so it does not prefetch sequentially.
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let _ = libc_fadvise_random(&map);
-        }
+        let _ = bw24_gguf::source::apply_expert_mmap_advice(&map);
         Ok(SpillCtx {
             file_map: Arc::new(map),
             pinned_remaining: budget.free_pinnable_ram,
@@ -103,21 +99,6 @@ impl SpillCtx {
             mmap_bytes: 0,
         })
     }
-}
-
-/// `posix_fadvise(fd, 0, len, POSIX_FADV_RANDOM)` on the mmap's backing fd. Best-effort: the mmap
-/// owns the fd internally (memmap2 closes the File after mapping), so we re-derive advice via
-/// `madvise(MADV_RANDOM)` on the mapped region, which serves the same purpose for an mmap.
-#[cfg(target_os = "linux")]
-unsafe fn libc_fadvise_random(map: &Mmap) -> std::io::Result<()> {
-    // MADV_RANDOM = 1 on Linux. madvise(addr, len, advice).
-    const MADV_RANDOM: i32 = 1;
-    unsafe extern "C" {
-        fn madvise(addr: *mut core::ffi::c_void, length: usize, advice: i32) -> i32;
-    }
-    let r = unsafe { madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), MADV_RANDOM) };
-    if r != 0 { return Err(std::io::Error::last_os_error()); }
-    Ok(())
 }
 
 /// Build one expert's `HostBuf`, choosing its tier under the running budget (SPILLING-PLAN §1.1):

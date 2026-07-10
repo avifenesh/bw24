@@ -805,7 +805,7 @@ impl HostExps {
         // page cache carry the hot expert mass (RAM tier) and demand-faults the overflow from NVMe,
         // exactly like the proven M3 `.bw24-repack` path (model.rs NVFP4 disk arm). Bit-identity:
         // `expert_bytes(e)` slices the same on-disk bytes the copy would have staged. The SLRU VRAM
-        // cache stacks on top unchanged. MADV_RANDOM is applied by the source at open.
+        // cache stacks on top unchanged. The configured whole-map advice is applied at source open.
         if let Some((map, off, len)) = src.find_expert_mmap(name) {
             let qtype = match t.ggml_type {
                 GgmlType::Q8_0 => QT_Q8_0,
@@ -1043,12 +1043,9 @@ impl HostExps {
                     let file = std::fs::File::open(cp)?;
                     let map = unsafe { memmap2::Mmap::map(&file)? };
                     assert_eq!(map.len(), total, "repack cache {cp:?} size mismatch");
-                    // MADV_RANDOM: expert access is routing-driven random; kill readahead waste.
-                    #[cfg(target_os = "linux")]
-                    unsafe {
-                        unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
-                        let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
-                    }
+                    // Default random preserves the original policy; normal lets Linux readahead
+                    // within each multi-megabyte expert on the spill-bound path.
+                    let _ = bw24_gguf::source::apply_expert_mmap_advice(&map);
                     let map = std::sync::Arc::new(map);
                     // ST PINNED TIER (2026-07-07, the M3 1.5-tok/s lever): mmap-only backing makes
                     // every SLRU miss a page-cache (or NVMe) synchronous read into the H2D copy.
