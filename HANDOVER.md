@@ -717,8 +717,11 @@ Three subtraction confounds later, the clean instrument exists and the answer is
 (35B K=3 p2, round loop only): TRUE #1 = MoE VERIFY expert ops 24% (gate_up_silu8_v_rows 16.6%
 + down8_rows 7.4%; ~60 launches/round = per-MoE-layer, already round-batched — the cost is the
 dp4a math itself at t=4-5 x top-8 experts under the verify-stays-dp4a exactness law). #2 =
-trunk matvecs 15.3% (fused2_b4 + mmvq_b4). #3 = cuBLAS gemvx 4%/12.8k instances in the round
-loop (UNIDENTIFIED CALLER — find it, possibly a Float-tensor fallback worth routing). The q6_K
+trunk matvecs 15.3% (fused2_b4 + mmvq_b4). #3 IDENTIFIED = the MoE ROUTER GEMV
+(hybrid_forward.rs:720 — gate_inp F32 -> cuBLASLt, plus the shexp gate at :1016): ~200 cuBLAS
+launches/round, 4% of the loop. Lever: a warp-per-row f32 router matvec kernel batched over t
+(tiny: [256 x n_embd] x [t]) replaces 12.8k cuBLAS dispatches per run — bounded, low-risk,
+verify-safe (f32 exact, same accumulation order achievable). Est +2-3% e2e on MoE models. The q6_K
 head batches correctly (b4_r2, 3.8%). Design frontier for #1: cross-token expert-activation
 dedup in the verify (t=5 x 8 experts with overlap — the CSR expert-major machinery is the
 natural host), NOT an MMA class change (dispatch-parity law). 27B (dense) p2 shares differ —
