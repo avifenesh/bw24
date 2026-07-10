@@ -5,6 +5,29 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
 ## SPEC-MULTIPLIER DIAGNOSTIC + 27B PLAIN AUDIT (owner directive 2026-07-10 late)
+## GEMMA4 MTP DRAFTER — VERIFIED WIRING (llama gemma4-assistant.cpp + llama-model.cpp:2162, read 2026-07-10)
+
+Files: /data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/drafter/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf
+(arch "gemma4-assistant", 4 layers, n_embd=1024, ff=8192 dense GELU_PAR, swa_pattern [T,T,T,F],
+hd 256/256/256/512, n_head 16, NO wk/wv/ffn-moe — Q-only attention over the MAIN model's KV).
+
+- inputs per draft token: token id + h[2816] where h = the MAIN model's POST-output_norm hidden
+  (gemma4.cpp h_nextn = rms_norm(l_out_29) * output_norm — the hpost convention).
+- x = MAIN tok_embd row(token) * sqrt(2816)   (the TARGET's embed table, not the drafter's)
+- xh = concat(x, h) [5632]; cur = nextn.pre_projection [5632->1024] @ xh
+- per layer il (0..3): attn_norm -> wq -> reshape [hd,16] -> q_norm -> rope (NEOX, base 1e6
+  global/1e4 swa, freq_factors=rope_freqs on the GLOBAL layer only, n_rot=hd, scale 1.0,
+  positions = absolute) -> attention over SHARED MAIN KV with NO new K/V appended:
+    * SWA layers (0,1,2) attend MAIN LAYER n-2 = 28's KV (sliding window 1024)
+    * global layer (3) attends MAIN LAYER n-1 = 29's KV (full)
+  -> wo -> attn_post_norm -> + residual = attn_out
+  -> ffn_norm -> dense GELU_PAR ffn (gate/up 8192) -> ffn_post_norm -> + attn_out
+  -> * layer_output_scale
+- final: output_norm[1024] -> TIED drafter token_embd [1024,262144] head -> logits (NO softcap)
+- h_next = nextn.post_projection [1024->2816] @ (post-output_norm hidden) — the next chained
+  draft token's h input. Drafter writes NO KV -> no draft cache, no trims; multi-token drafts
+  chain h_next while attending the frozen main cache (standard MTP).
+
 
 Owner: don't chase acceptance — tune the system; if llama's spec MULTIPLIER (spec/own-plain)
 beats ours, either our spec is bad or mechanisms remain. ANSWER: our multiplier wins 8/9 cells
