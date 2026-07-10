@@ -710,3 +710,16 @@ reclaims at most a few % — secondary, not primary). NEXT-SESSION FIRST STEP fo
 isolated profile (nsys capture-range around generate_spec, or an oracle-only subtraction run)
 -> TRUE spec-phase shares -> then design (fusion vs graph vs both). Do not design from the
 current table.
+
+### Verify-cost #1 — FINAL round-loop shares (BW24_PROFILE_SPEC=2 + nsys cudaProfilerApi)
+
+Three subtraction confounds later, the clean instrument exists and the answer is measured
+(35B K=3 p2, round loop only): TRUE #1 = MoE VERIFY expert ops 24% (gate_up_silu8_v_rows 16.6%
++ down8_rows 7.4%; ~60 launches/round = per-MoE-layer, already round-batched — the cost is the
+dp4a math itself at t=4-5 x top-8 experts under the verify-stays-dp4a exactness law). #2 =
+trunk matvecs 15.3% (fused2_b4 + mmvq_b4). #3 = cuBLAS gemvx 4%/12.8k instances in the round
+loop (UNIDENTIFIED CALLER — find it, possibly a Float-tensor fallback worth routing). The q6_K
+head batches correctly (b4_r2, 3.8%). Design frontier for #1: cross-token expert-activation
+dedup in the verify (t=5 x 8 experts with overlap — the CSR expert-major machinery is the
+natural host), NOT an MMA class change (dispatch-parity law). 27B (dense) p2 shares differ —
+profile it with the same instrument before designing.

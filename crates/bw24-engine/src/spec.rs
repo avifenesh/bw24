@@ -1586,6 +1586,13 @@ impl HybridModel {
                 start = end;
             }
         }
+        // BW24_PROFILE_SPEC=2: profiler capture starts HERE — after the prime, so an
+        // `nsys -c cudaProfilerApi` capture contains ONLY the round loop (draft/verify/commit).
+        // (=1 brackets the whole call in run_spec.rs, prime included.)
+        if std::env::var("BW24_PROFILE_SPEC").as_deref() == Ok("2") {
+            unsafe extern "C" { fn cudaProfilerStart() -> i32; }
+            unsafe { cudaProfilerStart(); }
+        }
         let mut round = 0usize;
         // (Adaptive-K — BW24_SPEC_ADAPT, acceptance-EMA draft length — measured an HONEST LOSS
         // to static per-class optima on 2026-07-07 (115.0/85.8/73.4 vs 121.6/92.7/75.6, EMA lag)

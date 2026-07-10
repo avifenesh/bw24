@@ -12,6 +12,12 @@ use bw24_engine::Engine;
 use bw24_engine::hybrid::HybridModel;
 use bw24_gguf::GgufFile;
 
+// BW24_PROFILE_SPEC=1: bracket ONLY the generate_spec calls with cudaProfiler{Start,Stop} —
+// with `nsys profile -c cudaProfilerApi` the capture then contains the spec phase alone
+// (phase isolation by subtraction is unworkable on MoE: primes are not fungible, the first
+// one cold-stages the expert cache — measured 2026-07-10).
+unsafe extern "C" { fn cudaProfilerStart() -> i32; fn cudaProfilerStop() -> i32; }
+
 fn first_divergence(a: &[u32], b: &[u32]) -> Option<usize> {
     let n = a.len().min(b.len());
     for i in 0..n { if a[i] != b[i] { return Some(i); } }
@@ -114,9 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     for &k in &ks {
         e.stream().synchronize()?;
+        let prof = std::env::var("BW24_PROFILE_SPEC").as_deref() == Ok("1");
         let t1 = std::time::Instant::now();
+        if prof { unsafe { cudaProfilerStart(); } }
         let (spec, drafted, accepted) = model.generate_spec(&e, &prompt, n_new, k)?;
         e.stream().synchronize()?;
+        if prof { unsafe { cudaProfilerStop(); } }
         let spec_prime = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
         let spec_dt = (t1.elapsed().as_secs_f64() - spec_prime).max(1e-9);
         let spec_tps = (n_new - 1) as f64 / spec_dt;

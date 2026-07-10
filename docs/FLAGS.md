@@ -162,6 +162,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |
+| `BW24_PROFILE_SPEC` | `1` = cudaProfiler{Start,Stop} brackets generate_spec (prime included); `2` = capture starts at the ROUND LOOP (prime excluded) — pair with `nsys -c cudaProfilerApi`. Built 2026-07-10 after phase-isolation-by-subtraction proved unworkable on MoE (primes are not fungible: the first cold-stages the expert cache) |
 | `BW24_LAYER_PROBE=1` | sync+print after every forward stage — bisects an in-graph ILLEGAL_ADDRESS (M3 bring-up tool) |
 | `BW24_GDN_DIFF=1` | dual-run oracle: chunked GDN prefill checked against the sequential scan per call |
 | `BW24_MOE_GATE=1` | byte-identity oracle: grouped-vs-sequential MoE FFN compare (pair contract; known benign q8-quantize diff class documented at the gate site) |
