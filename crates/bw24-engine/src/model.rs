@@ -647,6 +647,29 @@ impl HostBuf {
             HostBuf::Mmap { len, .. } => *len,
         }
     }
+
+    /// Best-effort OS read-ahead for a future mmap-backed expert range. This does not touch or
+    /// copy the bytes, so the zero-copy ownership contract is unchanged. Non-mmap buffers are
+    /// already resident and need no advice. Kept fallible-at-the-OS but non-fatal at the call site:
+    /// an unsupported/pressured kernel simply leaves the normal demand-fault path in place.
+    #[inline]
+    pub fn advise_willneed(&self, rel_off: usize, len: usize) -> bool {
+        let HostBuf::Mmap { map, off, len: extent } = self else {
+            return false;
+        };
+        if len == 0 || rel_off > *extent || len > *extent - rel_off {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            map.advise_range(memmap2::Advice::WillNeed, *off + rel_off, len).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (map, off);
+            false
+        }
+    }
 }
 
 /// One layer's stacked 256-expert tensor, raw GGUF quant bytes held HOST-RESIDENT.
@@ -1351,6 +1374,18 @@ impl HostExps {
             None => &self.bytes.as_bytes()[layout.offset..layout.offset + layout.len],
         }
     }
+
+    /// Hint that expert `e` will be staged soon. Uniform slabs advise only this expert's window;
+    /// mixed/pruned layouts advise the selected per-expert mmap. Returns false for resident or
+    /// empty buffers and on unsupported kernels; callers always retain the demand-fault fallback.
+    #[inline]
+    pub fn prefetch_expert_pages(&self, e: usize) -> bool {
+        let layout = self.expert_layout(e);
+        match &self.tiers {
+            Some(tiers) => tiers[e].advise_willneed(0, layout.len),
+            None => self.bytes.advise_willneed(layout.offset, layout.len),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1510,6 +1545,8 @@ mod tests {
         assert!(matches!(exps.tiers.as_ref().unwrap()[1], HostBuf::Mmap { .. }));
         assert_eq!(exps.expert_bytes(0), &bytes[..expert_len]);
         assert_eq!(exps.expert_bytes(1), &bytes[expert_len..]);
+        #[cfg(unix)]
+        assert!(exps.prefetch_expert_pages(1));
         std::fs::remove_file(path).ok();
     }
 
@@ -1532,6 +1569,8 @@ mod tests {
         assert_eq!(exps.expert_stride, expert_len);
         assert_eq!(exps.expert_bytes(0), &bytes[..expert_len]);
         assert_eq!(exps.expert_bytes(1), &bytes[expert_len..]);
+        #[cfg(unix)]
+        assert!(exps.prefetch_expert_pages(1));
         std::fs::remove_file(path).ok();
     }
 }

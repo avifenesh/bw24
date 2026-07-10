@@ -22,6 +22,14 @@ fn moe_prefetch_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1"))
 }
 
+/// Best-effort OS page-cache prefetch for mmap-backed expert ranges. Independent of the H2D
+/// copy-stream experiment so storage->RAM and RAM->HBM overlap can be measured separately.
+/// Default off until matched cold-cache A/Bs pass on G7e and the final RTX 5090 target.
+fn moe_page_prefetch_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_PAGE_PREFETCH").as_deref() == Ok("1"))
+}
+
 /// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
 /// zero-DtoH device-dispatch path for fully-resident layers: router top-k output stays on device,
 /// expert weight pointers come from the per-layer device table. Requires the fused router (the
@@ -951,6 +959,9 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
+                if moe_page_prefetch_enabled() && j + 1 < sel.len() {
+                    Self::moe_prefetch_host_expert(sel[j + 1] as usize, m);
+                }
                 if use_cache && moe_prefetch_enabled() && j + 1 < sel.len() {
                     let keep = [
                         crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_GATE, ex as u16),
@@ -1829,6 +1840,13 @@ impl HybridModel {
             Ok(())
         })
     }
+
+    #[inline]
+    fn moe_prefetch_host_expert(ex: usize, m: &MoeWeights) {
+        let _ = m.gate_exps.prefetch_expert_pages(ex);
+        let _ = m.up_exps.prefetch_expert_pages(ex);
+        let _ = m.down_exps.prefetch_expert_pages(ex);
+    }
 }
 
 // ================================================================================================
@@ -1926,7 +1944,10 @@ impl HybridModel {
         order.sort_by(|&a, &b| groups[b].tok_indices.len()
             .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
-        for ex in order {
+        for (order_pos, &ex) in order.iter().enumerate() {
+            if moe_page_prefetch_enabled() && order_pos + 1 < order.len() {
+                Self::moe_prefetch_host_expert(order[order_pos + 1], m);
+            }
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
             m_dist.push(m_e);
