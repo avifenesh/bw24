@@ -35,7 +35,18 @@ reading anything back; every inter-round dependency moves to device state:
    verbatim on device — token-identity gates (K=1..8 self-consistency + seeded sampled rerun)
    arbitrate as always. Snapshot/ckpt machinery (VerifyCkpt, replay-free partial accept) already
    lives device-side.
-STAGE PROGRESS (2026-07-10): (a) LANDED green (spec_accept_greedy + BW24_SPEC_DEVACC=1 seam,
+STAGE PROGRESS (2026-07-10): (a) LANDED green; (b) COMPLETE green (seeds + KV-len rollback via
+len_d pointer table + recur restore _dc twins — device owns every n_acc-dependent commit input;
+acceptance parity exact at every K, raw + serve). (c) GROUNDWORK LANDED: embed_gather_device_td
+(device-token verify embed) + spec_assemble_verify kernel (verify tokens from the K-chain pack
+slots + pending sentinel + in-kernel d2t + p-min k_used derivation). (c) REMAINING, in order:
+c2 verify-chain device-pos (_dc pos-vec kernel, append-at-len_d ROWS variant, fa rows t_kv_base
+from len_d — decode-graph precedents exist for all three at t=1); c3 accept kernel consumes
+brk[] (k_round from device); c4 the stream loop mode (BW24_SPEC_STREAM: K-chain draft graph
+resurrected always-K + zero-readback round issue + out-ring + M-round drain) + battery + A/B.
+NOTE: the K-chain always-K "waste" negative (draft-readback-arc row) is EXPECTED to invert here
+— its cost was measured WITH per-round readbacks still present.
+(a) LANDED green (spec_accept_greedy + BW24_SPEC_DEVACC=1 seam,
 K=1..8 token-identical). (b) piece 1 BUILT: spec_seed_gather kernel + Engine method (unifies the
 three commit arms' seed rules: j=base+n_acc, j>=1 -> vx col j-1, j==0 -> fill_prev; writes
 h_seed + fill_prev). NEXT WIRING POINT: the three §5 commit arms in spec.rs (~line 2010-2115)

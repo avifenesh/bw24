@@ -551,6 +551,26 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (c) 1: device verify-token assembly + p-min break derivation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spec_assemble_verify(&self, tokp: &CudaSlice<u32>, pend: &CudaSlice<u32>,
+                                d2t: Option<&CudaSlice<u32>>, vtok: &mut CudaSlice<u32>,
+                                brk: &mut CudaSlice<u32>, p_min: f32, k: usize, pmin0: bool)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_assemble_verify");
+        let (ki, pm) = (k as i32, if pmin0 { 1i32 } else { 0i32 });
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match d2t {
+            Some(m) => { b.arg(tokp).arg(pend).arg(m).arg(vtok).arg(brk).arg(&p_min).arg(&ki).arg(&pm);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(tokp).arg(pend).arg(&null).arg(vtok).arg(brk).arg(&p_min).arg(&ki).arg(&pm);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (b) 3b: recur-restore twins with device-j (see hybrid.cu headers).
     #[allow(clippy::too_many_arguments)]
     pub fn ssm_conv_ring_rebuild_dc(&self, qkv_tm: &CudaSlice<f32>, ring_old: &CudaSlice<f32>,
@@ -2035,6 +2055,23 @@ impl Engine {
         let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(embd).arg(&tok_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(x)
+    }
+
+    /// T-token embed gather from a DEVICE token buffer (round-stream stage c: the verify tokens
+    /// are assembled on-device from the draft-chain pack slots; no host round trip). Same kernel
+    /// as embed_gather_device_t — bit-identical rows.
+    pub fn embed_gather_device_td(&self, embd: &CudaSlice<u8>, tok_d: &CudaSlice<u32>, t: usize,
+                                  n_embd: usize, qtype: i32, row_bytes: usize)
+                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("embed_gather_u32_t");
+        let mut x = self.alloc_uninit::<f32>(t * n_embd)?;
+        let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(embd).arg(tok_d).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
         unsafe { b.launch(cfg)?; }
         Ok(x)
     }

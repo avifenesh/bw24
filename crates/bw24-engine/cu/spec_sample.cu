@@ -473,3 +473,31 @@ extern "C" __global__ void spec_rollback_kv(
     if (lp == nullptr) return;
     lp[0] = saved[il] + base + (int)acc[0];
 }
+
+// ROUND-STREAM stage (c) piece 1: verify-token assembly ON DEVICE. verify_tok[0] = pending
+// bonus when pend[0] != 0xFFFFFFFF (the no-pending sentinel), then the draft chain's packed
+// slots (tokp[2j] = PRE-remap argmax idx) mapped through d2t (identity when d2t == nullptr).
+// Also derives the p-min break vector: brk[0] = k_used = number of draft slots the host walk
+// would have kept (first j with p < p_min, respecting j>0-only unless pmin0&&base, capped K).
+extern "C" __global__ void spec_assemble_verify(
+        const unsigned int* __restrict__ tokp,   // [2K] packed (idx, p-bits) per chain step
+        const unsigned int* __restrict__ pend,   // [1] pending bonus or 0xFFFFFFFF
+        const unsigned int* __restrict__ d2t,    // trimmed-head map or nullptr
+        unsigned int* __restrict__ vtok,         // [K+1] out: verify tokens (used prefix)
+        unsigned int* __restrict__ brk,          // [2] out: brk[0]=k_used, brk[1]=base
+        float p_min, int k, int pmin0) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int base = (pend[0] != 0xFFFFFFFFu) ? 1 : 0;
+    if (base) vtok[0] = pend[0];
+    int k_used = 0;
+    for (int j = 0; j < k; j++) {
+        unsigned int idx = tokp[2 * j];
+        float p = __uint_as_float(tokp[2 * j + 1]);
+        if (p_min > 0.0f && p < p_min && (j > 0 || (pmin0 && base == 1))) break;
+        unsigned int d = (d2t != nullptr) ? d2t[idx] : idx;
+        vtok[base + k_used] = d;
+        k_used++;
+    }
+    brk[0] = (unsigned int)k_used;
+    brk[1] = (unsigned int)base;
+}
