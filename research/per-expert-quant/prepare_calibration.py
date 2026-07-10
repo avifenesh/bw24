@@ -205,8 +205,14 @@ def main() -> None:
             if tools is not None:
                 template_kwargs["tools"] = tools
             prompt_ids = tokenizer.apply_chat_template(**template_kwargs)
+            if isinstance(prompt_ids, dict):
+                prompt_ids = prompt_ids["input_ids"]
             if hasattr(prompt_ids, "tolist"):
                 prompt_ids = prompt_ids.tolist()
+            if prompt_ids and isinstance(prompt_ids[0], list):
+                if len(prompt_ids) != 1:
+                    raise RuntimeError(f"unexpected batched chat template output: {len(prompt_ids)}")
+                prompt_ids = prompt_ids[0]
             prompt_ids = [int(token) for token in prompt_ids]
             if not prompt_ids or len(prompt_ids) > max_tokens:
                 raise RuntimeError(f"invalid token count for {source_id}: {len(prompt_ids)}")
