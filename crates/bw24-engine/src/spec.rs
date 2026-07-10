@@ -1613,6 +1613,7 @@ impl HybridModel {
         // the verify accept readback). Printed once at loop end via spec-stats.
         let phase_on = std::env::var("BW24_SPEC_PHASE").as_deref() == Ok("1");
         let (mut ph_draft, mut ph_verify, mut ph_rest) = (0f64, 0f64, 0f64);
+        let mut ph_wait = 0f64;
         let mut ph_t = std::time::Instant::now();
         let mut ph_mark = |acc: &mut f64, on: bool| {
             if on { let now = std::time::Instant::now();
@@ -1780,8 +1781,9 @@ impl HybridModel {
                 for j in 0..t_v {
                     e.argmax_token_device_col(&tlogits_d, j, n_vocab, &mut preds_d, j)?;
                 }
-                preds = e.dtoh_u32(&preds_d)?;
+                preds = e.dtoh_u32(&preds_d)?;   // <- the verify-GPU wait lands here
             }
+            ph_mark(&mut ph_wait, phase_on);
             let t_pred = |j: usize| -> u32 {
                 if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
             };
@@ -2159,10 +2161,11 @@ impl HybridModel {
                       (total_accepted + round) as f64 / round.max(1) as f64);
         }
         if phase_on {
-            let tot = ph_draft + ph_verify + ph_rest;
-            eprintln!("[spec-phase] draft={:.1}ms ({:.1}%) verify-issue={:.1}ms ({:.1}%)                        accept+commit(+verify-wait)={:.1}ms ({:.1}%) rounds={round}",
+            let tot = ph_draft + ph_verify + ph_wait + ph_rest;
+            eprintln!("[spec-phase] draft={:.1}ms ({:.1}%) verify-issue={:.1}ms ({:.1}%) verify-wait={:.1}ms ({:.1}%) commit-host={:.1}ms ({:.1}%) rounds={round}",
                       ph_draft * 1e3, ph_draft / tot * 100.0,
                       ph_verify * 1e3, ph_verify / tot * 100.0,
+                      ph_wait * 1e3, ph_wait / tot * 100.0,
                       ph_rest * 1e3, ph_rest / tot * 100.0);
         }
         // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
