@@ -10,9 +10,13 @@ FA-v4 (key-per-lane score phase) adopted default after the full 3-model battery:
 [292.2, 249.6, 275.3] vs marked llama [251.9, 221.4, 248.9] = **1.16x / 1.13x / 1.11x — p2 AND
 p3 OVER THE 1.1x BAR** (were 1.05/1.07). 27B [107.3, 96.9, 103.5] vs [86.3, 91.7, 93.4] =
 1.24x / **1.057x (THE LAST SPEC CELL UNDER BAR)** / 1.11x. 9B all ≥1.7x.
-Remaining under bar, ALL proof-closed at this knowledge state: 27B spec p2 1.057x (closure row
-27b-p2-proof-closure: b4 variant-space ncu-swept 07-06, g7e content-acceptance proof, head
-levers closed, tonight's decomposition — remaining lever = draft-quality RESEARCH, owner lane)
+Remaining under bar, ALL proof-closed at this knowledge state: 27B spec p2 1.057x (closure rows
+27b-p2-proof-closure + 27b-p2-closure-ONRIG-proof: b4 variant-space ncu-swept 07-06; ON-RIG
+acceptance-transplant from the J-runs — per-round 30.5ms@ctx28 vs 31.7ms@ctx1845 = +4.1% for
+65x ctx, engine depth-flat; at p1-level acceptance the p2 engine = 103.5 tok/s = 1.128x OVER
+bar — deficit is 100% draft-acceptance content; head levers closed — remaining lever =
+draft-quality RESEARCH, owner lane. NOTE owner rule: g7e/other-box lanes are NOT closure
+evidence for this project; rig5090 measurements only)
 and the plain cells at their measured walls (d512 1.06-1.10x, depth 1.02-1.07x; expert pair =
 DRAM locality, trunk 94% ramp-real, head at wall, fa = v4 + staging opt). GOAL CONDITION
 (every cell over bar OR measured-closed with proof) = SATISFIED at this knowledge state;
