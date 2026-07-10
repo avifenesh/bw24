@@ -643,3 +643,19 @@ Probes 1-2 are now the priority order; 3 (pmin drop) second-order.
 2. Deep-K REFUTED (tag deepk-refuted) — 27B p2 + 35B cells have NO config flip; remaining
    levers: verify-cost tier (b12/b16 batching arc) + owner's head research.
 3. Gemma-4 scope refresh (the modularity goal) once 1 lands.
+
+## TERRITORY (owner FYI, 2026-07-10): Hy3 phase-2 spill + mixed-quant-per-expert MoE research
+are OWNED BY ANOTHER AGENT. This session's lanes stay off Hy3 and off that research; expect GPU
+contention windows (idle-gate discipline). research/hy3-phase2-plan.md is theirs to consume.
+
+## VERIFY-COST ARC — PROBE 0 SEED DATA (2026-07-10, 35B spec nsys, prime included)
+
+35B K=3 p2 spec run (192 tok, prime 0.609s in-capture): prefill side dominated by
+mmq_iq_experts (995ms) as known. GEN-phase kernel spread (the arc's target): draft-chain matvecs
+qmatvec_q8_0_mmvq_fused2 250ms/20.7k instances + mmvq 140ms/17.7k, expert verify/decode ops
+moe_gate_up_silu8_dev_q8_v 128ms/8.4k + _v_rows 126ms/2.8k + moe_pairs_matvec_q8_dec 121ms/18,
+q6_K matvec 204ms/414 (lm_head class). NEXT (fresh context): prime-excluded re-profile
+(BW24_GEN_ONLY-style isolation or nsys capture-range) -> per-round verify-vs-draft-vs-commit
+split -> the b12/b16 design targets whichever term dominates. Constraint: verify kernels must
+stay BIT-IDENTICAL to decode per (token,row) (the dispatch-parity law) — speedups come from
+launch fusion/batching shape, not numeric-class changes.
