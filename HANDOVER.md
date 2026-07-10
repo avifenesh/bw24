@@ -103,6 +103,17 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
+STANDING 2026-07-11 (ALL bars re-paired warm, today's llama build): short plain 193.9 vs
+181.3 = 1.07x MARGIN; depth plain 155.3 vs 168.7 = 0.92x; short spec 239 vs 290 = 0.82x;
+depth spec 236.7 vs 304 = 0.78x. Landed this block: Q4_0 split-plane mirrors (+6.3% short
+spec class), adaptive draft length default-on (+10.1% depth spec). EVERY red cell now shares
+ONE cause: llama's CUDA-graphed step/round (spec round 12.2ms vs ours 16.5 at EQUAL
+tok/round; depth plain same class). THE ARC = graph capture rebuilt on the parity-law
+machinery — persistent scratch pool (the old negative was bucket churn + alloc nodes),
+per-(t, ctx-bucket) verify graphs over the dc device-counter KV lens, window views in-graph
+via the shared rows_w symbols. Then E4B (download + per-layer-embed) and the 31B layout swap
+(gemm_rp twin) close the remaining conjuncts.
+
 POST-Q4RP RE-PAIRING (2026-07-10 late): split-plane mirrors landed (+6.3% short spec) and the
 llama bar RE-MEASURED at ~290 warm (draft-mtp; the 241-253 record was stale) -> short spec
 0.80x. THE GAP IS NOW ACCEPTANCE, NOT ROUND COST: llama accept 0.64-0.70 / mean len 2.9-3.1
