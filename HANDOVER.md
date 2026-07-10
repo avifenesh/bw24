@@ -612,3 +612,16 @@ be on par and we decided not to, its ok." The pp column is a DELIBERATE QUALITY 
 documented: we hold a precision class llama's bench config does not. pp rests unless
 quality-preserving levers appear. Priority = E2E + QUALITY. The margin-bar goal applies to the
 e2e cells; the pp cell carries the contract footnote, not a debt.
+
+## 27B SPEC P2 CELL (0.95x) — PROBE PLAN (2026-07-10, from existing data, GPU pending)
+
+Signal: llama accelerates on medium-code (p1 88.7 -> p2 93.8) while we DECELERATE
+(104.1 -> 88.8) and our acceptance FALLS (70.7 -> 68.3%) where code predictability should
+raise it. Hypothesis: our chain config caps the most draftable content — llama serves
+n-max 3 with p-min 0.1 (long effective chains, permissive gate); we run K=3 pmin 0.4.
+The K=4 rejection dates to an NGEN=64 sweep whose own lesson says short-gen understates ~20%.
+Probes (N=2 interleaved, NGEN=256, p2, 27B GGUF standing draft+trim):
+  1. K=4 pmin 0.4 / 0.3 / 0.2   2. K=5 pmin 0.3   3. K=3 pmin 0.2 / 0.1 (llama-class gate)
+  4. best-of-above + PMIN0=1 (base acceptance ~68% < the 75% PMIN0 threshold — in its pay band)
+Also record per-slot histograms (BW24_SPEC_STATS) — if slot-3+ acceptance stays >60% on p2,
+deeper K is free money the pmin gate was refusing.
