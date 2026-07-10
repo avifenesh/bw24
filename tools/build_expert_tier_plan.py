@@ -14,7 +14,7 @@ from typing import Any
 
 
 FORMAT = "bw24-expert-tier-plan-v2"
-RECIPES = ("usage-pyramid", "reap50-plus25")
+RECIPES = ("uniform-nvfp4", "usage-pyramid", "reap50-plus25")
 
 
 def sha256(path: Path) -> str:
@@ -73,9 +73,17 @@ def _take_ranked(ids: list[int], counts: list[int], n: int, hottest: bool) -> se
 
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     layers = parse_layers(args.layers)
-    counts, events = read_trace(args.trace, layers, args.expert_count)
-    if events == 0:
-        raise ValueError("no trace records matched the selected layers")
+    if args.recipe == "uniform-nvfp4":
+        if args.trace:
+            raise ValueError("uniform-nvfp4 must not depend on calibration traces")
+        if args.prune_unused:
+            raise ValueError("uniform-nvfp4 cannot prune experts")
+        counts = {layer: [0] * args.expert_count for layer in layers}
+        events = 0
+    else:
+        counts, events = read_trace(args.trace, layers, args.expert_count)
+        if events == 0:
+            raise ValueError("no trace records matched the selected layers")
     assignments: list[dict[str, Any]] = []
     pruned: dict[str, list[int]] = {}
     summaries: dict[str, Any] = {}
@@ -87,7 +95,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         if len(retained) < args.top_k:
             raise ValueError(f"layer {layer}: pruning leaves {len(retained)} experts, below top_k={args.top_k}")
         tiers: dict[str, set[int]]
-        if args.recipe == "usage-pyramid":
+        if args.recipe == "uniform-nvfp4":
+            tiers = {"NVFP4": set(retained)}
+        elif args.recipe == "usage-pyramid":
             hot_n = max(1, math.ceil(len(retained) * args.hot_fraction))
             low_n = max(1, math.ceil(len(retained) * args.low_fraction))
             if hot_n + low_n > len(retained):
@@ -126,11 +136,11 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "format": FORMAT,
         "recipe": args.recipe,
-        "description": (
-            "Top 25% NVFP4, middle 50% Q3_K, bottom 25% Q2_K, zero-count experts pruned"
-            if args.recipe == "usage-pyramid"
-            else "REAP50 source: least-used 25% of original bank Q2_K, remaining 25% NVFP4"
-        ),
+        "description": {
+            "uniform-nvfp4": "All retained experts NVFP4; no calibration or pruning",
+            "usage-pyramid": "Top 25% NVFP4, middle 50% Q3_K, bottom 25% Q2_K, zero-count experts pruned",
+            "reap50-plus25": "REAP50 source: least-used 25% of original bank Q2_K, remaining 25% NVFP4",
+        }[args.recipe],
         "model": {
             "expert_count": args.expert_count,
             "original_expert_count": args.original_expert_count,
@@ -138,7 +148,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "moe_layers": layers,
         },
         "policy": {
-            "rank_metric": "router_selection_count",
+            "rank_metric": None if args.recipe == "uniform-nvfp4" else "router_selection_count",
             "hot_fraction": args.hot_fraction if args.recipe == "usage-pyramid" else None,
             "low_fraction": args.low_fraction if args.recipe == "usage-pyramid" else None,
             "prune_unused": args.prune_unused,
@@ -173,6 +183,15 @@ def self_test() -> None:
             "nvfp4": 1, "q3_k": 2, "q2_k": 1,
         }
         assert plan["pruned_experts"] == {"1": [4]}
+        uniform = build_plan(argparse.Namespace(
+            trace=[], recipe="uniform-nvfp4", expert_count=4, original_expert_count=4,
+            top_k=2, layers="1", hot_fraction=0.25, low_fraction=0.25,
+            prune_unused=False,
+        ))
+        uniform_summary = uniform["layer_summary"]["1"]
+        assert uniform_summary["nvfp4"] == 4
+        assert uniform_summary["q3_k"] == 0 and uniform_summary["q2_k"] == 0
+        assert uniform["calibration"]["trace_files"] == []
         reap_trace = root / "reap.trace"
         reap_trace.write_text("1 1 " + ",".join(str(x) for x in range(96)) + "\n")
         reap = build_plan(argparse.Namespace(
@@ -203,9 +222,11 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
-    required = (args.trace, args.recipe, args.expert_count, args.original_expert_count, args.layers, args.out)
-    if not all(x is not None and x != [] for x in required):
-        parser.error("--trace, --recipe, --expert-count, --original-expert-count, --layers, and --out are required")
+    required = (args.recipe, args.expert_count, args.original_expert_count, args.layers, args.out)
+    if not all(x is not None for x in required):
+        parser.error("--recipe, --expert-count, --original-expert-count, --layers, and --out are required")
+    if args.recipe != "uniform-nvfp4" and not args.trace:
+        parser.error("--trace is required for usage-ranked recipes")
     if not (0 < args.hot_fraction < 1 and 0 < args.low_fraction < 1):
         parser.error("tier fractions must be between 0 and 1")
     plan = build_plan(args)

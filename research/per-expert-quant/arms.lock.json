@@ -1,0 +1,54 @@
+{
+  "format": "bw24-hy3-quant-arms-v1",
+  "generated_utc": "2026-07-10T00:00:00Z",
+  "source": {
+    "model": "tencent/Hy3",
+    "revision": "716aa7241bd6d95896be4ebfc761162a9c4d49ef",
+    "role": "common BF16 quantization source only; never scored as an arm"
+  },
+  "reap": {
+    "implementation": "https://github.com/CerebrasResearch/reap.git",
+    "revision": "1970473c51ca3caeb98c10392f15b3a08a672974",
+    "retained_experts_per_layer": 96,
+    "reference_model": "pipenetwork/Hy3-REAP50-MLX-4bit",
+    "reference_revision": "e054317b43aa601484a219a53e33e02e46caa970",
+    "reference_role": "mask and structure cross-check only; not a scored source because it is already MLX 4-bit"
+  },
+  "shared_contract": {
+    "uniform_qtype": "NVFP4",
+    "moe_layers": "1-79",
+    "original_expert_count": 192,
+    "experts_per_token": 8,
+    "public_eval_data_used_for_selection": false,
+    "same_non_expert_tensors": true,
+    "same_runtime_and_eval_settings": true
+  },
+  "arms": [
+    {
+      "name": "plain_quant",
+      "expert_bank": "full-192",
+      "recipe": "uniform-nvfp4",
+      "pruning": "none"
+    },
+    {
+      "name": "plain_reap_quant",
+      "expert_bank": "reap50-96",
+      "recipe": "uniform-nvfp4",
+      "pruning": "frozen REAP50 mask"
+    },
+    {
+      "name": "plain_reap_mix_quant",
+      "expert_bank": "reap50-96",
+      "recipe": "reap50-plus25",
+      "pruning": "frozen REAP50 mask",
+      "tiers": "48 least-used original-bank experts Q2_K; remaining 48 NVFP4"
+    },
+    {
+      "name": "mix_quant",
+      "expert_bank": "full-192",
+      "recipe": "usage-pyramid",
+      "pruning": "zero calibration-count experts only",
+      "tiers": "hottest 25% NVFP4; middle 50% Q3_K; coldest 25% Q2_K"
+    }
+  ]
+}
