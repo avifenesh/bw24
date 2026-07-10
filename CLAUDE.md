@@ -5,7 +5,7 @@
 Feature and research work MUST happen on a dedicated branch/worktree, never directly on `main`.
 Preserve unrelated dirty work and stage only the intended lane.
 
-## Per-expert mixed precision
+## Usage-tiered expert compression
 
 - `HostExps.layouts == None` is the uniform-layout fast-path contract. `Some(layouts)` makes each
   expert's `qtype`, `row_bytes`, `len`, and `offset` authoritative; use `expert_layout()` and
@@ -13,15 +13,25 @@ Preserve unrelated dirty work and stage only the intended lane.
 - Mixed layers run through metadata-aware staged, SLRU-cache, or grouped dispatch. Resident slab,
   pointer-table, pairs, dev, and grouped-decode fused kernels remain uniform-only until they group
   pointers by layout; never send mixed metadata through those kernels.
-- Sparse overlay manifests require `BW24_FULL_PREC=1`: selected experts come from the overlay,
-  every unlisted expert must retain the base checkpoint's BF16 bytes, and
-  `preserve_expert_encodings()` keeps the overlay authoritative even for an all-Q4_K control.
+- A v2 tier plan MUST assign every retained expert projection to Q2_K, Q3_K, or NVFP4. Missing
+  assignments are errors; never silently retain a BF16 expert. Q2_K remains on the generic staged
+  f32-dequant kernel until the target-rig correctness and performance gates justify a fast path.
+- A plan's pruned expert ids keep their original router positions. `active_experts()` masks them
+  before top-k and their weights must be absent. Never dispatch, cache, or fabricate bytes for a
+  masked id, and never let a fallback uniform slab bypass split expert overrides.
+- The frozen primary recipes are: usage pyramid = hottest 25% NVFP4, middle 50% Q3_K, coldest 25%
+  Q2_K, zero-count pruned; REAP50+25 = 96 retained Hy3 experts split 48 least-used Q2_K / 48
+  NVFP4. Rank per layer from non-public calibration traces and freeze trace/plan hashes before
+  viewing public eval scores.
+- Public eval runs require `ARTIFACT` and must retain its manifest/hash. Public benchmark data
+  must never select experts, thresholds, tier fractions, or pruning decisions.
 - This research lane is implementation/CPU-validation only on the current host. Model loading,
   GPU correctness gates, performance measurements, and public evals run on the provisioned target
   machine. Do not merge or tag mixed-expert work until its remote raw logs and eval report exist.
 
-Why: a projection-wide dtype silently decodes some experts with the wrong block layout; a local
-performance or quality claim would be fabricated because this host is not the experiment machine.
+Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
+pruned id dereferences nonexistent weights; and a local performance or quality claim would be
+fabricated because this host is not the experiment machine.
 
 ## Perf board: README must stay current, every push
 

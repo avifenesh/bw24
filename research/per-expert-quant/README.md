@@ -1,143 +1,208 @@
-# Per-expert mixed-precision research pack
+# Usage-tiered expert compression research pack
 
-This lane asks whether individual MoE experts can be quantized while the remaining experts retain
-their source precision. The code path is prepared here; no model-quality or GPU-performance claim
-has been measured on the current machine.
+This lane tests per-expert quantization and pruning in bw24. Every retained routed expert is
+quantized; there is no BF16 expert fallback. Preparation and CPU validation happen here. Model
+loading, CUDA correctness, performance measurement, calibration, and public evaluation happen on
+the provisioned research machine.
+
+## Target model and frozen recipes
+
+The checked Hy3 REAP50 checkpoint has 96 routed experts per MoE layer (already reduced from 192),
+top-8 sigmoid routing, and MoE layers 1 through 79.
+
+Two primary recipes are predeclared:
+
+1. usage-pyramid: rank experts separately in each layer by calibration-set router selection
+   count. The hottest 25% use NVFP4, the middle 50% use Q3_K, the coldest 25% use Q2_K, and
+   zero-count experts are pruned. Fractions are parameters, but any change creates a new named
+   plan before public scores are viewed.
+2. reap50-plus25: start from the 96-expert REAP50 checkpoint. The least-used 25% of the original
+   192-expert bank (48 experts per layer) use Q2_K; the other 48 retained experts use NVFP4.
+   No Q3 tier and no additional prune are applied.
+
+Q2 means GGUF Q2_K (2.625 effective bits/weight), Q3 means Q3_K (3.4375 bits/weight), and
+NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
+first: Q2_K uses the generic staged f32-dequant kernel until a dedicated target-rig-gated fast
+kernel exists.
 
 ## What is implemented
 
-- `tools/prepare_mixed_expert_repack.py` creates a sparse overlay from an explicit JSON plan.
-  Selected BF16 expert projections become Q4_K; unselected experts and all other tensors resolve
-  from the untouched Hugging Face checkpoint.
-- `HostExps` carries dtype, row size, byte extent, and offset per expert. Uniform checkpoints keep
-  the existing resident/fused paths. Mixed layers use the generic staged, SLRU-cache, or grouped
-  paths whose dispatch reads the selected expert's metadata.
-- `bw24-server` accepts manifest-backed overlays, so the same OpenAI-compatible endpoint can serve
-  the BF16 reference and every experimental arm.
-- `suite.lock.json` pins the lm-evaluation-harness commit, public dataset revisions, task names, and
-  primary metrics. `summarize_results.py` reports paired-bootstrap confidence intervals from the
-  logged per-document samples.
+- BW24_MOE_TRACE=/path records routed expert ids without changing normal runs.
+- tools/build_expert_tier_plan.py aggregates frozen calibration traces, ranks each layer
+  independently, and emits a complete immutable plan with trace hashes.
+- tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
+  and writes Q2_K, Q3_K, and NVFP4 byte ranges. Every active expert projection must be assigned.
+- A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
+  shared-expert tensors. Expert data is stored in one mixed file per layer/projection.
+- Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
+  excluded before top-k and have no weight bytes in the artifact.
+- HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay
+  on metadata-aware staged, SLRU-cache, or grouped paths; uniform fused kernels remain
+  uniform-only.
+- validate_artifact.py checks expert coverage, allowed qtypes, non-overlapping byte ranges, total
+  bytes, contamination metadata, and optional source fingerprints.
+- The public eval suite is pinned and stores the served artifact manifest/hash with each run.
 
-The v1 producer supports a BF16 base with selected Q4_K expert projections. The runtime metadata
-also supports the existing Q8_0, Q3/4/5/6_K, IQ3_S, IQ4_XS, NVFP4, F32, and BF16 matvec formats.
+## Calibration and plan generation
 
-## Prepare an overlay
+Calibration data and public evaluation data must be disjoint. Use a representative private or
+training-side corpus for routing counts; never use IFEval, GSM8K, BBH, DROP, HumanEval, or MBPP
+examples to select tiers.
 
-Start from an indexed Hugging Face safetensors checkpoint and copy
-`plans/example.json` to a named, immutable experiment plan. Public benchmark data must not be used
-to choose the experts; derive the plan from a separate calibration split or a predeclared random
-seed.
+Capture enough requests to cover the intended deployment distribution:
 
-```bash
-python3 tools/prepare_mixed_expert_repack.py test
+    BW24_MOE_TRACE=/runs/hy3-calibration.trace \
+    BW24_MODELS=hy3=/models/hy3-source \
+    ./target/release/bw24-server
 
-python3 tools/prepare_mixed_expert_repack.py prepare \
-  /models/base-bf16 \
-  /models/overlays/selected-q4k \
-  --plan research/per-expert-quant/plans/selected-q4k.json \
-  --max-work-mb 512 \
-  --resume
-```
+The trace format is one line per layer/forward: layer, token count, then comma-separated expert
+ids. Multiple trace files may be passed and their SHA-256 hashes are frozen into the plan.
 
-The overlay manifest records the plan, plan hash, source config/index hashes, tensor mapping, and
-the required `BW24_FULL_PREC=1` runtime setting. The base checkpoint is never modified.
+For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count experts:
+
+    python3 tools/build_expert_tier_plan.py \
+      --trace /runs/hy3-calibration.trace \
+      --recipe usage-pyramid \
+      --expert-count 192 \
+      --original-expert-count 192 \
+      --top-k 8 \
+      --layers 1-79 \
+      --hot-fraction 0.25 \
+      --low-fraction 0.25 \
+      --prune-unused \
+      --out /plans/hy3-usage-pyramid.json
+
+For the actual local REAP50 checkpoint, build the exact 48 Q2_K / 48 NVFP4 split:
+
+    python3 tools/build_expert_tier_plan.py \
+      --trace /runs/hy3-reap50-calibration.trace \
+      --recipe reap50-plus25 \
+      --expert-count 96 \
+      --original-expert-count 192 \
+      --top-k 8 \
+      --layers 1-79 \
+      --out /plans/hy3-reap50-plus25.json
+
+Run the builder self-test before producing plans:
+
+    python3 tools/build_expert_tier_plan.py --self-test
+
+Create at least three matched random controls without changing tier counts or prune masks:
+
+    for seed in 11 29 47; do
+      python3 tools/make_random_tier_control.py /plans/hy3-usage-pyramid.json \
+        --seed $seed --out /plans/hy3-usage-pyramid-random-$seed.json
+    done
+
+## Artifact preparation
+
+The local REAP50 quantization source is already MLX 4-bit. Its dense/router fallback is the
+existing complete bw24 Q4_K repack. The commands below quantize experts directly from the MLX
+source rather than adding another Q4_K intermediate:
+
+    python3 tools/prepare_mixed_expert_repack.py test
+    python3 tools/prepare_mixed_expert_repack.py probe /models/hy3-reap50-mlx \
+      --layer 1 --expert 0 --projection gate
+
+    python3 tools/prepare_mixed_expert_repack.py prepare \
+      /models/hy3-reap50-mlx \
+      /models/hy3-reap50-plus25 \
+      --fallback-dir /models/hy3-reap50-q4k-bw24 \
+      --plan /plans/hy3-reap50-plus25.json \
+      --max-work-mb 512 \
+      --resume
+
+    python3 research/per-expert-quant/validate_artifact.py \
+      /models/hy3-reap50-plus25 --verify-sources
+
+For the publication arm, prefer a BF16/FP16 REAP50 checkpoint produced from tencent/Hy3 with the
+official REAP pipeline, then quantize each expert once. If the public MLX 4-bit checkpoint is used
+as the source, label the arm double-quantized and keep it separate; an NVFP4 re-encode cannot
+recover precision already removed by the MLX quantizer.
+
+For an indexed BF16/F16/F32 source, fallback-dir may be the same checkpoint, but a complete
+fixed-precision bw24 repack is preferred so non-expert tensors are identical across all arms.
+Every retained expert must appear in the plan; omission is an error, not a BF16 fallback.
+
+Pruning through a v2 plan does not renumber experts or shrink router tensors. bw24 keeps the
+original router width, masks declared ids before selection, and only loads retained weights. This
+makes trace ids and cross-arm comparisons stable.
 
 ## Experimental arms
 
-Freeze these arms before looking at public-eval scores:
+Freeze all plans before looking at public scores:
 
-1. `bf16_reference`: the original checkpoint with `BW24_FULL_PREC=1`.
-2. `all_q4k`: every routed expert quantized to Q4_K; this measures the conventional uniform policy.
-3. `selected_q4k`: the calibration-selected experts quantized under the same per-layer bit budget.
-4. `random_q4k_seed_*`: at least three random assignments matched to `selected_q4k` by layer,
-   expert count, projections, and total bytes.
+1. uniform_q4k_control: the existing complete Q4_K bw24 repack.
+2. usage_pyramid: NVFP4/Q3_K/Q2_K plus zero-count prune from the frozen full-bank trace.
+3. reap50_plus25: REAP50, then 48 Q2_K and 48 NVFP4 experts per layer.
+4. random_budget_seed_*: at least three per-layer random assignments with the same counts,
+   pruned count, total bytes, projections, and fixed seeds as the corresponding candidate.
 
-Keep router, shared-expert, attention, tokenizer, prompt formatting, sampler, and runtime commit
-fixed. Report checkpoint/plan hashes and exact artifact bytes for every arm.
+An uncompressed/BF16 model may be reported as a quality ceiling, but it is not a mixed artifact
+and no retained expert in either candidate remains BF16. Keep router, attention, shared experts,
+tokenizer, prompt template, sampling, dense fallback, runtime commit, and calibration trace fixed.
 
-## Remote machine bring-up
+## Target-machine bring-up
 
-The provisioned machine needs a CUDA-capable GPU supported by bw24, enough host/disk capacity for
-the BF16 checkpoint plus overlays, Rust/CUDA build tools, Python 3 with NumPy, `uv`, `git`, and
-`curl`. Build the exact feature-branch commit, then run the CPU checks before loading a model:
+Build the exact feature commit and run CPU gates before loading a model:
 
-```bash
-cargo test -p bw24-gguf --lib
-cargo test -p bw24-engine --lib mixed_expert_loader_keeps_each_encoding_and_extent
-cargo build --release -p bw24-server -p bw24-engine
-```
+    cargo test -p bw24-gguf --lib
+    cargo test -p bw24-engine --lib mixed_expert_loader
+    cargo build --release -p bw24-server -p bw24-engine
 
-For each arm, start one clean server process. The mixed overlay must be served with full-precision
-fallback enabled:
+Serve one clean arm at a time:
 
-```bash
-BW24_FULL_PREC=1 \
-BW24_COMPAT=openai \
-BW24_MODELS=selected_q4k=/models/overlays/selected-q4k \
-BW24_ADDR=127.0.0.1:8080 \
-./target/release/bw24-server
-```
+    BW24_COMPAT=openai \
+    BW24_MODELS=reap50_plus25=/models/hy3-reap50-plus25 \
+    BW24_ADDR=127.0.0.1:8080 \
+    ./target/release/bw24-server
 
-Before public evaluation, capture the required target-machine gates:
+Before public evaluation, retain raw logs from the required CUDA gates:
 
-```bash
-./target/release/kernel-check 2>&1 | tee kernel-check.log
-BW24_FULL_PREC=1 ./target/release/run-gen /models/overlays/selected-q4k --prompt "gate prompt" \
-  2>&1 | tee run-gen.log
-for k in 1 2 3 4 5 6 7 8; do
-  BW24_FULL_PREC=1 BW24_SPEC_K=$k ./target/release/run-spec /models/overlays/selected-q4k \
-    2>&1 | tee "run-spec-k${k}.log"
-done
-```
+    ./target/release/kernel-check 2>&1 | tee kernel-check.log
+    ./target/release/run-gen /models/hy3-reap50-plus25 --prompt "gate prompt" \
+      2>&1 | tee run-gen.log
+    for k in 1 2 3 4 5 6 7 8; do
+      BW24_SPEC_K=$k ./target/release/run-spec /models/hy3-reap50-plus25 \
+        2>&1 | tee "run-spec-k${k}.log"
+    done
 
-The exact commands may need the target model's normal prompt/model arguments. A mixed arm is not
-merge- or publication-ready until kernel correctness, greedy argmax, coherent text, determinism,
-and K=1..8 self-consistency are recorded on that machine. Always retain raw logs and the concurrent
-GPU/process state.
+Add a dedicated Q2_K GPU oracle to kernel-check on that machine before trusting the Q2 tier.
+No correctness, quality, or throughput claim is made from this development host.
 
 ## Public evaluation
 
-The safe core suite uses generation-only tasks because bw24's completions endpoint does not expose
-token log-probabilities:
+The generation-only core suite contains IFEval, GSM8K CoT, BBH CoT few-shot, and DROP. HumanEval
+and MBPP are isolated as a code suite because their scorers execute generated Python. Run that
+lane only in a disposable sandbox.
 
-- IFEval: instruction following.
-- GSM8K CoT: mathematical reasoning.
-- BBH CoT few-shot: broad compositional reasoning.
-- DROP: reading comprehension and discrete reasoning.
+    ARM=reap50_plus25 \
+    MODEL=reap50_plus25 \
+    ARTIFACT=/models/hy3-reap50-plus25 \
+    research/per-expert-quant/run_public_evals.sh
 
-HumanEval and MBPP are a separate `code` suite because their scorers execute generated Python.
-Run that lane only inside an isolated disposable sandbox.
+    # Transport/config smoke:
+    ARM=reap50_plus25 MODEL=reap50_plus25 ARTIFACT=/models/hy3-reap50-plus25 LIMIT=2 \
+      research/per-expert-quant/run_public_evals.sh
 
-With the server running:
+    # Unsafe code lane, inside a sandbox only:
+    ARM=reap50_plus25 MODEL=reap50_plus25 ARTIFACT=/models/hy3-reap50-plus25 \
+    SUITE=code BW24_UNSAFE_EVALS=1 research/per-expert-quant/run_public_evals.sh
 
-```bash
-ARM=selected_q4k MODEL=selected_q4k \
-  research/per-expert-quant/run_public_evals.sh
+Run the uniform control first, then candidates in a predeclared order. Compare them with:
 
-# Fast transport/configuration smoke before a full run:
-ARM=selected_q4k MODEL=selected_q4k LIMIT=2 \
-  research/per-expert-quant/run_public_evals.sh
+    python3 research/per-expert-quant/summarize_results.py \
+      --baseline research/per-expert-quant/results/uniform_q4k_control/RUN_ID \
+      --candidate usage_pyramid=research/per-expert-quant/results/usage_pyramid/RUN_ID \
+      --candidate reap50_plus25=research/per-expert-quant/results/reap50_plus25/RUN_ID \
+      --out research/per-expert-quant/results/comparison.md
 
-# Unsafe code lane, inside a sandbox only:
-ARM=selected_q4k MODEL=selected_q4k SUITE=code BW24_UNSAFE_EVALS=1 \
-  research/per-expert-quant/run_public_evals.sh
-```
+Publish per-task scores, paired 95% bootstrap intervals, artifact bytes, tier counts, pruned
+counts, peak VRAM/RAM, prefill/decode throughput, N, thermal regime, failures, exclusions, exact
+commits, trace/plan hashes, and manifests. Do not collapse the report to perplexity or one macro
+average.
 
-Run the BF16 reference first, then every candidate with the same suite lock. Compare arms with:
-
-```bash
-python3 research/per-expert-quant/summarize_results.py \
-  --baseline research/per-expert-quant/results/bf16_reference/RUN_ID \
-  --candidate selected_q4k=research/per-expert-quant/results/selected_q4k/RUN_ID \
-  --candidate random_seed_11=research/per-expert-quant/results/random_seed_11/RUN_ID \
-  --out research/per-expert-quant/results/comparison.md
-```
-
-The report includes aggregate deltas and paired 95% bootstrap intervals. Publish per-task scores,
-not only a macro average. Also report model/overlay bytes, peak VRAM/RAM, prefill/decode throughput,
-N and thermal regime for performance runs, and every failed or excluded arm.
-
-Upstream references: [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness),
-[GSM8K](https://huggingface.co/datasets/openai/gsm8k),
-[IFEval](https://huggingface.co/datasets/google/IFEval), and
-[HumanEval safety guidance](https://github.com/openai/human-eval).
+Primary references: [REAP](https://github.com/CerebrasResearch/reap),
+[Hy3 REAP50 model card](https://huggingface.co/pipenetwork/Hy3-REAP50-MLX-4bit),
+[llama.cpp tensor encodings](https://github.com/ggml-org/llama.cpp/wiki/Tensor-Encoding-Schemes),
+and [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness).

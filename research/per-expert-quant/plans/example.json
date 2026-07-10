@@ -1,13 +1,31 @@
 {
-  "format": "bw24-per-expert-quant-plan-v1",
-  "default_qtype": "BF16",
-  "description": "Example only: quantize all three projections of experts 3 and 17 in layer 8.",
+  "format": "bw24-expert-tier-plan-v2",
+  "recipe": "usage-pyramid",
+  "description": "Schema example only; generate real Hy3 plans from frozen routing traces.",
+  "model": {
+    "expert_count": 4,
+    "original_expert_count": 4,
+    "expert_used_count": 2,
+    "moe_layers": [1]
+  },
+  "pruned_experts": {
+    "1": [3]
+  },
   "assignments": [
     {
-      "layer": 8,
-      "experts": [3, 17],
-      "projections": ["gate", "up", "down"],
-      "qtype": "Q4_K"
+      "layer": 1,
+      "experts": [0],
+      "qtype": "NVFP4"
+    },
+    {
+      "layer": 1,
+      "experts": [1],
+      "qtype": "Q3_K"
+    },
+    {
+      "layer": 1,
+      "experts": [2],
+      "qtype": "Q2_K"
     }
   ]
 }

@@ -7,7 +7,7 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
 use bw24_gguf::source::{TensorSource, GgufSource};
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32, QT_BF16};
+use crate::{Engine, QT_Q8_0, QT_Q2_K, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32, QT_BF16};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -662,6 +662,7 @@ pub struct ExpertLayout {
 fn staged_expert_qtype(ty: GgmlType) -> Option<i32> {
     Some(match ty {
         GgmlType::Q8_0 => QT_Q8_0,
+        GgmlType::Q2_K => QT_Q2_K,
         GgmlType::Q4_K => QT_Q4_K,
         GgmlType::Q6_K => QT_Q6_K,
         GgmlType::Q5_K => QT_Q5_K,
@@ -881,7 +882,12 @@ impl HostExps {
         // Detect a dtype/layout change before the uniform gather paths normalize the whole layer
         // to one encoding. Uniform checkpoints take the unchanged optimized path below.
         let mut signatures = Vec::with_capacity(n_expert);
+        let active = src.active_experts(il);
         for ex in 0..n_expert {
+            if active.is_some_and(|mask| !mask[ex]) {
+                signatures.push((i32::MIN, 0));
+                continue;
+            }
             let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
             if let Some(nv) = src.find_nvfp4_native(&name) {
                 signatures.push((QT_NVFP4, nv.in_f / 64 * 36));
@@ -1101,8 +1107,15 @@ impl HostExps {
         let mut macros = vec![1.0f32; n_expert];
         let mut in_f = 0usize;
         let mut out_f = 0usize;
+        let active = src.active_experts(il);
+        let mut first_active = None;
 
         for ex in 0..n_expert {
+            if active.is_some_and(|mask| !mask[ex]) {
+                layouts.push(ExpertLayout { offset: 0, len: 0, qtype: QT_F32, row_bytes: 0 });
+                tiers.push(HostBuf::Paged(Vec::new()));
+                continue;
+            }
             let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
             let (bytes, qtype, row_bytes, cur_in, cur_out) =
                 if let Some(nv) = src.find_nvfp4_native(&name) {
@@ -1129,12 +1142,13 @@ impl HostExps {
                     }
                 };
 
-            if ex == 0 {
+            if first_active.is_none() {
                 in_f = cur_in;
                 out_f = cur_out;
+                first_active = Some(ex);
             } else {
                 assert_eq!((cur_in, cur_out), (in_f, out_f),
-                    "expert {ex} dims ({cur_in},{cur_out}) != expert 0 ({in_f},{out_f})");
+                    "expert {ex} dims ({cur_in},{cur_out}) != first active expert ({in_f},{out_f})");
             }
             assert_eq!(bytes.len(), cur_out * row_bytes,
                 "expert {name} bytes {} != out_f*row_bytes {}", bytes.len(), cur_out * row_bytes);
@@ -1142,7 +1156,7 @@ impl HostExps {
             tiers.push(HostBuf::Paged(bytes));
         }
 
-        let first = layouts[0];
+        let first = layouts[*first_active.as_ref().expect("expert mask pruned every expert")];
         let expert_stride = layouts.iter().map(|layout| layout.len).max().unwrap_or(0);
         let all_one = macros.iter().all(|&scale| scale == 1.0);
         Ok(HostExps {
@@ -1206,7 +1220,7 @@ impl HostExps {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostExps, QT_BF16, QT_Q4_K, repack_nvfp4_split, unpack_nvfp4_split};
+    use super::{HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4, repack_nvfp4_split, unpack_nvfp4_split};
     use std::borrow::Cow;
     use bw24_gguf::{GgmlType, config::ModelConfig};
     use bw24_gguf::nvfp4_repack::{repack_modelopt_to_gguf, repack_modelopt_to_split};
@@ -1233,6 +1247,27 @@ mod tests {
                 ggml_type,
                 ne: vec![256, 2],
             })
+        }
+    }
+
+    struct PrunedExpertSource {
+        q2k: Vec<u8>,
+        nvfp4: Vec<u8>,
+        active: Vec<bool>,
+    }
+
+    impl TensorSource for PrunedExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps pruned-loader test") }
+        fn active_experts(&self, layer: u32) -> Option<&[bool]> {
+            (layer == 0).then_some(self.active.as_slice())
+        }
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let (bytes, ggml_type) = match name {
+                "blk.0.ffn_gate_exps.0.weight" => (&self.q2k, GgmlType::Q2_K),
+                "blk.0.ffn_gate_exps.2.weight" => (&self.nvfp4, GgmlType::NVFP4),
+                _ => return None,
+            };
+            Some(TensorView { bytes: Cow::Borrowed(bytes), ggml_type, ne: vec![256, 2] })
         }
     }
 
@@ -1272,5 +1307,21 @@ mod tests {
         assert_eq!(exps.expert_layout(1).len, 288);
         assert_eq!(exps.expert_bytes(0), source.bf16);
         assert_eq!(exps.expert_bytes(1), source.q4k);
+    }
+
+    #[test]
+    fn mixed_expert_loader_omits_masked_expert_bytes() {
+        let source = PrunedExpertSource {
+            q2k: vec![0x22; 2 * 84],
+            nvfp4: vec![0x44; 2 * 4 * 36],
+            active: vec![true, false, true],
+        };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 3).unwrap();
+        assert_eq!(exps.expert_layout(0).qtype, QT_Q2_K);
+        assert_eq!(exps.expert_layout(0).row_bytes, 84);
+        assert_eq!(exps.expert_layout(1).len, 0);
+        assert_eq!(exps.expert_bytes(1), &[]);
+        assert_eq!(exps.expert_layout(2).qtype, QT_NVFP4);
+        assert_eq!(exps.expert_layout(2).row_bytes, 4 * 36);
     }
 }

@@ -324,6 +324,22 @@ __device__ __forceinline__ float deq_nvfp4(const uint8_t* row, int j) {
     return (float)kvalues_mxfp4_d[code] * ue4m3_to_f32_d(d_bytes[s]);
 }
 
+// ---- Q2_K f32 deq ----
+__device__ __forceinline__ float deq_q2_k(const uint8_t* row, int j) {
+    int blk = j >> 8;
+    int jj = j & 255;
+    const uint8_t* b = row + (long)blk * 84;
+    const uint8_t* scales = b;
+    const uint8_t* qs = b + 16;
+    float d = half_to_float(*(const unsigned short*)(b + 80));
+    float dmin = half_to_float(*(const unsigned short*)(b + 82));
+    int within = jj & 127;
+    int shift = 2 * (within >> 5);
+    int q = (qs[(jj >> 7) * 32 + (within & 31)] >> shift) & 3;
+    int sc = scales[jj >> 4];
+    return d * (float)(sc & 0xf) * (float)q - dmin * (float)(sc >> 4);
+}
+
 enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7,
              QT_F32 = 8,
@@ -339,7 +355,9 @@ enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              // (the checkpoint's own precision; the Q8_0 re-encode this replaces was lossy).
              QT_F8_E4M3 = 10,
              // Raw BF16 row (FULL_PREC embed gather): 2 B/elem; f32 = bits << 16, exact.
-             QT_BF16 = 11 };
+             QT_BF16 = 11,
+             // Q2_K expert blocks. Generic staged f32-dequant path only for now.
+             QT_Q2_K = 12 };
 
 // e4m3 (OCP FP8, signed, bias 7) -> f32 via the native sm_89+ cvt (e4m3x2 -> f16x2 -> f32x2;
 // every e4m3 value is exactly representable in f16, and f16 -> f32 is exact, so this chain is
@@ -364,6 +382,7 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
         case QT_IQ4_XS: return deq_iq4_xs(row, j);
         case QT_IQ3_S:  return deq_iq3_s(row, j);
         case QT_NVFP4:  return deq_nvfp4(row, j);
+        case QT_Q2_K:   return deq_q2_k(row, j);
         // Unquantized f32 weight row (safetensors MoE Path A: experts gathered + dequantized to f32
         // host-resident, staged verbatim). `row` is the start of one out-row of `in_f` contiguous f32s.
         case QT_F32:    return ((const float*)row)[j];
