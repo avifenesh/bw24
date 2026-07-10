@@ -700,6 +700,18 @@ impl HybridModel {
         Self::moe_ffn_sequential_zq8(e, m, z, None, t, cfg, il, max_block)
     }
 
+    /// Append the host-visible router selection for one layer/forward when calibration tracing is
+    /// enabled. Both sequential and expert-grouped prefill must call this after routing so the
+    /// trace is independent of the dispatch optimization selected for the forward.
+    fn trace_moe_routes(il: u16, t: usize, sel_all: &[u32]) {
+        let Ok(path) = std::env::var("BW24_MOE_TRACE") else { return };
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
+            let _ = writeln!(f, "{} {} {}", il, t, ids.join(","));
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn moe_ffn_sequential_zq8(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
@@ -829,13 +841,7 @@ impl HybridModel {
         // BW24_MOE_TRACE=<path>: append one line per (layer, step) with the selected expert ids —
         // offline analysis derives the decode working set + step-to-step reuse (the go/no-go
         // measurement for resident-expert tiering; see rig5090.jsonl 2026-07-07 pinned-tier row).
-        if let Ok(path) = std::env::var("BW24_MOE_TRACE") {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
-                let _ = writeln!(f, "{} {} {}", il, t, ids.join(","));
-            }
-        }
+        Self::trace_moe_routes(il, t, &sel_all);
 
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
@@ -1836,6 +1842,7 @@ impl HybridModel {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
                                 None, None, m.active_experts.as_deref())?
         };
+        Self::trace_moe_routes(il, t, &sel_all);
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
         // For each expert e, we need: which tokens use it, their positions in z, their top-k
