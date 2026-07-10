@@ -1,5 +1,28 @@
 # bw24 — project instructions
 
+## Branch isolation
+
+Feature and research work MUST happen on a dedicated branch/worktree, never directly on `main`.
+Preserve unrelated dirty work and stage only the intended lane.
+
+## Per-expert mixed precision
+
+- `HostExps.layouts == None` is the uniform-layout fast-path contract. `Some(layouts)` makes each
+  expert's `qtype`, `row_bytes`, `len`, and `offset` authoritative; use `expert_layout()` and
+  `max_expert_bytes()` rather than projection-wide fields.
+- Mixed layers run through metadata-aware staged, SLRU-cache, or grouped dispatch. Resident slab,
+  pointer-table, pairs, dev, and grouped-decode fused kernels remain uniform-only until they group
+  pointers by layout; never send mixed metadata through those kernels.
+- Sparse overlay manifests require `BW24_FULL_PREC=1`: selected experts come from the overlay,
+  every unlisted expert must retain the base checkpoint's BF16 bytes, and
+  `preserve_expert_encodings()` keeps the overlay authoritative even for an all-Q4_K control.
+- This research lane is implementation/CPU-validation only on the current host. Model loading,
+  GPU correctness gates, performance measurements, and public evals run on the provisioned target
+  machine. Do not merge or tag mixed-expert work until its remote raw logs and eval report exist.
+
+Why: a projection-wide dtype silently decodes some experts with the wrong block layout; a local
+performance or quality claim would be fabricated because this host is not the experiment machine.
+
 ## Perf board: README must stay current, every push
 
 The tuning campaign lands new numbers several times a day (`research/tune-data/rig5090.jsonl` is
@@ -60,9 +83,9 @@ are filtered as research-log noise — pick the prefix accordingly.
 ## CI is compile-only; the exactness battery is the real gate
 
 GitHub runners have no GPU. `.github/workflows/ci.yml` catches build breaks (nvcc compiles fine
-GPU-less). Before any merge or tag, the battery runs on the rig: `kernel-check` ALL GREEN,
-`run-gen` argmax MATCH on affected models, `run-spec` K=1..8 self-consistency PASS. Never tag on
-a commit whose battery didn't run here.
+GPU-less). Before any merge or tag, the battery runs on the designated target GPU rig:
+`kernel-check` ALL GREEN, `run-gen` argmax MATCH on affected models, `run-spec` K=1..8
+self-consistency PASS. Never tag a commit without the target-rig battery.
 
 ## Flags doctrine
 

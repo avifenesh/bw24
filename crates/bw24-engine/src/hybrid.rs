@@ -139,6 +139,11 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
 /// fits => every subsequent layer uploads too (uniform). BW24_MOE_RESIDENT=0 forces the SLRU path.
 fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps, down: &HostExps)
                   -> Result<Option<crate::hybrid::DevExps>, Box<dyn std::error::Error>> {
+    // The resident pointer-table kernels take one qtype/row stride per projection. Mixed-expert
+    // layers stay on the metadata-aware staged/SLRU paths until those kernels group by layout.
+    if !gate.is_uniform_layout() || !up.is_uniform_layout() || !down.is_uniform_layout() {
+        return Ok(None);
+    }
     use std::sync::OnceLock;
     static DECISION: OnceLock<bool> = OnceLock::new();
     let per_layer = gate.bytes.as_bytes().len() + up.bytes.as_bytes().len() + down.bytes.as_bytes().len();
@@ -254,6 +259,15 @@ pub struct MoeWeights {
     /// None => the SLRU host-expert machinery (the spill regime, where it WINS vs llama's
     /// CPU-offload degradation). Decided at load in `load_ffn` (BW24_MOE_RESIDENT=0 forces off).
     pub dev_exps: Option<DevExps>,
+}
+
+impl MoeWeights {
+    #[inline]
+    pub fn has_uniform_expert_layout(&self) -> bool {
+        self.gate_exps.is_uniform_layout()
+            && self.up_exps.is_uniform_layout()
+            && self.down_exps.is_uniform_layout()
+    }
 }
 
 /// Device-resident expert slabs for one layer (gate/up/down) + the prebuilt [3, n_expert]

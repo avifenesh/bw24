@@ -161,17 +161,32 @@ pub fn run(
     let mut order: Vec<String> = Vec::new();
     for (name, path) in &models {
         eprintln!("[worker] loading model {name:?} <- {path}");
-        // DIRECTORY path = safetensors HF checkpoint (same dispatch as run_spec); file = GGUF.
+        // DIRECTORY path = safetensors HF checkpoint or a manifest-backed bw24 repack/overlay;
+        // file = GGUF. Repack tokenizers live in the manifest's source_dir.
         let (model, tok) = if std::path::Path::new(path).is_dir() {
-            let st = match bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(path)) {
-                Ok(s) => s,
-                Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
-            };
-            let model = match HybridModel::load_from_source(&engine, &st) {
+            let dir = std::path::Path::new(path);
+            let (src, tok_dir): (Box<dyn bw24_gguf::source::TensorSource>, std::path::PathBuf) =
+                if dir.join("manifest.json").exists() {
+                    let repack = match bw24_gguf::source::Hy3RepackSource::open(dir) {
+                        Ok(source) => source,
+                        Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+                    };
+                    let tok_dir = repack.source_dir()
+                        .filter(|source| source.join("tokenizer.json").exists())
+                        .unwrap_or(dir).to_path_buf();
+                    (Box::new(repack), tok_dir)
+                } else {
+                    let st = match bw24_gguf::source::SafetensorsSource::open(dir) {
+                        Ok(source) => source,
+                        Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+                    };
+                    (Box::new(st), dir.to_path_buf())
+                };
+            let model = match HybridModel::load_from_source(&engine, src.as_ref()) {
                 Ok(m) => m,
                 Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
             };
-            let tok = match Tokenizer::from_hf_dir(std::path::Path::new(path)) {
+            let tok = match Tokenizer::from_hf_dir(&tok_dir) {
                 Ok(t) => t,
                 Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
             };

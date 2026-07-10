@@ -1,0 +1,93 @@
+{
+  "format": "bw24-public-eval-suite-v1",
+  "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+  "generated_utc": "2026-07-10T00:00:00Z",
+  "suites": {
+    "core": [
+      "ifeval",
+      "gsm8k_cot",
+      "bbh_cot_fewshot",
+      "drop"
+    ],
+    "code": [
+      "humaneval_instruct",
+      "mbpp_instruct"
+    ]
+  },
+  "datasets": {
+    "openai/gsm8k": {
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "task_files": ["lm_eval/tasks/gsm8k/gsm8k-cot.yaml"]
+    },
+    "google/IFEval": {
+      "revision": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+      "task_files": ["lm_eval/tasks/ifeval/ifeval.yaml"]
+    },
+    "SaylorTwift/bbh": {
+      "revision": "b5306be6f827cfafbb545ff5a51f96916029b0fd",
+      "task_files": ["lm_eval/tasks/bbh/cot_fewshot/_cot_fewshot_template_yaml"]
+    },
+    "EleutherAI/drop": {
+      "revision": "619386fc7ffe6dace3cc6d3483c69b164ebf6bf3",
+      "task_files": ["lm_eval/tasks/drop/default.yaml"]
+    },
+    "openai/openai_humaneval": {
+      "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+      "task_files": ["lm_eval/tasks/humaneval/humaneval.yaml"]
+    },
+    "google-research-datasets/mbpp": {
+      "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+      "task_files": ["lm_eval/tasks/mbpp/mbpp_instruct.yaml"]
+    }
+  },
+  "primary_metrics": [
+    {
+      "label": "IFEval strict prompt accuracy",
+      "result_task": "ifeval",
+      "result_section": "results",
+      "metric": "prompt_level_strict_acc",
+      "filter": "none",
+      "sample_glob": "samples_ifeval_*.jsonl"
+    },
+    {
+      "label": "GSM8K CoT exact match",
+      "result_task": "gsm8k_cot",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "strict-match",
+      "sample_glob": "samples_gsm8k_cot_*.jsonl"
+    },
+    {
+      "label": "BBH CoT few-shot exact match",
+      "result_task": "bbh_cot_fewshot",
+      "result_section": "groups",
+      "metric": "exact_match",
+      "filter": "get-answer",
+      "sample_glob": "samples_bbh_cot_fewshot_*.jsonl"
+    },
+    {
+      "label": "DROP F1",
+      "result_task": "drop",
+      "result_section": "results",
+      "metric": "f1",
+      "filter": "none",
+      "sample_glob": "samples_drop_*.jsonl"
+    },
+    {
+      "label": "HumanEval pass at 1",
+      "result_task": "humaneval_instruct",
+      "result_section": "results",
+      "metric": "pass@1",
+      "filter": "create_test",
+      "sample_glob": "samples_humaneval_instruct_*.jsonl"
+    },
+    {
+      "label": "MBPP pass at 1",
+      "result_task": "mbpp_instruct",
+      "result_section": "results",
+      "metric": "pass_at_1",
+      "filter": "extract_code",
+      "sample_glob": "samples_mbpp_instruct_*.jsonl"
+    }
+  ]
+}
