@@ -8,8 +8,10 @@ The local RTX 5090 rig remains bw24's deployment and final performance target; r
 not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
 gates there.
 
-Mmap is a fallback, not the endpoint. If rolling readahead still leaves material spill waits, the
-next backend is the bounded pinned-buffer, buffered-io_uring pipeline specified in
+Mmap is a fallback, not the endpoint. The cold G7e result and bounded explicit-read promotion probe
+are recorded in [`evidence/spill-prefetch-g7e-20260710.md`](evidence/spill-prefetch-g7e-20260710.md).
+The next implementation step is an opt-in bounded pinned-buffer `pread` proof backend; io_uring then
+reuses that source/cache/H2D contract as specified in
 [`io-uring-spill-design.md`](io-uring-spill-design.md).
 
 GGUF remains bw24's general runtime and delivery focus. This study reads the pinned Hy3
@@ -313,6 +315,13 @@ expert-file-only cold-cache A/B before running the capability panel:
       OUT_ROOT=/data/results/spill-prefetch \
       research/per-expert-quant/run_spill_prefetch_ab.sh
 
+Before integrating a second runtime backend, measure bounded explicit reads against the same real
+expert files. This is a read-only storage-side upper bound; it does not include H2D or inference:
+
+    research/per-expert-quant/bench_explicit_reads.py \
+      /scratch/artifacts/plain-quant/experts \
+      --files 32 --workers 2 --chunk 3538944 --advice random
+
 The matched performance runner fixes a 512-token synthetic prompt, three warmed prefill
 repetitions, and three fresh 128-token eager-decode processes per arm. It enables the shared cache,
 grouped dispatch, H2D prefetch, and mmap page prefetch for every arm, and records exact
@@ -330,6 +339,14 @@ suites only after the size/quality direction is clear.
 
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh
+
+For the matched first-pass screen, use the orchestrator. It refuses existing outputs and stale
+listeners, starts a fresh exactly-one-model server for each arm, fixes the spill/cache environment,
+and wraps every harness invocation in an external timeout:
+
+    OUT_ROOT=/data/results/per-expert-quant/candidate \
+      CACHE_DIR=/data/cache/bw24-public-eval \
+      research/per-expert-quant/run_five_arm_candidate_evals.sh
 
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
