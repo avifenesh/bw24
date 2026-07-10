@@ -35,6 +35,16 @@ reading anything back; every inter-round dependency moves to device state:
    verbatim on device — token-identity gates (K=1..8 self-consistency + seeded sampled rerun)
    arbitrate as always. Snapshot/ckpt machinery (VerifyCkpt, replay-free partial accept) already
    lives device-side.
+STAGE PROGRESS (2026-07-10): (a) LANDED green (spec_accept_greedy + BW24_SPEC_DEVACC=1 seam,
+K=1..8 token-identical). (b) piece 1 BUILT: spec_seed_gather kernel + Engine method (unifies the
+three commit arms' seed rules: j=base+n_acc, j>=1 -> vx col j-1, j==0 -> fill_prev; writes
+h_seed + fill_prev). NEXT WIRING POINT: the three §5 commit arms in spec.rs (~line 2010-2115)
+each do host-offset D2Ds for seed/fill_prev — replace with spec_seed_gather under the devacc
+seam; note the full-accept arm ALSO gathers col t_v-2 for mtp_kv_fill's hp (a second gather or
+extend the kernel). CRUX for stage (c): the three arms run DIFFERENT host-length-dependent
+kernel sequences (mtp_kv_fill token slices, refresh vxs lengths, commit_verified_prefix) —
+pre-issuing needs union-with-device-guards (the CSR early-exit pattern) or an n_acc-max
+over-provisioned fill.
 6. **Incremental landing order**: (a) device accept kernel + device rollback with host loop
    still reading n_acc each round (gates the kernel alone); (b) move seed-gather + next-draft
    inputs on-device (host readback becomes optional); (c) pre-issue M rounds. Each stage battery-

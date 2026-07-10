@@ -551,6 +551,24 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (b): device next-round seed gather (see spec_seed_gather header).
+    /// fill_prev is read (j==0 case) and then overwritten via a distinct staging output — the
+    /// caller passes a scratch buffer as fill_prev_out and D2Ds it back, or distinct buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spec_seed_gather(&self, vx: &CudaSlice<f32>, fill_prev: &CudaSlice<f32>,
+                            acc: &CudaSlice<u32>, h_seed: &mut CudaSlice<f32>,
+                            fill_prev_out: &mut CudaSlice<f32>, base: usize, n_embd: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_seed_gather");
+        let (b, ne) = (base as i32, n_embd as i32);
+        let cfg = LaunchConfig { grid_dim: (n_embd.div_ceil(256) as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut bl = self.gpu.stream.launch_builder(&f);
+        bl.arg(vx).arg(fill_prev).arg(acc).arg(h_seed).arg(fill_prev_out).arg(&b).arg(&ne);
+        unsafe { bl.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (a): device greedy accept walk (see spec_accept_greedy header).
     pub fn spec_accept_greedy(&self, preds: &CudaSlice<u32>, draft: &CudaSlice<u32>,
                               last_pred: u32, base: usize, k_round: usize,

@@ -439,3 +439,24 @@ extern "C" __global__ void spec_accept_greedy(
     out[0] = (unsigned int)n_acc;
     out[1] = bonus;
 }
+
+// ROUND-STREAM stage (b) piece 1: next-round seed gather ON DEVICE. Unifies the three commit
+// arms' seed rules (spec.rs §5): j = base + n_acc; j >= 1 -> seed = vx[col j-1] (partial) which
+// at full accept (j == t_v) is col t_v-1 — the same expression; j == 0 -> seed = fill_prev
+// (zero-round fold). Writes BOTH h_seed slots (h_seed_buf and fill_prev get the same value in
+// every arm). acc = the spec_accept_greedy output (out[0] = n_acc).
+extern "C" __global__ void spec_seed_gather(
+        const float* __restrict__ vx,          // [t_v, n_embd] verify hiddens
+        const float* __restrict__ fill_prev,   // [n_embd] carried predecessor hidden
+        const unsigned int* __restrict__ acc,  // acc[0] = n_acc
+        float* __restrict__ h_seed,            // [n_embd] out
+        float* __restrict__ fill_prev_out,     // [n_embd] out (may alias fill_prev? NO — caller passes distinct)
+        int base, int n_embd) {
+    int j = base + (int)acc[0];
+    const float* src = (j >= 1) ? vx + (size_t)(j - 1) * n_embd : fill_prev;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_embd; i += gridDim.x * blockDim.x) {
+        float v = src[i];
+        h_seed[i] = v;
+        fill_prev_out[i] = v;
+    }
+}
