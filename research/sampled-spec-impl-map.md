@@ -35,6 +35,9 @@ E. **Gates**: (1) temp=1e-9 K=1..8 == greedy spec token-identical (continuity �
 ## Order
 1. A kernel + unit check vs host reference (probe-style bin or kernel-check section).
 2. B+C eager path, BW24_SPEC_NOGRAPH=1 first. Gates (1)(2).
-3. Graph-draft integration (fixed RNG-counter buffers).
+3. Graph-draft integration (fixed RNG-counter buffers). — DONE 2026-07-10 (feat/graph-sampled-draft:
+   second capture w/ in-graph sctr_inc + gumbel_perturb_ctr + perturbed argmax + persistent q slots;
+   graph-vs-eager streams IDENTICAL seeds 42/7/1234 K=3 temp=0.7; perf delta ~0 on p2 @1.8k ctx
+   N=2 — the sampled draft chain is not launch-bound there; raw logs research/graph-sampled-logs/).
 4. D reference + (3) aggregate gate + llama matched-temp pairing protocol.
 5. Re-baseline battery (owner's full-board order) with p3 under temp 0.7.
