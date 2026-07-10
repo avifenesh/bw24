@@ -309,10 +309,11 @@ fn fa_v3_on() -> bool {
 /// correct on the DEFAULT KV formats — and needs dpl % 4 == 0 consecutive quants per lane
 /// (head_dim % 128 == 0; both daily models are hd256). All three dispatch sites share this
 /// predicate so the twins can never diverge.
-fn fa_v4_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA_V4").as_deref() == Ok("1"))
+fn fa_v4_mode() -> &'static str {
+    static M: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    M.get_or_init(|| std::env::var("BW24_FA_V4").unwrap_or_default())
 }
+fn fa_v4_on() -> bool { fa_v4_mode() != "0" }   // DEFAULT ON 2026-07-10 (BW24_FA_V4=0 rollback)
 fn fa_v3_active(head_dim: usize) -> bool {
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
 }
@@ -3948,7 +3949,11 @@ impl Engine {
             if fa_v4_on() && head_dim == 256 {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
                 // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
-                let fv = self.func("fa_decode_vec_q_v4");
+                let fv = self.func(match fa_v4_mode() {
+                    "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
+                    "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
+                    _ => "fa_decode_vec_q_v4",
+                });
                 let shmem = (11520 + 32 * head_dim * 2) as u32;   // fa_v4_smem + sV
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
