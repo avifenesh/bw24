@@ -839,7 +839,16 @@ impl TensorSource for SafetensorsSource {
         match resolve_ggml(ggml_name, &self.cfg)? {
             // Zero-copy: a plain rename (dense path + most SSM matrices), borrow the mmap directly.
             // NVFP4 modelopt weights take the repack arm (owned GGUF block bytes); else borrow.
-            HfTarget::Plain(hf) => {
+            HfTarget::Plain(mut hf) => {
+                // Hy3 changed the correction-bias key between the preview and current releases.
+                // Prefer the current mapper spelling, but keep old repacks/checkpoints loadable.
+                if self.cfg.arch.is_hy3() && ggml_name.ends_with(".exp_probs_b.bias")
+                    && self.lookup(&hf).is_none() {
+                    let legacy = hf.replace(".mlp.expert_bias", ".mlp.router.expert_bias");
+                    if self.lookup(&legacy).is_some() {
+                        hf = legacy;
+                    }
+                }
                 // NVFP4 (modelopt OR Reza) -> repack to bw24 internal GGUF block_nvfp4 bytes (NO kernel
                 // change). `nvfp4_quant` returns the packed bytes directly (in Reza the packed tensor
                 // is `<hf>.nvfp4_packed`, not `<hf>` itself), so no second lookup.
@@ -1029,6 +1038,43 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hy3_expert_bias_resolves_current_and_preview_keys() {
+        for (tag, hf_name) in [
+            ("current", "model.layers.1.mlp.expert_bias"),
+            ("preview", "model.layers.1.mlp.router.expert_bias"),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "bw24_hy3_bias_{tag}_{}", std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let header = format!(
+                r#"{{"{hf_name}":{{"dtype":"F32","shape":[3],"data_offsets":[0,12]}}}}"#
+            );
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
+            buf.extend_from_slice(header.as_bytes());
+            for value in [0.25f32, -0.5, 0.75] {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+            std::fs::write(dir.join("model.safetensors"), buf).unwrap();
+            std::fs::write(
+                dir.join("config.json"),
+                r#"{"model_type":"hy_v3","num_hidden_layers":2,"hidden_size":4,"num_attention_heads":1,"num_key_value_heads":1,"head_dim":4,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128,"num_experts":3,"num_experts_per_tok":1,"moe_intermediate_size":4,"first_k_dense_replace":1,"moe_router_use_sigmoid":true,"moe_router_enable_expert_bias":true}"#,
+            ).unwrap();
+
+            let src = SafetensorsSource::open(&dir).unwrap();
+            let bias = src.find("blk.1.exp_probs_b.bias")
+                .unwrap_or_else(|| panic!("Hy3 {tag} expert-bias key did not resolve"));
+            assert_eq!(bias.ggml_type, GgmlType::F32);
+            assert_eq!(bias.ne, vec![3]);
+            assert_eq!(bias.bytes.len(), 12);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]
