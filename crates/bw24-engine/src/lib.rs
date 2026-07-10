@@ -551,6 +551,43 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (b) 3b: recur-restore twins with device-j (see hybrid.cu headers).
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv_ring_rebuild_dc(&self, qkv_tm: &CudaSlice<f32>, ring_old: &CudaSlice<f32>,
+                                    conv_state: &mut CudaSlice<f32>, conv_dim: usize,
+                                    acc: &CudaSlice<u32>, base: usize, t_v: usize, d_conv: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv_ring_rebuild_f32_dc");
+        let n = conv_dim * (d_conv - 1);
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let (cd, b0, tv, dc) = (conv_dim as i32, base as i32, t_v as i32, d_conv as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_tm).arg(ring_old).arg(conv_state).arg(&cd).arg(acc).arg(&b0).arg(&tv).arg(&dc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_scan_s128_dc(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            g: &CudaSlice<f32>, beta: &CudaSlice<f32>, state_in: &CudaSlice<f32>,
+                            state_out: &mut CudaSlice<f32>, o: &mut CudaSlice<f32>,
+                            n_head: usize, acc: &CudaSlice<u32>, base: usize, t_v: usize,
+                            scale: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_scan_s128_dc");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, 1, S_V / COLS_PER_BLOCK),
+            block_dim: (WARP, COLS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (h, b0, tv) = (n_head as i32, base as i32, t_v as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in).arg(state_out).arg(o)
+         .arg(&h).arg(acc).arg(&b0).arg(&tv).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (b) 3a: device per-layer KV-len rollback (see spec_rollback_kv).
     pub fn spec_rollback_kv(&self, len_ptrs: &CudaSlice<u64>, saved: &CudaSlice<i32>,
                             acc: &CudaSlice<u32>, base: usize, n_layer: usize)

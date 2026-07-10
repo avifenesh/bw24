@@ -324,6 +324,34 @@ extern "C" __global__ void gdn_scan_s128(
     gdn_scan_kernel<128, 32>(q, k, v, g, beta, state_in, state_out, o, H, T, scale);
 }
 
+// ROUND-STREAM stage (b) 3b twins: j (the accepted prefix length) from DEVICE (acc[0] = n_acc,
+// j = base + n_acc). Full accept (j == t_v) early-exits — the verify already advanced the state
+// to exactly what a j == t_v restore would recompute (same kernel, same order). Bodies are the
+// host-param kernels VERBATIM at Tc/T = j.
+extern "C" __global__ void ssm_conv_ring_rebuild_f32_dc(
+        const float* __restrict__ qkv_tm, const float* __restrict__ ring_old,
+        float* __restrict__ conv_state, int conv_dim,
+        const unsigned int* __restrict__ acc, int base, int t_v, int d_conv) {
+    int Tc = base + (int)acc[0];
+    if (Tc >= t_v) return;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pad = d_conv - 1;
+    if (idx >= conv_dim * pad) return;
+    int c = idx / pad;
+    int j = idx % pad;
+    int tt = Tc - pad + j;                    // may be negative when Tc < pad
+    conv_state[(size_t)c * pad + j] = (tt >= 0) ? qkv_tm[(size_t)tt * conv_dim + c]
+                                               : ring_old[(size_t)c * pad + (pad + tt)];
+}
+extern "C" __global__ void gdn_scan_s128_dc(
+        const float* q, const float* k, const float* v, const float* g, const float* beta,
+        const float* state_in, float* state_out, float* o, int H,
+        const unsigned int* acc, int base, int t_v, float scale) {
+    int T = base + (int)acc[0];
+    if (T >= t_v) return;
+    gdn_scan_kernel<128, 32>(q, k, v, g, beta, state_in, state_out, o, H, T, scale);
+}
+
 // =====================================================================================
 // A4 (SOTA-ADOPTION rank 6.0): CHUNKED WY / BLOCKWISE-INVERSE GDN PREFILL.
 // Chunk-parallel matmul form of the gated delta rule (the flashinfer/fla chunked

@@ -882,7 +882,8 @@ impl HybridModel {
     /// Caller guarantees 1 <= j <= t-1 (j==0 rounds take the legacy rollback; j==t is full accept).
     fn commit_verified_prefix(&self, e: &Engine, cache: &mut Cache,
                               snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt, j: usize,
-                              kv_lens_done: bool)
+                              kv_lens_done: bool,
+                              dev_j: Option<(&CudaSlice<u32>, usize, usize)>)
                               -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
@@ -901,12 +902,22 @@ impl HybridModel {
             if let Some(rl) = cache.recur[il].as_mut() {
                 if let Some(st) = &ckpt.gdn[il] {
                     let ring_old = snap.conv[il].as_ref().expect("snapshot missing conv");
+                    let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
+                    if let Some((acc, base, t_v)) = dev_j {
+                        // 3b: j read on-device (_dc twins, same bodies; full accept early-exits).
+                        e.ssm_conv_ring_rebuild_dc(&st.qkv_mixed, ring_old, &mut rl.conv_state,
+                                                   conv_dim, acc, base, t_v, d_conv)?;
+                        let mut o = e.uninit(d_state * num_v * j.max(1))?;
+                        e.gdn_scan_s128_dc(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
+                                           state_in, &mut rl.ssm_state, &mut o, num_v,
+                                           acc, base, t_v, scale)?;
+                    } else {
                     e.ssm_conv_ring_rebuild(&st.qkv_mixed, ring_old, &mut rl.conv_state,
                                             conv_dim, j, d_conv)?;
-                    let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
                     let mut o = e.uninit(d_state * num_v * j)?;   // scan output, discarded
                     e.gdn_scan_s128(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
                                     state_in, &mut rl.ssm_state, &mut o, num_v, j, scale)?;
+                    }
                 } else if let Some(cols) = &ckpt.cols[il] {
                     let (c, s) = &cols[j - 1];
                     e.copy_into(&mut rl.conv_state, 0, c, c.len())?;
@@ -1804,6 +1815,7 @@ impl HybridModel {
                 if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
             };
             let mut devacc_seeded = false;
+            let mut devacc_acc: Option<CudaSlice<u32>> = None;
             let (n_acc, bonus) = if !sampled {
                 // ROUND-STREAM stage (a) (BW24_SPEC_DEVACC=1 opt-in): the walk runs ON DEVICE
                 // (spec_accept_greedy, verbatim rule) and the host reads back 8B (n_acc, bonus)
@@ -1813,6 +1825,7 @@ impl HybridModel {
                     let draft_d = e.htod_u32_v(&draft)?;
                     let mut acc_out = e.alloc_u32_zeroed(2)?;
                     e.spec_accept_greedy(&preds_d, &draft_d, last_pred, base, k_round, &mut acc_out)?;
+                    devacc_acc = Some(acc_out.clone());
                     // stage (b): next-round seed gathered ON DEVICE from acc_out before the host
                     // ever reads n_acc (j=base+n_acc -> vx col j-1; j==0 -> fill_prev). The three
                     // non-replay commit arms skip their host-offset seed copies (guarded below);
@@ -2109,7 +2122,9 @@ impl HybridModel {
                 // committed columns).
                 let j = base + n_acc;
                 self.commit_verified_prefix(e, &mut *cache, &snap, ckpt.as_ref().unwrap(), j,
-                                            devacc_seeded)?;
+                                            devacc_seeded,
+                                            if devacc_seeded { devacc_acc.as_ref().map(|a| (a, base, t_v)) }
+                                            else { None })?;
                 let mut seed = e.zeros(n_embd)?;
                 e.copy_view_into(&mut seed, 0, &vx.slice((j - 1) * n_embd..j * n_embd), n_embd)?;
                 // Draft scratch: TRUE-HIDDEN REFRESH of the committed prefix (see the full-accept
