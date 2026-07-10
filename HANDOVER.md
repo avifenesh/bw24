@@ -4,6 +4,19 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## FA-V4 DESIGN (the last quantified structural target, ~+4-5% depth cell)
+
+fa_v3 at d6257 = 46.7us for 5.8MB = 14% of bytes-wall (kv-fmt-bench, split-optimal at 64).
+Critical path: per 32-key tile the walk does 32 x (8 dp4a + 5-shfl warp_reduce) ≈ 416
+warp-serial steps — the reduce-per-key structure. V4 = KEY-PER-LANE full dot: stage Q (256B
+int8) + the 32-key K tile (32 x 544B q8_0) to smem; lane j computes the ENTIRE q·k_j by
+looping hd chunks (64 dp4a per lane, all 32 keys in PARALLEL, zero shuffles in the score
+phase) ≈ 6x fewer critical-path steps. B2 softmax bookkeeping + B3 V-accumulate unchanged.
+smem ≈ 17.7KB (Q 256B + sK 17KB) + sV as v3. NEW NUMERIC CONFIG: per-key dot order changes
+(chunk-serial vs lane-parallel+reduce) — flip decode AND verify rows together (dispatch-parity
+law keeps self-consistency), battery + acceptance-shift check arbitrate per model (prefill-KV
+law class). Ceiling: ~2x kernel = +4-5% on the 35B depth cell; also serves 27B/9B decode FA.
+
 ## ENGINE-SIDE CLOSURE (2026-07-10, post round-stream): THE SPEC LOOP IS AT ITS MEASURED EDGE
 
 Round-stream stage (c) was assembled END TO END (zero-readback M-round bursts, token-identical
