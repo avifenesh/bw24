@@ -191,3 +191,35 @@ genuine new-arch port concentrated in three hard items — per-layer attention g
 SWA, and the parallel-branch block graph — plus ~11 trivial/small items on proven seams.
 That's smaller than the MiniMax-M3 bring-up was (which added routing semantics + a new
 activation + disk-tier all at once) and reuses its playbook end-to-end.
+
+## 6. SCOPE REFRESH (2026-07-10) — post-format-decision, post-sampled-protocol
+
+Everything above was scoped 2026-07-07. Changes since that affect this port:
+
+**A. THE FORK (owner decision needed before work starts):** GGUF is now bw24's primary format
+(FORMAT DECISION, 2026-07-10 — chosen on long-context serving reliability of the QWEN
+checkpoints). The Gemma-4 NVFP4 official checkpoint is ST-ONLY (this doc's route). Options:
+  (1) Port via ST anyway — the checkpoint class this route was scoped for; lands in the
+      best-effort tier by current policy, but it is the only NVFP4-official Gemma. The Qwen
+      ST long-context degradation was a CHECKPOINT property, not an ST-loader property — Gemma's
+      trunk may not share it (unknown until the loop matrix runs on it).
+  (2) Port the community GGUF (q4km) — primary-tier format, but re-inherits the 9-gap list
+      incl Q5_0 dequant and the fused-expert tensor work this doc showed the ST route dissolves,
+      AND a community quant lineage instead of NVIDIA's calibrated one.
+  (3) Both, ST first (cheaper per this doc), GGUF after — the Qwen pattern.
+  The port-order recommendation (§4) assumed ST; it survives under (1) or (3).
+
+**B. Landed since scoping — costs DOWN:**
+- Sampled-spec protocol (v0.10-v0.12): Gemma has NO MTP head — spec is N/A entirely; the
+  plain-decode + pp cells are the whole board for it. Simplifies gating (no K=1..8, no
+  acceptance; argmax + text-audit + loop-matrix only).
+- BW24_MMQ_F8F4 exists: Gemma's 3,840 NVFP4 expert Linears could ride it (prefill class) —
+  but the acceptance-shift law is moot (no spec), so f8f4 adoption is FREE of its usual risk:
+  gate on argmax+text only. Potential prefill lever from day one.
+- The trim/lineage laws, loop-matrix protocol, evidence-discipline harness rules: all apply
+  directly; the loop matrix (2 prompts x 3 seeds) is the mandatory long-context gate given
+  the vocab (262k) and sliding-window attention are new territory.
+
+**C. Unchanged hard items:** R5 (per-layer kv-head array + SWA window-KV — THE headline kernel
+work: windowed KV ring + masking in FA prefill/decode), R6 (dual rope), R8 (block wiring).
+Estimate unchanged from §4-5; the fastest true path remains (1)/(3) ST-first.
