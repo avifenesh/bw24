@@ -103,6 +103,26 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
+## GRAPH ARC — ACTIVE BUILD PLAN (2026-07-11, the lever for ALL red cells)
+Staged, each step gated (VERIFY-GATE 0.000e0 + run-gen MATCH + stream 128/128 + bench):
+1. DEVICE-LEN WINDOWED ATTENTION: fa_decode_rows_w_dc + rows_dpl16_dc twins (t_kv_base read
+   from an i32* device counter instead of a host arg — kvl.len_d exists). PARITY LAW: decode
+   AND verify BOTH switch to the _dc symbols (verify writes its host base into a counter with
+   set_i32 first — one tiny launch), so no codegen-luck pairing. Gate + bench (expect flat).
+2. SCRATCH ARENA: gemma4_decode_step_dc_into allocates ~450 transient buffers/step (uninit/
+   zeros) — inside capture these become alloc nodes (the OLD graph negative: 167 vs 191 short,
+   bucket churn + alloc nodes). Add a bump arena (one big device buffer + reset-per-step
+   offsets) behind an Engine scratch mode; step code paths take views from it.
+3. DEPTH GRAPH SCOPE: extend gemma4_generate_graph beyond t_kv <= window — windowed layers at
+   depth have CONSTANT t_kv == window and a CONSTANT base pointer (prefix view from 0); only
+   base_len varies and it now lives on-device (step 1). Global layers grow t_kv -> per-bucket
+   graphs (existing bucket machinery). Capture ONE dc step per bucket, replay.
+   Expected: depth plain 155 -> ~165+ (llama 168.7 warm rides graphs; our eager gap ~1ms/step
+   = launch tails), short plain 191->? (old graph read 167 BECAUSE of alloc nodes — re-test).
+4. SPEC ROUND GRAPHS: per (t, bucket) verify graphs + graphed draft chain (round 16.5ms vs
+   llama 12.2 at equal tok/round). The draft chain is 3 fixed-shape serial steps + head — a
+   single graph per draft depth; verify per t in 2..=cap+1.
+
 STANDING 2026-07-11 (ALL bars re-paired warm, today's llama build): short plain 193.9 vs
 181.3 = 1.07x MARGIN; depth plain 155.3 vs 168.7 = 0.92x; short spec 239 vs 290 = 0.82x;
 depth spec 236.7 vs 304 = 0.78x. Landed this block: Q4_0 split-plane mirrors (+6.3% short
