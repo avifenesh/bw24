@@ -78,8 +78,11 @@ tokens:
       --cache-dir /data/cache/huggingface/datasets \
       --out-dir /data/calibration/hy3-routing-v1
 
-The generated manifest records every source id/content hash, prompt length, total tokens, and the
-SHA-256 of `requests.jsonl`. Keep that manifest with the traces and final report.
+The locked result is 192 requests / 163,409 prompt tokens (103,274,488 routed-expert assignments
+per control) with `requests.jsonl` SHA-256
+`b23225e14d70947bc39d1ed92795d66deb365a69538cdb124b5c85e2b7daee04`. The builder fails on any
+drift. Its generated manifest also records every source id/content hash and prompt length; keep it
+with the traces and final report.
 
 Capture enough requests to cover the intended deployment distribution:
 
