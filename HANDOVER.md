@@ -4,6 +4,55 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## NIGHT 2026-07-10 (session continued): ROUTER GEMV + CSR DEDUP SHIPPED; SERVE-CONFIG TRANSFER MAP
+
+**Shipped (both DEFAULT ON, battery green, v0.13.0):**
+- **Router GEMV kernel** (3432db1): in-house warp-per-(expert,token) f32 router on the verify
+  small-t path, replaces ~240 per-column cuBLAS gemv launches/round. Acceptance bit-identical
+  every K (no routing flips). Raw-config +2-4% spec e2e. `BW24_ROUTER_KERNEL=0` rollback.
+- **CSR expert-dedup gate_up** (23869f1): owner-scan kernel (grid.y=pair, first pair of each
+  expert serves all its pairs), IQ3_S/IQ4_XS decode hoisted to registers. Overlap measured
+  0.60-0.62 unique/pairs at t=4 (`BW24_MOE_OVERLAP`). gate_up 55.0->39.7us/l. Raw-config
+  +1-2% all K. Three-iteration design record in rig5090.jsonl (v1 never engaged — gate/up are
+  IQ3_S not IQ4_XS, A/B law caught it; v2 build-kernel cost 18.2us/l + CSR down LOST 23.5->37.5;
+  v3 owner-scan). **ULP law hardened:** bit-identity across kernel structures requires EXPLICIT
+  __fmaf_rn/__fmul_rn — nvcc contraction differs per kernel body (naive drifted 1-2 ULP on 35%
+  of elements). **Early-return trap:** the 35B HAS shexp — a verify-path arm that returns before
+  the shared-expert epilogue FAILS deterministically. `BW24_MOE_CSR=0` rollback, `=2` byte-compare.
+
+**TRANSFER LESSON (key):** both wins are REAL at the raw run-spec config (55-65% acceptance,
+no trim) but a WASH at the BOARD serve config (p3v3 sampled rollback A/B: 238.8 vs 240.0) —
+at 88.9% acceptance + trim + PMIN0 the MoE-verify share dilutes. Board cells did not move.
+Raw-config wins must be re-proven at serve config before claiming cell movement.
+
+**Serve-config round map (35B p3v3 sampled K=3, shares of round loop after subtracting the
+seeded-rerun prime contamination — =2 sampled captures include the rerun's prime):**
+MoE verify (gate_up_csr 13.6% + down_rows 6.7%) ~20% #1; trunk q8 matvecs 15.3% #2 (marked
+94%-of-wall closed); FA decode ~9% #3 (G7e shared-K-reuse lane); q6_K trimmed head 3.8%;
+quantize 3.6% (42k launches). K=3 re-confirmed optimal at 89% acceptance (K=2 224.4, K=4 232.7
+vs 240.0) — deep-K stays refuted even at high acceptance.
+
+**NSYS-INFLATION LAW (hardened, cost one wrong arc):** the 27B "GPU only 37% busy in the round
+loop" was fabricated by nsys per-launch tracing — the same command runs 74-76 tok/s un-profiled
+vs 42.9 under nsys. envc() cached-env conversion (95 sites) measured e2e WASH N=3 and was
+REVERTED (row: envc-cache-wash-and-nsys-inflation). nsys = SHARES ONLY, never gap/wall claims;
+small-kernel shares are inflated too (serialization). Still real and unquantified: the round-loop
+blocking-DtoH ping-pong (80 pageable DtoH/run) — measuring it needs a non-tracing method
+(cudaEvents delta or CPU sampler); device-side acceptance is the structural fix if it's big.
+
+**27B p2 (0.947x cell) re-confirmed engine-closed:** profile = 75% NVFP4 b4-tier matvecs
+(rpr2 36% + rpr2w8 28.8% + rp 10.2%), all measured-closed by the 07-06 m-small arc (rpms/rpsc
+negative, rpks banned on k-order, w8 crossing rule tuned); daily config already code75+HPOST
+("re-confirmed under HPOST" — the HANDOVER "untested" note was stale). The cell's lever remains
+content acceptance (owner's head research), not engine work.
+
+**Standings check (F-logs, N=2, rebaseline-logs/):** p1 281.1 (+0.25% vs board), p2 227.0 clean
+(+0.4%), p3v3 240-242 vs board 255.7 — the -6% is CONTENTION/REGIME, not regression: identical
+tokens+acceptance (176/198 88.9%), only wall differs; colbert python (1.4GB) + llama-server
+resident on GPU all night, prime +13% same signature. BOARD UNTOUCHED — any refresh needs an
+idle GPU + same-session llama re-pair. NOTE: board p3 prompt = p3-agentic-long-**v3**.txt
+(22999 chars/5420 tok), not p3-agentic-long.txt — mismatch cost one confused Sonnet run.
+
 ## STANDINGS 2026-07-08 (full-power verified, plain-first per mandate; llama = floor, margin bar = 1.15x)
 
 PLAIN (tg128, both engines same-day, FA_V2 default-on 2026-07-08 evening): d512 — 9B 132.7 vs 124.6 = 1.07x | 27B 47.7 vs 43.5 = 1.10x | 35B 173.4 vs 170.5 = 1.02x (ALL THREE ABOVE LLAMA, first time). d6257 — 9B 124.5 vs 119.6 = 1.04x | 27B 44.9 vs 42.0 = 1.07x | 35B 158.5 vs 159.9 = 0.99x. Mechanism that did it: FA_V2 tile-batched online softmax (favendor lane — llama's depth flatness was OUR serial softmax chain, not their kernel; theirs is actually slower). Margin bar (>=1.1x) still open everywhere except 27B d512.
