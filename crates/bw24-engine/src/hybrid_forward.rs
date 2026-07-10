@@ -15,6 +15,13 @@ fn gdec_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// Deterministic in-token expert prefetch. Off until the target-rig correctness and throughput gates
+/// pass; `BW24_MOE_PREFETCH=1` overlaps the next expert's cache misses on the copy stream.
+fn moe_prefetch_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1"))
+}
+
 /// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
 /// zero-DtoH device-dispatch path for fully-resident layers: router top-k output stays on device,
 /// expert weight pointers come from the per-layer device table. Requires the fused router (the
@@ -880,16 +887,10 @@ impl HybridModel {
         // `max_block` (the GLOBAL max expert stride across all layers) is passed in — the cache slots
         // are FIXED-ADDRESS and must fit any layer's block (UD/dynamic GGUFs vary quant per layer).
 
-        // EDGE-1 §C.2/C.3 (async H2D prefetch) — TODO, deliberately NOT wired into the hot loop.
-        // The infrastructure is in place and validated: `HostExps` bytes are pinned under
-        // BW24_MOE_CACHE (§C.1, true-DMA H2D, argmax-1178 confirmed), and `Engine` exposes a copy
-        // stream + `stage_expert_async`/`compute_wait` (event-synced). What is left is the in-token
-        // pipeline-by-one: while `qmatvec_view` for sel[j] runs on compute, prefetch the MISS blocks
-        // of sel[j+1..] on the copy stream into double-buffered staging slots, then `compute_wait`
-        // the event before each dependent GEMM. It is deferred because (a) the SLRU cache already
-        // serves ~91% of blocks with ZERO H2D so prefetch only helps the ~9% miss tail, and (b) a
-        // mis-ordered copy-stream event would silently corrupt the bit-identity gate. Shipping A+B
-        // validated (per the build directive) rather than risk the argmax-1178 gate on the C tail.
+        // EDGE-1 §C.2/C.3: the optional pipeline queues the next selected expert's MISS blocks on
+        // the copy stream before launching the current expert's compute. Pending slots stay invisible
+        // to cache hits until dispatch inserts the completion-event wait; current gate/up/down ids are
+        // protected from eviction. This changes scheduling only, never the GGUF bytes or GEMM path.
 
         // 2. PER TOKEN: routed-expert loop. The ONE dispatch change vs Stage-1: a resident slot
         //    (cache HIT, no H2D) OR a staged slot (MISS) feeds the SAME unchanged qmatvec_view.
@@ -939,6 +940,15 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
+                if use_cache && moe_prefetch_enabled() && j + 1 < sel.len() {
+                    let keep = [
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_GATE, ex as u16),
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_UP, ex as u16),
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_DOWN, ex as u16),
+                    ];
+                    let next = sel[j + 1] as usize;
+                    Self::moe_prefetch_expert(e, il, next, m, max_block, &keep)?;
+                }
                 if use_cache && moe_q8 {
                     // dp4a EXPERT PATH (BW24_MOE_Q8): quantize z-row once per token (hoisted
                     // below via zq/zd lazies), int-dot the three projections. Same dispatch/
@@ -1792,6 +1802,20 @@ impl HybridModel {
             let buf = c.slot(sl);
             eng.qmatvec_view(buf, 0..layout.len, x, 1, exps.in_f, exps.out_f,
                              layout.qtype, layout.row_bytes)
+        })
+    }
+
+    fn moe_prefetch_expert(e: &Engine, il: u16, ex: usize, m: &MoeWeights, max_block: usize,
+                           keep: &[crate::moe_cache::BlockId])
+                           -> Result<(), Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+        e.with_moe_cache(max_block, |c, eng| {
+            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+                                 (PROJ_DOWN, &m.down_exps)] {
+                let id = BlockId::new(il, proj, ex as u16);
+                let _ = c.prefetch(id, exps.expert_bytes(ex), keep, eng)?;
+            }
+            Ok(())
         })
     }
 }

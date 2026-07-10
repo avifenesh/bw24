@@ -1814,6 +1814,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- EDGE-1 §C.2/C.3: copy-stream prefetch publication + store-before-reuse ordering. Fill an
+    // 8-slot cache without synchronizing, asynchronously replace one victim, then dispatch/read it.
+    // The read must see the new bytes, while the explicitly protected current block stays resident.
+    {
+        use bw24_engine::moe_cache::{BlockId, DispatchSlot, MoeSlotCache, PROJ_GATE};
+        let old_slots = std::env::var_os("BW24_MOE_SLOTS");
+        // SAFETY: kernel-check is a single-threaded process and no other code reads this variable
+        // while the scoped synthetic cache is being constructed.
+        unsafe { std::env::set_var("BW24_MOE_SLOTS", "8"); }
+        let block_len = 4096usize;
+        let mut cache = MoeSlotCache::new(&e, block_len)?;
+        let sources: Vec<Vec<u8>> = (0..8).map(|i| vec![0xA0 + i as u8; block_len]).collect();
+        for (i, src) in sources.iter().enumerate() {
+            cache.force_admit(BlockId::new(7, PROJ_GATE, i as u16), src, &e)?;
+        }
+        let keep = [BlockId::new(7, PROJ_GATE, 0)];
+        let next_id = BlockId::new(7, PROJ_GATE, 8);
+        let next = vec![0xF8; block_len];
+        let queued = cache.prefetch(next_id, &next, &keep, &e)?;
+        let hidden_while_pending = cache.resident(next_id).is_none();
+        let DispatchSlot::Resident(next_slot) = cache.dispatch(next_id, &next, &e)?;
+        let next_got = e.dtoh_u8(cache.slot(next_slot))?;
+        let keep_slot = cache.resident(keep[0]);
+        let keep_got = match keep_slot {
+            Some(slot) => e.dtoh_u8(cache.slot(slot))?,
+            None => Vec::new(),
+        };
+        let ok = queued && hidden_while_pending && cache.resident(next_id) == Some(next_slot)
+            && next_got == next && keep_got == sources[0];
+        println!("moe async-prefetch ordering + protected victim: {}",
+                 if ok { "OK" } else { fails += 1; "FAIL" });
+        unsafe {
+            match old_slots {
+                Some(v) => std::env::set_var("BW24_MOE_SLOTS", v),
+                None => std::env::remove_var("BW24_MOE_SLOTS"),
+            }
+        }
+    }
+
     if fails == 0 { println!("\nALL GREEN: kernels match CPU reference."); Ok(()) }
     else { Err(format!("{fails} kernel(s) FAILED").into()) }
 }
