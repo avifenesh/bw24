@@ -8,7 +8,7 @@ Preserve unrelated dirty work and stage only the intended lane.
 ## Hy3 spilling and quantization research
 
 This lane owns two separate deliverables: (1) spill-path improvements for large expert banks, and
-(2) a controlled four-arm quantization study. Do not trade correctness in one track for a result in
+(2) a controlled five-arm quantization study. Do not trade correctness in one track for a result in
 the other, and report spill performance separately from model-quality comparisons.
 
 - `HostExps.layouts == None` is the uniform-layout fast-path contract. `Some(layouts)` makes each
@@ -27,11 +27,12 @@ the other, and report spill performance separately from model-quality comparison
   Recover the frozen mask only through `tools/recover_hy3_reap_mask.py`: require one-to-one router
   row matches, the locked nearest-match margin, and exact correction-bias confirmation. Scored
   artifacts always quantize the pinned BF16 source; never re-quantize the public MLX experts.
-- The four scored arms are fixed in `research/per-expert-quant/arms.lock.json`: `plain_quant`
+- The five scored arms are fixed in `research/per-expert-quant/arms.lock.json`: `plain_quant`
   (full bank, uniform NVFP4), `plain_reap_quant` (REAP50 mask, uniform NVFP4),
   `plain_reap_mix_quant` (REAP50 mask, 48 least-used Q2_K plus 48 NVFP4), and `mix_quant`
-  (full bank, hottest 25% NVFP4, middle 50% Q3_K, coldest 25% Q2_K, zero-count pruned).
-- BF16 Hy3 is source material only, never an evaluation arm. All four arms must share the same
+  (full bank, hottest 25% NVFP4, middle 50% Q3_K, coldest 25% Q2_K, zero-count pruned), plus
+  `mix_quant_prune25` (per layer: 48 NVFP4, 48 Q3_K, 48 Q2_K, and 48 pruned).
+- BF16 Hy3 is source material only, never an evaluation arm. All five arms must share the same
   source revision, non-expert tensor encodings, REAP mask where applicable, prompt template,
   runtime commit, and evaluation settings.
 - Rank per layer from non-public calibration traces and freeze trace/plan hashes before viewing
@@ -40,16 +41,19 @@ the other, and report spill performance separately from model-quality comparison
   must never select experts, thresholds, tier fractions, or pruning decisions.
 - Model loading, spill correctness, research measurements, artifact generation, and public evals
   run on the provisioned G7e research machine. Do not merge or tag this lane until its remote raw logs
-  and four-arm eval report exist.
+  and five-arm eval report exist.
 - The local RTX 5090 rig remains bw24's deployment and final performance target. Treat G7e results
   as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
   on the 5090 before shipping any runtime default.
 - GGUF remains bw24's primary runtime and delivery format. Hy3 safetensors are a pinned source for
   this quantization study, and per-expert repack directories are experimental artifacts, not a
   format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
-- Optimize expert serving as one storage-to-compute pipeline: mmap/zero-copy, local-NVMe access,
-  pinned host memory, residency caching, asynchronous prefetch/overlap, PCIe transfer, and GPU
-  kernels. Measure the stages together so a faster kernel cannot hide a data-movement regression.
+- Optimize expert serving as one storage-to-compute pipeline: mmap fallback, explicit positioned
+  reads, local-NVMe access, bounded pinned host buffers, residency caching, asynchronous
+  prefetch/overlap, PCIe transfer, and GPU kernels. Compare `O_DIRECT`, io_uring, and mapped-host
+  access only against the measured worker baseline, and keep H2D/cache publication on the CUDA
+  owner thread. Measure the stages together so a faster kernel cannot hide a data-movement
+  regression.
 - Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
   the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
   staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.

@@ -81,6 +81,8 @@ HANDOVER.md sections from that date.
 | `BW24_MOE_PINNED` | pinned when MOE_CACHE on | force pinned host expert slabs |
 | `BW24_SPILL_DISK` | off | set = enable the NVMe disk tier for MoE experts (M3-class models that exceed host RAM) |
 | `BW24_SPILL_PINNED_FRAC` | 0.60 | fraction of MemAvailable the spill tier may pin |
+| `BW24_SPILL_IO` | `mmap` | expert storage backend: `mmap` (default and fallback), `pread` (blocking positioned-read oracle), or `worker` (bounded CPU positioned-read prefetch into CUDA-pinned buffers; caller-thread H2D/cache publication). Invalid values and backend/read failures degrade to mmap |
+| `BW24_SPILL_PREAD_DEPTH` | 2 | pinned-buffer count and worker-thread count for `worker` (`1..=64`; also sizes the blocking `pread` pool). The 2026-07-10 G7e A/B used depth 8; re-gate on the local RTX 5090 before changing its setting |
 | `BW24_ST_PINNED` | off | `1` pins the safetensors expert store — ONLY for fits-in-RAM checkpoints (pinning 26GB evicted the page cache: 30x regression, 2026-07-07) |
 | `BW24_ST_REPACK_DISK` | on | `0` forces in-RAM gather instead of the `.bw24-repack` disk cache (safetensors stream-repack loader) |
 | `BW24_KQ_NVFP4` | 0 | load-time k-quant→NVFP4 re-encode: `1` = Q4_K, `2` = +Q5_K. +3.9% 9B plain but ~2x quant error and an acceptance tax — bpw equality ≠ quality-class equality (2026-07-08). Speed-mode opt-in only |
@@ -163,6 +165,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | flag | what it does |
 |---|---|
 | `BW24_MOE_STATS=1` | per-layer expert-cache hit/miss/staged-bytes prints (forces the stats-visible dispatch path) |
+| `BW24_SPILL_STATS=1` | print cumulative positioned-read snapshots when server requests finish: reads, logical bytes, errors, short reads, mmap fallbacks, buffer waits, and worker ring-full events. Snapshots are totals, not per-request deltas; do not sum them |
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |

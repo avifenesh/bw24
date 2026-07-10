@@ -17,6 +17,9 @@ MAX_GEN_TOKS=${MAX_GEN_TOKS:-256}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-14400}
 HEALTH_TIMEOUT_S=${HEALTH_TIMEOUT_S:-600}
 PAGE_PREFETCH_WINDOW=${PAGE_PREFETCH_WINDOW:-8}
+BW24_SPILL_IO=${BW24_SPILL_IO:-mmap}
+BW24_SPILL_PREAD_DEPTH=${BW24_SPILL_PREAD_DEPTH:-2}
+BW24_SPILL_STATS=${BW24_SPILL_STATS:-0}
 
 ARMS=(plain_quant plain_reap_quant plain_reap_mix_quant mix_quant mix_quant_prune25)
 ARTIFACTS=(plain-quant plain-reap-quant plain-reap-mix-quant mix-quant mix-quant-prune25)
@@ -36,6 +39,14 @@ positive_integer "$MAX_GEN_TOKS" || die "MAX_GEN_TOKS must be a positive integer
 positive_integer "$EVAL_TIMEOUT_S" || die "EVAL_TIMEOUT_S must be a positive integer"
 positive_integer "$HEALTH_TIMEOUT_S" || die "HEALTH_TIMEOUT_S must be a positive integer"
 positive_integer "$PAGE_PREFETCH_WINDOW" || die "PAGE_PREFETCH_WINDOW must be a positive integer"
+case "$BW24_SPILL_IO" in
+  mmap|pread|worker) ;;
+  *) die "BW24_SPILL_IO must be mmap, pread, or worker" ;;
+esac
+[[ "$BW24_SPILL_PREAD_DEPTH" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] \
+  || die "BW24_SPILL_PREAD_DEPTH must be an integer from 1 through 64"
+[[ "$BW24_SPILL_STATS" == 0 || "$BW24_SPILL_STATS" == 1 ]] \
+  || die "BW24_SPILL_STATS must be 0 or 1"
 [[ -x "$SERVER_BIN" ]] || die "missing executable server: $SERVER_BIN"
 [[ -x "$PUBLIC_RUNNER" ]] || die "missing executable public-eval runner: $PUBLIC_RUNNER"
 command -v curl >/dev/null || die "curl is required"
@@ -54,6 +65,11 @@ CONTROL_DIR="$CONTROL_PARENT/$RUN_ID"
 mkdir -p "$CONTROL_PARENT"
 mkdir "$CONTROL_DIR" 2>/dev/null || die "refusing to reuse control output: $CONTROL_DIR"
 printf 'arm\tstatus\n' > "$CONTROL_DIR/status.tsv"
+{
+  printf 'BW24_SPILL_IO=%s\n' "$BW24_SPILL_IO"
+  printf 'BW24_SPILL_PREAD_DEPTH=%s\n' "$BW24_SPILL_PREAD_DEPTH"
+  printf 'BW24_SPILL_STATS=%s\n' "$BW24_SPILL_STATS"
+} > "$CONTROL_DIR/server.env"
 
 SERVER_PID=""
 
@@ -134,6 +150,9 @@ for index in "${!ARMS[@]}"; do
     printf 'BW24_MOE_MMAP_ADVICE=normal\n'
     printf 'BW24_MOE_RESIDENT=1\n'
     printf 'BW24_MOE_VRAM_FRAC=0.85\n'
+    printf 'BW24_SPILL_IO=%s\n' "$BW24_SPILL_IO"
+    printf 'BW24_SPILL_PREAD_DEPTH=%s\n' "$BW24_SPILL_PREAD_DEPTH"
+    printf 'BW24_SPILL_STATS=%s\n' "$BW24_SPILL_STATS"
     printf 'BW24_MODELS=%s=%s\n' "$arm" "$artifact"
     printf 'BW24_ADDR=%s\n' "$ADDR"
   } > "$run_dir/server.env"
@@ -162,6 +181,9 @@ for index in "${!ARMS[@]}"; do
     BW24_MOE_MMAP_ADVICE=normal \
     BW24_MOE_RESIDENT=1 \
     BW24_MOE_VRAM_FRAC=0.85 \
+    BW24_SPILL_IO="$BW24_SPILL_IO" \
+    BW24_SPILL_PREAD_DEPTH="$BW24_SPILL_PREAD_DEPTH" \
+    BW24_SPILL_STATS="$BW24_SPILL_STATS" \
     BW24_MODELS="$arm=$artifact" \
     BW24_ADDR="$ADDR" \
     "$SERVER_BIN" > "$run_dir/server.log" 2>&1 &

@@ -8,13 +8,17 @@ The local RTX 5090 rig remains bw24's deployment and final performance target; r
 not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
 gates there.
 
-Mmap is a fallback, not the endpoint. The cold G7e result and bounded explicit-read promotion probe
-are recorded in [`evidence/spill-prefetch-g7e-20260710.md`](evidence/spill-prefetch-g7e-20260710.md).
-An opt-in bounded pinned-buffer `pread` demand backend now proves the explicit-I/O source/cache/H2D
-contract. After its live GPU gate, the production candidate is a small worker-filled pinned ring so
-disk lookahead does not block the CUDA owner thread. Test buffered and `O_DIRECT` reads through the
-same state machine; add io_uring only if it beats that simpler baseline. The deferred ring design is
-specified in [`io-uring-spill-design.md`](io-uring-spill-design.md).
+Mmap remains the default and correctness fallback, not the throughput endpoint. The cold G7e result
+and bounded explicit-read promotion probe are recorded in
+[`evidence/spill-prefetch-g7e-20260710.md`](evidence/spill-prefetch-g7e-20260710.md). The runtime now
+also provides blocking `pread` as the explicit-I/O oracle and a bounded worker backend that reads
+ahead into CUDA-pinned buffers while the caller thread retains all H2D and cache-publication work.
+On the first five frozen calibration requests, the depth-8 worker run was 2.866x faster than mmap
+with identical responses and 395 byte-identical routing rows; see
+[`evidence/spill-worker-ab-g7e-20260710.md`](evidence/spill-worker-ab-g7e-20260710.md). Test buffered
+and `O_DIRECT` reads through the same state machine; add io_uring only if it beats this worker
+baseline. The deferred ring design is specified in
+[`io-uring-spill-design.md`](io-uring-spill-design.md).
 
 The first Hy3 quality attempt exposed and fixed an architecture-scoping bug in RMSNorm loading.
 The official-reference layer gate, coherent generation smoke, exact mmap/pread parity result, and
@@ -68,8 +72,9 @@ kernel exists.
   requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
   and writes Q2_K, Q3_K, and NVFP4 byte ranges. Bounded `--workers` parallelism preserves exact
-  expert order and is byte-compared against the single-worker path. Every active expert projection
-  must be assigned.
+  expert order and is byte-compared against the single-worker path. `--resume` only reuses files
+  whose atomic completion receipt matches the exact plan, layout, source identity, shape, and byte
+  count. Every active expert projection must be assigned.
 - A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
   shared-expert tensors. Expert data is stored in one mixed file per layer/projection.
 - Per-expert overlay entries remain zero-copy mmap windows in `HostExps`; the 161 GB full-bank
@@ -79,13 +84,22 @@ kernel exists.
 - `BW24_MOE_PAGE_PREFETCH=1` issues best-effort `MADV_WILLNEED` one expert ahead for mmap-backed
   GGUF and repack ranges in both sequential and grouped dispatch. It is off by default until matched
   cold-cache G7e measurements and final RTX 5090 gates prove a win.
+- `BW24_SPILL_IO=mmap|pread|worker` selects the expert storage path. Mmap remains the default;
+  `pread` is the blocking byte/H2D oracle, while `worker` moves exact positioned reads through a
+  bounded CUDA-pinned pool and CPU read workers. Grouped prefill queues known-next expert reads, but
+  only the caller thread submits H2D and publishes cache residency. Any initialization/read/ring
+  degradation retains the validated mmap extent as fallback.
+- `BW24_SPILL_PREAD_DEPTH` bounds worker threads and pinned buffers (`2` by default; the G7e A/B used
+  `8`). `BW24_SPILL_STATS=1` logs cumulative reads, bytes, errors, short reads, mmap fallbacks,
+  buffer waits, and ring-full events when server requests finish.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
   excluded before top-k and have no weight bytes in the artifact.
 - HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay
   on metadata-aware staged, SLRU-cache, or grouped paths; uniform fused kernels remain
   uniform-only.
-- validate_artifact.py checks expert coverage, allowed qtypes, non-overlapping byte ranges, total
-  bytes, contamination metadata, and optional source fingerprints.
+- validate_artifact.py checks the embedded-plan hash, expert coverage, allowed qtypes,
+  non-overlapping byte ranges, total bytes, contamination metadata, and optional source
+  fingerprints.
 - The public eval suite is pinned and stores the served artifact manifest/hash with each run.
 
 ## Owned spill track
@@ -105,11 +119,13 @@ benchmark.
 
 ### Backend ladder beyond mmap
 
-1. `pread` into a bounded CUDA-pinned pool is the correctness and storage-ceiling proof. Its first
-   version is demand-blocking and therefore not the throughput endpoint.
-2. A small disk worker pool fills the same pinned buffers while the CUDA owner continues compute;
-   only the CUDA owner submits H2D and publishes GPU-cache residency. Start at depth 2 on the local
-   5090 and depth 8 on G7e.
+1. Done: `pread` into a bounded CUDA-pinned pool is the blocking correctness and storage-ceiling
+   proof, not the throughput endpoint.
+2. Implemented and G7e-gated: a small disk worker pool fills the same pinned buffers while the CUDA
+   owner continues compute; only the CUDA owner submits H2D and publishes GPU-cache residency. Use
+   depth 2 as the current local-safe default and depth 8 for the measured G7e configuration. The
+   first-five A/B cut wall time by 65.1%; the local 5090 gate is still required before any default
+   change.
 3. A/B buffered reads against `O_DIRECT`. Every offset and length in all five current Hy3 staged
    artifacts is 4 KiB aligned, while `/scratch` reports 512-byte direct-I/O alignment, so this study
    needs no artifact rewrite. General GGUF must query `STATX_DIOALIGN` and use aligned over-read or
@@ -251,6 +267,10 @@ Build all five scored artifacts from the same pinned BF16 source. The recovered 
 original source experts are omitted; no intermediate BF16-pruned checkpoint and no MLX expert
 weights are used.
 
+For corrected scored builds, always use new empty output directories and omit `--resume`, as shown
+below. Safe receipt-checked resume remains useful for an interrupted build of the same frozen plan;
+a missing or mismatched per-file receipt forces that projection to be rebuilt.
+
     python3 tools/prepare_mixed_expert_repack.py test
     python3 tools/prepare_mixed_expert_repack.py probe /data/models/hy3-source \
       --layer 1 --expert 0 --projection gate
@@ -258,27 +278,27 @@ weights are used.
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-quant.json \
-      --workers 4 --resume
+      --workers 4
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-reap-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-quant.json \
-      --workers 4 --resume
+      --workers 4
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-reap-mix-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-mix-quant.json \
-      --workers 4 --resume
+      --workers 4
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/mix-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant.json \
-      --workers 4 --resume
+      --workers 4
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/mix-quant-prune25 \
       --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant-prune25.json \
-      --workers 4 --resume
+      --workers 4
 
     for arm in plain-quant plain-reap-quant plain-reap-mix-quant mix-quant mix-quant-prune25; do
       python3 research/per-expert-quant/validate_artifact.py \
@@ -337,12 +357,14 @@ local-NVMe root:
       RUN_ID=g7e-optimized-YYYYMMDD \
       research/per-expert-quant/run_performance_evals.sh
 
-When mmap spill is storage-bound, choose the page-readahead window with a fresh-server,
-expert-file-only cold-cache A/B before running the capability panel:
+When spill is storage-bound, run a fresh-server, expert-file-only cold-cache A/B before the
+capability panel. Use `SPILL_IO=mmap` to choose a page-readahead window, or `worker` plus an explicit
+pinned-buffer depth to measure the implemented read/compute overlap path:
 
     ARTIFACT=/scratch/artifacts/plain-quant \
       PROMPT=/data/runs/spill-profile/mmlu-pro-history-doc0-5shot.txt \
       WINDOWS="8 1 4" \
+      SPILL_IO=worker PREAD_DEPTH=8 \
       OUT_ROOT=/data/results/spill-prefetch \
       research/per-expert-quant/run_spill_prefetch_ab.sh
 
@@ -362,10 +384,10 @@ the local RTX 5090 run remains the final deployment-performance result.
 
 ## Public evaluation
 
-Start with the directional candidate panel: three fixed examples each from GPQA Diamond, MATH-500,
-MMLU-Pro history/other knowledge, economics, law, and psychology. Candidate generations are capped
-at 256 tokens so this remains a screening run; override `MAX_GEN_TOKS` only when deliberately
-expanding it. This is a promotion gate, not a leaderboard score; increase `LIMIT` or run the full
+Start with the directional candidate panel: one fixed example each from GPQA Diamond, MATH-500,
+MMLU-Pro history/other knowledge, economics, law, and psychology (`LIMIT=1`). Candidate generations
+are capped at 256 tokens so this remains a screening run; override `LIMIT` or `MAX_GEN_TOKS` only
+when deliberately expanding it. This is a promotion gate, not a leaderboard score; run the full
 suites only after the size/quality direction is clear.
 
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \

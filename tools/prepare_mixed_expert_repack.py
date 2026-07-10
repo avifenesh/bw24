@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import shutil
 import struct
@@ -37,12 +38,20 @@ from hy3_mlx_to_q4k import (
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
 OVERLAY_FORMAT = "bw24-expert-overlay-v2"
+COMPLETION_RECEIPT_FORMAT = "bw24-expert-overlay-file-completion-v1"
 PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q2_K": (256, 84, ".q2k"),
     "Q3_K": (256, 110, ".q3k"),
     "NVFP4": (64, 36, ".nvfp4"),
 }
+
+
+def canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _layers_from_model(model: dict[str, Any]) -> list[int]:
@@ -413,6 +422,26 @@ def _fingerprint(path: Path, names: tuple[str, ...]) -> dict[str, Any]:
     return out
 
 
+def _completion_receipt_path(out_path: Path) -> Path:
+    return out_path.with_name(out_path.name + ".complete.json")
+
+
+def _completion_receipt_matches(path: Path, expected: dict[str, Any]) -> bool:
+    try:
+        return json.loads(path.read_text()) == expected
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def _write_completion_receipt(path: Path, receipt: dict[str, Any]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def prepare(args: argparse.Namespace) -> None:
     source_dir = Path(args.source_dir).resolve()
     fallback_dir = Path(args.fallback_dir).resolve() if args.fallback_dir else source_dir
@@ -431,6 +460,11 @@ def prepare(args: argparse.Namespace) -> None:
     max_work = int(args.max_work_mb) << 20
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
+    plan_sha256 = sha256_file(plan_path)
+    source_fingerprints = _fingerprint(source_dir, ("config.json", "model.safetensors.index.json"))
+    fallback_fingerprints = _fingerprint(
+        fallback_dir, ("manifest.json", "config.json", "model.safetensors.index.json")
+    )
     manifest: dict[str, Any] = {
         "format": OVERLAY_FORMAT,
         "created_utc": dt.datetime.now(dt.UTC).isoformat(),
@@ -438,10 +472,11 @@ def prepare(args: argparse.Namespace) -> None:
         "quant_source_dir": str(source_dir),
         "quality": "unverified - pending target-machine correctness and public eval gates",
         "plan": plan,
-        "plan_sha256": sha256_file(plan_path),
+        "plan_sha256": plan_sha256,
+        "plan_canonical_sha256": canonical_json_sha256(plan),
         "pruned_experts": {str(layer): sorted(ids) for layer, ids in pruned.items() if ids},
-        "source_fingerprints": _fingerprint(source_dir, ("config.json", "model.safetensors.index.json")),
-        "fallback_fingerprints": _fingerprint(fallback_dir, ("manifest.json", "config.json")),
+        "source_fingerprints": source_fingerprints,
+        "fallback_fingerprints": fallback_fingerprints,
         "tensors": {},
         "tier_summary": {},
     }
@@ -458,12 +493,57 @@ def prepare(args: argparse.Namespace) -> None:
                     )
                 rel = Path("experts") / f"blk{layer}-{proj}-mixed.bin"
                 out_path = out_dir / rel
-                expected = sum(
-                    source.out_f * (source.in_f // QTYPES[assignments[layer, ex, proj]][0])
-                    * QTYPES[assignments[layer, ex, proj]][1]
-                    for ex in active
+                expert_layout = []
+                expected = 0
+                for expert in active:
+                    qtype = assignments[layer, expert, proj]
+                    block, type_size, _ = QTYPES[qtype]
+                    if source.in_f % block:
+                        raise ValueError(
+                            f"{layer}/{expert}/{proj}: in_features not aligned for {qtype}"
+                        )
+                    row_bytes = source.in_f // block * type_size
+                    size = source.out_f * row_bytes
+                    expert_layout.append({
+                        "expert": expert,
+                        "qtype": qtype,
+                        "offset": expected,
+                        "row_bytes": row_bytes,
+                        "bytes": size,
+                    })
+                    expected += size
+                layout_by_expert = {item["expert"]: item for item in expert_layout}
+                receipt = {
+                    "format": COMPLETION_RECEIPT_FORMAT,
+                    "plan_sha256": plan_sha256,
+                    "file": str(rel),
+                    "layer": layer,
+                    "projection": proj,
+                    "expert_layout": expert_layout,
+                    "source": {
+                        "path": str(source_dir),
+                        "fingerprints": source_fingerprints,
+                    },
+                    "fallback": {
+                        "path": str(fallback_dir),
+                        "fingerprints": fallback_fingerprints,
+                    },
+                    "shape": {
+                        "experts": len(active),
+                        "out_features": source.out_f,
+                        "in_features": source.in_f,
+                    },
+                    "expected_bytes": expected,
+                }
+                receipt_path = _completion_receipt_path(out_path)
+                reuse = (
+                    args.resume
+                    and out_path.exists()
+                    and out_path.stat().st_size == expected
+                    and _completion_receipt_matches(receipt_path, receipt)
                 )
-                reuse = args.resume and out_path.exists() and out_path.stat().st_size == expected
+                if not reuse:
+                    receipt_path.unlink(missing_ok=True)
                 handle = None if reuse else out_path.open("wb")
                 try:
                     offset = 0
@@ -497,13 +577,9 @@ def prepare(args: argparse.Namespace) -> None:
                         encoded = (item for batch in batches for item in batch)
                         for expert, data in encoded:
                             qtype = assignments[layer, expert, proj]
-                            block, type_size, _ = QTYPES[qtype]
-                            if source.in_f % block:
-                                raise ValueError(
-                                    f"{layer}/{expert}/{proj}: in_features not aligned for {qtype}"
-                                )
-                            row_bytes = source.in_f // block * type_size
-                            size = source.out_f * row_bytes
+                            layout = layout_by_expert[expert]
+                            row_bytes = layout["row_bytes"]
+                            size = layout["bytes"]
                             if handle is not None:
                                 if len(data) != size:
                                     raise RuntimeError(
@@ -538,6 +614,8 @@ def prepare(args: argparse.Namespace) -> None:
                         handle.close()
                 if out_path.stat().st_size != expected:
                     raise RuntimeError(f"{out_path}: size mismatch")
+                if not reuse:
+                    _write_completion_receipt(receipt_path, receipt)
                 print(f"layer={layer:02d} proj={proj:4s} experts={len(active)} bytes={expected / 1e9:.3f}G", flush=True)
                 source.stacked = None
                 store.drop_cached_shards()
@@ -599,6 +677,9 @@ def self_test() -> None:
         ))
         manifest = json.loads((out / "manifest.json").read_text())
         assert manifest["format"] == OVERLAY_FORMAT
+        assert manifest["plan_sha256"] == sha256_file(plan)
+        assert manifest["plan_canonical_sha256"] == canonical_json_sha256(manifest["plan"])
+        assert manifest["plan_sha256"] != manifest["plan_canonical_sha256"]
         assert len(manifest["tensors"]) == 9
         for proj in PROJECTIONS:
             records = [manifest["tensors"][f"blk.0.ffn_{proj}_exps.{ex}.weight"] for ex in range(3)]
@@ -625,6 +706,68 @@ def self_test() -> None:
         assert parallel_manifest["tier_summary"] == manifest["tier_summary"]
         for path in sorted((out / "experts").iterdir()):
             assert path.read_bytes() == (parallel_out / "experts" / path.name).read_bytes()
+
+        plan_a_bytes = {
+            path.name: path.read_bytes() for path in (out / "experts").glob("*.bin")
+        }
+        plan.write_text(json.dumps({
+            "format": PLAN_FORMAT,
+            "model": {"expert_count": 3, "moe_layers": [0]},
+            "pruned_experts": {},
+            "assignments": [
+                {"layer": 0, "experts": [0], "qtype": "Q2_K"},
+                {"layer": 0, "experts": [1], "qtype": "NVFP4"},
+                {"layer": 0, "experts": [2], "qtype": "Q3_K"},
+            ],
+        }))
+        prepare(SimpleNamespace(
+            source_dir=str(source), fallback_dir=None, out_dir=str(out), plan=str(plan),
+            max_work_mb=8, resume=True, workers=1,
+        ))
+        fresh_b = root / "overlay-plan-b-fresh"
+        prepare(SimpleNamespace(
+            source_dir=str(source), fallback_dir=None, out_dir=str(fresh_b), plan=str(plan),
+            max_work_mb=8, resume=False, workers=1,
+        ))
+
+        def stable_manifest(path: Path) -> dict[str, Any]:
+            value = json.loads((path / "manifest.json").read_text())
+            value.pop("created_utc")
+            return value
+
+        assert stable_manifest(out) == stable_manifest(fresh_b)
+        plan_b_paths = sorted((fresh_b / "experts").glob("*.bin"))
+        assert all(path.stat().st_size == len(plan_a_bytes[path.name]) for path in plan_b_paths)
+        assert any(path.read_bytes() != plan_a_bytes[path.name] for path in plan_b_paths)
+        for path in sorted((fresh_b / "experts").iterdir()):
+            assert path.read_bytes() == (out / "experts" / path.name).read_bytes()
+
+        # A missing receipt must rebuild only that projection, even when stale bytes have
+        # exactly the expected size. Matching receipts keep the other projections resumable.
+        gate_path = out / "experts" / "blk0-gate-mixed.bin"
+        gate_path.write_bytes(plan_a_bytes[gate_path.name])
+        _completion_receipt_path(gate_path).unlink()
+        assert gate_path.read_bytes() != (fresh_b / "experts" / gate_path.name).read_bytes()
+        calls = {qtype: 0 for qtype in QTYPES}
+        original_quantizers = QUANTIZERS.copy()
+        for qtype, quantizer in original_quantizers.items():
+            def counted(rows: np.ndarray, *, _qtype: str = qtype, _quantizer=quantizer) -> bytes:
+                calls[_qtype] += 1
+                return _quantizer(rows)
+
+            QUANTIZERS[qtype] = counted
+        try:
+            prepare(SimpleNamespace(
+                source_dir=str(source), fallback_dir=None, out_dir=str(out), plan=str(plan),
+                max_work_mb=8, resume=True, workers=1,
+            ))
+        finally:
+            QUANTIZERS.clear()
+            QUANTIZERS.update(original_quantizers)
+        assert calls == {"Q2_K": 1, "Q3_K": 1, "NVFP4": 1}, calls
+        assert stable_manifest(out) == stable_manifest(fresh_b)
+        for path in sorted((fresh_b / "experts").iterdir()):
+            assert path.read_bytes() == (out / "experts" / path.name).read_bytes()
         print("tiered expert overlay self-test: PASS")
     finally:
         shutil.rmtree(root, ignore_errors=True)
