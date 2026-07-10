@@ -1,7 +1,7 @@
 {
  "updated": "2026-07-10",
  "rig": "RTX 5090 Laptop",
- "protocol": "N=2 medians, engines interleaved per model in the same hour-regime, idle-gated cold starts, no flags (tuned paths are defaults); rebaseline2 campaign + 35B spec refresh 2026-07-10 (router GEMV + CSR gate_up dedup; H-runs, N=2, 1590MHz/58-65C, idle GPU, llama = marked 07-09 floor), 27B p1/p2 re-paired 2026-07-10 (I-runs: same-session interleaved N=2, idle GPU; p3 sampled pair unchanged), raw logs in research/tune-data/rebaseline-logs/",
+ "protocol": "N=2 medians, engines interleaved per model in the same hour-regime, idle-gated cold starts, no flags (tuned paths are defaults); rebaseline2 campaign + 35B spec refresh 2026-07-10 (router GEMV + CSR gate_up dedup; H-runs, N=2, 1590MHz/58-65C, idle GPU, llama = marked 07-09 floor), FA-v4 refresh 2026-07-10 (J-runs N=2; 35B p1 -0.5% = the v4 shallow-ctx cost, honest); 27B p1/p2 re-paired 2026-07-10 (I-runs: same-session interleaved N=2, idle GPU; p3 sampled pair unchanged), raw logs in research/tune-data/rebaseline-logs/",
  "plain_decode": {
   "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
   "rows": [
@@ -42,7 +42,7 @@
     "model": "Qwen3.6-27B (K=3 + draft + code75 trim)",
     "bw24": [
      107.3,
-     95.4,
+     96.9,
      103.5
     ],
     "llama": [
@@ -54,9 +54,9 @@
    {
     "model": "Qwen3.6-35B-A3B (K=3 + trim + zero-draft)",
     "bw24": [
-     293.6,
-     233.1,
-     265.9
+     292.2,
+     249.6,
+     275.3
     ],
     "llama": [
      251.9,
