@@ -15,6 +15,7 @@ import json
 import shutil
 import struct
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
@@ -428,6 +429,8 @@ def prepare(args: argparse.Namespace) -> None:
     (out_dir / "experts").mkdir(exist_ok=True)
     store = SafeTensorDir(source_dir)
     max_work = int(args.max_work_mb) << 20
+    if args.workers < 1:
+        raise ValueError("workers must be at least 1")
     manifest: dict[str, Any] = {
         "format": OVERLAY_FORMAT,
         "created_utc": dt.datetime.now(dt.UTC).isoformat(),
@@ -464,37 +467,70 @@ def prepare(args: argparse.Namespace) -> None:
                 handle = None if reuse else out_path.open("wb")
                 try:
                     offset = 0
-                    for expert in active:
+
+                    def encode_expert(expert: int) -> tuple[int, bytes]:
                         qtype = assignments[layer, expert, proj]
-                        block, type_size, _ = QTYPES[qtype]
-                        if source.in_f % block:
-                            raise ValueError(f"{layer}/{expert}/{proj}: in_features not aligned for {qtype}")
-                        row_bytes = source.in_f // block * type_size
-                        size = source.out_f * row_bytes
-                        if handle is not None:
-                            written = 0
-                            for rows in source.rows(expert):
-                                data = QUANTIZERS[qtype](rows)
+                        parts = [QUANTIZERS[qtype](rows) for rows in source.rows(expert)]
+                        return expert, b"".join(parts)
+
+                    if handle is not None and args.workers > 1 and source.stem is None:
+                        # Populate the shard cache before worker threads call store.raw(). The
+                        # mmaps are then immutable shared reads; no thread races through _open_shard.
+                        for expert in active:
+                            name = ordinary_expert_name(store, layer, expert, proj)
+                            if name is None:
+                                raise KeyError(f"missing retained expert {layer}/{expert}/{proj}")
+                            store.info(name)
+
+                    if handle is None:
+                        batches = ([(expert, b"")] for expert in active)
+                    elif args.workers == 1:
+                        batches = ([encode_expert(expert)] for expert in active)
+                    else:
+                        pool = ThreadPoolExecutor(max_workers=args.workers)
+                        batches = (
+                            list(pool.map(encode_expert, active[start : start + args.workers]))
+                            for start in range(0, len(active), args.workers)
+                        )
+
+                    try:
+                        encoded = (item for batch in batches for item in batch)
+                        for expert, data in encoded:
+                            qtype = assignments[layer, expert, proj]
+                            block, type_size, _ = QTYPES[qtype]
+                            if source.in_f % block:
+                                raise ValueError(
+                                    f"{layer}/{expert}/{proj}: in_features not aligned for {qtype}"
+                                )
+                            row_bytes = source.in_f // block * type_size
+                            size = source.out_f * row_bytes
+                            if handle is not None:
+                                if len(data) != size:
+                                    raise RuntimeError(
+                                        f"{layer}/{expert}/{proj}: wrote {len(data)}, expected {size}"
+                                    )
                                 handle.write(data)
-                                written += len(data)
-                            if written != size:
-                                raise RuntimeError(f"{layer}/{expert}/{proj}: wrote {written}, expected {size}")
-                        mapped = f"blk.{layer}.ffn_{proj}_exps.{expert}.weight"
-                        manifest["tensors"][mapped] = {
-                            "source": source.description(expert),
-                            "file": str(rel),
-                            "offset": offset,
-                            "qtype": qtype,
-                            "ne": [source.in_f, source.out_f],
-                            "row_bytes": row_bytes,
-                            "bytes": size,
-                        }
-                        summary = manifest["tier_summary"].setdefault(qtype, {"experts": 0, "projections": 0, "bytes": 0})
-                        summary["projections"] += 1
-                        summary["bytes"] += size
-                        if proj == "gate":
-                            summary["experts"] += 1
-                        offset += size
+                            mapped = f"blk.{layer}.ffn_{proj}_exps.{expert}.weight"
+                            manifest["tensors"][mapped] = {
+                                "source": source.description(expert),
+                                "file": str(rel),
+                                "offset": offset,
+                                "qtype": qtype,
+                                "ne": [source.in_f, source.out_f],
+                                "row_bytes": row_bytes,
+                                "bytes": size,
+                            }
+                            summary = manifest["tier_summary"].setdefault(
+                                qtype, {"experts": 0, "projections": 0, "bytes": 0}
+                            )
+                            summary["projections"] += 1
+                            summary["bytes"] += size
+                            if proj == "gate":
+                                summary["experts"] += 1
+                            offset += size
+                    finally:
+                        if handle is not None and args.workers > 1:
+                            pool.shutdown()
                     if offset != expected:
                         raise RuntimeError(f"{rel}: layout {offset} != expected {expected}")
                 finally:
@@ -559,7 +595,7 @@ def self_test() -> None:
         }))
         prepare(SimpleNamespace(
             source_dir=str(source), fallback_dir=None, out_dir=str(out), plan=str(plan),
-            max_work_mb=8, resume=False,
+            max_work_mb=8, resume=False, workers=1,
         ))
         manifest = json.loads((out / "manifest.json").read_text())
         assert manifest["format"] == OVERLAY_FORMAT
@@ -579,6 +615,16 @@ def self_test() -> None:
             restored = dequant(QUANTIZERS[qtype](probe), 256)
             mse = float(np.mean((restored - probe) ** 2))
             assert np.isfinite(restored).all() and mse < limit, (qtype, mse)
+        parallel_out = root / "overlay-parallel"
+        prepare(SimpleNamespace(
+            source_dir=str(source), fallback_dir=None, out_dir=str(parallel_out), plan=str(plan),
+            max_work_mb=8, resume=False, workers=3,
+        ))
+        parallel_manifest = json.loads((parallel_out / "manifest.json").read_text())
+        assert parallel_manifest["tensors"] == manifest["tensors"]
+        assert parallel_manifest["tier_summary"] == manifest["tier_summary"]
+        for path in sorted((out / "experts").iterdir()):
+            assert path.read_bytes() == (parallel_out / "experts" / path.name).read_bytes()
         print("tiered expert overlay self-test: PASS")
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -620,6 +666,7 @@ def main() -> int:
     prep.add_argument("--fallback-dir", help="complete HF or bw24 repack used for non-overlay tensors")
     prep.add_argument("--plan", required=True)
     prep.add_argument("--max-work-mb", type=int, default=512)
+    prep.add_argument("--workers", type=int, default=1)
     prep.add_argument("--resume", action="store_true")
     inspect = sub.add_parser("probe")
     inspect.add_argument("source_dir")

@@ -40,7 +40,9 @@ kernel exists.
 - tools/recover_hy3_reap_mask.py reconstructs the public REAP50 original-id mask from router rows,
   requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
-  and writes Q2_K, Q3_K, and NVFP4 byte ranges. Every active expert projection must be assigned.
+  and writes Q2_K, Q3_K, and NVFP4 byte ranges. Bounded `--workers` parallelism preserves exact
+  expert order and is byte-compared against the single-worker path. Every active expert projection
+  must be assigned.
 - A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
   shared-expert tensors. Expert data is stored in one mixed file per layer/projection.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
@@ -145,19 +147,23 @@ weights are used.
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-quant \
-      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-quant.json --resume
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-quant.json \
+      --workers 4 --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-reap-quant \
-      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-quant.json --resume
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-quant.json \
+      --workers 4 --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/plain-reap-mix-quant \
-      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-mix-quant.json --resume
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-mix-quant.json \
+      --workers 4 --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
       /data/models/hy3-source /data/artifacts/mix-quant \
-      --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant.json --resume
+      --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant.json \
+      --workers 4 --resume
 
     for arm in plain-quant plain-reap-quant plain-reap-mix-quant mix-quant; do
       python3 research/per-expert-quant/validate_artifact.py \
