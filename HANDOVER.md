@@ -32,11 +32,19 @@ tokenizer.ggml.model="gemma4"). Q4_0 WEIGHT SUPPORT LANDED (qmatvec_q4_0_mmvq �
 vendoring pattern with inline dp4a ones-sum; host dequant; QT_Q4_0=12; dispatch+supports wired).
 Gemma4Config PARSE LANDED (arch + per-layer arrays + softcap; hoisted before the ModelConfig
 literal). CHECKPOINTS: 26B QAT + its MTP drafters (Q4_0/Q8_0/F16 in .../gemma4-26b-a4b-qat-gguf/
-drafter/MTP/) on disk; 31B ~done. LOADER MARCH: run-gen now fails forward at
-`missing blk.5.attn_v.weight` = R7 (K=V globals) — NEXT UNIT = the gemma4 arm in
-HybridModel::load (hybrid.rs:373): optional wv (load_opt), per-layer FullAttnLayer geometry from
-cfg.gemma4 (R5 groundwork), fused gate_up_exps split at load, dual post-norms + layer_output_scale
-+ pre_ffw_norm_2 tensor names, parallel shared-FFN + MoE block fields. Then R8 forward graph.
+drafter/MTP/) on disk; 31B ~done. LOADER MARCH: **gemma4 LOADS AND RUNS end-to-end** (wv:=wk fallback landed for K=V globals —
+llama's exact `Vcur = wv ? mm : Kcur` semantic, zero type ripple; Q4_0 kernels live). Output is
+garbage BY DESIGN: the qwen graph runs, the shared FFN loaded as the layer FFN, MoE skipped.
+REMAINING (the real port): (a) fused ffn_gate_up_exps split at load (dims [2816,1408,128], out-
+major rows: gate=0..704, up=704..1408 per expert — byte-slice split) + MoeWeights.per_expert_out_
+scale (ffn_down_exps.scale[128]) + router = ffn_gate_inp.weight F32 [2816,128] with prologue
+scale vector ffn_gate_inp.scale[2816]; (b) HybridLayer gemma extras (pre_ffw_norm_2, post_ffw_
+norm_1/2, post_ffw_norm, layer_output_scale) + Ffn parallel-branch handling; (c) R8 forward
+graph (embed*sqrt(2816), branch-parallel FFN, softcap 30, gelu_tanh R1, router prologue R2/R3);
+(d) R5 per-layer attn geometry in forward (hd512/2kv globals, q/k_norm[512]) + R9 dual rope
+(rope_freqs tensor shipped) + R7 part-2 weightless V-norm; (e) R6 SWA mask; (f) drafter spec
+(mtp-*-Q4_0.gguf on disk, separate-model draft like the 27B). Tokenizer (model="gemma4") deferred
+— token-id prompts work for all gates.
 SEQUENCE (gaps tagged per the scope doc):
 - P0 census: GGUF metadata/tensor map/qtypes/drafter format when downloads land; verify Q4_0
   dequant + gguf-spm tokenizer coverage in bw24 (gap 9 may dissolve via from_gguf).
