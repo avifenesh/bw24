@@ -35,7 +35,10 @@ literal). CHECKPOINTS: 26B QAT + its MTP drafters (Q4_0/Q8_0/F16 in .../gemma4-2
 drafter/MTP/) on disk; 31B ~done. LOADER MARCH: **gemma4 LOADS AND RUNS end-to-end** (wv:=wk fallback landed for K=V globals —
 llama's exact `Vcur = wv ? mm : Kcur` semantic, zero type ripple; Q4_0 kernels live). Output is
 garbage BY DESIGN: the qwen graph runs, the shared FFN loaded as the layer FFN, MoE skipped.
-REMAINING (the real port): (a) fused ffn_gate_up_exps split at load (dims [2816,1408,128], out-
+REMAINING (the real port): (a) DONE — fused split landed (load_stacked_split_from_source), MoE
+loads RESIDENT 12.8GB + runs 158 tok/s placeholder; still to load: ffn_down_exps.scale[128]
+per-expert out-scale + ffn_gate_inp.scale[2816] router prologue vector + gemma layer extras
+(pre_ffw_norm_2, post_ffw_norm_1/2, post_ffw_norm, layer_output_scale). (a-was) fused ffn_gate_up_exps split at load (dims [2816,1408,128], out-
 major rows: gate=0..704, up=704..1408 per expert — byte-slice split) + MoeWeights.per_expert_out_
 scale (ffn_down_exps.scale[128]) + router = ffn_gate_inp.weight F32 [2816,128] with prologue
 scale vector ffn_gate_inp.scale[2816]; (b) HybridLayer gemma extras (pre_ffw_norm_2, post_ffw_
