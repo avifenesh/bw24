@@ -28,7 +28,14 @@ fn load_mixer_kind(e: &Engine, src: &dyn TensorSource, il: u32, kind: LayerKind)
         LayerKind::FullAttention => Mixer::Full(FullAttnLayer {
             wq: load_t(e, src, &p("attn_q.weight"))?,
             wk: load_t(e, src, &p("attn_k.weight"))?,
-            wv: load_t(e, src, &p("attn_v.weight"))?,
+            // gemma4 global layers ship NO v_proj (attention_k_eq_v): V = the K projection
+            // output pre-rope (llama gemma4.cpp: `Vcur = wv ? mm(wv,cur) : Kcur`). Loading
+            // wv := wk reproduces that exactly with zero forward changes; the gemma forward
+            // adds the weightless V rms_norm (R7 part 2).
+            wv: match load_opt(e, src, &p("attn_v.weight"))? {
+                Some(v) => v,
+                None => load_t(e, src, &p("attn_k.weight"))?,
+            },
             wo: load_t(e, src, &p("attn_output.weight"))?,
             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
             k_norm: load_t(e, src, &p("attn_k_norm.weight"))?,
