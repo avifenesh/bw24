@@ -8,6 +8,11 @@ The local RTX 5090 rig remains bw24's deployment and final performance target; r
 not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
 gates there.
 
+GGUF remains bw24's general runtime and delivery focus. This study reads the pinned Hy3
+safetensors checkpoint as common quantization source material and uses repack overlays to represent
+per-expert precision experimentally. Spill, cache, prefetch, and dispatch changes must stay in the
+shared expert-serving path, preserve GGUF behavior, and pass the existing GGUF gates before release.
+
 ## Target model and frozen recipes
 
 The source model is `tencent/Hy3` with 192 routed experts per MoE layer, top-8 sigmoid routing, and

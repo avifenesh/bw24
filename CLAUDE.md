@@ -44,6 +44,9 @@ the other, and report spill performance separately from model-quality comparison
 - The local RTX 5090 rig remains bw24's deployment and final performance target. Treat G7e results
   as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
   on the 5090 before shipping any runtime default.
+- GGUF remains bw24's primary runtime and delivery format. Hy3 safetensors are a pinned source for
+  this quantization study, and per-expert repack directories are experimental artifacts, not a
+  format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
 - Optimize expert serving as one storage-to-compute pipeline: mmap/zero-copy, local-NVMe access,
   pinned host memory, residency caching, asynchronous prefetch/overlap, PCIe transfer, and GPU
   kernels. Measure the stages together so a faster kernel cannot hide a data-movement regression.
