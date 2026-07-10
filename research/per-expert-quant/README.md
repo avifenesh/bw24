@@ -57,6 +57,9 @@ kernel exists.
   control does not materialize an impossible second copy in 124 GB host RAM.
 - Contiguous all-active/all-NVFP4 entries are coalesced back into a uniform mmap slab, preserving
   the uniform fused dispatch path for `plain_quant`; pruned or mixed arms retain per-expert layouts.
+- `BW24_MOE_PAGE_PREFETCH=1` issues best-effort `MADV_WILLNEED` one expert ahead for mmap-backed
+  GGUF and repack ranges in both sequential and grouped dispatch. It is off by default until matched
+  cold-cache G7e measurements and final RTX 5090 gates prove a win.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
   excluded before top-k and have no weight bytes in the artifact.
 - HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay
