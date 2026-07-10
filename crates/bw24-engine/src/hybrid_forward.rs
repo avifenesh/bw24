@@ -2213,8 +2213,13 @@ impl HybridModel {
                     bits.pre_ffw_norm_2.float_data(), &mut zsh, &mut router_in, &mut moe_in,
                     n_embd, t, eps)?;
         let n_ff = bits.shared_gate.out_features();
-        let gate = e.matmul(&bits.shared_gate, &zsh, t)?;
-        let up = e.matmul(&bits.shared_up, &zsh, t)?;
+        let (gate, up) = if t == 1 {
+            let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
+            (e.matmul_pre(&bits.shared_gate, &zq, &zd, &zsh, 1)?,
+             e.matmul_pre(&bits.shared_up, &zq, &zd, &zsh, 1)?)
+        } else {
+            (e.matmul(&bits.shared_gate, &zsh, t)?, e.matmul(&bits.shared_up, &zsh, t)?)
+        };
         let mut act = e.uninit(t * n_ff)?;
         e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
         let mlp0 = e.matmul(&bits.shared_down, &act, t)?;
@@ -2326,9 +2331,11 @@ impl HybridModel {
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
 
-        let q0 = e.matmul(&fa.wq, h, 1)?;
-        let k0 = e.matmul(&fa.wk, h, 1)?;
-        let v0 = if swa { e.matmul(&fa.wv, h, 1)? } else { e.clone_dtod(&k0)? };
+        // ONE h quantize shared by the q/k(/v) projections (matmul_pre; Q4_0 is q8_1-fast).
+        let (hq, hdq) = e.quantize_q8_1(h, 1, self.cfg.n_embd as usize)?;
+        let q0 = e.matmul_pre(&fa.wq, &hq, &hdq, h, 1)?;
+        let k0 = e.matmul_pre(&fa.wk, &hq, &hdq, h, 1)?;
+        let v0 = if swa { e.matmul_pre(&fa.wv, &hq, &hdq, h, 1)? } else { e.clone_dtod(&k0)? };
         let mut q = e.uninit(nh * hd)?;
         let mut k = e.uninit(nkv * hd)?;
         let mut v = e.uninit(nkv * hd)?;

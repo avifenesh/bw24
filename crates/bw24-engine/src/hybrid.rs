@@ -596,6 +596,8 @@ impl HybridModel {
         if cfg.gemma4.is_some() {
             // gemma4 fa-vec crossover default (measured sweep 2026-07-10; env overrides).
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
+            // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
+            crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
         }
         let gemma4_aux = if cfg.gemma4.is_some() {
             let rope_freqs = match src.find("rope_freqs.weight") {

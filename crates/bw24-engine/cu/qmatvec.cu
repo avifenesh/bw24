@@ -5892,6 +5892,67 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
 // value = d*(q-8); with per-32 q8_1 activations (aq int8 + ad group scale):
 //   dot_g = d * (sumi - 8*sums) * d8, sumi = dp4a(q, a), sums = dp4a(1, a) — exact ints,
 // one float expression per group (the q4_K vendoring pattern; llama vec_dot_q4_0_q8_1 math).
+// Q4_0 mr2 (gemma trunk lane): 2 rows/warp — the activation int4 loads AND the row-independent
+// ones-sum (sums) are computed ONCE per group and reused across both rows' dp4a chains.
+// Per-row accumulation chain identical to qmatvec_q4_0_mmvq (bit-identical per row).
+extern "C" __global__ void qmatvec_q4_0_mmvq_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * 2;
+    int t = blockIdx.y;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nsb;
+    float acc0 = 0.0f, acc1 = 0.0f;
+    bool two = (o0 + 1) < out_f;
+    const unsigned char* w0 = W + (long)o0 * row_bytes;
+    const unsigned char* w1 = W + (long)(o0 + 1) * row_bytes;
+    for (int g = lane; g < nsb; g += 32) {
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sums = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
+        {
+            const unsigned char* b = w0 + (long)g * 18;
+            float d4 = half_to_float(*(const unsigned short*)b);
+            const unsigned char* qs = b + 2;
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+                sumi = dp4a((int)(raw & 0x0F0F0F0Fu), aq4[k], sumi);
+                sumi = dp4a((int)((raw >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc0 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+        if (two) {
+            const unsigned char* b = w1 + (long)g * 18;
+            float d4 = half_to_float(*(const unsigned short*)b);
+            const unsigned char* qs = b + 2;
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+                sumi = dp4a((int)(raw & 0x0F0F0F0Fu), aq4[k], sumi);
+                sumi = dp4a((int)((raw >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc1 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+    }
+    acc0 = warp_reduce_sum(acc0);
+    if (two) acc1 = warp_reduce_sum(acc1);
+    if (lane == 0) {
+        y[(size_t)t * out_f + o0] = acc0;
+        if (two) y[(size_t)t * out_f + o0 + 1] = acc1;
+    }
+}
+
 extern "C" __global__ void qmatvec_q4_0_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

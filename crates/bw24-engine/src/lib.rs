@@ -155,6 +155,17 @@ pub fn fa_vec_min_tkv() -> usize {
 /// vec-always fastest: 119.9 (96) / 130.0 (48) / 133.2 (1) tok/s tg128-regime, 2026-07-10.
 pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(FA_VEC_MIN_TKV);
+/// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
+/// split changes with blockDim -> different FP order -> battery-arbitrated per model).
+/// qwen keeps the shipped 256; gemma4 adopts 1024 (single-row 2816-col norms are one-block
+/// latency-bound at 256 threads — 7us/launch measured).
+pub static RMS_BLOCK_DEFAULT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(256);
+pub(crate) fn rms_block() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("BW24_RMS_BLOCK").ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| RMS_BLOCK_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
+}
 
 fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -1543,6 +1554,12 @@ impl Engine {
             "h2" if in_f == 512 => (self.func("moe_down8_fma_dev_q8_h2"),
                 LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
                                block_dim: (32, 1, 1), shared_mem_bytes: 0 }),
+            // "" = AUTO gemma shape (in_f==704): w8r2 measured +1 tok/s vs base (sweep
+            // 1/2/4 -> 133.6/134.2/133.6, 2026-07-10); slot-ordered chain preserved.
+            "" if in_f == 704 && n_used <= 8 =>
+                (self.func("moe_down8_fma_dev_q8_w8r2"),
+                 LaunchConfig { grid_dim: (out_f.div_ceil(2) as u32, 1, 1),
+                                block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
             // "" = AUTO: the measured winner for the 35B expert shape (arc 2026-07-05, +3.8%);
             // any shape the h2 kernels can't take (nsb!=16 / n_used>8) falls to base via `_`.
             // _v twins (down8 lane 2026-07-08): wide-load IQ4_XS dot, bit-identical outputs.
@@ -2292,7 +2309,7 @@ impl Engine {
                      d2: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
                      -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("rms_norm3_f32");
-        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w0).arg(w1).arg(w2).arg(d0).arg(d1).arg(d2).arg(&nc).arg(&e);
@@ -2309,7 +2326,7 @@ impl Engine {
                         -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("rms_norm_qkv_f32");
         let grid = (rq + 2 * rk) as u32;
-        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, rqi, rki, e) = (ncols as i32, rq as i32, rk as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv)
@@ -2325,7 +2342,7 @@ impl Engine {
                       ncols: usize, nrows: usize, eps: f32)
                       -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("rms_norm2x_f32");
-        let cfg = LaunchConfig { grid_dim: (2 * nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (2 * nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(a).arg(bb).arg(wa).arg(wb).arg(da).arg(db).arg(&nc).arg(&nr).arg(&e);
@@ -2348,7 +2365,7 @@ impl Engine {
     pub fn rms_norm(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
                     ncols: usize, nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("rms_norm_f32");
-        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(dst).arg(&nc).arg(&e);
@@ -2419,7 +2436,7 @@ impl Engine {
                         res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                         eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("add_rms_norm_f32");
-        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let (nc, e) = (ncols as i32, eps);
         let mut b2 = self.gpu.stream.launch_builder(&f);
         b2.arg(a).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
@@ -2754,7 +2771,7 @@ impl Engine {
         if std::env::var("BW24_FAST").as_deref() == Ok("0") { return false; }
         match w {
             GpuTensor::Quant { qtype, .. } => matches!(*qtype,
-                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3)
+                QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q3_K | QT_NVFP4 | QT_F8_E4M3 | QT_Q4_0)
                 || (*qtype == QT_IQ4_XS && std::env::var("BW24_IQ_FAST").is_ok()),
             GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
@@ -3244,6 +3261,12 @@ impl Engine {
         //     of the 27B p3 spec wall; latency-bound like the other k-quants pre-fix).
         //   Q4_K/Q6_K m=1 -> single-row (mr2 measured +0.7% / flat — weight-bandwidth-bound).
         let mut mr: u32 = if m == 1 && (qtype == QT_NVFP4 || qtype == QT_Q5_K) { 2 } else { 1 };
+        // Q4_0 mr2 (gemma trunk): BW24_Q40_MR override; default 2 pending the sweep below.
+        if m == 1 && qtype == QT_Q4_0 {
+            static Q40MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            mr = *Q40MR.get_or_init(|| std::env::var("BW24_Q40_MR").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(2));
+        }
         // q5issue lane (2026-07-08): BW24_Q5K_ISSUE swaps the q5_K m=1 mmvq kernels for the
         // issue-reduced `_il` bodies (uint4 header/qh/qs loads + branchless scale decode —
         // cuts ~34 LDG.U16 + ~5 LDG.U8 + a warp-divergent scale branch per 32-elem group-row
@@ -3268,6 +3291,7 @@ impl Engine {
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q4_0, 2, _) => "qmatvec_q4_0_mmvq_mr2",
             (QT_Q4_0, _, _) => "qmatvec_q4_0_mmvq",
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq",
