@@ -31,10 +31,10 @@ NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
 DEPTH-1736 (degenerate long prompt, id file in scratchpad/long-ids.txt):
 - ours plain 146.7 (was 142.1 pre-dpl16) / spec K2 183.9 (acc .775) | llama MTP 252-285
   (acc .81-.91 — degenerate content inflates both engines' acceptance)
-- depth verify still pays a PER-TOKEN fa loop on windowed SWA rows (75 launches/round
-  ~1.4ms): the fix is a WINDOWED rows twin — fa_decode_rows kernels + per-row
-  t_lo = max(0, base+i+1-win) lower bound (per-row window starts differ by 1; a shared
-  view offset is WRONG by up to K old keys).
+- windowed verify rows twin DONE (fa_decode_vec_q_rows_v4_w, decode-view-identical split
+  geometry): depth spec 183 -> 187.6; hd-512 vec twin (dpl16) DONE: depth plain 142 -> 146.7.
+- depth standing: plain 146.7 / spec K2 187.6 (acc .775) vs llama MTP 252-285 (this prompt
+  inflates acceptance for both; honest depth pairs need battery-class content).
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
