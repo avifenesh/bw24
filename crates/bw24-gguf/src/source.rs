@@ -8,7 +8,9 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use memmap2::Mmap;
 use crate::config::{Arch, JsonObj, ModelConfig};
 use crate::safetensors::StModel;
@@ -104,6 +106,17 @@ pub struct Fp8Native<'a> {
     pub in_f: usize,
 }
 
+/// One immutable expert extent backed by an opened file and its whole-file mmap. Retaining both
+/// handles lets the engine choose explicit positioned I/O later while keeping the mmap bytes as the
+/// permanent correctness fallback. `offset` is absolute within both the file and the whole mapping.
+#[derive(Clone)]
+pub struct DiskExtent {
+    pub map: Arc<Mmap>,
+    pub file: Arc<File>,
+    pub offset: u64,
+    pub len: usize,
+}
+
 /// A weight source the engine can load from. GGUF and safetensors both implement it.
 pub trait TensorSource {
     /// The model configuration (from GGUF metadata or config.json).
@@ -143,7 +156,14 @@ pub trait TensorSource {
     /// slabs and v2 per-expert overlay entries. The engine then backs `HostExps` with
     /// `HostBuf::Mmap` directly (page cache = RAM tier, faults = NVMe tier) instead of copying a
     /// potentially >RAM expert set. None for sources that require gathering or repacking.
-    fn find_expert_mmap(&self, _ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> { None }
+    fn find_expert_disk(&self, _ggml_name: &str) -> Option<DiskExtent> { None }
+    /// Compatibility view for callers that only need mmap access. New disk-aware consumers should
+    /// use `find_expert_disk` so the opened file remains available after the source is dropped.
+    fn find_expert_mmap(&self, ggml_name: &str) -> Option<(Arc<Mmap>, usize, usize)> {
+        let extent = self.find_expert_disk(ggml_name)?;
+        let offset = usize::try_from(extent.offset).ok()?;
+        Some((extent.map, offset, extent.len))
+    }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -172,6 +192,13 @@ struct RepackTensor {
     ne: Vec<u64>,
     bytes: usize,
     expert_stride: Option<usize>,
+}
+
+struct RepackFile {
+    // Only expert files retain an fd. Dense-only manifest files keep their mmap but do not consume
+    // the process fd budget because positioned I/O is never requested for them.
+    file: Option<Arc<File>>,
+    map: Arc<Mmap>,
 }
 
 enum RepackFallback {
@@ -230,9 +257,9 @@ pub struct Hy3RepackSource {
     dir: PathBuf,
     source_dir: Option<PathBuf>,
     tensors: BTreeMap<String, RepackTensor>,
-    // Arc so stacked expert slabs can be handed to the engine's HostBuf::Mmap tier zero-copy
-    // (find_expert_mmap) while `find` keeps borrowing the same mapping.
-    files: BTreeMap<PathBuf, std::sync::Arc<Mmap>>,
+    // Retain both handles so stacked expert slabs can be handed to the engine's disk-aware mmap tier
+    // while `find` keeps borrowing the same mapping.
+    files: BTreeMap<PathBuf, RepackFile>,
     // Expert overlays store only overridden tensors. Everything else resolves from either the
     // original HF checkpoint (v1) or a complete manifest repack (v2).
     fallback: Option<RepackFallback>,
@@ -341,19 +368,23 @@ impl Hy3RepackSource {
         for t in tensors.values() {
             if !seen.insert(t.file.clone()) { continue; }
             let p = dir.join(&t.file);
-            let f = std::fs::File::open(&p)?;
-            let map = unsafe { Mmap::map(&f)? };
+            let file = Arc::new(File::open(&p)?);
+            let map = unsafe { Mmap::map(file.as_ref())? };
+            let retain_file = t.expert_stride.is_some() || expert_files.contains(&t.file);
             // Expert slabs use the configured whole-map policy. Default random is the historical
             // behavior; normal restores Linux readahead for multi-megabyte expert reads.
-            if t.expert_stride.is_some() || expert_files.contains(&t.file) {
+            if retain_file {
                 let _ = apply_expert_mmap_advice(&map);
             }
-            files.insert(t.file.clone(), std::sync::Arc::new(map));
+            files.insert(t.file.clone(), RepackFile {
+                file: retain_file.then_some(file),
+                map: Arc::new(map),
+            });
         }
         for (name, t) in &tensors {
             let len = files.get(&t.file)
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} file not mapped")))?
-                .len();
+                .map.len();
             if len < t.offset + t.bytes {
                 return Err(invalid_data(format!(
                     "manifest tensor {name} declares offset {} + {} bytes but {:?} has {len}",
@@ -395,8 +426,8 @@ impl TensorSource for Hy3RepackSource {
 
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         if let Some(t) = self.tensors.get(ggml_name) {
-            let map = self.files.get(&t.file)?;
-            let raw = &map[t.offset..t.offset + t.bytes];
+            let file = self.files.get(&t.file)?;
+            let raw = &file.map[t.offset..t.offset + t.bytes];
             if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
                 let n: u64 = t.ne.iter().product();
                 let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
@@ -454,10 +485,15 @@ impl TensorSource for Hy3RepackSource {
     /// Hand stacked expert slabs and v2 per-expert overlay entries to the engine as shared mmap
     /// windows. Both layouts are already kernel-ready; copying them into Vec would make the 161 GB
     /// full-bank control impossible on a 124 GB host.
-    fn find_expert_mmap(&self, ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> {
+    fn find_expert_disk(&self, ggml_name: &str) -> Option<DiskExtent> {
         let t = self.tensors.get(ggml_name)?;
-        let map = self.files.get(&t.file)?;
-        Some((map.clone(), t.offset, t.bytes))
+        let file = self.files.get(&t.file)?;
+        Some(DiskExtent {
+            map: file.map.clone(),
+            file: file.file.as_ref()?.clone(),
+            offset: t.offset as u64,
+            len: t.bytes,
+        })
     }
 }
 
@@ -1078,8 +1114,28 @@ mod tests {
         let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
         assert_eq!((off, len), (2, 84));
         assert_eq!(&map[off..off + len], &[0x22u8; 84]);
+        let disk = src.find_expert_disk("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!((disk.offset, disk.len), (2, 84));
+        assert!(std::sync::Arc::ptr_eq(&disk.map, &map));
         let dense = src.find("blk.0.attn_norm.weight").unwrap();
         assert_eq!(&*dense.bytes, &[1, 2, 3, 4]);
+
+        // The opened inode is part of the extent, not borrowed from the loader source.
+        drop(src);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            let expert_path = overlay.join("experts/mixed.bin");
+            std::fs::remove_file(&expert_path).unwrap();
+            let mut replacement = vec![0x99u8, 0x98];
+            replacement.extend(vec![0x77u8; 84]);
+            std::fs::write(&expert_path, &replacement).unwrap();
+
+            let mut direct = vec![0u8; disk.len];
+            assert_eq!(disk.file.read_at(&mut direct, disk.offset).unwrap(), disk.len);
+            assert_eq!(direct, vec![0x22u8; 84]);
+            assert_eq!(&std::fs::read(&expert_path).unwrap()[2..], &[0x77u8; 84]);
+        }
 
         std::fs::remove_dir_all(&root).ok();
     }

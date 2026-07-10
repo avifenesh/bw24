@@ -74,6 +74,8 @@ pub fn disk_tier_enabled() -> bool {
 pub struct SpillCtx {
     /// One `MAP_SHARED` mmap of the whole GGUF, shared (`Arc`) across every spilled expert block.
     pub file_map: Arc<Mmap>,
+    /// The same opened inode backing `file_map`, retained for future positioned expert reads.
+    pub file: Arc<std::fs::File>,
     /// Pinned-RAM budget still available (bytes); decremented as experts are pinned.
     pub pinned_remaining: usize,
     /// Diagnostics: how many experts landed pinned vs. mmap'd, and total disk-tier bytes.
@@ -83,16 +85,18 @@ pub struct SpillCtx {
 }
 
 impl SpillCtx {
-    /// Open a `MAP_SHARED` mmap of the GGUF and seed the pinned budget from a live `MemBudget` probe.
+    /// Clone the parsed GGUF's opened inode, create a `MAP_SHARED` mmap from it, and seed the pinned
+    /// budget from a live `MemBudget` probe.
     /// The whole-map expert advice defaults to random (the historical behavior); setting
     /// `BW24_MOE_MMAP_ADVICE=normal` restores ordinary Linux readahead. SPILLING-PLAN §1.
-    pub fn open(path: &std::path::Path, budget: &MemBudget) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = std::fs::File::open(path)?;
+    pub fn open(g: &bw24_gguf::GgufFile, budget: &MemBudget) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = g.opened_file().clone();
         // MAP_SHARED, no MAP_POPULATE (memmap2's default Mmap::map): zero upfront copy, demand-fault.
-        let map = unsafe { Mmap::map(&file)? };
+        let map = unsafe { Mmap::map(file.as_ref())? };
         let _ = bw24_gguf::source::apply_expert_mmap_advice(&map);
         Ok(SpillCtx {
             file_map: Arc::new(map),
+            file,
             pinned_remaining: budget.free_pinnable_ram,
             n_pinned: 0,
             n_mmap: 0,
@@ -124,7 +128,9 @@ pub fn place_expert(
         // Tier 2: mmap the GGUF region — demand-faulted from NVMe on first H2D. Zero RAM cost.
         ctx.n_mmap += 1;
         ctx.mmap_bytes += len;
-        Ok(HostBuf::Mmap { map: ctx.file_map.clone(), off: file_off, len })
+        Ok(HostBuf::Mmap {
+            map: ctx.file_map.clone(), file: ctx.file.clone(), off: file_off, len,
+        })
     }
 }
 
@@ -154,4 +160,36 @@ impl SpillBlock {
 pub struct Tiered {
     pub host: crate::model::HostExps,            // Tier 1/2 (Pinned hot / Mmap cold), per-expert
     pub slots: crate::moe_cache::MoeSlotCache,   // Tier 0 GPU residency (existing slot cache)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{MemBudget, SpillCtx};
+    use bw24_gguf::{GgufFile, GGUF_MAGIC};
+
+    #[test]
+    fn spill_ctx_keeps_parsed_gguf_inode_after_path_replacement() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-spill-inode-{}.gguf", std::process::id()
+        ));
+        let mut original = Vec::new();
+        original.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        original.extend_from_slice(&3u32.to_le_bytes());
+        original.extend_from_slice(&0i64.to_le_bytes());
+        original.extend_from_slice(&0i64.to_le_bytes());
+        original.resize(32, 0);
+        std::fs::write(&path, &original).unwrap();
+
+        let gguf = GgufFile::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, vec![0xA5u8; original.len()]).unwrap();
+
+        let budget = MemBudget { free_vram: 0, free_pinnable_ram: 0 };
+        let spill = SpillCtx::open(&gguf, &budget).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&spill.file, gguf.opened_file()));
+        assert_eq!(&spill.file_map[..], original.as_slice());
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0xA5u8; original.len()]);
+
+        std::fs::remove_file(path).ok();
+    }
 }
