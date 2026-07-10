@@ -103,6 +103,12 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
+POST-Q4RP RE-PAIRING (2026-07-10 late): split-plane mirrors landed (+6.3% short spec) and the
+llama bar RE-MEASURED at ~290 warm (draft-mtp; the 241-253 record was stale) -> short spec
+0.80x. THE GAP IS NOW ACCEPTANCE, NOT ROUND COST: llama accept 0.64-0.70 / mean len 2.9-3.1
+via ADAPTIVE DRAFT LENGTH (--spec-draft-n-min 1, p-min gate) vs our fixed-K 0.52 / 2.56
+tok/round — same drafter, same prompt. NEXT SPEC LEVER = adaptive draft length in the async
+round: device logit-margin gate on the draft chain, or host Markov K (no-sync heuristic).
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
