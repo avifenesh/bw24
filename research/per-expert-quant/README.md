@@ -3,7 +3,10 @@
 This lane owns two deliverables: spill-path improvements for large expert banks and a controlled
 four-arm quantization study. Every retained routed expert is quantized; there is no BF16 expert
 evaluation arm or BF16 expert fallback. Model loading, CUDA correctness, artifact generation,
-performance measurement, calibration, and public evaluation happen on the provisioned G7e machine.
+research measurement, calibration, and public evaluation happen on the provisioned G7e machine.
+The local RTX 5090 rig remains bw24's deployment and final performance target; runtime defaults are
+not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
+gates there.
 
 ## Target model and frozen recipes
 
@@ -60,9 +63,11 @@ kernel exists.
 
 ## Owned spill track
 
-The full-bank arms are also the spill stress cases. Improve staged transfer, SLRU residency,
-prefetch/overlap, and mixed-layout dispatch without changing the frozen precision plans. Record
-spill hit/miss counts, bytes transferred, peak host/VRAM, and throughput separately from quality.
+The full-bank arms are also the spill stress cases. Treat them as an end-to-end data-movement and
+GPU-compute problem: combine mmap/zero-copy views, local-NVMe locality, pinned host buffers, SLRU
+residency, asynchronous prefetch/overlap, PCIe transfer, and mixed-layout GPU dispatch without
+changing the frozen precision plans. Record spill hit/miss counts, fault/read bytes, H2D bytes,
+stage timing, peak host/VRAM, and throughput separately from quality.
 Public eval examples must never tune cache size, prefetch policy, REAP masks, or precision tiers.
 
 `/data` is the durable artifact store on the target host. Before calibration, public evaluation, or

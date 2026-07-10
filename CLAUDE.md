@@ -38,16 +38,22 @@ the other, and report spill performance separately from model-quality comparison
   public eval scores. Uniform plans must not consume calibration traces.
 - Public eval runs require `ARTIFACT` and must retain its manifest/hash. Public benchmark data
   must never select experts, thresholds, tier fractions, or pruning decisions.
-- Model loading, spill correctness, performance measurements, artifact generation, and public evals
-  run on the provisioned G7e target machine. Do not merge or tag this lane until its remote raw logs
+- Model loading, spill correctness, research measurements, artifact generation, and public evals
+  run on the provisioned G7e research machine. Do not merge or tag this lane until its remote raw logs
   and four-arm eval report exist.
+- The local RTX 5090 rig remains bw24's deployment and final performance target. Treat G7e results
+  as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
+  on the 5090 before shipping any runtime default.
+- Optimize expert serving as one storage-to-compute pipeline: mmap/zero-copy, local-NVMe access,
+  pinned host memory, residency caching, asynchronous prefetch/overlap, PCIe transfer, and GPU
+  kernels. Measure the stages together so a faster kernel cannot hide a data-movement regression.
 - Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
   the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
   staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.
 
 Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
-pruned id dereferences nonexistent weights; and a local performance or quality claim would be
-fabricated because this host is not the experiment machine.
+pruned id dereferences nonexistent weights; and a G7e-only performance win may not transfer to the
+5090's smaller HBM and different storage/PCIe balance.
 
 ## Perf board: README must stay current, every push
 
