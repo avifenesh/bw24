@@ -45,6 +45,8 @@ kernel exists.
   must be assigned.
 - A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
   shared-expert tensors. Expert data is stored in one mixed file per layer/projection.
+- Per-expert overlay entries remain zero-copy mmap windows in `HostExps`; the 161 GB full-bank
+  control does not materialize an impossible second copy in 124 GB host RAM.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
   excluded before top-k and have no weight bytes in the artifact.
 - HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay
@@ -89,6 +91,7 @@ Capture enough requests to cover the intended deployment distribution:
     BW24_SERVE_SPEC=0 \
     BW24_KV_REUSE=0 \
     BW24_CTX=1032 \
+    BW24_MOE_GROUPED=1 \
     BW24_MOE_TRACE=/data/runs/hy3-calibration.trace \
     BW24_MODELS=plain_quant=/data/artifacts/plain-quant \
     ./target/release/bw24-server

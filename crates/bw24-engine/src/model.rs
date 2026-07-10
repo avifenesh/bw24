@@ -1117,28 +1117,40 @@ impl HostExps {
                 continue;
             }
             let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
-            let (bytes, qtype, row_bytes, cur_in, cur_out) =
-                if let Some(nv) = src.find_nvfp4_native(&name) {
-                    let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
-                    if let Some(scale) = src.find(&format!("{stem}.scale")) {
-                        macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
-                    }
+            let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+            if let Some(scale) = src.find(&format!("{stem}.scale")) {
+                macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
+            }
+            let (host, byte_len, qtype, row_bytes, cur_in, cur_out) =
+                if let Some((map, offset, len)) = src.find_expert_mmap(&name) {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                    assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
+                    let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+                    let row_bytes = staged_expert_row_bytes(v.ggml_type, cur_in)
+                        .ok_or_else(|| format!("mmap expert {name} has unsupported qtype {:?}", v.ggml_type))?;
+                    (HostBuf::Mmap { map, off: offset, len }, len,
+                     staged_expert_qtype(v.ggml_type).unwrap(), row_bytes, cur_in, cur_out)
+                } else if let Some(nv) = src.find_nvfp4_native(&name) {
                     let bytes = bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
                         nv.wbytes, nv.wscale, nv.out_f, nv.in_f);
                     let row_bytes = nv.in_f / 64 * 36;
-                    (bytes, QT_NVFP4, row_bytes, nv.in_f, nv.out_f)
+                    let byte_len = bytes.len();
+                    (HostBuf::Paged(bytes), byte_len, QT_NVFP4, row_bytes, nv.in_f, nv.out_f)
                 } else {
                     let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
                     assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
                     let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
                     if let Some(row_bytes) = staged_expert_row_bytes(v.ggml_type, cur_in) {
-                        (v.bytes.into_owned(), staged_expert_qtype(v.ggml_type).unwrap(),
+                        let bytes = v.bytes.into_owned();
+                        let byte_len = bytes.len();
+                        (HostBuf::Paged(bytes), byte_len, staged_expert_qtype(v.ggml_type).unwrap(),
                          row_bytes, cur_in, cur_out)
                     } else {
                         let f32v = dequant::dequantize(v.ggml_type, &v.bytes, cur_in * cur_out);
                         let mut bytes = Vec::with_capacity(f32v.len() * 4);
                         for f in f32v { bytes.extend_from_slice(&f.to_le_bytes()); }
-                        (bytes, QT_F32, cur_in * 4, cur_in, cur_out)
+                        let byte_len = bytes.len();
+                        (HostBuf::Paged(bytes), byte_len, QT_F32, cur_in * 4, cur_in, cur_out)
                     }
                 };
 
@@ -1150,10 +1162,10 @@ impl HostExps {
                 assert_eq!((cur_in, cur_out), (in_f, out_f),
                     "expert {ex} dims ({cur_in},{cur_out}) != first active expert ({in_f},{out_f})");
             }
-            assert_eq!(bytes.len(), cur_out * row_bytes,
-                "expert {name} bytes {} != out_f*row_bytes {}", bytes.len(), cur_out * row_bytes);
-            layouts.push(ExpertLayout { offset: 0, len: bytes.len(), qtype, row_bytes });
-            tiers.push(HostBuf::Paged(bytes));
+            assert_eq!(byte_len, cur_out * row_bytes,
+                "expert {name} bytes {byte_len} != out_f*row_bytes {}", cur_out * row_bytes);
+            layouts.push(ExpertLayout { offset: 0, len: byte_len, qtype, row_bytes });
+            tiers.push(host);
         }
 
         let first = layouts[*first_active.as_ref().expect("expert mask pruned every expert")];
@@ -1220,7 +1232,8 @@ impl HostExps {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4, repack_nvfp4_split, unpack_nvfp4_split};
+    use super::{HostBuf, HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4,
+                repack_nvfp4_split, unpack_nvfp4_split};
     use std::borrow::Cow;
     use bw24_gguf::{GgmlType, config::ModelConfig};
     use bw24_gguf::nvfp4_repack::{repack_modelopt_to_gguf, repack_modelopt_to_split};
@@ -1254,6 +1267,37 @@ mod tests {
         q2k: Vec<u8>,
         nvfp4: Vec<u8>,
         active: Vec<bool>,
+    }
+
+    struct MmapExpertSource {
+        map: std::sync::Arc<memmap2::Mmap>,
+        expert_len: usize,
+    }
+
+    impl TensorSource for MmapExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps mmap-loader test") }
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            let off = ex * self.expert_len;
+            Some(TensorView {
+                bytes: Cow::Borrowed(&self.map[off..off + self.expert_len]),
+                ggml_type: GgmlType::Q2_K,
+                ne: vec![256, 2],
+            })
+        }
+        fn find_expert_mmap(&self, name: &str)
+                            -> Option<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            Some((self.map.clone(), ex * self.expert_len, self.expert_len))
+        }
     }
 
     impl TensorSource for PrunedExpertSource {
@@ -1323,5 +1367,25 @@ mod tests {
         assert_eq!(exps.expert_bytes(1), &[]);
         assert_eq!(exps.expert_layout(2).qtype, QT_NVFP4);
         assert_eq!(exps.expert_layout(2).row_bytes, 4 * 36);
+    }
+
+    #[test]
+    fn mixed_expert_loader_keeps_mmap_backing_zero_copy() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-mixed-mmap-{}", std::process::id()
+        ));
+        let expert_len = 2 * 84;
+        let mut bytes = vec![0x31; expert_len];
+        bytes.extend(vec![0x72; expert_len]);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&file).unwrap() });
+        let source = MmapExpertSource { map, expert_len };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 2).unwrap();
+        assert!(matches!(exps.tiers.as_ref().unwrap()[0], HostBuf::Mmap { .. }));
+        assert!(matches!(exps.tiers.as_ref().unwrap()[1], HostBuf::Mmap { .. }));
+        assert_eq!(exps.expert_bytes(0), &bytes[..expert_len]);
+        assert_eq!(exps.expert_bytes(1), &bytes[expert_len..]);
+        std::fs::remove_file(path).ok();
     }
 }
