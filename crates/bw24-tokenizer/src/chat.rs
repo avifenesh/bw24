@@ -30,6 +30,13 @@ pub fn apply_chat_template_str(
     if template.is_some_and(|t| t.contains("hy_User")) {
         return apply_hy3_template(messages, add_generation_prompt);
     }
+    // gemma4: `<|turn>role\n{content}<turn|>\n` dialect; generation prompt appends
+    // `<|turn>model\n` + the CLOSED thought channel (`<|channel>thought\n<channel|>` — the
+    // template's enable_thinking-false default). bos comes from encode(add_special) — the
+    // template's `{{ bos_token }}` is NOT re-emitted here (double-BOS trap).
+    if template.is_some_and(|t| t.contains("<|turn>")) {
+        return apply_gemma4_template(messages, add_generation_prompt);
+    }
     // qwen3.5 template emits a `<think>\n` tail on the generation prompt by default.
     let qwen_think = template
         .map(|t| t.contains("<think>") && t.contains("add_generation_prompt"))
@@ -125,6 +132,26 @@ fn apply_hy3_template(messages: &[(&str, &str)], add_generation_prompt: bool) ->
         out.push_str(ASSISTANT);
         out.push_str(THINK_BEGIN);
         out.push_str(THINK_END);
+    }
+    out
+}
+
+
+/// gemma4 turn dialect (text-only path of the GGUF template, verified against the dumped
+/// jinja): roles map assistant->model; each turn = `<|turn>{role}\n{content|trim}<turn|>\n`;
+/// generation prompt = `<|turn>model\n<|channel>thought\n<channel|>`.
+fn apply_gemma4_template(messages: &[(&str, &str)], add_generation_prompt: bool) -> String {
+    let mut out = String::new();
+    for (role, content) in messages {
+        let role = if *role == "assistant" { "model" } else { role };
+        out.push_str("<|turn>");
+        out.push_str(role);
+        out.push('\n');
+        out.push_str(content.trim());
+        out.push_str("<turn|>\n");
+    }
+    if add_generation_prompt {
+        out.push_str("<|turn>model\n<|channel>thought\n<channel|>");
     }
     out
 }

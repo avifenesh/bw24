@@ -218,6 +218,10 @@ impl HybridModel {
         // class as decode reading the cache. Prompts <= one chunk take the ORIGINAL monolithic
         // body byte-for-byte (chunk 0 short-circuits to the f32 fa_prefill path).
         // BW24_PRIME_CHUNK sets the chunk size (tokens); 0 disables chunking (monolithic).
+        if self.cfg.gemma4.is_some() {
+            // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
+            return self.gemma4_prime(e, tokens, cache);
+        }
         let chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(4096);
         if chunk == 0 || t <= chunk {
@@ -2004,9 +2008,13 @@ impl HybridModel {
     }
 
     /// gemma4 attention (R5 geometry, R7 weightless V-norm on the RAW K projection, R9 dual rope).
-    fn gemma4_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
-                   h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
-                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    /// `cache`: Some => PRIME mode — append the T post-rope K / normed V rows into the quantized
+    /// KV cache (same per-row quantize math as the decode append) and advance len. Fresh-prompt
+    /// only (v0): attends within `tokens` via the f32 sdpa.
+    fn gemma4_attn_prime(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                         h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                         cache: Option<&mut Cache>)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
@@ -2014,15 +2022,6 @@ impl HybridModel {
         let q0 = e.matmul(&fa.wq, h, t)?;   // [t, nh*hd]
         let k0 = e.matmul(&fa.wk, h, t)?;   // [t, nkv*hd]
         let v0 = e.matmul(&fa.wv, h, t)?;   // globals: wv==wk bytes -> the RAW K projection
-        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
-            for (nm, v, w) in [("Qcur", &q0, nh), ("Kcur", &k0, nkv), ("Vcur", &v0, nkv)] {
-                let hh = e.dtoh(v)?;
-                let r0 = &hh[..w * hd];
-                eprintln!("[g0] {nm}: sum={:.4} row0[0..3]={:?} row0[-3..]={:?}",
-                          hh.iter().map(|&x| x as f64).sum::<f64>(),
-                          &r0[..3], &r0[r0.len() - 3..]);
-            }
-        }
 
         let mut q = e.zeros(t * nh * hd)?;
         e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
@@ -2041,21 +2040,23 @@ impl HybridModel {
             e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, t, base, 1.0, ff)?;
         }
 
-        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
-            for (nm, v) in [("Qcur_pos", &q), ("Kcur_pos", &k), ("Vcur_normed", &v)] {
-                let hh = e.dtoh(v)?;
-                eprintln!("[g0] {nm}: sum={:.4} first={:?}",
-                          hh.iter().map(|&x| x as f64).sum::<f64>(), &hh[..3]);
-            }
+        if let Some(cache) = cache {
+            let kvl = cache.kv[il].as_mut().unwrap();
+            assert_eq!(kvl.len, 0, "gemma4 prime is fresh-prompt only (v0)");
+            e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
         e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
-        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
-            let hh = e.dtoh(&attn)?;
-            eprintln!("[g0] fattn: sum={:.4} first={:?}",
-                      hh.iter().map(|&x| x as f64).sum::<f64>(), &hh[..3]);
-        }
         Ok(e.matmul(&fa.wo, &attn, t)?)
+    }
+
+    /// Back-compat wrapper (pure prefill, no cache).
+    fn gemma4_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                   h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        self.gemma4_attn_prime(e, fa, il, h, pos_d, t, None)
     }
 
     /// gemma4 MoE (R2 router prologue input supplied by caller, R3 per-expert output scale).
@@ -2141,55 +2142,28 @@ impl HybridModel {
                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
-        let bits = layer.gemma4.as_ref().unwrap();
-        // BW24_GEMMA_PROBE=2: layer-0 intra-layer sums (bisect vs llama-eval-callback).
-        let p2 = il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2");
-        let psum = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
-            if p2 {
-                let h = e.dtoh(v)?;
-                eprintln!("[g0] {tag}: sum={:.4}", h.iter().map(|&x| x as f64).sum::<f64>());
-            }
-            Ok(())
-        };
 
         let mut h = e.zeros(t * n_embd)?;
         e.rms_norm(x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-        psum(e, &h, "attn_norm")?;
-        let pfirst = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
-            if p2 { let hh = e.dtoh(v)?; eprintln!("[g0] {tag} first={:?}", &hh[..3]); }
-            Ok(())
-        };
         let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
         let o = self.gemma4_attn(e, fa, il, &h, pos_d, t)?;
-        psum(e, &o, "node_29(wo)")?;
-        pfirst(e, &o, "node_29")?;
         // gemma order: post_attention_norm applies to the ATTENTION OUTPUT, then the residual.
         let mut cur = e.zeros(t * n_embd)?;
         e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
-        psum(e, &cur, "attn_post_norm")?;
-        pfirst(e, &cur, "attn_post_norm")?;
         let mut attn_out = e.zeros(t * n_embd)?;
         e.add(&cur, x, &mut attn_out, t * n_embd)?;
-        psum(e, &attn_out, "attn_out")?;
 
-        self.gemma4_layer_tail(e, layer, &attn_out, t, p2)
+        self.gemma4_layer_tail(e, layer, &attn_out, t)
     }
 
     /// Everything after `attn_out` in a gemma4 layer (shared FFN + router + MoE + combine +
     /// layer scale) — shared verbatim by the prefill and decode paths.
     fn gemma4_layer_tail(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
-                         attn_out: &CudaSlice<f32>, t: usize, p2: bool)
+                         attn_out: &CudaSlice<f32>, t: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
-        let psum = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
-            if p2 {
-                let h = e.dtoh(v)?;
-                eprintln!("[g0] {tag}: sum={:.4}", h.iter().map(|&x| x as f64).sum::<f64>());
-            }
-            Ok(())
-        };
         // shared (parallel) dense FFN branch: post_ffw_norm_1(GELU_FFN(rms_norm(x, ffn_norm)))
         let mut zsh = e.zeros(t * n_embd)?;
         e.rms_norm(attn_out, bits.ffn_norm.float_data(), &mut zsh, n_embd, t, eps)?;
@@ -2201,32 +2175,25 @@ impl HybridModel {
         let mlp0 = e.matmul(&bits.shared_down, &act, t)?;
         let mut mlp = e.zeros(t * n_embd)?;
         e.rms_norm(&mlp0, bits.post_ffw_norm_1.float_data(), &mut mlp, n_embd, t, eps)?;
-        psum(e, &mlp, "ffn_mlp")?;
 
         // R2 router prologue: weightless rms_norm x 1/sqrt(n_embd) x gate_inp.scale — folded
         // into ONE rms_norm whose weight is the pre-scaled vector (see Gemma4LayerBits).
         let mut router_in = e.zeros(t * n_embd)?;
         e.rms_norm(attn_out, &bits.router_scale_pre, &mut router_in, n_embd, t, eps)?;
-        psum(e, &router_in, "node_35(router_in)")?;
         let mut moe_in = e.zeros(t * n_embd)?;
         e.rms_norm(attn_out, bits.pre_ffw_norm_2.float_data(), &mut moe_in, n_embd, t, eps)?;
-        psum(e, &moe_in, "ffn_norm_2(moe_in)")?;
         let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer not MoE") };
         let moe0 = self.gemma4_moe(e, m, bits, &moe_in, &router_in, t)?;
-        psum(e, &moe0, "ffn_moe_out")?;
         let mut moe = e.zeros(t * n_embd)?;
         e.rms_norm(&moe0, bits.post_ffw_norm_2.float_data(), &mut moe, n_embd, t, eps)?;
-        psum(e, &moe, "ffn_moe")?;
 
         // combine: rms_norm(mlp + moe, post_ffw_norm) + attn_out, then the layer output scalar.
         let mut sum = e.zeros(t * n_embd)?;
         e.add(&mlp, &moe, &mut sum, t * n_embd)?;
         let mut sn = e.zeros(t * n_embd)?;
         e.rms_norm(&sum, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
-        psum(e, &sn, "ffn_post_norm")?;
         let mut xn = e.zeros(t * n_embd)?;
         e.add(&sn, attn_out, &mut xn, t * n_embd)?;
-        psum(e, &xn, "node_88")?;
         e.scale_inplace(&mut xn, bits.layer_scale, t * n_embd)?;
         Ok(xn)
     }
@@ -2269,6 +2236,45 @@ impl HybridModel {
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
         Ok(logits)
+    }
+
+    /// gemma4 BATCHED PROMPT PRIME v0 (fresh cache only): the prefill graph over the whole
+    /// prompt with each layer's post-rope K / weightless-normed V appended into the quantized
+    /// KV cache (decode-append row math). Returns (last-row softcapped logits, h_seed = last
+    /// pre-output_norm hidden, hiddens = full pre-output_norm stack [T, n_embd]).
+    pub(crate) fn gemma4_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+                               -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        assert_eq!(cache.pos, 0, "gemma4 prime v0 is fresh-prompt only");
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let pos: Vec<i32> = (0..t as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+        let mut x = self.embed(e, tokens)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.zeros(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer not full-attn") };
+            let o = self.gemma4_attn_prime(e, fa, il, &h, &pos_d, t, Some(cache))?;
+            let mut cur = e.zeros(t * n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+            let mut attn_out = e.zeros(t * n_embd)?;
+            e.add(&cur, &x, &mut attn_out, t * n_embd)?;
+            x = self.gemma4_layer_tail(e, layer, &attn_out, t)?;
+        }
+        cache.pos += t;
+        let hiddens = e.clone_dtod(&x)?;
+        let xv = e.view(&x, t * n_embd);
+        let last_row = xv.slice((t - 1) * n_embd..t * n_embd);
+        let mut h_seed = e.zeros(n_embd)?;
+        e.copy_view_into(&mut h_seed, 0, &last_row, n_embd)?;
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&h_seed, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let mut logits = e.dtoh(&e.matmul(&self.output, &hn, 1)?)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
+        Ok((logits, h_seed, hiddens))
     }
 
     /// gemma4 T=1 decode attention: per-layer geometry, quantized-KV append + fa_decode
@@ -2329,7 +2335,7 @@ impl HybridModel {
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, 1, eps)?;
             let mut attn_out = e.uninit(n_embd)?;
             e.add(&cur, &x, &mut attn_out, n_embd)?;
-            x = self.gemma4_layer_tail(e, layer, &attn_out, 1, false)?;
+            x = self.gemma4_layer_tail(e, layer, &attn_out, 1)?;
         }
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;

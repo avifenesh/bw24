@@ -438,6 +438,17 @@ impl Tokenizer {
     pub fn eos_id(&self) -> u32 {
         self.eos_id
     }
+    /// End-of-generation ids: eos + the common turn-end control tokens present in the vocab
+    /// (llama's special_eog set — <|im_end|> chatml, <turn|>/<end_of_turn> gemma).
+    pub fn eog_ids(&self) -> Vec<u32> {
+        let mut ids = vec![self.eos_id];
+        for t in ["<|im_end|>", "<turn|>", "<end_of_turn>"] {
+            if let Some(&id) = self.token_to_id.get(t) {
+                if !ids.contains(&id) { ids.push(id); }
+            }
+        }
+        ids
+    }
     pub fn bos_id(&self) -> Option<u32> {
         self.bos_id
     }

@@ -259,6 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- generate + time decode tok/s (honest Stage-A baseline) ---
     let n_new = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
     let eos = tokenizer.as_ref().map(|t| t.eos_id());
+    let eog: Vec<u32> = tokenizer.as_ref().map(|t| t.eog_ids()).unwrap_or_default();
     // Sampler config from env (defaults = greedy, the bit-exact reference). BW24_TEMP>0 enables
     // the full chain: BW24_TOP_K / BW24_TOP_P / BW24_MIN_P / BW24_PENALTY_REPEAT / BW24_SEED.
     let env_f = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
@@ -276,7 +277,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut sampler = bw24_engine::sampler::Sampler::new(scfg);
     // Stop conditions: EOS (text path) + optional stop-strings (BW24_STOP="a,b").
-    let eos_ids: Vec<u32> = eos.into_iter().collect();
+    let mut eos_ids: Vec<u32> = eos.into_iter().collect();
+    for id in eog { if !eos_ids.contains(&id) { eos_ids.push(id); } }
     let stop_strs: Vec<String> = std::env::var("BW24_STOP").ok()
         .map(|s| s.split(',').map(|x| x.to_string()).filter(|x| !x.is_empty()).collect())
         .unwrap_or_default();
