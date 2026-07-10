@@ -140,6 +140,12 @@ pub struct Gemma4Config {
     pub rope_dims_global: u32,       // 512 metadata (p-RoPE partial applies via rope_freqs)
     pub rope_dims_swa: u32,          // 256
     pub final_logit_softcapping: f32, // 30.0
+    // ---- E4B (per-layer-embedding + KV-sharing variant; 0 on 26B/31B) ----
+    /// n_embd_per_layer (E4B: 256). 0 = no per-layer-embedding machinery.
+    pub n_embd_per_layer: u32,
+    /// trailing layers WITHOUT own KV (E4B: 18); they attend an earlier layer's cache:
+    /// il >= n_layer - shared_kv_layers reads layer (n_layer - shared_kv_layers) - (swa ? 2 : 1).
+    pub shared_kv_layers: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +239,8 @@ impl ModelConfig {
                     rope_dims_global: u("rope.dimension_count").unwrap_or(512),
                     rope_dims_swa: u("rope.dimension_count_swa").unwrap_or(256),
                     final_logit_softcapping: f("final_logit_softcapping").unwrap_or(30.0),
+                    n_embd_per_layer: u("embedding_length_per_layer_input").unwrap_or(0),
+                    shared_kv_layers: u("attention.shared_kv_layers").unwrap_or(0),
                 })
             } else { None };
 

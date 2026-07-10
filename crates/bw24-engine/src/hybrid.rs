@@ -296,6 +296,34 @@ pub struct Gemma4LayerBits {
     /// branch norms + tensors, the router prologue vector, per-expert output scales.
     pub moe_bits: Option<Gemma4MoeBits>,
     pub layer_scale: f32,              // layer_output_scale [1]
+    /// E4B extras (None on 26B/31B): the per-layer-embedding tail block + KV-share target.
+    pub e4b: Option<Gemma4E4bLayer>,
+}
+
+/// gemma-4 E4B per-layer bits (see research/gemma4-bringup/e4b-arch-map.md):
+/// tail block  cur += rms_norm(proj . (gelu(inp_gate . cur) * inp_pl[il]), post_norm)
+/// and the KV-share map — layers il >= n_layer-shared_kv_layers have NO own k/v projections
+/// and attend the cache of layer (n_layer-shared) - (swa ? 2 : 1) with their own Q.
+pub struct Gemma4E4bLayer {
+    pub inp_gate: GpuTensor,           // blk.N.inp_gate  [n_embd, n_epl]
+    pub proj: GpuTensor,               // blk.N.proj      [n_epl, n_embd]
+    pub post_norm: GpuTensor,          // blk.N.post_norm [n_embd]
+    /// Some(target_layer) on KV-shared layers (wk/wv here are the TARGET layer's tensors,
+    /// loaded for shape symmetry only — the forward must skip k/v compute + append and read
+    /// the target's cache; TODO dedupe the duplicate weight upload ~63MB).
+    pub kv_share: Option<u32>,
+}
+
+/// gemma-4 E4B model-level per-layer-embedding tensors (prologue inputs). The token table
+/// stays HOST-side raw GGUF bytes at load (Q6_K [n_epl*n_layer, n_vocab], ~2.3GB VRAM when
+/// uploaded — the forward arc decides resident-vs-gather placement).
+pub struct Gemma4E4bModel {
+    pub tok_embd_bytes: Vec<u8>,
+    pub tok_embd_qt: i32,
+    pub tok_embd_row_bytes: usize,
+    pub model_proj: GpuTensor,         // per_layer_model_proj [n_embd, n_epl*n_layer] F16
+    pub proj_norm: GpuTensor,          // per_layer_proj_norm [n_epl]
+    pub n_epl: usize,
 }
 
 pub struct Gemma4MoeBits {
@@ -411,6 +439,8 @@ pub struct GemmaAux {
     pub rope_freqs: Option<CudaSlice<f32>>,
     /// all-ones norm weight [512] (max head_dim) — the weightless rms_norms (R7 V-norm).
     pub ones: CudaSlice<f32>,
+    /// E4B per-layer-embedding model tensors (None on 26B/31B).
+    pub e4b: Option<Gemma4E4bModel>,
 }
 
 pub struct HybridModel {
@@ -474,7 +504,30 @@ impl HybridModel {
                 post_attn_norm: load_opt(e, src, &p("post_attention_norm.weight"))?
                     .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                     .expect("need post_attention_norm or ffn_norm"),
-                mixer: load_mixer_kind(e, src, il, cfg.layer_kind(il))?,
+                mixer: {
+                    // E4B KV-shared layers ship NO attn_k/attn_v — load the SHARE TARGET's
+                    // k/v tensors for shape symmetry (forward skips k/v compute there and
+                    // reads the target layer's cache; see Gemma4E4bLayer::kv_share).
+                    let g4_shared = cfg.gemma4.as_ref().map(|g| g.shared_kv_layers).unwrap_or(0);
+                    let kv_from = n_trunk as u32 - g4_shared;
+                    if g4_shared > 0 && il >= kv_from
+                        && !src.has(&format!("blk.{il}.attn_k.weight")) {
+                        let g4 = cfg.gemma4.as_ref().unwrap();
+                        let swa = g4.swa_pattern.get(il as usize).copied().unwrap_or(true);
+                        let tgt = kv_from - if swa { 2 } else { 1 };
+                        let tp = |s: &str| format!("blk.{tgt}.{s}");
+                        Mixer::Full(FullAttnLayer {
+                            wq: load_t(e, src, &p("attn_q.weight"))?,
+                            wk: load_t(e, src, &tp("attn_k.weight"))?,
+                            wv: load_t(e, src, &tp("attn_v.weight"))?,
+                            wo: load_t(e, src, &p("attn_output.weight"))?,
+                            q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
+                            k_norm: load_t(e, src, &tp("attn_k_norm.weight"))?,
+                        })
+                    } else {
+                        load_mixer_kind(e, src, il, cfg.layer_kind(il))?
+                    }
+                },
                 ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
                 gemma4: if cfg.gemma4.is_some() {
                     let scalar = |n: &str| -> f32 {
@@ -503,11 +556,27 @@ impl HybridModel {
                             per_expert_scale_d: e.htod(&vecf("ffn_down_exps.scale"))?,
                         })
                     } else { None };
+                    // E4B extras (tensor-presence: blk.N.inp_gate only exists on E4B)
+                    let e4b = if src.has(&p("inp_gate.weight")) {
+                        let g4 = cfg.gemma4.as_ref().unwrap();
+                        let kv_from = n_trunk as u32 - g4.shared_kv_layers;
+                        let kv_share = if g4.shared_kv_layers > 0 && il >= kv_from {
+                            let swa = g4.swa_pattern.get(il as usize).copied().unwrap_or(true);
+                            Some(kv_from - if swa { 2 } else { 1 })
+                        } else { None };
+                        Some(crate::hybrid::Gemma4E4bLayer {
+                            inp_gate: load_t(e, src, &p("inp_gate.weight"))?,
+                            proj: load_t(e, src, &p("proj.weight"))?,
+                            post_norm: load_t(e, src, &p("post_norm.weight"))?,
+                            kv_share,
+                        })
+                    } else { None };
                     Some(Gemma4LayerBits {
                         ffn_norm: load_t(e, src, &p("ffn_norm.weight"))?,
                         post_ffw_norm: load_t(e, src, &p("post_ffw_norm.weight"))?,
                         moe_bits,
                         layer_scale: scalar("layer_output_scale.weight"),
+                        e4b,
                     })
                 } else { None },
             });
@@ -628,7 +697,29 @@ impl HybridModel {
                     t.ggml_type, &t.bytes, t.ne.iter().product::<u64>() as usize))?),
                 None => None,
             };
-            Some(GemmaAux { rope_freqs, ones: e.htod(&[1.0f32; 512])? })
+            // E4B per-layer-embedding model tensors (tensor-presence gated).
+            let e4b = match src.find("per_layer_token_embd.weight") {
+                Some(t) => {
+                    let n_epl = cfg.gemma4.as_ref().map(|g| g.n_embd_per_layer as usize).unwrap_or(0);
+                    let row = t.ne[0] as usize;   // n_epl * n_layer
+                    let row_bytes = t.bytes.len() / (t.ne[1] as usize);
+                    eprintln!("[gemma4-e4b] per-layer-embed tensors detected (n_epl={n_epl},                                row {row}); LOADER ONLY — the E4B forward is not wired yet                                (see HANDOVER-E4B.md)");
+                    Some(crate::hybrid::Gemma4E4bModel {
+                        tok_embd_bytes: t.bytes.to_vec(),
+                        tok_embd_qt: match t.ggml_type {
+                            bw24_gguf::GgmlType::Q6_K => crate::QT_Q6_K,
+                            bw24_gguf::GgmlType::Q8_0 => crate::QT_Q8_0,
+                            other => panic!("e4b per-layer tok embd: unhandled dtype {other:?}"),
+                        },
+                        tok_embd_row_bytes: row_bytes,
+                        model_proj: load_t(e, src, "per_layer_model_proj.weight")?,
+                        proj_norm: load_t(e, src, "per_layer_proj_norm.weight")?,
+                        n_epl,
+                    })
+                }
+                None => None,
+            };
+            Some(GemmaAux { rope_freqs, ones: e.htod(&[1.0f32; 512])?, e4b })
         } else { None };
         let mut layers = layers;
         // Q4_0 SPLIT-PLANE DECODE MIRRORS (2026-07-10, BW24_Q4RP seam): gemma-4 MoE-class trunk
