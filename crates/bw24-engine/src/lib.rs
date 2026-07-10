@@ -189,10 +189,12 @@ fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     // flat, ctx>=4096 sp64 edges sp16 by ~3%; 27B ctx128 70.9 vs 66.3 (+7%); 9B 177 vs 163
     // (+9%). Rigs <=100 SMs keep the validated 5090 ladder EXACTLY (default unchanged there —
     // rig-divergence law: this branch is measured on 188 SMs only).
-    // gemma4 ladder (2026-07-10 depth sweep at d1736: sp8/16/24/32/48/64 ->
-    // 155.0/157.5/153.5/142.6/140.2/129.0; short flat at 16): one rung for all its
-    // geometries. Set at model load (per-model numeric-config law); qwen ladders untouched.
-    if FA_SP_GEMMA.load(std::sync::atomic::Ordering::Relaxed) {
+    // gemma4 all-16 ladder probe REVERTED (2026-07-10): +1.3 plain at d1736 (157.5 vs 156.2)
+    // but depth VERIFY collapsed (spec 203.5 -> 169 — the windowed rows' per-row combine over
+    // 64 splits). The mixed default (swa nkv=8 -> 32, globals nkv=2 -> 8-ladder) stays; a
+    // caller-split policy would break row-vs-decode split parity. FA_SP_GEMMA kept as a seam.
+    if FA_SP_GEMMA.load(std::sync::atomic::Ordering::Relaxed)
+        && std::env::var("BW24_FA_SP16").as_deref() == Ok("1") {
         return if t_kv <= 8192 { 16 } else if t_kv <= 16384 { 64 } else { 128 };
     }
     let big_rig = fa_sm_count() >= 128;
