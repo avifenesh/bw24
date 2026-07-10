@@ -4605,6 +4605,8 @@ extern "C" __global__ void fa_decode_vec_q_rows_reg_w(
     }
 }
 
+
+
 // hd512 ROWS twin (gemma globals verify + decode, parity law): fa_decode_vec_q_dpl16's
 // EXACT walk with the rows frame (r = blockIdx.z causal bound, [T,...] partials). Decode
 // passes t=1 — decode and verify share THIS symbol in the hd512 vec regime, so parity does
