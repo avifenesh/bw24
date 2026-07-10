@@ -2761,18 +2761,32 @@ impl HybridModel {
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         e.inc_seqlen(&mut kvl.len_d)?;
-        let (bucket_max, k_view, v_view) = match cap_bucket_max {
-            None => {
-                kvl.len += 1;
-                let t_kv = kvl.len;
-                (t_kv, e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes),
-                       e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes))
-            }
-            Some(b) => (b, e.view_u8(&kvl.k, kvl.k.len()), e.view_u8(&kvl.v, kvl.v.len())),
-        };
         let mut attn = e.uninit(nh * hd)?;
-        e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, bucket_max,
-                       scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        match cap_bucket_max {
+            None => {
+                // dc-EAGER: host knows the length — R6 window views EXACTLY like the eager
+                // decode (SWA layers attend the last `sliding_window` keys); the device
+                // counters carry only the append slot + the graph seam.
+                kvl.len += 1;
+                let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+                let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
+                                      else { (0, kvl.len) };
+                let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                             (off_tok + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                             (off_tok + t_kv) * kvl.v_tok_bytes);
+                e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            }
+            Some(b) => {
+                // capture: full-buffer views + device length (V1 scope: t_kv <= window,
+                // caller gates — no window offsets in-graph).
+                let k_view = e.view_u8(&kvl.k, kvl.k.len());
+                let v_view = e.view_u8(&kvl.v, kvl.v.len());
+                e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
+                               scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            }
+        }
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
 
