@@ -874,10 +874,10 @@ impl HostExps {
             { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&buf); }
             let base = pn.as_ptr()? as *const u8;
             let len = buf.len();
-            HostBuf::Pinned { slice: pn, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(pn), base, len }
         } else { HostBuf::Paged(buf) };
         Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
-                      expert_stride, macros: None })
+                      expert_stride, layouts: None, macros: None })
     }
 
     pub fn load_stacked_from_source(e: &Engine, src: &dyn TensorSource, name: &str)
