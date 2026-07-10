@@ -7,6 +7,15 @@
   "shuffle_buffer": 4096,
   "max_input_tokens": 1024,
   "add_generation_prompt": false,
+  "toolchain": {
+    "datasets": "3.6.0",
+    "transformers": "5.6.0"
+  },
+  "expected_corpus": {
+    "request_count": 192,
+    "total_prompt_tokens": 163409,
+    "requests_sha256": "b23225e14d70947bc39d1ed92795d66deb365a69538cdb124b5c85e2b7daee04"
+  },
   "sources": [
     {
       "name": "theblackcat102/evol-codealpaca-v1",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import itertools
 import json
 from pathlib import Path
@@ -228,17 +229,27 @@ def main() -> None:
             requests.append(record)
             sample_manifest.append({k: record[k] for k in record if k != "prompt_ids"})
 
+    body = b"".join(canonical(record) + b"\n" for record in requests)
+    actual = {
+        "request_count": len(requests),
+        "total_prompt_tokens": sum(record["prompt_tokens"] for record in requests),
+        "requests_sha256": hashlib.sha256(body).hexdigest(),
+    }
+    for key, expected in lock.get("expected_corpus", {}).items():
+        if actual[key] != expected:
+            raise RuntimeError(f"calibration corpus drift: {key}={actual[key]!r}, expected {expected!r}")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     requests_path = args.out_dir / "requests.jsonl"
-    body = b"".join(canonical(record) + b"\n" for record in requests)
     requests_path.write_bytes(body)
     manifest = {
         "format": "bw24-hy3-routing-calibration-corpus-v1",
         "recipe": lock,
         "tokenizer_dir": str(Path(args.tokenizer).resolve()),
-        "request_count": len(requests),
-        "total_prompt_tokens": sum(record["prompt_tokens"] for record in requests),
-        "requests_sha256": hashlib.sha256(body).hexdigest(),
+        **actual,
+        "tool_versions": {
+            "datasets": importlib.metadata.version("datasets"),
+            "transformers": importlib.metadata.version("transformers"),
+        },
         "samples": sample_manifest,
     }
     (args.out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
