@@ -984,8 +984,8 @@ impl Engine {
     }
 
     /// Positioned-read proof-backend counters:
-    /// `(reads, bytes, read_errors, short_reads, mmap_fallbacks, buffer_waits)`.
-    pub fn moe_pread_stats(&self) -> Option<(u64, u64, u64, u64, u64, u64)> {
+    /// `(reads, bytes, read_errors, short_reads, mmap_fallbacks, buffer_waits, ring_full)`.
+    pub fn moe_pread_stats(&self) -> Option<(u64, u64, u64, u64, u64, u64, u64)> {
         let guard = self.moe_cache.lock().unwrap();
         guard.as_ref().and_then(|cache| cache.pread_stats()).map(|stats| (
             stats.reads,
@@ -994,6 +994,7 @@ impl Engine {
             stats.short_reads,
             stats.fallbacks,
             stats.buffer_waits,
+            stats.ring_full,
         ))
     }
 

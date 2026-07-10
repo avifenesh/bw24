@@ -8,6 +8,8 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_DIR="$OUT_ROOT/$RUN_ID"
 WINDOWS=${WINDOWS:-"8 1 4"}
 MMAP_ADVICE=${MMAP_ADVICE:-random}
+SPILL_IO=${SPILL_IO:-mmap}
+PREAD_DEPTH=${PREAD_DEPTH:-8}
 MODEL=${MODEL:-plain_quant}
 ADDR=${ADDR:-127.0.0.1:8080}
 HEALTH_TIMEOUT_S=${HEALTH_TIMEOUT_S:-1200}
@@ -26,6 +28,8 @@ Optional:
   MODEL=plain_quant            server model alias
   WINDOWS="8 1 4"              ordered page-prefetch windows
   MMAP_ADVICE=random|normal    whole expert-map kernel advice
+  SPILL_IO=mmap|pread|worker   expert storage backend
+  PREAD_DEPTH=8                pinned buffers / worker count
   OUT_ROOT=/path/to/results
   RUN_ID=unique-run-id
   ADDR=127.0.0.1:8080
@@ -63,6 +67,10 @@ done
 [[ -n "$MODEL" && "$MODEL" != *[=,]* ]] || die "MODEL must be a nonempty alias without '=' or ','"
 [[ "$MMAP_ADVICE" == random || "$MMAP_ADVICE" == normal ]] \
   || die "MMAP_ADVICE must be random or normal"
+[[ "$SPILL_IO" == mmap || "$SPILL_IO" == pread || "$SPILL_IO" == worker ]] \
+  || die "SPILL_IO must be mmap, pread, or worker"
+[[ "$PREAD_DEPTH" =~ ^[1-9][0-9]*$ && "$PREAD_DEPTH" -le 64 ]] \
+  || die "PREAD_DEPTH must be an integer from 1 through 64"
 [[ "$HEALTH_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "HEALTH_TIMEOUT_S must be a positive integer"
 [[ "$REQUEST_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "REQUEST_TIMEOUT_S must be a positive integer"
 [[ "$DRY_RUN" == 0 || "$DRY_RUN" == 1 ]] || die "DRY_RUN must be 0 or 1"
@@ -102,15 +110,16 @@ if [[ -n "$conflicts" ]]; then
 fi
 
 if [[ "$DRY_RUN" == 1 ]]; then
-  printf 'artifact=%s\nprompt=%s\nmodel=%s\nwindows=%s\nmmap_advice=%s\nrun_dir=%s\n' \
-    "$ARTIFACT" "$PROMPT" "$MODEL" "$WINDOWS" "$MMAP_ADVICE" "$RUN_DIR"
+  printf 'artifact=%s\nprompt=%s\nmodel=%s\nwindows=%s\nmmap_advice=%s\nspill_io=%s\npread_depth=%s\nrun_dir=%s\n' \
+    "$ARTIFACT" "$PROMPT" "$MODEL" "$WINDOWS" "$MMAP_ADVICE" "$SPILL_IO" \
+    "$PREAD_DEPTH" "$RUN_DIR"
   exit 0
 fi
 
 [[ ! -e "$RUN_DIR" ]] || die "run directory already exists: $RUN_DIR"
 mkdir -p "$RUN_DIR"
 
-export ROOT ARTIFACT PROMPT MODEL WINDOWS MMAP_ADVICE RUN_ID RUN_DIR SERVER_BIN ADDR
+export ROOT ARTIFACT PROMPT MODEL WINDOWS MMAP_ADVICE SPILL_IO PREAD_DEPTH RUN_ID RUN_DIR SERVER_BIN ADDR
 python3 - "$RUN_DIR/metadata.json" <<'PY'
 import hashlib
 import json
@@ -155,6 +164,9 @@ metadata = {
         "BW24_MOE_CACHE": "1",
         "BW24_MOE_GROUPED": "1",
         "BW24_MOE_MMAP_ADVICE": os.environ["MMAP_ADVICE"],
+        "BW24_SPILL_IO": os.environ["SPILL_IO"],
+        "BW24_SPILL_PREAD_DEPTH": os.environ["PREAD_DEPTH"],
+        "BW24_SPILL_STATS": "1",
         "BW24_MOE_PAGE_PREFETCH": "1",
         "BW24_MOE_PREFETCH": "1",
         "BW24_MOE_PREWARM": "1",
@@ -420,6 +432,9 @@ for window in "${WINDOW_LIST[@]}"; do
     BW24_MOE_PAGE_PREFETCH_WINDOW="$window" \
     BW24_MOE_RESIDENT=1 \
     BW24_MOE_VRAM_FRAC=0.85 \
+    BW24_SPILL_IO="$SPILL_IO" \
+    BW24_SPILL_PREAD_DEPTH="$PREAD_DEPTH" \
+    BW24_SPILL_STATS=1 \
     BW24_COMPAT=native \
     BW24_MODELS="$MODEL=$ARTIFACT" \
     BW24_ADDR="$ADDR" \

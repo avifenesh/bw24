@@ -287,6 +287,14 @@ pub fn run(
                 }
             }
         }
+        if !finished.is_empty() && std::env::var("BW24_SPILL_STATS").as_deref() == Ok("1") {
+            if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
+                engine.moe_pread_stats() {
+                eprintln!("[spill-pread] snapshot reads={reads} bytes={bytes} errors={errors} \
+                           short_reads={short} fallbacks={fallbacks} buffer_waits={waits} \
+                           ring_full={ring_full}");
+            }
+        }
     }
 }
 
