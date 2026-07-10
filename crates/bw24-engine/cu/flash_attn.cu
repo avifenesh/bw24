@@ -3335,12 +3335,17 @@ static __device__ __forceinline__ void fa_v4_stage_k(
         int j = task >> 3, c = task & 7;
         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
         sm->k_d[j][c] = __half2float(*(const half*)blk);
+        // aligned-word + funnelshift extraction (REVISION 4b recipe) — same ints as the byte
+        // path, 9 aligned LDG.32 instead of ~32 byte loads.
         const uint8_t* qs = blk + 2;
+        const unsigned sh8 = ((unsigned)(size_t)qs & 3u) * 8u;
+        const uint32_t* ap = (const uint32_t*)((size_t)qs & ~(size_t)3);
+        uint32_t w0 = ap[0];
         #pragma unroll
         for (int w = 0; w < 8; w++) {
-            uint32_t v;
-            memcpy(&v, qs + 4 * w, 4);
-            sm->k_ints[j][c * 8 + w] = (int)v;
+            uint32_t w1 = ap[w + 1];
+            sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
+            w0 = w1;
         }
     }
 }
@@ -3384,9 +3389,13 @@ extern "C" __global__ void fa_decode_vec_q_v4(
     for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
         const int nt = min(FA_DEC_TILE, t_hi - t0);
         // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
-        for (int b = bt; b < nt * dpl; b += bsz) {
-            const int j     = b / dpl;
-            const int blk_i = b - j * dpl;
+        for (int b = bt; b < nt * dpl * 4; b += bsz) {
+            // 4x-finer task split (8 elems/task): the 32-elem scalar unpack chain was the
+            // staging critical path (phase probe: staging = 61% of the kernel).
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3396,7 +3405,8 @@ extern "C" __global__ void fa_decode_vec_q_v4(
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
-            for (int e2 = 0; e2 < 32; ++e2) {
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
                 const int byte = (e2 < 16) ? e2 : e2 - 16;
                 const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
                 const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
@@ -3509,9 +3519,13 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
     for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
         const int nt = min(FA_DEC_TILE, t_hi - t0);
         // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
-        for (int b = bt; b < nt * dpl; b += bsz) {
-            const int j     = b / dpl;
-            const int blk_i = b - j * dpl;
+        for (int b = bt; b < nt * dpl * 4; b += bsz) {
+            // 4x-finer task split (8 elems/task): the 32-elem scalar unpack chain was the
+            // staging critical path (phase probe: staging = 61% of the kernel).
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3521,7 +3535,8 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
-            for (int e2 = 0; e2 < 32; ++e2) {
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
                 const int byte = (e2 < 16) ? e2 : e2 - 16;
                 const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
                 const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
@@ -3619,9 +3634,13 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
     for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
         const int nt = min(FA_DEC_TILE, t_hi - t0);
         // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
-        for (int b = bt; b < nt * dpl; b += bsz) {
-            const int j     = b / dpl;
-            const int blk_i = b - j * dpl;
+        for (int b = bt; b < nt * dpl * 4; b += bsz) {
+            // 4x-finer task split (8 elems/task): the 32-elem scalar unpack chain was the
+            // staging critical path (phase probe: staging = 61% of the kernel).
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3631,7 +3650,8 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
-            for (int e2 = 0; e2 < 32; ++e2) {
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
                 const int byte = (e2 < 16) ? e2 : e2 - 16;
                 const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
                 const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
@@ -3703,9 +3723,13 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
     for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
         const int nt = min(FA_DEC_TILE, t_hi - t0);
         // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
-        for (int b = bt; b < nt * dpl; b += bsz) {
-            const int j     = b / dpl;
-            const int blk_i = b - j * dpl;
+        for (int b = bt; b < nt * dpl * 4; b += bsz) {
+            // 4x-finer task split (8 elems/task): the 32-elem scalar unpack chain was the
+            // staging critical path (phase probe: staging = 61% of the kernel).
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3715,7 +3739,8 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
             uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
             __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
-            for (int e2 = 0; e2 < 32; ++e2) {
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
                 const int byte = (e2 < 16) ? e2 : e2 - 16;
                 const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
                 const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
