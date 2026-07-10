@@ -761,7 +761,9 @@ mod tests {
         pool.abort_read(first_buffer);
 
         let canceled = pool.submit_worker(file.clone(), 7, 41).unwrap().unwrap();
-        let blocker = pool.submit_worker(file.clone(), 30, 17).unwrap().unwrap();
+        let blockers: Vec<_> = (1..pool.buffers.len())
+            .map(|_| pool.submit_worker(file.clone(), 30, 17).unwrap().unwrap())
+            .collect();
         assert!(pool.submit_worker(file.clone(), 0, 8).unwrap().is_none());
         assert_eq!(pool.stats().ring_full, 1);
         assert!(pool.cancel_worker(canceled));
@@ -776,9 +778,11 @@ mod tests {
         let after_cancel_buffer = pool.wait_worker(after_cancel).unwrap();
         assert_eq!(pool.bytes(after_cancel_buffer, 13).unwrap(), &bytes[11..24]);
         pool.abort_read(after_cancel_buffer);
-        let blocker_buffer = pool.wait_worker(blocker).unwrap();
-        assert_eq!(pool.bytes(blocker_buffer, 17).unwrap(), &bytes[30..47]);
-        pool.abort_read(blocker_buffer);
+        for blocker in blockers {
+            let blocker_buffer = pool.wait_worker(blocker).unwrap();
+            assert_eq!(pool.bytes(blocker_buffer, 17).unwrap(), &bytes[30..47]);
+            pool.abort_read(blocker_buffer);
+        }
 
         let short = pool.submit_worker(file.clone(), 93, 8).unwrap().unwrap();
         let err = pool.wait_worker(short).unwrap_err();
