@@ -151,6 +151,14 @@ pub fn fa_vec_min_tkv() -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| FA_VEC_MIN_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
 }
+
+/// hd-512 vec crossover floor (BW24_FA512_MIN, default 512) — shared by fa_decode dispatch
+/// and the gemma global-layer rows/parity call sites.
+pub fn fa512_min_tkv() -> usize {
+    static FA512_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *FA512_MIN.get_or_init(|| std::env::var("BW24_FA512_MIN").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(512))
+}
 /// Per-model crossover default, set at model load BEFORE the first decode (per-model
 /// numeric-config adoption law). qwen keeps the measured 96; gemma4 (nkv=8 SWA) measured
 /// vec-always fastest: 119.9 (96) / 130.0 (48) / 133.2 (1) tok/s tg128-regime, 2026-07-10.
@@ -4494,9 +4502,7 @@ impl Engine {
         // (82.5 -> vec at 1736) but the scalar's more-blocks latency hiding wins at tiny t_kv
         // (the same scalar-floor physics as hd256's old 96 floor; short-ctx plain regressed
         // 178.4 -> 173.7 when 512 rode vec unconditionally).
-        static FA512_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-        let fa512_min = *FA512_MIN.get_or_init(|| std::env::var("BW24_FA512_MIN").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(512));
+        let fa512_min = fa512_min_tkv();
         let (f, cfg) = if fa_vec && head_dim == 512 && t_kv >= fa512_min {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
@@ -4612,7 +4618,7 @@ impl Engine {
                           base_len: usize, t: usize, scale: f32,
                           k_tok_bytes: usize, v_tok_bytes: usize)
                           -> Result<(), Box<dyn std::error::Error>> {
-        debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 256 && head_dim % 32 == 0);
+        debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
         let sp = fa_split_keys(t_kv_max, n_head_kv);       // env/default — same value every row
         let n_splits_max = (t_kv_max + sp - 1) / sp;
@@ -4635,8 +4641,9 @@ impl Engine {
         });
         let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
-        let smem_rows = !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if v4 { "fa_decode_vec_q_rows_v4" }
+        let smem_rows = head_dim <= 256 && !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
+        let fname = if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
+                    else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }

@@ -120,10 +120,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
         let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
         println!("spec K={k} n_new={n_new} prompt={} toks", toks.len());
-        // plain greedy reference + timing
+        // plain greedy reference + timing (BW24_SPEC_ONLY=1 skips it — profiling isolation)
+        let spec_only = std::env::var("BW24_SPEC_ONLY").as_deref() == Ok("1");
         e.stream().synchronize()?;
         let t0 = std::time::Instant::now();
-        let plain = model.generate(&e, &toks, n_new)?;
+        let plain = if spec_only { Vec::new() } else { model.generate(&e, &toks, n_new)? };
         e.stream().synchronize()?;
         let dt_plain = t0.elapsed().as_secs_f64()
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
@@ -134,6 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dt_spec = t1.elapsed().as_secs_f64()
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
         let same = plain.iter().zip(&spec).take_while(|(a, b)| a == b).count();
+        if spec_only {
+            println!("spec: {:.2} tok/s (spec-only)", spec.len() as f64 / dt_spec);
+            return Ok(());
+        }
         println!("plain: {:.2} tok/s | spec: {:.2} tok/s ({:.2}x) | stream agreement {}/{}",
                  plain.len() as f64 / dt_plain, spec.len() as f64 / dt_spec,
                  dt_plain / dt_spec * (spec.len() as f64 / plain.len() as f64),

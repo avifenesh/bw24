@@ -2648,6 +2648,15 @@ impl HybridModel {
         // positional). Globals attend the full history.
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(nh * hd)?;
+        // global layers: SAME hd512 rows twin as verify with t=1 (parity law).
+        if !swa && hd == 512 && kvl.len >= crate::fa512_min_tkv()
+            && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+            let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
+            let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+            e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
+                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            return Ok(e.matmul(&fa.wo, &attn, 1)?);
+        }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
         if swa && kvl.len > win && hd == 256
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
@@ -2778,7 +2787,14 @@ impl HybridModel {
                 // counters carry only the append slot + the graph seam.
                 kvl.len += 1;
                 let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
-                if swa && kvl.len > win && hd == 256
+                if !swa && hd == 512 && kvl.len >= crate::fa512_min_tkv()
+                    && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+                    // global layers: SAME hd512 rows twin as verify, t=1 (parity law).
+                    let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
+                    let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
+                                     scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
@@ -3024,7 +3040,11 @@ impl HybridModel {
         let mut attn = e.uninit(t * nh * hd)?;
         // ROWS twin when no window offset is in play (globals are hd512-ineligible; SWA rows
         // under the window need no offset): ONE launch, per-row causal == the per-token loop.
-        if hd == 256 && (!swa || base_len + t <= win) && base_len + 1 >= crate::fa_vec_min_tkv() {
+        let rows_ok = (hd == 256 && base_len + 1 >= crate::fa_vec_min_tkv())
+            // gemma globals: hd512 rows twin in the dpl16 vec regime (row 0 gates the batch);
+            // decode rides the SAME symbol at t=1 (parity law).
+            || (hd == 512 && !swa && base_len + 1 >= crate::fa512_min_tkv());
+        if rows_ok && (!swa || base_len + t <= win) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
@@ -3059,13 +3079,20 @@ impl HybridModel {
             e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
             let mut a_one = e.uninit(nh * hd)?;
             // straddle rounds: windowed rows must ride the SAME rows_w kernel decode uses
-            // (parity law above); unwindowed rows keep the gated fa_decode pair.
+            // (parity law above); global hd512 rows past the fa512 floor likewise ride the
+            // rows_dpl16 twin; remaining rows keep the gated fa_decode pair.
             if swa && avail > win && hd == 256
                 && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                 let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
                 let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
                 e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
                                    scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            } else if !swa && hd == 512 && avail >= crate::fa512_min_tkv()
+                && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+                let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
+                let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
+                e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
+                                 scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             } else {
                 e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;
