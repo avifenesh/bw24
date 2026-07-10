@@ -42,6 +42,9 @@ The scored arms are fixed:
 BF16 Hy3 is common source material only. It is never scored. The public MLX REAP50 checkpoint is a
 mask donor only; none of its already-quantized expert weights enter a scored artifact.
 
+Exact validated overlay, staged-directory, logical payload, tier, and prune counts are frozen in
+[`evidence/five-arm-artifact-sizes-g7e-20260710.md`](evidence/five-arm-artifact-sizes-g7e-20260710.md).
+
 Q2 means GGUF Q2_K (2.625 effective bits/weight), Q3 means Q3_K (3.4375 bits/weight), and
 NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
 first: Q2_K uses the generic staged f32-dequant kernel until a dedicated target-rig-gated fast
@@ -347,6 +350,13 @@ and wraps every harness invocation in an external timeout:
     OUT_ROOT=/data/results/per-expert-quant/candidate \
       CACHE_DIR=/data/cache/bw24-public-eval \
       research/per-expert-quant/run_five_arm_candidate_evals.sh
+
+The first pass has one matched sample per task, so do not use the bootstrap comparison below. Build
+the strict N=1 table (explicitly without confidence intervals) with:
+
+    python3 research/per-expert-quant/summarize_directional_results.py \
+      --out-root /data/results/per-expert-quant/candidate \
+      --run-id RUN_ID
 
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
