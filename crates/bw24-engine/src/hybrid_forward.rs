@@ -63,7 +63,7 @@ fn q8_expert_supported(qt: i32) -> bool {
 /// The decode-once (_dec) and IQ-MMA expert kernels dequant via IQ-specific extractors —
 /// k-quant tensors must fall to the _em dot path instead.
 fn q8_expert_dec_supported(qt: i32) -> bool {
-    qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
+    qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS || qt == crate::QT_Q4_0
 }
 
 /// STAGE 3 prewarm gate (BW24_MOE_PREWARM, default ON; `=0` leaves residency organic). One-shot
@@ -2056,7 +2056,13 @@ impl HybridModel {
             kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
-        e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        // fa_prefill is stamped at hd 256/128 — SWA layers ride it; the hd-512 globals keep
+        // the naive f32 sdpa (5/30 layers).
+        if hd == 256 && std::env::var("BW24_NOFA").is_err() {
+            e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        } else {
+            e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        }
         Ok(e.matmul(&fa.wo, &attn, t)?)
     }
 
@@ -2116,6 +2122,57 @@ impl HybridModel {
         let (sel_all, mut w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
         for (i, &sx) in sel_all.iter().enumerate() {
             w_all[i] *= bits.per_expert_scale[sx as usize];
+        }
+
+        // PREFILL PAIRS ARM (t >= 16): expert-major CSR over the resident slabs — ONE launch per
+        // projection covers ALL (token,expert) pairs (the qwen pairs recipe, _em dot = expert_dot_g
+        // which has the Q4_0 body; GELU pairs epilogue; R3 scale folded into pair_w).
+        if t >= PRIME_MIN_T && m.dev_exps.as_ref().is_some_and(|d| !d.gu_il)
+            && expert_dp4a_supported(m.gate_exps.qtype) && expert_dp4a_supported(m.up_exps.qtype)
+            && expert_dp4a_supported(m.down_exps.qtype)
+            && std::env::var("BW24_GEMMA_MOE_PAIRS").as_deref() != Ok("0") {
+            let dev = m.dev_exps.as_ref().unwrap();
+            let n_pairs = t * n_used;
+            let pair_ex: Vec<i32> = sel_all.iter().map(|&x| x as i32).collect();
+            let pair_tok: Vec<i32> = (0..n_pairs).map(|p| (p / n_used) as i32).collect();
+            let tok_off: Vec<i32> = (0..=t).map(|tok| (tok * n_used) as i32).collect();
+            let tok_ids: Vec<i32> = (0..n_pairs as i32).collect();
+            let pt = e.htod_i32(&pair_tok)?;
+            let pw = e.htod(&w_all)?;
+            let toff = e.htod_i32(&tok_off)?;
+            let tids = e.htod_i32(&tok_ids)?;
+            let mut by_ex: Vec<Vec<i32>> = vec![Vec::new(); n_expert];
+            for p in 0..n_pairs { by_ex[pair_ex[p] as usize].push(p as i32); }
+            let mut ex_ids: Vec<i32> = Vec::new();
+            let mut ex_off: Vec<i32> = vec![0];
+            let mut ex_pairs: Vec<i32> = Vec::with_capacity(n_pairs);
+            for (ex, list) in by_ex.iter().enumerate() {
+                if list.is_empty() { continue; }
+                ex_ids.push(ex as i32);
+                ex_pairs.extend_from_slice(list);
+                ex_off.push(ex_pairs.len() as i32);
+            }
+            let n_active = ex_ids.len();
+            let exi = e.htod_i32(&ex_ids)?;
+            let exo = e.htod_i32(&ex_off)?;
+            let exp_d = e.htod_i32(&ex_pairs)?;
+            let (zq, zd) = e.quantize_q8_1(moe_in, t, n_embd)?;
+            let gate = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                                 n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                                 m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+            let up = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 1, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                               n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                               m.up_exps.qtype, m.up_exps.row_bytes)?;
+            let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+            let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
+            let pself = e.htod_i32(&pair_self)?;
+            let y_down = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 2, &exi, &exo, &exp_d, &pself, &aq2, &ad2,
+                                                   n_ff_exp, n_embd, n_expert, n_active, n_pairs,
+                                                   m.down_exps.qtype, m.down_exps.row_bytes)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            e.moe_pairs_scatter(&y_down, &pw, &toff, &tids, &mut moe_out, t, n_embd)?;
+            return Ok(moe_out);
         }
 
         let g_len = m.gate_exps.expert_stride;

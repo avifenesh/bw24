@@ -4288,9 +4288,27 @@ __device__ __forceinline__ void expert_decode_iq4xs_g(const unsigned char* wrow,
 // and the activation int order in aq matches (aq4[l0], aq4[l0+1]); IQ4_XS packs [lo x4, hi x4] and
 // the activation is aLo[0..3] then aHi[0..3]. So the dp4a token loop must feed activation ints in
 // the SAME split for each qtype. We store the activation-int layout choice per qtype via a flag.
+// Q4_0 decode-once: fold the -8 offset INTO the int weights ((nib-8) in [-8,7], __vsub4) —
+// the group int sum then equals the _em chain's (sumi - 8*sums) EXACTLY (integer identity),
+// and the float chain fscale*(iscale*sumi)*d8 == d4*(sumi-8*sums)*d8 bit-for-bit.
+__device__ __forceinline__ void expert_decode_q4_0_g(const unsigned char* wrow, int g,
+                                                     int wq[8], int* iscale, float* fscale) {
+    const unsigned char* b = wrow + (long)g * 18;
+    *fscale = half_to_float(*(const unsigned short*)b);
+    *iscale = 1;
+    const unsigned char* qs = b + 2;
+    #pragma unroll
+    for (int k = 0; k < 4; k++) {
+        uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+        wq[k]     = __vsub4((int)(raw & 0x0F0F0F0Fu), 0x08080808);
+        wq[4 + k] = __vsub4((int)((raw >> 4) & 0x0F0F0F0Fu), 0x08080808);
+    }
+}
+
 __device__ __forceinline__ void expert_decode_g(int qtype, const unsigned char* wrow, int g,
                                                int wq[8], int* iscale, float* fscale) {
     if (qtype == QT_IQ3_S)  { expert_decode_iq3s_g(wrow, g, wq, iscale, fscale); return; }
+    if (qtype == QT_Q4_0)   { expert_decode_q4_0_g(wrow, g, wq, iscale, fscale); return; }
     expert_decode_iq4xs_g(wrow, g, wq, iscale, fscale);
 }
 // dp4a a pre-decoded weight group (wq[8]) against one token's 32 activation int8 (aqb) with the
@@ -4468,6 +4486,17 @@ extern "C" __global__ void moe_pairs_silu_mul(
         float* __restrict__ act, long n) {
     long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) { float g = gate[i]; act[i] = (g / (1.0f + expf(-g))) * up[i]; }
+}
+// gemma4 GELU twin of moe_pairs_silu_mul (gelu_tanh_mul_f32 expression).
+extern "C" __global__ void moe_pairs_gelu_mul(
+        const float* __restrict__ gate, const float* __restrict__ up,
+        float* __restrict__ act, long n) {
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = gate[i];
+        float th = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+        act[i] = 0.5f * x * (1.0f + th) * up[i];
+    }
 }
 // scatter: moe_out[tok] += w[pr] * y_down[pr] — slot-ORDERED per token for bit-identity with the
 // sequential axpy chain: one block per (token, col-tile); walks the token's pairs in SLOT order

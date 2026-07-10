@@ -47,6 +47,7 @@
 #define GQT_Q6_K  2
 #define GQT_Q5_K  3
 #define GQT_NVFP4 7
+#define GQT_Q4_0  8
 
 #define WARP_SZ 32
 // CTA tile: BM output rows x BN tokens x BK contraction. One mma K-step = BK=32 (one quant/q8_1 block).
@@ -240,6 +241,22 @@ __device__ __forceinline__ float decode_q8_0(const unsigned char* wrow, int g, i
     return ghalf2float(*(const unsigned short*)b);
 }
 
+// Q4_0: block 32 / 18 B (gemma4 QAT). int weight = nibble (0..15); y = d*(nib-8) folds into
+// the unified (scale, bias) form: scale = d, bias = -8d (acc += d*sumi - 8d*sumA — the exact
+// dp4a-class chain the mmvq kernel computes as d*(sumi - 8*sums)).
+__device__ __forceinline__ float decode_q4_0(const unsigned char* wrow, int g, int8_t* out, float* bias) {
+    const unsigned char* b = wrow + (long)g * 18;
+    float d = ghalf2float(*(const unsigned short*)b);
+    const unsigned char* qs = b + 2;
+    #pragma unroll
+    for (int j = 0; j < 16; j++) {
+        out[j]      = (int8_t)(qs[j] & 0xF);
+        out[j + 16] = (int8_t)(qs[j] >> 4);
+    }
+    *bias = -8.0f * d;
+    return d;
+}
+
 // Q4_K: superblock 256 / 144 B. group g&7 of 32; 6-bit sub scale/min. int weight = nibble (0..15).
 // y_block = d*sc * dp4a(nibble, a) - dmin*mn * sum(a). We return the int = nibble, the scale =
 // d*sc, and bias = -(dmin*mn) so scale-time does acc += scale*sumi + bias*sumA  (dp4a-identical).
@@ -316,6 +333,7 @@ template<> struct StageMeta<GQT_Q4_K>{ enum{ SB_BYTES=144, GPSB=8, RAW_W=160, PR
 template<> struct StageMeta<GQT_Q5_K>{ enum{ SB_BYTES=176, GPSB=8, RAW_W=192, PREDEC=1 }; };
 template<> struct StageMeta<GQT_Q6_K>{ enum{ SB_BYTES=210, GPSB=8, RAW_W=240, PREDEC=0 }; };
 template<> struct StageMeta<GQT_NVFP4>{ enum{ SB_BYTES=36,  GPSB=2, RAW_W=64,  PREDEC=0 }; };  // 64-elem block
+template<> struct StageMeta<GQT_Q4_0>{ enum{ SB_BYTES=18,  GPSB=1, RAW_W=32,  PREDEC=0 }; };
 // superblock byte offset within a weight row for K-block g (== the `b - wrow` of the global decode)
 template<int QT> __device__ __forceinline__ long sb_byte_off(int g);
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q8_0>(int g){ return (long)g * 34; }
@@ -323,6 +341,7 @@ template<> __device__ __forceinline__ long sb_byte_off<GQT_Q4_K>(int g){ return 
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q5_K>(int g){ return (long)(g>>3) * 176; }
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q6_K>(int g){ return (long)(g>>3) * 210; }
 template<> __device__ __forceinline__ long sb_byte_off<GQT_NVFP4>(int g){ return (long)(g>>1) * 36; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q4_0>(int g){ return (long)g * 18; }
 
 // --- smem-source decodes (kernel1 single-scale dtypes): `b` = staged superblock base in smem
 //     (== sWraw_row + phase), `grp` = g & (GPSB-1). Bodies VECTORIZED (4-byte int LDS + SIMD nibble/
@@ -418,6 +437,7 @@ __device__ __forceinline__ float decode_block_s(const unsigned char* b, int grp,
 template<> __device__ __forceinline__ float decode_block_s<GQT_Q8_0>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q8_0_s(b,grp,o,bs); }
 template<> __device__ __forceinline__ float decode_block_s<GQT_Q4_K>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q4_k_s(b,grp,o,bs); }
 template<> __device__ __forceinline__ float decode_block_s<GQT_Q5_K>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q5_k_s(b,grp,o,bs); }
+template<> __device__ __forceinline__ float decode_block_s<GQT_Q4_0>(const unsigned char* b,int grp,int8_t* o,float* bs){ return decode_q4_0(b,grp,o,bs); }
 
 // Q6_K: superblock 256 / 210 B. symmetric, no min. int weight = (ql|qh<<4)-32 in [-32,31].
 // Per-32 block g&7 spans TWO 16-elem scale groups (is0/is1). We can't fold two scales into one
@@ -444,6 +464,7 @@ __device__ __forceinline__ float decode_block(const unsigned char* wrow, int g, 
 template<> __device__ __forceinline__ float decode_block<GQT_Q8_0>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q8_0(w,g,o,b); }
 template<> __device__ __forceinline__ float decode_block<GQT_Q4_K>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q4_k(w,g,o,b); }
 template<> __device__ __forceinline__ float decode_block<GQT_Q5_K>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q5_k(w,g,o,b); }
+template<> __device__ __forceinline__ float decode_block<GQT_Q4_0>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q4_0(w,g,o,b); }
 
 // smem layout per CTA (double NOT buffered; correctness-first):
 //   sW   : int8 [BM][BK]      weight tile (decoded once per K-step)
@@ -711,6 +732,12 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q4_K(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q4_K>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q4_0(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int T, long row_bytes) {
+    qmatvec_gemm_kernel<GQT_Q4_0>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q5_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,

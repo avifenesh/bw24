@@ -1386,6 +1386,18 @@ impl Engine {
         Ok(y)
     }
 
+    pub fn moe_pairs_gelu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, n: usize)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_pairs_gelu_mul");
+        let mut act = self.alloc_uninit::<f32>(n)?;
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let nl = n as i64;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&mut act).arg(&nl);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
     pub fn moe_pairs_silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, n: usize)
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("moe_pairs_silu_mul");
@@ -3707,7 +3719,7 @@ impl Engine {
         if std::env::var("BW24_NO_GEMM").is_ok() { return false; }
         match w {
             GpuTensor::Quant { qtype, .. } =>
-                matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K)
+                matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q4_0)
                 || (*qtype == QT_NVFP4 && w.in_features() % 64 == 0),
             GpuTensor::Float { .. } | GpuTensor::FloatBf16 { .. } => false,
         }
@@ -3730,6 +3742,7 @@ impl Engine {
         };
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
+            QT_Q4_0 => "qmatvec_gemm_q4_0",
             QT_Q5_K => "qmatvec_gemm_q5_K",
             QT_Q6_K => "qmatvec_gemm_q6_K",
             QT_NVFP4 => if rp { "qmatvec_gemm_nvfp4_rp" } else { "qmatvec_gemm_nvfp4" },
@@ -3740,7 +3753,7 @@ impl Engine {
         // CTA tile MUST match the .cu per-kernel tile. MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) runs llama's
         // 128x128 SQUARE tile (K1_BM=128 x K1_BN=128, 8 warps); kernel2 (Q6_K/NVFP4) keeps 64x256, 4 warps
         // (the macro BM/BN in the .cu). Grid dims are selected by qtype so each launches its own tile.
-        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
+        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q4_0);
         // TUNE SEAM: BW24_GEMM_K1_LAUNCH overrides kernel1's launch tile to match a -D-swept fatbin.
         let k1_tile = if is_k1 { k1_launch_override().unwrap_or((128, 128, 8)) } else { (128, 128, 8) };
         let (bm, bn): (u32, u32) = if is_k1 { (k1_tile.0, k1_tile.1) } else { (64, 256) };
@@ -3770,6 +3783,7 @@ impl Engine {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
+            QT_Q4_0 => "qmatvec_gemm_q4_0",
             QT_Q5_K => "qmatvec_gemm_q5_K",
             QT_Q6_K => "qmatvec_gemm_q6_K", QT_NVFP4 => "qmatvec_gemm_nvfp4",
             QT_NVFP4_RP => "qmatvec_gemm_nvfp4_rp",
@@ -3779,7 +3793,7 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         // MMQ-PORT: kernel1 (Q8_0/Q4_K/Q5_K) = llama 128x128 tile, 8 warps; kernel2 (Q6_K/NVFP4) = 64x256,
         // 4/8 warps. Grid tile per qtype (must match the .cu K1_BM/K1_BN vs BM/BN). KEEP IN SYNC w/ qmatvec_gemm.
-        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K);
+        let is_k1 = matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q4_0);
         // TUNE SEAM: BW24_GEMM_K1_LAUNCH overrides kernel1's launch tile to match a -D-swept fatbin.
         let k1_tile = if is_k1 { k1_launch_override().unwrap_or((128, 128, 8)) } else { (128, 128, 8) };
         let (bm, bn): (u32, u32) = if is_k1 { (k1_tile.0, k1_tile.1) } else { (64, 256) };
