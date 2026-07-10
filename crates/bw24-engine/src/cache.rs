@@ -88,6 +88,17 @@ impl Cache {
             (ds * num_k * 2 + ds * num_v, ds, num_v, s.conv_kernel as usize)
         } else { (0, 0, 0, 0) };
         for il in 0..cfg.n_layer {
+            // gemma4 R5: per-layer KV geometry (SWA 256hd x 8kv = 2048 / global 512hd x 2kv = 1024).
+            let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
+                Some(g) => {
+                    let hd = if g.swa_pattern[il as usize] { g.key_length_swa } else { g.key_length_global } as usize;
+                    let d = hd * g.head_count_kv[il as usize] as usize;
+                    (d, d)
+                }
+                None => (kv_dim_k, kv_dim_v),
+            };
+            let k_tok_bytes = (kv_dim_k / 32) * kbb;
+            let v_tok_bytes = (kv_dim_v / 32) * vbb;
             match cfg.layer_kind(il) {
                 LayerKind::FullAttention => {
                     kv.push(Some(KvLayer {

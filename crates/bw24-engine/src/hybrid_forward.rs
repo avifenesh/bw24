@@ -2081,9 +2081,13 @@ impl HybridModel {
         let g_len = m.gate_exps.expert_stride;
         let u_len = m.up_exps.expert_stride;
         let d_len = m.down_exps.expert_stride;
-        let mut sg = e.alloc_u8_uninit(g_len)?;
-        let mut su = e.alloc_u8_uninit(u_len)?;
-        let mut sd = e.alloc_u8_uninit(d_len)?;
+        // Resident dev slabs (fits-VRAM regime): read each expert straight from the device slab
+        // at ex*stride — zero H2D, SAME qmatvec_view kernel/bytes as the staged path. Staging is
+        // the spill fallback.
+        let dev = m.dev_exps.as_ref().filter(|d| !d.gu_il);
+        let (mut sg, mut su, mut sd) = if dev.is_some() { (None, None, None) } else {
+            (Some(e.alloc_u8_uninit(g_len)?), Some(e.alloc_u8_uninit(u_len)?), Some(e.alloc_u8_uninit(d_len)?))
+        };
         let mut moe_out = e.zeros(t * n_embd)?;
         for tok in 0..t {
             let sel = &sel_all[tok * n_used..(tok + 1) * n_used];
@@ -2091,18 +2095,39 @@ impl HybridModel {
             let zt = moe_in.slice(tok * n_embd..(tok + 1) * n_embd);
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
-                e.stage_expert(m.gate_exps.expert_bytes(ex), &mut sg, 0)?;
-                let gate = e.qmatvec_view(&sg, 0..g_len, &zt, 1,
-                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-                e.stage_expert(m.up_exps.expert_bytes(ex), &mut su, 0)?;
-                let up = e.qmatvec_view(&su, 0..u_len, &zt, 1,
-                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                let gate = match dev {
+                    Some(d) => e.qmatvec_view(&d.gate, ex * g_len..(ex + 1) * g_len, &zt, 1,
+                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?,
+                    None => {
+                        let sg = sg.as_mut().unwrap();
+                        e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
+                        e.qmatvec_view(sg, 0..g_len, &zt, 1,
+                            m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?
+                    }
+                };
+                let up = match dev {
+                    Some(d) => e.qmatvec_view(&d.up, ex * u_len..(ex + 1) * u_len, &zt, 1,
+                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?,
+                    None => {
+                        let su = su.as_mut().unwrap();
+                        e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
+                        e.qmatvec_view(su, 0..u_len, &zt, 1,
+                            m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?
+                    }
+                };
                 let mut act = e.uninit(n_ff_exp)?;
                 e.gelu_tanh_mul(&gate, &up, &mut act, n_ff_exp)?;
-                e.stage_expert(m.down_exps.expert_bytes(ex), &mut sd, 0)?;
                 let actv = act.slice(0..n_ff_exp);
-                let y = e.qmatvec_view(&sd, 0..d_len, &actv, 1,
-                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
+                let y = match dev {
+                    Some(d) => e.qmatvec_view(&d.down, ex * d_len..(ex + 1) * d_len, &actv, 1,
+                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?,
+                    None => {
+                        let sd = sd.as_mut().unwrap();
+                        e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
+                        e.qmatvec_view(sd, 0..d_len, &actv, 1,
+                            m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
+                    }
+                };
                 let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                 e.axpy_into(&y, w[j], &mut dst, n_embd)?;
             }
@@ -2147,9 +2172,27 @@ impl HybridModel {
         e.add(&cur, x, &mut attn_out, t * n_embd)?;
         psum(e, &attn_out, "attn_out")?;
 
+        self.gemma4_layer_tail(e, layer, &attn_out, t, p2)
+    }
+
+    /// Everything after `attn_out` in a gemma4 layer (shared FFN + router + MoE + combine +
+    /// layer scale) — shared verbatim by the prefill and decode paths.
+    fn gemma4_layer_tail(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                         attn_out: &CudaSlice<f32>, t: usize, p2: bool)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let psum = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
+            if p2 {
+                let h = e.dtoh(v)?;
+                eprintln!("[g0] {tag}: sum={:.4}", h.iter().map(|&x| x as f64).sum::<f64>());
+            }
+            Ok(())
+        };
         // shared (parallel) dense FFN branch: post_ffw_norm_1(GELU_FFN(rms_norm(x, ffn_norm)))
         let mut zsh = e.zeros(t * n_embd)?;
-        e.rms_norm(&attn_out, bits.ffn_norm.float_data(), &mut zsh, n_embd, t, eps)?;
+        e.rms_norm(attn_out, bits.ffn_norm.float_data(), &mut zsh, n_embd, t, eps)?;
         let n_ff = bits.shared_gate.out_features();
         let gate = e.matmul(&bits.shared_gate, &zsh, t)?;
         let up = e.matmul(&bits.shared_up, &zsh, t)?;
@@ -2163,12 +2206,12 @@ impl HybridModel {
         // R2 router prologue: weightless rms_norm x 1/sqrt(n_embd) x gate_inp.scale — folded
         // into ONE rms_norm whose weight is the pre-scaled vector (see Gemma4LayerBits).
         let mut router_in = e.zeros(t * n_embd)?;
-        e.rms_norm(&attn_out, &bits.router_scale_pre, &mut router_in, n_embd, t, eps)?;
+        e.rms_norm(attn_out, &bits.router_scale_pre, &mut router_in, n_embd, t, eps)?;
         psum(e, &router_in, "node_35(router_in)")?;
         let mut moe_in = e.zeros(t * n_embd)?;
-        e.rms_norm(&attn_out, bits.pre_ffw_norm_2.float_data(), &mut moe_in, n_embd, t, eps)?;
+        e.rms_norm(attn_out, bits.pre_ffw_norm_2.float_data(), &mut moe_in, n_embd, t, eps)?;
         psum(e, &moe_in, "ffn_norm_2(moe_in)")?;
-        let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer {il} not MoE") };
+        let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer not MoE") };
         let moe0 = self.gemma4_moe(e, m, bits, &moe_in, &router_in, t)?;
         psum(e, &moe0, "ffn_moe_out")?;
         let mut moe = e.zeros(t * n_embd)?;
@@ -2182,7 +2225,7 @@ impl HybridModel {
         e.rms_norm(&sum, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
         psum(e, &sn, "ffn_post_norm")?;
         let mut xn = e.zeros(t * n_embd)?;
-        e.add(&sn, &attn_out, &mut xn, t * n_embd)?;
+        e.add(&sn, attn_out, &mut xn, t * n_embd)?;
         psum(e, &xn, "node_88")?;
         e.scale_inplace(&mut xn, bits.layer_scale, t * n_embd)?;
         Ok(xn)
@@ -2226,5 +2269,75 @@ impl HybridModel {
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
         Ok(logits)
+    }
+
+    /// gemma4 T=1 decode attention: per-layer geometry, quantized-KV append + fa_decode
+    /// (vec kernels at hd 256, generic scalar at the globals' hd 512), weightless V-norm,
+    /// dual rope, scale 1.0.
+    fn gemma4_decode_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                          h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &mut Cache)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+
+        let q0 = e.matmul(&fa.wq, h, 1)?;
+        let k0 = e.matmul(&fa.wk, h, 1)?;
+        let v0 = e.matmul(&fa.wv, h, 1)?;
+        let mut q = e.uninit(nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh, eps)?;
+        let mut k = e.uninit(nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv, eps)?;
+        let mut v = e.uninit(nkv * hd)?;
+        e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv, eps)?;
+        if swa {
+            e.rope_neox(&mut q, pos_d, hd, hd, nh, 1, base, 1.0)?;
+            e.rope_neox(&mut k, pos_d, hd, hd, nkv, 1, base, 1.0)?;
+        } else {
+            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
+            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, 1, base, 1.0, ff)?;
+            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, 1, base, 1.0, ff)?;
+        }
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        kvl.len += 1;
+        let t_kv = kvl.len;
+        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
+        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+        let mut attn = e.uninit(nh * hd)?;
+        e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                    kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        Ok(e.matmul(&fa.wo, &attn, 1)?)
+    }
+
+    /// gemma4 T=1 decode step: R8 layer graph over the cache; returns (softcapped logits host,
+    /// h_seed = pre-output_norm hidden). Advances cache.pos.
+    pub(crate) fn gemma4_decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
+                                       -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let pos_d = e.htod_i32(&[cache.pos as i32])?;
+        let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.uninit(n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_decode_attn(e, fa, il, &h, &pos_d, cache)?;
+            let mut cur = e.uninit(n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, 1, eps)?;
+            let mut attn_out = e.uninit(n_embd)?;
+            e.add(&cur, &x, &mut attn_out, n_embd)?;
+            x = self.gemma4_layer_tail(e, layer, &attn_out, 1, false)?;
+        }
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let h_seed = e.clone_dtod(&x)?;
+        let mut logits = e.dtoh(&e.matmul(&self.output, &hn, 1)?)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
+        cache.pos += 1;
+        Ok((logits, h_seed))
     }
 }

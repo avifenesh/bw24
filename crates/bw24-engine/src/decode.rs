@@ -331,6 +331,7 @@ impl HybridModel {
     /// `output_norm` (MTP-PLAN §A: this is `h_seed` for the NextN head). Device buffer [n_embd].
     pub fn decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        if self.cfg.gemma4.is_some() { return self.gemma4_decode_step_h(e, token, cache); }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
