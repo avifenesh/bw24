@@ -630,3 +630,16 @@ full-accept 54/91 rounds (59% hit the K-cap), len_hist shows pmin 0.4 truncates 
 rounds. 59% of rounds stop while the tail still accepts >54% -> K=4 expected ~+0.27 tok/round
 = +9-10% e2e = the 0.95x cell flips to ~1.04x on config alone; K=5 rides if slot-5 holds ~0.4.
 Probes 1-2 are now the priority order; 3 (pmin drop) second-order.
+
+## NEXT SESSION OPENS HERE (2026-07-10 close)
+
+1. MERGE feat/filtered-spec into main — SEMANTIC merge of spec.rs's sampled arm with the
+   already-merged graph-sampled work. Composition rule to implement: the sampled GRAPH draft
+   (draft_graph_s) engages only when NO filters AND NO penalties (pure-temp); filters/penalties
+   force the eager draft (they need per-row stats/history the capture cannot hold). Also keep
+   gsd's sess_tail counter fix (fspec's branch carries the old buggy read). Full gate battery
+   after: sample_check, greedy regression, temp/top-p/penalized seeded-identity, graph-vs-eager
+   identity (pure-temp), serve smoke. All individual gates are green on both branches.
+2. Deep-K REFUTED (tag deepk-refuted) — 27B p2 + 35B cells have NO config flip; remaining
+   levers: verify-cost tier (b12/b16 batching arc) + owner's head research.
+3. Gemma-4 scope refresh (the modularity goal) once 1 lands.
