@@ -77,6 +77,27 @@ the v4_w twin — parity law blocks a mixed config). fa v4 at sp16/window: 24.9u
 (short splits starve the key-per-lane pipeline) — the depth fa lane is ~0.77ms/step = the
 whole remaining depth gap.
 
+## PARITY LAW (2026-07-10 — the architectural rule for all verify/decode attention)
+nvcc does NOT compile textually identical kernel bodies identically (SASS-proven: fa_decode_vec_q
+is 2x-unrolled vs its rows clone; the unpinned score `+=` chain then rounds ~1e-2 apart). So
+verify-vs-decode bit parity NEVER comes from cloning a kernel — it comes from BOTH sides
+launching the SAME symbol: decode calls the rows twins with t=1 (windowed rows_w, hd512
+rows_dpl16), verify calls them batched; the straddle loop mirrors per row. Kernel/lane/split
+tuning inside the shared wrapper is then FREE (parity structural). VERIFY-GATE prints per-pos
+logit maxdiff — 0.000e0 on every lane.
+
+SPEC-DEPTH STATE (2026-07-10 evening): 206-207 paired / 227-233 solo (BW24_SPEC_ONLY=1) vs
+llama MTP 252-285. GPU-bound (round GPU 15.5ms == wall; no host gap — async v2 works). Round
+budget: verify MoE 4.1ms (gate_up csr 84% of unique-byte wall; down8 probed CSR-dedup AND
+slot-parallel — both NEGATIVE, serial rows_g stays), verify attention 3.5ms (rows_v4_w 25x
+60.7us latency-bound at 4MB traffic + rows_dpl16 globals), verify trunk b4/b4_r2 3.0ms, draft
+chain 1.7ms + head 0.45ms (mr2 ~150us ~= 137MB wall — closed), verify head 0.79ms (86% wall).
+K plateau 3-5 (231/233/232 solo). sp16 re-probe: plain +2, spec -18% (v4 per-block staging x
+splits x rows) — killed again.
+NEXT SPEC LEVER = comparison analysis: nsys llama-server MTP round at depth (their round ~=
+12.3ms at equal acceptance — find the 3.2ms structural difference), THEN round-stream port
+(device acceptance, +8-15%, designed for qwen v3 lane) if the gap is host/launch-side.
+
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
    small; corpus-ranked FR trim would cut the head), h-row copies, per-round htod/dtoh syncs.
