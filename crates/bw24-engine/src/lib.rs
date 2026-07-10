@@ -2681,6 +2681,32 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4: rope q and k in one launch (per-row chain = rope_neox / rope_neox_ff verbatim).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rope_neox2(&self, q: &mut CudaSlice<f32>, k: &mut CudaSlice<f32>,
+                      pos: &CudaSlice<i32>, head_dim: usize, n_dims: usize,
+                      nh_q: usize, nh_k: usize, n_tokens: usize, freq_base: f32,
+                      freq_scale: f32, ff: Option<&CudaSlice<f32>>)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rope_neox2_f32");
+        let theta_scale = (freq_base).powf(-2.0 / n_dims as f32);
+        let grid = ((nh_q + nh_k) * n_tokens) as u32;
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
+        let (hd, nd, nq, nk, nt) = (head_dim as i32, n_dims as i32, nh_q as i32, nh_k as i32, n_tokens as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(pos).arg(&hd).arg(&nd).arg(&nq).arg(&nk).arg(&nt)
+         .arg(&theta_scale).arg(&freq_scale);
+        match ff {
+            Some(ffv) => { b.arg(ffv); unsafe { b.launch(cfg)?; } }
+            None => {
+                let null: u64 = 0;
+                b.arg(&null);
+                unsafe { b.launch(cfg)?; }
+            }
+        }
+        Ok(())
+    }
+
     /// gemma4 R1: dst = GELU_tanh(gate) * up.
     pub fn gelu_tanh_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                          -> Result<(), Box<dyn std::error::Error>> {

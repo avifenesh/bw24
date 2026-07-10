@@ -2039,14 +2039,10 @@ impl HybridModel {
         e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
                        &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
 
-        if swa {
-            e.rope_neox(&mut q, pos_d, hd, hd, nh, t, base, 1.0)?;
-            e.rope_neox(&mut k, pos_d, hd, hd, nkv, t, base, 1.0)?;
-        } else {
-            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
-            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, t, base, 1.0, ff)?;
-            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, t, base, 1.0, ff)?;
-        }
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
 
         if let Some(cache) = cache {
             let kvl = cache.kv[il].as_mut().unwrap();
@@ -2639,14 +2635,10 @@ impl HybridModel {
         let mut v = e.uninit(nkv * hd)?;
         e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
                        &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
-        if swa {
-            e.rope_neox(&mut q, pos_d, hd, hd, nh, 1, base, 1.0)?;
-            e.rope_neox(&mut k, pos_d, hd, hd, nkv, 1, base, 1.0)?;
-        } else {
-            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
-            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, 1, base, 1.0, ff)?;
-            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, 1, base, 1.0, ff)?;
-        }
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
@@ -2764,14 +2756,10 @@ impl HybridModel {
         let mut v = e.uninit(t * nkv * hd)?;
         e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
                        &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
-        if swa {
-            e.rope_neox(&mut q, pos_d, hd, hd, nh, t, base, 1.0)?;
-            e.rope_neox(&mut k, pos_d, hd, hd, nkv, t, base, 1.0)?;
-        } else {
-            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
-            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, t, base, 1.0, ff)?;
-            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, t, base, 1.0, ff)?;
-        }
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,

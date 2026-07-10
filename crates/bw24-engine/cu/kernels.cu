@@ -785,6 +785,32 @@ extern "C" __global__ void add_rms_norm3_q8z_f32(const float* __restrict__ a, co
     }
 }
 
+// ---- gemma4: q AND k roped in ONE launch (two segments on grid.x; per-row math =
+// rope_neox_f32 / rope_neox_ff_f32 verbatim; ff = nullptr -> plain). ----
+extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restrict__ k,
+                                          const int* __restrict__ pos,
+                                          int head_dim, int n_dims, int nh_q, int nh_k,
+                                          int n_tokens, float theta_scale, float freq_scale,
+                                          const float* __restrict__ ff) {
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    int total_q = nh_q * n_tokens;
+    float* base; int tok;
+    if (hr < total_q) { base = q + (size_t)hr * head_dim; tok = hr / nh_q; }
+    else { int r = hr - total_q; base = k + (size_t)r * head_dim; tok = r / nh_k; }
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = base[j];
+    float x1 = base[j + half];
+    base[j]        = x0 * c - x1 * sn;
+    base[j + half] = x0 * sn + x1 * c;
+}
+
 // ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
 // SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
 extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
