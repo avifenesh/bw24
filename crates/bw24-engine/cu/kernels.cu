@@ -603,3 +603,25 @@ extern "C" __global__ void sdpa_naive_f32(const float* __restrict__ Q, const flo
         o[d] = acc;
     }
 }
+
+// MoE router GEMV (BW24_ROUTER_KERNEL=1): logits[t][e] = dot(W[e], x[t]) — replaces ~200
+// cuBLASLt dispatches/round (4% of the 35B spec round loop, 2026-07-10 BW24_PROFILE_SPEC=2).
+// One warp per (expert, token); fixed-stride f32 accumulation + standard warp reduce —
+// DETERMINISTIC but a DIFFERENT FP order than cuBLAS: new numeric config, the router feeds
+// top-k selection (discontinuous) so the full battery + MOE_GATE oracle arbitrate adoption.
+extern "C" __global__ void router_gemv_f32(
+        const float* __restrict__ w,   // [n_experts, n_embd] row-major
+        const float* __restrict__ x,   // [t, n_embd]
+        float* __restrict__ y,         // [t, n_experts]
+        int n_embd, int n_experts, int t) {
+    const int e = blockIdx.x;
+    const int tok = blockIdx.y;
+    if (e >= n_experts || tok >= t) return;
+    const float* wr = w + (size_t) e * n_embd;
+    const float* xr = x + (size_t) tok * n_embd;
+    float s = 0.0f;
+    for (int i = threadIdx.x; i < n_embd; i += 32) s += wr[i] * xr[i];
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xFFFFFFFF, s, off);
+    if (threadIdx.x == 0) y[(size_t) tok * n_experts + e] = s;
+}

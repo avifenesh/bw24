@@ -16,6 +16,18 @@ pub mod decode;
 pub mod spec;
 pub mod eagle;
 pub mod sampler;
+
+/// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
+/// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
+/// ~240 per-column cuBLAS gemv launches/round). BW24_ROUTER_KERNEL=0 is the rollback seam.
+pub fn router_kernel_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var("BW24_ROUTER_KERNEL").as_deref() != Ok("0");
+        if !on { eprintln!("[bw24] router kernel OFF (rollback: per-column cuBLAS gemv)"); }
+        on
+    })
+}
 pub mod moe_cache;
 pub mod spill;
 #[cfg(bw24_cutlass)]
@@ -522,6 +534,21 @@ impl Engine {
         b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni).arg(&nr);
         unsafe { b.launch(cfg)?; }
         Ok(())
+    }
+
+    /// MoE router GEMV (BW24_ROUTER_KERNEL): deterministic warp-per-(expert,token) f32 dot.
+    /// Different FP order than the cuBLAS path it replaces — battery-gated numeric config.
+    pub fn router_gemv(&self, w: &CudaSlice<f32>, x: &CudaSlice<f32>, n_embd: usize,
+                       n_experts: usize, t: usize)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut y = self.alloc_uninit::<f32>(t * n_experts)?;
+        let f = self.func("router_gemv_f32");
+        let (ne, nx, ti) = (n_embd as i32, n_experts as i32, t as i32);
+        let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(x).arg(&mut y).arg(&ne).arg(&nx).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
     }
 
     // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================

@@ -724,7 +724,14 @@ impl HybridModel {
         // small-t through per-column m=1 calls (decode-exact contract); real prefill keeps the
         // batched GEMM.
         let logits = if t > 1 && t < PRIME_MIN_T {
-            e.matmul_decode_exact(&m.gate_inp, z, t)?
+            if crate::router_kernel_on() {
+                // BW24_ROUTER_KERNEL=1: in-house router GEMV (battery-gated numeric config —
+                // top-k discontinuity means FP-order changes can flip routing; oracle arbitrates).
+                e.router_gemv(m.gate_inp.float_data(), z, cfg.n_embd as usize,
+                              m.gate_exps.n_expert, t)?
+            } else {
+                e.matmul_decode_exact(&m.gate_inp, z, t)?
+            }
         } else {
             e.matmul(&m.gate_inp, z, t)?
         };
