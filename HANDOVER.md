@@ -625,3 +625,8 @@ Probes (N=2 interleaved, NGEN=256, p2, 27B GGUF standing draft+trim):
   4. best-of-above + PMIN0=1 (base acceptance ~68% < the 75% PMIN0 threshold — in its pay band)
 Also record per-slot histograms (BW24_SPEC_STATS) — if slot-3+ acceptance stays >60% on p2,
 deeper K is free money the pmin gate was refusing.
+VALIDATED FROM EXISTING DATA (f8f4-flip model-c logs, K=3 p2): per_slot 0.813/0.658/0.543,
+full-accept 54/91 rounds (59% hit the K-cap), len_hist shows pmin 0.4 truncates only ~23% of
+rounds. 59% of rounds stop while the tail still accepts >54% -> K=4 expected ~+0.27 tok/round
+= +9-10% e2e = the 0.95x cell flips to ~1.04x on config alone; K=5 rides if slot-5 holds ~0.4.
+Probes 1-2 are now the priority order; 3 (pmin drop) second-order.
