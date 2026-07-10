@@ -1,0 +1,13 @@
+{
+  "format": "bw24-per-expert-quant-plan-v1",
+  "default_qtype": "BF16",
+  "description": "Example only: quantize all three projections of experts 3 and 17 in layer 8.",
+  "assignments": [
+    {
+      "layer": 8,
+      "experts": [3, 17],
+      "projections": ["gate", "up", "down"],
+      "qtype": "Q4_K"
+    }
+  ]
+}

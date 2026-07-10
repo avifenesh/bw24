@@ -713,7 +713,8 @@ impl HybridModel {
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
         let use_cache = Engine::moe_cache_enabled();
-        let moe_q8 = moe_q8_enabled()
+        let uniform_experts = m.has_uniform_expert_layout();
+        let moe_q8 = uniform_experts && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype);
 
@@ -788,7 +789,7 @@ impl HybridModel {
         // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = cfg.m3.is_none() && cfg.hy3.is_none();
+        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && std::env::var("BW24_MOE_STATS").is_err() {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
@@ -845,16 +846,16 @@ impl HybridModel {
         // and lazily zero ONLY the row of a token that falls through to the sequential axpy loop.
         // BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
         // zeroed-then-accumulated exactly as before (fallback).
-        let gdec_may_fire = use_cache && n_used <= 8 && gdec_enabled();
+        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled();
         let mut moe_out = if gdec_may_fire { e.uninit(t * n_embd)? } else { e.zeros(t * n_embd)? };
 
         // GPU scratch: one slot per proj, big enough for ONE expert (default stage-every-token path).
         // STAGE 2: LAZY — allocated only if the no-cache staging path actually runs (under
         // BW24_MOE_CACHE they were 3 dead ~1MB alloc_zeros + memset + free per layer per token,
         // measured ~123 memsets/token of the decode wall).
-        let g_len = m.gate_exps.expert_stride;  // 860160
-        let u_len = m.up_exps.expert_stride;    // 860160
-        let d_len = m.down_exps.expert_stride;  // 1114112
+        let g_len = m.gate_exps.max_expert_bytes();  // 860160 for the uniform 35B gate
+        let u_len = m.up_exps.max_expert_bytes();    // 860160 for the uniform 35B up
+        let d_len = m.down_exps.max_expert_bytes();  // 1114112 for the uniform 35B down
         let mut scratch_g: Option<CudaSlice<u8>> = None;
         let mut scratch_u: Option<CudaSlice<u8>> = None;
         let mut scratch_d: Option<CudaSlice<u8>> = None;
@@ -964,13 +965,16 @@ impl HybridModel {
                     }
                     let (sg, su, sd) = (scratch_g.as_mut().unwrap(), scratch_u.as_mut().unwrap(),
                                         scratch_d.as_mut().unwrap());
+                    let gl = m.gate_exps.expert_layout(ex);
+                    let ul = m.up_exps.expert_layout(ex);
+                    let dl = m.down_exps.expert_layout(ex);
                     e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
-                    let gate = e.qmatvec_view(sg, 0..g_len, &zt, 1,
-                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                    let gate = e.qmatvec_view(sg, 0..gl.len, &zt, 1,
+                        m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
 
                     e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
-                    let up = e.qmatvec_view(su, 0..u_len, &zt, 1,
-                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                    let up = e.qmatvec_view(su, 0..ul.len, &zt, 1,
+                        m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
 
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
                     Self::ffn_act_scaled(e, cfg, &gate, &up,
@@ -978,8 +982,8 @@ impl HybridModel {
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
-                    let y = e.qmatvec_view(sd, 0..d_len, &actv, 1,
-                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
+                    let y = e.qmatvec_view(sd, 0..dl.len, &actv, 1,
+                        m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?;
 
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                     e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
@@ -1048,8 +1052,8 @@ impl HybridModel {
         let mut bytes = 0u64;
         for l in self.layers.iter() {
             if let Ffn::Moe(m) = &l.ffn {
-                bytes += n_used * (m.gate_exps.expert_stride + m.up_exps.expert_stride
-                                   + m.down_exps.expert_stride) as u64;
+                bytes += n_used * (m.gate_exps.max_expert_bytes() + m.up_exps.max_expert_bytes()
+                                   + m.down_exps.max_expert_bytes()) as u64;
             }
         }
         bytes
@@ -1063,9 +1067,9 @@ impl HybridModel {
         let mut mx = 0usize;
         let mut scan = |ffn: &Ffn| {
             if let Ffn::Moe(m) = ffn {
-                mx = mx.max(m.gate_exps.expert_stride)
-                       .max(m.up_exps.expert_stride)
-                       .max(m.down_exps.expert_stride);
+                mx = mx.max(m.gate_exps.max_expert_bytes())
+                       .max(m.up_exps.max_expert_bytes())
+                       .max(m.down_exps.max_expert_bytes());
             }
         };
         for l in self.layers.iter() { scan(&l.ffn); }
@@ -1725,14 +1729,15 @@ impl HybridModel {
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
-        let len = exps.expert_stride;
+        let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
         let host_bytes = exps.expert_bytes(ex);
         e.with_moe_cache(max_block, |c, eng| {
             let slot = c.dispatch(id, host_bytes, eng)?;
             let DispatchSlot::Resident(sl) = slot;
             let buf = c.slot(sl);
-            eng.qmatvec_expert_q8(buf, 0..len, aq, ad, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
+            eng.qmatvec_expert_q8(buf, 0..layout.len, aq, ad, 1, exps.in_f, exps.out_f,
+                                  layout.qtype, layout.row_bytes)
         })
     }
 
@@ -1741,7 +1746,7 @@ impl HybridModel {
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
-        let len = exps.expert_stride;
+        let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
         let host_bytes = exps.expert_bytes(ex);
         // dispatch under the lock (lookup/admit/memcpy-issue), then resolve the slot and GEMM.
@@ -1751,7 +1756,8 @@ impl HybridModel {
             // (the same stream the memcpy was issued on, so ordering holds without extra sync).
             let DispatchSlot::Resident(sl) = slot;
             let buf = c.slot(sl);
-            eng.qmatvec_view(buf, 0..len, x, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
+            eng.qmatvec_view(buf, 0..layout.len, x, 1, exps.in_f, exps.out_f,
+                             layout.qtype, layout.row_bytes)
         })
     }
 }
@@ -1821,9 +1827,9 @@ impl HybridModel {
         let mut wbuf = e.zeros(t * n_used)?;  // [T, n_used] weight buffer for FMA reduce
 
         // Expert weight dimensions (used in both cache and staging paths).
-        let g_len = m.gate_exps.expert_stride;
-        let u_len = m.up_exps.expert_stride;
-        let d_len = m.down_exps.expert_stride;
+        let g_len = m.gate_exps.max_expert_bytes();
+        let u_len = m.up_exps.max_expert_bytes();
+        let d_len = m.down_exps.max_expert_bytes();
         let use_cache = Engine::moe_cache_enabled();
         let max_block = _max_block;
 
@@ -1853,6 +1859,9 @@ impl HybridModel {
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
             m_dist.push(m_e);
+            let gl = m.gate_exps.expert_layout(ex);
+            let ul = m.up_exps.expert_layout(ex);
+            let dl = m.down_exps.expert_layout(ex);
 
             // Upload index/weight arrays to device. The down-proj per-expert macro-scale
             // (ModelOpt weight_scale_2) folds into the scatter weights — post-matmul linear,
@@ -1878,15 +1887,15 @@ impl HybridModel {
                     let id = BlockId::new(il, PROJ_GATE, ex as u16);
                     let slot = c.dispatch(id, m.gate_exps.expert_bytes(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..g_len, &gv, m_e,
-                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..gl.len, &gv, m_e,
+                        m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)
                 })?;
                 let up = e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_UP, ex as u16);
                     let slot = c.dispatch(id, m.up_exps.expert_bytes(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..u_len, &gv, m_e,
-                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
+                        m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
                 })?;
                 // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
@@ -1897,8 +1906,8 @@ impl HybridModel {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
                     let slot = c.dispatch(id, m.down_exps.expert_bytes(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..d_len, &actv, m_e,
-                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..dl.len, &actv, m_e,
+                        m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)
                 })?
             } else {
                 // STAGING PATH: H2D the expert blocks into scratch buffers, then GEMM.
@@ -1908,17 +1917,17 @@ impl HybridModel {
                 e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
                 e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
                 e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
-                let gate = e.qmatvec_view(sg, 0..g_len, &gv, m_e,
-                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-                let up = e.qmatvec_view(su, 0..u_len, &gv, m_e,
-                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                let gate = e.qmatvec_view(sg, 0..gl.len, &gv, m_e,
+                    m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
+                let up = e.qmatvec_view(su, 0..ul.len, &gv, m_e,
+                    m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
                 // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
                 Self::ffn_act_scaled(e, cfg, &gate, &up,
                     m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
-                e.qmatvec_view(sd, 0..d_len, &actv, m_e,
-                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
+                e.qmatvec_view(sd, 0..dl.len, &actv, m_e,
+                    m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?
             };
 
             // SCATTER into slot buffer: each row goes to slot_buf[tok, slot, :].

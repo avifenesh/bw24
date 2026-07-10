@@ -77,6 +77,10 @@ pub trait TensorSource {
     /// The checkpoint directory, if this source is a safetensors HF dir (None for GGUF). Used by
     /// the ST expert disk-tier to place its repack cache next to the shards.
     fn st_dir(&self) -> Option<&std::path::Path> { None }
+    /// Whether per-expert tensor encodings exposed by this source are an intentional artifact
+    /// contract and must be retained even when every expert happens to use the same encoding.
+    /// Sparse overlays use this so an all-Q4_K control does not get normalized back to F32.
+    fn preserve_expert_encodings(&self) -> bool { false }
     /// Zero-copy mmap window for a STACKED 3D expert tensor (the disk-spill tier's byte source):
     /// `(shared file mmap, byte offset of expert 0, total expert bytes)`. `Some` only when the
     /// source's on-disk layout IS already the engine's expert layout (expert-axis-slowest,
@@ -114,12 +118,14 @@ struct RepackTensor {
     expert_stride: Option<usize>,
 }
 
-/// Manifest-backed source for bw24 Hy3 Q4_K repack directories.
+/// Manifest-backed source for bw24 repack directories and sparse per-expert overlays.
 ///
 /// The transcoder writes one file per tensor (including stacked expert slabs) plus a manifest with
 /// ggml-style names. This source presents those bytes directly to the existing loaders without a
-/// single-file GGUF wrapper. Files are mmap'd lazily by the OS; opening the 80G repack maps address
-/// space but does not fault tensor pages into RAM.
+/// single-file GGUF wrapper. Sparse overlays fall back to their `source_dir` HF checkpoint for
+/// unlisted tensors. Files are mmap'd lazily by the OS; opening the 80G repack maps address space
+/// but does not fault tensor pages into RAM. The public type retains its historical Hy3 name for
+/// compatibility with existing callers.
 pub struct Hy3RepackSource {
     cfg: ModelConfig,
     dir: PathBuf,
@@ -128,6 +134,9 @@ pub struct Hy3RepackSource {
     // Arc so stacked expert slabs can be handed to the engine's HostBuf::Mmap tier zero-copy
     // (find_expert_mmap) while `find` keeps borrowing the same mapping.
     files: BTreeMap<PathBuf, std::sync::Arc<Mmap>>,
+    // Sparse expert overlays store only the experts selected for quantization. Everything else
+    // resolves from the original HF checkpoint, so an unlisted expert remains in its source dtype.
+    fallback: Option<SafetensorsSource>,
 }
 
 impl Hy3RepackSource {
@@ -158,13 +167,23 @@ impl Hy3RepackSource {
             });
         }
 
-        let source_dir = top.string("source_dir").map(PathBuf::from);
+        let source_dir = top.string("source_dir").map(PathBuf::from).map(|path| {
+            if path.is_absolute() { path } else { dir.join(path) }
+        });
         let cfg_path = source_dir.clone()
             .map(|p| p.join("config.json"))
             .filter(|p| p.exists())
             .unwrap_or_else(|| dir.join("config.json"));
         let mut cfg = ModelConfig::from_config_json(&cfg_path)?;
         apply_stripped_mtp_override(&mut cfg, &tensors);
+        let fallback = if top.string("format").as_deref() == Some("bw24-expert-overlay-v1") {
+            let source = source_dir.as_deref().ok_or_else(|| {
+                invalid_data("bw24-expert-overlay-v1 manifest missing source_dir")
+            })?;
+            Some(SafetensorsSource::open(source)?)
+        } else {
+            None
+        };
 
         let mut files = BTreeMap::new();
         let mut seen = BTreeSet::new();
@@ -196,7 +215,7 @@ impl Hy3RepackSource {
             }
         }
 
-        Ok(Self { cfg, dir, source_dir, tensors, files })
+        Ok(Self { cfg, dir, source_dir, tensors, files, fallback })
     }
 
     pub fn dir(&self) -> &Path {
@@ -224,27 +243,47 @@ impl TensorSource for Hy3RepackSource {
     }
 
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
-        let t = self.tensors.get(ggml_name)?;
-        let map = self.files.get(&t.file)?;
-        let raw = &map[..t.bytes];
-        if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
-            let n: u64 = t.ne.iter().product();
-            let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
-            let mut bytes = Vec::with_capacity(vals.len() * 4);
-            for f in vals {
-                bytes.extend_from_slice(&f.to_le_bytes());
+        if let Some(t) = self.tensors.get(ggml_name) {
+            let map = self.files.get(&t.file)?;
+            let raw = &map[..t.bytes];
+            if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
+                let n: u64 = t.ne.iter().product();
+                let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
+                let mut bytes = Vec::with_capacity(vals.len() * 4);
+                for f in vals {
+                    bytes.extend_from_slice(&f.to_le_bytes());
+                }
+                return Some(TensorView {
+                    bytes: Cow::Owned(bytes),
+                    ggml_type: GgmlType::F32,
+                    ne: t.ne.clone(),
+                });
             }
             return Some(TensorView {
-                bytes: Cow::Owned(bytes),
-                ggml_type: GgmlType::F32,
+                bytes: Cow::Borrowed(raw),
+                ggml_type: t.ggml_type,
                 ne: t.ne.clone(),
             });
         }
-        Some(TensorView {
-            bytes: Cow::Borrowed(raw),
-            ggml_type: t.ggml_type,
-            ne: t.ne.clone(),
-        })
+        self.fallback.as_ref()?.find(ggml_name)
+    }
+
+    fn find_nvfp4_native(&self, ggml_name: &str) -> Option<Nvfp4Native<'_>> {
+        if self.tensors.contains_key(ggml_name) { return None; }
+        self.fallback.as_ref()?.find_nvfp4_native(ggml_name)
+    }
+
+    fn find_fp8_native(&self, ggml_name: &str) -> Option<Fp8Native<'_>> {
+        if self.tensors.contains_key(ggml_name) { return None; }
+        self.fallback.as_ref()?.find_fp8_native(ggml_name)
+    }
+
+    fn st_dir(&self) -> Option<&Path> {
+        self.fallback.as_ref().and_then(TensorSource::st_dir)
+    }
+
+    fn preserve_expert_encodings(&self) -> bool {
+        self.fallback.is_some()
     }
 
     /// Stacked expert slabs live one-per-file with expert 0 at byte 0 (the transcoder's layout);
@@ -780,6 +819,49 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expert_overlay_overrides_selected_tensor_and_falls_back_to_hf() {
+        let root = std::env::temp_dir().join(format!("bw24_overlay_test_{}", std::process::id()));
+        let base = root.join("base");
+        let overlay = root.join("overlay");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(overlay.join("experts")).unwrap();
+
+        let json = r#"{"model.layers.0.self_attn.q_proj.weight":{"dtype":"F32","shape":[4,2],"data_offsets":[0,32]}}"#;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        for v in 0..8u32 { buf.extend_from_slice(&(v as f32).to_le_bytes()); }
+        std::fs::write(base.join("model.safetensors"), &buf).unwrap();
+        let cfg_json = r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":4,"num_attention_heads":2,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128}"#;
+        std::fs::write(base.join("config.json"), cfg_json).unwrap();
+
+        let q4k = vec![0xa5u8; 144];
+        std::fs::write(overlay.join("experts/e0.q4k"), &q4k).unwrap();
+        let manifest = format!(r#"{{
+            "format":"bw24-expert-overlay-v1",
+            "source_dir":"{}",
+            "tensors":{{
+                "blk.0.ffn_gate_exps.0.weight":{{
+                    "file":"experts/e0.q4k","qtype":"Q4_K","ne":[256,1],"bytes":144
+                }}
+            }}
+        }}"#, base.display());
+        std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
+
+        let src = Hy3RepackSource::open(&overlay).unwrap();
+        assert!(src.preserve_expert_encodings());
+        let selected = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(selected.ggml_type, GgmlType::Q4_K);
+        assert_eq!(&*selected.bytes, &q4k);
+        let fallback = src.find("blk.0.attn_q.weight").unwrap();
+        assert_eq!(fallback.ggml_type, GgmlType::F32);
+        assert_eq!(fallback.ne, vec![2, 4]);
+        assert_eq!(src.st_dir(), Some(base.as_path()));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

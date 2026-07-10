@@ -557,9 +557,9 @@ impl Model {
         let mut mx = 0usize;
         for l in &self.layers {
             if let Ffn::Moe(m) = &l.ffn {
-                mx = mx.max(m.gate_exps.expert_stride)
-                       .max(m.up_exps.expert_stride)
-                       .max(m.down_exps.expert_stride);
+                mx = mx.max(m.gate_exps.max_expert_bytes())
+                       .max(m.up_exps.max_expert_bytes())
+                       .max(m.down_exps.max_expert_bytes());
             }
         }
         mx
@@ -651,6 +651,38 @@ impl HostBuf {
 /// THE 3D FIX: GpuTensor::load computes `row_bytes = raw.len()/ne[1]`, which for a stacked 3D
 /// tensor ignores the 256-expert axis and is 256x too large (gate_exps -> 430080 instead of 1680).
 /// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpertLayout {
+    pub offset: usize,
+    pub len: usize,
+    pub qtype: i32,
+    pub row_bytes: usize,
+}
+
+fn staged_expert_qtype(ty: GgmlType) -> Option<i32> {
+    Some(match ty {
+        GgmlType::Q8_0 => QT_Q8_0,
+        GgmlType::Q4_K => QT_Q4_K,
+        GgmlType::Q6_K => QT_Q6_K,
+        GgmlType::Q5_K => QT_Q5_K,
+        GgmlType::Q3_K => QT_Q3_K,
+        GgmlType::IQ4_XS => QT_IQ4_XS,
+        GgmlType::IQ3_S => QT_IQ3_S,
+        GgmlType::NVFP4 => QT_NVFP4,
+        GgmlType::F32 => QT_F32,
+        GgmlType::BF16 => QT_BF16,
+        _ => return None,
+    })
+}
+
+fn staged_expert_row_bytes(ty: GgmlType, in_f: usize) -> Option<usize> {
+    staged_expert_qtype(ty)?;
+    let (block, type_size) = ty.block_and_type_size();
+    assert_eq!(in_f as u64 % block, 0,
+        "expert row width {in_f} is not divisible by {ty:?} block {block}");
+    Some((in_f as u64 / block * type_size) as usize)
+}
+
 pub struct HostExps {
     pub bytes: HostBuf,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
     /// SPILLING-PLAN §1.1: per-expert backing tier. `None` => the layer fits in one `bytes` store and
@@ -664,6 +696,10 @@ pub struct HostExps {
     pub n_expert: usize,       // ne[2] = 256
     pub row_bytes: usize,      // raw.len()/(out_f*n_expert)  -> 1680 (gate/up) / 544 (down)
     pub expert_stride: usize,  // raw.len()/n_expert          -> 860160 (gate/up) / 1114112 (down)
+    /// Per-expert encoding metadata when experts in this projection do not share one dtype/layout.
+    /// `None` preserves the existing uniform slab contract and every resident/fused fast path.
+    /// `Some` routes through the per-expert staged/cache path, using each entry's qtype/row size.
+    pub layouts: Option<Vec<ExpertLayout>>,
     /// Per-expert post-matmul macro-scale (ModelOpt NVFP4 `weight_scale_2`, one scalar per expert
     /// tensor). `None` => all 1.0 (GGUF experts; block scales carry everything). The MoE forward
     /// folds gate/up macros into the activation epilogue (gs/us) and the down macro into the
@@ -718,7 +754,8 @@ impl HostExps {
             assert_eq!(len, n_expert * expert_stride, "{name} mmap len != n_expert*stride");
             return Ok(HostExps {
                 bytes: HostBuf::Mmap { map, off, len },
-                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None,
+                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride,
+                layouts: None, macros: None,
             });
         }
         let raw: &[u8] = &t.bytes;
@@ -757,7 +794,8 @@ impl HostExps {
         } else {
             HostBuf::Paged(raw.to_vec())
         };
-        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None })
+        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, layouts: None, macros: None })
     }
 
     /// SPILLING-PLAN §1.1, §2 step 4: load a stacked 3D expert tensor with a PER-EXPERT tier split.
@@ -807,7 +845,7 @@ impl HostExps {
         Ok(HostExps {
             bytes: HostBuf::Paged(Vec::new()),  // unused when `tiers` is Some
             tiers: Some(tiers),
-            qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None,
+            qtype, in_f, out_f, n_expert, row_bytes, expert_stride, layouts: None, macros: None,
         })
     }
 
@@ -838,6 +876,28 @@ impl HostExps {
             "ffn_down_exps.weight" => "down",
             other => panic!("not a *_exps suffix: {other}"),
         };
+
+        // A mixed-precision safetensors/repack source exposes experts as separate 2D tensors.
+        // Detect a dtype/layout change before the uniform gather paths normalize the whole layer
+        // to one encoding. Uniform checkpoints take the unchanged optimized path below.
+        let mut signatures = Vec::with_capacity(n_expert);
+        for ex in 0..n_expert {
+            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+            if let Some(nv) = src.find_nvfp4_native(&name) {
+                signatures.push((QT_NVFP4, nv.in_f / 64 * 36));
+            } else {
+                let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                let in_f = v.ne[0] as usize;
+                signatures.push(match staged_expert_row_bytes(v.ggml_type, in_f) {
+                    Some(row_bytes) => (staged_expert_qtype(v.ggml_type).unwrap(), row_bytes),
+                    None => (QT_F32, in_f * 4),
+                });
+            }
+        }
+        if src.preserve_expert_encodings()
+            || signatures.windows(2).any(|pair| pair[0] != pair[1]) {
+            return Self::load_mixed_from_source(src, il, proj, n_expert);
+        }
 
         // PATH B (NVFP4-NATIVE GATHER, 2026-07-05): when the source exposes the experts as packed
         // ModelOpt/Reza NVFP4 (find_nvfp4_native), keep them QUANTIZED — repack each expert's
@@ -953,7 +1013,7 @@ impl HostExps {
                         return Ok(HostExps {
                             bytes: HostBuf::Mmap { map, off: 0, len: total },
                             tiers: Some(tiers), qtype: QT_NVFP4, in_f, out_f, n_expert,
-                            row_bytes, expert_stride,
+                            row_bytes, expert_stride, layouts: None,
                             macros: if all_one { None } else { Some(macros) },
                         });
                     }
@@ -984,7 +1044,7 @@ impl HostExps {
                 let all_one = macros.iter().all(|&m| m == 1.0);
                 return Ok(HostExps {
                     bytes, tiers: None, qtype: QT_NVFP4, in_f, out_f, n_expert,
-                    row_bytes, expert_stride,
+                    row_bytes, expert_stride, layouts: None,
                     macros: if all_one { None } else { Some(macros) },
                 });
             }
@@ -1030,7 +1090,73 @@ impl HostExps {
         } else {
             HostBuf::Paged(buf)
         };
-        Ok(HostExps { bytes, tiers: None, qtype: QT_F32, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None })
+        Ok(HostExps { bytes, tiers: None, qtype: QT_F32, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, layouts: None, macros: None })
+    }
+
+    fn load_mixed_from_source(src: &dyn TensorSource, il: u32, proj: &str, n_expert: usize)
+                              -> Result<Self, Box<dyn std::error::Error>> {
+        let mut tiers = Vec::with_capacity(n_expert);
+        let mut layouts = Vec::with_capacity(n_expert);
+        let mut macros = vec![1.0f32; n_expert];
+        let mut in_f = 0usize;
+        let mut out_f = 0usize;
+
+        for ex in 0..n_expert {
+            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+            let (bytes, qtype, row_bytes, cur_in, cur_out) =
+                if let Some(nv) = src.find_nvfp4_native(&name) {
+                    let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+                    if let Some(scale) = src.find(&format!("{stem}.scale")) {
+                        macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
+                    }
+                    let bytes = bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
+                        nv.wbytes, nv.wscale, nv.out_f, nv.in_f);
+                    let row_bytes = nv.in_f / 64 * 36;
+                    (bytes, QT_NVFP4, row_bytes, nv.in_f, nv.out_f)
+                } else {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                    assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
+                    let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+                    if let Some(row_bytes) = staged_expert_row_bytes(v.ggml_type, cur_in) {
+                        (v.bytes.into_owned(), staged_expert_qtype(v.ggml_type).unwrap(),
+                         row_bytes, cur_in, cur_out)
+                    } else {
+                        let f32v = dequant::dequantize(v.ggml_type, &v.bytes, cur_in * cur_out);
+                        let mut bytes = Vec::with_capacity(f32v.len() * 4);
+                        for f in f32v { bytes.extend_from_slice(&f.to_le_bytes()); }
+                        (bytes, QT_F32, cur_in * 4, cur_in, cur_out)
+                    }
+                };
+
+            if ex == 0 {
+                in_f = cur_in;
+                out_f = cur_out;
+            } else {
+                assert_eq!((cur_in, cur_out), (in_f, out_f),
+                    "expert {ex} dims ({cur_in},{cur_out}) != expert 0 ({in_f},{out_f})");
+            }
+            assert_eq!(bytes.len(), cur_out * row_bytes,
+                "expert {name} bytes {} != out_f*row_bytes {}", bytes.len(), cur_out * row_bytes);
+            layouts.push(ExpertLayout { offset: 0, len: bytes.len(), qtype, row_bytes });
+            tiers.push(HostBuf::Paged(bytes));
+        }
+
+        let first = layouts[0];
+        let expert_stride = layouts.iter().map(|layout| layout.len).max().unwrap_or(0);
+        let all_one = macros.iter().all(|&scale| scale == 1.0);
+        Ok(HostExps {
+            bytes: HostBuf::Paged(Vec::new()),
+            tiers: Some(tiers),
+            qtype: first.qtype,
+            in_f,
+            out_f,
+            n_expert,
+            row_bytes: first.row_bytes,
+            expert_stride,
+            layouts: Some(layouts),
+            macros: if all_one { None } else { Some(macros) },
+        })
     }
 
     /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.
@@ -1041,21 +1167,74 @@ impl HostExps {
         self.macros.as_ref().map(|m| m[e]).unwrap_or(1.0)
     }
 
+    #[inline]
+    pub fn is_uniform_layout(&self) -> bool {
+        self.layouts.is_none()
+    }
+
+    #[inline]
+    pub fn expert_layout(&self, e: usize) -> ExpertLayout {
+        debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
+        self.layouts.as_ref().map(|layouts| layouts[e]).unwrap_or(ExpertLayout {
+            offset: e * self.expert_stride,
+            len: self.expert_stride,
+            qtype: self.qtype,
+            row_bytes: self.row_bytes,
+        })
+    }
+
+    #[inline]
+    pub fn max_expert_bytes(&self) -> usize {
+        self.layouts.as_ref()
+            .and_then(|layouts| layouts.iter().map(|layout| layout.len).max())
+            .unwrap_or(self.expert_stride)
+    }
+
     /// backing store (unchanged in-RAM path). Each `tiers[e]` is exactly one expert's stride.
     #[inline]
     pub fn expert_bytes(&self, e: usize) -> &[u8] {
-        debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
+        let layout = self.expert_layout(e);
         match &self.tiers {
-            Some(tiers) => tiers[e].as_bytes(),
-            None => &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride],
+            Some(tiers) => {
+                debug_assert_eq!(tiers[e].len(), layout.len);
+                tiers[e].as_bytes()
+            }
+            None => &self.bytes.as_bytes()[layout.offset..layout.offset + layout.len],
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{repack_nvfp4_split, unpack_nvfp4_split};
+    use super::{HostExps, QT_BF16, QT_Q4_K, repack_nvfp4_split, unpack_nvfp4_split};
+    use std::borrow::Cow;
+    use bw24_gguf::{GgmlType, config::ModelConfig};
     use bw24_gguf::nvfp4_repack::{repack_modelopt_to_gguf, repack_modelopt_to_split};
+    use bw24_gguf::source::{TensorSource, TensorView};
+
+    struct MixedExpertSource {
+        bf16: Vec<u8>,
+        q4k: Vec<u8>,
+    }
+
+    impl TensorSource for MixedExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps mixed-loader test") }
+
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let (bytes, ggml_type) = if name == "blk.0.ffn_gate_exps.0.weight" {
+                (&self.bf16, GgmlType::BF16)
+            } else if name == "blk.0.ffn_gate_exps.1.weight" {
+                (&self.q4k, GgmlType::Q4_K)
+            } else {
+                return None;
+            };
+            Some(TensorView {
+                bytes: Cow::Borrowed(bytes),
+                ggml_type,
+                ne: vec![256, 2],
+            })
+        }
+    }
 
     /// A1 direct-import gate (engine side): the fused modelopt->split repack must be byte-for-byte
     /// the composition of the two passes it replaces (modelopt->GGUF blocks, then the A6
@@ -1074,5 +1253,24 @@ mod tests {
             assert_eq!(unpack_nvfp4_split(&direct, out_f), gguf,
                        "split roundtrip broken at out_f={out_f} in_f={in_f}");
         }
+    }
+
+    #[test]
+    fn mixed_expert_loader_keeps_each_encoding_and_extent() {
+        let source = MixedExpertSource {
+            bf16: vec![0x5a; 256 * 2 * 2],
+            q4k: vec![0xa5; 2 * 144],
+        };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 2).unwrap();
+        assert!(!exps.is_uniform_layout());
+        assert_eq!(exps.max_expert_bytes(), 1024);
+        assert_eq!(exps.expert_layout(0).qtype, QT_BF16);
+        assert_eq!(exps.expert_layout(0).row_bytes, 512);
+        assert_eq!(exps.expert_layout(0).len, 1024);
+        assert_eq!(exps.expert_layout(1).qtype, QT_Q4_K);
+        assert_eq!(exps.expert_layout(1).row_bytes, 144);
+        assert_eq!(exps.expert_layout(1).len, 288);
+        assert_eq!(exps.expert_bytes(0), source.bf16);
+        assert_eq!(exps.expert_bytes(1), source.q4k);
     }
 }

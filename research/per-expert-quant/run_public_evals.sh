@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+HERE="$ROOT/research/per-expert-quant"
+LOCK="$HERE/suite.lock.json"
+
+: "${ARM:?set ARM to the experiment arm name, e.g. bf16_reference or selected_q4k}"
+: "${MODEL:?set MODEL to the name configured in BW24_MODELS}"
+BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
+SUITE=${SUITE:-core}
+OUT_ROOT=${OUT_ROOT:-$HERE/results}
+CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
+HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
+HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
+
+case "$SUITE" in
+  core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
+  code)
+    if [[ ${BW24_UNSAFE_EVALS:-0} != 1 ]]; then
+      echo "code evals execute model-generated Python; run in an isolated sandbox and set BW24_UNSAFE_EVALS=1" >&2
+      exit 2
+    fi
+    TASKS=humaneval_instruct,mbpp_instruct
+    ;;
+  *) echo "unknown SUITE=$SUITE (expected core or code)" >&2; exit 2 ;;
+esac
+
+mkdir -p "$CACHE_DIR" "$RUN_DIR"
+if [[ ! -d "$HARNESS_DIR/.git" ]]; then
+  git init --quiet "$HARNESS_DIR"
+  git -C "$HARNESS_DIR" remote add origin https://github.com/EleutherAI/lm-evaluation-harness.git
+  git -C "$HARNESS_DIR" fetch --quiet --depth=1 origin "$HARNESS_COMMIT"
+  git -C "$HARNESS_DIR" checkout --quiet --detach FETCH_HEAD
+fi
+python3 "$HERE/prepare_harness.py" "$HARNESS_DIR" --lock "$LOCK"
+
+SERVER_ROOT=${BASE_URL%/v1/completions}
+curl -fsS "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
+cp "$LOCK" "$RUN_DIR/suite.lock.json"
+export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT
+python3 - "$RUN_DIR/run-metadata.json" <<'PY'
+import json, os, pathlib, platform, subprocess, sys
+
+def command(*args):
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+    except Exception as exc:
+        return f"unavailable: {exc}"
+
+root = pathlib.Path(os.environ["ROOT"])
+metadata = {
+    "arm": os.environ["ARM"],
+    "model": os.environ["MODEL"],
+    "suite": os.environ["SUITE"],
+    "base_url": os.environ["BASE_URL"],
+    "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
+    "lm_eval_commit": os.environ["HARNESS_COMMIT"],
+    "platform": platform.platform(),
+    "nvidia_smi": command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"),
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+PY
+
+ARGS=(
+  --model local-completions
+  --model_args "model=$MODEL,base_url=$BASE_URL,num_concurrent=1,max_retries=3,tokenized_requests=False,tokenizer_backend=none"
+  --tasks "$TASKS"
+  --batch_size 1
+  --log_samples
+  --output_path "$RUN_DIR"
+)
+if [[ -n ${LIMIT:-} ]]; then ARGS+=(--limit "$LIMIT"); fi
+if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
+
+uv run --extra api --project "$HARNESS_DIR" lm_eval "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
