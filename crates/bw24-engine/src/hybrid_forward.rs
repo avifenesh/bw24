@@ -1416,8 +1416,9 @@ impl HybridModel {
                                                          m.gate_exps.qtype, m.up_exps.qtype,
                                                          m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
-                // down stays on the _rows twin: the CSR down variant measured 23.5 -> 37.5us
-                // (16-group rows can't amortize the serial pair loop). act layout matches.
+                // down stays on the _rows twin — BOTH CSR down variants measured negative
+                // (v1 serial pairs 23.5->37.5us; v2 warp-parallel+SMEM -14% e2e, K=8 -37%):
+                // 16-group rows have too little decode to amortize any dedup structure.
                 e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
                                             t, n_ff_exp, n_embd, n_used, n_expert,
                                             m.down_exps.qtype, m.down_exps.row_bytes)?;

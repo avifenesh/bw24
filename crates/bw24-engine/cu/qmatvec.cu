@@ -5698,3 +5698,4 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
         }
     }
 }
+
