@@ -205,7 +205,7 @@ def main() -> None:
             if tools is not None:
                 template_kwargs["tools"] = tools
             prompt_ids = tokenizer.apply_chat_template(**template_kwargs)
-            if isinstance(prompt_ids, dict):
+            if hasattr(prompt_ids, "keys") and "input_ids" in prompt_ids:
                 prompt_ids = prompt_ids["input_ids"]
             if hasattr(prompt_ids, "tolist"):
                 prompt_ids = prompt_ids.tolist()
