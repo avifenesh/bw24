@@ -2063,6 +2063,21 @@ impl HybridModel {
                 e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
                 pending = Some(bonus);
                 if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)"); }
+            } else if !spec_replay {
+                // ZERO ROUND FOLD (2026-07-10, verify-cost target #3): base+n_acc == 0 — a
+                // pending-less round where nothing was accepted (PMIN0 zero-draft chains after a
+                // replay/commit, or plain 0-accept rounds at round 0). The old path replayed
+                // [bonus] through a FULL m=1 trunk+head forward (the 489us full-vocab head pass
+                // measured at ~0.75/round on PMIN0 configs). Instead: restore the pre-round
+                // snapshot and let the bonus ride the NEXT round's verify as col 0 — the existing
+                // base=1 pending machinery, bit-identical by the decode-exact verify contract.
+                // Seed: the bonus's predecessor is the last COMMITTED token, whose hidden
+                // fill_prev already carries (same seeding as the 1-token-replay case it replaces).
+                cache.rollback(e, &snap, 0)?;
+                scratch.set_len(e, pos)?;
+                e.copy_into(&mut h_seed_buf, 0, &fill_prev, n_embd)?;
+                pending = Some(bonus);
+                if debug_spec { eprintln!("  -> ZERO-ROUND FOLD (bonus pending, fill_prev seed)"); }
             } else {
                 // PARTIAL ACCEPT, LEGACY REPLAY (seam BW24_SPEC_REPLAY=1 — or j==0: nothing of
                 // this round survives, only possible before the first pending exists, ~round 0):
