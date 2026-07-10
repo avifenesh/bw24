@@ -357,24 +357,36 @@ impl HybridModel {
         // NEGATIVE — the pageable-copy sync; this is the retry with the sync removed.)
         let mut batch_d = e.stream().alloc_zeros::<u32>(k + 1)?;
         let mut packed = e.stream().alloc_zeros::<u32>(2 * k + 1)?;
+        // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
+        // draft-mtp reaches 0.64-0.70 acceptance on the SAME drafter (ours fixed-K: 0.52) by
+        // drafting fewer tokens when unconfident (p-min gate). Zero-sync host proxy: next
+        // round's depth = last round's accepted run + 1, clamped to [floor=1, k] — rounds
+        // after a miss shrink, streaks re-deepen. The round's ONE dtoh already carries the
+        // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
+        // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
+        let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
+        let k_cap = k;
+        let mut kc = k;
         'outer: while out.len() < max_new {
+            let kr = if adapt { kc } else { k_cap };
             e.u32_set_k(&mut batch_d, last, 0)?;
             let mut hc = e.clone_dtod(&h)?;
-            for j in 0..k {
+            for j in 0..kr {
                 let tv = batch_d.slice(j..j + 1);
                 let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
                 let ld = e.matmul(&d.head, &hn, 1)?;
                 e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
                 hc = h_next;
             }
-            drafted += k;
+            drafted += kr;
             rounds += 1;
             let pos0 = cache.pos;
-            let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, k + 1, pos0, &mut cache)?;
-            e.u32_pack2(&batch_d, 1, k, &vam_d, k + 1, &mut packed)?;
+            let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?;
+            e.u32_pack2(&batch_d, 1, kr, &vam_d, kr + 1, &mut packed)?;
             let host = e.dtoh_u32(&packed)?;           // the round's ONE sync
+            let k = kr;
             let dtoks: Vec<u32> = host[..k].to_vec();
-            let vam: Vec<u32> = host[k..].to_vec();
+            let vam: Vec<u32> = host[k..2 * k + 1].to_vec();
             // longest accepted prefix: d_i accepted iff d_i == argmax(verify[i-1])
             debug_assert!(d.d2t.is_none(), "async round requires an untrimmed draft head");
             let mut m = 0usize;
@@ -406,6 +418,11 @@ impl HybridModel {
             e.copy_view_into(&mut hrow, 0, &row, n_embd)?;
             h = hrow;
             last = next;
+            if adapt {
+                let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(1);
+                kc = (m + 1).clamp(floor.min(k_cap), k_cap);
+            }
         }
         eprintln!("[gemma-spec] rounds={rounds} drafted={drafted} accepted={accepted}                    accept-rate={:.3} tok/round={:.2}",
                   accepted as f64 / drafted.max(1) as f64,
