@@ -2125,6 +2125,8 @@ impl HybridModel {
         };
         let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
         let mut moe_out = e.uninit(t * n_embd)?;
+        // down stays rows_g: the CSR dedup twin measured NEGATIVE at nsb=22 too (189.4 vs
+        // 207.0 depth spec, bitwise-exact — jsonl 2026-07-10; qwen nsb=16 same verdict).
         e.moe_down8_fma_dev_q8_rows_g(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out, t,
                                       n_ff_exp, n_embd, n_used, n_expert,
                                       m.down_exps.qtype, m.down_exps.row_bytes)?;
