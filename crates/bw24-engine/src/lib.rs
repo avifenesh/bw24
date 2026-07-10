@@ -3987,6 +3987,49 @@ impl Engine {
         Ok(())
     }
 
+    /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. v3-only
+    /// (stream mode gates on fa_v3_active); `t_kv_upper` sizes splits/partials — the same
+    /// one-sp-for-all-rows approximation class the host rows path already uses (battery-
+    /// arbitrated); actual per-row bounds derive in-kernel from the counter.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_decode_rows_dc(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                             v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                             head_dim: usize, n_head: usize, n_head_kv: usize,
+                             base_dev: &CudaSlice<i32>, t_kv_upper: usize, t: usize, scale: f32,
+                             k_tok_bytes: usize, v_tok_bytes: usize)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        assert!(fa_v3_active(head_dim), "stream fa rows requires the v3 lane");
+        let sp = fa_split_keys(t_kv_upper, n_head_kv);
+        let n_splits_max = (t_kv_upper + sp - 1) / sp;
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let (nspm, spk) = (n_splits_max as i32, sp as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let gqa = (n_head / n_head_kv).max(1) as u32;
+        let o_len = t * n_head * n_splits_max * head_dim;
+        let ml_len = t * n_head * n_splits_max;
+        let (mut part_o, mut part_m, mut part_l) =
+            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let f = self.func("fa_decode_vec_q_rows_v3_dc");
+        let sh = (32 * head_dim * 2) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+            block_dim: (32, gqa, 1), shared_mem_bytes: sh };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&scale).arg(&nspm).arg(&spk)
+         .arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        let fc = self.func("fa_decode_combine_rows_dc");
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+          .arg(base_dev).arg(&nspm).arg(&spk);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     /// Device-counter variant of `fa_decode` (CUDA-GRAPH-PLAN Phase 2). The sequence length is read
     /// from `t_kv_dev[0]` (resident device i32[1]) for the attention loop bound + per-split key range;
     /// the GRID `n_splits` is sized for `bucket_max` (the bucket's max t_kv — baked at capture time).

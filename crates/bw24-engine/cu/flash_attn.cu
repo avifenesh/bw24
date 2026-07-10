@@ -3234,6 +3234,37 @@ extern "C" __global__ void fa_decode_vec_q_rows(
 // fa_decode_combine_f32 — identical values, identical fmax/sum order; only the
 // partial STRIDE differs (n_splits_max vs n_splits_r) and slots >= n_splits_r
 // are never read. Writes O[row, n_head, head_dim] (the verify attn stack).
+// ROUND-STREAM stage (c): combine twin with the causal base from a device counter — body
+// identical to fa_decode_combine_rows (per-row n_splits derived the same way from T_kv).
+extern "C" __global__ void fa_decode_combine_rows_dc(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, float* __restrict__ O,
+        int head_dim, int n_head, const int* __restrict__ t_kv_base_dev,
+        int n_splits_max, int split_keys)
+{
+    const int head     = blockIdx.x;
+    const int r        = blockIdx.y;
+    const int T_kv     = t_kv_base_dev[0] + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int tid      = threadIdx.x;
+    if (head >= n_head || tid >= head_dim) return;
+    const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pO = partO + ((size_t)r * n_head + head) * n_splits_max * head_dim;
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, pM[s]);
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = pM[s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += pL[s] * w;
+        o += pO[(size_t)s * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
+}
+
 extern "C" __global__ void fa_decode_combine_rows(
         const float* __restrict__ partO, const float* __restrict__ partM,
         const float* __restrict__ partL, float* __restrict__ O,

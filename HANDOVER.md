@@ -39,7 +39,16 @@ STAGE PROGRESS (2026-07-10): (a) LANDED green; (b) COMPLETE green (seeds + KV-le
 len_d pointer table + recur restore _dc twins — device owns every n_acc-dependent commit input;
 acceptance parity exact at every K, raw + serve). (c) GROUNDWORK LANDED: embed_gather_device_td
 (device-token verify embed) + spec_assemble_verify kernel (verify tokens from the K-chain pack
-slots + pending sentinel + in-kernel d2t + p-min k_used derivation). (c) REMAINING, in order:
+slots + pending sentinel + in-kernel d2t + p-min k_used derivation). (c4 VERIFY-CHAIN THREADING LANDED 2026-07-10: decode_step_t_core_stream(stream=(vtok_d, ctr))
+routes embed через embed_gather_device_td, rope via pos_iota, and full_attn_verify's stream arm
+(append_kv_quantized_rows_dc + fa_decode_rows_dc + combine _dc) all off ONE device counter —
+every-layer-len == cache.pos invariant; host kvl.len becomes a stale lower bound (split-sizing
+upper = len + t + 64 slack, min max_ctx). Default path re-gated green after each change.
+STILL REMAINING for c4: K-chain draft graph resurrection under the stream seam (git history has
+the reverted implementation — commit "draft-readback arc negative" parent), the out-ring append
+kernel, the M-round pre-issue loop + drain + reconcile (host mirrors from device counters), the
+last_pred seeding for round 1, battery, A/B vs devacc-off.)
+(c) REMAINING, in order:
 c2 verify-chain device-pos (_dc pos-vec kernel, append-at-len_d ROWS variant, fa rows t_kv_base
 from len_d — decode-graph precedents exist for all three at t=1); c3 accept kernel consumes
 brk[] — SPEC: spec_accept_greedy_dc(preds, vtok, last_pred_dev, brk, out): k_used = brk[0],

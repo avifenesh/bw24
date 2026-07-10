@@ -614,17 +614,41 @@ impl HybridModel {
                           embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
                           mut ckpt: Option<&mut VerifyCkpt>)
                          -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        self.decode_step_t_core_stream(e, tokens, pos0, cache, embd_dev, ckpt.take(), None)
+    }
+
+    /// ROUND-STREAM stage (c) 4: `stream` = (device verify tokens [t], device pos counter) —
+    /// when Some, rope positions come from pos_iota over the counter, the embed gathers the
+    /// device tokens, and full_attn_verify routes appends/FA through the _dc twins reading the
+    /// SAME counter (every layer's kvl.len == cache.pos, one counter drives all three). The
+    /// host `tokens`/`pos0` args still size buffers (t is FIXED K+1 in stream mode).
+    #[allow(clippy::too_many_arguments)]
+    fn decode_step_t_core_stream(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                          embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+                          mut ckpt: Option<&mut VerifyCkpt>,
+                          stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>)
+                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
         let t = tokens.len();
-        let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
-        let pos_d = e.htod_i32(&pos_vec)?;
+        let pos_d = match stream {
+            Some((_, ctr)) => {
+                let mut p = e.alloc_uninit::<i32>(t)?;
+                e.pos_iota(ctr, &mut p, t)?;
+                p
+            }
+            None => {
+                let pos_vec: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+                e.htod_i32(&pos_vec)?
+            }
+        };
 
         // embed T tokens -> [T, n_embd] token-major (device gather on the spec hot loop)
-        let mut x = match embd_dev {
-            Some((g, qt, rb)) => e.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
-            None => e.htod(&self.embd.gather(n_embd, tokens))?,
+        let mut x = match (stream, embd_dev) {
+            (Some((vtok, _)), Some((g, qt, rb))) => e.embed_gather_device_td(g, vtok, t, n_embd, qt, rb)?,
+            (None, Some((g, qt, rb))) => e.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
+            _ => e.htod(&self.embd.gather(n_embd, tokens))?,
         };
 
         for (il, layer) in self.layers.iter().enumerate() {
@@ -645,7 +669,8 @@ impl HybridModel {
             }
 
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
+                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il,
+                                                          stream.map(|(_, c)| c))?,
                 Mixer::Linear(la) => {
                     // BATCHED linear verify (2026-07-03, the MTP-profit lever): one T-token pass —
                     // batched projections (weight read ONCE, hits the m=2-4 weight-resident matvec),
@@ -962,7 +987,7 @@ impl HybridModel {
                 e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il)?,
+                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, None)?,
                 Mixer::Linear(la) => {
                     let mut out = e.zeros(t * n_embd)?;
                     for col in 0..t {
@@ -1027,7 +1052,8 @@ impl HybridModel {
     /// Appends the T new K/V columns to cache.kv[il] then attends causally over [0..len) via
     /// fa_prefill. Token-major [T, kv_dim] projection layout == cache row layout (single copy).
     fn full_attn_verify(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize,
+                        stream_ctr: Option<&CudaSlice<i32>>)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
@@ -1085,6 +1111,13 @@ impl HybridModel {
         // f32; append-quantize each of the T token rows into the byte cache (q8_0 K / q5_1 V).
         let kvl = cache.kv[il].as_mut().unwrap();
         let (kv_dim_k, kv_dim_v, ktb, vtb) = (kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes);
+        if let Some(ctr) = stream_ctr {
+            // stream: ONE batched append at the device counter (rows kernel = the per-view warp
+            // math on a (block, token) grid, documented byte-identical); host len is a stale
+            // LOWER BOUND under pre-issue (drain reconciles it).
+            e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, ctr, t,
+                                          kv_dim_k, kv_dim_v, ktb, vtb)?;
+        } else {
         for i in 0..t {
             let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
             let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
@@ -1092,6 +1125,7 @@ impl HybridModel {
                                        kv_dim_k, kv_dim_v, ktb, vtb)?;
         }
         kvl.len += t;
+        }
 
         // BIT-IDENTICAL VERIFY ATTENTION (spec-exactness fix): the FP accumulation order must be
         // byte-for-byte identical to the eager decode path. fa_prefill uses a different tile size
@@ -1119,7 +1153,16 @@ impl HybridModel {
         // the EXACT eager decode dispatch (vec_q_v2 + combine_f32; the rows pair measured +50us
         // at m=1). Byte-identical: kernel-check pins rows-vs-loop identity, and the per-row loop
         // at t=1 is fa_decode on the same q with zero-offset copies. Gates arbitrate.
-        if spec_lean() && t == 1 {
+        if let Some(ctr) = stream_ctr {
+            // STREAM ARM: causal base from the device counter; host kvl.len is a stale lower
+            // bound used only for the split-sizing upper bound (+64 slack covers M pre-issued
+            // rounds at K<=8). Views span the bound; per-row limits derive in-kernel.
+            let upper = kvl.len + t + 64;
+            let k_view = e.view_u8(&kvl.k, (upper.min(cache.max_ctx)) * ktb);
+            let v_view = e.view_u8(&kvl.v, (upper.min(cache.max_ctx)) * vtb);
+            e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb)?;
+        } else if spec_lean() && t == 1 {
             let t_kv = base_len + 1;
             let k_view = e.view_u8(&kvl.k, t_kv * ktb);
             let v_view = e.view_u8(&kvl.v, t_kv * vtb);
