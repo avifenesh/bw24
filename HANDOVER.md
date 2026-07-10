@@ -48,6 +48,33 @@ graph (embed*sqrt(2816), branch-parallel FFN, softcap 30, gelu_tanh R1, router p
 (rope_freqs tensor shipped) + R7 part-2 weightless V-norm; (e) R6 SWA mask; (f) drafter spec
 (mtp-*-Q4_0.gguf on disk, separate-model draft like the 27B). Tokenizer (model="gemma4") deferred
 — token-id prompts work for all gates.
+R8 VERIFIED WIRING (from llama gemma4.cpp:180-405, read 2026-07-10 — implement EXACTLY):
+```
+x = embed * sqrt(n_embd)                       # token inputs only
+per layer il (hd_l = 512 global / 256 swa; nkv_l = 2/8; scale_l = 1/sqrt(hd_l) [no meta key ->
+llama default]; rope: NEOX, base 1e6+rope_freqs-factors global / 1e4 no-factors swa; n_rot_l =
+hd_l per metadata):
+  cur = rms_norm(x, attn_norm)
+  Q = wq@cur -> [hd,nh,t] -> rms_norm(q_norm) -> rope
+  K = wk@cur -> [hd,nkv,t] -> rms_norm(k_norm) -> rope
+  V = (wv ? wv@cur : RAW K PROJECTION — before k_norm AND before rope!) -> WEIGHTLESS rms_norm
+      # our wv:=wk load gives exactly the raw K projection ✓; add weightless V-norm; never rope V
+  attn = attention(Q,K,V, scale_l) -> wo
+  cur = rms_norm(attn, post_attention_norm); attn_out = cur + x
+  mlp = rms_norm(GELU_PAR_FFN(rms_norm(attn_out, ffn_norm)), post_ffw_norm_1)
+  router: tmp = WEIGHTLESS rms_norm(attn_out) * (1/sqrt(n_embd)) * gate_inp.scale[2816];
+          logits = gate_inp.weight[2816,128] @ tmp
+  moe_in = rms_norm(attn_out, pre_ffw_norm_2)
+  moe = MoE(moe_in; softmax gating + weight renorm [qwen3moe recipe], GELU_PAR experts,
+            per-expert OUTPUT scale = ffn_down_exps.scale[128] [llama passes it as
+            ffn_down_exps_s into build_moe_ffn])
+  moe = rms_norm(moe, post_ffw_norm_2)
+  cur = rms_norm(mlp + moe, post_ffw_norm) + attn_out
+  x = cur * layer_output_scale[1]
+final: rms_norm(x, output_norm) -> tied head -> logits = 30*tanh(logits/30)
+```
+KV-cache note (llama-model.cpp:2135): n_layer_kv_from_start reuse machinery exists for OTHER
+gemma4 sizes; the 26B has shared_kv_layers=0 -> plain per-layer KV ✓.
 SEQUENCE (gaps tagged per the scope doc):
 - P0 census: GGUF metadata/tensor map/qtypes/drafter format when downloads land; verify Q4_0
   dequant + gguf-spm tokenizer coverage in bw24 (gap 9 may dissolve via from_gguf).
