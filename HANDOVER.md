@@ -14,8 +14,9 @@ prefill + decode window VIEW into cache), MTP spec loop (gemma_spec.rs, stream-i
 greedy at every K, VERIFY-GATE K=1..7 PASS).
 
 NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
-- ours plain 172.7-174 tok/s | llama serve plain 181-182 | llama-bench tg128 191.9
-- ours spec K2/K3 213-216 (acc .52; 1.25x own plain, ~1.18x llama plain serve)
+- ours plain 178.4 tok/s (fused mmvq triples + cross-layer q8 norm carry) | llama serve
+  plain 181-182 | llama-bench tg128 191.9
+- ours spec K2 219.0 (acc .52; 1.23x own plain, ~1.20x llama plain serve)
   | llama MTP serve 241-253 (acc .517 — drafter FAITHFUL; the remaining gap is round cost)
 - prefill pp511: ours 1419 | llama-bench pp512 5713
 - spec lever history: 169 -> 179 (Q4_0 batched r2) -> 192 (fa_decode_rows verify) ->
@@ -26,6 +27,14 @@ NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
   interleaved 4B syncs beat the batched memcpy_htod+dtoh pair; reverted (no gain = no change)
 - qwen regression battery GREEN after all shared-path changes (kernel-check, 9B/27B argmax,
   9B run-spec K=1..8 self-consistency)
+
+DEPTH-1736 (degenerate long prompt, id file in scratchpad/long-ids.txt):
+- ours plain 146.7 (was 142.1 pre-dpl16) / spec K2 183.9 (acc .775) | llama MTP 252-285
+  (acc .81-.91 — degenerate content inflates both engines' acceptance)
+- depth verify still pays a PER-TOKEN fa loop on windowed SWA rows (75 launches/round
+  ~1.4ms): the fix is a WINDOWED rows twin — fa_decode_rows kernels + per-row
+  t_lo = max(0, base+i+1-win) lower bound (per-row window starts differ by 1; a shared
+  view offset is WRONG by up to K old keys).
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
