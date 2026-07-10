@@ -34,7 +34,9 @@ def main() -> None:
                 {
                     "model": args.model,
                     "prompt_ids": record["prompt_ids"],
-                    "max_tokens": 1,
+                    # Route only the frozen prompt ids. A generated token could differ between the
+                    # two uniform controls and would make their calibration inputs non-identical.
+                    "max_tokens": 0,
                     "temperature": 0.0,
                     "stream": False,
                     "max_ctx": len(record["prompt_ids"]) + 8,

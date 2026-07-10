@@ -83,12 +83,16 @@ SHA-256 of `requests.jsonl`. Keep that manifest with the traces and final report
 
 Capture enough requests to cover the intended deployment distribution:
 
+    BW24_SERVE_SPEC=0 \
+    BW24_KV_REUSE=0 \
+    BW24_CTX=1032 \
     BW24_MOE_TRACE=/data/runs/hy3-calibration.trace \
-    BW24_MODELS=hy3=/data/models/hy3-source \
+    BW24_MODELS=plain_quant=/data/artifacts/plain-quant \
     ./target/release/bw24-server
 
-With the server ready, submit the frozen prompt ids. Use a fresh trace/output pair for each uniform
-control; do not append one arm to the other:
+Spec decode and KV reuse are disabled so a zero-generation request still primes and traces every
+frozen prompt token. With the server ready, submit the prompt ids. Use a fresh trace/output pair for
+each uniform control; do not append one arm to the other:
 
     /data/src/reap/.venv/bin/python research/per-expert-quant/capture_calibration.py \
       --requests /data/calibration/hy3-routing-v1/requests.jsonl \
