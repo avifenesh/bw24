@@ -660,13 +660,21 @@ split -> the b12/b16 design targets whichever term dominates. Constraint: verify
 stay BIT-IDENTICAL to decode per (token,row) (the dispatch-parity law) — speedups come from
 launch fusion/batching shape, not numeric-class changes.
 
-### Verify-cost arc — target #1 QUANTIFIED (gen-phase nsys, 35B K=3, prime-excluded)
+### Verify-cost arc — targets CORRECTED (trimmed re-profile 2026-07-10)
 
-qmatvec_q6_K_mmvq = 205ms of a 963ms gen wall (21%), 419 instances = 6.8/round, uniform
-489us (stddev 4.2us -> ONE shape). The Q6_K head/tensor is the single largest per-round term.
-matmul_decode_exact's batched arm DOES cover Q6_K m=2-8 (batched_supports + b8), so the 6.8
-launches/round need CALL-SITE MAPPING before the fix: candidates = draft-chain head steps
-(trimmed q6_K x ~3/round), verify head (batched or fallthrough?), another q6_K weight class.
-Next session: nvtx-range or per-callsite counter -> map instances -> then batch/trim/shape-fix
-whichever term it is. A 4-5x cut of this term ~= +15-17% e2e on the 35B = both its sub-bar
-cells clear the margin. Draft-chain trunk matvecs (fused2+mmvq, 437ms combined) = target #2.
+CORRECTION: the first quantification ran UNTRIMMED (probe-script bug: the 35B trim-path grep
+resolved empty — every 35B probe that day incl. deep-K used no trim; the BOARD rebaseline was
+trimmed and stands; the deep-K refutation was all-arms-untrimmed = internally consistent, stands
+with that caveat). TRIMMED truth (nsys, K=3 PMIN0, numeric prompt):
+- #1: verify+draft TRUNK matvecs — fused2 15.2% + mmvq 8.5% ~= 24% of gen wall.
+- #2: MoE expert ops (gate_up_v + _rows + down8) ~= 14%.
+- #3: q6_K head 7-11%, BIMODAL: trimmed draft 68us (fine) + full-vocab 489us at m=1
+  ~0.75/round — call-site mapped (BW24_Q6K_TRACE): the ZERO-DRAFT / j==0 legacy-replay path
+  runs a full-head m=1 pass per zero round (PMIN0 rounds!). Small real lever on PMIN0 models:
+  route the zero-round commit through a head-free step or the trimmed head.
+- Trace also confirmed the verify head batches correctly (m=2-4 batched=true).
+- Trim content-dependence noted: on the NUMERIC id prompt the trim made 35B spec 0.86x vs
+  plain (141 vs 198 untrimmed) — the generic ranking excludes numeric-heavy tokens; real-prompt
+  board configs unaffected.
+35B margin math: no single >15% term remains; clearing p2/p3 (1.02/1.03x) likely needs #1
+(trunk-matvec launch/fusion work, FUSED_T-class follow-on) + #3. 27B p2: same class.
