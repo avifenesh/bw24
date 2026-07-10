@@ -104,6 +104,7 @@ impl MetaValue {
             MetaValue::U32(v) => *v as u64, MetaValue::U64(v) => *v,
             MetaValue::I8(v) => *v as u64, MetaValue::I16(v) => *v as u64,
             MetaValue::I32(v) => *v as u64, MetaValue::I64(v) => *v as u64,
+            MetaValue::Bool(v) => *v as u64,
             _ => return None,
         })
     }

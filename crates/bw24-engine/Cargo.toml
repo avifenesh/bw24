@@ -11,6 +11,10 @@ cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-
 memmap2 = "0.9"
 
 [[bin]]
+name = "gemma-gate"
+path = "src/bin/gemma_gate.rs"
+
+[[bin]]
 name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 

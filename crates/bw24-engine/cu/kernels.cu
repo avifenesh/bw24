@@ -465,6 +465,40 @@ extern "C" __global__ void rope_neox_f32(float* __restrict__ x, const int* __res
     base[j + half] = x0 * s + x1 * c;
 }
 
+// ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
+// SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
+extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
+                                             float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float x = gate[i];
+        float t = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+        dst[i] = 0.5f * x * (1.0f + t) * up[i];
+    }
+}
+
+// ---- gemma4 R9: RoPE NEOX with per-dim freq factors (rope_freqs.weight, global layers).
+// theta = pos * base^(-2j/d) / ff[j] (llama rope_ext freq_factors semantics, freq_scale = 1). ----
+extern "C" __global__ void rope_neox_ff_f32(float* __restrict__ x, const int* __restrict__ pos,
+                                            int head_dim, int n_dims, int n_heads,
+                                            float theta_scale, float freq_scale,
+                                            const float* __restrict__ ff) {
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    int tok = hr / n_heads;
+    float* base = x + (size_t)hr * head_dim;
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), s = sinf(theta);
+    float x0 = base[j];
+    float x1 = base[j + half];
+    base[j]        = x0 * c - x1 * s;
+    base[j + half] = x0 * s + x1 * c;
+}
+
 // ---- elementwise ----
 extern "C" __global__ void silu_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
                                         float* __restrict__ dst, int n) {

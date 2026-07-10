@@ -324,6 +324,17 @@ __device__ __forceinline__ float deq_nvfp4(const uint8_t* row, int j) {
     return (float)kvalues_mxfp4_d[code] * ue4m3_to_f32_d(d_bytes[s]);
 }
 
+// ---- Q4_0 f32 deq (gemma4 QAT-Q4_0 checkpoints): 18B block per 32 elems = fp16 d + 16 nibble
+// bytes; x[j] = d * (nib - 8); qs[i] holds elems i (lo nibble) and i+16 (hi nibble). ----
+__device__ __forceinline__ float deq_q4_0(const uint8_t* row, int j) {
+    const uint8_t* blk = row + (j / 32) * 18;
+    float d = __half2float(*(const __half*)blk);
+    const uint8_t* qs = blk + 2;
+    int i = j % 32;
+    int q = (i < 16) ? (qs[i] & 0xF) : (qs[i - 16] >> 4);
+    return d * (float)(q - 8);
+}
+
 enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              QT_Q5_K = 3, QT_Q3_K = 4, QT_IQ4_XS = 5, QT_IQ3_S = 6, QT_NVFP4 = 7,
              QT_F32 = 8,
@@ -339,7 +350,9 @@ enum QType { QT_Q8_0 = 0, QT_Q4_K = 1, QT_Q6_K = 2,
              // (the checkpoint's own precision; the Q8_0 re-encode this replaces was lossy).
              QT_F8_E4M3 = 10,
              // Raw BF16 row (FULL_PREC embed gather): 2 B/elem; f32 = bits << 16, exact.
-             QT_BF16 = 11 };
+             QT_BF16 = 11,
+             // gemma4 QAT checkpoints (Q4_0 blocks, host tag 12 = lib.rs QT_Q4_0).
+             QT_Q4_0 = 12 };
 
 // e4m3 (OCP FP8, signed, bias 7) -> f32 via the native sm_89+ cvt (e4m3x2 -> f16x2 -> f32x2;
 // every e4m3 value is exactly representable in f16, and f16 -> f32 is exact, so this chain is
@@ -376,6 +389,7 @@ __device__ __forceinline__ float deq(int qtype, const uint8_t* row, int j) {
             unsigned int bits = ((const unsigned short*)row)[j];
             return __uint_as_float(bits << 16);
         }
+        case QT_Q4_0:   return deq_q4_0(row, j);
     }
     return 0.0f;
 }

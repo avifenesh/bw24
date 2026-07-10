@@ -74,6 +74,7 @@ pub const PRIME_MIN_T: usize = 16;
 impl HybridModel {
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
     pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.gemma4.is_some() { return self.gemma4_forward(e, tokens, false); }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let t = tokens.len();
@@ -128,6 +129,7 @@ impl HybridModel {
     /// On a 512-token prompt this turns a [512,248320] GEMM into [1,248320] — the dominant prefill
     /// cost (nsys: ~99ms when done for all T). Bit-identical last-row logits to forward()[last].
     pub fn forward_last(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.gemma4.is_some() { return self.gemma4_forward(e, tokens, true); }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let t = tokens.len();
@@ -1979,5 +1981,250 @@ impl HybridModel {
         }
 
         Ok(moe_out)
+    }
+}
+
+// ============================ gemma4 (R8 verified wiring) ==================================
+// Node-for-node vs llama.cpp src/models/gemma4.cpp:180-405 (HANDOVER "R8 VERIFIED WIRING").
+// v0 bring-up: full attention everywhere (exact for prompts < sliding_window 1024 — R6 masking
+// later), sdpa_naive (hd 512 has no FA stamp), sequential host-staged MoE (the perf arms grow
+// gemma variants after the correctness gate).
+impl HybridModel {
+    /// Per-layer attention geometry (R5): (head_dim, n_kv, n_head, rope_base, scale, is_swa).
+    pub(crate) fn gemma4_geom(&self, il: usize) -> (usize, usize, usize, f32, f32, bool) {
+        let g = self.cfg.gemma4.as_ref().unwrap();
+        let swa = g.swa_pattern[il];
+        let hd = if swa { g.key_length_swa } else { g.key_length_global } as usize;
+        // attention scale = 1.0 (llama gemma4.cpp:11 "Gemma4 uses self.scaling = 1.0" — q/k are
+        // per-head rms-normed; NOT the 1/sqrt(hd) default. Bring-up bug: 1/sqrt(hd) left token-0
+        // rows exact (softmax over one element) while every later position drifted).
+        (hd, g.head_count_kv[il] as usize, self.cfg.n_head as usize,
+         if swa { g.rope_base_swa } else { g.rope_base_global },
+         1.0, swa)
+    }
+
+    /// gemma4 attention (R5 geometry, R7 weightless V-norm on the RAW K projection, R9 dual rope).
+    fn gemma4_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                   h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+
+        let q0 = e.matmul(&fa.wq, h, t)?;   // [t, nh*hd]
+        let k0 = e.matmul(&fa.wk, h, t)?;   // [t, nkv*hd]
+        let v0 = e.matmul(&fa.wv, h, t)?;   // globals: wv==wk bytes -> the RAW K projection
+        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
+            for (nm, v, w) in [("Qcur", &q0, nh), ("Kcur", &k0, nkv), ("Vcur", &v0, nkv)] {
+                let hh = e.dtoh(v)?;
+                let r0 = &hh[..w * hd];
+                eprintln!("[g0] {nm}: sum={:.4} row0[0..3]={:?} row0[-3..]={:?}",
+                          hh.iter().map(|&x| x as f64).sum::<f64>(),
+                          &r0[..3], &r0[r0.len() - 3..]);
+            }
+        }
+
+        let mut q = e.zeros(t * nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
+        let mut k = e.zeros(t * nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
+        // R7: V = weightless rms_norm of the raw projection; NEVER roped.
+        let mut v = e.zeros(t * nkv * hd)?;
+        e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
+
+        if swa {
+            e.rope_neox(&mut q, pos_d, hd, hd, nh, t, base, 1.0)?;
+            e.rope_neox(&mut k, pos_d, hd, hd, nkv, t, base, 1.0)?;
+        } else {
+            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
+            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, t, base, 1.0, ff)?;
+            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, t, base, 1.0, ff)?;
+        }
+
+        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
+            for (nm, v) in [("Qcur_pos", &q), ("Kcur_pos", &k), ("Vcur_normed", &v)] {
+                let hh = e.dtoh(v)?;
+                eprintln!("[g0] {nm}: sum={:.4} first={:?}",
+                          hh.iter().map(|&x| x as f64).sum::<f64>(), &hh[..3]);
+            }
+        }
+        let mut attn = e.zeros(t * nh * hd)?;
+        e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        if il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2") {
+            let hh = e.dtoh(&attn)?;
+            eprintln!("[g0] fattn: sum={:.4} first={:?}",
+                      hh.iter().map(|&x| x as f64).sum::<f64>(), &hh[..3]);
+        }
+        Ok(e.matmul(&fa.wo, &attn, t)?)
+    }
+
+    /// gemma4 MoE (R2 router prologue input supplied by caller, R3 per-expert output scale).
+    /// Sequential host-staged v0 — softmax gating + renorm (moe_route, the qwen recipe), GELU
+    /// experts, scale folded into the accumulate weight (post-matmul linear scale, exact fold).
+    fn gemma4_moe(&self, e: &Engine, m: &crate::hybrid::MoeWeights,
+                  bits: &crate::hybrid::Gemma4LayerBits, moe_in: &CudaSlice<f32>,
+                  router_in: &CudaSlice<f32>, t: usize)
+                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+
+        let logits = e.matmul(&m.gate_inp, router_in, t)?;
+        let (sel_all, mut w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
+        for (i, &sx) in sel_all.iter().enumerate() {
+            w_all[i] *= bits.per_expert_scale[sx as usize];
+        }
+
+        let g_len = m.gate_exps.expert_stride;
+        let u_len = m.up_exps.expert_stride;
+        let d_len = m.down_exps.expert_stride;
+        let mut sg = e.alloc_u8_uninit(g_len)?;
+        let mut su = e.alloc_u8_uninit(u_len)?;
+        let mut sd = e.alloc_u8_uninit(d_len)?;
+        let mut moe_out = e.zeros(t * n_embd)?;
+        for tok in 0..t {
+            let sel = &sel_all[tok * n_used..(tok + 1) * n_used];
+            let w = &w_all[tok * n_used..(tok + 1) * n_used];
+            let zt = moe_in.slice(tok * n_embd..(tok + 1) * n_embd);
+            for (j, &ex) in sel.iter().enumerate() {
+                let ex = ex as usize;
+                e.stage_expert(m.gate_exps.expert_bytes(ex), &mut sg, 0)?;
+                let gate = e.qmatvec_view(&sg, 0..g_len, &zt, 1,
+                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                e.stage_expert(m.up_exps.expert_bytes(ex), &mut su, 0)?;
+                let up = e.qmatvec_view(&su, 0..u_len, &zt, 1,
+                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                let mut act = e.uninit(n_ff_exp)?;
+                e.gelu_tanh_mul(&gate, &up, &mut act, n_ff_exp)?;
+                e.stage_expert(m.down_exps.expert_bytes(ex), &mut sd, 0)?;
+                let actv = act.slice(0..n_ff_exp);
+                let y = e.qmatvec_view(&sd, 0..d_len, &actv, 1,
+                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                e.axpy_into(&y, w[j], &mut dst, n_embd)?;
+            }
+        }
+        Ok(moe_out)
+    }
+
+    /// One gemma4 trunk layer (R8): x -> x_next.
+    fn gemma4_layer(&self, e: &Engine, il: usize, layer: &crate::hybrid::HybridLayer,
+                    x: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let bits = layer.gemma4.as_ref().unwrap();
+        // BW24_GEMMA_PROBE=2: layer-0 intra-layer sums (bisect vs llama-eval-callback).
+        let p2 = il == 0 && std::env::var("BW24_GEMMA_PROBE").as_deref() == Ok("2");
+        let psum = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
+            if p2 {
+                let h = e.dtoh(v)?;
+                eprintln!("[g0] {tag}: sum={:.4}", h.iter().map(|&x| x as f64).sum::<f64>());
+            }
+            Ok(())
+        };
+
+        let mut h = e.zeros(t * n_embd)?;
+        e.rms_norm(x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+        psum(e, &h, "attn_norm")?;
+        let pfirst = |e: &Engine, v: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
+            if p2 { let hh = e.dtoh(v)?; eprintln!("[g0] {tag} first={:?}", &hh[..3]); }
+            Ok(())
+        };
+        let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+        let o = self.gemma4_attn(e, fa, il, &h, pos_d, t)?;
+        psum(e, &o, "node_29(wo)")?;
+        pfirst(e, &o, "node_29")?;
+        // gemma order: post_attention_norm applies to the ATTENTION OUTPUT, then the residual.
+        let mut cur = e.zeros(t * n_embd)?;
+        e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+        psum(e, &cur, "attn_post_norm")?;
+        pfirst(e, &cur, "attn_post_norm")?;
+        let mut attn_out = e.zeros(t * n_embd)?;
+        e.add(&cur, x, &mut attn_out, t * n_embd)?;
+        psum(e, &attn_out, "attn_out")?;
+
+        // shared (parallel) dense FFN branch: post_ffw_norm_1(GELU_FFN(rms_norm(x, ffn_norm)))
+        let mut zsh = e.zeros(t * n_embd)?;
+        e.rms_norm(&attn_out, bits.ffn_norm.float_data(), &mut zsh, n_embd, t, eps)?;
+        let n_ff = bits.shared_gate.out_features();
+        let gate = e.matmul(&bits.shared_gate, &zsh, t)?;
+        let up = e.matmul(&bits.shared_up, &zsh, t)?;
+        let mut act = e.uninit(t * n_ff)?;
+        e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
+        let mlp0 = e.matmul(&bits.shared_down, &act, t)?;
+        let mut mlp = e.zeros(t * n_embd)?;
+        e.rms_norm(&mlp0, bits.post_ffw_norm_1.float_data(), &mut mlp, n_embd, t, eps)?;
+        psum(e, &mlp, "ffn_mlp")?;
+
+        // R2 router prologue: weightless rms_norm x 1/sqrt(n_embd) x gate_inp.scale — folded
+        // into ONE rms_norm whose weight is the pre-scaled vector (see Gemma4LayerBits).
+        let mut router_in = e.zeros(t * n_embd)?;
+        e.rms_norm(&attn_out, &bits.router_scale_pre, &mut router_in, n_embd, t, eps)?;
+        psum(e, &router_in, "node_35(router_in)")?;
+        let mut moe_in = e.zeros(t * n_embd)?;
+        e.rms_norm(&attn_out, bits.pre_ffw_norm_2.float_data(), &mut moe_in, n_embd, t, eps)?;
+        psum(e, &moe_in, "ffn_norm_2(moe_in)")?;
+        let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer {il} not MoE") };
+        let moe0 = self.gemma4_moe(e, m, bits, &moe_in, &router_in, t)?;
+        psum(e, &moe0, "ffn_moe_out")?;
+        let mut moe = e.zeros(t * n_embd)?;
+        e.rms_norm(&moe0, bits.post_ffw_norm_2.float_data(), &mut moe, n_embd, t, eps)?;
+        psum(e, &moe, "ffn_moe")?;
+
+        // combine: rms_norm(mlp + moe, post_ffw_norm) + attn_out, then the layer output scalar.
+        let mut sum = e.zeros(t * n_embd)?;
+        e.add(&mlp, &moe, &mut sum, t * n_embd)?;
+        let mut sn = e.zeros(t * n_embd)?;
+        e.rms_norm(&sum, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
+        psum(e, &sn, "ffn_post_norm")?;
+        let mut xn = e.zeros(t * n_embd)?;
+        e.add(&sn, &attn_out, &mut xn, t * n_embd)?;
+        psum(e, &xn, "node_88")?;
+        e.scale_inplace(&mut xn, bits.layer_scale, t * n_embd)?;
+        Ok(xn)
+    }
+
+    /// gemma4 prefill: `last_only` = forward_last semantics (lm_head on the final row only).
+    /// R4: final logits softcapped 30*tanh(l/30) on host (monotonic — argmax unaffected).
+    fn gemma4_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
+                      -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let pos: Vec<i32> = (0..t as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+
+        let mut x = self.embed(e, tokens)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        // BW24_GEMMA_PROBE=1: per-layer trunk stats (host rms + max of the LAST token row) —
+        // the bring-up bisect vs llama-eval-callback node stats.
+        let probe = std::env::var("BW24_GEMMA_PROBE").is_ok();
+        let stat = |e: &Engine, x: &CudaSlice<f32>, tag: &str| -> Result<(), Box<dyn std::error::Error>> {
+            let h = e.dtoh(x)?;
+            eprintln!("[gemma-probe] {tag}: tok0_first3={:?}", &h[..3]);
+            Ok(())
+        };
+        if probe { stat(e, &x, "embed")?; }
+        for (il, layer) in self.layers.iter().enumerate() {
+            x = self.gemma4_layer(e, il, layer, &x, &pos_d, t)?;
+            if probe { stat(e, &x, &format!("L{il}"))?; }
+        }
+        let mut hn = e.zeros(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, self.cfg.rms_eps)?;
+        let mut logits = if last_only {
+            let hv = e.view(&hn, t * n_embd);
+            let last_row = hv.slice((t - 1) * n_embd..t * n_embd);
+            let mut hlast = e.zeros(n_embd)?;
+            e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
+            e.dtoh(&e.matmul(&self.output, &hlast, 1)?)?
+        } else {
+            e.dtoh(&e.matmul(&self.output, &hn, t)?)?
+        };
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
+        Ok(logits)
     }
 }

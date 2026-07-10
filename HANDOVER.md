@@ -51,8 +51,9 @@ graph (embed*sqrt(2816), branch-parallel FFN, softcap 30, gelu_tanh R1, router p
 R8 VERIFIED WIRING (from llama gemma4.cpp:180-405, read 2026-07-10 — implement EXACTLY):
 ```
 x = embed * sqrt(n_embd)                       # token inputs only
-per layer il (hd_l = 512 global / 256 swa; nkv_l = 2/8; scale_l = 1/sqrt(hd_l) [no meta key ->
-llama default]; rope: NEOX, base 1e6+rope_freqs-factors global / 1e4 no-factors swa; n_rot_l =
+per layer il (hd_l = 512 global / 256 swa; nkv_l = 2/8; scale_l = 1.0 (gemma4.cpp:11 f_attention_scale=1.0 — q/k
+per-head rms-normed; VERIFIED against eval-callback: 1/sqrt(hd) matched token-0 rows exactly but
+drifted every later position — the scale is invisible at pos 0); rope: NEOX, base 1e6+rope_freqs-factors global / 1e4 no-factors swa; n_rot_l =
 hd_l per metadata):
   cur = rms_norm(x, attn_norm)
   Q = wq@cur -> [hd,nh,t] -> rms_norm(q_norm) -> rope

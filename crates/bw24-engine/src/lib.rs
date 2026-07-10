@@ -2363,6 +2363,34 @@ impl Engine {
         Ok(())
     }
 
+    /// RoPE NEOX with per-dim freq factors (gemma4 global layers, rope_freqs.weight [n_dims/2]).
+    pub fn rope_neox_ff(&self, x: &mut CudaSlice<f32>, pos: &CudaSlice<i32>, head_dim: usize,
+                        n_dims: usize, n_heads: usize, n_tokens: usize, freq_base: f32,
+                        freq_scale: f32, ff: &CudaSlice<f32>)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rope_neox_ff_f32");
+        let theta_scale = (freq_base).powf(-2.0 / n_dims as f32);
+        let grid = (n_heads * n_tokens) as u32;
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
+        let (hd, nd, nh) = (head_dim as i32, n_dims as i32, n_heads as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(pos).arg(&hd).arg(&nd).arg(&nh).arg(&theta_scale).arg(&freq_scale).arg(ff);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// gemma4 R1: dst = GELU_tanh(gate) * up.
+    pub fn gelu_tanh_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gelu_tanh_mul_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                     -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("silu_mul_f32");

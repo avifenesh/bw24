@@ -294,7 +294,11 @@ pub struct Gemma4LayerBits {
     pub shared_gate: GpuTensor,
     pub shared_up: GpuTensor,
     pub shared_down: GpuTensor,
-    pub router_scale_vec: GpuTensor,   // ffn_gate_inp.scale [n_embd] (F32)
+    /// ffn_gate_inp.scale [n_embd] PRE-multiplied by 1/sqrt(n_embd) at load: the router
+    /// prologue (weightless rms_norm x 1/sqrt(n_embd) x scale-vec) collapses to ONE rms_norm
+    /// with this as the norm weight (x_hat * (v*s) vs llama's (x_hat*s)*v — one reassociation;
+    /// the argmax gate arbitrates).
+    pub router_scale_pre: CudaSlice<f32>,
     pub per_expert_scale: Vec<f32>,    // ffn_down_exps.scale [n_expert] (host)
     pub layer_scale: f32,              // layer_output_scale [1]
 }
@@ -390,6 +394,14 @@ impl MtpHead {
     }
 }
 
+/// gemma4 model-level auxiliaries.
+pub struct GemmaAux {
+    /// rope_freqs.weight [hd_global/2] freq factors — global layers' RoPE (R9).
+    pub rope_freqs: Option<CudaSlice<f32>>,
+    /// all-ones norm weight [512] (max head_dim) — the weightless rms_norms (R7 V-norm).
+    pub ones: CudaSlice<f32>,
+}
+
 pub struct HybridModel {
     pub cfg: ModelConfig,
     pub embd: EmbedHost,
@@ -400,6 +412,7 @@ pub struct HybridModel {
     /// Lazily-uploaded DEVICE copy of the raw embed table (spec/graph hot loops gather rows
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
+    pub gemma4_aux: Option<GemmaAux>,
 }
 
 impl HybridModel {
@@ -471,7 +484,11 @@ impl HybridModel {
                         shared_gate: load_t(e, src, &p("ffn_gate.weight"))?,
                         shared_up: load_t(e, src, &p("ffn_up.weight"))?,
                         shared_down: load_t(e, src, &p("ffn_down.weight"))?,
-                        router_scale_vec: load_t(e, src, &p("ffn_gate_inp.scale"))?,
+                        router_scale_pre: {
+                            let inv = 1.0 / (cfg.n_embd as f32).sqrt();
+                            let v: Vec<f32> = vecf("ffn_gate_inp.scale").iter().map(|x| x * inv).collect();
+                            e.htod(&v)?
+                        },
                         per_expert_scale: vecf("ffn_down_exps.scale"),
                         layer_scale: scalar("layer_output_scale.weight"),
                     })
@@ -574,7 +591,15 @@ impl HybridModel {
                       ctx.n_pinned, ctx.n_mmap, ctx.mmap_bytes >> 20);
         }
 
-        Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp, embd_gpu: std::sync::OnceLock::new() })
+        let gemma4_aux = if cfg.gemma4.is_some() {
+            let rope_freqs = match src.find("rope_freqs.weight") {
+                Some(t) => Some(e.htod(&bw24_gguf::dequant::dequantize(
+                    t.ggml_type, &t.bytes, t.ne.iter().product::<u64>() as usize))?),
+                None => None,
+            };
+            Some(GemmaAux { rope_freqs, ones: e.htod(&[1.0f32; 512])? })
+        } else { None };
+        Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp, embd_gpu: std::sync::OnceLock::new(), gemma4_aux })
     }
 
     pub fn embed(&self, e: &Engine, tokens: &[u32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
