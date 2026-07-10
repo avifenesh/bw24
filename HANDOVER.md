@@ -26,6 +26,11 @@ _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA
 - **BOARD REFRESHED (v0.14.0):** 35B spec 293.6 / 233.1 / 265.9 (+4.7/+3.1/+4.0% — router GEMV
   + CSR gate_up transfer fine at serve config; the earlier "wash" was colbert/llama CONTENTION).
   Ratios vs marked llama floor: p1 1.17x, p2 1.05x, p3 1.07x. H-logs N=2, 1590MHz, idle GPU.
+- **27B p2 FLIPPED ABOVE FLOOR (v0.15.0):** the 0.947x cell was a stale/contended pair — clean
+  same-session interleaved re-pair (I-logs): p2 95.4 vs 91.7 = 1.04x, p1 107.3 vs 86.3 = 1.24x.
+  Third contention-fabricated cell tonight. Bar map after v0.15.0 — below 1.1x: 27B p2 1.04,
+  35B p2 1.05, 35B p3 1.07; NOTHING below floor. 27B phase split mirrors the 35B (GPU-bound,
+  device-side-acceptance ceiling ~9%).
 - **REMAINING ENGINE LEVER (measured):** the ~10-15% draft-roundtrip gap (device-side
   acceptance / conditional round-graph). Everything else on the 35B spec round is
   measured-closed. p2/p3 to 1.1x also reachable via acceptance (owner's head research).
