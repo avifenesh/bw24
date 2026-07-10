@@ -1,0 +1,4 @@
+gateD-short graph n1 exit=0 :: [generate_spec K=3] 256 tok in 1.537s = 165.86 tok/s (1.28x vs generate; this run's prime 0.007s)
+gateD-short eager n1 exit=0 :: [generate_spec K=3] 256 tok in 1.533s = 166.38 tok/s (1.28x vs generate; this run's prime 0.007s)
+gateD-short graph n2 exit=0 :: [generate_spec K=3] 256 tok in 1.536s = 166.04 tok/s (1.28x vs generate; this run's prime 0.007s)
+gateD-short eager n2 exit=0 :: [generate_spec K=3] 256 tok in 1.536s = 165.99 tok/s (1.28x vs generate; this run's prime 0.007s)
