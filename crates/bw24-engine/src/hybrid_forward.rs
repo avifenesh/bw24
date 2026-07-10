@@ -2545,6 +2545,15 @@ impl HybridModel {
         kvl.len += t;
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
+        // ROWS twin when no window offset is in play (globals are hd512-ineligible; SWA rows
+        // under the window need no offset): ONE launch, per-row causal == the per-token loop.
+        if hd == 256 && (!swa || base_len + t <= win) && base_len + 1 >= crate::fa_vec_min_tkv() {
+            let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
+            let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
+            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
+                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            return Ok(e.matmul(&fa.wo, &attn, t)?);
+        }
         for i in 0..t {
             let avail = base_len + i + 1;
             let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };
