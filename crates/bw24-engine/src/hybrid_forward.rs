@@ -1196,6 +1196,10 @@ impl HybridModel {
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
         let dev = m.dev_exps.as_ref().unwrap();
+        // WALL-GAP ARC: interleaved gate/up slab strides (see moe_ffn_dev).
+        let (rbg_d, rbu_d) = if dev.gu_il {
+            let sxx = m.gate_exps.row_bytes + m.up_exps.row_bytes; (sxx, sxx)
+        } else { (m.gate_exps.row_bytes, m.up_exps.row_bytes) };
 
         let (sel_all, w_all) = Self::moe_route(e, logits, t, n_expert, n_used)?;
         let n_pairs = t * n_used;
@@ -1264,10 +1268,10 @@ impl HybridModel {
             let z_scr = e.mmq_iq_quantize_act(z, n_embd, t)?;
             let gate = e.mmq_iq_experts(&dev.ptr_row, 0, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
                                         n_embd, n_ff_exp, n_active, n_pairs, t,
-                                        m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                                        m.gate_exps.qtype, rbg_d)?;
             let up = e.mmq_iq_experts(&dev.ptr_row, 1, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
                                       n_embd, n_ff_exp, n_active, n_pairs, t,
-                                      m.up_exps.qtype, m.up_exps.row_bytes)?;
+                                      m.up_exps.qtype, rbu_d)?;
             let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
             // down: activation = act, pair-major [n_pairs, n_ff_exp]; pair_tok = identity.
             let a_scr = e.mmq_iq_quantize_act(&act, n_ff_exp, n_pairs)?;
@@ -1316,9 +1320,9 @@ impl HybridModel {
         };
         let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
         let gate = matvec(0, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                          n_embd, n_ff_exp, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                          n_embd, n_ff_exp, m.gate_exps.qtype, rbg_d)?;
         let up = matvec(1, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                        n_embd, n_ff_exp, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                        n_embd, n_ff_exp, m.up_exps.qtype, rbu_d)?;
         let act = e.moe_pairs_silu_mul(&gate, &up, n_pairs * n_ff_exp)?;
         let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
         // down consumes PAIR-major activation rows: pair_tok = identity.
@@ -1378,6 +1382,11 @@ impl HybridModel {
         // RESIDENT-EXPERTS arm: the pointer row comes from the load-time slab (no cache, no
         // lock). Same kernels/loop as the SLRU arm below — only the row's provenance differs.
         if let Some(dev) = m.dev_exps.as_ref() {
+            // WALL-GAP ARC: interleaved gate/up slab (BW24_MOE_GU_IL) -> both projections use
+            // the combined stride; up's base is offset in the ptr table. Down unchanged.
+            let (rbg_d, rbu_d) = if dev.gu_il {
+                let sxx = m.gate_exps.row_bytes + m.up_exps.row_bytes; (sxx, sxx)
+            } else { (m.gate_exps.row_bytes, m.up_exps.row_bytes) };
             let q8 = moe_q8_enabled()
                 && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
                 && q8_expert_supported(m.down_exps.qtype);
@@ -1417,7 +1426,7 @@ impl HybridModel {
                 let act = e.moe_gate_up_silu8_dev_q8_csr(&dev.ptr_row, &sel_d, &zq, &zd, n_pairs,
                                                          n_embd, n_ff_exp, n_used, n_expert,
                                                          m.gate_exps.qtype, m.up_exps.qtype,
-                                                         m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                         rbg_d, rbu_d)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
                 // down stays on the _rows twin — BOTH CSR down variants measured negative
                 // (v1 serial pairs 23.5->37.5us; v2 warp-parallel+SMEM -14% e2e, K=8 -37%):
@@ -1430,7 +1439,7 @@ impl HybridModel {
                     let act_r = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                                 n_embd, n_ff_exp, n_used, n_expert,
                                                                 m.gate_exps.qtype, m.up_exps.qtype,
-                                                                m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                                rbg_d, rbu_d)?;
                     let mut out_r = e.uninit(t * n_embd)?;
                     let (aq2r, ad2r) = e.quantize_q8_1(&act_r, n_pairs, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2r, &ad2r, &mut out_r,
@@ -1481,7 +1490,7 @@ impl HybridModel {
                 let act = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                           n_embd, n_ff_exp, n_used, n_expert,
                                                           m.gate_exps.qtype, m.up_exps.qtype,
-                                                          m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                          rbg_d, rbu_d)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
                 e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
                                             t, n_ff_exp, n_embd, n_used, n_expert,
@@ -1500,7 +1509,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev_q8(&dev.ptr_row, &selt, &zq, &zd,
                                                          n_embd, n_ff_exp, n_used, n_expert,
                                                          m.gate_exps.qtype, m.up_exps.qtype,
-                                                         m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                         rbg_d, rbu_d)?;
                     let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8(&dev.ptr_row, &selt, &wt, &aq2, &ad2, &mut dst,
                                            n_ff_exp, n_embd, n_used, n_expert,
@@ -1509,7 +1518,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev(&dev.ptr_row, &selt, &zt, n_embd, n_ff_exp,
                                                       n_used, n_expert,
                                                       m.gate_exps.qtype, m.up_exps.qtype,
-                                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                      rbg_d, rbu_d)?;
                     e.moe_down8_fma_dev(&dev.ptr_row, &selt, &wt, &act, &mut dst,
                                         n_ff_exp, n_embd, n_used, n_expert,
                                         m.down_exps.qtype, m.down_exps.row_bytes)?;

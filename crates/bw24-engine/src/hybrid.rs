@@ -139,10 +139,33 @@ fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps,
     });
     if !fits { return Ok(None); }
     use cudarc::driver::DevicePtr;
-    let g = e.htod_bytes(gate.bytes.as_bytes())?;
-    let u = e.htod_bytes(up.bytes.as_bytes())?;
-    let d = e.htod_bytes(down.bytes.as_bytes())?;
+    let gu_il = std::env::var("BW24_MOE_GU_IL").as_deref() == Ok("1")
+        && gate.out_f == up.out_f && gate.in_f == up.in_f;
     let n_expert = gate.n_expert;
+    let (g, u) = if gu_il {
+        // interleave gate/up rows: [ex][row o] = gate-row-o bytes ++ up-row-o bytes.
+        let (rbg, rbu) = (gate.row_bytes, up.row_bytes);
+        let n_rows = gate.out_f;
+        let gb = gate.bytes.as_bytes();
+        let ub = up.bytes.as_bytes();
+        let mut il = vec![0u8; n_expert * n_rows * (rbg + rbu)];
+        for ex in 0..n_expert {
+            for o in 0..n_rows {
+                let dst = (ex * n_rows + o) * (rbg + rbu);
+                let sg = ex * gate.expert_stride + o * rbg;
+                let su = ex * up.expert_stride + o * rbu;
+                il[dst..dst + rbg].copy_from_slice(&gb[sg..sg + rbg]);
+                il[dst + rbg..dst + rbg + rbu].copy_from_slice(&ub[su..su + rbu]);
+            }
+        }
+        let ild = e.htod_bytes(&il)?;
+        // `up` slot points into the same buffer via ptr math; keep a tiny placeholder alloc so
+        // the struct shape is unchanged (the table below carries the real pointers).
+        (ild, e.htod_bytes(&[0u8; 16])?)
+    } else {
+        (e.htod_bytes(gate.bytes.as_bytes())?, e.htod_bytes(up.bytes.as_bytes())?)
+    };
+    let d = e.htod_bytes(down.bytes.as_bytes())?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
         let (pg, _e0) = g.device_ptr(e.stream());
@@ -151,12 +174,19 @@ fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps,
         (pg as u64, pu as u64, pd as u64)
     };
     for ex in 0..n_expert {
-        host[ex]                = pg + (ex * gate.expert_stride) as u64;
-        host[n_expert + ex]     = pu + (ex * up.expert_stride) as u64;
+        if gu_il {
+            let stride = gate.out_f * (gate.row_bytes + up.row_bytes);
+            host[ex]            = pg + (ex * stride) as u64;
+            host[n_expert + ex] = pg + (ex * stride + gate.row_bytes) as u64;
+        } else {
+            host[ex]            = pg + (ex * gate.expert_stride) as u64;
+            host[n_expert + ex] = pu + (ex * up.expert_stride) as u64;
+        }
         host[2 * n_expert + ex] = pd + (ex * down.expert_stride) as u64;
     }
+    if gu_il { eprintln!("[moe] gate/up dev slab INTERLEAVED (BW24_MOE_GU_IL)"); }
     let ptr_row = e.htod_u64(&host)?;
-    Ok(Some(crate::hybrid::DevExps { gate: g, up: u, down: d, ptr_row }))
+    Ok(Some(crate::hybrid::DevExps { gate: g, up: u, down: d, ptr_row, gu_il }))
 }
 
 pub struct FullAttnLayer {
@@ -214,6 +244,12 @@ pub struct DevExps {
     pub down: CudaSlice<u8>,
     /// [3*n_expert] u64 device row: gate ptrs, up ptrs, down ptrs (proj-major like layer_dev_row).
     pub ptr_row: CudaSlice<u64>,
+    /// WALL-GAP ARC (BW24_MOE_GU_IL=1): gate/up rows INTERLEAVED in one slab — row o of gate at
+    /// base + o*(rb_g+rb_u), up at +rb_g. Consumers on the dev path must use (rb_g+rb_u) as the
+    /// row stride for BOTH projections (see MoeWeights::dev_rb_gu). One contiguous 1760B stream
+    /// per (expert,row) instead of two scattered 880B streams — the measured 56%-of-wall fix
+    /// candidate. Kernels unchanged (stride is already a parameter everywhere).
+    pub gu_il: bool,
 }
 
 /// Per-layer FFN: dense SwiGLU (qwen35) or 256-expert MoE (qwen35moe).
