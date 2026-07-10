@@ -551,6 +551,19 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (c) 3: accept walk fully device-driven (brk + assembled vtok).
+    pub fn spec_accept_greedy_dc(&self, preds: &CudaSlice<u32>, vtok: &CudaSlice<u32>,
+                                 last_pred: &CudaSlice<u32>, brk: &CudaSlice<u32>,
+                                 out: &mut CudaSlice<u32>)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_accept_greedy_dc");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(preds).arg(vtok).arg(last_pred).arg(brk).arg(out);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 2: verify-chain device-pos entries.
     pub fn pos_iota(&self, pos0: &CudaSlice<i32>, out: &mut CudaSlice<i32>, t: usize)
                     -> Result<(), Box<dyn std::error::Error>> {

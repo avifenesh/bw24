@@ -42,7 +42,12 @@ acceptance parity exact at every K, raw + serve). (c) GROUNDWORK LANDED: embed_g
 slots + pending sentinel + in-kernel d2t + p-min k_used derivation). (c) REMAINING, in order:
 c2 verify-chain device-pos (_dc pos-vec kernel, append-at-len_d ROWS variant, fa rows t_kv_base
 from len_d — decode-graph precedents exist for all three at t=1); c3 accept kernel consumes
-brk[] (k_round from device); c4 the stream loop mode (BW24_SPEC_STREAM: K-chain draft graph
+brk[] — SPEC: spec_accept_greedy_dc(preds, vtok, last_pred_dev, brk, out): k_used = brk[0],
+base = brk[1]; the assembled vtok[base..base+k_used] ARE the d2t-mapped draft tokens (compare
+against those, no separate draft buffer); t_pred(j) = preds[base+j-1] for j>=1, j==0&&base==0
+reads last_pred_dev[0] (host-seeded once at round 1 — STREAM INVARIANT: every non-replay arm
+sets pending=Some(bonus), so base==1 for every round after the first and last_pred is dead);
+c4 the stream loop mode (BW24_SPEC_STREAM: K-chain draft graph
 resurrected always-K + zero-readback round issue + out-ring + M-round drain) + battery + A/B.
 NOTE: the K-chain always-K "waste" negative (draft-readback-arc row) is EXPECTED to invert here
 — its cost was measured WITH per-round readbacks still present.

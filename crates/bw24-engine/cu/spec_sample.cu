@@ -508,3 +508,26 @@ extern "C" __global__ void pos_iota_i32(const int* __restrict__ pos0, int* __res
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < t) out[i] = pos0[0] + i;
 }
+
+// ROUND-STREAM stage (c) 3: accept walk with k_round/base from DEVICE (the assemble kernel's
+// brk output) and the draft tokens read from the assembled vtok (they ARE the d2t-mapped
+// drafts). t_pred rule verbatim from spec_accept_greedy; last_pred_dev is host-seeded once
+// (stream invariant: base == 1 on every round after the first, so it is read at most once).
+extern "C" __global__ void spec_accept_greedy_dc(
+        const unsigned int* __restrict__ preds,     // [t_v] verify device argmaxes
+        const unsigned int* __restrict__ vtok,      // [t_v] assembled verify tokens
+        const unsigned int* __restrict__ last_pred, // [1]
+        const unsigned int* __restrict__ brk,       // [2] = (k_used, base)
+        unsigned int* __restrict__ out) {           // out[0] = n_acc, out[1] = bonus
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int k_used = (int)brk[0];
+    int base = (int)brk[1];
+    int n_acc = 0;
+    for (int j = 0; j < k_used; j++) {
+        unsigned int tp = (j == 0 && base == 0) ? last_pred[0] : preds[base + j - 1];
+        if (tp == vtok[base + j]) n_acc++; else break;
+    }
+    unsigned int bonus = (n_acc == 0 && base == 0) ? last_pred[0] : preds[base + n_acc - 1];
+    out[0] = (unsigned int)n_acc;
+    out[1] = bonus;
+}
