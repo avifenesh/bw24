@@ -141,6 +141,20 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
 /// fa_geom_eager / fa_decode_rows-eligibility (spec verify) so the kernel pick NEVER diverges
 /// between eager decode and the verify (the spec-exactness law).
 pub const FA_VEC_MIN_TKV: usize = 96;
+/// Env-overridable crossover (BW24_FA_VEC_MIN, default FA_VEC_MIN_TKV). The 96 floor was
+/// measured on the qwen geometry (nkv=2); gemma4 SWA layers run nkv=8 = 4x the vec grid,
+/// which moves the crossover — sweep per model, adopt per the battery.
+pub fn fa_vec_min_tkv() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("BW24_FA_VEC_MIN").ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| FA_VEC_MIN_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
+}
+/// Per-model crossover default, set at model load BEFORE the first decode (per-model
+/// numeric-config adoption law). qwen keeps the measured 96; gemma4 (nkv=8 SWA) measured
+/// vec-always fastest: 119.9 (96) / 130.0 (48) / 133.2 (1) tok/s tg128-regime, 2026-07-10.
+pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(FA_VEC_MIN_TKV);
 
 fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
@@ -4052,7 +4066,7 @@ impl Engine {
         // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
         // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
+        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
@@ -4154,7 +4168,7 @@ impl Engine {
     pub fn fa_rows_eligible(&self, base_len: usize, head_dim: usize) -> bool {
         std::env::var("BW24_NO_FA_VEC").is_err()
             && std::env::var("BW24_FA_ROWS_OFF").is_err()
-            && base_len + 1 >= FA_VEC_MIN_TKV
+            && base_len + 1 >= fa_vec_min_tkv()
             && head_dim <= 256 && head_dim % 32 == 0
     }
 
@@ -4173,7 +4187,7 @@ impl Engine {
                           base_len: usize, t: usize, scale: f32,
                           k_tok_bytes: usize, v_tok_bytes: usize)
                           -> Result<(), Box<dyn std::error::Error>> {
-        debug_assert!(base_len + 1 >= FA_VEC_MIN_TKV && head_dim <= 256 && head_dim % 32 == 0);
+        debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 256 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
         let sp = fa_split_keys(t_kv_max, n_head_kv);       // env/default — same value every row
         let n_splits_max = (t_kv_max + sp - 1) / sp;
@@ -4290,7 +4304,7 @@ impl Engine {
         // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
         // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= FA_VEC_MIN_TKV;
+        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
         let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
@@ -4351,7 +4365,7 @@ impl Engine {
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
-        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= FA_VEC_MIN_TKV;
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
         fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
