@@ -130,7 +130,15 @@ Staged, each step gated (VERIFY-GATE 0.000e0 + run-gen MATCH + stream 128/128 + 
    llama 12.2 at equal tok/round). The draft chain is 3 fixed-shape serial steps + head — a
    single graph per draft depth; verify per t in 2..=cap+1.
 
-STANDING 2026-07-11 (ALL bars re-paired warm, today's llama build): short plain 193.9 vs
+STANDING 2026-07-11 EVENING (cumulative after the day's kernel campaign): depth plain 164.6
+/ depth spec 268.8 paired (i2 globals + v4_w_mr + sp512-16 + spw64 + adaptive + q4rp); llama
+bars thermal-dependent (plain 161.8 hot - 168.7 cool; MTP 303-305 warm). Short: plain 192-193
+(1.07x margin), spec 238-239 vs 290. E4B: model + drafters ON DISK, arch mapped (NO altup/
+laurel — plain gemma4 + KV-sharing last 18 layers + per-layer embeddings), loader skeleton
+merged (9debe6d); forward wiring in flight on a second Fable lane. KV-twin incident: caught,
+reverted, depth run-gen now a standing gate.
+
+STANDING 2026-07-11 morning (ALL bars re-paired warm, today's llama build): short plain 193.9 vs
 181.3 = 1.07x MARGIN; depth plain 155.3 vs 168.7 = 0.92x; short spec 239 vs 290 = 0.82x;
 depth spec 236.7 vs 304 = 0.78x. Landed this block: Q4_0 split-plane mirrors (+6.3% short
 spec class), adaptive draft length default-on (+10.1% depth spec). EVERY red cell now shares
