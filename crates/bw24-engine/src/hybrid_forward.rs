@@ -2666,6 +2666,16 @@ impl HybridModel {
                              kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
+        // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, per-row split
+        // geometry == the decode window-view chain. BW24_GEMMA_ROWS_W=0 -> per-token loop.
+        if hd == 256 && swa && base_len + 1 >= win
+            && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+            let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
+            let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
+            e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
+                               win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            return Ok(e.matmul(&fa.wo, &attn, t)?);
+        }
         for i in 0..t {
             let avail = base_len + i + 1;
             let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };

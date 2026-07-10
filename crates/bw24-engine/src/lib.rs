@@ -4524,6 +4524,48 @@ impl Engine {
         Ok(())
     }
 
+    /// WINDOWED verify rows (gemma R6 deep-ctx): every row attends exactly `window` keys —
+    /// bit-identical per row to the T=1 decode's fa_decode over the window VIEW. Caller gates
+    /// base_len + 1 >= window (no under-window rows) and head_dim == 256 (v4 stamp).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_decode_rows_w(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                            v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                            head_dim: usize, n_head: usize, n_head_kv: usize,
+                            base_len: usize, t: usize, scale: f32, window: usize,
+                            k_tok_bytes: usize, v_tok_bytes: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(base_len + 1 >= window && head_dim == 256);
+        let sp = fa_split_keys(window, n_head_kv);
+        let n_splits_max = (window + sp - 1) / sp;
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let (base_i, nspm, spk, wini) = (base_len as i32, n_splits_max as i32, sp as i32, window as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let gqa = (n_head / n_head_kv).max(1) as u32;
+        let o_len = t * n_head * n_splits_max * head_dim;
+        let ml_len = t * n_head * n_splits_max;
+        let (mut part_o, mut part_m, mut part_l) =
+            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let f = self.func("fa_decode_vec_q_rows_v4_w");
+        let sh = (11520 + 32 * head_dim * 2) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+            block_dim: (32, gqa, 1), shared_mem_bytes: sh };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
+         .arg(&ktb).arg(&vtb).arg(&wini);
+        unsafe { b.launch(cfg)?; }
+        let (fc, cfg2) = (self.func("fa_decode_combine_rows_w"),
+            LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+          .arg(&nspm).arg(&spk).arg(&wini);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. v3-only
     /// (stream mode gates on fa_v3_active); `t_kv_upper` sizes splits/partials — the same
     /// one-sp-for-all-rows approximation class the host rows path already uses (battery-
