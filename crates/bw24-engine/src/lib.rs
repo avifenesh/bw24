@@ -4775,7 +4775,10 @@ impl Engine {
                           // hd512 dpl16 twin is DEVICE-LEN (graph arc): base_dev/plus feed the
                           // kernel; host base_len keeps sizing the splits/partials. hd256 twins
                           // keep the host arg. None is a bug for hd512 (asserted below).
-                          base_dev: Option<(&CudaSlice<i32>, i32)>)
+                          base_dev: Option<(&CudaSlice<i32>, i32)>,
+                          // K and V planes hold the same values (gemma globals, wv:=wk): pick
+                          // the _kv twin — V plane never read, value rides the q8_0 key dq.
+                          kv_shared: bool)
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
@@ -4813,7 +4816,8 @@ impl Engine {
         let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
         let smem_rows = head_dim <= 256 && !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
+        let fname = if head_dim == 512 && kv_shared { "fa_decode_vec_q_rows_dpl16_kv" }
+                    else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }

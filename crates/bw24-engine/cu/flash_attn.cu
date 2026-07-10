@@ -4693,3 +4693,95 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16(
         partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
     }
 }
+
+// K=V twin (gemma globals: wv:=wk — the K and V planes hold the same VALUES, but K is q8_0
+// and V is q5_1): reuse the dequantized+bf16-rounded q8_0 key chunk as the value chunk. The
+// separate V walk disappears (the V plane is never read — ~40% less KV traffic + half the dq
+// ALU) and the value vector carries q8_0 precision instead of q5_1 (a strictly finer numeric
+// config — NEW CONFIG, battery-arbitrated). Parity is structural: every hd512 caller shares
+// this symbol via fa_decode_rows. Callers pass kv_shared only when K-values == V-values.
+extern "C" __global__ void fa_decode_vec_q_rows_dpl16_kv(
+        const float* __restrict__ Q,
+        const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V,   // unused (kept for launch-arg symmetry)
+        float* __restrict__ partO,
+        float* __restrict__ partM,
+        float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    (void)V; (void)v_tok_bytes;
+    const int r        = blockIdx.z;
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int kv_head  = blockIdx.x;
+    const int split    = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    float q_reg[FA_DEC_MAX_DPL16];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)r * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL16];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) acc[i] = 0.0f;
+
+    {
+        const int kblk0 = (kv_head * head_dim) >> 5;
+        for (int t = t_lo; t < t_hi; ++t) {
+            const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+            float kv[FA_DEC_MAX_DPL16];
+            float part = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = kt + i * K_BLK_B;
+                    kv[i] = __bfloat162float(__float2bfloat16(dq_K_lane(blk, lane)));
+                    part += q_reg[i] * kv[i];
+                } else kv[i] = 0.0f;
+            }
+            float score = warp_reduce_sum(part);
+
+            float m_new = fmaxf(m_i, score);
+            float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            float p     = exp2f((score - m_new) * LOG2E);
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+                if (i < dpl) {
+                    acc[i] = __fmaf_rn(acc[i], alpha, __fmul_rn(p, kv[i]));
+                }
+            }
+            l_i = l_i * alpha + p;
+            m_i = m_new;
+        }
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) {
+        partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+        partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+    }
+}
