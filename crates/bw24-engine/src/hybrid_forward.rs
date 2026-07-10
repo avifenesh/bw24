@@ -2077,6 +2077,64 @@ impl HybridModel {
         self.gemma4_attn_prime(e, fa, il, h, pos_d, t, None)
     }
 
+    /// gemma4 MoE with the expert input PRE-QUANTIZED (the q8z tail fusion). Caller guarantees
+    /// the fast-arm conditions (resident dev slabs + dp4a qtypes) — decode t=1 and verify rows
+    /// arms only, per-token kernel chains identical to the f32-input path (same quantize bytes:
+    /// the q8z epilogue is quantize_q8_1 verbatim).
+    fn gemma4_moe_q8(&self, e: &Engine, m: &crate::hybrid::MoeWeights,
+                     bits: &crate::hybrid::Gemma4MoeBits,
+                     mq: &(CudaSlice<i8>, CudaSlice<f32>),
+                     router_in: &CudaSlice<f32>, t: usize)
+                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+        let logits = if crate::router_kernel_on() {
+            e.router_gemv(m.gate_inp.float_data(), router_in, n_embd, n_expert, t)?
+        } else {
+            e.matmul(&m.gate_inp, router_in, t)?
+        };
+        let dev = m.dev_exps.as_ref().unwrap();
+        let (sel_d, w_d) = e.moe_router_topk_scaled(&logits, t, n_expert, n_used,
+                                                    &bits.per_expert_scale_d)?;
+        let (zq, zd) = mq;
+        if t == 1 {
+            let selv = sel_d.slice(0..n_used);
+            let wv = w_d.slice(0..n_used);
+            let act = e.moe_gate_up_gelu8_dev_q8(&dev.ptr_row, &selv, zq, zd,
+                                                 n_embd, n_ff_exp, n_used, n_expert,
+                                                 m.gate_exps.qtype, m.up_exps.qtype,
+                                                 m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+            let mut moe_out = e.uninit(n_embd)?;
+            e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2,
+                                   &mut moe_out.slice_mut(0..n_embd), n_ff_exp, n_embd,
+                                   n_used, n_expert, m.down_exps.qtype, m.down_exps.row_bytes)?;
+            return Ok(moe_out);
+        }
+        let csr = t <= 10 && std::env::var("BW24_GEMMA_CSR").as_deref() != Ok("0");
+        let act = if csr {
+            e.moe_gate_up_gelu8_dev_q8_csr(&dev.ptr_row, &sel_d, zq, zd, t * n_used,
+                                           n_embd, n_ff_exp, n_used, n_expert,
+                                           m.gate_exps.qtype, m.up_exps.qtype,
+                                           m.gate_exps.row_bytes, m.up_exps.row_bytes)?
+        } else {
+            e.moe_gate_up_gelu8_dev_q8_rows(&dev.ptr_row, &sel_d, zq, zd, t,
+                                            n_embd, n_ff_exp, n_used, n_expert,
+                                            m.gate_exps.qtype, m.up_exps.qtype,
+                                            m.gate_exps.row_bytes, m.up_exps.row_bytes)?
+        };
+        let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
+        let mut moe_out = e.uninit(t * n_embd)?;
+        e.moe_down8_fma_dev_q8_rows_g(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out, t,
+                                      n_ff_exp, n_embd, n_used, n_expert,
+                                      m.down_exps.qtype, m.down_exps.row_bytes)?;
+        Ok(moe_out)
+    }
+
     /// gemma4 MoE (R2 router prologue input supplied by caller, R3 per-expert output scale).
     /// Sequential host-staged v0 — softmax gating + renorm (moe_route, the qwen recipe), GELU
     /// experts, scale folded into the accumulate weight (post-matmul linear scale, exact fold).
@@ -2366,33 +2424,67 @@ impl HybridModel {
         };
 
         // MoE variant (26B): attn_out = cur + x fused with the three attn_out norms
-        // (ffn_norm + router-scale + pre_ffw_norm_2): ONE launch, chains verbatim.
+        // (ffn_norm + router-scale + pre_ffw_norm_2): ONE launch, chains verbatim. At small t
+        // (decode + verify) the zsh and moe_in outputs are EMITTED q8_1 (both consumers are
+        // quantized matmuls — two quantize launches + two f32 round-trips fold away).
         let mut attn_out = e.uninit(t * n_embd)?;
-        let mut zsh = e.uninit(t * n_embd)?;
         let mut router_in = e.uninit(t * n_embd)?;
-        let mut moe_in = e.uninit(t * n_embd)?;
-        e.add_rms_norm3(cur, x, bits.ffn_norm.float_data(), &mbits.router_scale_pre,
-                        mbits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
-                        &mut router_in, &mut moe_in, n_embd, t, eps)?;
+        let fast_moe = match &layer.ffn {
+            crate::hybrid::Ffn::Moe(m) => m.dev_exps.as_ref().is_some_and(|d| !d.gu_il)
+                && expert_dp4a_supported(m.gate_exps.qtype)
+                && expert_dp4a_supported(m.up_exps.qtype)
+                && expert_dp4a_supported(m.down_exps.qtype)
+                && std::env::var("BW24_GEMMA_MOE_FAST").as_deref() != Ok("0"),
+            _ => false,
+        };
+        let q8z = t < PRIME_MIN_T && fast_moe;
+        let (zsh_f32, zsh_q8, moe_q8) = if q8z {
+            let (z0, m2) = e.add_rms_norm3_q8z(cur, x, bits.ffn_norm.float_data(),
+                                               &mbits.router_scale_pre,
+                                               mbits.pre_ffw_norm_2.float_data(),
+                                               &mut attn_out, &mut router_in, n_embd, t, eps)?;
+            (None, Some(z0), Some(m2))
+        } else {
+            let mut zsh = e.uninit(t * n_embd)?;
+            let mut moe_in = e.uninit(t * n_embd)?;
+            e.add_rms_norm3(cur, x, bits.ffn_norm.float_data(), &mbits.router_scale_pre,
+                            mbits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
+                            &mut router_in, &mut moe_in, n_embd, t, eps)?;
+            (Some((zsh, moe_in)), None, None)
+        };
         let attn_out2 = attn_out;
         #[allow(unused_variables)]
         let attn_out = &attn_out2;
         let n_ff = mbits.shared_gate.out_features();
-        let (gate, up) = if t == 1 {
-            let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
-            match e.matmul_q4_fused2(&mbits.shared_gate, &mbits.shared_up, &zq, &zd)? {
-                Some(p) => p,
-                None => (e.matmul_pre(&mbits.shared_gate, &zq, &zd, &zsh, 1)?,
-                         e.matmul_pre(&mbits.shared_up, &zq, &zd, &zsh, 1)?),
+        let (gate, up) = if let Some((zq, zd)) = zsh_q8.as_ref() {
+            if t == 1 {
+                match e.matmul_q4_fused2(&mbits.shared_gate, &mbits.shared_up, zq, zd)? {
+                    Some(p) => p,
+                    None => {
+                        let h0 = e.zeros(0)?;
+                        (e.matmul_pre(&mbits.shared_gate, zq, zd, &h0, 1)?,
+                         e.matmul_pre(&mbits.shared_up, zq, zd, &h0, 1)?)
+                    }
+                }
+            } else {
+                // verify t 2..15: the batched mmvq twins consume the pre-quantized pair.
+                let h0 = e.zeros(0)?;
+                (e.matmul_pre(&mbits.shared_gate, zq, zd, &h0, t)?,
+                 e.matmul_pre(&mbits.shared_up, zq, zd, &h0, t)?)
             }
         } else {
-            (e.matmul(&mbits.shared_gate, &zsh, t)?, e.matmul(&mbits.shared_up, &zsh, t)?)
+            let (zsh, _) = zsh_f32.as_ref().unwrap();
+            (e.matmul(&mbits.shared_gate, zsh, t)?, e.matmul(&mbits.shared_up, zsh, t)?)
         };
         let mut act = e.uninit(t * n_ff)?;
         e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
         let mlp0 = e.matmul(&mbits.shared_down, &act, t)?;
         let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer not MoE") };
-        let moe0 = self.gemma4_moe(e, m, mbits, &moe_in, &router_in, t)?;
+        let moe0 = match (&moe_q8, &zsh_f32) {
+            (Some(mq), _) => self.gemma4_moe_q8(e, m, mbits, mq, &router_in, t)?,
+            (None, Some((_, moe_in))) => self.gemma4_moe(e, m, mbits, moe_in, &router_in, t)?,
+            _ => unreachable!(),
+        };
         // post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0): one fused launch, per-row verbatim.
         let mut mlp = e.uninit(t * n_embd)?;
         let mut moe = e.uninit(t * n_embd)?;

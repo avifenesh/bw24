@@ -2491,6 +2491,27 @@ impl Engine {
         Ok((out_q, out_d))
     }
 
+    /// gemma4: add + rms_norm3 with outputs 0/2 emitted q8_1 (zsh + moe_in) and 1 f32 (router).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_rms_norm3_q8z(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>,
+                             w0: &CudaSlice<f32>, w1: &CudaSlice<f32>, w2: &CudaSlice<f32>,
+                             res: &mut CudaSlice<f32>, out1: &mut CudaSlice<f32>,
+                             ncols: usize, nrows: usize, eps: f32)
+                             -> Result<((CudaSlice<i8>, CudaSlice<f32>), (CudaSlice<i8>, CudaSlice<f32>)), Box<dyn std::error::Error>> {
+        let mut q0 = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut d0 = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let mut q2 = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut d2 = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("add_rms_norm3_q8z_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(w0).arg(w1).arg(w2).arg(res)
+         .arg(&mut q0).arg(&mut d0).arg(out1).arg(&mut q2).arg(&mut d2).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok(((q0, d0), (q2, d2)))
+    }
+
     /// gemma4: res = a+b AND the three rms_norms of res in one launch.
     #[allow(clippy::too_many_arguments)]
     pub fn add_rms_norm3(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>,

@@ -701,6 +701,90 @@ extern "C" __global__ void add_scale_rms_norm_q8_1(const float* __restrict__ a, 
     }
 }
 
+// ---- gemma4: residual add + the three attn_out norms with TWO outputs emitted q8_1
+// (zsh -> the quantized gate/up pair input; moe_in -> the quantized expert input) and the
+// router input f32. Chains: add + rms_norm3 + quantize_q8_1 verbatim per element. ----
+extern "C" __global__ void add_rms_norm3_q8z_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                                 const float* __restrict__ w0, const float* __restrict__ w1,
+                                                 const float* __restrict__ w2,
+                                                 float* __restrict__ res,
+                                                 signed char* __restrict__ q0, float* __restrict__ d0,
+                                                 float* __restrict__ out1,
+                                                 signed char* __restrict__ q2, float* __restrict__ d2,
+                                                 int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float v = ar[i] + br[i];
+        rr[i] = v;
+        sum += v * v;
+    }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    // f32 router output (plain rms_norm write)
+    float* o1 = out1 + (size_t)row * ncols;
+    for (int i = tid; i < ncols; i += blockDim.x) o1[i] = rr[i] * scale * w1[i];
+    // q8 outputs: the rms_norm_q8_1 warp-per-4-blocks float4 epilogue, once per weight vector.
+    int lane = tid & 31;
+    const float4* x4 = (const float4*)rr;
+    {
+        signed char* bq = q0 + (size_t)row * ncols;
+        float* bd = d0 + (size_t)row * nblk;
+        const float4* w4 = (const float4*)w0;
+        for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+            int i4 = quad * 32 + lane;
+            float4 xv = x4[i4];
+            float4 wv = w4[i4];
+            float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                                   (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+            float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+            #pragma unroll
+            for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+            float d = amax / 127.0f;
+            float id = d > 0.0f ? 1.0f / d : 0.0f;
+            char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                                  (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+            ((char4*)bq)[i4] = qv;
+            if ((lane & 7) == 0) bd[quad * 4 + (lane >> 3)] = d;
+        }
+    }
+    {
+        signed char* bq = q2 + (size_t)row * ncols;
+        float* bd = d2 + (size_t)row * nblk;
+        const float4* w4 = (const float4*)w2;
+        for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+            int i4 = quad * 32 + lane;
+            float4 xv = x4[i4];
+            float4 wv = w4[i4];
+            float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                                   (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+            float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+            #pragma unroll
+            for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+            float d = amax / 127.0f;
+            float id = d > 0.0f ? 1.0f / d : 0.0f;
+            char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                                  (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+            ((char4*)bq)[i4] = qv;
+            if ((lane & 7) == 0) bd[quad * 4 + (lane >> 3)] = d;
+        }
+    }
+}
+
 // ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
 // SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
 extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
