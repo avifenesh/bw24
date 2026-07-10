@@ -5552,3 +5552,149 @@ extern "C" __global__ void moe_down8_fma_dev(
     }
     if (tid == 0) dst[o] = chain;
 }
+
+// ---- CSR EXPERT-DEDUP VERIFY TWINS (verify-cost target #1, 2026-07-10) ----
+// The _rows twins re-stream + re-decode each selected expert's full gate/up/down rows once per
+// (token, slot) pair. Measured cross-token overlap at verify (BW24_MOE_OVERLAP, 35B K=3 p2,
+// t=4): unique/pairs = 0.60-0.62 — 38-40% of the expert weight traffic AND nibble decode is
+// duplicated. These twins group pairs by expert (CSR built ON DEVICE — ZERO-DtoH preserved),
+// hoist the IQ4_XS/IQ3_S group decode into registers once per (expert, row, group), and replay only
+// the per-pair dp4a chain per token.
+// BIT-IDENTITY CONTRACT: exp_decode_g_cached + exp_dot_cached replay expert_dot_iq4xs_g /
+// expert_dot_iq3s_g VERBATIM (same packing, same dp4a order, same scalar expression);
+// per pair the lane-strided g order and the warp tree match the _v_rows / w8h2v bodies; the
+// down combine replays the slot-ordered __fmaf_rn chain. Outputs bit-identical to the _rows
+// twins. Host dispatch-gates each projection qtype to {IQ4_XS, IQ3_S} (the k-quant tail
+// layers keep the _rows twins).
+// Cached group decode: 8 dp4a weight words + (d, scale) such that the dot below replays the
+// expert_dot_*_g expression bit-for-bit. IQ4_XS: w[k]=wlo[k], w[4+k]=whi[k], expression
+// d_sb*(float)(scale*sumi)*d8. IQ3_S: w[k] = signed grid ints in linear aq4 order, scale=1
+// (so (float)(1*sumi) == (float)sumi), expression db*(float)sumi*d8. The 35B UD mix runs
+// gate/up = IQ3_S, down = IQ4_XS.
+struct expg { int w[8]; float d; int scale; };
+__device__ __forceinline__ expg exp_decode_g_cached(int qt, const unsigned char* wrow, int g) {
+    expg r;
+    if (qt == 5) {                              // QT_IQ4_XS
+        int sblk = g >> 3, ib = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 136;
+        r.d = half_to_float(*(const unsigned short*)b);
+        unsigned short sh = *(const unsigned short*)(b + 2);
+        const unsigned char* sl = b + 4;
+        const unsigned char* qs = b + 8 + ib * 16;
+        int ls = ((sl[ib >> 1] >> (4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
+        r.scale = ls - 32;
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            r.w[k]   = (kvalues_iq4nl_d[qs[k*4+0]&0xf]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]&0xf]&0xff)<<8)
+                     | ((kvalues_iq4nl_d[qs[k*4+2]&0xf]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]&0xf]&0xff)<<24);
+            r.w[4+k] = (kvalues_iq4nl_d[qs[k*4+0]>>4]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]>>4]&0xff)<<8)
+                     | ((kvalues_iq4nl_d[qs[k*4+2]>>4]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]>>4]&0xff)<<24);
+        }
+    } else {                                    // QT_IQ3_S (host-gated to {5, 6})
+        int sblk = g >> 3, ib32 = g & 7;
+        const unsigned char* b = wrow + (long)sblk * 110;
+        float d = half_to_float(*(const unsigned short*)b);
+        const unsigned char* qs    = b + 2  + ib32 * 8;
+        unsigned char qh           = b[66 + ib32];
+        const unsigned char* signs = b + 74 + ib32 * 4;
+        const unsigned char* scales= b + 106;
+        int sc_nib = (ib32 & 1) ? (scales[ib32 / 2] >> 4) : (scales[ib32 / 2] & 0xf);
+        r.d = d * (1.0f + 2.0f * (float)sc_nib);
+        r.scale = 1;
+        #pragma unroll
+        for (int l0 = 0; l0 < 8; l0 += 2) {
+            int gl = iq3s_grid_d(qs[l0 + 0] | (((int)qh << (8 - l0)) & 0x100));
+            int gh = iq3s_grid_d(qs[l0 + 1] | (((int)qh << (7 - l0)) & 0x100));
+            unsigned char sb = signs[l0 / 2];
+            int signs0 = __vcmpne4(((sb & 0x03) << 7) | ((sb & 0x0C) << 21), 0);
+            int signs1 = __vcmpne4(((sb & 0x30) << 3) | ((sb & 0xC0) << 17), 0);
+            r.w[l0 + 0] = __vsub4(gl ^ signs0, signs0);
+            r.w[l0 + 1] = __vsub4(gh ^ signs1, signs1);
+        }
+    }
+    return r;
+}
+// dp4a is exact integer math — dot ORDER is bit-irrelevant; only the closing FLOAT ops care.
+// CODEGEN CONTRACT (ULP lesson, 2026-07-10): the _rows twins compile `acc += d*(float)(s*sumi)*d8`
+// with nvcc's default fmad contraction — the final x*d8 fuses into the accumulate as
+// fma(d*(float)(s*sumi), d8, acc). A structurally different kernel contracts DIFFERENTLY and
+// drifts last-ULP (measured: 35% of ACT elements). So the accumulate is written as EXPLICIT
+// intrinsics here — __fmaf_rn(__fmul_rn(d,(float)(s*sumi)), d8, acc) — pinning the exact
+// rounding sequence instead of trusting the optimizer to match.
+__device__ __forceinline__ int exp_sumi_cached(int qt, const expg& e, const signed char* aqb) {
+    const int* aq4 = (const int*)aqb;
+    int sumi = 0;
+    if (qt == 5) {                               // IQ4_XS interleave: (w[k],a[k]),(w[4+k],a[4+k])
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            sumi = dp4a(e.w[k],     aq4[k],     sumi);
+            sumi = dp4a(e.w[4 + k], aq4[4 + k], sumi);
+        }
+    } else {                                     // IQ3_S linear order
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi = dp4a(e.w[k], aq4[k], sumi);
+    }
+    return sumi;
+}
+__device__ __forceinline__ float exp_dot_acc_cached(int qt, const expg& e,
+                                                    const signed char* aqb, float d8, float acc) {
+    int sumi = exp_sumi_cached(qt, e, aqb);
+    return __fadd_rn(acc, __fmul_rn(__fmul_rn(e.d, (float)(e.scale * sumi)), d8));
+}
+// single-group form (down: nsb==16, one group per lane, NO accumulate) — pure rounded muls.
+__device__ __forceinline__ float exp_dot_cached(int qt, const expg& e, const signed char* aqb,
+                                                float d8) {
+    int sumi = exp_sumi_cached(qt, e, aqb);
+    return __fmul_rn(__fmul_rn(e.d, (float)(e.scale * sumi)), d8);
+}
+
+#define CSR_MAXP 10   // pairs per expert <= t <= 10 (verify t = 2..K+2, K <= 8); host-gated
+// OWNER-SCAN dedup (v3): no separate CSR build — grid.y = pair index; the block whose pair is
+// the FIRST occurrence of its expert OWNS the expert and serves every pair that selected it;
+// duplicate blocks exit after an n_pairs-long L1 scan (~24-80 loads). v2's one-thread build
+// kernel measured 18.2us/launch (5.5% of the round loop) and its parallel fix still cost a
+// launch + 4 allocs per layer — inlining the scan makes the dedup's fixed cost ~0.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        int n_used, int n_pairs) {
+    int pself = blockIdx.y;
+    int ex = sel[pself];
+    for (int q = 0; q < pself; q++) if (sel[q] == ex) return;   // duplicate: owner is earlier
+    int plist[CSR_MAXP];
+    int np = 0;
+    for (int q = pself; q < n_pairs; q++) if (sel[q] == ex && np < CSR_MAXP) plist[np++] = q;
+    int o = blockIdx.x;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg[CSR_MAXP], accu[CSR_MAXP];
+    #pragma unroll
+    for (int i = 0; i < CSR_MAXP; i++) { accg[i] = 0.0f; accu[i] = 0.0f; }
+    for (int g = lane; g < nsb; g += 32) {
+        expg wg = exp_decode_g_cached(qt_g, grow, g);
+        expg wu = exp_decode_g_cached(qt_u, urow, g);
+        #pragma unroll
+        for (int i = 0; i < CSR_MAXP; i++) {
+            if (i < np) {
+                int tok = plist[i] / n_used;
+                const signed char* aqb = aq + (size_t)tok * in_f + (size_t)g * 32;
+                float d8 = ad[(size_t)tok * nsb + g];
+                accg[i] = exp_dot_acc_cached(qt_g, wg, aqb, d8, accg[i]);
+                accu[i] = exp_dot_acc_cached(qt_u, wu, aqb, d8, accu[i]);
+            }
+        }
+    }
+    #pragma unroll
+    for (int i = 0; i < CSR_MAXP; i++) {
+        if (i < np) {
+            float sg = warp_reduce_sum(accg[i]);
+            float su = warp_reduce_sum(accu[i]);
+            if (lane == 0)
+                act[(size_t)plist[i] * n_ff + o] = (sg / (1.0f + expf(-sg))) * su;
+        }
+    }
+}

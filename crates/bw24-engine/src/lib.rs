@@ -1330,6 +1330,29 @@ impl Engine {
         Ok(())
     }
 
+    /// CSR gate/up v3 (owner-scan dedup, no build kernel): qtypes {IQ4_XS, IQ3_S} (caller
+    /// gates), grid.y = pair index; the first pair of each expert serves all its pairs.
+    /// Bit-identical to moe_gate_up_silu8_dev_q8_v_rows (explicit-intrinsic accumulate).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_silu8_dev_q8_csr(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                        aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                        n_pairs: usize, in_f: usize, n_ff: usize, n_used: usize,
+                                        n_expert: usize, qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("moe_gate_up_silu8_dev_q8_csr_iq4");
+        let mut act = self.alloc_uninit::<f32>(n_pairs * n_ff)?;
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_pairs as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (inf, nff, ne, nu, npi, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                                 n_used as i32, n_pairs as i32, rb_g as i64, rb_u as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(&npi);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+
     /// TEST SEAM (down8 lane 2026-07-08): launch a down dev_q8 variant BY NAME with its
     /// canonical geometry, bypassing the env-cached dispatch so moe-devq8-check can byte-
     /// compare variants in one process. Variants: "base", "w8h2", "w8h2r2", "w8h2v", "w8h2r2v".

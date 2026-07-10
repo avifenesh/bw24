@@ -1390,7 +1390,89 @@ impl HybridModel {
                 && n_ff_exp == 512 && n_used <= 8
                 && std::env::var("BW24_MOE_DEVQ8_GU").map(|v| v.is_empty() || v == "v").unwrap_or(true)
                 && std::env::var("BW24_MOE_DEVQ8_DOWN").map(|v| v.is_empty() || v == "w8h2v").unwrap_or(true);
-            if rows_arm {
+            // CSR EXPERT-DEDUP gate_up (verify-cost target #1, DEFAULT ON 2026-07-10): the
+            // owner-scan kernel serves every (token, slot) pair of an expert from ONE block,
+            // deduping the 38-40% duplicated weight-stream+decode the overlap probe measured
+            // (gate_up 55.0 -> 39.7us/launch; +1.3-2.1% spec e2e p2, +0.6-1.7% p3, all K).
+            // Bit-identical to the _rows twins (explicit-intrinsic accumulate — the ULP/fmad
+            // lesson; =2 byte-compare verified zero diffs). down stays on _rows (CSR down
+            // measured 23.5 -> 37.5us: 16-group rows can't amortize the serial pair loop).
+            // BW24_MOE_CSR=0 rollback; =2 runs BOTH paths and byte-compares (debug).
+            let csr_mode = std::env::var("BW24_MOE_CSR").ok()
+                .and_then(|v| v.parse::<i32>().ok()).unwrap_or(1);
+            let csr_qt = |qt: i32| qt == crate::QT_IQ4_XS || qt == crate::QT_IQ3_S;
+            let csr_arm = rows_arm && csr_mode > 0 && t <= 10
+                && csr_qt(m.gate_exps.qtype) && csr_qt(m.up_exps.qtype)
+                && csr_qt(m.down_exps.qtype);
+            if csr_arm {
+                if csr_mode == 2 {
+                    static ENGAGED: std::sync::Once = std::sync::Once::new();
+                    ENGAGED.call_once(|| eprintln!("[bw24] moe CSR byte-compare mode ON (t={t})"));
+                }
+                let n_pairs = t * n_used;
+                let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+                let act = e.moe_gate_up_silu8_dev_q8_csr(&dev.ptr_row, &sel_d, &zq, &zd, n_pairs,
+                                                         n_embd, n_ff_exp, n_used, n_expert,
+                                                         m.gate_exps.qtype, m.up_exps.qtype,
+                                                         m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+                // down stays on the _rows twin: the CSR down variant measured 23.5 -> 37.5us
+                // (16-group rows can't amortize the serial pair loop). act layout matches.
+                e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
+                                            t, n_ff_exp, n_embd, n_used, n_expert,
+                                            m.down_exps.qtype, m.down_exps.row_bytes)?;
+                if csr_mode == 2 {
+                    // DEBUG BYTE-COMPARE: run the _rows twins on the same inputs, diff bits.
+                    let act_r = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
+                                                                n_embd, n_ff_exp, n_used, n_expert,
+                                                                m.gate_exps.qtype, m.up_exps.qtype,
+                                                                m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                    let mut out_r = e.uninit(t * n_embd)?;
+                    let (aq2r, ad2r) = e.quantize_q8_1(&act_r, n_pairs, n_ff_exp)?;
+                    e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2r, &ad2r, &mut out_r,
+                                                t, n_ff_exp, n_embd, n_used, n_expert,
+                                                m.down_exps.qtype, m.down_exps.row_bytes)?;
+                    let (a1, a2) = (e.dtoh(&act)?, e.dtoh(&act_r)?);
+                    let (o1, o2) = (e.dtoh(&moe_out)?, e.dtoh(&out_r)?);
+                    let ba = a1.iter().zip(&a2).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                    let bo = o1.iter().zip(&o2).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+                    if ba + bo > 0 {
+                        eprintln!("[csr-check] il={il} t={t} ACT diffs={ba}/{} OUT diffs={bo}/{}",
+                                  a1.len(), o1.len());
+                        // First 4 differing ACT elements: (pair, o, csr, rows) + that pair's expert
+                        let sel_h = e.dtoh_i32(&sel_d)?;
+                        let mut shown = 0;
+                        for (i, (x, y)) in a1.iter().zip(&a2).enumerate() {
+                            if x.to_bits() != y.to_bits() && shown < 4 {
+                                let (p, o) = (i / n_ff_exp, i % n_ff_exp);
+                                let ex = sel_h[p];
+                                let npx = sel_h.iter().filter(|&&v| v == ex).count();
+                                eprintln!("  ACT p={p} ex={ex} np={npx} o={o} csr={x:e} rows={y:e}");
+                                shown += 1;
+                            }
+                        }
+                        std::process::exit(3);
+                    }
+                }
+            } else if rows_arm {
+                // TEMP PROBE (BW24_MOE_OVERLAP=1): cross-token expert-activation overlap at
+                // verify — sizes the CSR dedup win (unique experts vs t*n_used pairs).
+                if std::env::var("BW24_MOE_OVERLAP").as_deref() == Ok("1") {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static PAIRS: AtomicU64 = AtomicU64::new(0);
+                    static UNIQ: AtomicU64 = AtomicU64::new(0);
+                    static CALLS: AtomicU64 = AtomicU64::new(0);
+                    let sel_h = e.dtoh_i32(&sel_d)?;
+                    let mut u: Vec<i32> = sel_h.clone(); u.sort_unstable(); u.dedup();
+                    PAIRS.fetch_add(sel_h.len() as u64, Ordering::Relaxed);
+                    UNIQ.fetch_add(u.len() as u64, Ordering::Relaxed);
+                    let c = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+                    if c % 480 == 0 {
+                        let p = PAIRS.load(Ordering::Relaxed); let q = UNIQ.load(Ordering::Relaxed);
+                        eprintln!("[overlap] calls={c} pairs={p} unique={q} ratio={:.3} (t={t})",
+                                  q as f64 / p as f64);
+                    }
+                }
                 let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
                 let act = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                           n_embd, n_ff_exp, n_used, n_expert,
