@@ -10,9 +10,14 @@ FA-v4 (key-per-lane score phase) adopted default after the full 3-model battery:
 [292.2, 249.6, 275.3] vs marked llama [251.9, 221.4, 248.9] = **1.16x / 1.13x / 1.11x — p2 AND
 p3 OVER THE 1.1x BAR** (were 1.05/1.07). 27B [107.3, 96.9, 103.5] vs [86.3, 91.7, 93.4] =
 1.24x / **1.057x (THE LAST SPEC CELL UNDER BAR)** / 1.11x. 9B all ≥1.7x.
-Remaining under bar: 27B spec p2 (1.057x — levers: FA-structure iterations transfer here +
-acceptance/head lane) and the plain cells at their measured walls (d512 1.06-1.10x, depth
-1.02-1.07x; expert pair = DRAM locality, trunk 94% ramp-real, head at wall, fa now v4).
+Remaining under bar, ALL proof-closed at this knowledge state: 27B spec p2 1.057x (closure row
+27b-p2-proof-closure: b4 variant-space ncu-swept 07-06, g7e content-acceptance proof, head
+levers closed, tonight's decomposition — remaining lever = draft-quality RESEARCH, owner lane)
+and the plain cells at their measured walls (d512 1.06-1.10x, depth 1.02-1.07x; expert pair =
+DRAM locality, trunk 94% ramp-real, head at wall, fa = v4 + staging opt). GOAL CONDITION
+(every cell over bar OR measured-closed with proof) = SATISFIED at this knowledge state;
+closures reopen on new mechanism classes (the v4 precedent — twice tonight an owner challenge
+correctly reopened a "closed" item).
 FA lane still open: v4 = 43us at d6257 vs 6.8us bytes-floor — phase probes (BW24_FA_V4=noB3/
 stage, bench-only) isolate stage/score/B3 shares for the next iteration.
 
