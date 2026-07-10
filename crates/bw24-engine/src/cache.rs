@@ -92,11 +92,27 @@ impl Cache {
             let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
                 Some(g) => {
                     let hd = if g.swa_pattern[il as usize] { g.key_length_swa } else { g.key_length_global } as usize;
-                    let d = hd * g.head_count_kv[il as usize] as usize;
+                    // E4B ships a SCALAR head_count_kv (per-layer vec empty): both kinds land
+                    // on 512 total (swa 2x256, global 1x512 — verified against tensor shapes
+                    // at load). 26B/31B keep the per-layer vec.
+                    let d = match g.head_count_kv.get(il as usize) {
+                        Some(n) => hd * *n as usize,
+                        None => g.key_length_global as usize,
+                    };
                     (d, d)
                 }
                 None => (kv_dim_k, kv_dim_v),
             };
+            // E4B KV-SHARING: the trailing shared_kv_layers have no k/v of their own — they
+            // attend an earlier layer's cache (hybrid_forward resolves the target). No KvLayer
+            // here: any accidental use is a loud unwrap at bring-up, and rewind/len loops
+            // (iter_mut().flatten()) skip None naturally.
+            let g4_shared = cfg.gemma4.as_ref().map(|g| g.shared_kv_layers).unwrap_or(0);
+            if g4_shared > 0 && il >= cfg.n_layer - g4_shared {
+                kv.push(None);
+                recur.push(None);
+                continue;
+            }
             let k_tok_bytes = (kv_dim_k / 32) * kbb;
             let v_tok_bytes = (kv_dim_v / 32) * vbb;
             match cfg.layer_kind(il) {

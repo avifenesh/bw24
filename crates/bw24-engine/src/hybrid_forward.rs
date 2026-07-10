@@ -81,6 +81,7 @@ pub const PRIME_MIN_T: usize = 16;
 impl HybridModel {
     /// Prefill forward over `tokens`; returns logits [T, n_vocab] (host f32).
     pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if self.is_gemma4_e4b() { return self.gemma4_e4b_forward(e, tokens, false); }
         if self.cfg.gemma4.is_some() { return self.gemma4_forward(e, tokens, false); }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -225,6 +226,9 @@ impl HybridModel {
         // class as decode reading the cache. Prompts <= one chunk take the ORIGINAL monolithic
         // body byte-for-byte (chunk 0 short-circuits to the f32 fa_prefill path).
         // BW24_PRIME_CHUNK sets the chunk size (tokens); 0 disables chunking (monolithic).
+        if self.is_gemma4_e4b() {
+            return self.gemma4_e4b_prime(e, tokens, cache);
+        }
         if self.cfg.gemma4.is_some() {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
@@ -3190,5 +3194,238 @@ impl HybridModel {
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, h_seed))
+    }
+}
+
+
+// ===================================================================================== //
+//  gemma-4 E4B (per-layer embeddings + KV-sharing) — FIRST-LIGHT forward.               //
+//  Dedicated simple path (Stage-B matmuls, per-row causal attention over the quantized  //
+//  cache) so the tuned 26B/31B paths stay untouched. Arch: research/gemma4-bringup/     //
+//  e4b-arch-map.md; llama reference: src/models/gemma4.cpp (E4B arms). Wired: forward   //
+//  (prefill logits), prime (tokenwise-equivalent batched trunk), eager decode_step_h.   //
+//  NOT wired: dc/graph serving arms, verify/spec, chunked prime (HANDOVER-E4B.md).      //
+// ===================================================================================== //
+impl HybridModel {
+    pub fn is_gemma4_e4b(&self) -> bool {
+        self.gemma4_aux.as_ref().is_some_and(|a| a.e4b.is_some())
+    }
+
+    /// E4B per-layer geometry: nh/nkv derive from the layer's OWN tensor shapes (the E4B GGUF
+    /// ships a scalar head_count_kv; swa q 8x256 / kv 2x256, global q 4x512 / kv 1x512).
+    /// KV-shared layers report the SHARE TARGET's kv count (their wk IS the target's tensor).
+    fn gemma4_e4b_geom(&self, il: usize) -> (usize, usize, usize, f32, f32, bool) {
+        let g = self.cfg.gemma4.as_ref().unwrap();
+        let swa = g.swa_pattern[il];
+        let hd = if swa { g.key_length_swa } else { g.key_length_global } as usize;
+        let Mixer::Full(fa) = &self.layers[il].mixer else { panic!("e4b layer {il} not full-attn") };
+        let nh = fa.wq.out_features() / hd;
+        let nkv = fa.wk.out_features() / hd;
+        (hd, nkv, nh, if swa { g.rope_base_swa } else { g.rope_base_global }, 1.0, swa)
+    }
+
+    /// E4B KV-share target: Some(target) for the trailing shared layers, None = own cache.
+    fn gemma4_e4b_kv_target(&self, il: usize) -> Option<usize> {
+        self.layers[il].gemma4.as_ref()
+            .and_then(|b| b.e4b.as_ref())
+            .and_then(|e4| e4.kv_share.map(|t| t as usize))
+    }
+
+    /// E4B prologue: inp_pl [t][n_layer][n_epl] =
+    ///   ( gather(per_layer_tok_embd, tok)*sqrt(n_epl)
+    ///   + rms_norm(model_proj . x_scaled * 1/sqrt(n_embd), proj_norm) ) * 1/sqrt(2)
+    /// (llama gemma4.cpp build_inp_per_layer + project_per_layer_inputs, exact order).
+    fn gemma4_e4b_inp_pl(&self, e: &Engine, tokens: &[u32], x_scaled: &CudaSlice<f32>, t: usize)
+                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let m = aux.e4b.as_ref().unwrap();
+        let n_embd = self.cfg.n_embd as usize;
+        let n_layer = self.layers.len();
+        let width = m.n_epl * n_layer;
+        let tbl = m.tok_tbl_gpu.get_or_init(|| {
+            e.upload_u8(&m.tok_embd_bytes).expect("e4b per-layer token table upload")
+        });
+        let tok_d = e.stream().clone_htod(&tokens.iter().map(|&x| x).collect::<Vec<u32>>())?;
+        let mut a = e.embed_gather_device_td(tbl, &tok_d, t, width, m.tok_embd_qt,
+                                             m.tok_embd_row_bytes)?;
+        e.scale_inplace(&mut a, (m.n_epl as f32).sqrt(), t * width)?;
+        let mut p = e.matmul(&m.model_proj, x_scaled, t)?;
+        e.scale_inplace(&mut p, 1.0 / (n_embd as f32).sqrt(), t * width)?;
+        let mut pn = e.uninit(t * width)?;
+        e.rms_norm(&p, m.proj_norm.float_data(), &mut pn, m.n_epl, t * n_layer,
+                   self.cfg.rms_eps)?;
+        let mut out = e.uninit(t * width)?;
+        e.add_scale(&a, &pn, 1.0 / 2f32.sqrt(), &mut out, t * width)?;
+        Ok(out)
+    }
+
+    /// E4B attention (t-wide, causal, per-row fa over the QUANTIZED cache — first-light
+    /// correctness path; the fa rows arms come later). Own-KV layers project+norm+rope k/v
+    /// and append t rows; KV-shared layers are Q-only over the target layer's cache (which
+    /// already holds this forward's rows — the target runs earlier in the stack).
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_e4b_attn(&self, e: &Engine, il: usize, h: &CudaSlice<f32>,
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
+                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_e4b_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let Mixer::Full(fa) = &self.layers[il].mixer else { unreachable!() };
+        let n_embd = self.cfg.n_embd as usize;
+        let _ = n_embd;
+
+        let mut q = {
+            let q0 = e.matmul(&fa.wq, h, t)?;
+            let mut q = e.uninit(t * nh * hd)?;
+            // q_norm (per-head rms) — the qkv fused norm needs k/v operands; single-tensor
+            // norm here (rms over hd rows).
+            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
+            q
+        };
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("e4b global rope needs rope_freqs.weight"))
+        };
+        let share = self.gemma4_e4b_kv_target(il);
+        if let Some(_tgt) = share {
+            // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
+            let mut kdummy = e.uninit(t * hd)?;
+            e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
+        } else {
+            let k0 = e.matmul(&fa.wk, h, t)?;
+            let v0 = e.matmul(&fa.wv, h, t)?;   // E4B: real v everywhere kv exists (K != V)
+            let mut k = e.uninit(t * nkv * hd)?;
+            let mut v = e.uninit(t * nkv * hd)?;
+            e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
+            // R7: V = weightless rms (ones), never roped.
+            e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
+            e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+            let kvl = cache.kv[il].as_mut().unwrap();
+            e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                       kvl.v_tok_bytes)?;
+            kvl.len += t;
+        }
+        // attention: per-row causal fa over the (own or target) quantized cache. The cache
+        // already contains this forward's rows in both arms; row i attends [.., base+i].
+        let kvl_idx = share.unwrap_or(il);
+        let kvl = cache.kv[kvl_idx].as_ref().unwrap();
+        let base_len = kvl.len - t;   // pre-append length (target appended this forward too)
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let mut attn = e.uninit(t * nh * hd)?;
+        for i in 0..t {
+            let avail = base_len + i + 1;
+            let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };
+            let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                         (off_tok + t_kv) * kvl.k_tok_bytes);
+            let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                         (off_tok + t_kv) * kvl.v_tok_bytes);
+            let qv = e.view(&q, t * nh * hd);
+            let q_row = qv.slice(i * nh * hd..(i + 1) * nh * hd);
+            let mut q_one = e.uninit(nh * hd)?;
+            e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
+            let mut a_one = e.uninit(nh * hd)?;
+            e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
+        }
+        Ok(e.matmul(&fa.wo, &attn, t)?)
+    }
+
+    /// E4B trunk: embed -> prologue -> layers (attn + dense ffn via the 31B tail_core + the
+    /// per-layer-embedding tail + layer scale) -> output_norm. Returns (softcapped logits
+    /// device [t, n_vocab], pre-output_norm hidden [t, n_embd]). Appends t rows per own-KV
+    /// layer; does NOT advance cache.pos (caller owns pos).
+    fn gemma4_e4b_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
+                        -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let n_layer = self.layers.len();
+        let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
+        let aux_e4b = self.gemma4_aux.as_ref().unwrap().e4b.as_ref().unwrap();
+        let n_epl = aux_e4b.n_epl;
+
+        for il in 0..n_layer {
+            let layer = &self.layers[il];
+            let mut h = e.uninit(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let o = self.gemma4_e4b_attn(e, il, &h, &pos_d, t, cache)?;
+            let mut cur = e.uninit(t * n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+            // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
+            let (sn, attn_out) = self.gemma4_layer_tail_core(e, layer, &cur, &x, t)?;
+            let mut resid = e.uninit(t * n_embd)?;
+            e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
+            // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
+            let bits = layer.gemma4.as_ref().unwrap();
+            let e4b = bits.e4b.as_ref().expect("e4b layer bits");
+            let g = e.matmul(&e4b.inp_gate, &resid, t)?;
+            let mut inp_this = e.uninit(t * n_epl)?;
+            e.copy_rows_strided(&inp_pl, &mut inp_this, n_epl, t, n_epl * n_layer, il * n_epl)?;
+            let mut act = e.uninit(t * n_epl)?;
+            e.gelu_tanh_mul(&g, &inp_this, &mut act, t * n_epl)?;
+            let y = e.matmul(&e4b.proj, &act, t)?;
+            let mut yn = e.uninit(t * n_embd)?;
+            e.rms_norm(&y, e4b.post_norm.float_data(), &mut yn, n_embd, t, eps)?;
+            // (resid + tail) * layer_output_scale — llama order (add, then scalar mul).
+            let mut xn = e.uninit(t * n_embd)?;
+            e.add_scale(&yn, &resid, bits.layer_scale, &mut xn, t * n_embd)?;
+            x = xn;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let mut ld = e.matmul(&self.output, &hn, t)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        Ok((ld, x))
+    }
+
+    /// E4B eager T=1 decode step (decode_step_h contract): returns (softcapped logits host,
+    /// pre-output_norm hidden). Advances cache.pos.
+    pub(crate) fn gemma4_e4b_decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
+                                           -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (ld, x) = self.gemma4_e4b_trunk(e, &[token], cache.pos, cache)?;
+        let logits = e.dtoh(&ld)?;
+        cache.pos += 1;
+        Ok((logits, x))
+    }
+
+    /// E4B batched prime (prime_cache contract: (last-row logits host, h_seed pre-norm last
+    /// row, hidden stack)). First-light: the t-wide trunk (per-row attention) — correct, not
+    /// fast; the prefill fa arms come later.
+    pub(crate) fn gemma4_e4b_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+                                   -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        assert_eq!(cache.pos, 0, "e4b prime is fresh-prompt only (v0)");
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let n_vocab = self.output.out_features();
+        let (ld, x) = self.gemma4_e4b_trunk(e, tokens, 0, cache)?;
+        cache.pos += t;
+        let lh = e.dtoh(&ld)?;
+        let last = lh[(t - 1) * n_vocab..t * n_vocab].to_vec();
+        let xv = e.view(&x, t * n_embd);
+        let row = xv.slice((t - 1) * n_embd..t * n_embd);
+        let mut h_seed = e.uninit(n_embd)?;
+        e.copy_view_into(&mut h_seed, 0, &row, n_embd)?;
+        Ok((last, h_seed, x))
+    }
+
+    /// E4B prefill logits (forward contract — no persistent cache; scratch cache internally).
+    pub(crate) fn gemma4_e4b_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
+                                     -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let mut cache = Cache::new(e, &self.cfg, tokens.len() + 8)?;
+        let (ld, _x) = self.gemma4_e4b_trunk(e, tokens, 0, &mut cache)?;
+        let lh = e.dtoh(&ld)?;
+        let n_vocab = self.output.out_features();
+        if last_only {
+            let t = tokens.len();
+            Ok(lh[(t - 1) * n_vocab..t * n_vocab].to_vec())
+        } else {
+            Ok(lh)
+        }
     }
 }

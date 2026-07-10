@@ -331,6 +331,7 @@ impl HybridModel {
     /// `output_norm` (MTP-PLAN §A: this is `h_seed` for the NextN head). Device buffer [n_embd].
     pub fn decode_step_h(&self, e: &Engine, token: u32, cache: &mut Cache)
                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        if self.is_gemma4_e4b() { return self.gemma4_e4b_decode_step_h(e, token, cache); }
         if self.cfg.gemma4.is_some() { return self.gemma4_decode_step_h(e, token, cache); }
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -785,7 +786,9 @@ impl HybridModel {
         crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
                                  std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(max_new);
-        if self.cfg.gemma4.is_some() {
+        // E4B: dc/graph serving arms UNWIRED (HANDOVER-E4B.md) — the eager loop below routes
+        // through gemma4_e4b_decode_step_h.
+        if self.cfg.gemma4.is_some() && !self.is_gemma4_e4b() {
             // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
             let n_vocab = self.output.out_features();
             let embd_gpu = self.embd_gpu.get_or_init(|| {
@@ -861,7 +864,8 @@ impl HybridModel {
         // gemma4 DEVICE-COUNTER greedy serving loop (the dc arc): token/pos/kv-lens live in
         // device counters, argmax on device — host sees 4B/token. Stream-identical to the
         // eager chain (DC-GATE). Penalties/temp fall through to the host-logits loop.
-        if self.cfg.gemma4.is_some() && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
+        if self.cfg.gemma4.is_some() && !self.is_gemma4_e4b()
+            && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
             let n_vocab = self.output.out_features();
             let embd_gpu = self.embd_gpu.get_or_init(|| {
                 e.upload_u8(&self.embd.raw).expect("embed table upload")
