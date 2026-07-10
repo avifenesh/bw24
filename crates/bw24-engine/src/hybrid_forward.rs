@@ -2156,13 +2156,27 @@ impl HybridModel {
             let exi = e.htod_i32(&ex_ids)?;
             let exo = e.htod_i32(&ex_off)?;
             let exp_d = e.htod_i32(&ex_pairs)?;
-            let (zq, zd) = e.quantize_q8_1(moe_in, t, n_embd)?;
-            let gate = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                                                 n_embd, n_ff_exp, n_expert, n_active, n_pairs,
-                                                 m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-            let up = e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 1, &exi, &exo, &exp_d, &pt, &zq, &zd,
-                                               n_embd, n_ff_exp, n_expert, n_active, n_pairs,
-                                               m.up_exps.qtype, m.up_exps.row_bytes)?;
+            // gate/up: int8-MMA expert GEMM (in_f = n_embd 2816 = 11x256 tiles ok); down keeps
+            // the decode-once dp4a (in_f 704 fails the 256-superblock tiling).
+            let mma = n_embd % 256 == 0
+                && std::env::var("BW24_GEMMA_MOE_MMA").as_deref() != Ok("0");
+            let (gate, up) = if mma {
+                let z_scr = e.mmq_iq_quantize_act(moe_in, n_embd, t)?;
+                (e.mmq_iq_experts(&dev.ptr_row, 0, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
+                                  n_embd, n_ff_exp, n_active, n_pairs, t,
+                                  m.gate_exps.qtype, m.gate_exps.row_bytes)?,
+                 e.mmq_iq_experts(&dev.ptr_row, 1, n_expert, &exi, &exo, &exp_d, &pt, &z_scr,
+                                  n_embd, n_ff_exp, n_active, n_pairs, t,
+                                  m.up_exps.qtype, m.up_exps.row_bytes)?)
+            } else {
+                let (zq, zd) = e.quantize_q8_1(moe_in, t, n_embd)?;
+                (e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 0, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                           n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                           m.gate_exps.qtype, m.gate_exps.row_bytes)?,
+                 e.moe_pairs_matvec_q8_dec(&dev.ptr_row, 1, &exi, &exo, &exp_d, &pt, &zq, &zd,
+                                           n_embd, n_ff_exp, n_expert, n_active, n_pairs,
+                                           m.up_exps.qtype, m.up_exps.row_bytes)?)
+            };
             let act = e.moe_pairs_gelu_mul(&gate, &up, n_pairs * n_ff_exp)?;
             let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
             let pair_self: Vec<i32> = (0..n_pairs as i32).collect();

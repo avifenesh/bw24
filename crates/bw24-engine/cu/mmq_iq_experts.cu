@@ -40,6 +40,7 @@
 // qtype tags (match qmatvec.cu QType).
 #define QT_IQ4_XS 5
 #define QT_IQ3_S  6
+#define QT_Q4_0   12
 
 __device__ __forceinline__ float half_to_float(uint16_t h){ return __half2float(*reinterpret_cast<const __half*>(&h)); }
 __constant__ signed char kvalues_iq4nl_d[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
@@ -181,6 +182,40 @@ static __device__ __forceinline__ void load_tiles_iq4xs(const uint8_t* __restric
     }
 }
 
+// Q4_0 (gemma4 QAT): 8 consecutive 18B/32-val blocks per 256-val superblock (144B). int weight
+// = (nib - 8) folded via __vsub4 (same integer identity as expert_decode_q4_0_g); per-16 scale
+// slots both map to the owning 32-block's fp16 d.
+template<int mmq_y, bool nc>
+static __device__ __forceinline__ void load_tiles_q4_0(const uint8_t* __restrict__ W, int* __restrict__ x_tile,
+        int kb0, int i_max, long row_bytes){
+    int* x_qs = x_tile;
+    float* x_df = (float*)(x_qs + MMQ_TILE_NE_K*2);
+    for(int i0=0;i0<mmq_y;i0+=MMQ_NWARPS){
+        int i = i0 + threadIdx.y; if constexpr(nc) i=min(i,i_max);
+        const uint8_t* sb = W + (long)i*row_bytes + (long)kb0*144;   // 8 x 18B Q4_0 blocks
+        #pragma unroll
+        for(int c2=0;c2<2;c2++){
+            int c = threadIdx.x + c2*32;          // int-col 0..63 = vals 4c..4c+3
+            int g = c >> 3;                        // 32-val block within the superblock
+            int v0 = (c - g*8) * 4;                // first val within the block (0,4,..,28)
+            const uint8_t* qs = sb + g*18 + 2;
+            int w;
+            if (v0 < 16) {
+                // lo nibbles of qs[v0..v0+3]
+                uint32_t raw; memcpy(&raw, qs + v0, 4);
+                w = __vsub4((int)(raw & 0x0F0F0F0Fu), 0x08080808);
+            } else {
+                uint32_t raw; memcpy(&raw, qs + (v0 - 16), 4);
+                w = __vsub4((int)((raw >> 4) & 0x0F0F0F0Fu), 0x08080808);
+            }
+            x_qs[i*MMQ_MMA_TILE_X_K + c] = w;
+        }
+        if(threadIdx.x<16){ int s=threadIdx.x; int g=s>>1;
+            x_df[i*MMQ_MMA_TILE_X_K + s] = half_to_float(*(const uint16_t*)(sb + g*18));
+        }
+    }
+}
+
 // IQ3_S: 110B block / 256 vals: d(2) qs[64](2..66) qh[8](66..74) signs[32](74..106) scales[4](106..110).
 // Decode uses the iq3s_grid + sign trick (expert_decode_iq3s_g). db = d*(1+2*sc_nib), applied as the
 // per-32 float scale (iscale==1 there). Natural k-order: group g (0..7) = 32 values = 8 int-cols.
@@ -307,8 +342,9 @@ mmq_iq_experts_kernel(
         __syncthreads();
         float sum[mmq_x*mmq_y/(MMQ_NWARPS*MMQ_WARP_SIZE)] = {0.0f};
         for(int kb=0;kb<nsblk;kb++){
-            if(qtype==QT_IQ4_XS) load_tiles_iq4xs<mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
-            else                 load_tiles_iq3s <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            if(qtype==QT_IQ4_XS)      load_tiles_iq4xs<mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            else if(qtype==QT_Q4_0)   load_tiles_q4_0 <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
+            else                      load_tiles_iq3s <mmq_y,nc>(W, tile_x, kb, i_max, row_bytes);
             #pragma unroll
             for(int half=0;half<2;half++){
                 int blockk = kb*2 + half;              // 128-value chunk index (block_q8_1_mmq)
