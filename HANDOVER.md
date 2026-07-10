@@ -13,6 +13,15 @@ decode (per-layer KV, fa vec-always FA_VEC_MIN_DEFAULT=1), tokenizer exact (7-ca
 prefill + decode window VIEW into cache), MTP spec loop (gemma_spec.rs, stream-identical to
 greedy at every K, VERIFY-GATE K=1..7 PASS).
 
+DC-EAGER MILESTONE (2026-07-10 latest): device-counter decode ships for gemma greedy serving
+(generate/generate_with arms; device embed/argmax/pos/len counters; 4B/token host traffic;
+embed table uploaded at LOAD). 26B short plain 190.6-191.5 = 1.06x llama serve (MARGIN, first
+cell over the bar) / parity with llama-bench tg 191.9. Depth 156.2 vs llama 161.7-163.9
+(0.96x). 31B 38.9 vs llama serve 40.1-41.0 (0.96x). Spec 222.3 vs llama MTP 253 (0.88x).
+Graph capture NEGATIVE (bucket churn + alloc nodes; retry lever = persistent scratch pool).
+NEXT: dc-ify the SPEC round (draft chain + verify still pay host round-trips — the biggest
+spec lever), depth fa (vec 25us/layer at 1-2k), 31B kernel polish (73% of wall vs llama 77%).
+
 NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
 - ours plain 181.5 (q8z tail + rope2; PARITY with llama serve 168.8-182.5 same-session)
   | llama-bench tg128 191.9 (its graph-clean floor) — capture arc = the margin lever
