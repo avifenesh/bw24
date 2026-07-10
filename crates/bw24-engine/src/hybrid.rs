@@ -279,6 +279,24 @@ pub struct HybridLayer {
     pub post_attn_norm: GpuTensor,  // "post_attention_norm" = PRE-FFN norm
     pub mixer: Mixer,
     pub ffn: Ffn,
+    pub gemma4: Option<Gemma4LayerBits>,
+}
+
+/// Gemma-4 per-layer extras (R8 wiring, HANDOVER "R8 VERIFIED WIRING"): the parallel shared
+/// FFN branch, the four extra norms, the router prologue scale vector, per-expert output
+/// scales, and the layer output scalar.
+pub struct Gemma4LayerBits {
+    pub ffn_norm: GpuTensor,           // shared-branch pre-norm
+    pub post_ffw_norm_1: GpuTensor,    // shared-branch post
+    pub pre_ffw_norm_2: GpuTensor,     // moe-branch pre
+    pub post_ffw_norm_2: GpuTensor,    // moe-branch post
+    pub post_ffw_norm: GpuTensor,      // combined post (before the attn_out residual)
+    pub shared_gate: GpuTensor,
+    pub shared_up: GpuTensor,
+    pub shared_down: GpuTensor,
+    pub router_scale_vec: GpuTensor,   // ffn_gate_inp.scale [n_embd] (F32)
+    pub per_expert_scale: Vec<f32>,    // ffn_down_exps.scale [n_expert] (host)
+    pub layer_scale: f32,              // layer_output_scale [1]
 }
 
 /// Qwen3.5 NextN/MTP head: a full transformer block (attn+FFN, same tensors as a trunk layer)
@@ -434,6 +452,30 @@ impl HybridModel {
                     .expect("need post_attention_norm or ffn_norm"),
                 mixer: load_mixer_kind(e, src, il, cfg.layer_kind(il))?,
                 ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
+                gemma4: if cfg.gemma4.is_some() {
+                    let scalar = |n: &str| -> f32 {
+                        let t = src.find(&p(n)).unwrap_or_else(|| panic!("missing {n}"));
+                        bw24_gguf::dequant::dequantize(t.ggml_type, &t.bytes, 1)[0]
+                    };
+                    let vecf = |n: &str| -> Vec<f32> {
+                        let t = src.find(&p(n)).unwrap_or_else(|| panic!("missing {n}"));
+                        bw24_gguf::dequant::dequantize(t.ggml_type, &t.bytes,
+                                                       t.ne.iter().product::<u64>() as usize)
+                    };
+                    Some(Gemma4LayerBits {
+                        ffn_norm: load_t(e, src, &p("ffn_norm.weight"))?,
+                        post_ffw_norm_1: load_t(e, src, &p("post_ffw_norm_1.weight"))?,
+                        pre_ffw_norm_2: load_t(e, src, &p("pre_ffw_norm_2.weight"))?,
+                        post_ffw_norm_2: load_t(e, src, &p("post_ffw_norm_2.weight"))?,
+                        post_ffw_norm: load_t(e, src, &p("post_ffw_norm.weight"))?,
+                        shared_gate: load_t(e, src, &p("ffn_gate.weight"))?,
+                        shared_up: load_t(e, src, &p("ffn_up.weight"))?,
+                        shared_down: load_t(e, src, &p("ffn_down.weight"))?,
+                        router_scale_vec: load_t(e, src, &p("ffn_gate_inp.scale"))?,
+                        per_expert_scale: vecf("ffn_down_exps.scale"),
+                        layer_scale: scalar("layer_output_scale.weight"),
+                    })
+                } else { None },
             });
         }
 
