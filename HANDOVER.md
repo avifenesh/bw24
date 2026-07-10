@@ -678,3 +678,24 @@ with that caveat). TRIMMED truth (nsys, K=3 PMIN0, numeric prompt):
   board configs unaffected.
 35B margin math: no single >15% term remains; clearing p2/p3 (1.02/1.03x) likely needs #1
 (trunk-matvec launch/fusion work, FUSED_T-class follow-on) + #3. 27B p2: same class.
+
+### #3 zero-round fold — DESIGN (code-anchored, 2026-07-10 close)
+
+Today the j==0-with-pending case (n_acc=0, a pending bonus exists) takes the LEGACY REPLAY:
+one m=1 full-stack forward (incl. the 489us full-vocab head) to commit the old pending + new
+bonus. The fold: carry BOTH as pending -> next round's verify batch = [pending_a, pending_b,
+drafts...] with base=2. Feasibility (read from generate_spec_inner2):
+- t_pred/p_j indexing already generalizes over `base` (preds[base+j-1], cols (base+j-1)) — no
+  structural change, only the base=2 value.
+- pending: Option<u32> -> a 2-slot carry (SmallVec/array). The draft-KV seed for the round
+  start needs the hidden of the LAST pending's predecessor — the verify computes hiddens for
+  every column, same pattern the base=1 path uses (fill_prev chain extends one slot).
+- Commit bookkeeping: rollback keeps base columns unconditionally (they are EMITTED tokens);
+  accept_len arithmetic shifts by base — audit the three commit arms + the session tail.
+- PMIN0 zero-draft rounds (the p3 +13% win) become base-growing rounds: cap the carry at 2 —
+  a zero round WITH 2 pendings still must flush via replay (rare^2). Bound the change.
+- Gates: the full battery + the session-gate oracle (4-turn incl empty-suffix) — the carry
+  interacts with burst boundaries (pending must persist across generate_spec_session calls or
+  flush at burst end — FLUSH AT BURST END, simplest, matches today's tail commit).
+Win: removes ~0.75 full-head passes/round on PMIN0 configs (35B p3-class rounds) AND the extra
+trunk m=1 replay — est. +3-5% on the p3 cell, stacking with #1.
