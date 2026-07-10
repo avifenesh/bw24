@@ -14,6 +14,8 @@ pub enum Arch {
     MinimaxM3,    // dense full-attention (MSA later) + MoE FFN: sigmoid router + shared expert,
                   // gemma-norm, swigluoai, GQA 64/4 hd128 partial-RoPE, QK-norm
     Hy3,          // dense full-attention + MoE FFN: sigmoid router + bias + shared MLP, QK-norm
+    Gemma4,       // hybrid SWA(1024)/global 5:1, per-layer kv-heads+head_dim+rope, K=V globals,
+                  // 128-expert MoE + parallel shared FFN, gelu_tanh, softcap 30, layer_output_scale
     Llama,
     Other(String),
 }
@@ -28,6 +30,7 @@ impl Arch {
             "olmoe" => Arch::Olmoe,
             "minimax-m3" => Arch::MinimaxM3,
             "hy3" => Arch::Hy3,
+            "gemma4" => Arch::Gemma4,
             "llama" => Arch::Llama,
             other => Arch::Other(other.to_string()),
         }
@@ -56,7 +59,7 @@ impl Arch {
     /// `Model` has no decode path — and M3 already proved the dense-attention-MoE-as-degenerate-
     /// hybrid shape end to end. "Not qwen35 hybrid" holds where it matters: zero SSM/linear layers.)
     pub fn is_hybrid(&self) -> bool {
-        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3)
+        matches!(self, Arch::Qwen35 | Arch::Qwen35Moe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4)
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
@@ -124,6 +127,21 @@ pub struct Hy3Config {
     pub hidden_act: String,
 }
 
+/// Gemma-4 per-layer attention geometry + block extras (P0 census 2026-07-10).
+#[derive(Debug, Clone)]
+pub struct Gemma4Config {
+    pub head_count_kv: Vec<u32>,     // per layer (8 SWA / 2 global on the 26B)
+    pub swa_pattern: Vec<bool>,      // true = sliding-window layer
+    pub sliding_window: u32,         // 1024
+    pub key_length_global: u32,      // 512
+    pub key_length_swa: u32,         // 256
+    pub rope_base_global: f32,       // 1e6 (+ rope_freqs.weight factors tensor)
+    pub rope_base_swa: f32,          // 1e4
+    pub rope_dims_global: u32,       // 512 metadata (p-RoPE partial applies via rope_freqs)
+    pub rope_dims_swa: u32,          // 256
+    pub final_logit_softcapping: f32, // 30.0
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub arch: Arch,
@@ -150,6 +168,7 @@ pub struct ModelConfig {
     pub m3: Option<M3Config>,
     // Hy3 extras (None for every other arch)
     pub hy3: Option<Hy3Config>,
+    pub gemma4: Option<Gemma4Config>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -196,6 +215,27 @@ impl ModelConfig {
 
         let nextn = u("nextn_predict_layers").unwrap_or(0);
 
+        let gemma4 = if matches!(&arch, Arch::Gemma4) {
+                let arr_u = |k: &str| -> Vec<u32> {
+                    match g.meta_arch(k) {
+                        Some(MetaValue::Array(a)) => a.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                        _ => Vec::new(),
+                    }
+                };
+                Some(Gemma4Config {
+                    head_count_kv: arr_u("attention.head_count_kv"),
+                    swa_pattern: arr_u("attention.sliding_window_pattern").iter().map(|&x| x == 1).collect(),
+                    sliding_window: u("attention.sliding_window").unwrap_or(1024),
+                    key_length_global: u("attention.key_length").unwrap_or(512),
+                    key_length_swa: u("attention.key_length_swa").unwrap_or(256),
+                    rope_base_global: f("rope.freq_base").unwrap_or(1e6),
+                    rope_base_swa: f("rope.freq_base_swa").unwrap_or(1e4),
+                    rope_dims_global: u("rope.dimension_count").unwrap_or(512),
+                    rope_dims_swa: u("rope.dimension_count_swa").unwrap_or(256),
+                    final_logit_softcapping: f("final_logit_softcapping").unwrap_or(30.0),
+                })
+            } else { None };
+
         ModelConfig {
             arch,
             name: g.metadata.get("general.name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -220,6 +260,7 @@ impl ModelConfig {
             moe,
             m3: None,   // GGUF M3 metadata keys are a later arc (ST import first)
             hy3: None,  // GGUF Hy3 metadata keys are a later arc (repack source first)
+            gemma4,
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -328,6 +369,7 @@ impl ModelConfig {
             moe,
             m3,
             hy3,
+            gemma4: None,   // ST gemma4 route: config wiring when that arc opens
             // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
             // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
             nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
