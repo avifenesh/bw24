@@ -465,6 +465,109 @@ extern "C" __global__ void rope_neox_f32(float* __restrict__ x, const int* __res
     base[j + half] = x0 * s + x1 * c;
 }
 
+// ---- gemma4: 3-way rms_norm — ONE reduction over x, three weight vectors/outputs
+// (gemma's attn_out feeds ffn_norm + router-scale + pre_ffw_norm_2). Numerics per output
+// identical to rms_norm_f32 (same block reduction, same scale multiply). ----
+extern "C" __global__ void rms_norm3_f32(const float* __restrict__ x,
+                                         const float* __restrict__ w0, const float* __restrict__ w1,
+                                         const float* __restrict__ w2,
+                                         float* __restrict__ d0, float* __restrict__ d1,
+                                         float* __restrict__ d2, int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = xr[i]; sum += v * v; }
+    // block reduce — the rms_norm_f32 shuffle tree VERBATIM (per-output bit-identity).
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    float* o0 = d0 + (size_t)row * ncols;
+    float* o1 = d1 + (size_t)row * ncols;
+    float* o2 = d2 + (size_t)row * ncols;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float xh = xr[i] * scale;
+        o0[i] = xh * w0[i];
+        o1[i] = xh * w1[i];
+        o2[i] = xh * w2[i];
+    }
+}
+
+// ---- gemma4: q/k/v head norms in ONE launch — 3 (src,dst,rows) segments of the same width
+// (q_norm rows=nh, k_norm rows=nkv, weightless-V rows=nkv). Segment picked by row index;
+// per-row chain = rms_norm_f32 verbatim. ----
+extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const float* __restrict__ k,
+                                            const float* __restrict__ v,
+                                            const float* __restrict__ wq, const float* __restrict__ wk,
+                                            const float* __restrict__ wv,
+                                            float* __restrict__ dq, float* __restrict__ dk,
+                                            float* __restrict__ dv,
+                                            int ncols, int rq, int rk, float eps) {
+    int row = blockIdx.x;
+    const float* xr; const float* w; float* dr;
+    if (row < rq)           { xr = q + (size_t)row * ncols;        w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { int r = row - rq; xr = k + (size_t)r * ncols; w = wk; dr = dk + (size_t)r * ncols; }
+    else                    { int r = row - rq - rk; xr = v + (size_t)r * ncols; w = wv; dr = dv + (size_t)r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// ---- gemma4: two rms_norms of two DIFFERENT inputs, same width, one launch
+// (post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0)). grid.x = 2*nrows; per-row verbatim. ----
+extern "C" __global__ void rms_norm2x_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                          const float* __restrict__ wa, const float* __restrict__ wb,
+                                          float* __restrict__ da, float* __restrict__ db,
+                                          int ncols, int nrows, float eps) {
+    int row = blockIdx.x;
+    const float* xr; const float* w; float* dr;
+    if (row < nrows) { xr = a + (size_t)row * ncols; w = wa; dr = da + (size_t)row * ncols; }
+    else { int r = row - nrows; xr = b + (size_t)r * ncols; w = wb; dr = db + (size_t)r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+}
+
+// ---- gemma4: dst = (a + b) * c — the layer-tail residual add + layer_output_scale in one
+// launch. Same IEEE add-then-multiply as add_f32 followed by scale_f32. ----
+extern "C" __global__ void add_scale_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                         float c, float* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = (a[i] + b[i]) * c;
+}
+
 // ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
 // SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
 extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,

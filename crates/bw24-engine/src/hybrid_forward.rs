@@ -33,6 +33,13 @@ fn moe_q8_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| std::env::var("BW24_MOE_Q8").map(|v| v != "0").unwrap_or(true))
 }
+/// gemma4 fast-arm gate: qtypes with an `expert_dot_g` dp4a body (superset used by the gelu
+/// dev arm; the qwen q8 arms keep their own battery-gated q8_expert_supported policy).
+fn expert_dp4a_supported(qt: i32) -> bool {
+    qt == crate::QT_Q4_0 || qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS
+        || qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K
+}
+
 fn q8_expert_supported(qt: i32) -> bool {
     // k-quant arms added 2026-07-06 (Q3_K/Q4_K/Q6_K bodies for the UD tail layers). Briefly
     // default-excluded the same day when they appeared to break 35B real-prompt spec — the
@@ -2021,15 +2028,16 @@ impl HybridModel {
 
         let q0 = e.matmul(&fa.wq, h, t)?;   // [t, nh*hd]
         let k0 = e.matmul(&fa.wk, h, t)?;   // [t, nkv*hd]
-        let v0 = e.matmul(&fa.wv, h, t)?;   // globals: wv==wk bytes -> the RAW K projection
+        // globals ship no v_proj (wv := wk at load) — V input is the SAME projection output;
+        // reuse k0 instead of re-running the identical matmul (K=V dedup, 5 layers).
+        let v0 = if swa { e.matmul(&fa.wv, h, t)? } else { e.clone_dtod(&k0)? };
 
-        let mut q = e.zeros(t * nh * hd)?;
-        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
-        let mut k = e.zeros(t * nkv * hd)?;
-        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
+        let mut q = e.uninit(t * nh * hd)?;
+        let mut k = e.uninit(t * nkv * hd)?;
         // R7: V = weightless rms_norm of the raw projection; NEVER roped.
-        let mut v = e.zeros(t * nkv * hd)?;
-        e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
+        let mut v = e.uninit(t * nkv * hd)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
 
         if swa {
             e.rope_neox(&mut q, pos_d, hd, hd, nh, t, base, 1.0)?;
@@ -2073,7 +2081,38 @@ impl HybridModel {
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
 
-        let logits = e.matmul(&m.gate_inp, router_in, t)?;
+        // Router: the in-house GEMV at t=1 (decode-exact class), batched matmul at prefill.
+        let logits = if t == 1 && crate::router_kernel_on() {
+            e.router_gemv(m.gate_inp.float_data(), router_in, n_embd, n_expert, t)?
+        } else {
+            e.matmul(&m.gate_inp, router_in, t)?
+        };
+
+        // FAST T=1 ARM (decode hot path): device softmax-topk router + ONE fused gate_up GELU
+        // launch + ONE down8 FMA launch over the resident dev slabs (the qwen dev_q8 recipe with
+        // the gelu twin + the R3 per-expert-scale weight fold). Requires dp4a expert support.
+        if t == 1 && m.dev_exps.as_ref().is_some_and(|d| !d.gu_il)
+            && expert_dp4a_supported(m.gate_exps.qtype) && expert_dp4a_supported(m.up_exps.qtype)
+            && expert_dp4a_supported(m.down_exps.qtype)
+            && std::env::var("BW24_GEMMA_MOE_FAST").as_deref() != Ok("0") {
+            let dev = m.dev_exps.as_ref().unwrap();
+            let (sel_d, mut w_d) = e.moe_router_topk(&logits, 1, n_expert, n_used)?;
+            e.moe_w_exscale(&mut w_d, &sel_d, &bits.per_expert_scale_d, n_used)?;
+            let (zq, zd) = e.quantize_q8_1(moe_in, 1, n_embd)?;
+            let selv = sel_d.slice(0..n_used);
+            let act = e.moe_gate_up_gelu8_dev_q8(&dev.ptr_row, &selv, &zq, &zd,
+                                                 n_embd, n_ff_exp, n_used, n_expert,
+                                                 m.gate_exps.qtype, m.up_exps.qtype,
+                                                 m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+            let mut moe_out = e.uninit(n_embd)?;
+            let wv = w_d.slice(0..n_used);
+            e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2,
+                                   &mut moe_out.slice_mut(0..n_embd), n_ff_exp, n_embd,
+                                   n_used, n_expert, m.down_exps.qtype, m.down_exps.row_bytes)?;
+            return Ok(moe_out);
+        }
+
         let (sel_all, mut w_all) = Self::moe_route(e, &logits, t, n_expert, n_used)?;
         for (i, &sx) in sel_all.iter().enumerate() {
             w_all[i] *= bits.per_expert_scale[sx as usize];
@@ -2165,36 +2204,36 @@ impl HybridModel {
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
         // shared (parallel) dense FFN branch: post_ffw_norm_1(GELU_FFN(rms_norm(x, ffn_norm)))
-        let mut zsh = e.zeros(t * n_embd)?;
-        e.rms_norm(attn_out, bits.ffn_norm.float_data(), &mut zsh, n_embd, t, eps)?;
+        // The three attn_out norms (ffn_norm + router-scale + pre_ffw_norm_2) fuse into ONE
+        // rms_norm3 launch (one reduction; per-output bit-identical to three rms_norms).
+        let mut zsh = e.uninit(t * n_embd)?;
+        let mut router_in = e.uninit(t * n_embd)?;
+        let mut moe_in = e.uninit(t * n_embd)?;
+        e.rms_norm3(attn_out, bits.ffn_norm.float_data(), &bits.router_scale_pre,
+                    bits.pre_ffw_norm_2.float_data(), &mut zsh, &mut router_in, &mut moe_in,
+                    n_embd, t, eps)?;
         let n_ff = bits.shared_gate.out_features();
         let gate = e.matmul(&bits.shared_gate, &zsh, t)?;
         let up = e.matmul(&bits.shared_up, &zsh, t)?;
         let mut act = e.uninit(t * n_ff)?;
         e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
         let mlp0 = e.matmul(&bits.shared_down, &act, t)?;
-        let mut mlp = e.zeros(t * n_embd)?;
-        e.rms_norm(&mlp0, bits.post_ffw_norm_1.float_data(), &mut mlp, n_embd, t, eps)?;
-
-        // R2 router prologue: weightless rms_norm x 1/sqrt(n_embd) x gate_inp.scale — folded
-        // into ONE rms_norm whose weight is the pre-scaled vector (see Gemma4LayerBits).
-        let mut router_in = e.zeros(t * n_embd)?;
-        e.rms_norm(attn_out, &bits.router_scale_pre, &mut router_in, n_embd, t, eps)?;
-        let mut moe_in = e.zeros(t * n_embd)?;
-        e.rms_norm(attn_out, bits.pre_ffw_norm_2.float_data(), &mut moe_in, n_embd, t, eps)?;
         let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer not MoE") };
         let moe0 = self.gemma4_moe(e, m, bits, &moe_in, &router_in, t)?;
-        let mut moe = e.zeros(t * n_embd)?;
-        e.rms_norm(&moe0, bits.post_ffw_norm_2.float_data(), &mut moe, n_embd, t, eps)?;
+        // post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0): one fused launch, per-row verbatim.
+        let mut mlp = e.uninit(t * n_embd)?;
+        let mut moe = e.uninit(t * n_embd)?;
+        e.rms_norm2x(&mlp0, &moe0, bits.post_ffw_norm_1.float_data(),
+                     bits.post_ffw_norm_2.float_data(), &mut mlp, &mut moe, n_embd, t, eps)?;
 
         // combine: rms_norm(mlp + moe, post_ffw_norm) + attn_out, then the layer output scalar.
-        let mut sum = e.zeros(t * n_embd)?;
-        e.add(&mlp, &moe, &mut sum, t * n_embd)?;
-        let mut sn = e.zeros(t * n_embd)?;
-        e.rms_norm(&sum, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
-        let mut xn = e.zeros(t * n_embd)?;
-        e.add(&sn, attn_out, &mut xn, t * n_embd)?;
-        e.scale_inplace(&mut xn, bits.layer_scale, t * n_embd)?;
+        // add+norm fused (add_rms_norm == add then rms_norm, kernel-check-pinned identity).
+        let mut sum = e.uninit(t * n_embd)?;
+        let mut sn = e.uninit(t * n_embd)?;
+        e.add_rms_norm(&mlp, &moe, bits.post_ffw_norm.float_data(), &mut sum, &mut sn,
+                       n_embd, t, eps)?;
+        let mut xn = e.uninit(t * n_embd)?;
+        e.add_scale(&sn, attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
         Ok(xn)
     }
 
@@ -2289,13 +2328,12 @@ impl HybridModel {
 
         let q0 = e.matmul(&fa.wq, h, 1)?;
         let k0 = e.matmul(&fa.wk, h, 1)?;
-        let v0 = e.matmul(&fa.wv, h, 1)?;
+        let v0 = if swa { e.matmul(&fa.wv, h, 1)? } else { e.clone_dtod(&k0)? };
         let mut q = e.uninit(nh * hd)?;
-        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh, eps)?;
         let mut k = e.uninit(nkv * hd)?;
-        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv, eps)?;
         let mut v = e.uninit(nkv * hd)?;
-        e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv, eps)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
         if swa {
             e.rope_neox(&mut q, pos_d, hd, hd, nh, 1, base, 1.0)?;
             e.rope_neox(&mut k, pos_d, hd, hd, nkv, 1, base, 1.0)?;

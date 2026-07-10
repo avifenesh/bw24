@@ -4148,6 +4148,31 @@ __device__ __forceinline__ float expert_dot_nvfp4_g(const unsigned char* wrow, i
     return d8 * partial;
 }
 
+// ---- Q4_0 group dot (gemma4 QAT experts): one 18B block per 32-elem group; the exact
+// qmatvec_q4_0_mmvq accumulation chain (dp4a nibbles + inline ones-sum, d*(sumi-8*sums)*d8). ----
+__device__ __forceinline__ float expert_dot_q4_0_g(const unsigned char* wrow, int g,
+                                                   const signed char* aqb, float d8) {
+    const unsigned char* b = wrow + (long)g * 18;
+    float d4 = half_to_float(*(const unsigned short*)b);
+    const unsigned char* qs = b + 2;
+    const int* aq4 = (const int*)aqb;
+    int sumi = 0, sums = 0;
+    #pragma unroll
+    for (int k = 0; k < 4; k++) {
+        uint32_t raw;
+        memcpy(&raw, qs + 4 * k, 4);
+        int lo = (int)(raw & 0x0F0F0F0Fu);
+        int hi = (int)((raw >> 4) & 0x0F0F0F0Fu);
+        int a_lo = aq4[k];
+        int a_hi = aq4[4 + k];
+        sumi = dp4a(lo, a_lo, sumi);
+        sumi = dp4a(hi, a_hi, sumi);
+        sums = dp4a(0x01010101, a_lo, sums);
+        sums = dp4a(0x01010101, a_hi, sums);
+    }
+    return d4 * (float)(sumi - 8 * sums) * d8;
+}
+
 __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wrow, int g,
                                               const signed char* aqb, float d8) {
     if (qtype == QT_IQ3_S)  return expert_dot_iq3s_g(wrow, g, aqb, d8);
@@ -4156,6 +4181,7 @@ __device__ __forceinline__ float expert_dot_g(int qtype, const unsigned char* wr
     if (qtype == QT_Q4_K)   return expert_dot_q4k_g(wrow, g, aqb, d8);
     if (qtype == QT_Q6_K)   return expert_dot_q6k_g(wrow, g, aqb, d8);
     if (qtype == QT_NVFP4)  return expert_dot_nvfp4_g(wrow, g, aqb, d8);
+    if (qtype == QT_Q4_0)   return expert_dot_q4_0_g(wrow, g, aqb, d8);
     return 0.0f; // caller gates on supported qtypes
 }
 
@@ -4735,6 +4761,44 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8(
         act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
     }
 }
+// gemma4 GELU twin of moe_gate_up_silu8_dev_q8: identical dots/reduce, gelu_tanh epilogue
+// (the gelu_tanh_mul_f32 expression exactly).
+extern "C" __global__ void moe_gate_up_gelu8_dev_q8(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float x = accg;
+        float th = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+        act[(size_t)j * n_ff + o] = 0.5f * x * (1.0f + th) * accu;
+    }
+}
+
+// gemma4 R3: fold the per-expert OUTPUT scale into the routing weights on device:
+// w[i] *= s[sel[i]] (post-renorm — associative with the down accumulate's w*dot).
+extern "C" __global__ void moe_w_exscale(float* __restrict__ w, const int* __restrict__ sel,
+                                         const float* __restrict__ s, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) w[i] *= s[sel[i]];
+}
+
 extern "C" __global__ void moe_down8_fma_dev_q8(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const float* __restrict__ w,

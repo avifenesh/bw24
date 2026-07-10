@@ -300,6 +300,7 @@ pub struct Gemma4LayerBits {
     /// the argmax gate arbitrates).
     pub router_scale_pre: CudaSlice<f32>,
     pub per_expert_scale: Vec<f32>,    // ffn_down_exps.scale [n_expert] (host)
+    pub per_expert_scale_d: CudaSlice<f32>,  // device copy (router-weight fold kernel)
     pub layer_scale: f32,              // layer_output_scale [1]
 }
 
@@ -490,6 +491,7 @@ impl HybridModel {
                             e.htod(&v)?
                         },
                         per_expert_scale: vecf("ffn_down_exps.scale"),
+                        per_expert_scale_d: e.htod(&vecf("ffn_down_exps.scale"))?,
                         layer_scale: scalar("layer_output_scale.weight"),
                     })
                 } else { None },

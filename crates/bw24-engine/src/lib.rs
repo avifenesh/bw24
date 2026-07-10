@@ -1388,6 +1388,38 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4 GELU twin of moe_gate_up_silu8_dev_q8 (base geometry only for now).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_gelu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                    in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                    qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;
+        let (inf, nff, ne, rbg, rbu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                        rb_g as i64, rb_u as i64);
+        let f = self.func("moe_gate_up_gelu8_dev_q8");
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    /// gemma4 R3 device fold: w[i] *= s[sel[i]] over the router's [n] (sel, w) pair.
+    pub fn moe_w_exscale(&self, w: &mut CudaSlice<f32>, sel: &CudaSlice<i32>,
+                         s: &CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_w_exscale");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(sel).arg(s).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn moe_gate_up_silu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
@@ -2238,6 +2270,67 @@ impl Engine {
     }
 
     /// RMSNorm: x[ncols,nrows] row-major, weight[ncols] -> dst. One block/row, 256 threads.
+    /// gemma4: 3 rms_norms of the SAME input in one launch (one reduction, three weights).
+    /// Per-output bit-identical to three rms_norm calls (verbatim reduction/scale chain).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm3(&self, x: &CudaSlice<f32>, w0: &CudaSlice<f32>, w1: &CudaSlice<f32>,
+                     w2: &CudaSlice<f32>, d0: &mut CudaSlice<f32>, d1: &mut CudaSlice<f32>,
+                     d2: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm3_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w0).arg(w1).arg(w2).arg(d0).arg(d1).arg(d2).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// gemma4 fused q/k/v head norms (one launch, per-row rms_norm_f32-verbatim).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_qkv(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                        wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
+                        dq: &mut CudaSlice<f32>, dk: &mut CudaSlice<f32>, dv: &mut CudaSlice<f32>,
+                        ncols: usize, rq: usize, rk: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_qkv_f32");
+        let grid = (rq + 2 * rk) as u32;
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, rqi, rki, e) = (ncols as i32, rq as i32, rk as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv)
+         .arg(&nc).arg(&rqi).arg(&rki).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// gemma4 fused pair of rms_norms over two different inputs (same width).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm2x(&self, a: &CudaSlice<f32>, bb: &CudaSlice<f32>, wa: &CudaSlice<f32>,
+                      wb: &CudaSlice<f32>, da: &mut CudaSlice<f32>, db: &mut CudaSlice<f32>,
+                      ncols: usize, nrows: usize, eps: f32)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm2x_f32");
+        let cfg = LaunchConfig { grid_dim: (2 * nrows as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(bb).arg(wa).arg(wb).arg(da).arg(db).arg(&nc).arg(&nr).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// dst = (a + b) * c (residual add + layer scale, one launch).
+    pub fn add_scale(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
+                     dst: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_scale_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(&c).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn rms_norm(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
                     ncols: usize, nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("rms_norm_f32");
