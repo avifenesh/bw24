@@ -1836,13 +1836,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let hidden_while_pending = cache.resident(next_id).is_none();
         let DispatchSlot::Resident(next_slot) = cache.dispatch(next_id, &next, &e)?;
         let next_got = e.dtoh_u8(cache.slot(next_slot))?;
+        let visible_after_wait = cache.resident(next_id) == Some(next_slot);
+        let _ = cache.dispatch(next_id, &next, &e)?;
         let keep_slot = cache.resident(keep[0]);
         let keep_got = match keep_slot {
             Some(slot) => e.dtoh_u8(cache.slot(slot))?,
             None => Vec::new(),
         };
-        let ok = queued && hidden_while_pending && cache.resident(next_id) == Some(next_slot)
-            && next_got == next && keep_got == sources[0];
+        let counters_ok = cache.hits == 1 && cache.misses == 1
+            && cache.staged_bytes == 9 * block_len as u64;
+        let ok = queued && hidden_while_pending && visible_after_wait
+            && next_got == next && keep_got == sources[0] && counters_ok;
         println!("moe async-prefetch ordering + protected victim: {}",
                  if ok { "OK" } else { fails += 1; "FAIL" });
         unsafe {
