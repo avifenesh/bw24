@@ -356,6 +356,10 @@ fn fa_v4_on() -> bool { fa_v4_mode() != "0" }   // DEFAULT ON 2026-07-10 (BW24_F
 /// Threshold BW24_FA_V4_MAX (default usize::MAX = unchanged behavior; gemma sets 1024 at load
 /// via FA_V4_MAX_DEFAULT). Applied at EVERY dispatch site (eager, rows, rows_w, dc) so verify
 /// stays kernel-family-identical to decode at the same t_kv.
+/// Per-model deep-ctx smem floor default (BW24_FA_SMEM_TKV env overrides): gemma pushes it
+/// above the 1024 window so the windowed decode + verify rows share the REGISTER family.
+pub static FA_SMEM_TKV_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1024);
 pub static FA_V4_MAX_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(usize::MAX);
 pub fn fa_v4_at_pub(t_kv: usize) -> bool { fa_v4_at(t_kv) }
@@ -4514,7 +4518,8 @@ impl Engine {
             // there by 12x — latency, not bandwidth, rules small KV).
             static SMEM_TKV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
-                std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
+                std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
             });
             if fa_v4_at(t_kv) && head_dim == 256 {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
@@ -4625,7 +4630,8 @@ impl Engine {
         // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
         static SMEM_TKV_R: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
-            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
+            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
         });
         let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
@@ -4688,8 +4694,10 @@ impl Engine {
             let f = self.func("fa_decode_vec_q_rows_v4_w");
             (f, (11520 + 32 * head_dim * 2) as u32)
         } else {
-            let f = self.func("fa_decode_vec_q_rows_smem_w");
-            (f, (2 * 32 * head_dim * 2) as u32)
+            // non-v4 window lane: REGISTER twin (decode must pick register too — the gemma
+            // smem floor sits above the window). rows_smem_w carries an unexplained real
+            // divergence (jsonl 2026-07-10) and stays quarantined.
+            (self.func("fa_decode_vec_q_rows_reg_w"), 0u32)
         };
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;

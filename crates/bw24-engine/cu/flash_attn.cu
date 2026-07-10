@@ -4509,3 +4509,98 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
         partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
     }
 }
+
+// windowed REGISTER rows twin (gemma R6 non-v4 lane; body = fa_decode_vec_q_rows verbatim).
+extern "C" __global__ void fa_decode_vec_q_rows_reg_w(
+        const float* __restrict__ Q,    // [T, n_head, head_dim] token-major (verify q stack)
+        const uint8_t* __restrict__ K,  // q8_0 cache [token, kv_dim_k bytes]
+        const uint8_t* __restrict__ V,  // q5_1 cache [token, kv_dim_v bytes]
+        float* __restrict__ partO,      // [T, n_head, n_splits_max, head_dim]
+        float* __restrict__ partM,      // [T, n_head, n_splits_max]
+        float* __restrict__ partL,      // [T, n_head, n_splits_max]
+        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes, int window)
+{
+    const int r        = blockIdx.z;             // query row (verify column)
+    const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
+    const int start    = T_kv - window;
+    const int n_splits = (window + split_keys - 1) / split_keys;  // == host fa_split_keys sizing
+    const int kv_head  = blockIdx.x;
+    const int split    = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (window + n_splits - 1) / n_splits;
+    const int t_lo = start + split * per;
+    const int t_hi = start + min(window, split * per + per);
+
+    float q_reg[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)r * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    // REGISTER-DEQUANT walk: byte-for-byte the fa_decode_vec_q body (see comment there); only the
+    // Q read and partial writes carry the row offset. Any change HERE must be mirrored in
+    // fa_decode_vec_q/_dc and re-gated (kernel-check rows-vs-loop bit identity + run-spec battery).
+    {
+        const int kblk0 = (kv_head * head_dim) >> 5;
+        for (int t = t_lo; t < t_hi; ++t) {
+            const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+            float part = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = kt + i * K_BLK_B;
+                    // bf16 round-trip: BIT-IDENTICAL to fa_decode_vec_q (see comment there).
+                    part += q_reg[i] * __bfloat162float(__float2bfloat16(dq_K_lane(blk, lane)));
+                }
+            }
+            float score = warp_reduce_sum(part);
+
+            float m_new = fmaxf(m_i, score);
+            float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            float p     = exp2f((score - m_new) * LOG2E);
+            const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = vt + i * V_BLK_B;
+                    // bf16 round-trip: see K above.
+                    // PINNED FP association (kvbytes refactor): FMUL(p,vv) then FFMA(acc,alpha,prod) —
+                    // the exact pre-refactor SASS. Without intrinsics ptxas flipped which product
+                    // fuses (rounds acc*alpha instead of p*vv) = silent numeric-config change.
+                    acc[i] = __fmaf_rn(acc[i], alpha, __fmul_rn(p, __bfloat162float(__float2bfloat16(dq_V_lane(blk, lane)))));
+                }
+            }
+            l_i = l_i * alpha + p;
+            m_i = m_new;
+        }
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) {
+        partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+        partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+    }
+}

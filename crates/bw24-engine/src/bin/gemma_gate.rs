@@ -159,10 +159,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // reference: tokenwise decode over the whole prompt
         let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
         let mut ref_am: Vec<usize> = Vec::new();
+        let mut ref_logits: Vec<Vec<f32>> = Vec::new();
         for (i, &tk) in toks.iter().enumerate() {
             let l = model.decode_step(&e, tk, &mut c1)?;
             if i >= split {
                 ref_am.push(bw24_engine::forward::argmax(&l));
+                ref_logits.push(l.clone());
             }
         }
         // candidate: prefix tokenwise, tail as ONE batched verify
@@ -176,6 +178,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             all_ok &= ok;
             println!("verify pos {i}: batched={am} tokenwise={} {}", ref_am[i],
                      if ok { "MATCH" } else { "MISMATCH" });
+            if let Some(rl) = ref_logits.get(i) {
+                let md = rl.iter().zip(&lv[i * n_vocab..(i + 1) * n_vocab])
+                    .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                println!("  pos {i} logit maxdiff={md:.3e}");
+            }
         }
         println!("VERIFY-GATE K={k}: {}", if all_ok { "PASS" } else { "FAIL" });
         return Ok(());
