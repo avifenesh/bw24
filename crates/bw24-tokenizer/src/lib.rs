@@ -68,6 +68,8 @@ pub struct Tokenizer {
     add_bos: bool,
     pre: String,
     chat_template: Option<String>,
+    /// SPM-style BPE (gemma4): \u2581 whitespace escaping, raw-UTF-8 merges, <0xXX> byte fallback.
+    spm_style: bool,
 }
 
 /// A bigram in the BPE work queue. Ordering matches llama.cpp's comparator:
@@ -114,14 +116,18 @@ impl Tokenizer {
             .get("tokenizer.ggml.model")
             .and_then(|v| v.as_str())
             .ok_or("missing tokenizer.ggml.model")?;
-        if model != "gpt2" {
-            return Err(format!("unsupported tokenizer model '{model}' (only gpt2)"));
+        if model != "gpt2" && model != "gemma4" {
+            return Err(format!("unsupported tokenizer model '{model}' (only gpt2/gemma4)"));
         }
+        // gemma4 = SPM-style BPE (llama-vocab.cpp): spaces escaped to \u2581 by the normalizer,
+        // merges over raw UTF-8 (NO gpt2 byte-encoding), whole-line pre-split, <0xXX> byte
+        // fallback tokens, add_bos force-true (PR #21500 workaround).
+        let spm_style = model == "gemma4";
         let pre = g
             .metadata
             .get("tokenizer.ggml.pre")
             .and_then(|v| v.as_str())
-            .unwrap_or("default")
+            .unwrap_or(if spm_style { "gemma4" } else { "default" })
             .to_string();
 
         // tokens[]
@@ -199,6 +205,7 @@ impl Tokenizer {
                 _ => v.as_u64().map(|x| x != 0),
             })
             .unwrap_or(false);
+        let add_bos = add_bos || spm_style;
 
         let chat_template = g
             .metadata
@@ -217,6 +224,7 @@ impl Tokenizer {
             add_bos,
             pre,
             chat_template,
+            spm_style,
         })
     }
 
@@ -423,6 +431,7 @@ impl Tokenizer {
             add_bos,
             pre: "default".to_string(),
             chat_template,
+            spm_style: false,
         })
     }
 
@@ -526,6 +535,34 @@ impl Tokenizer {
 
     /// Core BPE over one raw-text fragment (`llm_tokenizer_bpe_session::tokenize`).
     fn bpe_tokenize(&self, text: &str, output: &mut Vec<u32>) {
+        if self.spm_style {
+            // gemma4 (llama PRE_TYPE_GEMMA4): escape spaces to \u2581 on the raw fragment,
+            // split whole lines ([^\n]+|[\n]+), run BPE on raw UTF-8 chars.
+            let escaped: String = text.chars().map(|c| if c == ' ' { '\u{2581}' } else { c }).collect();
+            let mut words: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            let mut cur_nl: Option<bool> = None;
+            for c in escaped.chars() {
+                let nl = c == '\n';
+                if cur_nl != Some(nl) && !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+                cur_nl = Some(nl);
+                cur.push(c);
+            }
+            if !cur.is_empty() { words.push(cur); }
+            for word in &words {
+                // newline-run fix (llama PR #21343): whole-word vocab hit short-circuits BPE.
+                if word.chars().all(|c| c == '\n') {
+                    if let Some(tok) = self.text_to_token(word) {
+                        output.push(tok);
+                        continue;
+                    }
+                }
+                self.bpe_merge_word(word, output);
+            }
+            return;
+        }
         // 1) pre-tokenizer split (qwen35), then 2) GPT-2 byte-encode each word.
         let words: Vec<String> = match self.pre.as_str() {
             "qwen35" => unicode::split_qwen35(text),
@@ -542,6 +579,15 @@ impl Tokenizer {
 
         for word in &words {
             let word = unicode::byte_encode(word);
+            self.bpe_merge_word(&word, output);
+        }
+    }
+
+    /// BPE merge over one pre-split word (symbols = unicode chars), emitting token ids with
+    /// byte fallback (gpt2 single-char byte tokens, or SPM <0xXX> tokens when spm_style).
+    fn bpe_merge_word(&self, word: &str, output: &mut Vec<u32>) {
+        {
+            let word = word.to_string();
 
             // build the symbol chain, one symbol per unicode char initially.
             let chars: Vec<char> = word.chars().collect();
@@ -597,7 +643,11 @@ impl Tokenizer {
                     None => {
                         // byte fallback: each *byte* of the piece must be its own token.
                         for b in sym.text.bytes() {
-                            let bs = (b as char).to_string();
+                            let bs = if self.spm_style {
+                                format!("<0x{b:02X}>")   // SPM-style byte tokens (gemma4)
+                            } else {
+                                (b as char).to_string()
+                            };
                             if let Some(t) = self.text_to_token(&bs) {
                                 output.push(t);
                             }
@@ -643,8 +693,26 @@ impl Tokenizer {
             let piece = &self.id_to_token[i];
             match attr {
                 TokAttr::Normal | TokAttr::Byte => {
-                    // undo GPT-2 byte encoding: each char -> one raw byte.
-                    self.piece_to_bytes(piece, &mut bytes);
+                    if self.spm_style {
+                        // gemma4: <0xXX> byte tokens -> raw byte; else unescape \u2581 -> space.
+                        if matches!(attr, TokAttr::Byte)
+                            || (piece.len() == 6 && piece.starts_with("<0x") && piece.ends_with('>')) {
+                            if let Ok(b) = u8::from_str_radix(&piece[3..5], 16) {
+                                bytes.push(b);
+                                continue;
+                            }
+                        }
+                        for c in piece.chars() {
+                            if c == '\u{2581}' { bytes.push(b' '); }
+                            else {
+                                let mut buf = [0u8; 4];
+                                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                            }
+                        }
+                    } else {
+                        // undo GPT-2 byte encoding: each char -> one raw byte.
+                        self.piece_to_bytes(piece, &mut bytes);
+                    }
                 }
                 TokAttr::UserDefined => {
                     // user-defined tokens are literal text (not byte-encoded).
