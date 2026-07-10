@@ -1,24 +1,27 @@
-# Usage-tiered expert compression research pack
+# Hy3 spilling and quantization research pack
 
-This lane tests per-expert quantization and pruning in bw24. Every retained routed expert is
-quantized; there is no BF16 expert fallback. Preparation and CPU validation happen here. Model
-loading, CUDA correctness, performance measurement, calibration, and public evaluation happen on
-the provisioned research machine.
+This lane owns two deliverables: spill-path improvements for large expert banks and a controlled
+four-arm quantization study. Every retained routed expert is quantized; there is no BF16 expert
+evaluation arm or BF16 expert fallback. Model loading, CUDA correctness, artifact generation,
+performance measurement, calibration, and public evaluation happen on the provisioned G7e machine.
 
 ## Target model and frozen recipes
 
-The checked Hy3 REAP50 checkpoint has 96 routed experts per MoE layer (already reduced from 192),
-top-8 sigmoid routing, and MoE layers 1 through 79.
+The source model is `tencent/Hy3` with 192 routed experts per MoE layer, top-8 sigmoid routing, and
+MoE layers 1 through 79. The frozen REAP50 mask retains 96 experts per layer. Exact model, REAP,
+and reference revisions live in `arms.lock.json`.
 
-Two primary recipes are predeclared:
+The scored arms are fixed:
 
-1. usage-pyramid: rank experts separately in each layer by calibration-set router selection
-   count. The hottest 25% use NVFP4, the middle 50% use Q3_K, the coldest 25% use Q2_K, and
-   zero-count experts are pruned. Fractions are parameters, but any change creates a new named
-   plan before public scores are viewed.
-2. reap50-plus25: start from the 96-expert REAP50 checkpoint. The least-used 25% of the original
-   192-expert bank (48 experts per layer) use Q2_K; the other 48 retained experts use NVFP4.
-   No Q3 tier and no additional prune are applied.
+1. `plain_quant`: full 192-expert bank, uniform NVFP4, no pruning.
+2. `plain_reap_quant`: frozen REAP50 96-expert bank, uniform NVFP4.
+3. `plain_reap_mix_quant`: the same REAP50 mask, with the least-used 48 experts Q2_K and the
+   remaining 48 NVFP4.
+4. `mix_quant`: full bank ranked separately per layer; hottest 25% NVFP4, middle 50% Q3_K,
+   coldest 25% Q2_K, and zero-count experts pruned.
+
+BF16 Hy3 is common source material only. It is never scored. The public MLX REAP50 checkpoint is a
+mask/structure cross-check only because re-quantizing it would create a double-quantized arm.
 
 Q2 means GGUF Q2_K (2.625 effective bits/weight), Q3 means Q3_K (3.4375 bits/weight), and
 NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
@@ -28,8 +31,8 @@ kernel exists.
 ## What is implemented
 
 - BW24_MOE_TRACE=/path records routed expert ids without changing normal runs.
-- tools/build_expert_tier_plan.py aggregates frozen calibration traces, ranks each layer
-  independently, and emits a complete immutable plan with trace hashes.
+- tools/build_expert_tier_plan.py emits calibration-independent uniform plans or aggregates frozen
+  calibration traces for usage-ranked plans, with trace hashes in the latter.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
   and writes Q2_K, Q3_K, and NVFP4 byte ranges. Every active expert projection must be assigned.
 - A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
@@ -43,6 +46,13 @@ kernel exists.
   bytes, contamination metadata, and optional source fingerprints.
 - The public eval suite is pinned and stores the served artifact manifest/hash with each run.
 
+## Owned spill track
+
+The full-bank arms are also the spill stress cases. Improve staged transfer, SLRU residency,
+prefetch/overlap, and mixed-layout dispatch without changing the frozen precision plans. Record
+spill hit/miss counts, bytes transferred, peak host/VRAM, and throughput separately from quality.
+Public eval examples must never tune cache size, prefetch policy, REAP masks, or precision tiers.
+
 ## Calibration and plan generation
 
 Calibration data and public evaluation data must be disjoint. Use a representative private or
@@ -51,17 +61,27 @@ examples to select tiers.
 
 Capture enough requests to cover the intended deployment distribution:
 
-    BW24_MOE_TRACE=/runs/hy3-calibration.trace \
-    BW24_MODELS=hy3=/models/hy3-source \
+    BW24_MOE_TRACE=/data/runs/hy3-calibration.trace \
+    BW24_MODELS=hy3=/data/models/hy3-source \
     ./target/release/bw24-server
 
 The trace format is one line per layer/forward: layer, token count, then comma-separated expert
 ids. Multiple trace files may be passed and their SHA-256 hashes are frozen into the plan.
 
+Generate the two uniform controls without reading a calibration trace:
+
+    python3 tools/build_expert_tier_plan.py \
+      --recipe uniform-nvfp4 --expert-count 192 --original-expert-count 192 \
+      --top-k 8 --layers 1-79 --out /data/plans/plain-quant.json
+
+    python3 tools/build_expert_tier_plan.py \
+      --recipe uniform-nvfp4 --expert-count 96 --original-expert-count 192 \
+      --top-k 8 --layers 1-79 --out /data/plans/plain-reap-quant.json
+
 For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count experts:
 
     python3 tools/build_expert_tier_plan.py \
-      --trace /runs/hy3-calibration.trace \
+      --trace /data/runs/hy3-calibration.trace \
       --recipe usage-pyramid \
       --expert-count 192 \
       --original-expert-count 192 \
@@ -70,18 +90,18 @@ For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count e
       --hot-fraction 0.25 \
       --low-fraction 0.25 \
       --prune-unused \
-      --out /plans/hy3-usage-pyramid.json
+      --out /data/plans/mix-quant.json
 
 For the actual local REAP50 checkpoint, build the exact 48 Q2_K / 48 NVFP4 split:
 
     python3 tools/build_expert_tier_plan.py \
-      --trace /runs/hy3-reap50-calibration.trace \
+      --trace /data/runs/hy3-reap50-calibration.trace \
       --recipe reap50-plus25 \
       --expert-count 96 \
       --original-expert-count 192 \
       --top-k 8 \
       --layers 1-79 \
-      --out /plans/hy3-reap50-plus25.json
+      --out /data/plans/plain-reap-mix-quant.json
 
 Run the builder self-test before producing plans:
 
@@ -90,39 +110,44 @@ Run the builder self-test before producing plans:
 Create at least three matched random controls without changing tier counts or prune masks:
 
     for seed in 11 29 47; do
-      python3 tools/make_random_tier_control.py /plans/hy3-usage-pyramid.json \
-        --seed $seed --out /plans/hy3-usage-pyramid-random-$seed.json
+      python3 tools/make_random_tier_control.py /data/plans/mix-quant.json \
+        --seed $seed --out /data/plans/mix-quant-random-$seed.json
     done
 
 ## Artifact preparation
 
-The local REAP50 quantization source is already MLX 4-bit. Its dense/router fallback is the
-existing complete bw24 Q4_K repack. The commands below quantize experts directly from the MLX
-source rather than adding another Q4_K intermediate:
+Build all four scored artifacts from the same pinned BF16 source. Produce
+`/data/models/hy3-reap50-source` with the pinned REAP implementation and frozen mask first. The
+public MLX model at `/data/models/hy3-reap50-mlx-reference` is not an artifact source.
 
     python3 tools/prepare_mixed_expert_repack.py test
-    python3 tools/prepare_mixed_expert_repack.py probe /models/hy3-reap50-mlx \
+    python3 tools/prepare_mixed_expert_repack.py probe /data/models/hy3-source \
       --layer 1 --expert 0 --projection gate
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
-      /models/hy3-reap50-mlx \
-      /models/hy3-reap50-plus25 \
-      --fallback-dir /models/hy3-reap50-q4k-bw24 \
-      --plan /plans/hy3-reap50-plus25.json \
-      --max-work-mb 512 \
-      --resume
+      /data/models/hy3-source /data/artifacts/plain-quant \
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-quant.json --resume
 
-    python3 research/per-expert-quant/validate_artifact.py \
-      /models/hy3-reap50-plus25 --verify-sources
+    python3 tools/prepare_mixed_expert_repack.py prepare \
+      /data/models/hy3-reap50-source /data/artifacts/plain-reap-quant \
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-quant.json --resume
 
-For the publication arm, prefer a BF16/FP16 REAP50 checkpoint produced from tencent/Hy3 with the
-official REAP pipeline, then quantize each expert once. If the public MLX 4-bit checkpoint is used
-as the source, label the arm double-quantized and keep it separate; an NVFP4 re-encode cannot
-recover precision already removed by the MLX quantizer.
+    python3 tools/prepare_mixed_expert_repack.py prepare \
+      /data/models/hy3-reap50-source /data/artifacts/plain-reap-mix-quant \
+      --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-mix-quant.json --resume
 
-For an indexed BF16/F16/F32 source, fallback-dir may be the same checkpoint, but a complete
-fixed-precision bw24 repack is preferred so non-expert tensors are identical across all arms.
-Every retained expert must appear in the plan; omission is an error, not a BF16 fallback.
+    python3 tools/prepare_mixed_expert_repack.py prepare \
+      /data/models/hy3-source /data/artifacts/mix-quant \
+      --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant.json --resume
+
+    for arm in plain-quant plain-reap-quant plain-reap-mix-quant mix-quant; do
+      python3 research/per-expert-quant/validate_artifact.py \
+        "/data/artifacts/$arm" --verify-sources
+    done
+
+Every retained expert must appear in the plan; omission is an error, not a BF16 fallback. All arms
+resolve non-expert tensors from the same pinned source so router, attention, shared experts,
+tokenizer, and prompt template are byte-identical.
 
 Pruning through a v2 plan does not renumber experts or shrink router tensors. bw24 keeps the
 original router width, masks declared ids before selection, and only loads retained weights. This
@@ -130,16 +155,9 @@ makes trace ids and cross-arm comparisons stable.
 
 ## Experimental arms
 
-Freeze all plans before looking at public scores:
-
-1. uniform_q4k_control: the existing complete Q4_K bw24 repack.
-2. usage_pyramid: NVFP4/Q3_K/Q2_K plus zero-count prune from the frozen full-bank trace.
-3. reap50_plus25: REAP50, then 48 Q2_K and 48 NVFP4 experts per layer.
-4. random_budget_seed_*: at least three per-layer random assignments with the same counts,
-   pruned count, total bytes, projections, and fixed seeds as the corresponding candidate.
-
-An uncompressed/BF16 model may be reported as a quality ceiling, but it is not a mixed artifact
-and no retained expert in either candidate remains BF16. Keep router, attention, shared experts,
+The only scored arms are `plain_quant`, `plain_reap_quant`, `plain_reap_mix_quant`, and
+`mix_quant`, in that predeclared order. Matched random-budget controls are diagnostic appendices,
+not replacements for the four arms. No BF16 arm is scored. Keep router, attention, shared experts,
 tokenizer, prompt template, sampling, dense fallback, runtime commit, and calibration trace fixed.
 
 ## Target-machine bring-up
@@ -153,17 +171,17 @@ Build the exact feature commit and run CPU gates before loading a model:
 Serve one clean arm at a time:
 
     BW24_COMPAT=openai \
-    BW24_MODELS=reap50_plus25=/models/hy3-reap50-plus25 \
+    BW24_MODELS=plain_reap_mix_quant=/data/artifacts/plain-reap-mix-quant \
     BW24_ADDR=127.0.0.1:8080 \
     ./target/release/bw24-server
 
 Before public evaluation, retain raw logs from the required CUDA gates:
 
     ./target/release/kernel-check 2>&1 | tee kernel-check.log
-    ./target/release/run-gen /models/hy3-reap50-plus25 --prompt "gate prompt" \
+    ./target/release/run-gen /data/artifacts/plain-reap-mix-quant --prompt "gate prompt" \
       2>&1 | tee run-gen.log
     for k in 1 2 3 4 5 6 7 8; do
-      BW24_SPEC_K=$k ./target/release/run-spec /models/hy3-reap50-plus25 \
+      BW24_SPEC_K=$k ./target/release/run-spec /data/artifacts/plain-reap-mix-quant \
         2>&1 | tee "run-spec-k${k}.log"
     done
 
@@ -176,25 +194,28 @@ The generation-only core suite contains IFEval, GSM8K CoT, BBH CoT few-shot, and
 and MBPP are isolated as a code suite because their scorers execute generated Python. Run that
 lane only in a disposable sandbox.
 
-    ARM=reap50_plus25 \
-    MODEL=reap50_plus25 \
-    ARTIFACT=/models/hy3-reap50-plus25 \
+    ARM=plain_reap_mix_quant \
+    MODEL=plain_reap_mix_quant \
+    ARTIFACT=/data/artifacts/plain-reap-mix-quant \
     research/per-expert-quant/run_public_evals.sh
 
     # Transport/config smoke:
-    ARM=reap50_plus25 MODEL=reap50_plus25 ARTIFACT=/models/hy3-reap50-plus25 LIMIT=2 \
+    ARM=plain_reap_mix_quant MODEL=plain_reap_mix_quant \
+      ARTIFACT=/data/artifacts/plain-reap-mix-quant LIMIT=2 \
       research/per-expert-quant/run_public_evals.sh
 
     # Unsafe code lane, inside a sandbox only:
-    ARM=reap50_plus25 MODEL=reap50_plus25 ARTIFACT=/models/hy3-reap50-plus25 \
+    ARM=plain_reap_mix_quant MODEL=plain_reap_mix_quant \
+      ARTIFACT=/data/artifacts/plain-reap-mix-quant \
     SUITE=code BW24_UNSAFE_EVALS=1 research/per-expert-quant/run_public_evals.sh
 
-Run the uniform control first, then candidates in a predeclared order. Compare them with:
+Run all four arms in the predeclared order. Compare them with:
 
     python3 research/per-expert-quant/summarize_results.py \
-      --baseline research/per-expert-quant/results/uniform_q4k_control/RUN_ID \
-      --candidate usage_pyramid=research/per-expert-quant/results/usage_pyramid/RUN_ID \
-      --candidate reap50_plus25=research/per-expert-quant/results/reap50_plus25/RUN_ID \
+      --baseline research/per-expert-quant/results/plain_quant/RUN_ID \
+      --candidate plain_reap_quant=research/per-expert-quant/results/plain_reap_quant/RUN_ID \
+      --candidate plain_reap_mix_quant=research/per-expert-quant/results/plain_reap_mix_quant/RUN_ID \
+      --candidate mix_quant=research/per-expert-quant/results/mix_quant/RUN_ID \
       --out research/per-expert-quant/results/comparison.md
 
 Publish per-task scores, paired 95% bootstrap intervals, artifact bytes, tier counts, pruned

@@ -5,7 +5,11 @@
 Feature and research work MUST happen on a dedicated branch/worktree, never directly on `main`.
 Preserve unrelated dirty work and stage only the intended lane.
 
-## Usage-tiered expert compression
+## Hy3 spilling and quantization research
+
+This lane owns two separate deliverables: (1) spill-path improvements for large expert banks, and
+(2) a controlled four-arm quantization study. Do not trade correctness in one track for a result in
+the other, and report spill performance separately from model-quality comparisons.
 
 - `HostExps.layouts == None` is the uniform-layout fast-path contract. `Some(layouts)` makes each
   expert's `qtype`, `row_bytes`, `len`, and `offset` authoritative; use `expert_layout()` and
@@ -19,15 +23,20 @@ Preserve unrelated dirty work and stage only the intended lane.
 - A plan's pruned expert ids keep their original router positions. `active_experts()` masks them
   before top-k and their weights must be absent. Never dispatch, cache, or fabricate bytes for a
   masked id, and never let a fallback uniform slab bypass split expert overrides.
-- The frozen primary recipes are: usage pyramid = hottest 25% NVFP4, middle 50% Q3_K, coldest 25%
-  Q2_K, zero-count pruned; REAP50+25 = 96 retained Hy3 experts split 48 least-used Q2_K / 48
-  NVFP4. Rank per layer from non-public calibration traces and freeze trace/plan hashes before
-  viewing public eval scores.
+- The four scored arms are fixed in `research/per-expert-quant/arms.lock.json`: `plain_quant`
+  (full bank, uniform NVFP4), `plain_reap_quant` (REAP50 mask, uniform NVFP4),
+  `plain_reap_mix_quant` (REAP50 mask, 48 least-used Q2_K plus 48 NVFP4), and `mix_quant`
+  (full bank, hottest 25% NVFP4, middle 50% Q3_K, coldest 25% Q2_K, zero-count pruned).
+- BF16 Hy3 is source material only, never an evaluation arm. All four arms must share the same
+  source revision, non-expert tensor encodings, REAP mask where applicable, prompt template,
+  runtime commit, and evaluation settings.
+- Rank per layer from non-public calibration traces and freeze trace/plan hashes before viewing
+  public eval scores. Uniform plans must not consume calibration traces.
 - Public eval runs require `ARTIFACT` and must retain its manifest/hash. Public benchmark data
   must never select experts, thresholds, tier fractions, or pruning decisions.
-- This research lane is implementation/CPU-validation only on the current host. Model loading,
-  GPU correctness gates, performance measurements, and public evals run on the provisioned target
-  machine. Do not merge or tag mixed-expert work until its remote raw logs and eval report exist.
+- Model loading, spill correctness, performance measurements, artifact generation, and public evals
+  run on the provisioned G7e target machine. Do not merge or tag this lane until its remote raw logs
+  and four-arm eval report exist.
 
 Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
 pruned id dereferences nonexistent weights; and a local performance or quality claim would be
