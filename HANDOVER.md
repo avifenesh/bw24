@@ -104,6 +104,13 @@ weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a 
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
 ## GRAPH ARC — ACTIVE BUILD PLAN (2026-07-11, the lever for ALL red cells)
+STATUS: step 1 LANDED (3953183 — device-len rows attention, all gates green, flat). Graph
+path (gate-only, NOT shipped) now has a KNOWN MISMATCH at ctx>=512 (19/128 at mid-ids): the
+capture arm still launches fa_decode_dc twins while eager rides the parity-law rows symbols
+— step 3 ports the capture arm to the device-len rows symbols + splits fa bucket keys at
+win/fa512_min. Graph perf -7..8% vs eager at BOTH narrow and wide buckets with identical
+kernels; qwen graphs win WITH alloc nodes, so re-profile after the step-3 port before
+committing to the arena (step 2 may be unnecessary).
 Staged, each step gated (VERIFY-GATE 0.000e0 + run-gen MATCH + stream 128/128 + bench):
 1. DEVICE-LEN WINDOWED ATTENTION: fa_decode_rows_w_dc + rows_dpl16_dc twins (t_kv_base read
    from an i32* device counter instead of a host arg — kvl.len_d exists). PARITY LAW: decode
