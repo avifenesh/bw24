@@ -4355,8 +4355,15 @@ impl Engine {
         // The vec kernel holds head_dim/32 register accumulators (FA_DEC_MAX_DPL=8 -> head_dim<=256).
         // All shipped models use head_dim=256; fall back to scalar for anything wider rather than
         // silently truncating the accumulator.
-        let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec {
+        let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
+        let (f, cfg) = if fa_vec && head_dim == 512 {
+            // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
+            // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let fv = self.func("fa_decode_vec_q_dpl16");
+            (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
+        } else if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // DEEP-CTX smem twin (2026-07-05): the register-dequant path's GQA reuse rides L2,
             // which holds to ~8k ctx but dies at 40k (layer KV ~37MB) — the 4 GQA warps then

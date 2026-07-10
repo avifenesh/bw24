@@ -1,0 +1,89 @@
+#!/usr/bin/env shuck
+// MTP acceptance battery — fixed prompts + optional agent-loop.
+
+let model = arg(1) or ""
+let out = arg(2) or ""
+if model == "" or out == "" {
+  fail("usage: acceptance_battery.shk <model_path> <out.jsonl>")
+}
+
+let root = env("BW24_ROOT") or (env("HOME") + "/projects/bw24")
+cd(root)
+
+let full_prec = env("FULL_PREC") or "0"
+let arm = env("ARM") or ""
+if arm == "" {
+  if full_prec == "1" {
+    arm = "bf16-fullprec"
+  } else {
+    arm = "nvfp4"
+  }
+}
+let n = env("N") or "3"
+let ks = env("KS") or "1 2 3 4 6 8"
+let ngen = env("NGEN") or "128"
+let prompts = env("PROMPTS") or "p1 p2 p3"
+let run_agentloop = env("RUN_AGENTLOOP") or "1"
+let extra_env = env("EXTRA_ENV") or ""
+let runspec = env("RUNSPEC") or "./target/release/run-spec"
+let timeout = env("TIMEOUT") or "1800"
+let pybin = env("PYBIN") or "python3"
+let parse = root + "/tools/acceptance_parse.py"
+let corpus_dir = env("CORPUS_DIR") or ""
+if corpus_dir != "" {
+  mkdir_p(corpus_dir)
+}
+
+let fp_flag = ""
+if full_prec == "1" {
+  fp_flag = "--full-prec"
+}
+
+echo("[battery] arm=#{arm} model=#{model} full_prec=#{full_prec} N=#{n} KS=(#{ks}) ngen=#{ngen} -> #{out}")
+if full_prec == "1" {
+  echo("[battery] FULL PRECISION mode — SLOW is expected (f32 oracle path).")
+}
+write(out, "")
+
+// Nested matrix via bash (word-split env lists + optional EXTRA_ENV).
+sh(
+  "set -euo pipefail; " +
+  "ROOT=" + root + "; MODEL=" + model + "; OUT=" + out + "; ARM=" + arm + "; " +
+  "FULL_PREC=" + full_prec + "; N=" + n + "; KS=\"" + ks + "\"; NGEN=" + ngen + "; " +
+  "PROMPTS=\"" + prompts + "\"; RUNSPEC=\"" + runspec + "\"; TIMEOUT=" + timeout + "; " +
+  "PYBIN=" + pybin + "; PARSE=\"" + parse + "\"; CORPUS_DIR=\"" + corpus_dir + "\"; " +
+  "EXTRA_ENV=\"" + extra_env + "\"; FP_FLAG=\"" + fp_flag + "\"; " +
+  "EXTRA_ENV_ARR=($EXTRA_ENV); " +
+  "prompt_file() { local id=\"$1\"; local f; f=$(ls research/e2e/prompts/${id}-*.txt 2>/dev/null | head -1 || true); " +
+  "[ -n \"$f\" ] || { echo \"no prompt file for id '$id'\" >&2; return 1; }; echo \"$f\"; }; " +
+  "for pid in $PROMPTS; do " +
+  "  PF=$(prompt_file \"$pid\"); echo \"[battery] prompt=$pid file=$PF\"; " +
+  "  [ -n \"$CORPUS_DIR\" ] && cp \"$PF\" \"$CORPUS_DIR/${ARM}-${pid}.txt\"; " +
+  "  for k in $KS; do for run in $(seq 1 \"$N\"); do " +
+  "    echo \"[battery]   $ARM $pid K=$k run=$run/$N ...\"; " +
+  "    OUTLOG=$(env \"${EXTRA_ENV_ARR[@]}\" " +
+  "      ${FULL_PREC:+BW24_FULL_PREC=$FULL_PREC} " +
+  "      BW24_NGEN=\"$NGEN\" BW24_SPEC_K=\"$k\" BW24_SPEC_STATS=1 " +
+  "      BW24_PROMPT_FILE=\"$PF\" " +
+  "      timeout \"$TIMEOUT\" \"$RUNSPEC\" \"$MODEL\" 2>&1 || true); " +
+  "    printf '%s\\n' \"$OUTLOG\" | \"$PYBIN\" \"$PARSE\" --out \"$OUT\" --arm \"$ARM\" " +
+  "      --prompt \"$pid\" --k \"$k\" --run \"$run\" --model \"$MODEL\" --ngen \"$NGEN\" $FP_FLAG " +
+  "      --extra \"$EXTRA_ENV\"; " +
+  "    ACC=$(printf '%s\\n' \"$OUTLOG\" | grep -oE 'acceptance:[^%]*%' | head -1 || true); " +
+  "    echo \"[battery]     -> ${ACC:-<no acceptance parsed>}\"; " +
+  "  done; done; " +
+  "done"
+).or_die("battery prompt matrix failed")
+
+if run_agentloop == "1" {
+  echo("[battery] agent-loop (8 turns, accumulative) ...")
+  let k_default = sh("echo " + ks + " | awk '{print $NF==8?3:$1}'").text().trim()
+  sh(
+    "FULL_PREC=" + full_prec + " K=" + k_default + " NGEN=256 CORPUS_DIR=\"" + corpus_dir + "\" " +
+    "tools/agent_loop_acceptance.sh \"" + model + "\" \"" + out + "\" \"" + arm + "\" " + extra_env
+  ).or_die("agent-loop failed")
+}
+
+let rows = sh("wc -l < \"" + out + "\"").text().trim()
+echo("[battery] DONE arm=#{arm} -> #{out}  (#{rows} rows)")
+echo("[battery] delta table: tools/acceptance_delta.py out-bf16.jsonl out-nvfp4.jsonl")

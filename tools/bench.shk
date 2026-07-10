@@ -1,0 +1,12 @@
+#!/usr/bin/env shuck
+// Fair single-stream prefill+decode bench (bw24 vs llama.cpp vs printed vLLM/SGLang cmds).
+// Full SERIAL GPU protocol lives in tools/_bench_body.sh — keep behavior identical.
+
+let root = env("BW24_ROOT") or (env("HOME") + "/projects/bw24")
+cd(root)
+let body = root + "/tools/_bench_body.sh"
+if !exists(body) {
+  fail("missing tools/_bench_body.sh")
+}
+// forward env knobs N/P/NGEN
+exec("bash", body)
