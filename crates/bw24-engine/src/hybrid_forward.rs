@@ -2109,8 +2109,8 @@ impl HybridModel {
             && expert_dp4a_supported(m.down_exps.qtype)
             && std::env::var("BW24_GEMMA_MOE_FAST").as_deref() != Ok("0") {
             let dev = m.dev_exps.as_ref().unwrap();
-            let (sel_d, mut w_d) = e.moe_router_topk(&logits, t, n_expert, n_used)?;
-            e.moe_w_exscale(&mut w_d, &sel_d, &bits.per_expert_scale_d, t * n_used)?;
+            let (sel_d, w_d) = e.moe_router_topk_scaled(&logits, t, n_expert, n_used,
+                                                        &bits.per_expert_scale_d)?;
             if t == 1 {
                 let (zq, zd) = e.quantize_q8_1(moe_in, 1, n_embd)?;
                 let selv = sel_d.slice(0..n_used);

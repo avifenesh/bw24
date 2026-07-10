@@ -1132,6 +1132,23 @@ impl Engine {
         Ok((sel_idx, sel_w))
     }
 
+    /// gemma4 twin: per-expert output scale folded into the topk renorm write (replaces the
+    /// separate moe_w_exscale launch; value chain identical: (w/ws) * s[sel]).
+    pub fn moe_router_topk_scaled(&self, logits: &CudaSlice<f32>, t: usize, n_expert: usize,
+                                  n_used: usize, ex_scale: &CudaSlice<f32>)
+                                  -> Result<(CudaSlice<i32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let f = self.func("moe_router_topk_scaled_f32");
+        let mut sel_idx = self.alloc_uninit::<i32>(t * n_used)?;
+        let mut sel_w = self.alloc_uninit::<f32>(t * n_used)?;
+        let cfg = LaunchConfig { grid_dim: (t as u32, 1, 1), block_dim: (n_expert as u32, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (ne, nu) = (n_expert as i32, n_used as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(&mut sel_idx).arg(&mut sel_w).arg(&ne).arg(&nu).arg(ex_scale);
+        unsafe { b.launch(cfg)?; }
+        Ok((sel_idx, sel_w))
+    }
+
     /// LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router + SINGLE-SYNC host readback. The old
     /// BW24_FUSED_ROUTER path lost 2% at t=1 because it paid TWO full stream syncs (dtoh_i32 then
     /// dtoh, each = clone_dtoh + synchronize) + two alloc_zeros memsets per MoE layer, where the
@@ -4356,14 +4373,21 @@ impl Engine {
         // All shipped models use head_dim=256; fall back to scalar for anything wider rather than
         // silently truncating the accumulator.
         let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec && head_dim == 512 {
+        // hd-512 vec crossover (BW24_FA512_MIN, default 512): the DPL16 twin wins at depth
+        // (82.5 -> vec at 1736) but the scalar's more-blocks latency hiding wins at tiny t_kv
+        // (the same scalar-floor physics as hd256's old 96 floor; short-ctx plain regressed
+        // 178.4 -> 173.7 when 512 rode vec unconditionally).
+        static FA512_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let fa512_min = *FA512_MIN.get_or_init(|| std::env::var("BW24_FA512_MIN").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(512));
+        let (f, cfg) = if fa_vec && head_dim == 512 && t_kv >= fa512_min {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
             let gqa = (n_head / n_head_kv).max(1) as u32;
             let fv = self.func("fa_decode_vec_q_dpl16");
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
-        } else if fa_vec {
+        } else if fa_vec && head_dim <= 256 {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // DEEP-CTX smem twin (2026-07-05): the register-dequant path's GQA reuse rides L2,
             // which holds to ~8k ctx but dies at 40k (layer KV ~37MB) — the 4 GQA warps then
