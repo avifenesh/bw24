@@ -7,7 +7,7 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
 use bw24_gguf::source::{TensorSource, GgufSource};
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_F32, QT_BF16};
+use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_Q4_0, QT_F32, QT_BF16};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -257,6 +257,7 @@ impl GpuTensor {
             GgmlType::IQ4_XS => Some(QT_IQ4_XS),
             GgmlType::IQ3_S => Some(QT_IQ3_S),
             GgmlType::NVFP4 => Some(QT_NVFP4),
+            GgmlType::Q4_0 => Some(QT_Q4_0),
             // F32/F16/BF16 (the dtypes safetensors carries) -> Float path below.
             _ => None,
         };
@@ -403,6 +404,7 @@ impl GpuTensor {
             GgmlType::Q8_0 => QT_Q8_0, GgmlType::Q4_K => QT_Q4_K, GgmlType::Q6_K => QT_Q6_K,
             GgmlType::Q5_K => QT_Q5_K, GgmlType::Q3_K => QT_Q3_K, GgmlType::IQ4_XS => QT_IQ4_XS,
             GgmlType::IQ3_S => QT_IQ3_S, GgmlType::NVFP4 => QT_NVFP4,
+            GgmlType::Q4_0 => QT_Q4_0,
             other => panic!("from_quant_bytes: unsupported dtype {other:?}"),
         };
         let row_bytes = bytes.len() / ne1 as usize;

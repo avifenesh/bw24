@@ -53,6 +53,7 @@ pub fn dequantize(ty: GgmlType, raw: &[u8], n_elems: usize) -> Vec<f32> {
             for i in 0..n_elems { out[i] = bf16_to_f32(rd_u16(raw, i * 2)); }
         }
         GgmlType::Q8_0 => dequant_q8_0(raw, n_elems, &mut out),
+        GgmlType::Q4_0 => dequant_q4_0(raw, n_elems, &mut out),
         GgmlType::Q4_K => dequant_q4_k(raw, n_elems, &mut out),
         GgmlType::Q5_K => dequant_q5_k(raw, n_elems, &mut out),
         GgmlType::Q6_K => dequant_q6_k(raw, n_elems, &mut out),
@@ -66,6 +67,21 @@ pub fn dequantize(ty: GgmlType, raw: &[u8], n_elems: usize) -> Vec<f32> {
 }
 
 /// block_q8_0: { fp16 d; int8 qs[32] } => 34 bytes / 32 elems. y = d * qs.
+/// Q4_0: 18B per 32 elems — fp16 d + 16 nibble bytes; elem i (<16) = low nibble of byte i,
+/// elem i (>=16) = high nibble of byte i-16; value = d * (q - 8).
+fn dequant_q4_0(raw: &[u8], n_elems: usize, out: &mut [f32]) {
+    let nb = n_elems / 32;
+    for b in 0..nb {
+        let blk = &raw[b * 18..(b + 1) * 18];
+        let d = fp16_to_f32(u16::from_le_bytes([blk[0], blk[1]]));
+        for i in 0..16 {
+            let byte = blk[2 + i];
+            out[b * 32 + i]      = d * ((byte & 0x0F) as i32 - 8) as f32;
+            out[b * 32 + i + 16] = d * ((byte >> 4)   as i32 - 8) as f32;
+        }
+    }
+}
+
 fn dequant_q8_0(raw: &[u8], n: usize, out: &mut [f32]) {
     const QK: usize = 32;
     const BYTES: usize = 34;

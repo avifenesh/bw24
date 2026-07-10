@@ -226,7 +226,8 @@ pub const QT_F8_E4M3: i32 = 10;
 pub const QT_NVFP4_RP: i32 = 9;
 /// Unquantized f32 weight (safetensors MoE Path A: experts dequantized to f32 host-resident).
 pub const QT_F32: i32 = 8;
-pub const QT_BF16: i32 = 11;   // raw bf16 rows (FULL_PREC embed gather; exact bits<<16 in-kernel)
+pub const QT_BF16: i32 = 11;
+pub const QT_Q4_0: i32 = 12;   // gemma-4 QAT GGUF weight format (18B/32: fp16 d + nibbles)   // raw bf16 rows (FULL_PREC embed gather; exact bits<<16 in-kernel)
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {
@@ -3087,7 +3088,7 @@ impl Engine {
         // is a pure function of the dtype — the decode-parity law holds under every env.
         if qtype == QT_F8_E4M3 { return true; }
         if std::env::var("BW24_MMVQ").as_deref() == Ok("0") { return false; }
-        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4)
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4 | QT_Q4_0)
     }
 
     /// PERF-3 warp-per-row MMVQ launcher (decode m=1 hot path). block=(32,ROWS_PER_BLOCK,1):
@@ -3132,6 +3133,7 @@ impl Engine {
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
+            (QT_Q4_0, _, _) => "qmatvec_q4_0_mmvq",
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq",
             (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",

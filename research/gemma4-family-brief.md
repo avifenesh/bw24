@@ -43,3 +43,19 @@ quality question is answered by the vendor, not by us.
 
 Sources: ai.google.dev/gemma/docs/core, blog.google (gemma-4, mtp drafters), huggingface.co
 google/gemma-4-*-qat-q4_0-gguf, ggml-org/llama.cpp PR #24282 + discussion #21975.
+
+## P0 census (gemma-4-26B_q4_0-it.gguf, 2026-07-10)
+
+- arch `gemma4`, 30L, n_embd 2816, ctx 262144, softcap 30, 128 experts top-8 (exp_ff 704) +
+  parallel shared FFN (ff 2112), layer_output_scale per layer.
+- **Per-layer attention arrays in metadata**: head_count_kv = [8,8,8,8,8,2]x5 (5:1 SWA:global),
+  key/value_length 512 global / 256 SWA, sliding_window 1024, rope base 1M/10k + dims 512/256
+  per layer type, **rope_freqs.weight tensor SHIPPED** (R9 simplifies: load, don't compute).
+- attn_v on 25 layers only (K=V globals confirmed, R7).
+- **Quant layout: Q4_0 x 265 (everything hot) + F32 x 392 (norms/scales) + Q6_K x 1** —
+  the new qmatvec_q4_0_mmvq is THE kernel for this file.
+- **ffn_gate_up_exps FUSED** (GGUF gap #1 returns on this route — expert loader must split or
+  handle fused); ffn_gate_inp x2/layer (router proj + per_expert_scale), ffn_down_exps x2/layer.
+- tokenizer.ggml.model = "gemma4" (neither gpt2 nor llama — N1 tokenizer arm confirmed, format
+  to be derived from the gguf token arrays).
+- Drafter = SEPARATE repo (main repo carries model + mmproj only) — locate + download next.

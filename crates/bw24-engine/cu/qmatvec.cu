@@ -5808,3 +5808,46 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
     }
 }
 
+
+// ===== Q4_0 decode MMVQ (gemma-4 QAT GGUF, 2026-07-10). Block = 18B per 32 elems: fp16 d +
+// 16B nibbles (elem i = low nibble of byte i for i<16, high nibble of byte i-16 for i>=16).
+// value = d*(q-8); with per-32 q8_1 activations (aq int8 + ad group scale):
+//   dot_g = d * (sumi - 8*sums) * d8, sumi = dp4a(q, a), sums = dp4a(1, a) — exact ints,
+// one float expression per group (the q4_K vendoring pattern; llama vec_dot_q4_0_q8_1 math).
+extern "C" __global__ void qmatvec_q4_0_mmvq(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* wrow = W + (long)o * row_bytes;
+    const signed char*   arow = aq + (size_t)t * in_f;
+    const float*         adrow = ad + (size_t)t * nsb;
+    float acc = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const unsigned char* b = wrow + (long)g * 18;
+        float d4 = half_to_float(*(const unsigned short*)b);
+        const unsigned char* qs = b + 2;
+        const int* aq4 = (const int*)(arow + (size_t)g * 32);
+        int sumi = 0, sums = 0;
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            uint32_t raw;
+            memcpy(&raw, qs + 4 * k, 4);
+            int lo = (int)(raw & 0x0F0F0F0Fu);
+            int hi = (int)((raw >> 4) & 0x0F0F0F0Fu);
+            int a_lo = aq4[k];
+            int a_hi = aq4[4 + k];
+            sumi = dp4a(lo, a_lo, sumi);
+            sumi = dp4a(hi, a_hi, sumi);
+            sums = dp4a(0x01010101, a_lo, sums);
+            sums = dp4a(0x01010101, a_hi, sums);
+        }
+        acc += d4 * (float)(sumi - 8 * sums) * adrow[g];
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
