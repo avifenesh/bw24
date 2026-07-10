@@ -4879,7 +4879,18 @@ impl Engine {
         // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
-        let sp = fa_split_keys(window, n_head_kv);
+        let mut sp = fa_split_keys(window, n_head_kv);
+        // windowed split (BW24_FA_SPW, default 64 — 2026-07-11 depth sweep N=2: plain
+        // 156.6->159.3, depth spec 251.2->253.4; sp48 trades +3 plain for -10.7 spec, sp16
+        // collapses spec — v4_w's per-block staging scales with splits x verify rows while
+        // t=1 occupancy prefers fewer, bigger splits; 64 lifts BOTH). Same parity-law
+        // freedom as BW24_FA_SP512: every windowed caller shares this wrapper.
+        {
+            static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
+                .and_then(|x| x.parse().ok()).unwrap_or(64));
+            if v >= 8 { sp = v; }
+        }
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (nspm, spk, wini) = (n_splits_max as i32, sp as i32, window as i32);
