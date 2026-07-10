@@ -449,14 +449,10 @@ extern "C" __global__ void spec_seed_gather(
         const float* __restrict__ vx,          // [t_v, n_embd] verify hiddens
         const float* __restrict__ fill_prev,   // [n_embd] carried predecessor hidden
         const unsigned int* __restrict__ acc,  // acc[0] = n_acc
-        float* __restrict__ h_seed,            // [n_embd] out
-        float* __restrict__ fill_prev_out,     // [n_embd] out (may alias fill_prev? NO — caller passes distinct)
+        float* __restrict__ h_seed,            // [n_embd] out (caller D2Ds into fill_prev after)
         int base, int n_embd) {
     int j = base + (int)acc[0];
     const float* src = (j >= 1) ? vx + (size_t)(j - 1) * n_embd : fill_prev;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_embd; i += gridDim.x * blockDim.x) {
-        float v = src[i];
-        h_seed[i] = v;
-        fill_prev_out[i] = v;
-    }
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_embd; i += gridDim.x * blockDim.x)
+        h_seed[i] = src[i];
 }

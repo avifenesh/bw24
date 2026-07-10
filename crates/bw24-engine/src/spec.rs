@@ -1791,15 +1791,25 @@ impl HybridModel {
             let t_pred = |j: usize| -> u32 {
                 if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
             };
+            let mut devacc_seeded = false;
             let (n_acc, bonus) = if !sampled {
                 // ROUND-STREAM stage (a) (BW24_SPEC_DEVACC=1 opt-in): the walk runs ON DEVICE
                 // (spec_accept_greedy, verbatim rule) and the host reads back 8B (n_acc, bonus)
                 // instead of the [T] preds. Same sync count — machinery for stages (b)/(c),
                 // gated on token identity vs the host walk (the arms below are bit-equal rules).
-                if crate::spec::spec_devacc() && k_round > 0 {
+                if crate::spec::spec_devacc() && k_round > 0 && !spec_replay {
                     let draft_d = e.htod_u32_v(&draft)?;
                     let mut acc_out = e.alloc_u32_zeroed(2)?;
                     e.spec_accept_greedy(&preds_d, &draft_d, last_pred, base, k_round, &mut acc_out)?;
+                    // stage (b): next-round seed gathered ON DEVICE from acc_out before the host
+                    // ever reads n_acc (j=base+n_acc -> vx col j-1; j==0 -> fill_prev). The three
+                    // non-replay commit arms skip their host-offset seed copies (guarded below);
+                    // the legacy spec_replay arm keeps its own rx-based seeding (excluded here).
+                    // NOTE: fill_prev is NOT updated here — the commit arms' TRUE-HIDDEN
+                    // REFRESH reads the OLD fill_prev (predecessor of this round's verify batch);
+                    // the update lands after the arms (devacc_seeded guard below).
+                    e.spec_seed_gather(&vx, &fill_prev, &acc_out, &mut h_seed_buf, base, n_embd)?;
+                    devacc_seeded = true;
                     let ab = e.dtoh_u32(&acc_out)?;
                     (ab[0] as usize, ab[1])
                 } else {
@@ -2059,8 +2069,10 @@ impl HybridModel {
                 // reference's (id_last, h_prev) draft row; it appends the bonus's scratch
                 // entry itself. Seed = TRUE hidden of the bonus's predecessor (last verify
                 // col). Saves one MTP-block pass per round on top of the pairing fix.
-                e.copy_into(&mut h_seed_buf, 0, &vh_seed, n_embd)?;
-                e.copy_into(&mut fill_prev, 0, &vh_seed, n_embd)?;
+                if !devacc_seeded {
+                    e.copy_into(&mut h_seed_buf, 0, &vh_seed, n_embd)?;
+                    e.copy_into(&mut fill_prev, 0, &vh_seed, n_embd)?;
+                }
                 pending = Some(bonus);
                 if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending, prev-h seed)"); }
             } else if !spec_replay && base + n_acc >= 1 {
@@ -2097,8 +2109,10 @@ impl HybridModel {
                 }
                 // REFERENCE SEEDING (see the full-accept branch): seed = TRUE hidden of the
                 // bonus's predecessor (verify col j-1); no pseudo pass.
-                e.copy_into(&mut h_seed_buf, 0, &seed, n_embd)?;
-                e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
+                if !devacc_seeded {
+                    e.copy_into(&mut h_seed_buf, 0, &seed, n_embd)?;
+                    e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
+                }
                 pending = Some(bonus);
                 if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)"); }
             } else if !spec_replay {
@@ -2158,6 +2172,11 @@ impl HybridModel {
                                  n_embd)?;
                 e.copy_into(&mut fill_prev, 0, &rh_last, n_embd)?;
                 if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
+            }
+            if devacc_seeded {
+                // stage (b) epilogue: fill_prev takes the gathered seed AFTER the refresh fills
+                // consumed the old value (both slots carry the same value in every non-replay arm).
+                e.copy_into(&mut fill_prev, 0, &h_seed_buf, n_embd)?;
             }
             ph_mark(&mut ph_rest, phase_on);
             round += 1;
