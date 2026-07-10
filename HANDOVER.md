@@ -94,9 +94,13 @@ slot-parallel — both NEGATIVE, serial rows_g stays), verify attention 3.5ms (r
 chain 1.7ms + head 0.45ms (mr2 ~150us ~= 137MB wall — closed), verify head 0.79ms (86% wall).
 K plateau 3-5 (231/233/232 solo). sp16 re-probe: plain +2, spec -18% (v4 per-block staging x
 splits x rows) — killed again.
-NEXT SPEC LEVER = comparison analysis: nsys llama-server MTP round at depth (their round ~=
-12.3ms at equal acceptance — find the 3.2ms structural difference), THEN round-stream port
-(device acceptance, +8-15%, designed for qwen v3 lane) if the gap is host/launch-side.
+NEXT SPEC LEVER — QUANTIFIED (2026-07-10 short-round nsys): verify trunk b4/b4_r2 = 205
+launches/round of 10-15us matvecs at 41% of the byte wall (2.62ms/round vs 1.08 floor; MoE +
+head + fa are all 59-94% eff). That launch/tail-latency class is exactly what llama's CUDA
+graphs erase (their K=3 round 10.1ms vs our 11.7). The arc: capture the VERIFY step as a
+fixed-shape graph per (t, ctx-bucket) using the dc device-counter KV lens, or fuse the b4
+matvec chain (rows-fused3 qkv + gate/up pairs). Est +1.5ms/round = short 222 -> ~260 (llama
+MTP bar 253); same class at depth. Round-stream (device acceptance) composes on top.
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
