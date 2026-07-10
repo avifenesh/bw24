@@ -26,6 +26,17 @@ TARGETS: 26B-A4B (+drafter), 31B dense (+drafter), E4B (+drafter; the one llama-
 cell = the honest fight). Downloads running -> /data/ai-ml/hf-models/gemma4-{26b-a4b,31b}-qat-gguf.
 OPENING: llama's gemma-4 MTP = E2B/E4B-only, server-only, 1.2-1.3x on the 26B MoE.
 
+PROGRESS (2026-07-10 late): P0 DONE (census in family-brief §P0: per-layer kv-heads [8x5,2]x5,
+rope_freqs tensor shipped, Q4_0 everywhere + 1 Q6_K + F32 norms, fused ffn_gate_up_exps,
+tokenizer.ggml.model="gemma4"). Q4_0 WEIGHT SUPPORT LANDED (qmatvec_q4_0_mmvq — K-quant
+vendoring pattern with inline dp4a ones-sum; host dequant; QT_Q4_0=12; dispatch+supports wired).
+Gemma4Config PARSE LANDED (arch + per-layer arrays + softcap; hoisted before the ModelConfig
+literal). CHECKPOINTS: 26B QAT + its MTP drafters (Q4_0/Q8_0/F16 in .../gemma4-26b-a4b-qat-gguf/
+drafter/MTP/) on disk; 31B ~done. LOADER MARCH: run-gen now fails forward at
+`missing blk.5.attn_v.weight` = R7 (K=V globals) — NEXT UNIT = the gemma4 arm in
+HybridModel::load (hybrid.rs:373): optional wv (load_opt), per-layer FullAttnLayer geometry from
+cfg.gemma4 (R5 groundwork), fused gate_up_exps split at load, dual post-norms + layer_output_scale
++ pre_ffw_norm_2 tensor names, parallel shared-FFN + MoE block fields. Then R8 forward graph.
 SEQUENCE (gaps tagged per the scope doc):
 - P0 census: GGUF metadata/tensor map/qtypes/drafter format when downloads land; verify Q4_0
   dequant + gguf-spm tokenizer coverage in bw24 (gap 9 may dissolve via from_gguf).
