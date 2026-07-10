@@ -67,11 +67,36 @@ Calibration data and public evaluation data must be disjoint. Use a representati
 training-side corpus for routing counts; never use IFEval, GSM8K, BBH, DROP, HumanEval, or MBPP
 examples to select tiers.
 
+`calibration.lock.json` freezes 32 examples from each of the six training-side strata recommended
+by REAP (192 requests total), the exact Hub revisions, seed, shuffle buffer, and 1,024-token cap.
+The token cap keeps the routing run practical while still yielding tens of millions of layer/expert
+assignments across Hy3. Freeze prompt ids once so the full-bank and REAP50 controls see identical
+tokens:
+
+    /data/src/reap/.venv/bin/python research/per-expert-quant/prepare_calibration.py \
+      --tokenizer /data/models/hy3-source \
+      --cache-dir /data/cache/huggingface/datasets \
+      --out-dir /data/calibration/hy3-routing-v1
+
+The generated manifest records every source id/content hash, prompt length, total tokens, and the
+SHA-256 of `requests.jsonl`. Keep that manifest with the traces and final report.
+
 Capture enough requests to cover the intended deployment distribution:
 
     BW24_MOE_TRACE=/data/runs/hy3-calibration.trace \
     BW24_MODELS=hy3=/data/models/hy3-source \
     ./target/release/bw24-server
+
+With the server ready, submit the frozen prompt ids. Use a fresh trace/output pair for each uniform
+control; do not append one arm to the other:
+
+    /data/src/reap/.venv/bin/python research/per-expert-quant/capture_calibration.py \
+      --requests /data/calibration/hy3-routing-v1/requests.jsonl \
+      --model plain_quant \
+      --out /data/calibration/hy3-routing-v1/plain-quant-requests.jsonl
+
+Repeat with `BW24_MODELS=plain_reap_quant=/data/artifacts/plain-reap-quant`,
+`BW24_MOE_TRACE=/data/runs/hy3-reap50-calibration.trace`, and `--model plain_reap_quant`.
 
 The trace format is one line per layer/forward: layer, token count, then comma-separated expert
 ids. Multiple trace files may be passed and their SHA-256 hashes are frozen into the plan.
