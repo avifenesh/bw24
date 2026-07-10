@@ -181,7 +181,7 @@ impl HybridModel {
 
         let mut cur = e.matmul(&d.pre_proj, &xh, 1)?;   // [1024]
 
-        for (il, dl) in d.layers.iter().enumerate() {
+        for (_il, dl) in d.layers.iter().enumerate() {
             // attention over the shared MAIN KV: swa -> main n-2 (windowed), global -> main n-1.
             let main_il = if dl.swa { n_main - 2 } else { n_main - 1 };
             let kvl = cache.kv[main_il].as_ref().unwrap();
@@ -258,7 +258,6 @@ impl HybridModel {
                                k: usize, eos: &[u32])
                                -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
-        let n_vocab = self.output.out_features();
         let eps = self.cfg.rms_eps;
         let mut cache = Cache::new(e, &self.cfg, prompt.len() + max_new + k + 8)?;
 
@@ -295,7 +294,7 @@ impl HybridModel {
         };
 
         let mut last = crate::forward::argmax(&pl) as u32;
-        let mut out: Vec<u32> = Vec::with_capacity(max_new);
+                let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let (mut drafted, mut accepted, mut rounds) = (0usize, 0usize, 0usize);
 
         'outer: while out.len() < max_new {
