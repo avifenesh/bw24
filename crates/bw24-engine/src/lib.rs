@@ -2477,6 +2477,20 @@ impl Engine {
     /// Set a [1] i32 device counter IN PLACE (keeps the buffer pointer stable — required for the
     /// graph-resident pos/seqlen counters whose addresses are baked into captured graphs). Restores
     /// the counter value after the throwaway capture warmups corrupt it.
+    /// ASYNC i32 single-slot store (value rides the kernel arg — no host-memory transfer/sync).
+    /// The graph-arc device-len counters use this; set_i32_one below is the SYNCING pageable
+    /// copy (fine at stream-idle boundaries, poison mid-round).
+    pub fn i32_set_k(&self, dst: &mut CudaSlice<i32>, v: i32)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_set_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let idx = 0i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(dst).arg(&v).arg(&idx);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn set_i32_one(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
         self.gpu.stream.memcpy_htod(&[v], d)?;
         Ok(())
@@ -4757,7 +4771,11 @@ impl Engine {
                           v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                           head_dim: usize, n_head: usize, n_head_kv: usize,
                           base_len: usize, t: usize, scale: f32,
-                          k_tok_bytes: usize, v_tok_bytes: usize)
+                          k_tok_bytes: usize, v_tok_bytes: usize,
+                          // hd512 dpl16 twin is DEVICE-LEN (graph arc): base_dev/plus feed the
+                          // kernel; host base_len keeps sizing the splits/partials. hd256 twins
+                          // keep the host arg. None is a bug for hd512 (asserted below).
+                          base_dev: Option<(&CudaSlice<i32>, i32)>)
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
@@ -4801,10 +4819,18 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
-         .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
-         .arg(&ktb).arg(&vtb);
-        unsafe { b.launch(cfg)?; }
+        if head_dim == 512 {
+            let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
+            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(bd).arg(&plus).arg(&scale).arg(&nspm).arg(&spk)
+             .arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        } else {
+            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
+             .arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        }
         let (fc, cfg2) = (self.func("fa_decode_combine_rows"),
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
@@ -4822,14 +4848,18 @@ impl Engine {
     pub fn fa_decode_rows_w(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
                             v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                             head_dim: usize, n_head: usize, n_head_kv: usize,
-                            base_len: usize, t: usize, scale: f32, window: usize,
-                            k_tok_bytes: usize, v_tok_bytes: usize)
+                            base_dev: &CudaSlice<i32>, base_plus: i32, t: usize, scale: f32,
+                            window: usize, k_tok_bytes: usize, v_tok_bytes: usize)
                             -> Result<(), Box<dyn std::error::Error>> {
-        debug_assert!(base_len + 1 >= window && head_dim == 256);
+        // DEVICE-LEN (graph arc step 1, 2026-07-11): the causal base rides an i32 counter
+        // (kernel T_kv = dev[0] + base_plus + r + 1) so depth graphs can replay with len
+        // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
+        // counter with one async set_i32_one first. Partials/splits size from `window` (host).
+        debug_assert!(head_dim == 256);
         let sp = fa_split_keys(window, n_head_kv);
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
-        let (base_i, nspm, spk, wini) = (base_len as i32, n_splits_max as i32, sp as i32, window as i32);
+        let (nspm, spk, wini) = (n_splits_max as i32, sp as i32, window as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let gqa = (n_head / n_head_kv).max(1) as u32;
         let o_len = t * n_head * n_splits_max * head_dim;
@@ -4860,7 +4890,7 @@ impl Engine {
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
-         .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
         let (fc, cfg2) = (self.func("fa_decode_combine_rows_w"),

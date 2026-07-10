@@ -2534,12 +2534,12 @@ extern "C" __global__ void fa_decode_vec_q_rows_smem_w(
         float* __restrict__ partO,      // [T, n_head, n_splits_max, head_dim]
         float* __restrict__ partM,      // [T, n_head, n_splits_max]
         float* __restrict__ partL,      // [T, n_head, n_splits_max]
-        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int window)
 {
     const int r        = blockIdx.z;             // query row (verify column)
-    const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;      // this row's causal key bound
     // WINDOWED twin (gemma R6): every row attends exactly `window` keys; split geometry/key
     // order mirror the decode window-VIEW chain (start+j absolute; host gates full-window rows).
     const int start    = T_kv - window;
@@ -4373,12 +4373,12 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
 extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
         const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
         float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int window)
 {
     const int r        = blockIdx.z;             // query row (verify column)
-    const int T_kv     = t_kv_base + r + 1;      // per-row causal bound
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;      // per-row causal bound
     // WINDOWED twin (gemma R6): every row attends exactly `window` keys; split geometry and
     // key order mirror the T=1 decode's fa_decode-over-window-VIEW bit-for-bit (start+j
     // absolute mapping; host gates base_len+1 >= window so no row is under-window).
@@ -4518,12 +4518,12 @@ extern "C" __global__ void fa_decode_vec_q_rows_reg_w(
         float* __restrict__ partO,      // [T, n_head, n_splits_max, head_dim]
         float* __restrict__ partM,      // [T, n_head, n_splits_max]
         float* __restrict__ partL,      // [T, n_head, n_splits_max]
-        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int window)
 {
     const int r        = blockIdx.z;             // query row (verify column)
-    const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;      // this row's causal key bound
     const int start    = T_kv - window;
     const int n_splits = (window + split_keys - 1) / split_keys;  // == host fa_split_keys sizing
     const int kv_head  = blockIdx.x;
@@ -4616,12 +4616,12 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16(
         float* __restrict__ partO,      // [T, n_head, n_splits_max, head_dim]
         float* __restrict__ partM,
         float* __restrict__ partL,
-        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes)
 {
     const int r        = blockIdx.z;
-    const int T_kv     = t_kv_base + r + 1;
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
     const int n_splits = (T_kv + split_keys - 1) / split_keys;
     const int kv_head  = blockIdx.x;
     const int split    = blockIdx.y;

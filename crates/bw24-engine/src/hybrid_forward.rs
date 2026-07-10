@@ -2655,8 +2655,11 @@ impl HybridModel {
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
             let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
             let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+            // device-len: eager syncs the counter (async arg-store), dc keeps it live.
+            let base = kvl.len as i32;
+            e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                             kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)))?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
@@ -2664,7 +2667,9 @@ impl HybridModel {
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
             let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
             let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
-            e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
+            let base = kvl.len as i32;
+            e.i32_set_k(&mut kvl.len_d, base)?;
+            e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1, 1, scale,
                                win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
@@ -2792,17 +2797,19 @@ impl HybridModel {
                 if !swa && hd == 512 && kvl.len >= crate::fa512_min_tkv()
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // global layers: SAME hd512 rows twin as verify, t=1 (parity law).
+                    // dc: len_d is live (inc_seqlen) — device-len rides it, plus=-1.
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
                     e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
-                                     scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                     scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     Some((&kvl.len_d, -1)))?;
                 } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
-                    e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
-                                       scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1,
+                                       1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
                 } else {
                     let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
                                           else { (0, kvl.len) };
@@ -3049,8 +3056,13 @@ impl HybridModel {
         if rows_ok && (!swa || base_len + t <= win) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
+            let bd = if hd == 512 {
+                // device-len twin: sync the counter to the verify base (async arg-store).
+                e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
+                Some((&kvl.len_d, 0))
+            } else { None };
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                             kvl.k_tok_bytes, kvl.v_tok_bytes, bd)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, ABSOLUTE-index
@@ -3064,8 +3076,9 @@ impl HybridModel {
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
-            e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
-                               win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
+            e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, 0,
+                               t, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
@@ -3087,14 +3100,17 @@ impl HybridModel {
                 && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                 let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
                 let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
-                e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
-                                   scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
+                e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, &kvl.len_d, 0,
+                                   1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             } else if !swa && hd == 512 && avail >= crate::fa512_min_tkv()
                 && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                 let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
                 let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
+                e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
-                                 scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                 scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 Some((&kvl.len_d, 0)))?;
             } else {
                 e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
                             kvl.k_tok_bytes, kvl.v_tok_bytes)?;

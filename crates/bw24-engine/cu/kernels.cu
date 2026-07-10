@@ -815,6 +815,11 @@ extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restri
 extern "C" __global__ void u32_set_k(unsigned int* __restrict__ dst, unsigned int v, int idx) {
     dst[idx] = v;
 }
+
+// i32 twin (device-len counters, graph arc): async single-slot store, value rides the arg.
+extern "C" __global__ void i32_set_k(int* dst, int v, int idx) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) dst[idx] = v;
+}
 // pack: out[0..n1) = a[off_a..], out[n1..n1+n2) = b[0..n2) (single dtoh follows).
 extern "C" __global__ void u32_pack2(const unsigned int* __restrict__ a, int off_a, int n1,
                                      const unsigned int* __restrict__ b, int n2,
