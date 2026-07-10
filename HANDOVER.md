@@ -4,6 +4,18 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## SPEC-MULTIPLIER DIAGNOSTIC + 27B PLAIN AUDIT (owner directive 2026-07-10 late)
+
+Owner: don't chase acceptance — tune the system; if llama's spec MULTIPLIER (spec/own-plain)
+beats ours, either our spec is bad or mechanisms remain. ANSWER: our multiplier wins 8/9 cells
+(9B p1 1.76 vs 0.98!; 35B 1.64/1.45/1.68 vs 1.50/1.34/1.55); the single tie is 27B p2 (2.04 vs
+2.07) — that cell's deficit tracks the PLAIN gap. 27B plain audit: trunk = 786GB/s COLD over
+the exact 13.92GB stream = ~97% practical stream efficiency (BYTE-BOUND honest), head at wall,
+fa v4'd; the only headroom = the 5.5% small-kernel slice (fusion, ~1-2% ceiling). Graph-decode
+re-open REFUSED (the 21% profile gap was nsys inflation; production gap ~1%; the post-stage3
+negative closure stands). Plain cells move materially only via fewer bytes (W4A4 =
+quality-blocked by owner policy) or the fusion slice.
+
 ## BAR MAP AFTER v0.17.0 (FA-v4 shipped default — TWO CELLS CROSSED THE BAR)
 
 FA-v4 (key-per-lane score phase) adopted default after the full 3-model battery: 35B spec
