@@ -22,6 +22,8 @@ NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
   203 (gelu CSR owner-scan) -> 216 (device per-row verify argmax, softcap-free greedy)
 - head trim top-N-ids NEGATIVE (acc .52 -> .34) — id order is NOT frequency; needs a
   corpus-ranked gather + d2t (seam: BW24_GEMMA_DRAFT_VOCAB, default 0)
+- async-round probe (device token buffer, batched dtoh) NEGATIVE: 200 vs 216 — the round's
+  interleaved 4B syncs beat the batched memcpy_htod+dtoh pair; reverted (no gain = no change)
 - qwen regression battery GREEN after all shared-path changes (kernel-check, 9B/27B argmax,
   9B run-spec K=1..8 self-consistency)
 

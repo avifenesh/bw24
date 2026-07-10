@@ -1,0 +1,6 @@
+[gemma-spec] rounds=60 drafted=120 accepted=69                    accept-rate=0.575 tok/round=2.15
+plain: 172.99 tok/s | spec: 216.54 tok/s (1.25x) | stream agreement 128/128
+[gemma-spec] rounds=60 drafted=120 accepted=69                    accept-rate=0.575 tok/round=2.15
+plain: 172.74 tok/s | spec: 216.43 tok/s (1.25x) | stream agreement 128/128
+[gemma-spec] rounds=60 drafted=120 accepted=69                    accept-rate=0.575 tok/round=2.15
+plain: 172.97 tok/s | spec: 216.40 tok/s (1.25x) | stream agreement 128/128
