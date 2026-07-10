@@ -37,6 +37,15 @@ if [[ ! -d "$HARNESS_DIR/.git" ]]; then
   git -C "$HARNESS_DIR" checkout --quiet --detach FETCH_HEAD
 fi
 python3 "$HERE/prepare_harness.py" "$HARNESS_DIR" --lock "$LOCK"
+HARNESS_PYTHON="$HARNESS_DIR/.venv/bin/python"
+HARNESS_CLI="$HARNESS_DIR/.venv/bin/lm_eval"
+if [[ ! -x "$HARNESS_CLI" ]]; then
+  uv venv --python 3.12 "$HARNESS_DIR/.venv"
+  # `uv sync --extra api` resolves every optional extra in lm-eval's universal lock; the pinned
+  # checkout currently has mutually exclusive acpbench/vllm lark constraints. Install only the
+  # backend and task dependency set this suite actually uses.
+  uv pip install --python "$HARNESS_PYTHON" -e "$HARNESS_DIR[api,ifeval]"
+fi
 
 SERVER_ROOT=${BASE_URL%/v1/completions}
 curl -fsS "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
@@ -92,4 +101,4 @@ ARGS=(
 if [[ -n ${LIMIT:-} ]]; then ARGS+=(--limit "$LIMIT"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
 
-uv run --extra api --project "$HARNESS_DIR" lm_eval "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+"$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
