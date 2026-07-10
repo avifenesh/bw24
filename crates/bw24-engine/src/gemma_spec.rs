@@ -109,12 +109,37 @@ impl GemmaDraft {
             e.htod(&bw24_gguf::dequant::dequantize(
                 t.ggml_type, &t.bytes, t.ne.iter().product::<u64>() as usize))?
         };
+        // Head trim seam (BW24_GEMMA_DRAFT_VOCAB, DEFAULT 0 = full head): top-N-ids trim
+        // MEASURED NEGATIVE (32k: acceptance .520 -> .339, spec 175 -> 143 — the id order is
+        // NOT frequency for this 262k vocab). Real FR-Spec needs a corpus-ranked row gather +
+        // d2t map; the seam stays for that experiment.
+        let head = {
+            let trim: usize = std::env::var("BW24_GEMMA_DRAFT_VOCAB").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(0);
+            let t = src.find("token_embd.weight").ok_or("drafter missing token_embd")?;
+            let in_f = t.ne[0] as usize;
+            let n_vocab = t.ne[1] as usize;
+            if trim > 0 && trim < n_vocab {
+                assert_eq!(t.ggml_type, bw24_gguf::GgmlType::Q4_0, "drafter head trim expects Q4_0");
+                let row_bytes = in_f / 32 * 18;
+                let bytes = e.htod_bytes(&t.bytes[..trim * row_bytes])?;
+                GpuTensor::Quant {
+                    bytes, qtype: crate::QT_Q4_0, row_bytes,
+                    ne: vec![in_f as u64, trim as u64], scale: 1.0, rp: false,
+                    #[cfg(bw24_cutlass)]
+                    cutlass: None,
+                    fp8: None,
+                }
+            } else {
+                load_t(e, &src, "token_embd.weight")?
+            }
+        };
         Ok(GemmaDraft {
             layers,
             pre_proj: load_t(e, &src, "nextn.pre_projection.weight")?,
             post_proj: load_t(e, &src, "nextn.post_projection.weight")?,
             output_norm: load_t(e, &src, "output_norm.weight")?,
-            head: load_t(e, &src, "token_embd.weight")?,
+            head,
             rope_freqs,
             ones: e.htod(&[1.0f32; 512])?,
             n_embd,
