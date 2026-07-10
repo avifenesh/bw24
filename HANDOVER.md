@@ -4,6 +4,22 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## ENGINE-SIDE CLOSURE (2026-07-10, post round-stream): THE SPEC LOOP IS AT ITS MEASURED EDGE
+
+Round-stream stage (c) was assembled END TO END (zero-readback M-round bursts, token-identical
+by construction on both models) and measured NEGATIVE: 35B serve p2 -16%, p1 -4.3%, 27B wash —
+the fixed-shape price (always-K drafts, K+1-wide verify, no refresh fills) beats the ~1.5-2ms/
+round host-trip savings at real acceptance rates. With that, every engine lever on the spec
+round has a measured verdict: kernel space (07-06 m-small arc + router GEMV + CSR gate_up),
+dedup spaces (down x2 negative, FA shared-K L2-absorbed), host paths (envc wash, readback
+shapes x3 negative, stream negative), verify bytes, deep-K. **The three sub-bar cells (27B p2
+1.04x, 35B p2 1.05x, 35B p3 1.07x) are ACCEPTANCE-GATED — engine closed with proof (rig5090
+.jsonl trail); the lever is draft/head quality = the owner's research lane (mtpheal platform).**
+Machinery kept behind documented seams: BW24_SPEC_DEVACC (stages a/b, neutral), BW24_SPEC_STREAM
+(+_M, stage c, negative) — the rpks force-seam precedent. Also unlocked en route: the 35B
+resident-MoE NextN head IS graph-capturable (moe_ffn_il in capture — the Dense-only rejection
+was conservative), which future draft-graph work on the 35B can use.
+
 ## ROUND-STREAM DESIGN (device-side acceptance — the last measured engine lever, ~+8-15% spec)
 
 **Problem (4-bucket + util-sampled, both models):** the spec round serializes host<->GPU three
