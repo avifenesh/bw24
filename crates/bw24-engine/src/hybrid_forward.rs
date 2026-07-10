@@ -1831,9 +1831,9 @@ impl HybridModel {
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
         let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
-        let host_bytes = exps.expert_bytes(ex);
+        let source = exps.expert_source(ex);
         e.with_moe_cache(max_block, |c, eng| {
-            let slot = c.dispatch(id, host_bytes, eng)?;
+            let slot = c.dispatch_source(id, source, eng)?;
             let DispatchSlot::Resident(sl) = slot;
             let buf = c.slot(sl);
             eng.qmatvec_expert_q8(buf, 0..layout.len, aq, ad, 1, exps.in_f, exps.out_f,
@@ -1848,10 +1848,10 @@ impl HybridModel {
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
         let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
-        let host_bytes = exps.expert_bytes(ex);
+        let source = exps.expert_source(ex);
         // dispatch under the lock (lookup/admit/memcpy-issue), then resolve the slot and GEMM.
         e.with_moe_cache(max_block, |c, eng| {
-            let slot = c.dispatch(id, host_bytes, eng)?;
+            let slot = c.dispatch_source(id, source, eng)?;
             // resolve the device buffer for this slot; the GEMM is enqueued on the compute stream
             // (the same stream the memcpy was issued on, so ordering holds without extra sync).
             let DispatchSlot::Resident(sl) = slot;
@@ -1869,7 +1869,7 @@ impl HybridModel {
             for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
                                  (PROJ_DOWN, &m.down_exps)] {
                 let id = BlockId::new(il, proj, ex as u16);
-                let _ = c.prefetch(id, exps.expert_bytes(ex), keep, eng)?;
+                let _ = c.prefetch_source(id, exps.expert_source(ex), keep, eng)?;
             }
             Ok(())
         })
@@ -2012,14 +2012,14 @@ impl HybridModel {
                 // CACHE PATH: dispatch through MOE cache, get device-resident buffer, GEMM at m=m_e.
                 let gate = e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_GATE, ex as u16);
-                    let slot = c.dispatch(id, m.gate_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.gate_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
                     eng.qmatvec_view(buf, 0..gl.len, &gv, m_e,
                         m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)
                 })?;
                 let up = e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_UP, ex as u16);
-                    let slot = c.dispatch(id, m.up_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.up_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
                     eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
                         m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
@@ -2031,7 +2031,7 @@ impl HybridModel {
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
-                    let slot = c.dispatch(id, m.down_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.down_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
                     eng.qmatvec_view(buf, 0..dl.len, &actv, m_e,
                         m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)

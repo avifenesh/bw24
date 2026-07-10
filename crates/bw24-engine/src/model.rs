@@ -607,7 +607,11 @@ pub enum HostBuf {
     Paged(Vec<u8>),
     /// Pinned host memory. We keep the `PinnedHostSlice` alive (it owns the allocation; Drop frees it)
     /// AND cache its raw base pointer + len so the hot-path `as_bytes()` needs no per-call event sync.
-    Pinned { slice: cudarc::driver::PinnedHostSlice<u8>, base: *const u8, len: usize },
+    Pinned {
+        slice: std::sync::Arc<cudarc::driver::PinnedHostSlice<u8>>,
+        base: *const u8,
+        len: usize,
+    },
     /// Alias into a shared pinned slab (ST pinned tier): `owner` keeps the slab alive; `base`/`len`
     /// select this expert's window. Same DMA class as `Pinned`.
     PinnedAlias { owner: std::sync::Arc<HostBuf>, base: *const u8, len: usize },
@@ -690,22 +694,49 @@ impl HostBuf {
                     offset: offset as u64,
                     len,
                     fallback: &map[offset..offset + len],
+                    keepalive: ExpertKeepalive::Mmap(map.clone()),
                 }
             }
-            _ => ExpertSource::Memory(&self.as_bytes()[rel_off..rel_off + len]),
+            HostBuf::Pinned { slice, .. } => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                keepalive: Some(ExpertKeepalive::Pinned(slice.clone())),
+            },
+            HostBuf::PinnedAlias { owner, .. } => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                keepalive: Some(ExpertKeepalive::Buffer(owner.clone())),
+            },
+            HostBuf::Paged(_) => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                // CUDA stages pageable input before returning from the async-copy API. Only true
+                // pinned and mmap-backed sources need an explicit lifetime owner in the cache.
+                keepalive: None,
+            },
         }
     }
+}
+
+/// Clonable ownership retained by asynchronous cache transfers. The payload is intentionally never
+/// read: keeping it alive is the contract.
+#[allow(dead_code)]
+pub(crate) enum ExpertKeepalive {
+    Pinned(std::sync::Arc<cudarc::driver::PinnedHostSlice<u8>>),
+    Buffer(std::sync::Arc<HostBuf>),
+    Mmap(std::sync::Arc<memmap2::Mmap>),
 }
 
 /// Source-aware view of one expert block. The mmap fallback remains the byte oracle; retaining the
 /// opened file enables a later explicit-read backend without changing tensor layout or numerics.
 pub(crate) enum ExpertSource<'a> {
-    Memory(&'a [u8]),
+    Memory {
+        bytes: &'a [u8],
+        keepalive: Option<ExpertKeepalive>,
+    },
     Disk {
         file: &'a std::sync::Arc<std::fs::File>,
         offset: u64,
         len: usize,
         fallback: &'a [u8],
+        keepalive: ExpertKeepalive,
     },
 }
 
@@ -924,7 +955,7 @@ impl HostExps {
             { let dst = p.as_mut_slice()?; dst.copy_from_slice(raw); }
             let base = p.as_ptr()? as *const u8;   // syncs once here at load; stable afterward
             let len = raw.len();
-            HostBuf::Pinned { slice: p, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
         } else {
             HostBuf::Paged(raw.to_vec())
         };
@@ -1136,7 +1167,9 @@ impl HostExps {
                             { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&map[..slab_len]); }
                             let base = pn.as_ptr()? as *const u8;
                             *rem -= slab_len;
-                            let slab = std::sync::Arc::new(HostBuf::Pinned { slice: pn, base, len: slab_len });
+                            let slab = std::sync::Arc::new(HostBuf::Pinned {
+                                slice: std::sync::Arc::new(pn), base, len: slab_len,
+                            });
                             let mut tiers: Vec<HostBuf> = Vec::with_capacity(n_expert);
                             for ex in 0..n_expert {
                                 let off = ex * expert_stride;
@@ -1182,7 +1215,7 @@ impl HostExps {
                         { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
                         let base = p.as_ptr()? as *const u8;
                         let len = buf.len();
-                        HostBuf::Pinned { slice: p, base, len }
+                        HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
                     } else { HostBuf::Paged(buf) }
                 };
                 let all_one = macros.iter().all(|&m| m == 1.0);
@@ -1230,7 +1263,7 @@ impl HostExps {
             { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
             let base = p.as_ptr()? as *const u8;
             let len = buf.len();
-            HostBuf::Pinned { slice: p, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
         } else {
             HostBuf::Paged(buf)
         };
@@ -1468,7 +1501,7 @@ impl HostExps {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExpertSource, HostBuf, HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4,
+    use super::{ExpertKeepalive, ExpertSource, HostBuf, HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4,
                 repack_nvfp4_split, unpack_nvfp4_split};
     use std::borrow::Cow;
     use bw24_gguf::{GgmlType, config::ModelConfig};
@@ -1627,7 +1660,7 @@ mod tests {
         assert_eq!(exps.expert_bytes(0), source.bf16);
         assert_eq!(exps.expert_bytes(1), source.q4k);
         match exps.expert_source(1) {
-            ExpertSource::Memory(bytes) => assert_eq!(bytes, source.q4k),
+            ExpertSource::Memory { bytes, .. } => assert_eq!(bytes, source.q4k),
             ExpertSource::Disk { .. } => panic!("paged expert unexpectedly became disk-backed"),
         }
     }
@@ -1668,13 +1701,19 @@ mod tests {
         assert_eq!(exps.expert_bytes(0), &bytes[base_offset..base_offset + expert_len]);
         assert_eq!(exps.expert_bytes(1), &bytes[base_offset + expert_len..]);
         match exps.expert_source(1) {
-            ExpertSource::Disk { file: got_file, offset, len, fallback } => {
+            ExpertSource::Disk { file: got_file, offset, len, fallback, keepalive } => {
                 assert!(std::sync::Arc::ptr_eq(got_file, &file));
                 assert_eq!(offset, (base_offset + expert_len) as u64);
                 assert_eq!(len, expert_len);
                 assert_eq!(fallback, &bytes[base_offset + expert_len..]);
+                match keepalive {
+                    ExpertKeepalive::Mmap(owner) => {
+                        assert!(std::sync::Arc::ptr_eq(&owner, &source.map));
+                    }
+                    _ => panic!("mmap expert did not retain its mmap owner"),
+                }
             }
-            ExpertSource::Memory(_) => panic!("mixed mmap tier lost its disk extent"),
+            ExpertSource::Memory { .. } => panic!("mixed mmap tier lost its disk extent"),
         }
         #[cfg(unix)]
         assert!(exps.prefetch_expert_pages(1));
@@ -1722,7 +1761,7 @@ mod tests {
                 assert_eq!(len, expert_len);
                 assert_eq!(fallback, &bytes[base_offset + expert_len..]);
             }
-            ExpertSource::Memory(_) => panic!("tiered mmap expert lost its disk extent"),
+            ExpertSource::Memory { .. } => panic!("tiered mmap expert lost its disk extent"),
         }
         std::fs::remove_file(path).ok();
     }
@@ -1770,13 +1809,13 @@ mod tests {
         assert_eq!(exps.expert_bytes(0), &bytes[base_offset..base_offset + expert_len]);
         assert_eq!(exps.expert_bytes(1), &bytes[base_offset + expert_len..]);
         match exps.expert_source(1) {
-            ExpertSource::Disk { file: got_file, offset, len, fallback } => {
+            ExpertSource::Disk { file: got_file, offset, len, fallback, .. } => {
                 assert!(std::sync::Arc::ptr_eq(got_file, &file));
                 assert_eq!(offset, (base_offset + expert_len) as u64);
                 assert_eq!(len, expert_len);
                 assert_eq!(fallback, &bytes[base_offset + expert_len..]);
             }
-            ExpertSource::Memory(_) => panic!("uniform mmap slab lost its disk extent"),
+            ExpertSource::Memory { .. } => panic!("uniform mmap slab lost its disk extent"),
         }
         #[cfg(unix)]
         assert!(exps.prefetch_expert_pages(1));
