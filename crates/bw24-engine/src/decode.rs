@@ -396,6 +396,14 @@ impl HybridModel {
         // h_seed = trunk hidden BEFORE output_norm (default, §A) or AFTER it (BW24_SPEC_HPOST,
         // the reference engines' convention — see spec::spec_hpost).
         let h_seed = if crate::spec::spec_hpost() { e.clone_dtod(&hn)? } else { e.clone_dtod(&x)? };
+        // head-MIPS feasibility probe (BW24_DUMP_HN=<path>): append pre-head hiddens for
+        // offline bound analysis. Diagnostic only.
+        if let Ok(path) = std::env::var("BW24_DUMP_HN") {
+            let hh = e.dtoh(&hn)?;
+            use std::io::Write;
+            let mut fo = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+            for v in &hh { fo.write_all(&v.to_le_bytes())?; }
+        }
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
         cache.pos += 1;
