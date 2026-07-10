@@ -4688,15 +4688,22 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let (mut part_o, mut part_m, mut part_l) =
             (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
-        // lane pick mirrors decode at t_kv == window (the parity contract): v4_w under the
-        // v4 threshold, the smem rows twin at/above it.
+        // Lane pick: decode AND verify both land here in the windowed regime (parity law —
+        // hybrid_forward verify_attn), so the pick only needs internal consistency, not
+        // clone-of-decode bit fidelity (SASS-proven impossible for textually identical
+        // kernels, jsonl 2026-07-10). v4 under the threshold; smem twin at/above the smem
+        // floor (deep-ctx broadcast win); register twin between.
+        static SMEM_TKV_W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let smem_tkv = *SMEM_TKV_W.get_or_init(|| {
+            std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
+        });
         let (f, sh) = if fa_v4_at(window) {
             let f = self.func("fa_decode_vec_q_rows_v4_w");
             (f, (11520 + 32 * head_dim * 2) as u32)
+        } else if smem_tkv > 0 && window >= smem_tkv {
+            (self.func("fa_decode_vec_q_rows_smem_w"), (2 * 32 * head_dim * 2) as u32)
         } else {
-            // non-v4 window lane: REGISTER twin (decode must pick register too — the gemma
-            // smem floor sits above the window). rows_smem_w carries an unexplained real
-            // divergence (jsonl 2026-07-10) and stays quarantined.
             (self.func("fa_decode_vec_q_rows_reg_w"), 0u32)
         };
         use cudarc::driver::sys::CUfunction_attribute_enum as A;

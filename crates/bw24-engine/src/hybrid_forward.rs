@@ -2647,12 +2647,21 @@ impl HybridModel {
         // VIEW OFFSET into the quantized cache (keys carry absolute rope; the mask is purely
         // positional). Globals attend the full history.
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let mut attn = e.uninit(nh * hd)?;
+        // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
+        if swa && kvl.len > win && hd == 256
+            && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+            let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
+            let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+            e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
+                               win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            return Ok(e.matmul(&fa.wo, &attn, 1)?);
+        }
         let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
         let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
                                      (off_tok + t_kv) * kvl.k_tok_bytes);
         let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                      (off_tok + t_kv) * kvl.v_tok_bytes);
-        let mut attn = e.uninit(nh * hd)?;
         e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         Ok(e.matmul(&fa.wo, &attn, 1)?)
@@ -2769,14 +2778,23 @@ impl HybridModel {
                 // counters carry only the append slot + the graph seam.
                 kvl.len += 1;
                 let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
-                let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
-                                      else { (0, kvl.len) };
-                let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
-                                             (off_tok + t_kv) * kvl.k_tok_bytes);
-                let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
-                                             (off_tok + t_kv) * kvl.v_tok_bytes);
-                e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
-                            kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                if swa && kvl.len > win && hd == 256
+                    && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+                    // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
+                    let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
+                    let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
+                                       scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
+                                          else { (0, kvl.len) };
+                    let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                                 (off_tok + t_kv) * kvl.k_tok_bytes);
+                    let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                                 (off_tok + t_kv) * kvl.v_tok_bytes);
+                    e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                                kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                }
             }
             Some(b) => {
                 // capture: full-buffer views + device length (V1 scope: t_kv <= window,
@@ -3013,11 +3031,13 @@ impl HybridModel {
                              kvl.k_tok_bytes, kvl.v_tok_bytes)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
-        // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, per-row split
-        // geometry == the decode window-view chain. ONLY when v4 is the decode lane at the
-        // window (rows_smem_w measured a row-0 divergence — jsonl 2026-07-10; until root-caused
-        // the non-v4 window regime rides the per-token loop = exact decode parity).
-        // BW24_GEMMA_ROWS_W=0 -> per-token loop.
+        // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, ABSOLUTE-index
+        // per-row geometry over the prefix view. PARITY LAW (2026-07-10 root-cause): textually
+        // identical kernels do NOT compile bit-identically (nvcc unrolls fa_decode_vec_q 2x vs
+        // its rows_w clone — SASS-proven; the unpinned score `+=` chain then rounds apart), so
+        // decode-vs-verify parity comes from BOTH sides launching THIS SAME rows_w kernel
+        // (decode passes t=1) — bitwise equal per position by symbol identity, any lane.
+        // BW24_GEMMA_ROWS_W=0 -> per-token loop (decode falls back to fa_decode views too).
         if hd == 256 && swa && base_len + 1 >= win
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
@@ -3038,8 +3058,18 @@ impl HybridModel {
             let mut q_one = e.uninit(nh * hd)?;
             e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
             let mut a_one = e.uninit(nh * hd)?;
-            e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            // straddle rounds: windowed rows must ride the SAME rows_w kernel decode uses
+            // (parity law above); unwindowed rows keep the gated fa_decode pair.
+            if swa && avail > win && hd == 256
+                && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
+                let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
+                let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
+                e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
+                                   scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            } else {
+                e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            }
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
         Ok(e.matmul(&fa.wo, &attn, t)?)
