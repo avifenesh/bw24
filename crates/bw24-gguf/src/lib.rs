@@ -10,7 +10,9 @@
 //! gguf_string = len: u64 | bytes[len]  (no NUL terminator)
 
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use memmap2::Mmap;
 
 pub mod dequant;
@@ -138,7 +140,9 @@ impl TensorInfo {
 
 pub struct GgufFile {
     mmap: Mmap,
-    /// On-disk path of the file (for the disk-tier loader, which mmaps the file itself; SPILLING-PLAN §1).
+    /// The same opened inode backing `mmap`, retained for disk-tier positioned reads.
+    file: Arc<File>,
+    /// Original on-disk path, retained for diagnostics and adjacent artifact lookup.
     path: PathBuf,
     pub version: u32,
     pub metadata: BTreeMap<String, MetaValue>,
@@ -194,8 +198,8 @@ impl<'a> Cursor<'a> {
 impl GgufFile {
     pub fn open<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = std::fs::File::open(&path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let file = Arc::new(File::open(&path)?);
+        let mmap = unsafe { Mmap::map(file.as_ref())? };
         let mut c = Cursor::new(&mmap);
 
         let magic = c.u32();
@@ -239,7 +243,7 @@ impl GgufFile {
         let header_end = c.pos as u64;
         let data_start = header_end.div_ceil(alignment) * alignment;
 
-        Ok(Self { mmap, path, version, metadata, tensors, data_start, alignment })
+        Ok(Self { mmap, file, path, version, metadata, tensors, data_start, alignment })
     }
 
     /// Raw bytes for a tensor (mmap'd, zero-copy slice).
@@ -248,8 +252,12 @@ impl GgufFile {
         &self.mmap[start..start + t.n_bytes as usize]
     }
 
-    /// On-disk path of this GGUF file (the disk-tier loader mmaps it itself; SPILLING-PLAN §1).
+    /// Original on-disk path of this GGUF file.
     pub fn path(&self) -> &Path { &self.path }
+
+    /// Opened inode backing the parsed mmap. Disk-tier consumers clone this handle instead of
+    /// reopening `path`, so a path replacement cannot change the bytes behind a loaded model.
+    pub fn opened_file(&self) -> &Arc<File> { &self.file }
 
     /// Absolute byte range `[start, end)` of a tensor's data WITHIN the GGUF file on disk.
     /// `start = data_start + t.offset`; the disk-tier `HostBuf::Mmap` slices its own file mmap here.

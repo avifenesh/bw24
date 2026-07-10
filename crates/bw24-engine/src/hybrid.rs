@@ -380,7 +380,7 @@ impl HybridModel {
         let mut spill: Option<crate::spill::SpillCtx> =
             if cfg.moe.is_some() && crate::spill::disk_tier_enabled() && gguf.is_some() {
                 let budget = crate::spill::MemBudget::probe(e)?;
-                let ctx = crate::spill::SpillCtx::open(gguf.unwrap().path(), &budget)?;
+                let ctx = crate::spill::SpillCtx::open(gguf.unwrap(), &budget)?;
                 eprintln!("[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
                           budget.free_vram >> 20, budget.free_pinnable_ram >> 20);
                 Some(ctx)
