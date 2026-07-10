@@ -25,7 +25,7 @@ from safetensors import safe_open
 
 
 TRANSFORMERS_COMMIT = "d610229d0f0d80c7927694f164e3dd362750ca19"
-SCHEMA = "bw24.hy3.layer0.v1"
+SCHEMA = "bw24.hy3.layer0.v2"
 
 
 class TensorStore:
@@ -114,7 +114,7 @@ def layer0_reference(
     *,
     dtype: torch.dtype,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> dict[str, torch.Tensor]:
     hidden_size = int(config_value(config, "hidden_size"))
     n_head = int(config_value(config, "num_attention_heads"))
     n_head_kv = int(config_value(config, "num_key_value_heads"))
@@ -189,7 +189,13 @@ def layer0_reference(
     up = F.linear(mlp_input, weights["up"])
     mlp = F.linear(F.silu(gate) * up, weights["down"])
     layer0 = after_attention + mlp
-    return embeddings.float().cpu(), layer0[0].float().cpu()
+    return {
+        "embedding": embeddings.float().cpu(),
+        "attention_output": attention[0].float().cpu(),
+        "after_attention": after_attention[0].float().cpu(),
+        "mlp_output": mlp[0].float().cpu(),
+        "layer0_residual": layer0[0].float().cpu(),
+    }
 
 
 def vector_stats(reference: torch.Tensor, observed: list[float]) -> dict[str, float]:
@@ -259,7 +265,7 @@ def main() -> None:
 
     with ExitStack() as stack:
         store = TensorStore(args.checkpoint, stack)
-        embeddings, layer0 = layer0_reference(
+        stages = layer0_reference(
             store, config, args.tokens, dtype=dtype, device=device
         )
         bw24 = load_bw24_records(args.compare) if args.compare else {}
@@ -276,7 +282,7 @@ def main() -> None:
                     "producer": "transformers_reference",
                     "checkpoint": str(args.checkpoint),
                     "tokens": args.tokens,
-                    "n_embd": embeddings.shape[-1],
+                    "n_embd": stages["embedding"].shape[-1],
                     "precision": args.dtype,
                     "transformers_commit": TRANSFORMERS_COMMIT,
                 },
@@ -289,8 +295,10 @@ def main() -> None:
                         "producer": "transformers_reference",
                         "position": position,
                         "token_id": token_id,
-                        "embedding": embeddings[position].tolist(),
-                        "layer0_residual": layer0[position].tolist(),
+                        **{
+                            name: values[position].tolist()
+                            for name, values in stages.items()
+                        },
                     },
                     output,
                 )
@@ -307,12 +315,10 @@ def main() -> None:
                             "producer": "comparison",
                             "position": position,
                             "token_id": token_id,
-                            "embedding": vector_stats(
-                                embeddings[position], observed["embedding"]
-                            ),
-                            "layer0_residual": vector_stats(
-                                layer0[position], observed["layer0_residual"]
-                            ),
+                            **{
+                                name: vector_stats(values[position], observed[name])
+                                for name, values in stages.items()
+                            },
                         },
                         output,
                     )

@@ -1,7 +1,7 @@
-//! Dump the serving-path Hy3 embedding and post-layer-0 residual as JSONL.
+//! Dump serving-path Hy3 layer-0 stage vectors as JSONL.
 //!
-//! This intentionally uses `decode_step_aux`: the dump observes the same T=1 path as serving,
-//! including its KV representation and quantized matmuls.  The Python sidecar in
+//! This intentionally uses the eager T=1 decode path, including its KV representation, fused
+//! norms, and quantized matmuls.  The Python sidecar in
 //! `research/per-expert-quant/hy3_layer0_reference.py` computes the corresponding official
 //! Transformers layer-0 reference directly from the pinned BF16 source checkpoint.
 
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     write!(
         out,
-        "{{\"schema\":\"bw24.hy3.layer0.v1\",\"producer\":\"bw24\",\"artifact\":"
+        "{{\"schema\":\"bw24.hy3.layer0.v2\",\"producer\":\"bw24\",\"artifact\":"
     )?;
     write_json_string(&mut out, &artifact)?;
     write!(
@@ -89,18 +89,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     for (position, &token_id) in tokens.iter().enumerate() {
-        let (_, aux) = model.decode_step_aux(&engine, token_id, &mut cache, &[0])?;
-        let layer0 = engine.dtoh(
-            aux.first()
-                .ok_or("decode_step_aux returned no layer-0 residual")?,
-        )?;
+        let (_, stages) = model.decode_step_hy3_layer0_stages(&engine, token_id, &mut cache)?;
+        let attention_output = engine.dtoh(&stages.attention_output)?;
+        let after_attention = engine.dtoh(&stages.after_attention)?;
+        let mlp_output = engine.dtoh(&stages.mlp_output)?;
+        let layer0 = engine.dtoh(&stages.residual)?;
         let embedding = &embeddings[position * n_embd..(position + 1) * n_embd];
 
         write!(
             out,
-            "{{\"schema\":\"bw24.hy3.layer0.v1\",\"producer\":\"bw24\",\"position\":{position},\"token_id\":{token_id},\"embedding\":"
+            "{{\"schema\":\"bw24.hy3.layer0.v2\",\"producer\":\"bw24\",\"position\":{position},\"token_id\":{token_id},\"embedding\":"
         )?;
         write_f32_array(&mut out, embedding)?;
+        write!(out, ",\"attention_output\":")?;
+        write_f32_array(&mut out, &attention_output)?;
+        write!(out, ",\"after_attention\":")?;
+        write_f32_array(&mut out, &after_attention)?;
+        write!(out, ",\"mlp_output\":")?;
+        write_f32_array(&mut out, &mlp_output)?;
         write!(out, ",\"layer0_residual\":")?;
         write_f32_array(&mut out, &layer0)?;
         write!(out, "}}\n")?;
