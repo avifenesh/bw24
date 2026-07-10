@@ -1674,6 +1674,22 @@ impl Engine {
         *ON.get_or_init(|| std::env::var("BW24_Q4RP").map(|v| v != "0").unwrap_or(true))
     }
 
+    /// gemma4-E4B: dense [t][row_elems] gather of layer il's rows from the strided prologue
+    /// buffer ([t][n_layer][n_epl]; off = il*n_epl, stride = n_layer*n_epl).
+    pub fn copy_rows_strided(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                             row_elems: usize, n_rows: usize, src_stride: usize, src_off: usize)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("copy_rows_strided_f32");
+        let cfg = LaunchConfig { grid_dim: (((row_elems as u32 + 255) / 256).max(1), n_rows as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (re, nr) = (row_elems as i32, n_rows as i32);
+        let (st, off) = (src_stride as i64, src_off as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(&mut *dst).arg(&re).arg(&nr).arg(&st).arg(&off);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Async device u32 store (value rides the kernel ARG — no host-memory transfer/sync).
     pub fn u32_set_k(&self, dst: &mut CudaSlice<u32>, v: u32, idx: usize)
                      -> Result<(), Box<dyn std::error::Error>> {

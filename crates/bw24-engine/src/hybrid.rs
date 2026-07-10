@@ -318,6 +318,9 @@ pub struct Gemma4E4bLayer {
 /// stays HOST-side raw GGUF bytes at load (Q6_K [n_epl*n_layer, n_vocab], ~2.3GB VRAM when
 /// uploaded — the forward arc decides resident-vs-gather placement).
 pub struct Gemma4E4bModel {
+    /// device copy of the per-layer token table, uploaded on first use (the 26B embd_gpu
+    /// pattern — keeps the ~2.3GB off load-critical paths that never decode).
+    pub tok_tbl_gpu: std::sync::OnceLock<CudaSlice<u8>>,
     pub tok_embd_bytes: Vec<u8>,
     pub tok_embd_qt: i32,
     pub tok_embd_row_bytes: usize,
@@ -703,8 +706,11 @@ impl HybridModel {
                     let n_epl = cfg.gemma4.as_ref().map(|g| g.n_embd_per_layer as usize).unwrap_or(0);
                     let row = t.ne[0] as usize;   // n_epl * n_layer
                     let row_bytes = t.bytes.len() / (t.ne[1] as usize);
-                    eprintln!("[gemma4-e4b] per-layer-embed tensors detected (n_epl={n_epl},                                row {row}); LOADER ONLY — the E4B forward is not wired yet                                (see HANDOVER-E4B.md)");
+                    eprintln!("[gemma4-e4b] per-layer-embed model detected (n_epl={n_epl}, row {row}) — \
+                               first-light forward (eager decode + prime); dc/graph/spec unwired \
+                               (HANDOVER-E4B.md)");
                     Some(crate::hybrid::Gemma4E4bModel {
+                        tok_tbl_gpu: std::sync::OnceLock::new(),
                         tok_embd_bytes: t.bytes.to_vec(),
                         tok_embd_qt: match t.ggml_type {
                             bw24_gguf::GgmlType::Q6_K => crate::QT_Q6_K,

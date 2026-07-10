@@ -812,6 +812,17 @@ extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restri
 }
 
 // ---- tiny async setters/packers (gemma spec round: zero host-memory transfers) ----
+// gemma4-E4B: gather layer il's per-layer-input rows out of the [t][n_layer][n_epl] prologue
+// buffer into a dense [t][n_epl] operand (row t at src offset (t*stride + off)).
+extern "C" __global__ void copy_rows_strided_f32(
+        const float* __restrict__ src, float* __restrict__ dst,
+        int row_elems, int n_rows, long src_stride, long src_off) {
+    int r = blockIdx.y;
+    if (r >= n_rows) return;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < row_elems; j += gridDim.x * blockDim.x)
+        dst[(size_t)r * row_elems + j] = src[(size_t)r * src_stride + src_off + j];
+}
+
 extern "C" __global__ void u32_set_k(unsigned int* __restrict__ dst, unsigned int v, int idx) {
     dst[idx] = v;
 }
