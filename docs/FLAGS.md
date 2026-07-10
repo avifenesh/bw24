@@ -164,7 +164,8 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |
 | `BW24_MOE_CSR` | `0` = rollback the CSR expert-dedup gate_up on spec verify (default ON 2026-07-10: owner-scan dedup of the 38-40% duplicated expert weight-stream+decode, +1-2% spec e2e all K); `2` = run BOTH paths + byte-compare (debug) |
 | `BW24_MOE_OVERLAP` | `1` = log cross-token expert-activation overlap at spec verify (unique/pairs ratio, diagnostic) |
-| `BW24_ROUTER_KERNEL` | `0` = rollback to per-column cuBLAS gemv on the spec-verify router (default ON since 2026-07-10: in-house warp-per-row GEMV, battery green, acceptance bit-identical, +2-4% spec e2e on 35B) |
+| `BW24_ROUTER_KERNEL` | `0` = rollback to the cuBLAS router (per-column gemv at verify t, gemvx at t=1). Default ON since 2026-07-10, extended to t=1 the same day: decode + verify route through the SAME kernel (parity by construction — the cuBLASLt n-dependence class is structurally gone). Verify +2-4% spec e2e; t=1 e2e wash (kept for parity) |
+| `BW24_PROFILE_GEN` | `1` = cudaProfiler{Start,Stop} brackets run-gen's timed generate_with (prime included); `2` = capture starts at the DECODE LOOP (prime excluded) — pair with `nsys -c cudaProfilerApi`. Window-cutting whole-run captures misattributes the argmax-gate loop into decode shares (2026-07-10) |
 | `BW24_PROFILE_SPEC` | `1` = cudaProfiler{Start,Stop} brackets generate_spec (prime included); `2` = capture starts at the ROUND LOOP (prime excluded) — pair with `nsys -c cudaProfilerApi`. Built 2026-07-10 after phase-isolation-by-subtraction proved unworkable on MoE (primes are not fungible: the first cold-stages the expert cache) |
 | `BW24_LAYER_PROBE=1` | sync+print after every forward stage — bisects an in-graph ILLEGAL_ADDRESS (M3 bring-up tool) |
 | `BW24_GDN_DIFF=1` | dual-run oracle: chunked GDN prefill checked against the sequential scan per call |

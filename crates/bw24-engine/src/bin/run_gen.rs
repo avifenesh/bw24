@@ -288,6 +288,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut emitted_ids: Vec<u32> = Vec::new();
     let tok_ref = tokenizer.as_ref();
     e.stream().synchronize()?;
+    // BW24_PROFILE_GEN=1: cudaProfiler{Start,Stop} brackets ONLY the timed generate_with (pair
+    // with `nsys -c cudaProfilerApi`) — window-cutting a whole-run capture misattributes the
+    // tokenwise argmax-gate loop + prime into the decode share map (measured 2026-07-10: the
+    // gate's small-t_kv fa_decode_f32 calls read as a phantom 5% decode share).
+    let prof_gen = std::env::var("BW24_PROFILE_GEN").as_deref() == Ok("1");
+    unsafe extern "C" { fn cudaProfilerStart() -> i32; fn cudaProfilerStop() -> i32; }
+    if prof_gen { unsafe { cudaProfilerStart(); } }
     let t0 = std::time::Instant::now();
     let gen_out = model.generate_with(&e, &prompt, &params, &mut sampler, |id| {
         emitted_ids.push(id);
@@ -299,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         true
     })?;
     e.stream().synchronize()?;
+    if prof_gen { unsafe { cudaProfilerStop(); } }
     let dt_total = t0.elapsed().as_secs_f64();
     // GEN-ONLY timing (2026-07-06 fix): generate_with primes INSIDE the timed span — at long
     // prompts the old number was prime-inclusive (35B @256-tok prime read 33.7 when decode was

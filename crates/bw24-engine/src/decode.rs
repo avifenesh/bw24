@@ -821,6 +821,13 @@ impl HybridModel {
         e.stream().synchronize()?;
         crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
                                  std::sync::atomic::Ordering::Relaxed);
+        // BW24_PROFILE_GEN=2: profiler capture starts HERE — after the prime — so an
+        // `nsys -c cudaProfilerApi` capture contains ONLY the decode loop (the run-spec
+        // BW24_PROFILE_SPEC=2 pattern; =1 in run_gen brackets prime+decode).
+        if std::env::var("BW24_PROFILE_GEN").as_deref() == Ok("2") {
+            unsafe extern "C" { fn cudaProfilerStart() -> i32; }
+            unsafe { cudaProfilerStart(); }
+        }
         let mut out = Vec::with_capacity(budget);
         let mut reason = StopReason::MaxNew;
         for _ in 0..budget {

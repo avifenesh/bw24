@@ -723,7 +723,10 @@ impl HybridModel {
         // top-k WEIGHTS (and at tie margins the SELECTION) differ -> verify != decode. Route
         // small-t through per-column m=1 calls (decode-exact contract); real prefill keeps the
         // batched GEMM.
-        let logits = if t > 1 && t < PRIME_MIN_T {
+        let logits = if t < PRIME_MIN_T {
+            // t == 1 included since 2026-07-10 (was cuBLAS gemvx, 3.1% + adjacent of the depth
+            // decode map): decode and verify now route through the SAME kernel — the
+            // verify==decode router parity holds by construction instead of by FP-order luck.
             if crate::router_kernel_on() {
                 // BW24_ROUTER_KERNEL=1: in-house router GEMV (battery-gated numeric config —
                 // top-k discontinuity means FP-order changes can flip routing; oracle arbitrates).
