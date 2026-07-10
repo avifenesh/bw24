@@ -47,6 +47,8 @@ kernel exists.
   shared-expert tensors. Expert data is stored in one mixed file per layer/projection.
 - Per-expert overlay entries remain zero-copy mmap windows in `HostExps`; the 161 GB full-bank
   control does not materialize an impossible second copy in 124 GB host RAM.
+- Contiguous all-active/all-NVFP4 entries are coalesced back into a uniform mmap slab, preserving
+  the uniform fused dispatch path for `plain_quant`; pruned or mixed arms retain per-expert layouts.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
   excluded before top-k and have no weight bytes in the artifact.
 - HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay
@@ -140,6 +142,7 @@ For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count e
       --expert-count 192 \
       --original-expert-count 192 \
       --top-k 8 \
+      --expected-tokens 163409 \
       --layers 1-79 \
       --hot-fraction 0.25 \
       --low-fraction 0.25 \
@@ -156,6 +159,7 @@ expert ids because bw24 masks the full-width router instead of renumbering it:
       --expert-count 192 \
       --original-expert-count 192 \
       --top-k 8 \
+      --expected-tokens 163409 \
       --layers 1-79 \
       --out /data/plans/plain-reap-mix-quant.json
 
