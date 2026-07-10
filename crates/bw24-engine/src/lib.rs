@@ -4920,6 +4920,27 @@ impl Engine {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
         });
+        // MULTI-ROW v4 (2026-07-11): at gqa==1 (gemma SWA) warp = row over a widened shared
+        // k-tile — one staging per (split, tile) instead of per (row, split, tile), and t=1
+        // blocks pack t warps. Per-row tile grouping matches v4_w exactly; ONE symbol serves
+        // every t (parity structural). BW24_FA_MR=0 reverts to the per-row v4_w grid.
+        let mr = gqa == 1 && t <= 8 && fa_v4_at(window)
+            && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        if mr {
+            let f = self.func("fa_decode_vec_q_rows_v4_w_mr");
+            // fa_v4_smem_mr (fixed 39-slot k tile) + sV for (32 + t - 1) staged keys
+            let sh = (2048 + 256 + 39 * 256 + 39 * 32 + (32 + t - 1) * head_dim * 2) as u32;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            let nr = t as i32;
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, 1),
+                block_dim: (32, t as u32, 1), shared_mem_bytes: sh };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
+             .arg(&ktb).arg(&vtb).arg(&wini).arg(&nr);
+            unsafe { b.launch(cfg)?; }
+        } else {
         let (f, sh) = if fa_v4_at(window) {
             let f = self.func("fa_decode_vec_q_rows_v4_w");
             (f, (11520 + 32 * head_dim * 2) as u32)
@@ -4928,7 +4949,6 @@ impl Engine {
         } else {
             (self.func("fa_decode_vec_q_rows_reg_w"), 0u32)
         };
-        use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
@@ -4937,6 +4957,7 @@ impl Engine {
          .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
+        }
         let (fc, cfg2) = (self.func("fa_decode_combine_rows_w"),
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });

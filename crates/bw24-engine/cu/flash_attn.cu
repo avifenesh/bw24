@@ -4510,6 +4510,190 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
     }
 }
 
+// MULTI-ROW v4 windowed kernel (2026-07-11, the windowed-lane occupancy/staging fix): gemma
+// SWA has gqa==1 (nh==nkv), so v4_w ran ONE warp per block and staged the k-tile once PER
+// (row, split). Here warp wy = verify row over a WIDENED shared tile (FA_DEC_TILE + R - 1
+// staged keys, cooperative across all R warps): row r's k-th tile is staged slots
+// [wy + 32k, wy + 32k + 32), which is EXACTLY its own t_lo_r-aligned grouping — per-row tile
+// boundaries (and therefore the online-softmax order) match the single-row v4_w. This kernel
+// REPLACES v4_w at every t (R=1 decode .. R=8 gates) so parity stays structural (one symbol).
+// gqa==1 is host-gated.
+#define FA_MR_MAX 8
+struct fa_v4_smem_mr {
+    int   q_ints[FA_MR_MAX][64];
+    float q_d[FA_MR_MAX][8];
+    int   k_ints[FA_DEC_TILE + FA_MR_MAX - 1][64];
+    float k_d[FA_DEC_TILE + FA_MR_MAX - 1][8];
+    // sV bf16 [(FA_DEC_TILE + FA_MR_MAX - 1) x head_dim] follows in dynamic smem
+};
+static __device__ __forceinline__ void fa_v4_stage_q_mr(
+        const float* __restrict__ Q, size_t qoff, float scale, int lane, int wy,
+        fa_v4_smem_mr* sm) {
+    int qq[FA_DEC_MAX_DPL / 4];
+    float dQ;
+    fa_dec_v3_qquant(Q, qoff, scale, 8, lane, qq, dQ);
+    sm->q_ints[wy][lane * 2]     = qq[0];
+    sm->q_ints[wy][lane * 2 + 1] = qq[1];
+    if ((lane & 3) == 0) sm->q_d[wy][lane >> 2] = dQ;
+}
+static __device__ __forceinline__ void fa_v4_stage_k_mr(
+        const uint8_t* __restrict__ K, int t0, int nt, int bt, int bsz,
+        int kblk0, long k_tok_bytes, fa_v4_smem_mr* sm) {
+    for (int task = bt; task < nt * 8; task += bsz) {
+        int j = task >> 3, c = task & 7;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        sm->k_d[j][c] = __half2float(*(const half*)blk);
+        const uint8_t* qs = blk + 2;
+        const unsigned sh8 = ((unsigned)(size_t)qs & 3u) * 8u;
+        const uint32_t* ap = (const uint32_t*)((size_t)qs & ~(size_t)3);
+        uint32_t w0 = ap[0];
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            uint32_t w1 = ap[w + 1];
+            sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
+            w0 = w1;
+        }
+    }
+}
+extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes, int window, int n_rows)
+{
+    const int r     = threadIdx.y;               // this warp's verify row
+    const int lane  = threadIdx.x;
+    const int T_kv  = t_kv_base_dev[0] + base_plus + r + 1;
+    const int start = T_kv - window;
+    const int n_splits = (window + split_keys - 1) / split_keys;
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int head = kv_head;                    // gqa == 1 (host-gated)
+    const int dpl  = head_dim >> 5;
+
+    const int per   = (window + n_splits - 1) / n_splits;
+    const int t_lo  = start + split * per;                          // this ROW's range
+    const int t_hi  = start + min(window, split * per + per);
+    const int u0    = (t_kv_base_dev[0] + base_plus + 1) - window + split * per;  // row 0's t_lo
+    const int nkeys = (t_hi - t_lo);                                // == per for every row
+
+    extern __shared__ unsigned char sm_raw_mr[];
+    fa_v4_smem_mr* sm = (fa_v4_smem_mr*)sm_raw_mr;
+    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_mr + sizeof(fa_v4_smem_mr));
+
+    if (r < n_rows) {
+        fa_v4_stage_q_mr(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, r, sm);
+    }
+    __syncthreads();
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    const int bt  = threadIdx.y * WARP_SZ + lane;
+    const int bsz = WARP_SZ * blockDim.y;
+    const int kblk0 = (kv_head * head_dim) >> 5;
+
+    // tiles walk row 0's grid; the shared stage covers [u0 + 32k, u0 + 32k + 32 + n_rows - 1)
+    // so every row's own 32-key window [u0 + r + 32k, ...+32) is resident.
+    for (int k0 = 0; k0 < nkeys; k0 += FA_DEC_TILE) {
+        const int t0  = u0 + k0;
+        const int nt_row = min(FA_DEC_TILE, nkeys - k0);            // keys this tile, per row
+        const int nt_stage = nt_row + n_rows - 1;                   // union staged
+        // stage V (q5_1 -> bf16) for the union
+        for (int b = bt; b < nt_stage * dpl * 4; b += bsz) {
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * 24;
+            uint32_t wdm; memcpy(&wdm, blk, 4);
+            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
+            uint32_t qh; memcpy(&qh, blk + 4, 4);
+            uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
+                const int byte = (e2 < 16) ? e2 : e2 - 16;
+                const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
+                const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
+                const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
+                out[e2] = __float2bfloat16(d * (float)q5 + m);
+            }
+        }
+        fa_v4_stage_k_mr(K, t0, nt_stage, bt, bsz, kblk0, k_tok_bytes, sm);
+        __syncthreads();
+
+        if (r < n_rows) {
+            // ---- score: lane j owns THIS ROW's key j = staged slot j + r ----
+            float my_score = NEG_INF;
+            if (lane < nt_row) {
+                float s = 0.0f;
+                #pragma unroll
+                for (int c = 0; c < 8; c++) {
+                    int sumi = 0;
+                    #pragma unroll
+                    for (int w = 0; w < 8; w++)
+                        sumi = __dp4a(sm->k_ints[lane + r][c * 8 + w], sm->q_ints[r][c * 8 + w], sumi);
+                    s = __fmaf_rn(__fmul_rn(sm->k_d[lane + r][c], sm->q_d[r][c]), (float)sumi, s);
+                }
+                my_score = s;
+            }
+            float tile_max = m_i;
+            {
+                float v = my_score;
+                #pragma unroll
+                for (int off = 16; off > 0; off >>= 1)
+                    v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+                tile_max = fmaxf(tile_max, v);
+            }
+            const float m_new = tile_max;
+            const float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            const float p_lane = (lane < nt_row) ? exp2f((my_score - m_new) * LOG2E) : 0.0f;
+            l_i = l_i * alpha + warp_reduce_sum(p_lane);
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) acc[i] *= alpha;
+            }
+            m_i = m_new;
+            #pragma unroll 8
+            for (int j = 0; j < nt_row; ++j) {
+                const float p = __shfl_sync(0xffffffffu, p_lane, j);
+                const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)(j + r) * head_dim);
+                #pragma unroll
+                for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                    if (2 * i2 < dpl) {
+                        const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                        acc[2 * i2]     += p * __bfloat162float(vv.x);
+                        acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                    }
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (r < n_rows) {
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+            if (i < dpl) {
+                int d = lane + (i << 5);
+                partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+            }
+        }
+        if (lane == 0) {
+            partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+            partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+        }
+    }
+}
+
 // windowed REGISTER rows twin (gemma R6 non-v4 lane; body = fa_decode_vec_q_rows verbatim).
 extern "C" __global__ void fa_decode_vec_q_rows_reg_w(
         const float* __restrict__ Q,    // [T, n_head, head_dim] token-major (verify q stack)
