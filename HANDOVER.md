@@ -4,6 +4,26 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## NIGHT 2026-07-10 PART 2: FA SHARED-K REFUTED; GPU-BOUND CORRECTION; OPS INCIDENTS
+
+- **Round loop = GPU-BOUND (correction):** the 4-bucket BW24_SPEC_PHASE split (draft /
+  verify-issue / verify-wait / commit-host) shows verify-issue (4.6-5.0ms/rd) fully overlapped
+  by a LONGER GPU verify (~9-11ms/rd); commit-host 0.3ms. The earlier "host-issue-bound +30-50%"
+  read was a 3-bucket artifact. Verify-graph arc downgraded to ~10-15% ceiling (draft roundtrips).
+- **FA verify shared-K REFUTED before build:** ncu on fa_decode_vec_q_rows_v3 at p3 depth:
+  dram__throughput 2.35% (≈zero DRAM), lts 38.6MB/launch — the 4 rows' KV re-reads are entirely
+  L2-absorbed; kernel is latency-bound. Shared-K ceiling ~2-3% vs a geometry-hard port (per-row
+  split/tile boundaries pinned by exactness, misaligned across rows). CLOSED.
+- **Draft-readback arc NEGATIVE ×3** (packed 8B readback / K-chain-one-graph / per-step+d2t):
+  all reverted; law = after the first dependency-satisfying sync, tiny DtoHs are near-free.
+- **OPS (cost a night of trust):** (1) my 35B/27B loads OOM-crashed the owner's colbert server
+  twice — resident-experts budgets 80% of free VRAM assuming sole ownership; EVERY run now
+  checks compute-apps first + caps BW24_MOE_RESIDENT_GB. (2) ncu crashes live GPU apps incl.
+  the session-hosting desktop app — ncu ONLY with per-run owner approval (nsys is safe).
+  (3) Codex desktop had an unrelated spinning Electron gpu-process (93% CPU) — restarted.
+- **IN FLIGHT:** down-csr2 kernel (warp-parallel pairs + SMEM-staged decode + combine chain)
+  built, gates queued behind the clean-idle standings re-run (G-logs, Sonnet lane).
+
 ## NIGHT 2026-07-10 (session continued): ROUTER GEMV + CSR DEDUP SHIPPED; SERVE-CONFIG TRANSFER MAP
 
 **Shipped (both DEFAULT ON, battery green, v0.13.0):**
