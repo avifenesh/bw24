@@ -814,12 +814,17 @@ impl HybridModel {
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
         let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
+        // Observation modes must route through the host-visible selection below. Otherwise a fully
+        // resident layer returns through device dispatch before its trace/stats row is recorded,
+        // silently biasing calibration toward only non-resident layers on large-VRAM machines.
+        let observe_routes = std::env::var("BW24_MOE_STATS").is_ok()
+            || std::env::var("BW24_MOE_TRACE").is_ok();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
-            && std::env::var("BW24_MOE_STATS").is_err() {
+            && !observe_routes {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
         }
         if dev_ok && use_cache && n_used <= 8 && moe_dev_enabled()
-            && std::env::var("BW24_MOE_STATS").is_err() {
+            && !observe_routes {
             let row_ok = e.with_moe_cache(max_block, |c, eng| {
                 if moe_prewarm_enabled() { c.prewarm_layer(il, m, eng)?; }
                 Ok(c.layer_dev_row(il, n_expert, eng)?.is_some())
