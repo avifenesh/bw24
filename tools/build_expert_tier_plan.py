@@ -66,6 +66,27 @@ def read_trace(paths: list[Path], layers: list[int], n_expert: int) -> tuple[dic
     return counts, events
 
 
+def read_mask(path: Path, layers: list[int], n_expert: int) -> dict[int, set[int]]:
+    payload = json.loads(path.read_text())
+    if payload.get("format") != "bw24-hy3-reap-mask-v1":
+        raise ValueError(f"{path}: unsupported expert mask format {payload.get('format')!r}")
+    specs = payload.get("layers")
+    if not isinstance(specs, dict):
+        raise ValueError(f"{path}: layers must be an object")
+    result: dict[int, set[int]] = {}
+    universe = set(range(n_expert))
+    for layer in layers:
+        spec = specs.get(str(layer))
+        if not isinstance(spec, dict):
+            raise ValueError(f"{path}: missing layer {layer}")
+        retained = {int(expert) for expert in spec.get("retained_experts", [])}
+        pruned = {int(expert) for expert in spec.get("pruned_experts", [])}
+        if retained | pruned != universe or retained & pruned:
+            raise ValueError(f"{path}: layer {layer} is not an exact partition of 0..{n_expert - 1}")
+        result[layer] = pruned
+    return result
+
+
 def _take_ranked(ids: list[int], counts: list[int], n: int, hottest: bool) -> set[int]:
     ranked = sorted(ids, key=lambda ex: ((-counts[ex], ex) if hottest else (counts[ex], ex)))
     return set(ranked[:n])
@@ -73,6 +94,11 @@ def _take_ranked(ids: list[int], counts: list[int], n: int, hottest: bool) -> se
 
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     layers = parse_layers(args.layers)
+    masked_pruned = (
+        read_mask(args.mask, layers, args.expert_count)
+        if args.mask is not None
+        else {layer: set() for layer in layers}
+    )
     if args.recipe == "uniform-nvfp4":
         if args.trace:
             raise ValueError("uniform-nvfp4 must not depend on calibration traces")
@@ -90,7 +116,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
     for layer in layers:
         c = counts[layer]
-        inactive = {ex for ex, count in enumerate(c) if count == 0} if args.prune_unused else set()
+        inactive = set(masked_pruned[layer])
+        if args.prune_unused:
+            inactive.update(ex for ex, count in enumerate(c) if count == 0)
         retained = [ex for ex in range(args.expert_count) if ex not in inactive]
         if len(retained) < args.top_k:
             raise ValueError(f"layer {layer}: pruning leaves {len(retained)} experts, below top_k={args.top_k}")
@@ -107,12 +135,14 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             low = _take_ranked(remaining, c, low_n, hottest=False)
             tiers = {"NVFP4": hot, "Q2_K": low, "Q3_K": set(retained) - hot - low}
         else:
-            if args.expert_count * 2 != args.original_expert_count:
+            if args.mask is None:
+                raise ValueError("reap50-plus25 requires a recovered REAP mask")
+            if len(retained) * 2 != args.original_expert_count:
                 raise ValueError(
                     "reap50-plus25 expects the source to retain exactly 50% of original experts "
-                    f"({args.expert_count} vs original {args.original_expert_count})"
+                    f"({len(retained)} vs original {args.original_expert_count})"
                 )
-            if inactive:
+            if args.prune_unused:
                 raise ValueError("reap50-plus25 does not apply an additional unused-expert prune")
             q2_n = round(args.original_expert_count * 0.25)
             low = _take_ranked(retained, c, q2_n, hottest=False)
@@ -152,12 +182,18 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "hot_fraction": args.hot_fraction if args.recipe == "usage-pyramid" else None,
             "low_fraction": args.low_fraction if args.recipe == "usage-pyramid" else None,
             "prune_unused": args.prune_unused,
+            "expert_mask": str(args.mask.resolve()) if args.mask is not None else None,
             "tie_break": "ascending expert id",
         },
         "calibration": {
             "trace_files": [
                 {"path": str(path.resolve()), "sha256": sha256(path)} for path in args.trace
             ],
+            "mask_file": (
+                {"path": str(args.mask.resolve()), "sha256": sha256(args.mask)}
+                if args.mask is not None
+                else None
+            ),
             "matched_events": events,
             "public_eval_data_used_for_selection": False,
         },
@@ -175,6 +211,7 @@ def self_test() -> None:
         args = argparse.Namespace(
             trace=[trace], recipe="usage-pyramid", expert_count=5, original_expert_count=5,
             top_k=2, layers="1", hot_fraction=0.25, low_fraction=0.25, prune_unused=True,
+            mask=None,
         )
         plan = build_plan(args)
         summary = plan["layer_summary"]["1"]
@@ -186,28 +223,45 @@ def self_test() -> None:
         uniform = build_plan(argparse.Namespace(
             trace=[], recipe="uniform-nvfp4", expert_count=4, original_expert_count=4,
             top_k=2, layers="1", hot_fraction=0.25, low_fraction=0.25,
-            prune_unused=False,
+            prune_unused=False, mask=None,
         ))
         uniform_summary = uniform["layer_summary"]["1"]
         assert uniform_summary["nvfp4"] == 4
         assert uniform_summary["q3_k"] == 0 and uniform_summary["q2_k"] == 0
         assert uniform["calibration"]["trace_files"] == []
         reap_trace = root / "reap.trace"
-        reap_trace.write_text("1 1 " + ",".join(str(x) for x in range(96)) + "\n")
+        reap_trace.write_text("1 1 " + ",".join(str(x) for x in range(0, 192, 2)) + "\n")
+        reap_mask = root / "reap-mask.json"
+        reap_mask.write_text(json.dumps({
+            "format": "bw24-hy3-reap-mask-v1",
+            "layers": {"1": {
+                "retained_experts": list(range(0, 192, 2)),
+                "pruned_experts": list(range(1, 192, 2)),
+            }},
+        }))
         reap = build_plan(argparse.Namespace(
-            trace=[reap_trace], recipe="reap50-plus25", expert_count=96,
+            trace=[reap_trace], recipe="reap50-plus25", expert_count=192,
             original_expert_count=192, top_k=8, layers="1",
-            hot_fraction=0.25, low_fraction=0.25, prune_unused=False,
+            hot_fraction=0.25, low_fraction=0.25, prune_unused=False, mask=reap_mask,
         ))
         reap_summary = reap["layer_summary"]["1"]
         assert reap_summary["q2_k"] == 48 and reap_summary["nvfp4"] == 48
-        assert reap_summary["q3_k"] == 0 and reap_summary["pruned"] == 0
+        assert reap_summary["q3_k"] == 0 and reap_summary["pruned"] == 96
+        reap_uniform = build_plan(argparse.Namespace(
+            trace=[], recipe="uniform-nvfp4", expert_count=192,
+            original_expert_count=192, top_k=8, layers="1",
+            hot_fraction=0.25, low_fraction=0.25, prune_unused=False,
+            mask=reap_mask,
+        ))
+        assert reap_uniform["layer_summary"]["1"]["nvfp4"] == 96
+        assert reap_uniform["pruned_experts"]["1"] == list(range(1, 192, 2))
         print("expert tier plan self-test: PASS")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trace", type=Path, action="append", default=[])
+    parser.add_argument("--mask", type=Path, help="recovered original-id expert mask")
     parser.add_argument("--recipe", choices=RECIPES)
     parser.add_argument("--expert-count", type=int)
     parser.add_argument("--original-expert-count", type=int)

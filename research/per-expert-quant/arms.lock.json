@@ -9,10 +9,12 @@
   "reap": {
     "implementation": "https://github.com/CerebrasResearch/reap.git",
     "revision": "1970473c51ca3caeb98c10392f15b3a08a672974",
+    "implementation_role": "method provenance; the frozen public REAP50 mask is recovered without loading its quantized experts into scored artifacts",
     "retained_experts_per_layer": 96,
     "reference_model": "pipenetwork/Hy3-REAP50-MLX-4bit",
     "reference_revision": "e054317b43aa601484a219a53e33e02e46caa970",
-    "reference_role": "mask and structure cross-check only; not a scored source because it is already MLX 4-bit"
+    "reference_role": "mask donor only; retained router rows are matched to pinned BF16 original ids and confirmed by correction bias",
+    "mask_recovery": "nearest 8-bit MLX router row to BF16 source row, one-to-one, minimum 10x nearest/second-nearest RMSE margin, exact correction-bias match"
   },
   "shared_contract": {
     "uniform_qtype": "NVFP4",
@@ -32,13 +34,13 @@
     },
     {
       "name": "plain_reap_quant",
-      "expert_bank": "reap50-96",
+      "expert_bank": "reap50-original-id-mask-96",
       "recipe": "uniform-nvfp4",
       "pruning": "frozen REAP50 mask"
     },
     {
       "name": "plain_reap_mix_quant",
-      "expert_bank": "reap50-96",
+      "expert_bank": "reap50-original-id-mask-96",
       "recipe": "reap50-plus25",
       "pruning": "frozen REAP50 mask",
       "tiers": "48 least-used original-bank experts Q2_K; remaining 48 NVFP4"

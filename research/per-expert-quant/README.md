@@ -8,8 +8,11 @@ performance measurement, calibration, and public evaluation happen on the provis
 ## Target model and frozen recipes
 
 The source model is `tencent/Hy3` with 192 routed experts per MoE layer, top-8 sigmoid routing, and
-MoE layers 1 through 79. The frozen REAP50 mask retains 96 experts per layer. Exact model, REAP,
-and reference revisions live in `arms.lock.json`.
+MoE layers 1 through 79. The frozen REAP50 mask retains 96 experts per layer. The public checkpoint
+renumbered them to 0..95 without publishing the original ids, so `recover_hy3_reap_mask.py` matches
+its 8-bit router rows back to the pinned BF16 router and confirms every match with the untouched
+correction bias. Exact model, REAP-method provenance, and reference revisions live in
+`arms.lock.json`.
 
 The scored arms are fixed:
 
@@ -21,7 +24,7 @@ The scored arms are fixed:
    coldest 25% Q2_K, and zero-count experts pruned.
 
 BF16 Hy3 is common source material only. It is never scored. The public MLX REAP50 checkpoint is a
-mask/structure cross-check only because re-quantizing it would create a double-quantized arm.
+mask donor only; none of its already-quantized expert weights enter a scored artifact.
 
 Q2 means GGUF Q2_K (2.625 effective bits/weight), Q3 means Q3_K (3.4375 bits/weight), and
 NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
@@ -32,7 +35,10 @@ kernel exists.
 
 - BW24_MOE_TRACE=/path records routed expert ids without changing normal runs.
 - tools/build_expert_tier_plan.py emits calibration-independent uniform plans or aggregates frozen
-  calibration traces for usage-ranked plans, with trace hashes in the latter.
+  calibration traces for usage-ranked plans, accepts original-id expert masks, and records all
+  trace/mask hashes.
+- tools/recover_hy3_reap_mask.py reconstructs the public REAP50 original-id mask from router rows,
+  requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
   and writes Q2_K, Q3_K, and NVFP4 byte ranges. Every active expert projection must be assigned.
 - A v2 overlay can reuse a complete manifest repack for dense, attention, router, tokenizer, and
@@ -68,14 +74,25 @@ Capture enough requests to cover the intended deployment distribution:
 The trace format is one line per layer/forward: layer, token count, then comma-separated expert
 ids. Multiple trace files may be passed and their SHA-256 hashes are frozen into the plan.
 
-Generate the two uniform controls without reading a calibration trace:
+Recover the frozen REAP mask after both pinned downloads complete:
+
+    python3 tools/recover_hy3_reap_mask.py \
+      --base /data/models/hy3-source \
+      --reference /data/models/hy3-reap50-mlx-reference \
+      --base-revision 716aa7241bd6d95896be4ebfc761162a9c4d49ef \
+      --reference-revision e054317b43aa601484a219a53e33e02e46caa970 \
+      --out /data/plans/hy3-reap50-mask.json
+
+Generate the two uniform controls without reading a calibration trace. Both consume the same BF16
+source and preserve original expert ids:
 
     python3 tools/build_expert_tier_plan.py \
       --recipe uniform-nvfp4 --expert-count 192 --original-expert-count 192 \
       --top-k 8 --layers 1-79 --out /data/plans/plain-quant.json
 
     python3 tools/build_expert_tier_plan.py \
-      --recipe uniform-nvfp4 --expert-count 96 --original-expert-count 192 \
+      --recipe uniform-nvfp4 --expert-count 192 --original-expert-count 192 \
+      --mask /data/plans/hy3-reap50-mask.json \
       --top-k 8 --layers 1-79 --out /data/plans/plain-reap-quant.json
 
 For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count experts:
@@ -92,12 +109,14 @@ For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count e
       --prune-unused \
       --out /data/plans/mix-quant.json
 
-For the actual local REAP50 checkpoint, build the exact 48 Q2_K / 48 NVFP4 split:
+For the masked REAP50 bank, build the exact 48 Q2_K / 48 NVFP4 split. The trace retains original
+expert ids because bw24 masks the full-width router instead of renumbering it:
 
     python3 tools/build_expert_tier_plan.py \
       --trace /data/runs/hy3-reap50-calibration.trace \
+      --mask /data/plans/hy3-reap50-mask.json \
       --recipe reap50-plus25 \
-      --expert-count 96 \
+      --expert-count 192 \
       --original-expert-count 192 \
       --top-k 8 \
       --layers 1-79 \
@@ -116,9 +135,9 @@ Create at least three matched random controls without changing tier counts or pr
 
 ## Artifact preparation
 
-Build all four scored artifacts from the same pinned BF16 source. Produce
-`/data/models/hy3-reap50-source` with the pinned REAP implementation and frozen mask first. The
-public MLX model at `/data/models/hy3-reap50-mlx-reference` is not an artifact source.
+Build all four scored artifacts from the same pinned BF16 source. The recovered mask controls which
+original source experts are omitted; no intermediate BF16-pruned checkpoint and no MLX expert
+weights are used.
 
     python3 tools/prepare_mixed_expert_repack.py test
     python3 tools/prepare_mixed_expert_repack.py probe /data/models/hy3-source \
@@ -129,11 +148,11 @@ public MLX model at `/data/models/hy3-reap50-mlx-reference` is not an artifact s
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-quant.json --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
-      /data/models/hy3-reap50-source /data/artifacts/plain-reap-quant \
+      /data/models/hy3-source /data/artifacts/plain-reap-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-quant.json --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
-      /data/models/hy3-reap50-source /data/artifacts/plain-reap-mix-quant \
+      /data/models/hy3-source /data/artifacts/plain-reap-mix-quant \
       --fallback-dir /data/models/hy3-source --plan /data/plans/plain-reap-mix-quant.json --resume
 
     python3 tools/prepare_mixed_expert_repack.py prepare \
@@ -185,8 +204,9 @@ Before public evaluation, retain raw logs from the required CUDA gates:
         2>&1 | tee "run-spec-k${k}.log"
     done
 
-Add a dedicated Q2_K GPU oracle to kernel-check on that machine before trusting the Q2 tier.
-No correctness, quality, or throughput claim is made from this development host.
+`kernel-check` includes a model-independent Q2_K CPU-vs-GPU oracle; its raw target-machine log is a
+required artifact before trusting the Q2 tier. No correctness, quality, or throughput claim is made
+from the development host.
 
 ## Public evaluation
 
