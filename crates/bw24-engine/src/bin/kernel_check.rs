@@ -1485,7 +1485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
             let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
             let mut o_rows = e.zeros(hd*nh*t)?;
-            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes)?;
+            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false)?;
             let a = e.dtoh(&o_loop)?; let b = e.dtoh(&o_rows)?;
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
@@ -1510,7 +1510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
                 let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
                 let mut o_rows3 = e.zeros(hd*nh*t)?;
-                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes)?;
+                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false)?;
                 unsafe { std::env::remove_var("BW24_FA_V3"); }
                 let a3 = e.dtoh(&o_loop3)?; let b3 = e.dtoh(&o_rows3)?;
                 let bd3 = a3.iter().zip(&b3).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
