@@ -8,6 +8,42 @@ use bw24_gguf::GgufFile;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: gemma-gate <model.gguf> <tok ids...>");
     let mut toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+    // BW24_SPEC=K + BW24_DRAFT=<drafter.gguf>: MTP spec loop — prime, draft K, verify, accept.
+    // Compares the spec token stream against plain greedy (self-consistency) + times both.
+    if let (Ok(kk), Ok(dpath)) = (std::env::var("BW24_SPEC"), std::env::var("BW24_DRAFT")) {
+        let k: usize = kk.parse().unwrap_or(4);
+        let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let dg = bw24_gguf::GgufFile::open(&dpath)?;
+        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        println!("spec K={k} n_new={n_new} prompt={} toks", toks.len());
+        // plain greedy reference + timing
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let plain = model.generate(&e, &toks, n_new)?;
+        e.stream().synchronize()?;
+        let dt_plain = t0.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        // spec run + timing
+        let t1 = std::time::Instant::now();
+        let spec = model.generate_spec_gemma(&e, &draft, &toks, n_new, k, &[])?;
+        e.stream().synchronize()?;
+        let dt_spec = t1.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let same = plain.iter().zip(&spec).take_while(|(a, b)| a == b).count();
+        println!("plain: {:.2} tok/s | spec: {:.2} tok/s ({:.2}x) | stream agreement {}/{}",
+                 plain.len() as f64 / dt_plain, spec.len() as f64 / dt_spec,
+                 dt_plain / dt_spec * (spec.len() as f64 / plain.len() as f64),
+                 same, plain.len().min(spec.len()));
+        if same < plain.len().min(spec.len()) {
+            println!("plain: {:?}", &plain[..plain.len().min(24)]);
+            println!("spec : {:?}", &spec[..spec.len().min(24)]);
+        }
+        return Ok(());
+    }
     // BW24_VERIFY_GATE=K: batched-verify self-consistency — decode the prompt tokenwise
     // (reference), then on a fresh cache decode the prefix and run ONE decode_step_t over the
     // last K tokens; per-position argmax must match the tokenwise chain (the spec K-gate).

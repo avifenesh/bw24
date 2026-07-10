@@ -14,6 +14,7 @@ pub mod hybrid_forward;
 pub mod cache;
 pub mod decode;
 pub mod spec;
+pub mod gemma_spec;
 pub mod eagle;
 pub mod sampler;
 

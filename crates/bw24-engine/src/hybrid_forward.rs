@@ -2463,6 +2463,14 @@ impl HybridModel {
     pub(crate) fn gemma4_decode_step_t(&self, e: &Engine, tokens: &[u32], pos0: usize,
                                        cache: &mut Cache)
                                        -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        Ok(self.gemma4_decode_step_t_h(e, tokens, pos0, cache)?.0)
+    }
+
+    /// gemma4 verify + the POST-output_norm hidden stack [t, n_embd] (the drafter's h input —
+    /// llama's h_nextn convention).
+    pub(crate) fn gemma4_decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize,
+                                         cache: &mut Cache)
+                                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
@@ -2488,7 +2496,7 @@ impl HybridModel {
         e.softcap(&mut ld, cap, t * self.output.out_features())?;
         let logits = e.dtoh(&ld)?;
         cache.pos += t;
-        Ok(logits)
+        Ok((logits, hn))
     }
 
     /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
