@@ -590,6 +590,9 @@ impl HybridModel {
     /// Advances `cache.pos` by T.
     pub fn decode_step_t(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
                          -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.gemma4.is_some() {
+            return self.gemma4_decode_step_t(e, tokens, pos0, cache);
+        }
         Ok(self.decode_step_t_h(e, tokens, pos0, cache)?.0)
     }
 

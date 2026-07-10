@@ -3368,7 +3368,7 @@ impl Engine {
     /// `_mmvq` kernels but iterate the m token columns INSIDE one warp/row, so the weight bytes leave
     /// HBM/L2 once for m tokens (vs grid.y=m re-reading m times). The 5 daily-hot dtypes have them.
     pub fn batched_supports(&self, qtype: i32) -> bool {
-        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4 | QT_F8_E4M3)
+        matches!(qtype, QT_Q8_0 | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_NVFP4 | QT_F8_E4M3 | QT_Q4_0)
     }
 
     /// b8 tier seam: BW24_B8=0 keeps m=5..8 on the per-m grid.y=m path (m=2..4 batched dispatch
@@ -3401,6 +3401,8 @@ impl Engine {
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
             (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
             (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
+            (QT_Q4_0, 2) => "qmatvec_q4_0_mmvq_b2", (QT_Q4_0, 4) => "qmatvec_q4_0_mmvq_b4",
+            (QT_Q4_0, 8) => "qmatvec_q4_0_mmvq_b8",
             _ => return None,
         })
     }

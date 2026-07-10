@@ -2091,35 +2091,42 @@ impl HybridModel {
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
 
-        // Router: the in-house GEMV at t=1 (decode-exact class), batched matmul at prefill.
-        let logits = if t == 1 && crate::router_kernel_on() {
+        // Router: the in-house GEMV for ALL small t (decode AND verify ride the same per-column
+        // kernel — the cuBLASLt n-dependence flipped top-k at verify t on the 27B, d994271);
+        // batched matmul only at real prefill.
+        let logits = if t < PRIME_MIN_T && crate::router_kernel_on() {
             e.router_gemv(m.gate_inp.float_data(), router_in, n_embd, n_expert, t)?
         } else {
             e.matmul(&m.gate_inp, router_in, t)?
         };
 
-        // FAST T=1 ARM (decode hot path): device softmax-topk router + ONE fused gate_up GELU
-        // launch + ONE down8 FMA launch over the resident dev slabs (the qwen dev_q8 recipe with
-        // the gelu twin + the R3 per-expert-scale weight fold). Requires dp4a expert support.
-        if t == 1 && m.dev_exps.as_ref().is_some_and(|d| !d.gu_il)
+        // FAST SMALL-T ARM (decode t=1 AND spec verify t=2..15): device softmax-topk router,
+        // then PER TOKEN the same fused gate_up GELU + down8 FMA launch pair over the resident
+        // dev slabs — verify rides the EXACT decode kernel chain per token (dispatch-parity
+        // law; the qwen "verify must be kernel-dispatch-identical to decode" lesson).
+        if t < PRIME_MIN_T && m.dev_exps.as_ref().is_some_and(|d| !d.gu_il)
             && expert_dp4a_supported(m.gate_exps.qtype) && expert_dp4a_supported(m.up_exps.qtype)
             && expert_dp4a_supported(m.down_exps.qtype)
             && std::env::var("BW24_GEMMA_MOE_FAST").as_deref() != Ok("0") {
             let dev = m.dev_exps.as_ref().unwrap();
-            let (sel_d, mut w_d) = e.moe_router_topk(&logits, 1, n_expert, n_used)?;
-            e.moe_w_exscale(&mut w_d, &sel_d, &bits.per_expert_scale_d, n_used)?;
-            let (zq, zd) = e.quantize_q8_1(moe_in, 1, n_embd)?;
-            let selv = sel_d.slice(0..n_used);
-            let act = e.moe_gate_up_gelu8_dev_q8(&dev.ptr_row, &selv, &zq, &zd,
-                                                 n_embd, n_ff_exp, n_used, n_expert,
-                                                 m.gate_exps.qtype, m.up_exps.qtype,
-                                                 m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
-            let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
-            let mut moe_out = e.uninit(n_embd)?;
-            let wv = w_d.slice(0..n_used);
-            e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2,
-                                   &mut moe_out.slice_mut(0..n_embd), n_ff_exp, n_embd,
-                                   n_used, n_expert, m.down_exps.qtype, m.down_exps.row_bytes)?;
+            let (sel_d, mut w_d) = e.moe_router_topk(&logits, t, n_expert, n_used)?;
+            e.moe_w_exscale(&mut w_d, &sel_d, &bits.per_expert_scale_d, t * n_used)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            for tok in 0..t {
+                let zt = moe_in.slice(tok * n_embd..(tok + 1) * n_embd);
+                let (zq, zd) = e.quantize_q8_1_view(&zt, 1, n_embd)?;
+                let selv = sel_d.slice(tok * n_used..(tok + 1) * n_used);
+                let wv = w_d.slice(tok * n_used..(tok + 1) * n_used);
+                let act = e.moe_gate_up_gelu8_dev_q8(&dev.ptr_row, &selv, &zq, &zd,
+                                                     n_embd, n_ff_exp, n_used, n_expert,
+                                                     m.gate_exps.qtype, m.up_exps.qtype,
+                                                     m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2, &mut dst,
+                                       n_ff_exp, n_embd, n_used, n_expert,
+                                       m.down_exps.qtype, m.down_exps.row_bytes)?;
+            }
             return Ok(moe_out);
         }
 
@@ -2446,6 +2453,96 @@ impl HybridModel {
         e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         Ok(e.matmul(&fa.wo, &attn, 1)?)
+    }
+
+    /// gemma4 VERIFY step (spec decode): t tokens batched through the trunk at positions
+    /// pos0..pos0+t-1, K/V rows appended to the quantized cache (caller rolls back rejected
+    /// rows via kvl.len), per-token causal windowed attend (fa_decode per token — the same
+    /// kernel family as T=1 decode at each token's t_kv). Returns [t, n_vocab] softcapped
+    /// logits (host) + advances cache.pos by t.
+    pub(crate) fn gemma4_decode_step_t(&self, e: &Engine, tokens: &[u32], pos0: usize,
+                                       cache: &mut Cache)
+                                       -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.uninit(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_verify_attn(e, fa, il, &h, &pos_d, t, cache)?;
+            let mut cur = e.uninit(t * n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+            let mut attn_out = e.uninit(t * n_embd)?;
+            e.add(&cur, &x, &mut attn_out, t * n_embd)?;
+            x = self.gemma4_layer_tail(e, layer, &attn_out, t)?;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let mut ld = e.matmul(&self.output, &hn, t)?;
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        let logits = e.dtoh(&ld)?;
+        cache.pos += t;
+        Ok(logits)
+    }
+
+    /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
+    /// row causally over [win_off_i .. base+i] via the SAME fa_decode dispatch as T=1 decode.
+    fn gemma4_verify_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                          h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          cache: &mut Cache)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let n_embd = self.cfg.n_embd as usize;
+
+        let (hq, hdq) = e.quantize_q8_1(h, t, n_embd)?;
+        let q0 = e.matmul_pre(&fa.wq, &hq, &hdq, h, t)?;
+        let k0 = e.matmul_pre(&fa.wk, &hq, &hdq, h, t)?;
+        let v0 = if swa { e.matmul_pre(&fa.wv, &hq, &hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        let mut q = e.uninit(t * nh * hd)?;
+        let mut k = e.uninit(t * nkv * hd)?;
+        let mut v = e.uninit(t * nkv * hd)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        if swa {
+            e.rope_neox(&mut q, pos_d, hd, hd, nh, t, base, 1.0)?;
+            e.rope_neox(&mut k, pos_d, hd, hd, nkv, t, base, 1.0)?;
+        } else {
+            let ff = aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight");
+            e.rope_neox_ff(&mut q, pos_d, hd, hd, nh, t, base, 1.0, ff)?;
+            e.rope_neox_ff(&mut k, pos_d, hd, hd, nkv, t, base, 1.0, ff)?;
+        }
+        let kvl = cache.kv[il].as_mut().unwrap();
+        let base_len = kvl.len;
+        e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
+                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        kvl.len += t;
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let mut attn = e.uninit(t * nh * hd)?;
+        for i in 0..t {
+            let avail = base_len + i + 1;
+            let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };
+            let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                         (off_tok + t_kv) * kvl.k_tok_bytes);
+            let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                         (off_tok + t_kv) * kvl.v_tok_bytes);
+            let qi = e.view(&q, t * nh * hd);
+            let q_row = qi.slice(i * nh * hd..(i + 1) * nh * hd);
+            let mut q_one = e.uninit(nh * hd)?;
+            e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
+            let mut a_one = e.uninit(nh * hd)?;
+            e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
+        }
+        Ok(e.matmul(&fa.wo, &attn, t)?)
     }
 
     /// gemma4 T=1 decode step: R8 layer graph over the cache; returns (softcapped logits host,

@@ -8,6 +8,42 @@ use bw24_gguf::GgufFile;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: gemma-gate <model.gguf> <tok ids...>");
     let mut toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+    // BW24_VERIFY_GATE=K: batched-verify self-consistency — decode the prompt tokenwise
+    // (reference), then on a fresh cache decode the prefix and run ONE decode_step_t over the
+    // last K tokens; per-position argmax must match the tokenwise chain (the spec K-gate).
+    if let Ok(kk) = std::env::var("BW24_VERIFY_GATE") {
+        let k: usize = kk.parse().unwrap_or(4);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let n_vocab = model.output.out_features();
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        assert!(toks.len() > k + 1, "prompt must exceed K+1");
+        let split = toks.len() - k;
+        // reference: tokenwise decode over the whole prompt
+        let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        let mut ref_am: Vec<usize> = Vec::new();
+        for (i, &tk) in toks.iter().enumerate() {
+            let l = model.decode_step(&e, tk, &mut c1)?;
+            if i >= split {
+                ref_am.push(bw24_engine::forward::argmax(&l));
+            }
+        }
+        // candidate: prefix tokenwise, tail as ONE batched verify
+        let mut c2 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        for &tk in &toks[..split] { let _ = model.decode_step(&e, tk, &mut c2)?; }
+        let lv = model.decode_step_t(&e, &toks[split..], split, &mut c2)?;
+        let mut all_ok = true;
+        for i in 0..k {
+            let am = bw24_engine::forward::argmax(&lv[i * n_vocab..(i + 1) * n_vocab]);
+            let ok = am == ref_am[i];
+            all_ok &= ok;
+            println!("verify pos {i}: batched={am} tokenwise={} {}", ref_am[i],
+                     if ok { "MATCH" } else { "MISMATCH" });
+        }
+        println!("VERIFY-GATE K={k}: {}", if all_ok { "PASS" } else { "FAIL" });
+        return Ok(());
+    }
     let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
