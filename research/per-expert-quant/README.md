@@ -287,6 +287,18 @@ the local RTX 5090 run remains the final deployment-performance result.
 
 ## Public evaluation
 
+Start with the directional candidate panel: three fixed examples each from GPQA Diamond, MATH-500,
+MMLU-Pro history/other knowledge, economics, law, and psychology. This is a promotion gate, not a
+leaderboard score; increase `LIMIT` or run the full suites only after the size/quality direction is
+clear.
+
+    ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
+      SUITE=candidate research/per-expert-quant/run_public_evals.sh
+
+SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
+`lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
+screening, then run their complete public suites only for promoted artifacts.
+
 The generation-only core suite contains IFEval, GSM8K CoT, BBH CoT few-shot, and DROP. HumanEval
 and MBPP are isolated as a code suite because their scorers execute generated Python. Run that
 lane only in a disposable sandbox.
