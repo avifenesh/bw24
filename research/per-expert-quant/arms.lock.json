@@ -51,6 +51,13 @@
       "recipe": "usage-pyramid",
       "pruning": "zero calibration-count experts only",
       "tiers": "hottest 25% NVFP4; middle 50% Q3_K; coldest 25% Q2_K"
+    },
+    {
+      "name": "mix_quant_prune25",
+      "expert_bank": "full-192",
+      "recipe": "quartile-prune",
+      "pruning": "coldest 25% per layer",
+      "tiers": "hottest 25% NVFP4; next 25% Q3_K; next 25% Q2_K; coldest 25% pruned"
     }
   ]
 }
