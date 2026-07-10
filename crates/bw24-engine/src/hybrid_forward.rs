@@ -2056,9 +2056,13 @@ impl HybridModel {
             kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
-        // fa_prefill is stamped at hd 256/128 — SWA layers ride it; the hd-512 globals keep
-        // the naive f32 sdpa (5/30 layers).
-        if hd == 256 && std::env::var("BW24_NOFA").is_err() {
+        // R6: SWA layers mask keys older than sliding_window once the prompt exceeds it
+        // (windowed naive twin; fa windowed stamps later). Under the window, full attention
+        // is exact — SWA rides fa_prefill (hd-256 stamp), the hd-512 globals stay naive.
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        if swa && t > win {
+            e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+        } else if hd == 256 && std::env::var("BW24_NOFA").is_err() {
             e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         } else {
             e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
@@ -2429,9 +2433,15 @@ impl HybridModel {
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         kvl.len += 1;
-        let t_kv = kvl.len;
-        let k_view = e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes);
-        let v_view = e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes);
+        // R6 decode: SWA layers attend only the last `sliding_window` keys — a token-aligned
+        // VIEW OFFSET into the quantized cache (keys carry absolute rope; the mask is purely
+        // positional). Globals attend the full history.
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
+        let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                     (off_tok + t_kv) * kvl.k_tok_bytes);
+        let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                     (off_tok + t_kv) * kvl.v_tok_bytes);
         let mut attn = e.uninit(nh * hd)?;
         e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;

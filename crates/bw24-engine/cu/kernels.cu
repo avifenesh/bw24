@@ -747,6 +747,52 @@ extern "C" __global__ void sdpa_naive_f32(const float* __restrict__ Q, const flo
     }
 }
 
+// Windowed twin of sdpa_naive_f32 (gemma4 R6 SWA): additionally masks keys OLDER than
+// q_pos - (window-1) — llama's sliding-window mask (window keys incl self). window <= 0 = none.
+extern "C" __global__ void sdpa_naive_w_f32(const float* __restrict__ Q, const float* __restrict__ K,
+                                            const float* __restrict__ V, float* __restrict__ O,
+                                            int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+                                            float scale, int causal, int window) {
+    int head = blockIdx.x;
+    int qt = blockIdx.y;
+    if (head >= n_head || qt >= T) return;
+    int kv_head = head / (n_head / n_head_kv);
+    int tid = threadIdx.x;
+    extern __shared__ float scores[];
+    const float* q = Q + ((size_t)qt * n_head + head) * head_dim;
+    int q_pos = (T_kv - T) + qt;
+    for (int t = tid; t < T_kv; t += blockDim.x) {
+        const float* k = K + ((size_t)t * n_head_kv + kv_head) * head_dim;
+        float acc = 0.0f;
+        for (int d = 0; d < head_dim; d++) acc += q[d] * k[d];
+        acc *= scale;
+        if (causal && t > q_pos) acc = -1e30f;
+        if (window > 0 && t < q_pos - (window - 1)) acc = -1e30f;
+        scores[t] = acc;
+    }
+    __syncthreads();
+    __shared__ float red[1];
+    if (tid == 0) {
+        float mx = -1e30f;
+        for (int t = 0; t < T_kv; t++) mx = fmaxf(mx, scores[t]);
+        float sum = 0.0f;
+        for (int t = 0; t < T_kv; t++) { float e = expf(scores[t] - mx); scores[t] = e; sum += e; }
+        float inv = 1.0f / sum;
+        for (int t = 0; t < T_kv; t++) scores[t] *= inv;
+        red[0] = 0.0f;
+    }
+    __syncthreads();
+    float* o = O + ((size_t)qt * n_head + head) * head_dim;
+    for (int d = tid; d < head_dim; d += blockDim.x) {
+        float acc = 0.0f;
+        for (int t = 0; t < T_kv; t++) {
+            const float* v = V + ((size_t)t * n_head_kv + kv_head) * head_dim;
+            acc += scores[t] * v[d];
+        }
+        o[d] = acc;
+    }
+}
+
 // MoE router GEMV (BW24_ROUTER_KERNEL=1): logits[t][e] = dot(W[e], x[t]) — replaces ~200
 // cuBLASLt dispatches/round (4% of the 35B spec round loop, 2026-07-10 BW24_PROFILE_SPEC=2).
 // One warp per (expert, token); fixed-stride f32 accumulation + standard warp reduce —

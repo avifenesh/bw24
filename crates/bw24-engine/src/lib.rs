@@ -938,6 +938,11 @@ impl Engine {
     }
 
     /// View the first `len` BYTES of a u8 device buffer (quantized KV cache: [0..t_kv*tok_bytes)).
+    /// Byte-range view (gemma4 R6 window offset into the quantized KV stream).
+    pub fn view_u8_range<'a>(&self, b: &'a CudaSlice<u8>, start: usize, end: usize)
+                             -> cudarc::driver::CudaView<'a, u8> {
+        b.slice(start..end)
+    }
     pub fn view_u8<'a>(&self, b: &'a CudaSlice<u8>, len: usize) -> cudarc::driver::CudaView<'a, u8> {
         b.slice(0..len)
     }
@@ -3924,6 +3929,27 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Windowed sdpa_naive twin (gemma4 R6): masks keys older than q_pos-(window-1).
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_naive_w(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                        o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
+                        t: usize, t_kv: usize, scale: f32, causal: bool, window: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("sdpa_naive_w_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, t as u32, 1),
+            block_dim: (128, 1, 1),
+            shared_mem_bytes: (t_kv * 4) as u32,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32, n_head_kv as i32,
+                                                t as i32, t_kv as i32, causal as i32, window as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+         .arg(&scale).arg(&cz).arg(&wi);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
