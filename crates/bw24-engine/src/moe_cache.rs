@@ -15,7 +15,7 @@
 //! Gated behind `BW24_MOE_CACHE` (default off => current stage-every-token behavior).
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use cudarc::driver::CudaSlice;
+use cudarc::driver::{CudaEvent, CudaSlice};
 use crate::Engine;
 
 /// Which projection of an expert (gate/up/down are three distinct GGUF blocks per expert).
@@ -51,15 +51,14 @@ pub struct MoeSlotCache {
     probation: VecDeque<usize>,       // SLRU segment 1 (slot indices, LRU front = coldest)
     protected: VecDeque<usize>,       // SLRU segment 2 (hot; capped at ~0.8*N)
     free: Vec<usize>,                 // unused slot indices (startup)
+    /// Copy-stream admissions that have reserved a slot but are not visible in `table` until the
+    /// consumer inserts an explicit compute-stream wait for `ready`. Pending slots are absent from
+    /// both SLRU queues, so neither synchronous admission nor another prefetch can evict them.
+    pending: HashMap<BlockId, PendingBlock>,
 
     n: usize,
     protected_cap: usize,
     max_block_bytes: usize,
-
-    /// SPILLING-PLAN §4: true when async (copy-stream) prefetch can write into cache slots. While
-    /// false (today's default), the store-before-evict barrier in `admit` is skipped (no copy-stream
-    /// H2D is in flight, so reusing a slot cannot race one). The disk-tier prefetch sets this on.
-    prefetch_active: bool,
 
     // --- LAUNCH-STRUCTURE STAGE 3 (2026-07-05): device-side expert-pointer indirection ---
     /// Resident-block count per LAYER (all 3 projections summed). When a layer reaches
@@ -81,6 +80,11 @@ pub struct MoeSlotCache {
     pub hits: u64,
     pub misses: u64,
     pub staged_bytes: u64,    // total H2D bytes the cache caused (admit + first-miss transient)
+}
+
+struct PendingBlock {
+    slot: usize,
+    ready: CudaEvent,
 }
 
 impl MoeSlotCache {
@@ -120,17 +124,12 @@ impl MoeSlotCache {
         Ok(MoeSlotCache {
             slots, occupant, table: HashMap::with_capacity(n * 2),
             probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
+            pending: HashMap::new(),
             n, protected_cap, max_block_bytes,
-            prefetch_active: false,
             per_layer: HashMap::new(), dev_rows: HashMap::new(), prewarm_tried: HashSet::new(),
             hits: 0, misses: 0, staged_bytes: 0,
         })
     }
-
-    /// SPILLING-PLAN §4: enable the store-before-evict barrier (arm it once disk-tier prefetch is
-    /// turned on so a copy-stream H2D into a slot can never race the slot's reuse on eviction).
-    #[inline]
-    pub fn set_prefetch_active(&mut self, on: bool) { self.prefetch_active = on; }
 
     #[inline]
     pub fn n_slots(&self) -> usize { self.n }
@@ -195,6 +194,24 @@ impl MoeSlotCache {
         unreachable!("evict_one called with no resident slots (n>=8 guarantees occupancy)");
     }
 
+    /// Pick a resident victim that is not needed by the expert currently being computed. Pending
+    /// slots never enter the SLRU queues, so they are excluded automatically. Returns `None` rather
+    /// than evicting a protected block; the caller then leaves this block to the synchronous path.
+    fn evict_one_excluding(&mut self, keep: &[BlockId]) -> Option<usize> {
+        let take = |q: &mut VecDeque<usize>, occupant: &[Option<BlockId>]| {
+            q.iter()
+                .position(|&s| occupant[s].is_some_and(|id| !keep.contains(&id)))
+                .and_then(|pos| q.remove(pos))
+        };
+        let slot = take(&mut self.probation, &self.occupant)
+            .or_else(|| take(&mut self.protected, &self.occupant))?;
+        if let Some(old) = self.occupant[slot].take() {
+            self.table.remove(&old);
+            self.on_block_evicted(old.layer);
+        }
+        Some(slot)
+    }
+
     /// STAGE 3 bookkeeping: a resident block of `layer` was evicted — the layer is no longer fully
     /// resident, so its device pointer row (if uploaded) must be invalidated. NOTE: the row's device
     /// buffer is dropped here, which is safe because the fully-resident fast path is only taken when
@@ -209,18 +226,9 @@ impl MoeSlotCache {
     /// probation (new admissions enter probation — they earn promotion on a later hit).
     fn admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
              -> Result<usize, Box<dyn std::error::Error>> {
-        let reused = self.free.is_empty();   // no free slot => we are about to evict + reuse one
         let slot = if let Some(s) = self.free.pop() { s } else { self.evict_one() };
-        // SPILLING-PLAN §4 — STORE-BEFORE-EVICT BARRIER. Before staging into a REUSED (just-evicted)
-        // slot, drain the copy stream so an in-flight async H2D into that slot (issued by disk-tier
-        // prefetch on the copy stream) cannot race the new occupant -> use-after-free -> silent wrong
-        // tokens (would break the argmax GATE). This is a NO-OP today: the stage below runs on the
-        // DEFAULT compute stream (`stage_expert`), and no prefetch issues copy-stream H2D into cache
-        // slots yet. It is wired now (gated on `prefetch_active`) so the disk-tier prefetch is correct
-        // from the moment it is turned on. The vLLM/LMCache eviction-barrier pattern.
-        if reused && self.prefetch_active {
-            e.copy_stream.synchronize()?;
-        }
+        // Pending copy-stream admissions are not in either SLRU queue, so `evict_one` cannot return
+        // an in-flight slot. This synchronous copy and its consumer remain ordered on gpu.stream.
         e.stage_expert(host_bytes, &mut self.slots[slot], 0)?;
         self.staged_bytes += host_bytes.len() as u64;
         self.occupant[slot] = Some(id);
@@ -244,6 +252,17 @@ impl MoeSlotCache {
             self.on_hit(s);
             return Ok(DispatchSlot::Resident(s));
         }
+        if let Some(pending) = self.pending.remove(&id) {
+            if let Err(err) = e.compute_wait(&pending.ready) {
+                self.pending.insert(id, pending);
+                return Err(err);
+            }
+            self.misses += 1;
+            self.table.insert(id, pending.slot);
+            self.probation.push_back(pending.slot);
+            *self.per_layer.entry(id.layer).or_insert(0) += 1;
+            return Ok(DispatchSlot::Resident(pending.slot));
+        }
         self.misses += 1;
         // FIRST-MISS ADMIT (the only policy since 2026-07-08; the second-miss "ghost" filter and
         // its seams BW24_MOE_GHOST / BW24_MOE_FAST_ADMIT are gone). Measured record: while FREE
@@ -256,6 +275,56 @@ impl MoeSlotCache {
         // slot holds byte-for-byte the same GGUF block (D.2 gate).
         let s = self.admit(id, host_bytes, e)?;
         Ok(DispatchSlot::Resident(s))
+    }
+
+    /// Deterministically stage a known-future block on the copy stream. The slot is reserved but is
+    /// not considered resident until `dispatch` inserts a compute-stream wait for the returned copy
+    /// event. Before overwriting a reused slot, the copy stream waits for all compute work already
+    /// queued at this call site; the caller issues prefetch before the current expert's kernels, so
+    /// the transfer can overlap those kernels without racing any earlier consumer of the victim.
+    ///
+    /// `keep` is the current expert's gate/up/down ids. If no safe victim exists, return `false` and
+    /// let the normal synchronous miss path handle the block.
+    pub fn prefetch(&mut self, id: BlockId, host_bytes: &[u8], keep: &[BlockId], e: &Engine)
+                    -> Result<bool, Box<dyn std::error::Error>> {
+        if self.table.contains_key(&id) || self.pending.contains_key(&id) {
+            return Ok(false);
+        }
+        let slot = if let Some(s) = self.free.pop() {
+            s
+        } else if let Some(s) = self.evict_one_excluding(keep) {
+            s
+        } else {
+            return Ok(false);
+        };
+
+        // Store-before-reuse: every earlier compute-stream consumer of this slot is before `prior`.
+        // The copy stream waits for that point, then records a completion event for the future GEMM.
+        let prior = match e.stream().record_event(None) {
+            Ok(ev) => ev,
+            Err(err) => {
+                self.free.push(slot);
+                return Err(err.into());
+            }
+        };
+        if let Err(err) = e.copy_stream.wait(&prior) {
+            self.free.push(slot);
+            return Err(err.into());
+        }
+        let ready = match e.stage_expert_async(host_bytes, &mut self.slots[slot], 0) {
+            Ok(ev) => ev,
+            Err(err) => {
+                // A copy may have been queued before event creation failed. Drain before making the
+                // slot reusable, then leave it free rather than exposing partially-copied bytes.
+                let _ = e.copy_stream.synchronize();
+                self.free.push(slot);
+                return Err(err);
+            }
+        };
+        self.occupant[slot] = Some(id);
+        self.pending.insert(id, PendingBlock { slot, ready });
+        self.staged_bytes += host_bytes.len() as u64;
+        Ok(true)
     }
 
     /// Pre-warm: force-admit a block (used by the §D.2 bit-identity gate to make all blocks resident).
