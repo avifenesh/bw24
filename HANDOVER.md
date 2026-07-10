@@ -606,8 +606,9 @@ block-scale pipe (762-TF class). Its MMQ kernel time 783ms/1845tok vs our W4A8 1
 by the GREEDY exactness contract (long-prompt argmax forks, 1/8 agent-loop self-consistency).
 Eliminated efficiency levers this session (all JSONL-recorded): k32-imma (+4.3% pp, dominated,
 deleted), ilpswap (-10.5%), y64 (-8%), epilogue hoist (killed by pipe data), pipe staging (wash).
-DECISION PENDING (owner): W4A4 prefill as a SAMPLED-SERVE-ONLY config — the sampled protocol's
-gates (seeded reproducibility, distribution-level) never invoke greedy token-identity, so the
-blocker does not apply to that mode; it also matches llama's own bench numeric class (fair
-fight). Alternative: keep the absolute contract; the board documents the pp column as a
-precision-class difference.
+DECISION (owner, 2026-07-10, FINAL): NO quality demotion — W4A4 stays blocked EVERYWHERE,
+including sampled serve. "My call is not to demote our quality... if we could demote quality to
+be on par and we decided not to, its ok." The pp column is a DELIBERATE QUALITY CHOICE, so
+documented: we hold a precision class llama's bench config does not. pp rests unless
+quality-preserving levers appear. Priority = E2E + QUALITY. The margin-bar goal applies to the
+e2e cells; the pp cell carries the contract footnote, not a debt.
