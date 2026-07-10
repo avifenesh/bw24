@@ -3270,8 +3270,12 @@ impl Engine {
         }
         // F8-E4M3 catch-all (m=9..15 / batched-disabled seams): grid.y=m e4m3 mmvq — this dtype
         // has NO _dp4a twin, and per (token,row) the mmvq body is the exact m=1 decode program.
-        if qtype == QT_F8_E4M3 {
-            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
+        // Q4_0 joins the catch-all (2026-07-11): adaptive-K cap 8 makes verify t=9 reachable
+        // for the first time (past the b8 tier) and Q4_0 has no dp4a twin either. The mirror
+        // (mbytes/mrp) keeps the rp layout consistent with the m=1 decode program.
+        if qtype == QT_F8_E4M3 || qtype == QT_Q4_0 {
+            let (b2, r2) = if qtype == QT_Q4_0 { (mbytes, mrp) } else { (bytes, rp) };
+            return self.qmatvec_mmvq(b2, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, r2);
         }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_q8_0_dp4a", QT_Q4_K => "qmatvec_q4_K_dp4a",
