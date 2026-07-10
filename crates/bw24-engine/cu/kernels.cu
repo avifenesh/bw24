@@ -640,3 +640,13 @@ extern "C" __global__ void tok_map_u32(unsigned int* __restrict__ tok,
                                        const unsigned int* __restrict__ map) {
     if (threadIdx.x == 0) tok[0] = map[tok[0]];
 }
+
+// LATENCY-HIDING ARC (owner angles, 2026-07-10): L2 prefetch of a byte range — issued 1-2
+// kernels ahead of the consumer (fa's KV stream), so the latency-bound consumer finds its
+// lines L2-warm. Pure scheduling: touches no values, changes no numeric config.
+extern "C" __global__ void prefetch_l2_bytes(const unsigned char* __restrict__ p, long n) {
+    long i = (long)(blockIdx.x * blockDim.x + threadIdx.x) * 128;
+    if (i < n) {
+        asm volatile("prefetch.global.L2 [%0];" :: "l"(p + i));
+    }
+}

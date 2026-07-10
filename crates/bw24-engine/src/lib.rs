@@ -541,6 +541,19 @@ impl Engine {
         Ok(())
     }
 
+    /// L2 prefetch of a device byte range (latency-hiding arc; value-free scheduling op).
+    pub fn prefetch_l2(&self, p: &CudaSlice<u8>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("prefetch_l2_bytes");
+        let lines = n.div_ceil(128);
+        let ni = n as i64;
+        let cfg = LaunchConfig { grid_dim: (lines.div_ceil(256) as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(p).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// MoE router GEMV (BW24_ROUTER_KERNEL): deterministic warp-per-(expert,token) f32 dot.
     /// Different FP order than the cuBLAS path it replaces — battery-gated numeric config.
     pub fn router_gemv(&self, w: &CudaSlice<f32>, x: &CudaSlice<f32>, n_embd: usize,

@@ -864,6 +864,17 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
+        // LATENCY-HIDING (BW24_KV_PREFETCH=1): warm this layer's KV stream into L2 while the
+        // q/k/v projections run ahead of the fa (fa is latency-bound; its lines land warm).
+        // Value-free scheduling — no numeric config change.
+        static KV_PF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *KV_PF.get_or_init(|| std::env::var("BW24_KV_PREFETCH").as_deref() == Ok("1")) {
+            let kvl = cache.kv[il].as_ref().unwrap();
+            let t_kv = kvl.len + 1;
+            e.prefetch_l2(&kvl.k, t_kv * kvl.k_tok_bytes)?;
+            e.prefetch_l2(&kvl.v, t_kv * kvl.v_tok_bytes)?;
+        }
+
         // wq|wk|wv all take the same input `h` (in_f = n_embd) — quantize q8_1 ONCE, feed all three.
         // Q8 TRUNK-FUSION: on Q8_0 trunks (35B) the three fold into ONE fused3 launch (same MMVQ
         // body per (tensor,row) — bit-identical; see full_attn_decode_dc_inner). BW24_Q8_DUAL=0 off.
