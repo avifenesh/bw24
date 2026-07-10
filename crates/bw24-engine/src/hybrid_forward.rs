@@ -2658,6 +2658,109 @@ impl HybridModel {
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
 
+    /// gemma4 DEVICE-COUNTER decode step (graph arc): token id + rope pos + KV lengths live in
+    /// device counters; ZERO varying host kernel args. `cap_bucket_max` = Some(bucket) for graph
+    /// capture (host mirrors untouched, n_splits from bucket, full-buffer KV views) / None for
+    /// the eager-dc gate path (host mirrors advanced, live geometry — bit-identical target =
+    /// gemma4_decode_step_h's token stream). V1 scope: t_kv <= sliding_window (no window views
+    /// in-graph; the driver gates).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_decode_step_dc(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                 pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                 embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                 n_vocab: usize, cap_bucket_max: Option<usize>)
+                                 -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
+        let n_layers = self.layers.len();
+        for (il, layer) in self.layers.iter().enumerate() {
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, 1, eps)?,
+            };
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_decode_attn_dc(e, fa, il, &hq, &hdq, pos_d, cache, cap_bucket_max)?;
+            let mut cur = e.uninit(n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, 1, eps)?;
+            let next_norm = if il + 1 < n_layers {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, 1, next_norm)?;
+            x = xn;
+            h_carry = hn;
+        }
+        let mut hn = e.uninit(n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+        let logits = e.matmul(&self.output, &hn, 1)?;
+        let next_tok = e.argmax_token_device(&logits, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        if cap_bucket_max.is_none() { cache.pos += 1; }
+        Ok(next_tok)
+    }
+
+    /// dc attention: same math as gemma4_decode_attn, KV slot/lengths from device counters.
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_decode_attn_dc(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                             hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                             pos_d: &CudaSlice<i32>, cache: &mut Cache,
+                             cap_bucket_max: Option<usize>)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let (q0, k0, v0) = if swa {
+            match e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)? {
+                Some(t3) => t3,
+                None => {
+                    let h0 = e.zeros(0)?;
+                    (e.matmul_pre(&fa.wq, hq, hdq, &h0, 1)?,
+                     e.matmul_pre(&fa.wk, hq, hdq, &h0, 1)?,
+                     e.matmul_pre(&fa.wv, hq, hdq, &h0, 1)?)
+                }
+            }
+        } else {
+            let (q0, k0) = match e.matmul_q4_fused2(&fa.wq, &fa.wk, hq, hdq)? {
+                Some(p) => p,
+                None => {
+                    let h0 = e.zeros(0)?;
+                    (e.matmul_pre(&fa.wq, hq, hdq, &h0, 1)?,
+                     e.matmul_pre(&fa.wk, hq, hdq, &h0, 1)?)
+                }
+            };
+            let v0 = e.clone_dtod(&k0)?;
+            (q0, k0, v0)
+        };
+        let mut q = e.uninit(nh * hd)?;
+        let mut k = e.uninit(nkv * hd)?;
+        let mut v = e.uninit(nkv * hd)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        e.inc_seqlen(&mut kvl.len_d)?;
+        let (bucket_max, k_view, v_view) = match cap_bucket_max {
+            None => {
+                kvl.len += 1;
+                let t_kv = kvl.len;
+                (t_kv, e.view_u8(&kvl.k, t_kv * kvl.k_tok_bytes),
+                       e.view_u8(&kvl.v, t_kv * kvl.v_tok_bytes))
+            }
+            Some(b) => (b, e.view_u8(&kvl.k, kvl.k.len()), e.view_u8(&kvl.v, kvl.v.len())),
+        };
+        let mut attn = e.uninit(nh * hd)?;
+        e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, bucket_max,
+                       scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        Ok(e.matmul(&fa.wo, &attn, 1)?)
+    }
+
     /// gemma4 VERIFY step (spec decode): t tokens batched through the trunk at positions
     /// pos0..pos0+t-1, K/V rows appended to the quantized cache (caller rolls back rejected
     /// rows via kvl.len), per-token causal windowed attend (fa_decode per token — the same

@@ -614,6 +614,9 @@ impl HybridModel {
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
         }
+        // gemma4: the dc serving loop + spec draft gather read the device embed table every
+        // step — upload it AT LOAD (OnceLock init) so first-use cost never lands in a timed span.
+        let force_embd_gpu = cfg.gemma4.is_some();
         let gemma4_aux = if cfg.gemma4.is_some() {
             let rope_freqs = match src.find("rope_freqs.weight") {
                 Some(t) => Some(e.htod(&bw24_gguf::dequant::dequantize(
@@ -622,7 +625,14 @@ impl HybridModel {
             };
             Some(GemmaAux { rope_freqs, ones: e.htod(&[1.0f32; 512])? })
         } else { None };
-        Ok(HybridModel { cfg, embd, output_norm, output, layers, mtp, embd_gpu: std::sync::OnceLock::new(), gemma4_aux })
+        let model = HybridModel { cfg, embd, output_norm, output, layers, mtp,
+                                  embd_gpu: std::sync::OnceLock::new(), gemma4_aux };
+        if force_embd_gpu {
+            let _ = model.embd_gpu.get_or_init(|| {
+                e.upload_u8(&model.embd.raw).expect("embed table upload")
+            });
+        }
+        Ok(model)
     }
 
     pub fn embed(&self, e: &Engine, tokens: &[u32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {

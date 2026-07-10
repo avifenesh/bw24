@@ -785,6 +785,25 @@ impl HybridModel {
         crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
                                  std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(max_new);
+        if self.cfg.gemma4.is_some() {
+            // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
+            let n_vocab = self.output.out_features();
+            let embd_gpu = self.embd_gpu.get_or_init(|| {
+                e.upload_u8(&self.embd.raw).expect("embed table upload")
+            });
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            for _ in 0..max_new {
+                out.push(e.dtoh_u32(&token_d)?[0]);
+                token_d = self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                                     &mut cache, n_vocab, None)?;
+            }
+            return Ok(out);
+        }
         for _ in 0..max_new {
             let next = argmax(&last_logits) as u32;
             out.push(next);
@@ -839,6 +858,34 @@ impl HybridModel {
         }
         let mut out = Vec::with_capacity(budget);
         let mut reason = StopReason::MaxNew;
+        // gemma4 DEVICE-COUNTER greedy serving loop (the dc arc): token/pos/kv-lens live in
+        // device counters, argmax on device — host sees 4B/token. Stream-identical to the
+        // eager chain (DC-GATE). Penalties/temp fall through to the host-logits loop.
+        if self.cfg.gemma4.is_some() && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
+            let n_vocab = self.output.out_features();
+            let embd_gpu = self.embd_gpu.get_or_init(|| {
+                e.upload_u8(&self.embd.raw).expect("embed table upload")
+            });
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let first = crate::forward::argmax(&last_logits) as u32;
+            let mut token_d = e.stream().clone_htod(&[first])?;
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            let mut next = first;
+            for _ in 0..budget {
+                sampler.accept(next);
+                out.push(next);
+                if params.eos.contains(&next) { reason = StopReason::Eos; break; }
+                if !on_token(next) { reason = StopReason::Callback; break; }
+                if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+                token_d = self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                                     &mut cache, n_vocab, None)?;
+                next = e.dtoh_u32(&token_d)?[0];
+            }
+            return Ok(GenOutput { tokens: out, stop_reason: reason });
+        }
         for _ in 0..budget {
             let next = sampler.sample(&last_logits);
             sampler.accept(next);

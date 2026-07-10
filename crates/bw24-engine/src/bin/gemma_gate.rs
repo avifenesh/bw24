@@ -8,6 +8,63 @@ use bw24_gguf::GgufFile;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: gemma-gate <model.gguf> <tok ids...>");
     let mut toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+    // BW24_DC_GATE=N: device-counter decode gate — the dc chain's N-token greedy stream must
+    // be IDENTICAL to the eager decode_step chain; prints both throughputs.
+    if let Ok(nn) = std::env::var("BW24_DC_GATE") {
+        let n: usize = nn.parse().unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        let n_vocab = model.output.out_features();
+        // eager reference
+        let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + n + 8)?;
+        let mut ll = Vec::new();
+        for &t in &toks { ll = model.decode_step(&e, t, &mut c1)?; }
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let mut eager: Vec<u32> = Vec::new();
+        let mut next = bw24_engine::forward::argmax(&ll) as u32;
+        for _ in 0..n {
+            eager.push(next);
+            ll = model.decode_step(&e, next, &mut c1)?;
+            next = bw24_engine::forward::argmax(&ll) as u32;
+        }
+        e.stream().synchronize()?;
+        let dt_e = t0.elapsed().as_secs_f64();
+        // dc chain
+        let mut c2 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + n + 8)?;
+        let mut ll2 = Vec::new();
+        for &t in &toks { ll2 = model.decode_step(&e, t, &mut c2)?; }
+        let embd_gpu = e.upload_u8(&model.embd.raw)?;
+        let (qt, rb) = model.embd.qt_and_row_bytes(model.cfg.n_embd as usize);
+        let first = bw24_engine::forward::argmax(&ll2) as u32;
+        // sync the device counters to the host-primed mirrors (eager never touches len_d).
+        for kvl in c2.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        let mut token_d = e.stream().clone_htod(&[first])?;
+        let mut pos_d = e.htod_i32(&[c2.pos as i32])?;
+        e.stream().synchronize()?;
+        let t1 = std::time::Instant::now();
+        let mut dc: Vec<u32> = Vec::new();
+        for _ in 0..n {
+            dc.push(e.dtoh_u32(&token_d)?[0]);
+            token_d = model.gemma4_decode_step_dc(&e, &token_d, &mut pos_d, &embd_gpu, qt, rb,
+                                                  &mut c2, n_vocab, None)?;
+        }
+        e.stream().synchronize()?;
+        let dt_d = t1.elapsed().as_secs_f64();
+        let same = eager.iter().zip(&dc).take_while(|(a, b)| a == b).count();
+        println!("DC-GATE: eager {:.2} tok/s | dc {:.2} tok/s | stream {}/{} {}",
+                 n as f64 / dt_e, n as f64 / dt_d, same, n,
+                 if same == n { "IDENTICAL" } else { "MISMATCH" });
+        if same < n {
+            println!("eager: {:?}", &eager[..same.min(eager.len()).saturating_add(4).min(n)]);
+            println!("dc   : {:?}", &dc[..same.saturating_add(4).min(n)]);
+        }
+        return Ok(());
+    }
     // BW24_SPEC=K + BW24_DRAFT=<drafter.gguf>: MTP spec loop — prime, draft K, verify, accept.
     // Compares the spec token stream against plain greedy (self-consistency) + times both.
     if let (Ok(kk), Ok(dpath)) = (std::env::var("BW24_SPEC"), std::env::var("BW24_DRAFT")) {

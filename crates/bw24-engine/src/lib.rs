@@ -4708,8 +4708,32 @@ impl Engine {
         let mut part_l = self.zeros(n_head * n_splits)?;
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
-        let fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
-        let (f, cfg) = if fa_vec && fa_v3_active(head_dim) {
+        let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
+        let (f, cfg) = if fa_vec && head_dim == 512 && bucket_max >= {
+            static FA512_MIN_DC: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            *FA512_MIN_DC.get_or_init(|| std::env::var("BW24_FA512_MIN").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(512))
+        } {
+            // gemma globals dc twin (mirror the eager dpl16 pick incl the crossover floor).
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            (self.func("fa_decode_vec_q_dpl16_dc"),
+             LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
+        } else if fa_vec && head_dim == 512 {
+            // under the 512 floor eager runs scalar — mirror it (same geometry as the scalar arm).
+            (self.func("fa_decode_f32_dc"),
+             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+        } else if fa_vec && head_dim == 256 && fa_v4_on() {
+            // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick.
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let fv = self.func("fa_decode_vec_q_v4_dc");
+            let shmem = (11520 + 32 * head_dim * 2) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                 block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+        } else if fa_vec && fa_v3_active(head_dim) {
             // FA v3 lane _dc twin: the captured graph must run the SAME walk body as eager
             // under BW24_FA_V3=1 (eager, rows-verify and graph switch together).
             let gqa = (n_head / n_head_kv).max(1) as u32;
