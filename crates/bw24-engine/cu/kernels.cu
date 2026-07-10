@@ -625,3 +625,18 @@ extern "C" __global__ void router_gemv_f32(
     for (int off = 16; off > 0; off >>= 1) s += __shfl_down_sync(0xFFFFFFFF, s, off);
     if (threadIdx.x == 0) y[(size_t) tok * n_experts + e] = s;
 }
+
+// ROUND-STREAM stage (c) draft-chain pack: (tok, p) into slot j of a u32[2K] buffer — the
+// host (or the assemble kernel) reads the whole chain in one go instead of 2 DtoHs per token.
+extern "C" __global__ void pack_tok_p(const unsigned int* __restrict__ tok,
+                                      const float* __restrict__ p,
+                                      unsigned int* __restrict__ out, int slot) {
+    if (threadIdx.x == 0) { out[2 * slot] = tok[0]; out[2 * slot + 1] = __float_as_uint(p[0]); }
+}
+
+// In-graph trimmed-head token remap: tok[0] = map[tok[0]] — replaces the host read-map-patch
+// round trip inside the K-chain draft graph. Exact integer identity with the host map.
+extern "C" __global__ void tok_map_u32(unsigned int* __restrict__ tok,
+                                       const unsigned int* __restrict__ map) {
+    if (threadIdx.x == 0) tok[0] = map[tok[0]];
+}

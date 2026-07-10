@@ -551,6 +551,37 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (c) 4 epilogue: ring commit + tiny counter copies.
+    pub fn spec_ring_commit(&self, vtok: &CudaSlice<u32>, acc: &CudaSlice<u32>,
+                            brk: &CudaSlice<u32>, ring: &mut CudaSlice<u32>,
+                            pend: &mut CudaSlice<u32>)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_ring_commit");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(vtok).arg(acc).arg(brk).arg(ring).arg(pend);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    pub fn i32_copy_add(&self, src: &CudaSlice<i32>, dst: &mut CudaSlice<i32>, delta: i32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_copy_add");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst).arg(&delta);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    pub fn u32_copy(&self, src: &CudaSlice<u32>, dst: &mut CudaSlice<u32>)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("u32_copy");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(src).arg(dst);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 3: accept walk fully device-driven (brk + assembled vtok).
     pub fn spec_accept_greedy_dc(&self, preds: &CudaSlice<u32>, vtok: &CudaSlice<u32>,
                                  last_pred: &CudaSlice<u32>, brk: &CudaSlice<u32>,
@@ -590,6 +621,27 @@ impl Engine {
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(k_rows).arg(v_rows).arg(kc).arg(vc).arg(t0_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// ROUND-STREAM: draft-chain pack + in-graph d2t remap (see kernels.cu headers).
+    pub fn pack_tok_p(&self, tok: &CudaSlice<u32>, p: &CudaSlice<f32>, out: &mut CudaSlice<u32>,
+                      slot: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("pack_tok_p");
+        let sl = slot as i32;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(tok).arg(p).arg(out).arg(&sl);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    pub fn tok_map_u32(&self, tok: &mut CudaSlice<u32>, map: &CudaSlice<u32>)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("tok_map_u32");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(tok).arg(map);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

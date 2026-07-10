@@ -481,7 +481,8 @@ impl HybridModel {
                             scratch: &mut MtpScratch, with_prob: bool, with_head: bool,
                             embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize,
                             sampled_cap: Option<(&mut CudaSlice<u32>, &mut CudaSlice<f32>,
-                                                 &mut CudaSlice<f32>, u64, f32)>)
+                                                 &mut CudaSlice<f32>, u64, f32)>,
+                            stream_pack: Option<(&mut CudaSlice<u32>, usize, Option<&CudaSlice<u32>>)>)
                             -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -549,6 +550,12 @@ impl HybridModel {
                 e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
                 if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
             }
+        }
+        // ROUND-STREAM K-chain: pack (tok, p) into slot j, then remap tok through d2t so the
+        // NEXT chained body's embed reads the TARGET id — zero host involvement per step.
+        if let Some((out, slot, d2t)) = stream_pack {
+            e.pack_tok_p(tok_d, p_d, out, slot)?;
+            if let Some(map) = d2t { e.tok_map_u32(tok_d, map)?; }
         }
         // Next draft step's h_seed: pre-norm h_nextn (default) or post-norm final_h (HPOST).
         if spec_hpost() {
@@ -1552,7 +1559,7 @@ impl HybridModel {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
                                           &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
-                                          embd_rb, d_vocab, None)
+                                          embd_rb, d_vocab, None, None)
             });
             match cap_res {
                 Ok(g) => { scratch.set_len(e, 0)?; draft_graph = Some(g); }
@@ -1587,7 +1594,7 @@ impl HybridModel {
                                           &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
                                           embd_rb, d_vocab,
                                           Some((&mut g_ctr, &mut g_perturb, &mut g_q,
-                                                sp_seed, sp_temp)))
+                                                sp_seed, sp_temp)), None)
             });
             match cap_res {
                 Ok(g) => {

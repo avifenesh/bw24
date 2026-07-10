@@ -498,8 +498,40 @@ extern "C" __global__ void spec_assemble_verify(
         vtok[base + k_used] = d;
         k_used++;
     }
+    for (int j = base + k_used; j < base + k; j++) vtok[j] = 0u;  // embed-safe filler
     brk[0] = (unsigned int)k_used;
     brk[1] = (unsigned int)base;
+}
+
+// ROUND-STREAM stage (c) 4 epilogue kernels: single-thread device bookkeeping between rounds.
+// ring layout: ring[0] = count, tokens from ring[1]. Appends this round's accepted prefix +
+// bonus, sets pend <- bonus for the next round's assemble, bumps the pos counter is NOT done
+// here (spec_rollback_kv owns every len/pos write).
+extern "C" __global__ void spec_ring_commit(
+        const unsigned int* __restrict__ vtok,   // [base + K] assembled verify tokens
+        const unsigned int* __restrict__ acc,    // acc[0] = n_acc, acc[1] = bonus
+        const unsigned int* __restrict__ brk,    // brk[1] = base
+        unsigned int* __restrict__ ring,         // [1 + capacity]
+        unsigned int* __restrict__ pend) {       // [1]
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    unsigned int rc = ring[0];
+    int base = (int)brk[1];
+    int n_acc = (int)acc[0];
+    for (int i = 0; i < n_acc; i++) ring[1 + rc + i] = vtok[base + i];
+    ring[1 + rc + n_acc] = acc[1];
+    ring[0] = rc + (unsigned int)n_acc + 1u;
+    pend[0] = acc[1];
+}
+
+// i32 counter copy (scratch draft-KV len <- pos counter; draft rope pos <- pos + delta).
+extern "C" __global__ void i32_copy_add(const int* __restrict__ src, int* __restrict__ dst,
+                                        int delta) {
+    if (threadIdx.x == 0) dst[0] = src[0] + delta;
+}
+// u32[1] copy (g_tok <- pending bonus).
+extern "C" __global__ void u32_copy(const unsigned int* __restrict__ src,
+                                    unsigned int* __restrict__ dst) {
+    if (threadIdx.x == 0) dst[0] = src[0];
 }
 
 // ROUND-STREAM stage (c) 2: verify rope positions from a device pos counter (pos evolves by
