@@ -2128,11 +2128,21 @@ impl HybridModel {
             }
             // VERIFY ROWS TWINS (t=2..15): ONE launch pair for all tokens; per (token,row,slot)
             // bodies are the t=1 kernels VERBATIM (bit-identical to the per-token loop).
+            // gate_up rides the CSR owner-scan dedup when t <= 10 (each duplicated expert's
+            // weight stream decoded once; the qwen CSR class). BW24_GEMMA_CSR=0 -> rows.
             let (zq, zd) = e.quantize_q8_1(moe_in, t, n_embd)?;
-            let act = e.moe_gate_up_gelu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
-                                                      n_embd, n_ff_exp, n_used, n_expert,
-                                                      m.gate_exps.qtype, m.up_exps.qtype,
-                                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+            let csr = t <= 10 && std::env::var("BW24_GEMMA_CSR").as_deref() != Ok("0");
+            let act = if csr {
+                e.moe_gate_up_gelu8_dev_q8_csr(&dev.ptr_row, &sel_d, &zq, &zd, t * n_used,
+                                               n_embd, n_ff_exp, n_used, n_expert,
+                                               m.gate_exps.qtype, m.up_exps.qtype,
+                                               m.gate_exps.row_bytes, m.up_exps.row_bytes)?
+            } else {
+                e.moe_gate_up_gelu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
+                                                n_embd, n_ff_exp, n_used, n_expert,
+                                                m.gate_exps.qtype, m.up_exps.qtype,
+                                                m.gate_exps.row_bytes, m.up_exps.row_bytes)?
+            };
             let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
             let mut moe_out = e.uninit(t * n_embd)?;
             e.moe_down8_fma_dev_q8_rows_g(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out, t,

@@ -6035,7 +6035,18 @@ __device__ __forceinline__ expg exp_decode_g_cached(int qt, const unsigned char*
             r.w[4+k] = (kvalues_iq4nl_d[qs[k*4+0]>>4]&0xff) | ((kvalues_iq4nl_d[qs[k*4+1]>>4]&0xff)<<8)
                      | ((kvalues_iq4nl_d[qs[k*4+2]>>4]&0xff)<<16) | ((kvalues_iq4nl_d[qs[k*4+3]>>4]&0xff)<<24);
         }
-    } else {                                    // QT_IQ3_S (host-gated to {5, 6})
+    } else if (qt == 12) {                      // QT_Q4_0: -8 folded into the ints (gemma)
+        const unsigned char* b = wrow + (long)g * 18;
+        r.d = half_to_float(*(const unsigned short*)b);
+        r.scale = 1;
+        const unsigned char* qs = b + 2;
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+            r.w[k]     = __vsub4((int)(raw & 0x0F0F0F0Fu), 0x08080808);
+            r.w[4 + k] = __vsub4((int)((raw >> 4) & 0x0F0F0F0Fu), 0x08080808);
+        }
+    } else {                                    // QT_IQ3_S (host-gated to {5, 6, 12})
         int sblk = g >> 3, ib32 = g & 7;
         const unsigned char* b = wrow + (long)sblk * 110;
         float d = half_to_float(*(const unsigned short*)b);
@@ -6069,7 +6080,7 @@ __device__ __forceinline__ expg exp_decode_g_cached(int qt, const unsigned char*
 __device__ __forceinline__ int exp_sumi_cached(int qt, const expg& e, const signed char* aqb) {
     const int* aq4 = (const int*)aqb;
     int sumi = 0;
-    if (qt == 5) {                               // IQ4_XS interleave: (w[k],a[k]),(w[4+k],a[4+k])
+    if (qt == 5 || qt == 12) {                   // IQ4_XS / Q4_0: (w[k],a[k]),(w[4+k],a[4+k])
         #pragma unroll
         for (int k = 0; k < 4; k++) {
             sumi = dp4a(e.w[k],     aq4[k],     sumi);
@@ -6099,6 +6110,55 @@ __device__ __forceinline__ float exp_dot_cached(int qt, const expg& e, const sig
 // duplicate blocks exit after an n_pairs-long L1 scan (~24-80 loads). v2's one-thread build
 // kernel measured 18.2us/launch (5.5% of the round loop) and its parallel fix still cost a
 // launch + 4 allocs per layer — inlining the scan makes the dedup's fixed cost ~0.
+// gemma4 GELU CSR twin (verify dedup): owner-scan body of _csr_iq4 with the gelu epilogue.
+extern "C" __global__ void moe_gate_up_gelu8_dev_q8_csr(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        int n_used, int n_pairs) {
+    int pself = blockIdx.y;
+    int ex = sel[pself];
+    for (int q = 0; q < pself; q++) if (sel[q] == ex) return;
+    int plist[CSR_MAXP];
+    int np = 0;
+    for (int q = pself; q < n_pairs; q++) if (sel[q] == ex && np < CSR_MAXP) plist[np++] = q;
+    int o = blockIdx.x;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg[CSR_MAXP], accu[CSR_MAXP];
+    #pragma unroll
+    for (int i = 0; i < CSR_MAXP; i++) { accg[i] = 0.0f; accu[i] = 0.0f; }
+    for (int g = lane; g < nsb; g += 32) {
+        expg wg = exp_decode_g_cached(qt_g, grow, g);
+        expg wu = exp_decode_g_cached(qt_u, urow, g);
+        #pragma unroll
+        for (int i = 0; i < CSR_MAXP; i++) {
+            if (i < np) {
+                int tok = plist[i] / n_used;
+                const signed char* aqb = aq + (size_t)tok * in_f + (size_t)g * 32;
+                float d8 = ad[(size_t)tok * nsb + g];
+                accg[i] = exp_dot_acc_cached(qt_g, wg, aqb, d8, accg[i]);
+                accu[i] = exp_dot_acc_cached(qt_u, wu, aqb, d8, accu[i]);
+            }
+        }
+    }
+    #pragma unroll
+    for (int i = 0; i < CSR_MAXP; i++) {
+        if (i < np) {
+            float sg = warp_reduce_sum(accg[i]);
+            float su = warp_reduce_sum(accu[i]);
+            if (lane == 0) {
+                float x = sg;
+                float th = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+                act[(size_t)plist[i] * n_ff + o] = 0.5f * x * (1.0f + th) * su;
+            }
+        }
+    }
+}
+
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,

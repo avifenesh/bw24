@@ -1471,6 +1471,27 @@ impl Engine {
         Ok(act)
     }
 
+    /// gemma4 GELU CSR twin (verify dedup: owner block serves every pair of its expert).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_gelu8_dev_q8_csr(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                        aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, n_pairs: usize,
+                                        in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                        qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut act = self.alloc_uninit::<f32>(n_pairs * n_ff)?;
+        let (inf, nff, ne, rbg, rbu, nu, npi) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                                 rb_g as i64, rb_u as i64, n_used as i32,
+                                                 n_pairs as i32);
+        let f = self.func("moe_gate_up_gelu8_dev_q8_csr");
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_pairs as u32, 1),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(&npi);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
     /// gemma4 generic down rows twin (verify): one launch over (out_f, 1, t).
     #[allow(clippy::too_many_arguments)]
     pub fn moe_down8_fma_dev_q8_rows_g(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
