@@ -161,6 +161,8 @@ pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
 /// qwen keeps the shipped 256; gemma4 adopts 1024 (single-row 2816-col norms are one-block
 /// latency-bound at 256 threads — 7us/launch measured).
 pub static RMS_BLOCK_DEFAULT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(256);
+/// gemma4 fa split ladder switch (set at model load; see fa_split_keys).
+pub static FA_SP_GEMMA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(crate) fn rms_block() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("BW24_RMS_BLOCK").ok()
@@ -187,6 +189,12 @@ fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     // flat, ctx>=4096 sp64 edges sp16 by ~3%; 27B ctx128 70.9 vs 66.3 (+7%); 9B 177 vs 163
     // (+9%). Rigs <=100 SMs keep the validated 5090 ladder EXACTLY (default unchanged there —
     // rig-divergence law: this branch is measured on 188 SMs only).
+    // gemma4 ladder (2026-07-10 depth sweep at d1736: sp8/16/24/32/48/64 ->
+    // 155.0/157.5/153.5/142.6/140.2/129.0; short flat at 16): one rung for all its
+    // geometries. Set at model load (per-model numeric-config law); qwen ladders untouched.
+    if FA_SP_GEMMA.load(std::sync::atomic::Ordering::Relaxed) {
+        return if t_kv <= 8192 { 16 } else if t_kv <= 16384 { 64 } else { 128 };
+    }
     let big_rig = fa_sm_count() >= 128;
     if big_rig {
         let _ = n_head_kv;

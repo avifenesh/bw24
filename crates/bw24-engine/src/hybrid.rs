@@ -613,6 +613,8 @@ impl HybridModel {
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
+            // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
+            crate::FA_SP_GEMMA.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         // gemma4: the dc serving loop + spec draft gather read the device embed table every
         // step — upload it AT LOAD (OnceLock init) so first-use cost never lands in a timed span.

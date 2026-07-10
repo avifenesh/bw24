@@ -71,6 +71,12 @@ step: ~5.1ms busy / ~0.4ms gaps (+7% capture ceiling); 31B ~4%. Steps:
 Also remaining busy-side: mmvq ~13% off wall uniformly (issue-bound; llama same class),
 down8 0.50 vs 0.39ms, router 0.28ms, norms ~0.5ms/step.
 
+DEPTH FA NOTE: v4 wins short but LOSES at the 1024-window depth (BW24_FA_V4=0 depth 158.0 vs
+156.7). A t_kv-conditional v4 pick needs a rows_smem_w twin (the windowed verify rows only has
+the v4_w twin — parity law blocks a mixed config). fa v4 at sp16/window: 24.9us vs 4.4 wall
+(short splits starve the key-per-lane pipeline) — the depth fa lane is ~0.77ms/step = the
+whole remaining depth gap.
+
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
    small; corpus-ranked FR trim would cut the head), h-row copies, per-round htod/dtoh syncs.
