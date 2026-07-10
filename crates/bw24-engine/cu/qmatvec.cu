@@ -6311,6 +6311,297 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3(
                    (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
 }
 
+// ----- Q4_0 SPLIT-PLANE (rp) MIRROR twins (2026-07-10, the verify-trunk/decode-trunk 18B-
+// straggle cure — A6's NVFP4 layout applied to Q4_0). Mirror layout in ONE buffer:
+// qs plane [out_f x nblk x 16B] (16B-aligned -> ONE LDG.128/block) then d plane
+// [out_f x nblk x 2B] (dense u16). Raw GGUF bytes stay resident for prefill/gemm/Stage-A;
+// decode-class kernels read the mirror. Every twin's per (token,row) float chain
+// (d4*(sumi-8*sums)*d8 in ascending-g order) is VERBATIM its block-layout source kernel —
+// the standing batched==mr2 bit-identity contract extends to the rp family (kernel gates +
+// VERIFY-GATE + run-spec battery arbitrate). Microprobe: m=1 1.34x, m=3 1.17x, m=4 1.13x,
+// bitwise-exact (rp_q4_probe). -----
+__device__ __forceinline__ void q4_0_rp_planes(const unsigned char* W, int out_f,
+                                               int o, int nblk,
+                                               const unsigned char** wq,
+                                               const unsigned short** wd) {
+    // planes derived from shape (the NVFP4 rp convention): qs plane is out_f*nblk*16 bytes.
+    *wq = W + ((size_t)o * nblk) * 16;
+    *wd = (const unsigned short*)(W + (size_t)out_f * nblk * 16) + (size_t)o * nblk;
+}
+// device-side mirror build: one thread per q4_0 block, pure byte permutation.
+extern "C" __global__ void q4_0_split_rp_build(
+        const unsigned char* __restrict__ src, unsigned char* __restrict__ dst,
+        int out_f, int nblk) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= out_f * nblk) return;
+    const unsigned char* b = src + (size_t)i * 18;
+    long qplane = (long)out_f * nblk * 16;
+    unsigned char* q = dst + (size_t)i * 16;
+    #pragma unroll
+    for (int k = 0; k < 16; k++) q[k] = b[2 + k];
+    dst[qplane + (size_t)i * 2 + 0] = b[0];
+    dst[qplane + (size_t)i * 2 + 1] = b[1];
+}
+// m=1 two-rows-per-warp twin (the mr2 body with split loads).
+__device__ __forceinline__ void q4_0_mmvq_row2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes, int o0, int t) {
+    (void)row_bytes;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nsb;
+    float acc0 = 0.0f, acc1 = 0.0f;
+    bool two = (o0 + 1) < out_f;
+    const unsigned char* wq0; const unsigned short* wd0;
+    const unsigned char* wq1; const unsigned short* wd1;
+    q4_0_rp_planes(W, out_f, o0, nsb, &wq0, &wd0);
+    q4_0_rp_planes(W, out_f, o0 + 1, nsb, &wq1, &wd1);
+    for (int g = lane; g < nsb; g += 32) {
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sums = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
+        {
+            int4 qv = *(const int4*)(wq0 + (size_t)g * 16);
+            float d4 = half_to_float(wd0[g]);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                sumi = dp4a(qk[k] & 0x0F0F0F0F, aq4[k], sumi);
+                sumi = dp4a((int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc0 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+        if (two) {
+            int4 qv = *(const int4*)(wq1 + (size_t)g * 16);
+            float d4 = half_to_float(wd1[g]);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                sumi = dp4a(qk[k] & 0x0F0F0F0F, aq4[k], sumi);
+                sumi = dp4a((int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc1 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+    }
+    acc0 = warp_reduce_sum(acc0);
+    if (two) acc1 = warp_reduce_sum(acc1);
+    if (lane == 0) {
+        y[(size_t)t * out_f + o0] = acc0;
+        if (two) y[(size_t)t * out_f + o0 + 1] = acc1;
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_mr2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                      (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, blockIdx.y);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, long rb0, long rb1) {
+    int pairs0 = (out0 + 1) / 2;
+    int nb0 = (pairs0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    if (b < nb0) {
+        q4_0_mmvq_row2_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    } else {
+        b -= nb0;
+        q4_0_mmvq_row2_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
+    int nb0 = ((out0 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int nb1 = ((out1 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f; long rb;
+    if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+    else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+    q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, 1, rb,
+                      (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+}
+// batched (weight-read-once, m<=MCOLS) twin — body mirrors q4_0_mmvq_batched.
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o = blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y;
+    if (o >= out_f) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq; const unsigned short* wd;
+    q4_0_rp_planes(W, out_f, o, nblk, &wq, &wd);
+    float acc[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int4 qv = *(const int4*)(wq + (size_t)blk * 16);
+        float d4 = half_to_float(wd[blk]);
+        int lo[4], hi[4];
+        const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+        #pragma unroll
+        for (int k = 0; k < 4; k++) {
+            lo[k] = qk[k] & 0x0F0F0F0F;
+            hi[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+        }
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            int sumi = 0, sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                int a_lo = aq4[k];
+                int a_hi = aq4[4 + k];
+                sumi = dp4a(lo[k], a_lo, sumi);
+                sumi = dp4a(hi[k], a_hi, sumi);
+                sums = dp4a(0x01010101, a_lo, sums);
+                sums = dp4a(0x01010101, a_hi, sums);
+            }
+            acc[c] += d4 * (float)(sumi - 8 * sums) * ad[(size_t)c * nblk + blk];
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a = warp_reduce_sum(acc[c]);
+        if (lane == 0) y[(size_t)c * out_f + o] = a;
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_rp<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// batched 2-rows-per-warp twin — body mirrors q4_0_mmvq_batched_mr2 (row-shared activation
+// int4 loads + ones-sums, per-row chains in the same order).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    if (o0 >= out_f) return;
+    bool two = (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq0; const unsigned short* wd0;
+    const unsigned char* wq1; const unsigned short* wd1;
+    q4_0_rp_planes(W, out_f, o0, nblk, &wq0, &wd0);
+    q4_0_rp_planes(W, out_f, o0 + 1, nblk, &wq1, &wd1);
+    float acc0[MCOLS], acc1[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo0[k] = qk[k] & 0x0F0F0F0F;
+                hi0[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo1[k] = qk[k] & 0x0F0F0F0F;
+                hi1[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(wd0[blk]);
+        float d41 = two ? half_to_float(wd1[blk]) : 0.0f;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            int a[8];
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            float d8 = ad[(size_t)c * nblk + blk];
+            int s0 = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                s0 = dp4a(lo0[k], a[k], s0);
+                s0 = dp4a(hi0[k], a[4 + k], s0);
+            }
+            acc0[c] += d40 * (float)(s0 - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) {
+                    s1 = dp4a(lo1[k], a[k], s1);
+                    s1 = dp4a(hi1[k], a[4 + k], s1);
+                }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)c * out_f + o0] = a0;
+        if (two) {
+            float a1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + 1] = a1;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 extern "C" __global__ void qmatvec_q4_0_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

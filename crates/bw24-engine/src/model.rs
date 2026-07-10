@@ -34,6 +34,13 @@ pub enum GpuTensor {
         /// decode (dp4a/MMVQ) is untouched; only the m>=16 prefill dispatch (cuBLASLt FP8 TN,
         /// fp8_ffi.rs) reads this. None unless the env is set at load (zero VRAM cost by default).
         fp8: Option<Fp8Weight>,
+        /// Q4_0 SPLIT-PLANE MIRROR (2026-07-10, the 18B-straggle cure for decode): qs plane
+        /// [out_f x nblk x 16B] + d plane [out_f x nblk x 2B] built device-side at model load
+        /// (q4_0_split_rp_build) for decode-hot trunk weights. Raw `bytes` stay resident —
+        /// prefill (gemm/MMQ) and Stage-A read those; the m<=8 mmvq/batched/fused dispatch
+        /// reads this when present (`_rp` twins; microprobe m=1 1.34x, m=3 1.17x, bitwise).
+        /// None everywhere except where the arch-load hook opted in (VRAM cost = weight size).
+        rp4: Option<CudaSlice<u8>>,
     },
     Float { data: CudaSlice<f32>, ne: Vec<u64> },
     /// BF16-RESIDENT full-precision matmul weight (BW24_FULL_PREC only). Holds the checkpoint's raw
@@ -193,7 +200,7 @@ impl GpuTensor {
                         ne: vec![nv.in_f as u64, nv.out_f as u64], scale, rp: true,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None,
+                        fp8: None, rp4: None,
                     });
                 }
             }
@@ -216,7 +223,7 @@ impl GpuTensor {
                         scale: f8.scale, rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None,
+                        fp8: None, rp4: None,
                     });
                 }
             }
@@ -343,7 +350,7 @@ impl GpuTensor {
                     bytes, qtype: qt, row_bytes, ne: v.ne.clone(), scale, rp,
                     #[cfg(bw24_cutlass)]
                     cutlass,
-                    fp8,
+                    fp8, rp4: None,
                 })
             }
             None => {
@@ -417,7 +424,7 @@ impl GpuTensor {
             bytes: dev, qtype: qt, row_bytes, ne: vec![ne0, ne1], scale, rp,
             #[cfg(bw24_cutlass)]
             cutlass: None,
-            fp8: None,
+            fp8: None, rp4: None,
         })
     }
 

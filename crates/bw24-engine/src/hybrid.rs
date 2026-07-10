@@ -615,10 +615,9 @@ impl HybridModel {
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
             crate::FA_SP_GEMMA.store(true, std::sync::atomic::Ordering::Relaxed);
-            // depth fa lane switch (v4->register at the window) remains BLOCKED: the register
-            // windowed pair (reg_w/smem_w vs T1) diverges ~2e-2 while the v4 pair is bit-exact
-            // — root-cause open (jsonl 2026-07-10, two rounds). v4 everywhere = the shipped
-            // bit-exact pairing. Seams: BW24_FA_V4_MAX / BW24_FA_SMEM_TKV / BW24_FA_SP16.
+            // depth fa: PARITY LAW (2026-07-10) — decode and verify share the rows_w/rows_dpl16
+            // kernel symbols (decode t=1), so lane choice is freely tunable; v4 measured the
+            // depth winner. Seams: BW24_FA_V4_MAX / BW24_FA_SMEM_TKV / BW24_GEMMA_ROWS_W.
         }
         // gemma4: the dc serving loop + spec draft gather read the device embed table every
         // step — upload it AT LOAD (OnceLock init) so first-use cost never lands in a timed span.
@@ -631,6 +630,31 @@ impl HybridModel {
             };
             Some(GemmaAux { rope_freqs, ones: e.htod(&[1.0f32; 512])? })
         } else { None };
+        let mut layers = layers;
+        // Q4_0 SPLIT-PLANE DECODE MIRRORS (2026-07-10, BW24_Q4RP seam): gemma-4 MoE-class trunk
+        // (26B — attn wq/wk/wv/wo + the parallel shared FFN triple). The 18B GGUF block stride
+        // costs ~25-35% decode bandwidth in sector overfetch (rp_q4_probe: m=1 1.34x, m=3 1.17x,
+        // bitwise); the mirror (~0.7GB for the 26B) fixes the m<=8 mmvq/batched/fused family.
+        // Dense 31B is NOT mirrored (its 15GB trunk mirror does not fit 24GB — the full layout
+        // swap is the follow-up arc); raw bytes stay for prefill/gemm/Stage-A either way.
+        if cfg.gemma4.is_some() && crate::Engine::q4rp_enabled() {
+            let mut nmir = 0usize;
+            for layer in layers.iter_mut() {
+                let mirror_layer = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_some());
+                if !mirror_layer { continue; }
+                if let Mixer::Full(fa) = &mut layer.mixer {
+                    for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                        e.build_q4_rp4(w)?; nmir += 1;
+                    }
+                }
+                if let Some(mb) = layer.gemma4.as_mut().unwrap().moe_bits.as_mut() {
+                    for w in [&mut mb.shared_gate, &mut mb.shared_up, &mut mb.shared_down] {
+                        e.build_q4_rp4(w)?; nmir += 1;
+                    }
+                }
+            }
+            if nmir > 0 { eprintln!("[q4rp] split-plane decode mirrors built: {nmir} trunk tensors"); }
+        }
         let model = HybridModel { cfg, embd, output_norm, output, layers, mtp,
                                   embd_gpu: std::sync::OnceLock::new(), gemma4_aux };
         if force_embd_gpu {

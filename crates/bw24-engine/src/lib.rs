@@ -1566,6 +1566,114 @@ impl Engine {
         Ok(())
     }
 
+    /// rp_q4 microprobe (2026-07-10 verify-trunk lever): b4 GGUF-block layout vs the Q4_0
+    /// split-plane twin on the wq-class shape. Returns (blk_us, rp_us) after asserting bitwise
+    /// identity. Bench-only surface (rp_q4_probe bin); no production dispatch reads this.
+    pub fn rp_probe_q4(&self, m: usize) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+        let (out_f, in_f) = (2048usize, 2816usize);
+        let nblk = in_f / 32;
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        let mut rng = move || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) as u8 };
+        let mut w = vec![0u8; out_f * nblk * 18];
+        for b in w.iter_mut() { *b = rng(); }
+        for r in 0..out_f {
+            for g in 0..nblk {
+                let off = (r * nblk + g) * 18;
+                w[off] = 0x00; w[off + 1] = 0x2C;   // sane half d
+            }
+        }
+        let qplane = out_f * nblk * 16;
+        let mut wrp = vec![0u8; w.len()];
+        for r in 0..out_f {
+            for g in 0..nblk {
+                let src = &w[(r * nblk + g) * 18..(r * nblk + g) * 18 + 18];
+                wrp[qplane + (r * nblk + g) * 2..qplane + (r * nblk + g) * 2 + 2]
+                    .copy_from_slice(&src[0..2]);
+                wrp[(r * nblk + g) * 16..(r * nblk + g) * 16 + 16].copy_from_slice(&src[2..18]);
+            }
+        }
+        let w_d = self.htod_bytes(&w)?;
+        let wrp_d = self.htod_bytes(&wrp)?;
+        let mut aq = vec![0i8; m * in_f];
+        for v in aq.iter_mut() { *v = rng() as i8; }
+        let aq_d = self.htod_i8(&aq)?;
+        let ad_d = self.htod(&vec![0.03125f32; m * nblk])?;
+        let mut y0 = self.alloc_uninit::<f32>(m * out_f)?;
+        let mut y1 = self.alloc_uninit::<f32>(m * out_f)?;
+        const RPB: u32 = 4;
+        let cfg = LaunchConfig { grid_dim: ((out_f as u32).div_ceil(RPB), 1, 1),
+                                 block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let (inf, outf, mi) = (in_f as i32, out_f as i32, m as i32);
+        let (rb, qp) = ((nblk * 18) as i64, qplane as i64);
+        let fb = self.func("qmatvec_q4_0_mmvq_b4");
+        let fr = self.func("qmatvec_q4_0_mmvq_b4_rp");
+        {
+            let mut b = self.gpu.stream.launch_builder(&fb);
+            b.arg(&w_d).arg(&aq_d).arg(&ad_d).arg(&mut y0).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            unsafe { b.launch(cfg)?; }
+            let mut b = self.gpu.stream.launch_builder(&fr);
+            b.arg(&wrp_d).arg(&aq_d).arg(&ad_d).arg(&mut y1).arg(&inf).arg(&outf).arg(&mi).arg(&qp);
+            unsafe { b.launch(cfg)?; }
+        }
+        self.gpu.stream.synchronize()?;
+        let (h0, h1) = (self.dtoh(&y0)?, self.dtoh(&y1)?);
+        let nd = h0.iter().zip(&h1).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        if nd != 0 { return Err(format!("rp twin not bitwise: {nd}/{} diffs", h0.len()).into()); }
+        let mut time = |rp: bool| -> Result<f64, Box<dyn std::error::Error>> {
+            self.gpu.stream.synchronize()?;
+            let t0 = std::time::Instant::now();
+            for _ in 0..500 {
+                if rp {
+                    let mut b = self.gpu.stream.launch_builder(&fr);
+                    b.arg(&wrp_d).arg(&aq_d).arg(&ad_d).arg(&mut y1)
+                     .arg(&inf).arg(&outf).arg(&mi).arg(&qp);
+                    unsafe { b.launch(cfg)?; }
+                } else {
+                    let mut b = self.gpu.stream.launch_builder(&fb);
+                    b.arg(&w_d).arg(&aq_d).arg(&ad_d).arg(&mut y0)
+                     .arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+                    unsafe { b.launch(cfg)?; }
+                }
+            }
+            self.gpu.stream.synchronize()?;
+            Ok(t0.elapsed().as_secs_f64() * 1e6 / 500.0)
+        };
+        let _ = time(false)?; let _ = time(true)?;   // warm
+        Ok((time(false)?, time(true)?))
+    }
+
+    /// Build the Q4_0 split-plane decode mirror for a 2D Quant tensor (device-side permutation,
+    /// q4_0_split_rp_build). Raw bytes stay resident (prefill/gemm/Stage-A); the m<=8 decode
+    /// dispatch prefers the mirror (_rp twins). No-op unless (Q4_0, 2D, mirror absent).
+    /// VRAM cost == the tensor's weight size. BW24_Q4RP=0 disables at the call sites.
+    pub fn build_q4_rp4(&self, t: &mut crate::model::GpuTensor)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, qtype, row_bytes, ne, rp4, .. } = t else { return Ok(()) };
+        if *qtype != QT_Q4_0 || rp4.is_some() || ne.len() != 2 { return Ok(()); }
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        if in_f % 32 != 0 || *row_bytes != (in_f / 32) * 18 { return Ok(()); }
+        let nblk = in_f / 32;
+        let mut dst = self.alloc_uninit::<u8>(out_f * nblk * 18)?;
+        let f = self.func("q4_0_split_rp_build");
+        let n = (out_f * nblk) as i32;
+        let cfg = LaunchConfig { grid_dim: (((out_f * nblk) as u32).div_ceil(256), 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (of, nb) = (out_f as i32, nblk as i32);
+        let _ = n;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
+        unsafe { b.launch(cfg)?; }
+        *rp4 = Some(dst);
+        Ok(())
+    }
+
+    /// BW24_Q4RP seam (default ON): the Q4_0 split-plane decode mirror at model load.
+    pub fn q4rp_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_Q4RP").map(|v| v != "0").unwrap_or(true))
+    }
+
     /// Async device u32 store (value rides the kernel ARG — no host-memory transfer/sync).
     pub fn u32_set_k(&self, dst: &mut CudaSlice<u32>, v: u32, idx: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
@@ -2952,12 +3060,14 @@ impl Engine {
         // matmul_pre siblings. qmatvec_mmvq_raw quantizes the activation internally (q8_1) like the
         // _fast paths; the NVFP4 macro-scale is applied by the `scale != 1.0` block below.
         if m == 1 && fast {
-            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, scale, .. } = w {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, scale, .. } = w {
                 if self.mmvq_supports(*qtype) {
                     // NVFP4 macro-scale rides the kernel's fused epilogue arg (one launch total);
                     // non-NVFP4 has scale==1.0 so qmatvec_mmvq skips scale_inplace either way.
+                    // Q4_0 split-plane mirror (rp4): the decode arm reads it via the _rp twins.
+                    let (bytes, rp) = match rp4 { Some(m4) => (m4, true), None => (bytes, *rp) };
                     let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-                    return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, *scale, *rp);
+                    return self.qmatvec_mmvq(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, *scale, rp);
                 }
             }
         }
@@ -2978,11 +3088,12 @@ impl Engine {
         // dp4a program). BW24_MMVQ=1 (the daily config) is dispatch-unchanged.
         if (2..=8).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
-            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, .. } = w {
+            if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
+                    let (bytes, rp) = match rp4 { Some(m4) => (m4, true), None => (bytes, *rp) };
                     let mcols = Self::batched_mcols(m);
                     let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
-                    let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0, *rp)?;
+                    let mut y = self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, *qtype, *row_bytes, mcols, 1.0, rp)?;
                     if let GpuTensor::Quant { scale, .. } = w {
                         if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
                     }
@@ -3097,11 +3208,17 @@ impl Engine {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => unreachable!("uses_q8_1_fast guaranteed Quant"),
         };
+        // Q4_0 split-plane mirror: only the mmvq/batched decode arms read it (the _rp twins);
+        // the dp4a/oracle tails below keep the raw GGUF bytes.
+        let (mbytes, mrp) = match w {
+            GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+            _ => (bytes, rp),
+        };
         // PERF-3 decode-GEMV: warp-per-row MMVQ for the m=1 decode arm, gated behind BW24_MMVQ.
         // Only the 4 daily-hot dtypes have an _mmvq kernel (Q8_0/Q4_K/Q6_K/NVFP4); Q5_K/Q3_K/IQ4_XS
         // keep _dp4a (the oracle/fallback). Bit-equivalent to _dp4a up to f32 reduction order.
         if m == 1 && self.mmvq_supports(qtype) {
-            return self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp);
+            return self.qmatvec_mmvq(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, mrp);
         }
         // BATCHED weight-resident matvec for the m=2-4 band (the MTP/verify forward: full_attn_verify
         // and decode_step_t run their projections at m=T=k=2..4). The plain _dp4a path below launches
@@ -3119,7 +3236,7 @@ impl Engine {
             && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
             let mcols = Self::batched_mcols(m);
-            return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
+            return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
         // F8-E4M3 catch-all (m=9..15 / batched-disabled seams): grid.y=m e4m3 mmvq — this dtype
         // has NO _dp4a twin, and per (token,row) the mmvq body is the exact m=1 decode program.
@@ -3177,6 +3294,12 @@ impl Engine {
         let (bytes, qtype, row_bytes, scale, rp) = match w {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => return self.matmul(w, x, m),
+        };
+        // Q4_0 split-plane mirror for the mmvq/batched arms below (dp4a tail = matmul_pre,
+        // which does its own mirror pick).
+        let (bytes, rp) = match w {
+            GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+            _ => (bytes, rp),
         };
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
         // Batched weight-resident matvec for m=2-8: BIT-IDENTICAL per (token,row) to MMVQ (exact
@@ -3332,9 +3455,13 @@ impl Engine {
         if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
             return Ok(None);
         }
-        let (b0, b1, b2) = match (w0, w1, w2) {
-            (GpuTensor::Quant { bytes: b0, .. }, GpuTensor::Quant { bytes: b1, .. },
-             GpuTensor::Quant { bytes: b2, .. }) => (b0, b1, b2),
+        let (b0, b1, b2, rp) = match (w0, w1, w2) {
+            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. },
+             GpuTensor::Quant { bytes: b2, rp4: r2, .. }) => match (r0, r1, r2) {
+                // Q4_0 split-plane mirrors: all three or none (mixed -> raw layout).
+                (Some(m0), Some(m1), Some(m2)) => (m0, m1, m2, true),
+                _ => (b0, b1, b2, false),
+            },
             _ => unreachable!(),
         };
         const RPB: u32 = 4;
@@ -3343,7 +3470,7 @@ impl Engine {
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let mut y2 = self.alloc_uninit::<f32>(o2)?;
-        let f = self.func("qmatvec_q4_0_mmvq_fused3");
+        let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused3_rp" } else { "qmatvec_q4_0_mmvq_fused3" });
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
@@ -3369,8 +3496,12 @@ impl Engine {
         };
         let (Some((rb0, o0)), Some((rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(None) };
         if w0.in_features() != w1.in_features() { return Ok(None); }
-        let (b0, b1) = match (w0, w1) {
-            (GpuTensor::Quant { bytes: b0, .. }, GpuTensor::Quant { bytes: b1, .. }) => (b0, b1),
+        let (b0, b1, rp) = match (w0, w1) {
+            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. }) =>
+                match (r0, r1) {
+                    (Some(m0), Some(m1)) => (m0, m1, true),
+                    _ => (b0, b1, false),
+                },
             _ => unreachable!(),
         };
         const RPB: u32 = 4;
@@ -3378,7 +3509,7 @@ impl Engine {
         let grid = nb(o0) + nb(o1);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
-        let f = self.func("qmatvec_q4_0_mmvq_fused2");
+        let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused2_rp" } else { "qmatvec_q4_0_mmvq_fused2" });
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
@@ -3568,7 +3699,12 @@ impl Engine {
         };
         // MMVQ warp-per-row (scale==1.0 passed -> kernel skips its internal scale; we return scale).
         if self.mmvq_supports(qtype) {
-            let y = self.qmatvec_mmvq(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, /*scale*/ 1.0, rp)?;
+            // Q4_0 split-plane mirror (dp4a fallback below keeps the raw GGUF bytes).
+            let (mbytes, mrp) = match w {
+                GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+                _ => (bytes, rp),
+            };
+            let y = self.qmatvec_mmvq(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, /*scale*/ 1.0, mrp)?;
             return Ok(Some((y, scale)));
         }
         // dp4a fallback: same launch as matmul_pre but WITHOUT the post scale_inplace.
@@ -3643,15 +3779,18 @@ impl Engine {
         let q5_il = qtype == QT_Q5_K && m == 1
             && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
         if q5_il && !q5_force && out_f > 65536 { mr = 1; }
+        // Q4_0 split-plane mirror has only the mr2 twin — force mr=2 under rp.
+        if qtype == QT_Q4_0 && rp { mr = 2; }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
+            (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
-            (QT_Q4_0, 2, _) => "qmatvec_q4_0_mmvq_mr2",
-            (QT_Q4_0, _, _) => "qmatvec_q4_0_mmvq",
+            (QT_Q4_0, 2, false) => "qmatvec_q4_0_mmvq_mr2",
+            (QT_Q4_0, _, false) => "qmatvec_q4_0_mmvq",
             (QT_Q5_K, _, _) => if q5_il { "qmatvec_q5_K_mmvq_il" } else { "qmatvec_q5_K_mmvq" },
             (QT_Q6_K, _, _) => "qmatvec_q6_K_mmvq",
             (QT_NVFP4, _, false) => "qmatvec_nvfp4_mmvq",
@@ -3844,8 +3983,10 @@ impl Engine {
             let q40 = *Q40BV.get_or_init(|| match std::env::var("BW24_Q40_BV").as_deref() {
                 Ok("base") => "base", Ok("r2") => "r2", _ => "auto",
             });
-            if q40 != "auto" { q40 }
-            else if (out_f as u32).div_ceil(8) >= 4 * sms as u32 { "r2" } else { "base" }
+            let v = if q40 != "auto" { q40 }
+            else if (out_f as u32).div_ceil(8) >= 4 * sms as u32 { "r2" } else { "base" };
+            // split-plane mirror twins (2026-07-10): same fill rule, _rp names.
+            if rp { if v == "r2" { "r2_rp" } else { "rp" } } else { v }
         } else if qtype != QT_NVFP4 && !kq_r2 {
             "base"
         } else if kq_r2 {

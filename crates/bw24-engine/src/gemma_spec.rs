@@ -139,16 +139,30 @@ impl GemmaDraft {
                         ne: vec![in_f as u64, ids.len() as u64], scale: 1.0, rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None,
+                        fp8: None, rp4: None,
                     }, Some(ids))
                 }
                 None => (load_t(e, &src, "token_embd.weight")?, None),
             }
         };
+        // Q4_0 split-plane decode mirrors (BW24_Q4RP, same as the main trunk — see hybrid.rs):
+        // the draft chain is 3 serial mmvq trips/round; the head alone is ~137MB/draft.
+        let (mut pre_proj, mut post_proj) = (load_t(e, &src, "nextn.pre_projection.weight")?,
+                                             load_t(e, &src, "nextn.post_projection.weight")?);
+        let mut head = head;
+        let mut layers = layers;
+        if crate::Engine::q4rp_enabled() {
+            for w in [&mut pre_proj, &mut post_proj, &mut head] { e.build_q4_rp4(w)?; }
+            for l in layers.iter_mut() {
+                for w in [&mut l.wq, &mut l.wo, &mut l.ffn_gate, &mut l.ffn_up, &mut l.ffn_down] {
+                    e.build_q4_rp4(w)?;
+                }
+            }
+        }
         Ok(GemmaDraft {
             layers,
-            pre_proj: load_t(e, &src, "nextn.pre_projection.weight")?,
-            post_proj: load_t(e, &src, "nextn.post_projection.weight")?,
+            pre_proj,
+            post_proj,
             output_norm: load_t(e, &src, "output_norm.weight")?,
             head,
             d2t,
