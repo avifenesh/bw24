@@ -645,7 +645,8 @@ impl MoeSlotCache {
             }
             ExpertSource::Disk { file, offset, len, fallback, keepalive } => {
                 if self.pread.as_ref().is_some_and(PreadPool::is_worker) {
-                    match self.pread.as_mut().unwrap().submit_worker(file.clone(), offset, len) {
+                    match self.pread.as_mut().unwrap()
+                        .submit_worker_speculative(file.clone(), offset, len) {
                         Ok(Some(ticket)) => {
                             self.worker_reads.insert(id, ticket);
                             Ok(true)

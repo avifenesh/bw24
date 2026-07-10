@@ -172,6 +172,21 @@ struct PinnedBuffer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ReadTicket(u64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerAdmission {
+    Demand,
+    Speculative,
+}
+
+impl WorkerAdmission {
+    fn free_buffer_floor(self) -> usize {
+        match self {
+            Self::Demand => 0,
+            Self::Speculative => 1,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct WorkerReadError { message: String, short: bool }
 
@@ -461,10 +476,22 @@ impl PreadPool {
         }
     }
 
-    /// Submit a known-future extent without blocking the CUDA owner. `None` means the bounded ring
-    /// is busy; speculative prefetch leaves the normal demand/fallback path in place.
+    /// Submit a demand extent without blocking the CUDA owner. `None` means every pinned buffer is
+    /// busy and the mmap fallback must handle the miss.
     pub(crate) fn submit_worker(&mut self, file: Arc<File>, offset: u64, len: usize)
                                 -> Result<Option<ReadTicket>, Box<dyn std::error::Error>> {
+        self.submit_worker_with_admission(file, offset, len, WorkerAdmission::Demand)
+    }
+
+    /// Submit a known-future extent while reserving one pinned buffer for a demand miss.
+    pub(crate) fn submit_worker_speculative(&mut self, file: Arc<File>, offset: u64, len: usize)
+                                            -> Result<Option<ReadTicket>, Box<dyn std::error::Error>> {
+        self.submit_worker_with_admission(file, offset, len, WorkerAdmission::Speculative)
+    }
+
+    fn submit_worker_with_admission(&mut self, file: Arc<File>, offset: u64, len: usize,
+                                    admission: WorkerAdmission)
+                                    -> Result<Option<ReadTicket>, Box<dyn std::error::Error>> {
         if self.mode != SpillIoMode::Worker {
             return Err(io::Error::other("worker read submitted to blocking pread backend").into());
         }
@@ -476,10 +503,16 @@ impl PreadPool {
             ).into());
         }
         self.reap_completed();
+        let free_count = self.buffers.iter()
+            .filter(|buffer| buffer.phase == BufferPhase::Free)
+            .count();
+        if free_count <= admission.free_buffer_floor() {
+            self.stats.ring_full += 1;
+            return Ok(None);
+        }
         let Some(index) = self.buffers.iter()
             .position(|buffer| buffer.phase == BufferPhase::Free) else {
-                self.stats.ring_full += 1;
-                return Ok(None);
+                unreachable!("positive free-buffer count must have a free buffer");
             };
         let ticket = ReadTicket(self.next_ticket);
         self.next_ticket = self.next_ticket.checked_add(1)
@@ -750,6 +783,7 @@ mod tests {
         let (path, file) = temp_file("worker", &bytes);
         let file = std::sync::Arc::new(file);
         let mut pool = super::PreadPool::try_new(&engine, 64, SpillIoMode::Worker).unwrap();
+        assert!(pool.buffers.len() >= 2, "worker reservation test requires depth >= 2");
 
         let first = pool.submit_worker(file.clone(), 3, 37).unwrap().unwrap();
         let second = pool.submit_worker(file.clone(), 51, 29).unwrap().unwrap();
@@ -760,12 +794,29 @@ mod tests {
         assert_eq!(pool.bytes(first_buffer, 37).unwrap(), &bytes[3..40]);
         pool.abort_read(first_buffer);
 
+        let speculative: Vec<_> = (1..pool.buffers.len())
+            .map(|_| pool.submit_worker_speculative(file.clone(), 30, 17).unwrap().unwrap())
+            .collect();
+        assert!(pool.submit_worker_speculative(file.clone(), 0, 8).unwrap().is_none());
+        let demand = pool.submit_worker(file.clone(), 11, 13).unwrap().unwrap();
+        assert!(pool.submit_worker(file.clone(), 0, 8).unwrap().is_none());
+        assert_eq!(pool.stats().ring_full, 2);
+        let demand_buffer = pool.wait_worker(demand).unwrap();
+        assert_eq!(pool.bytes(demand_buffer, 13).unwrap(), &bytes[11..24]);
+        pool.abort_read(demand_buffer);
+        for ticket in speculative {
+            let buffer = pool.wait_worker(ticket).unwrap();
+            assert_eq!(pool.bytes(buffer, 17).unwrap(), &bytes[30..47]);
+            pool.abort_read(buffer);
+        }
+
         let canceled = pool.submit_worker(file.clone(), 7, 41).unwrap().unwrap();
         let blockers: Vec<_> = (1..pool.buffers.len())
             .map(|_| pool.submit_worker(file.clone(), 30, 17).unwrap().unwrap())
             .collect();
+        let ring_full_before = pool.stats().ring_full;
         assert!(pool.submit_worker(file.clone(), 0, 8).unwrap().is_none());
-        assert_eq!(pool.stats().ring_full, 1);
+        assert_eq!(pool.stats().ring_full, ring_full_before + 1);
         assert!(pool.cancel_worker(canceled));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let after_cancel = loop {

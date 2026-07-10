@@ -1,21 +1,25 @@
 # Buffered io_uring spill backend design
 
-Status: deferred implementation-ready design. The explicit-read probe justified moving beyond
-mmap, but a worker-thread `pread`/`O_DIRECT` pipeline is now the required baseline. Implement this
-ring only if it improves end-to-end wall time over that simpler asynchronous worker path.
+Status: io_uring remains a deferred, implementation-ready option. Commit `66394bf` implements the
+required comparison baseline: blocking `pread` plus a bounded worker-thread positioned-read path.
+On G7e, the depth-8 worker backend completed the first five frozen calibration requests in
+240.2775 s versus 688.6587 s for mmap (2.866x faster), with identical response payloads and 395
+byte-identical routing rows. The exact run record is
+[`evidence/spill-worker-ab-g7e-20260710.md`](evidence/spill-worker-ab-g7e-20260710.md). Implement
+this ring only if it improves end-to-end wall time over that worker baseline.
 
 ## Backend order and capability evidence
 
 The common contract is fixed regardless of submission mechanism:
 
 ```text
-GPU SLRU -> bounded hot page/host cache -> pinned read buffers -> copy-stream H2D -> GPU slot
+GPU SLRU -> bounded hot page/host cache -> pinned read buffers -> caller-thread H2D -> GPU slot
 ```
 
 Use these promotion rungs:
 
-1. blocking buffered `pread` for byte/lifetime/fallback proof;
-2. worker-thread buffered `pread` for real disk/compute overlap;
+1. done: blocking buffered `pread` for byte/lifetime/fallback proof;
+2. done and G7e-gated: worker-thread buffered `pread` for real disk/compute overlap;
 3. worker-thread `O_DIRECT` through the same buffers;
 4. buffered and direct io_uring against the winning worker baseline;
 5. mapped pinned-host zero-copy only for cold one-shot experts.
@@ -31,30 +35,38 @@ capability probe. A compatibility-mode cuFile result would only benchmark anothe
 
 ## Decision and scope
 
-The second backend is **buffered** `io_uring` `READ_FIXED` into a bounded CUDA-pinned buffer ring,
-followed by the existing copy-stream H2D into a reserved `MoeSlotCache` slot. It does not use
-`O_DIRECT` initially:
+The implemented non-mmap baseline uses exact `FileExt::read_at` calls and a bounded pool of
+CUDA-pinned buffers. `BW24_SPILL_IO=pread` performs the demand read on the caller thread;
+`BW24_SPILL_IO=worker` transfers buffer ownership through bounded CPU read workers so known-next
+reads can overlap GPU compute. Only the caller thread submits H2D and publishes GPU-cache
+residency. Failed initialization, read errors, short reads, and a busy worker ring retain the
+validated mmap extent as the byte oracle and fallback.
+
+The proposed next backend is **buffered** `io_uring` `READ_FIXED` into the same class of bounded
+CUDA-pinned buffer ring, followed by caller-owned H2D into a reserved `MoeSlotCache` slot. It would
+not use `O_DIRECT` initially:
 
 - buffered reads remain the portability baseline and accept arbitrary native-GGUF extents;
 - they preserve the mmap/page-cache backend as a cheap correctness fallback;
 - the five current Hy3 artifacts are already 4 KiB aligned, so `O_DIRECT` can be tested through the
   same buffers before deciding whether io_uring is justified.
 
-The runtime remains opt-in. `BW24_SPILL_IO=mmap` is the default and `pread` selects the implemented
-blocking proof backend. A future `BW24_SPILL_IO=uring` mode would attempt the capability gate below
-and fall back to mmap for the whole process if initialization fails.
+The implemented runtime remains opt-in: `BW24_SPILL_IO=mmap|pread|worker`, default `mmap`.
+`BW24_SPILL_PREAD_DEPTH` controls both pinned-buffer and worker count (default 2; the G7e result used
+8), and `BW24_SPILL_STATS=1` prints cumulative snapshots. A future `BW24_SPILL_IO=uring` mode would
+attempt the capability gate below and fall back to mmap if initialization fails.
 
 The current research artifacts contain 237 expert files (one file per layer/projection) and expert
 blocks no larger than 3,538,944 bytes. A bounded sparse registered-file table of 256 or 512 entries
 therefore covers the current artifacts without a hot-path registered-file LRU.
 
-## Current seams that must change
+## Implemented source and worker seams
 
 The prerequisite seams are now implemented: `HostBuf::Mmap` retains the opened file plus its map,
 `ExpertSource` distinguishes memory from disk extents, and `MoeSlotCache` accepts source-aware
 dispatch/prefetch calls. `expert_bytes()` remains the byte oracle and compatibility API.
 
-The resulting source contract is equivalent to:
+The resulting source contract is:
 
 ```rust
 // bw24-gguf/src/source.rs
@@ -75,19 +87,23 @@ pub enum HostBuf {
     // existing arms...
     Mmap {
         map: Arc<Mmap>,
-        file: Option<Arc<File>>,
+        file: Arc<File>,
         off: usize,
         len: usize,
     },
 }
 
 pub enum ExpertSource<'a> {
-    Memory(&'a [u8]),
+    Memory {
+        bytes: &'a [u8],
+        keepalive: Option<ExpertKeepalive>,
+    },
     Disk {
         file: &'a Arc<File>,
         offset: u64,
         len: usize,
         fallback: &'a [u8],
+        keepalive: ExpertKeepalive,
     },
 }
 
@@ -96,17 +112,22 @@ impl HostExps {
 }
 ```
 
-`Hy3RepackSource` should retain `Arc<File>` beside every mapped file. `GgufFile` should retain its
-opened `Arc<File>` instead of closing it after `Mmap::map`. The source path remains immutable for the
-model lifetime. The loader continues validating every manifest extent against file length.
+`Hy3RepackSource` retains `Arc<File>` beside every mapped file, and `GgufFile` retains its opened
+handle after `Mmap::map`. The source path remains immutable for the model lifetime. The loader
+continues validating every manifest extent against file length. Cache call sites use
+`expert_source()`; non-cache staging and correctness oracles keep using `expert_bytes()`.
 
-Change only the cache call sites to use `expert_source()`. Non-cache staging and all correctness
-oracles keep using `expert_bytes()` until the backend is proven.
+The worker pool moves each pinned allocation by ownership to a CPU reader and back through the
+completion channel. Canceled/stale tickets cannot recycle a buffer until the read returns, and a
+buffer submitted to H2D is not reusable until its CUDA event completes. Per-forward worker scopes
+cancel unused lookahead, grouped prefill queues the first and then known-next expert projections,
+and ring saturation skips speculative work without moving CUDA submission off the caller thread.
 
-## New module and API
+## Proposed io_uring module and API
 
 Add `crates/bw24-engine/src/spill_uring.rs`, Linux-only, behind a target-specific dependency on the
-`io-uring` crate. Do not add the dependency before the mmap-window A/B justifies this phase.
+`io-uring` crate. Do not add the dependency before a matched worker/direct-I/O study justifies this
+phase.
 
 ```rust
 pub struct UringSpill {
@@ -140,15 +161,18 @@ impl UringSpill {
 }
 ```
 
-`MoeSlotCache` owns `Option<UringSpill>`. This keeps io_uring, fixed buffers, pending block state,
+`MoeSlotCache` would own `Option<UringSpill>`. This keeps io_uring, fixed buffers, pending block state,
 and GPU slot reservations behind the existing cache mutex on the single GPU-worker path. No async
 runtime or background CUDA thread is required. Poll completions at cache entry, after submissions,
 and immediately before a pending block is consumed.
 
-Recommended initial knobs:
+Current knobs and proposed additions:
 
 ```text
-BW24_SPILL_IO=mmap|pread|uring default mmap (`uring` is future)
+BW24_SPILL_IO=mmap|pread|worker default mmap (implemented)
+BW24_SPILL_PREAD_DEPTH=2      pinned buffers and worker count; G7e A/B used 8
+BW24_SPILL_STATS=1            cumulative read/fallback/wait/ring-full snapshots
+BW24_SPILL_IO=uring           future selector after promotion
 BW24_SPILL_URING_DEPTH=8       number of fixed buffers and maximum disk reads in flight
 BW24_SPILL_URING_SQ=32         SQ/CQ entries, power of two and >= 2*depth
 ```
@@ -317,16 +341,21 @@ GPU integration gates:
 Performance promotion requires matched cold-cache runs against mmap windows `1/4/8/16`, recording:
 prefill wall time, major faults, `folio_wait` samples, per-device read MiB/s, read queue depth,
 read-to-H2D latency, H2D latency, ring-full count, mmap fallback count, cache hit rate, and GPU duty.
-Keep io_uring only if it improves end-to-end wall time without reducing steady-state cache behavior.
+The worker baseline already passed a five-request frozen-input G7e direction gate; it still requires
+the full calibration run and an RTX 5090 deployment gate. Keep io_uring only if it improves
+end-to-end wall time over worker without reducing steady-state cache behavior.
 
 ## Implementation sequence
 
 1. Done: retain files in `GgufFile`/`Hy3RepackSource`; add `DiskExtent` and `expert_source()` with tests.
-2. Add Linux-only `spill_uring.rs` plus fixed-buffer state-machine tests; no cache integration yet.
-3. Add the capability gate and byte-for-byte temporary-file/readback probe.
-4. Integrate disk tickets into `MoeSlotCache::prefetch/dispatch` behind `BW24_SPILL_IO=uring`.
-5. Add epoch cancellation and shutdown gates.
-6. Run cold-cache A/B on G7e, then repeat any winner on the local RTX 5090 target.
+2. Done: add blocking and worker `PreadPool` modes, bounded pinned-buffer ownership, exact reads,
+   caller-thread H2D, cancellation, telemetry, and mmap fallback.
+3. Done: pass the live depth-8 ignored CUDA test and the frozen first-five G7e mmap/worker A/B.
+4. Next only after the direct-I/O decision: add Linux-only `spill_uring.rs` plus fixed-buffer
+   state-machine and capability/readback tests; no cache integration yet.
+5. Integrate disk tickets into `MoeSlotCache::prefetch/dispatch` behind future
+   `BW24_SPILL_IO=uring`, then add epoch cancellation and shutdown gates.
+6. Run a matched G7e A/B against worker, then repeat any winner on the local RTX 5090 target.
 
 Do not combine this phase with SIMD/kernel changes. It is a storage-to-pinned-to-HBM pipeline
 experiment and must be measured separately before interaction tuning.

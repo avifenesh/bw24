@@ -19,6 +19,18 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def legacy_pretty_json_sha256(value: object) -> str:
+    encoded = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def validate(root: Path, verify_sources: bool) -> dict[str, int]:
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -29,6 +41,16 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         raise ValueError("embedded plan is missing or has the wrong format")
     if manifest.get("plan_sha256") is None:
         raise ValueError("manifest has no plan hash")
+    expected_plan_hash = manifest.get("plan_canonical_sha256", manifest["plan_sha256"])
+    actual_plan_hash = (
+        canonical_json_sha256(plan)
+        if "plan_canonical_sha256" in manifest
+        else legacy_pretty_json_sha256(plan)
+    )
+    if actual_plan_hash != expected_plan_hash:
+        raise ValueError(
+            f"embedded plan hash mismatch: {actual_plan_hash} != {expected_plan_hash}"
+        )
     if plan.get("calibration", {}).get("public_eval_data_used_for_selection") is True:
         raise ValueError("plan declares public eval data was used for expert selection")
 
@@ -164,11 +186,50 @@ def self_test() -> None:
         }
         manifest = {
             "format": "bw24-expert-overlay-v2", "plan": plan, "plan_sha256": "test",
+            "plan_canonical_sha256": canonical_json_sha256(plan),
             "pruned_experts": {"1": [1]}, "artifact_bytes": 6, "tensors": tensors,
         }
         (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
         assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 6
+
+        plan["assignments"][0]["qtype"] = "Q3_K"
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        try:
+            validate(root, False)
+        except ValueError as exc:
+            assert "embedded plan hash mismatch" in str(exc)
+        else:
+            raise AssertionError("tampered embedded plan was accepted")
+        plan["assignments"][0]["qtype"] = "NVFP4"
+
+        manifest["plan_canonical_sha256"] = "0" * 64
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        try:
+            validate(root, False)
+        except ValueError as exc:
+            assert "embedded plan hash mismatch" in str(exc)
+        else:
+            raise AssertionError("tampered embedded-plan hash was accepted")
+        manifest["plan_canonical_sha256"] = canonical_json_sha256(plan)
+
+        del manifest["plan_canonical_sha256"]
+        manifest["plan_sha256"] = legacy_pretty_json_sha256(plan)
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        summary = validate(root, False)
+        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 6
+
+        plan["assignments"][0]["qtype"] = "Q3_K"
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        try:
+            validate(root, False)
+        except ValueError as exc:
+            assert "embedded plan hash mismatch" in str(exc)
+        else:
+            raise AssertionError("tampered legacy embedded plan was accepted")
+        plan["assignments"][0]["qtype"] = "NVFP4"
+        manifest["plan_canonical_sha256"] = canonical_json_sha256(plan)
+
         tensors["blk.1.ffn_up_exps.0.weight"]["qtype"] = "Q3_K"
         (root / "manifest.json").write_text(json.dumps(manifest))
         try:
