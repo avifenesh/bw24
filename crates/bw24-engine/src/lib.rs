@@ -1400,6 +1400,22 @@ impl Engine {
                      LaunchConfig { grid_dim: (n_ff as u32, 1, 1),
                                     block_dim: (32, n_used as u32, 1), shared_mem_bytes: 0 }),
             // SMEM-GRID twins (IQ3_S 2KB grid copied to shared, static smem — bit-identical dots)
+            "vsm2" => {
+                let f = self.func("moe_gate_up_silu8_dev_q8_vsm2");
+                let sh = (rb_g + rb_u) as u32;
+                use cudarc::driver::sys::CUfunction_attribute_enum as A;
+                f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+                (f, LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                   block_dim: (32, 1, 1), shared_mem_bytes: sh })
+            }
+            "vsm" => {
+                let f = self.func("moe_gate_up_silu8_dev_q8_vsm");
+                let sh = (rb_g + rb_u) as u32;
+                use cudarc::driver::sys::CUfunction_attribute_enum as A;
+                f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+                (f, LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
+                                   block_dim: (32, 1, 1), shared_mem_bytes: sh })
+            }
             "sg" => (self.func("moe_gate_up_silu8_dev_q8_sg"),
                      LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, 1),
                                     block_dim: (32, 1, 1), shared_mem_bytes: 0 }),

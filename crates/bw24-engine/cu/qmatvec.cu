@@ -5137,6 +5137,115 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
     }
 }
 
+// ---- WALL-GAP ARC (2026-07-10, owner: "94% of wall is not 100%"): cp.async ROW-STAGED
+// gate_up twin. The _v dot issues ~24 scattered synchronous byte-loads per lane per iteration
+// (IQ3_S superblock: qs/qh/signs/scales all separate) — measured 482GB/s = 56% of wall, the
+// b4-tier long_scoreboard signature. This twin bulk-stages BOTH expert rows to shared memory
+// with cp.async 16B chunks (one commit/wait, no ring), then runs the dot bodies VERBATIM from
+// smem — same bytes, same order, byte-identical outputs. Rows are 16B-aligned by construction
+// (IQ3_S rb = in_f/256*110: 880B at in_f 2048; slab bases 256B-aligned).
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    extern __shared__ unsigned char srow_vsm[];          // [rb_g + rb_u]
+    for (int off = lane * 16; off < (int)rb_g; off += 32 * 16)
+        cp_async16_g(srow_vsm + off, grow + off);
+    for (int off = lane * 16; off < (int)rb_u; off += 32 * 16)
+        cp_async16_g(srow_vsm + rb_g + off, urow + off);
+    cp_async_commit();
+    cp_async_wait<0>();
+    __syncwarp();
+    const unsigned char* gsm = srow_vsm;
+    const unsigned char* usm = srow_vsm + rb_g;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g_v(qt_g, gsm, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, usm, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+
+// vsm2: 2-stage pipelined variant — rows split in half along superblocks; half h+1's cp.async
+// is in flight while half h computes. Same dot bodies from smem (byte-identical values); the
+// per-lane group order is UNCHANGED?? NO — it is: lane processes g = lane, lane+32 which spans
+// both halves (g=lane in half0 for lane<32 when nsb=64: g=lane -> superblock g/8 -> halves by
+// g<nsb/2). Loop restructured to walk halves outer, g-within-half inner: per lane the two
+// g-values (lane, lane+32) land one in EACH half at nsb=64 -> same two groups, same ORDER
+// (lane < lane+32 == half0 then half1). accg accumulation order preserved -> bit-identical.
+extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm2(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[j];
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    extern __shared__ unsigned char srow2[];             // [rb_g + rb_u]
+    int hg = (int)rb_g / 2, hu = (int)rb_u / 2;          // halves are 16B-aligned (880/2=440.. NOT 16-aligned!)
+    // 440 % 16 != 0 -> split at superblock granularity instead: half0 = first (nsb/2) groups'
+    // superblocks. IQ3_S: 8 groups per 110B superblock; nsb=64 -> 8 superblocks -> half = 4
+    // superblocks = 440B. cp.async 16B needs 16B alignment: 440 % 16 = 8 -> VIOLATION.
+    // Fallback: stage half0 = ceil-to-16B prefix; the boundary superblock loads land in stage 0.
+    int h0g = (hg + 15) & ~15;
+    int h0u = (hu + 15) & ~15;
+    if (h0g > (int)rb_g) h0g = (int)rb_g;
+    if (h0u > (int)rb_u) h0u = (int)rb_u;
+    // stage 0: first halves of both rows
+    for (int off = lane * 16; off < h0g; off += 512) cp_async16_g(srow2 + off, grow + off);
+    for (int off = lane * 16; off < h0u; off += 512) cp_async16_g(srow2 + rb_g + off, urow + off);
+    cp_async_commit();
+    // stage 1: second halves (issued now, awaited after half-0 compute)
+    for (int off = h0g + lane * 16; off < (int)rb_g; off += 512) cp_async16_g(srow2 + off, grow + off);
+    for (int off = h0u + lane * 16; off < (int)rb_u; off += 512) cp_async16_g(srow2 + rb_g + off, urow + off);
+    cp_async_commit();
+    const unsigned char* gsm = srow2;
+    const unsigned char* usm = srow2 + rb_g;
+    float accg = 0.0f, accu = 0.0f;
+    int half_nsb = nsb / 2;
+    cp_async_wait<1>();                                   // half 0 resident
+    __syncwarp();
+    for (int g = lane; g < half_nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g_v(qt_g, gsm, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, usm, g, aqb, d8);
+    }
+    cp_async_wait<0>();                                   // half 1 resident
+    __syncwarp();
+    for (int g = half_nsb + lane; g < nsb; g += 32) {
+        const signed char* aqb = aq + (size_t)g * 32;
+        float d8 = ad[g];
+        accg += expert_dot_g_v(qt_g, gsm, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, usm, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float g = accg;
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+    }
+}
+
 // ---- SMALL-M VERIFY ROWS TWINS (BW24_SPEC_M2, lane/spec-m2 2026-07-08) ----
 // grid.z = token: the spec verify's MoE dev token loop (t = 2..K+2) ran one launch-pair per
 // token (plus per-token quantizes: 4t launches/layer). These twins run the serial loop's
