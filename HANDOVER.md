@@ -14,9 +14,10 @@ prefill + decode window VIEW into cache), MTP spec loop (gemma_spec.rs, stream-i
 greedy at every K, VERIFY-GATE K=1..7 PASS).
 
 NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
-- ours plain 178.4 tok/s (fused mmvq triples + cross-layer q8 norm carry) | llama serve
-  plain 181-182 | llama-bench tg128 191.9
-- ours spec K2 219.0 (acc .52; 1.23x own plain, ~1.20x llama plain serve)
+- ours plain 181.5 (q8z tail + rope2; PARITY with llama serve 168.8-182.5 same-session)
+  | llama-bench tg128 191.9 (its graph-clean floor) — capture arc = the margin lever
+- ours spec K2 222.0 (acc .52; 1.25x own plain) | llama MTP serve 253
+- 31B: plain 38.34 N=3 vs llama-bench tg 40.39 (0.95x; byte-wall 80% of step at 92-100%)
   | llama MTP serve 241-253 (acc .517 — drafter FAITHFUL; the remaining gap is round cost)
 - prefill pp511: ours 1419 | llama-bench pp512 5713
 - spec lever history: 169 -> 179 (Q4_0 batched r2) -> 192 (fa_decode_rows verify) ->
@@ -44,6 +45,22 @@ through d2t to the target id. The BW24_GEMMA_DRAFT_VOCAB seam + head-build code 
 gemma_spec.rs (currently contiguous-truncation; replace with the ranked gather + d2t).
 Acceptance re-gate on the chat prompt (top-N-ids truncation lost .52 -> .34; ranked gather
 is the real FR-Spec).
+
+GRAPH/DC ARC (the llama margin lever — design, start here):
+llama-bench tg 191.9 vs its serve 179.7 shows ~12 tok/s of its lead is CUDA graphs. Our 26B
+step: ~5.1ms busy / ~0.4ms gaps (+7% capture ceiling); 31B ~4%. Steps:
+1. gemma4_decode_step_dc: device pos counter (i32[1], inc kernel), KV append via len_d
+   (append_kv_quantized_dc exists), fa via fa_decode_dc (len_d + bucket_max geometry exists,
+   needs a dpl16-512 dc twin + a WINDOWED dc twin computing start = max(0,len-win) IN-KERNEL
+   from len_d — the host window VIEW pointer is the capture blocker), embed_gather_device +
+   argmax_token_device_into (exist), router/moe all-device (exist). Norm/fusion kernels are
+   capture-safe (fixed args).
+2. Persistent round buffers (capture needs stable addresses): the per-step e.uninit allocs
+   must come from a reused pool (qwen GraphDecodeState/dc_cap machinery is the template).
+3. Bucket key = (fa_vec, n_splits) per layer-class (qwen fa_bucket_key); re-capture on change.
+4. Gate: bit-identity vs eager (qwen dc contract), then the run-gen argmax + spec battery.
+Also remaining busy-side: mmvq ~13% off wall uniformly (issue-bound; llama same class),
+down8 0.50 vs 0.39ms, router 0.28ms, norms ~0.5ms/step.
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
