@@ -55,11 +55,19 @@ python3 "$HERE/prepare_harness.py" "$HARNESS_DIR" --lock "$LOCK"
 HARNESS_PYTHON="$HARNESS_DIR/.venv/bin/python"
 HARNESS_CLI="$HARNESS_DIR/.venv/bin/lm_eval"
 if [[ ! -x "$HARNESS_CLI" ]]; then
-  uv venv --python 3.12 "$HARNESS_DIR/.venv"
+  UV_BIN=${UV_BIN:-$(command -v uv || true)}
+  if [[ -z "$UV_BIN" && -x "${HOME:-}/.local/bin/uv" ]]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+  fi
+  [[ -n "$UV_BIN" && -x "$UV_BIN" ]] || {
+    echo "uv is required to create the pinned lm-eval environment (set UV_BIN or install ~/.local/bin/uv)" >&2
+    exit 2
+  }
+  "$UV_BIN" venv --python 3.12 "$HARNESS_DIR/.venv"
   # `uv sync --extra api` resolves every optional extra in lm-eval's universal lock; the pinned
   # checkout currently has mutually exclusive acpbench/vllm lark constraints. Install only the
   # backend and task dependency set this suite actually uses.
-  uv pip install --python "$HARNESS_PYTHON" -e "$HARNESS_DIR[api,ifeval]"
+  "$UV_BIN" pip install --python "$HARNESS_PYTHON" -e "$HARNESS_DIR[api,ifeval]"
 fi
 
 SERVER_ROOT=${BASE_URL%/v1/completions}
@@ -69,7 +77,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S
+export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S SERVER_BIN
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -82,6 +90,8 @@ def command(*args):
 root = pathlib.Path(os.environ["ROOT"])
 artifact = pathlib.Path(os.environ["ARTIFACT"]).resolve()
 identity = artifact / "manifest.json" if artifact.is_dir() else artifact
+server_bin_raw = os.environ.get("SERVER_BIN")
+server_bin = pathlib.Path(server_bin_raw).resolve() if server_bin_raw else None
 
 def sha256(path):
     h = hashlib.sha256()
@@ -103,6 +113,10 @@ metadata = {
     "eval_timeout_s": int(os.environ["EVAL_TIMEOUT_S"]),
     "max_gen_toks_override": (
         int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
+    ),
+    "server_binary": str(server_bin) if server_bin else None,
+    "server_binary_sha256": (
+        sha256(server_bin) if server_bin and server_bin.is_file() else None
     ),
     "platform": platform.platform(),
     "nvidia_smi": command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"),

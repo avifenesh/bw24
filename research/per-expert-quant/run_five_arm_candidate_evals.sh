@@ -178,6 +178,7 @@ for index in "${!ARMS[@]}"; do
     LIMIT="$LIMIT" \
     MAX_GEN_TOKS="$MAX_GEN_TOKS" \
     EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
+    SERVER_BIN="$SERVER_BIN" \
     BASE_URL="$BASE_URL" \
     OUT_ROOT="$OUT_ROOT" \
     CACHE_DIR="$CACHE_DIR" \
