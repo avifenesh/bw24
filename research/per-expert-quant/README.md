@@ -272,6 +272,19 @@ Before public evaluation, retain raw logs from the required CUDA gates:
 required artifact before trusting the Q2 tier. No correctness, quality, or throughput claim is made
 from the development host.
 
+Run the four arms through one matched performance invocation after staging them under the same
+local-NVMe root:
+
+    ARTIFACT_ROOT=/scratch/artifacts \
+      RUN_ID=g7e-optimized-YYYYMMDD \
+      research/per-expert-quant/run_performance_evals.sh
+
+The runner fixes a 512-token synthetic prompt, three warmed prefill repetitions, and three fresh
+128-token eager-decode processes per arm. It enables the shared cache, grouped dispatch, H2D
+prefetch, and mmap page prefetch for every arm, and records exact manifest/directory bytes, the GPU
+and code revision, peak process memory, and raw timing logs. G7e numbers are research-host results;
+the local RTX 5090 run remains the final deployment-performance result.
+
 ## Public evaluation
 
 The generation-only core suite contains IFEval, GSM8K CoT, BBH CoT few-shot, and DROP. HumanEval
