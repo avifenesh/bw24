@@ -98,9 +98,10 @@ NEXT SPEC LEVER — QUANTIFIED, then REFRAMED (2026-07-10): verify trunk b4/b4_r
 of the byte wall (2.62ms/round vs 1.08 floor; MoE/head/fa are 59-94%). Fused-qkv one-launch
 probe = FLAT (bitwise-exact, reverted) -> the deficit is NOT launch gaps (stream already
 saturated); it is per-warp DRAM latency INSIDE q4_0_mmvq_batched's walk (one 18B block load
-in flight between dp4a chains; wq 3.25MB in 11.6us = 280GB/s). REAL lever = pipeline the
-batched walk (2+ blocks in flight / wider loads / cp.async) — touches the shipped b4 family,
-VERIFY-GATE + battery arbitrate; est short 222 -> ~250-260 if it reaches gate_up's eff.
+in flight between dp4a chains; wq 3.25MB in 11.6us = 280GB/s). Pipeline probe ALSO flat ->
+the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever = load-time
+weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
+twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
