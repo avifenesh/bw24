@@ -23,6 +23,10 @@ the other, and report spill performance separately from model-quality comparison
 - A plan's pruned expert ids keep their original router positions. `active_experts()` masks them
   before top-k and their weights must be absent. Never dispatch, cache, or fabricate bytes for a
   masked id, and never let a fallback uniform slab bypass split expert overrides.
+- The public Hy3 REAP50 checkpoint renumbers retained experts and publishes no original-id list.
+  Recover the frozen mask only through `tools/recover_hy3_reap_mask.py`: require one-to-one router
+  row matches, the locked nearest-match margin, and exact correction-bias confirmation. Scored
+  artifacts always quantize the pinned BF16 source; never re-quantize the public MLX experts.
 - The four scored arms are fixed in `research/per-expert-quant/arms.lock.json`: `plain_quant`
   (full bank, uniform NVFP4), `plain_reap_quant` (REAP50 mask, uniform NVFP4),
   `plain_reap_mix_quant` (REAP50 mask, 48 least-used Q2_K plus 48 NVFP4), and `mix_quant`

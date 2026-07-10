@@ -424,6 +424,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- Q2_K Stage-A GPU path vs the CPU dequant oracle on deterministic synthetic blocks. ---
+    // Q2_K intentionally has no dp4a fast path yet, but mixed expert artifacts rely on this
+    // generic staged path. Keep this model-independent so every target-rig gate exercises it.
+    {
+        use bw24_gguf::{GgmlType, dequant};
+        use bw24_runtime::cpu_linear;
+        let (in_f, out_f, m, row_bytes) = (256usize, 7usize, 3usize, 84usize);
+        let mut raw = vec![0u8; out_f * row_bytes];
+        for row in 0..out_f {
+            let base = row * row_bytes;
+            for group in 0..16 {
+                let scale = 1 + ((row * 3 + group * 5) % 15) as u8;
+                let min = 1 + ((row * 7 + group * 2) % 15) as u8;
+                raw[base + group] = scale | (min << 4);
+            }
+            for byte in 0..64 {
+                raw[base + 16 + byte] = ((row * 41 + byte * 17 + 13) & 0xff) as u8;
+            }
+            raw[base + 80..base + 82].copy_from_slice(&0x2c00u16.to_le_bytes()); // f16 0.0625
+            raw[base + 82..base + 84].copy_from_slice(&0x2800u16.to_le_bytes()); // f16 0.03125
+        }
+        let weights = dequant::dequantize(GgmlType::Q2_K, &raw, in_f * out_f);
+        let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 79) * 0.1).collect();
+        let cpu = cpu_linear(&x, &weights, m, in_f, out_f);
+        let wd = e.htod_bytes(&raw)?;
+        let xd = e.htod(&x)?;
+        let gpu = e.dtoh(&e.qmatvec(
+            &wd, &xd, m, in_f, out_f, bw24_engine::QT_Q2_K, row_bytes,
+        )?)?;
+        let scale = cpu.iter().map(|value| value.abs()).fold(0.0, f32::max).max(1e-3);
+        let rel = maxdiff(&cpu, &gpu) / scale;
+        println!("qmatvec Q2_K synthetic Stage-A: rel={rel:.2e} {}",
+                 if rel < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- qmatvec (resident-quant GEMM) vs cpu_linear(dequant(W)) on real GGUF weights ---
     if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType, dequant};
