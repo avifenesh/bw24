@@ -5462,6 +5462,69 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
         act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
     }
 }
+// gemma4 GELU rows twin (verify t=2..K+2, one launch for all tokens): per (token, row, slot)
+// the body is moe_gate_up_gelu8_dev_q8 VERBATIM (expert_dot_g order, warp tree, gelu epilogue).
+extern "C" __global__ void moe_gate_up_gelu8_dev_q8_rows(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ act,
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        int n_used) {
+    int tok = blockIdx.z;
+    int o = blockIdx.x;
+    int j = blockIdx.y;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    int ex = sel[tok * n_used + j];
+    const signed char* aqt = aq + (size_t)tok * in_f;
+    const float* adt = ad + (size_t)tok * nsb;
+    const unsigned char* grow = (const unsigned char*)table[ex] + (long)o * rb_g;
+    const unsigned char* urow = (const unsigned char*)table[n_expert + ex] + (long)o * rb_u;
+    float accg = 0.0f, accu = 0.0f;
+    for (int g = lane; g < nsb; g += 32) {
+        const signed char* aqb = aqt + (size_t)g * 32;
+        float d8 = adt[g];
+        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+    }
+    accg = warp_reduce_sum(accg);
+    accu = warp_reduce_sum(accu);
+    if (lane == 0) {
+        float x = accg;
+        float th = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+        act[((size_t)tok * n_used + j) * n_ff + o] = 0.5f * x * (1.0f + th) * accu;
+    }
+}
+
+// gemma4 generic down rows twin: grid.z = token; per row the base moe_down8_fma_dev_q8 body
+// VERBATIM (serial slot-ordered __fmaf_rn chain).
+extern "C" __global__ void moe_down8_fma_dev_q8_rows_g(
+        const unsigned long long* __restrict__ table, const int* __restrict__ sel,
+        const float* __restrict__ w,
+        const signed char* __restrict__ aq2, const float* __restrict__ ad2,
+        float* __restrict__ dst,
+        int in_f, int out_f, int n_used, int n_expert, int qt, long rb) {
+    int tok = blockIdx.z;
+    int o = blockIdx.x;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const int* selt = sel + tok * n_used;
+    const float* wt = w + tok * n_used;
+    float chain = 0.0f;
+    for (int j = 0; j < n_used; j++) {
+        int ex = selt[j];
+        const unsigned char* wrow = (const unsigned char*)table[2 * n_expert + ex] + (long)o * rb;
+        const signed char* arow = aq2 + ((size_t)tok * n_used + j) * in_f;
+        const float* adrow = ad2 + ((size_t)tok * n_used + j) * nsb;
+        float acc = 0.0f;
+        for (int g = lane; g < nsb; g += 32)
+            acc += expert_dot_g(qt, wrow, g, arow + (size_t)g * 32, adrow[g]);
+        acc = warp_reduce_sum(acc);
+        if (lane == 0) chain = __fmaf_rn(wt[j], acc, chain);
+    }
+    if (lane == 0) dst[(size_t)tok * out_f + o] = chain;
+}
+
 // down rows twin of w8h2v (the AUTO winner for the 35B shape, in_f==512 && n_used<=8 —
 // dispatch-gated by the host). Same down_h2_dot_v body per (token, row-pair, slot).
 extern "C" __global__ void moe_down8_fma_dev_q8_w8h2v_rows(

@@ -2111,22 +2111,33 @@ impl HybridModel {
             let dev = m.dev_exps.as_ref().unwrap();
             let (sel_d, mut w_d) = e.moe_router_topk(&logits, t, n_expert, n_used)?;
             e.moe_w_exscale(&mut w_d, &sel_d, &bits.per_expert_scale_d, t * n_used)?;
-            let mut moe_out = e.uninit(t * n_embd)?;
-            for tok in 0..t {
-                let zt = moe_in.slice(tok * n_embd..(tok + 1) * n_embd);
-                let (zq, zd) = e.quantize_q8_1_view(&zt, 1, n_embd)?;
-                let selv = sel_d.slice(tok * n_used..(tok + 1) * n_used);
-                let wv = w_d.slice(tok * n_used..(tok + 1) * n_used);
+            if t == 1 {
+                let (zq, zd) = e.quantize_q8_1(moe_in, 1, n_embd)?;
+                let selv = sel_d.slice(0..n_used);
+                let wv = w_d.slice(0..n_used);
                 let act = e.moe_gate_up_gelu8_dev_q8(&dev.ptr_row, &selv, &zq, &zd,
                                                      n_embd, n_ff_exp, n_used, n_expert,
                                                      m.gate_exps.qtype, m.up_exps.qtype,
                                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
-                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
-                e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2, &mut dst,
-                                       n_ff_exp, n_embd, n_used, n_expert,
-                                       m.down_exps.qtype, m.down_exps.row_bytes)?;
+                let mut moe_out = e.uninit(n_embd)?;
+                e.moe_down8_fma_dev_q8(&dev.ptr_row, &selv, &wv, &aq2, &ad2,
+                                       &mut moe_out.slice_mut(0..n_embd), n_ff_exp, n_embd,
+                                       n_used, n_expert, m.down_exps.qtype, m.down_exps.row_bytes)?;
+                return Ok(moe_out);
             }
+            // VERIFY ROWS TWINS (t=2..15): ONE launch pair for all tokens; per (token,row,slot)
+            // bodies are the t=1 kernels VERBATIM (bit-identical to the per-token loop).
+            let (zq, zd) = e.quantize_q8_1(moe_in, t, n_embd)?;
+            let act = e.moe_gate_up_gelu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
+                                                      n_embd, n_ff_exp, n_used, n_expert,
+                                                      m.gate_exps.qtype, m.up_exps.qtype,
+                                                      m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            e.moe_down8_fma_dev_q8_rows_g(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out, t,
+                                          n_ff_exp, n_embd, n_used, n_expert,
+                                          m.down_exps.qtype, m.down_exps.row_bytes)?;
             return Ok(moe_out);
         }
 

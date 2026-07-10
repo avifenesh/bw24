@@ -1451,6 +1451,46 @@ impl Engine {
         Ok(act)
     }
 
+    /// gemma4 GELU rows twin (verify): one launch over (n_ff, n_used, t).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_gate_up_gelu8_dev_q8_rows(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                         aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, t: usize,
+                                         in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
+                                         qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut act = self.alloc_uninit::<f32>(t * n_used * n_ff)?;
+        let (inf, nff, ne, rbg, rbu, nu) = (in_f as i32, n_ff as i32, n_expert as i32,
+                                            rb_g as i64, rb_u as i64, n_used as i32);
+        let f = self.func("moe_gate_up_gelu8_dev_q8_rows");
+        let cfg = LaunchConfig { grid_dim: (n_ff as u32, n_used as u32, t as u32),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu);
+        unsafe { b.launch(cfg)?; }
+        Ok(act)
+    }
+
+    /// gemma4 generic down rows twin (verify): one launch over (out_f, 1, t).
+    #[allow(clippy::too_many_arguments)]
+    pub fn moe_down8_fma_dev_q8_rows_g(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
+                                       w: &CudaSlice<f32>, aq2: &CudaSlice<i8>, ad2: &CudaSlice<f32>,
+                                       dst: &mut CudaSlice<f32>, t: usize,
+                                       in_f: usize, out_f: usize, n_used: usize, n_expert: usize,
+                                       qt: i32, rb: usize)
+                                       -> Result<(), Box<dyn std::error::Error>> {
+        let (inf, outf, nu, ne, rbi) = (in_f as i32, out_f as i32, n_used as i32,
+                                        n_expert as i32, rb as i64);
+        let f = self.func("moe_down8_fma_dev_q8_rows_g");
+        let cfg = LaunchConfig { grid_dim: (out_f as u32, 1, t as u32),
+                                 block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(sel).arg(w).arg(aq2).arg(ad2).arg(dst)
+         .arg(&inf).arg(&outf).arg(&nu).arg(&ne).arg(&qt).arg(&rbi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// gemma4 R3 device fold: w[i] *= s[sel[i]] over the router's [n] (sel, w) pair.
     pub fn moe_w_exscale(&self, w: &mut CudaSlice<f32>, sel: &CudaSlice<i32>,
                          s: &CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
