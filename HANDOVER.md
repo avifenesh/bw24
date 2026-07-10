@@ -13,20 +13,25 @@ decode (per-layer KV, fa vec-always FA_VEC_MIN_DEFAULT=1), tokenizer exact (7-ca
 prefill + decode window VIEW into cache), MTP spec loop (gemma_spec.rs, stream-identical to
 greedy at every K, VERIFY-GATE K=1..7 PASS).
 
-NUMBERS (chat prompt 22 toks, n=128, greedy):
+NUMBERS (chat prompt 22 toks, n=128, greedy, 2026-07-10 late):
 - ours plain 172.7-174 tok/s | llama serve plain 181-182 | llama-bench tg128 191.9
-- ours spec K3 179.0 (acc .520) | llama MTP serve 241-253 (acc .517 — drafter FAITHFUL)
+- ours spec K2/K3 213-216 (acc .52; 1.25x own plain, ~1.18x llama plain serve)
+  | llama MTP serve 241-253 (acc .517 — drafter FAITHFUL; the remaining gap is round cost)
 - prefill pp511: ours 1419 | llama-bench pp512 5713
-- round cost: ours ~14ms vs llama ~10.1 (K3, 2.56 tok/round)
+- spec lever history: 169 -> 179 (Q4_0 batched r2) -> 192 (fa_decode_rows verify) ->
+  203 (gelu CSR owner-scan) -> 216 (device per-row verify argmax, softcap-free greedy)
+- head trim top-N-ids NEGATIVE (acc .52 -> .34) — id order is NOT frequency; needs a
+  corpus-ranked gather + d2t (seam: BW24_GEMMA_DRAFT_VOCAB, default 0)
+- qwen regression battery GREEN after all shared-path changes (kernel-check, 9B/27B argmax,
+  9B run-spec K=1..8 self-consistency)
 
-NEXT LEVERS (ranked):
-1. Draft head trim (FR-Spec class): drafter head = 151MB Q4_0 read PER DRAFT (x3/round =
-   0.5ms). tok_trim/d2t machinery exists for qwen; drafter head rows = drafter token_embd.
-2. Verify MoE CSR dedup (unique experts across the K+1 tokens; qwen CSR gate_up won 55->39.7us)
-   + gelu CSR twin. gate_up_rows 87.7us / down_rows 56us per layer-round now (byte-wall for
-   pair-count; CSR cuts ~25-40%).
-3. fa verify: per-token fa_decode loop -> fa_decode_rows twins (SWA hd256 eligible; globals
-   hd512 stay looped).
+NEXT LEVERS (ranked; 1-3 of the old list DONE):
+1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
+   small; corpus-ranked FR trim would cut the head), h-row copies, per-round htod/dtoh syncs.
+   llama closes this class with CUDA graphs.
+2. Verify trunk b4_r2 tuning + t=3-specific mcols; verify fa windowed-rows twin (per-row
+   window offsets) so depth also rides rows.
+3. down8 CSR probe for nsb=22 (qwen nsb=16 measured NEGATIVE; 704-wide may differ — probe once).
 4. Plain decode continues: 174 vs llama serve 182 — mmvq 1.52ms/step vs 1.08 wall; fa hd512
    scalar 5 layers; norms 0.55ms; graph/gaps 0.95ms (device-token loop probed NEGATIVE eager;
    llama wins via CUDA graphs).
