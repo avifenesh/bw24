@@ -54,6 +54,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("variant[{}]: {us:.2} us/launch  {:.0} GB/s ({:.0}% of 858)",
              if variant.is_empty() { "v(auto)" } else { &variant },
              bytes / us / 1e3, bytes / us / 1e3 / 858.0 * 100.0);
-    // byte-compare vs auto (only when a variant is forced)
+    // ---- down8 floor (w8h2v, the 35B shape: IQ4_XS in_f=512 out_f=2048 rb=272) ----
+    let (din, dout, drb) = (512usize, 2048usize, 272usize);
+    let dstride = drb * dout;
+    let dslab: Vec<u8> = (0..n_expert * dstride).map(|i| hb(i + 31)).collect();
+    let dslab_d = e.htod_bytes(&dslab)?;
+    let (pdn, _g2) = dslab_d.device_ptr(e.stream());
+    let mut dtab = vec![0u64; 3 * n_expert];
+    for ex in 0..n_expert {
+        dtab[ex] = pdn + (ex * dstride) as u64;
+        dtab[n_expert + ex] = pdn + (ex * dstride) as u64;
+        dtab[2 * n_expert + ex] = pdn + (ex * dstride) as u64;
+    }
+    let dtab_d = e.htod_u64(&dtab)?;
+    let w_d = e.htod(&(0..n_used).map(|i| pr(i) * 0.4).collect::<Vec<f32>>())?;
+    let aq2: Vec<i8> = (0..n_used * din).map(|i| hb(i + 77) as i8).collect();
+    let ad2: Vec<f32> = (0..n_used * (din / 32)).map(|i| (pr(i) + 1.5) * 0.01).collect();
+    let aq2_d = e.htod_i8(&aq2)?;
+    let ad2_d = e.htod(&ad2)?;
+    let mut ddst = e.zeros(dout)?;
+    let run = |ddst: &mut cudarc::driver::CudaSlice<f32>| -> Result<(), Box<dyn std::error::Error>> {
+        let mut dv = ddst.slice_mut(0..dout);
+        e.moe_down8_fma_dev_q8_variant("w8h2v", &dtab_d, &sel_d.slice(0..n_used),
+                                       &w_d.slice(0..n_used), &aq2_d, &ad2_d, &mut dv,
+                                       din, dout, n_used, n_expert, bw24_engine::QT_IQ4_XS, drb)?;
+        Ok(())
+    };
+    for _ in 0..20 { run(&mut ddst)?; }
+    e.stream().synchronize()?;
+    let t1 = std::time::Instant::now();
+    for _ in 0..reps { run(&mut ddst)?; }
+    e.stream().synchronize()?;
+    let dus = t1.elapsed().as_secs_f64() * 1e6 / reps as f64;
+    let dbytes = (n_used * dout) as f64 * drb as f64;
+    println!("down8[w8h2v]: {dus:.2} us/launch  {:.0} GB/s ({:.0}% of 858)",
+             dbytes / dus / 1e3, dbytes / dus / 1e3 / 858.0 * 100.0);
     Ok(())
 }
