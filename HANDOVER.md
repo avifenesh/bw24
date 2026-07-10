@@ -94,13 +94,14 @@ slot-parallel — both NEGATIVE, serial rows_g stays), verify attention 3.5ms (r
 chain 1.7ms + head 0.45ms (mr2 ~150us ~= 137MB wall — closed), verify head 0.79ms (86% wall).
 K plateau 3-5 (231/233/232 solo). sp16 re-probe: plain +2, spec -18% (v4 per-block staging x
 splits x rows) — killed again.
-NEXT SPEC LEVER — QUANTIFIED (2026-07-10 short-round nsys): verify trunk b4/b4_r2 = 205
-launches/round of 10-15us matvecs at 41% of the byte wall (2.62ms/round vs 1.08 floor; MoE +
-head + fa are all 59-94% eff). That launch/tail-latency class is exactly what llama's CUDA
-graphs erase (their K=3 round 10.1ms vs our 11.7). The arc: capture the VERIFY step as a
-fixed-shape graph per (t, ctx-bucket) using the dc device-counter KV lens, or fuse the b4
-matvec chain (rows-fused3 qkv + gate/up pairs). Est +1.5ms/round = short 222 -> ~260 (llama
-MTP bar 253); same class at depth. Round-stream (device acceptance) composes on top.
+NEXT SPEC LEVER — QUANTIFIED, then REFRAMED (2026-07-10): verify trunk b4/b4_r2 runs at 41%
+of the byte wall (2.62ms/round vs 1.08 floor; MoE/head/fa are 59-94%). Fused-qkv one-launch
+probe = FLAT (bitwise-exact, reverted) -> the deficit is NOT launch gaps (stream already
+saturated); it is per-warp DRAM latency INSIDE q4_0_mmvq_batched's walk (one 18B block load
+in flight between dp4a chains; wq 3.25MB in 11.6us = 280GB/s). REAL lever = pipeline the
+batched walk (2+ blocks in flight / wider loads / cp.async) — touches the shipped b4 family,
+VERIFY-GATE + battery arbitrate; est short 222 -> ~250-260 if it reaches gate_up's eff.
+llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
 
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
