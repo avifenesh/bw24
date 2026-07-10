@@ -57,7 +57,10 @@ pub fn ggml_to_hf(ggml: &str, arch: &Arch) -> Option<String> {
     if arch.is_hy3() {
         let hy3_suffix: Option<&str> = match suffix {
             "ffn_gate_inp.weight" => Some("mlp.router.gate.weight"),
-            "exp_probs_b.bias" => Some("mlp.router.expert_bias"),
+            // Current tencent/Hy3 checkpoints store the selection-only correction beside the
+            // router module. Preview checkpoints used `mlp.router.expert_bias`; the safetensors
+            // source keeps that older spelling as a lookup fallback.
+            "exp_probs_b.bias" => Some("mlp.expert_bias"),
             "ffn_gate_shexp.weight" => Some("mlp.shared_mlp.gate_proj.weight"),
             "ffn_up_shexp.weight" => Some("mlp.shared_mlp.up_proj.weight"),
             "ffn_down_shexp.weight" => Some("mlp.shared_mlp.down_proj.weight"),
@@ -550,7 +553,7 @@ mod tests {
         );
         assert_eq!(
             ggml_to_hf("blk.1.exp_probs_b.bias", &a).unwrap(),
-            "model.layers.1.mlp.router.expert_bias"
+            "model.layers.1.mlp.expert_bias"
         );
         assert_eq!(
             ggml_to_hf("blk.1.ffn_gate_shexp.weight", &a).unwrap(),
