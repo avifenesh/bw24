@@ -85,13 +85,11 @@ pub trait TensorSource {
     /// overlay and must be excluded before top-k routing. Keeping the original router width makes
     /// usage-driven pruning possible without rewriting router tensors or expert ids.
     fn active_experts(&self, _layer: u32) -> Option<&[bool]> { None }
-    /// Zero-copy mmap window for a STACKED 3D expert tensor (the disk-spill tier's byte source):
-    /// `(shared file mmap, byte offset of expert 0, total expert bytes)`. `Some` only when the
-    /// source's on-disk layout IS already the engine's expert layout (expert-axis-slowest,
-    /// contiguous strides) — the Hy3 Q4_K repack dir. The engine then backs `HostExps` with
-    /// `HostBuf::Mmap` directly (page cache = the RAM tier, faults = the NVMe tier) instead of
-    /// copying an 80 GB expert set into RAM/pinned. None everywhere else (GGUF spill has its own
-    /// file-mmap path; safetensors gathers/repacks).
+    /// Zero-copy mmap window for an expert tensor (the disk-spill tier's byte source):
+    /// `(shared file mmap, tensor byte offset, tensor bytes)`. This covers both stacked 3D expert
+    /// slabs and v2 per-expert overlay entries. The engine then backs `HostExps` with
+    /// `HostBuf::Mmap` directly (page cache = RAM tier, faults = NVMe tier) instead of copying a
+    /// potentially >RAM expert set. None for sources that require gathering or repacking.
     fn find_expert_mmap(&self, _ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> { None }
 }
 
@@ -281,6 +279,10 @@ impl Hy3RepackSource {
             }
         }
 
+        let expert_files: BTreeSet<PathBuf> = tensors.iter()
+            .filter(|(name, _)| name.contains("_exps."))
+            .map(|(_, tensor)| tensor.file.clone())
+            .collect();
         let mut files = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for t in tensors.values() {
@@ -291,7 +293,7 @@ impl Hy3RepackSource {
             // Expert slab files back the disk-spill tier (routing-driven random access):
             // MADV_RANDOM kills readahead waste, same as the GGUF/M3 spill mmaps.
             #[cfg(target_os = "linux")]
-            if t.expert_stride.is_some() {
+            if t.expert_stride.is_some() || expert_files.contains(&t.file) {
                 unsafe {
                     unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
                     let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
@@ -400,12 +402,11 @@ impl TensorSource for Hy3RepackSource {
         self.active_experts.get(&layer).map(Vec::as_slice)
     }
 
-    /// Stacked expert slabs live one-per-file with expert 0 at byte 0 (the transcoder's layout);
-    /// hand the engine the shared mmap so `HostExps` can be mmap-backed with ZERO copy — the
-    /// spill-tier contract for the 80 GB Hy3 expert set (page cache = RAM tier, faults = NVMe).
+    /// Hand stacked expert slabs and v2 per-expert overlay entries to the engine as shared mmap
+    /// windows. Both layouts are already kernel-ready; copying them into Vec would make the 161 GB
+    /// full-bank control impossible on a 124 GB host.
     fn find_expert_mmap(&self, ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> {
         let t = self.tensors.get(ggml_name)?;
-        t.expert_stride?;
         let map = self.files.get(&t.file)?;
         Some((map.clone(), t.offset, t.bytes))
     }
@@ -971,6 +972,8 @@ mod tests {
         let selected = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
         assert_eq!(selected.ggml_type, GgmlType::Q4_K);
         assert_eq!(&*selected.bytes, &q4k);
+        let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(&map[off..off + len], &q4k);
         let fallback = src.find("blk.0.attn_q.weight").unwrap();
         assert_eq!(fallback.ggml_type, GgmlType::F32);
         assert_eq!(fallback.ne, vec![2, 4]);
@@ -1014,6 +1017,9 @@ mod tests {
         let expert = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
         assert_eq!(expert.ggml_type, GgmlType::Q2_K);
         assert_eq!(&*expert.bytes, &[0x22u8; 84]);
+        let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!((off, len), (2, 84));
+        assert_eq!(&map[off..off + len], &[0x22u8; 84]);
         let dense = src.find("blk.0.attn_norm.weight").unwrap();
         assert_eq!(&*dense.bytes, &[1, 2, 3, 4]);
 
