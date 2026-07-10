@@ -22,6 +22,7 @@ case "$SUITE" in
   candidate)
     TASKS=gpqa_diamond_cot_zeroshot,hendrycks_math500,mmlu_pro_history,mmlu_pro_other,mmlu_pro_economics,mmlu_pro_law,mmlu_pro_psychology
     LIMIT=${LIMIT:-3}
+    MAX_GEN_TOKS=${MAX_GEN_TOKS:-256}
     ;;
   code)
     if [[ ${BW24_UNSAFE_EVALS:-0} != 1 ]]; then
@@ -57,7 +58,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT
+export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -88,6 +89,9 @@ metadata = {
     "artifact_identity_sha256": sha256(identity),
     "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
+    "max_gen_toks_override": (
+        int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
+    ),
     "platform": platform.platform(),
     "nvidia_smi": command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"),
 }
@@ -103,6 +107,7 @@ ARGS=(
   --output_path "$RUN_DIR"
 )
 if [[ -n ${LIMIT:-} ]]; then ARGS+=(--limit "$LIMIT"); fi
+if [[ -n ${MAX_GEN_TOKS:-} ]]; then ARGS+=(--gen_kwargs "max_gen_toks=$MAX_GEN_TOKS"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
 
 "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
