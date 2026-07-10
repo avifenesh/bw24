@@ -53,10 +53,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(128);
     let mode = std::env::args().nth(4).unwrap_or_else(|| "eager".to_string());
     let e = Engine::new(0)?;
-    // Directory path = safetensors HF checkpoint, same convention as run-gen.
+    // Directory path = safetensors HF checkpoint or manifest-backed bw24 repack, matching run-gen.
     let m = if std::path::Path::new(&path).is_dir() {
-        let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
-        HybridModel::load_from_source(&e, &st)?
+        let dir = std::path::Path::new(&path);
+        if dir.join("manifest.json").exists() {
+            let repack = bw24_gguf::source::Hy3RepackSource::open(dir)?;
+            HybridModel::load_from_source(&e, &repack)?
+        } else {
+            let st = bw24_gguf::source::SafetensorsSource::open(dir)?;
+            HybridModel::load_from_source(&e, &st)?
+        }
     } else {
         let g = GgufFile::open(&path)?;
         HybridModel::load(&e, &g)?
