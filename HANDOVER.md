@@ -4,6 +4,18 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## BAR MAP AFTER v0.17.0 (FA-v4 shipped default — TWO CELLS CROSSED THE BAR)
+
+FA-v4 (key-per-lane score phase) adopted default after the full 3-model battery: 35B spec
+[292.2, 249.6, 275.3] vs marked llama [251.9, 221.4, 248.9] = **1.16x / 1.13x / 1.11x — p2 AND
+p3 OVER THE 1.1x BAR** (were 1.05/1.07). 27B [107.3, 96.9, 103.5] vs [86.3, 91.7, 93.4] =
+1.24x / **1.057x (THE LAST SPEC CELL UNDER BAR)** / 1.11x. 9B all ≥1.7x.
+Remaining under bar: 27B spec p2 (1.057x — levers: FA-structure iterations transfer here +
+acceptance/head lane) and the plain cells at their measured walls (d512 1.06-1.10x, depth
+1.02-1.07x; expert pair = DRAM locality, trunk 94% ramp-real, head at wall, fa now v4).
+FA lane still open: v4 = 43us at d6257 vs 6.8us bytes-floor — phase probes (BW24_FA_V4=noB3/
+stage, bench-only) isolate stage/score/B3 shares for the next iteration.
+
 ## FA-V4 DESIGN (the last quantified structural target, ~+4-5% depth cell)
 
 fa_v3 at d6257 = 46.7us for 5.8MB = 14% of bytes-wall (kv-fmt-bench, split-optimal at 64).
