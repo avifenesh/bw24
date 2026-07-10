@@ -659,3 +659,14 @@ q6_K matvec 204ms/414 (lm_head class). NEXT (fresh context): prime-excluded re-p
 split -> the b12/b16 design targets whichever term dominates. Constraint: verify kernels must
 stay BIT-IDENTICAL to decode per (token,row) (the dispatch-parity law) — speedups come from
 launch fusion/batching shape, not numeric-class changes.
+
+### Verify-cost arc — target #1 QUANTIFIED (gen-phase nsys, 35B K=3, prime-excluded)
+
+qmatvec_q6_K_mmvq = 205ms of a 963ms gen wall (21%), 419 instances = 6.8/round, uniform
+489us (stddev 4.2us -> ONE shape). The Q6_K head/tensor is the single largest per-round term.
+matmul_decode_exact's batched arm DOES cover Q6_K m=2-8 (batched_supports + b8), so the 6.8
+launches/round need CALL-SITE MAPPING before the fix: candidates = draft-chain head steps
+(trimmed q6_K x ~3/round), verify head (batched or fallthrough?), another q6_K weight class.
+Next session: nvtx-range or per-callsite counter -> map instances -> then batch/trim/shape-fix
+whichever term it is. A 4-5x cut of this term ~= +15-17% e2e on the 35B = both its sub-bar
+cells clear the margin. Draft-chain trunk matvecs (fused2+mmvq, 437ms combined) = target #2.
