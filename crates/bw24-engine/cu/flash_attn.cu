@@ -4786,4 +4786,121 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16_kv(
     }
 }
 
+// 2-KEY INTERLEAVE twin (2026-07-11, register-frugal ILP for the 30x-off-floor global lane):
+// each iteration scores TWO keys with interleaved dq chains (2 loads in flight instead of 1),
+// does one fused softmax update (m_new = max(m, sA, sB)), then accumulates both values with
+// interleaved V chains. +6 registers vs the serial walk (the two-pass rewrite's +32 collapsed
+// occupancy — jsonl). NEW NUMERIC CONFIG (paired max/update order); every caller shares this
+// symbol via fa_decode_rows — battery + depth run-gen arbitrate.
+extern "C" __global__ void fa_decode_vec_q_rows_dpl16_i2(
+        const float* __restrict__ Q,
+        const uint8_t* __restrict__ K,
+        const uint8_t* __restrict__ V,
+        float* __restrict__ partO,
+        float* __restrict__ partM,
+        float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int r        = blockIdx.z;
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int kv_head  = blockIdx.x;
+    const int split    = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    float q_reg[FA_DEC_MAX_DPL16];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)r * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL16];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) acc[i] = 0.0f;
+
+    const int kblk0 = (kv_head * head_dim) >> 5;
+    int t = t_lo;
+    for (; t + 1 < t_hi; t += 2) {
+        const uint8_t* ka = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+        const uint8_t* kb = K + (size_t)(t + 1) * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+        float pa = 0.0f, pb = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) {
+                pa += q_reg[i] * __bfloat162float(__float2bfloat16(dq_K_lane(ka + i * K_BLK_B, lane)));
+                pb += q_reg[i] * __bfloat162float(__float2bfloat16(dq_K_lane(kb + i * K_BLK_B, lane)));
+            }
+        }
+        float sA = warp_reduce_sum(pa);
+        float sB = warp_reduce_sum(pb);
+        float m_new = fmaxf(m_i, fmaxf(sA, sB));
+        float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        float wA = exp2f((sA - m_new) * LOG2E);
+        float wB = exp2f((sB - m_new) * LOG2E);
+        const uint8_t* va = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
+        const uint8_t* vb = V + (size_t)(t + 1) * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) {
+                float vva = __bfloat162float(__float2bfloat16(dq_V_lane(va + i * V_BLK_B, lane)));
+                float vvb = __bfloat162float(__float2bfloat16(dq_V_lane(vb + i * V_BLK_B, lane)));
+                acc[i] = __fmaf_rn(acc[i], alpha, __fmaf_rn(wA, vva, __fmul_rn(wB, vvb)));
+            }
+        }
+        l_i = l_i * alpha + wA + wB;
+        m_i = m_new;
+    }
+    for (; t < t_hi; ++t) {   // odd tail: the serial walk body
+        const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+        float part = 0.0f;
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) {
+                part += q_reg[i] * __bfloat162float(__float2bfloat16(dq_K_lane(kt + i * K_BLK_B, lane)));
+            }
+        }
+        float score = warp_reduce_sum(part);
+        float m_new = fmaxf(m_i, score);
+        float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        float p     = exp2f((score - m_new) * LOG2E);
+        const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) {
+                acc[i] = __fmaf_rn(acc[i], alpha, __fmul_rn(p, __bfloat162float(__float2bfloat16(dq_V_lane(vt + i * V_BLK_B, lane)))));
+            }
+        }
+        l_i = l_i * alpha + p;
+        m_i = m_new;
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) {
+        partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+        partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+    }
+}
+
 

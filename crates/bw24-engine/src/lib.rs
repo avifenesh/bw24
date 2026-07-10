@@ -4821,7 +4821,10 @@ impl Engine {
         // in as values. Verify/decode/stream gates were blind (both sides shared the wrong
         // symbol — the parity law's blind spot); only prefill-vs-decode at depth caught it.
         let _ = kv_shared;
-        let fname = if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
+        // i2 twin: 2-key interleaved walk (BW24_FA_I2=0 reverts to the serial walk).
+        let i2 = head_dim == 512 && std::env::var("BW24_FA_I2").as_deref() != Ok("0");
+        let fname = if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
+                    else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
