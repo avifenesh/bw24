@@ -4779,7 +4779,19 @@ impl Engine {
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
-        let sp = fa_split_keys(t_kv_max, n_head_kv);       // env/default — same value every row
+        let mut sp = fa_split_keys(t_kv_max, n_head_kv);   // env/default — same value every row
+        // hd512 split override (BW24_FA_SP512, 2026-07-11): gemma globals have n_head_kv=2 so
+        // the grid is (2 x n_splits) — at depth ~29 splits = 58 blocks on 82 SMs (half idle,
+        // rows_dpl16 8x off its byte floor). EVERY gemma hd512 caller shares THIS wrapper
+        // (parity law), so the partition is freely tunable — verify and decode move together.
+        if head_dim == 512 {
+            static SP512: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            // default 16 (2026-07-11 depth sweep, N=2: plain 155.4->156.5, depth spec
+            // 236.9->250.4; 12/24/32 all worse). hd512 exists only on gemma globals.
+            let v = *SP512.get_or_init(|| std::env::var("BW24_FA_SP512").ok()
+                .and_then(|x| x.parse().ok()).unwrap_or(16));
+            if v >= 8 { sp = v; }
+        }
         let n_splits_max = (t_kv_max + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
