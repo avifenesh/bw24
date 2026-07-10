@@ -1370,9 +1370,10 @@ impl HybridModel {
         } else { None };
         let mut q_full_buf: Option<CudaSlice<f32>> = None;
         // Counters resume from the session (burst continuity: randomness must never repeat
-        // across generate_spec_session calls); one-shot callers start at (0,0).
-        let mut sctr: u32 = sess.as_ref().map(|s| s.sctr).unwrap_or(0);
-        let mut uctr: u32 = sess.as_ref().map(|s| s.uctr).unwrap_or(0);
+        // across generate_spec_session calls); one-shot callers start at (0,0). Read through
+        // sess_tail — `sess` was take()n into it above, so sess.as_ref() here is always None.
+        let mut sctr: u32 = sess_tail.as_ref().map(|(_, _, _, s, _)| **s).unwrap_or(0);
+        let mut uctr: u32 = sess_tail.as_ref().map(|(_, _, _, _, u)| **u).unwrap_or(0);
         // host Philox4x32-10 (mirrors spec_sample.cu; independent stream via ctr_lo tag)
         let host_u01 = |seed: u64, ctr: u32| -> f32 {
             let (m0, m1) = (0xD2511F53u32, 0xCD9E8D57u32);
