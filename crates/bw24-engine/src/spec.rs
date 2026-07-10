@@ -104,6 +104,20 @@ fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Erro
 /// suffix (chunked continuation prime over the quantized past) and mtp_kv_fill's its suffix rows,
 /// then the round loop runs unchanged. `last_h` carries the pre-output_norm hidden of the last
 /// committed row across turns (the predecessor-pairing seed + fill anchor).
+/// Per-request sampling config for the sampled-spec serve path.
+#[derive(Clone, Copy, Debug)]
+pub struct SpecSampling {
+    pub temp: f32,
+    pub seed: u64,
+    pub top_k: i32,        // 0 = off
+    pub top_p: f32,        // 1.0 = off
+    pub min_p: f32,        // 0.0 = off
+    pub penalty_last_n: usize, // 0 = penalties off
+    pub penalty_repeat: f32,
+    pub penalty_freq: f32,
+    pub penalty_present: f32,
+}
+
 pub struct SpecSession {
     pub(crate) cache: Cache,
     pub(crate) scratch: MtpScratch,
@@ -1173,11 +1187,12 @@ impl HybridModel {
         self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None)
     }
 
-    /// Serve-path sampled spec: `sampling` = Some((temperature, seed)) routes the burst through
-    /// the rejection-sampling verify with per-SESSION Philox continuity (sess.sctr/uctr).
-    /// None = env-driven (BW24_SPEC_TEMP, the CLI contract) or greedy.
+    /// Serve-path sampled spec: routes the burst through the rejection-sampling verify with
+    /// per-SESSION Philox continuity (sess.sctr/uctr). None = env-driven (CLI) or greedy.
+    /// Filters (top-k/p/min-p) apply SYMMETRICALLY to draft q and verify p — distribution-exact
+    /// for the filtered target (feat/filtered-spec).
     pub fn generate_spec_session_sampled(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
-                                 max_new: usize, k: usize, sampling: Option<(f32, u64)>)
+                                 max_new: usize, k: usize, sampling: Option<SpecSampling>)
                                  -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         let mtp_dense = self.mtp.as_ref()
             .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
@@ -1218,7 +1233,7 @@ impl HybridModel {
 
     fn generate_spec_inner2(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
                            graph_draft: bool, mut sess: Option<&mut SpecSession>,
-                           sampling: Option<(f32, u64)>)
+                           sampling: Option<SpecSampling>)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
@@ -1356,11 +1371,18 @@ impl HybridModel {
         // sampling verify (Leviathan/Chen) — accept draft x at u < p(x)/q(x), resample from
         // norm(max(0,p-q)) on reject, bonus sampled from p on full accept. Counter-based Philox
         // everywhere (seed, event) -> reproducible. temp==0/unset = the greedy path, untouched.
-        let (sp_temp, sp_seed): (f32, u64) = match sampling {
-            Some((t, sd)) => (t, sd),
-            None => (std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                     std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42)),
-        };
+        let sp = sampling.unwrap_or_else(|| SpecSampling {
+            temp: std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            seed: std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42),
+            top_k: std::env::var("BW24_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            top_p: std::env::var("BW24_TOP_P").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+            min_p: std::env::var("BW24_MIN_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            penalty_last_n: std::env::var("BW24_PENALTY_LAST_N").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            penalty_repeat: std::env::var("BW24_PENALTY_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+            penalty_freq: std::env::var("BW24_PENALTY_FREQ").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            penalty_present: std::env::var("BW24_PENALTY_PRESENT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        });
+        let (sp_temp, sp_seed) = (sp.temp, sp.seed);
         let sampled = sp_temp > 0.0;
         // Trimmed heads: q lives on the trimmed vocab; accept gathers use the TRIMMED index and
         // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
@@ -1389,13 +1411,24 @@ impl HybridModel {
             (c0 as f32 + 1.0) * (1.0 / 4294967296.0)
         };
         let mut draft_logits: Vec<CudaSlice<f32>> = Vec::new();   // retained head logits (q), per slot
+        let mut draft_stats: Vec<(f32, f32, f32)> = Vec::new();   // (row_max, th_e, z_e) per slot
         let mut perturb_buf: Option<CudaSlice<f32>> = None;       // gumbel scratch (max(n_vocab,d_vocab))
         let mut sample_tok = e.alloc_u32_zeroed(1)?;              // residual/bonus sample out
         let mut col_buf: Option<CudaSlice<f32>> = None;           // materialized verify column
+        // Penalties (v2.1): applied to COPIES of q rows and p columns symmetrically (exactness
+        // for the penalized+filtered target). History = generated tokens, host-tracked window.
+        let pen_on = sampled && sp.penalty_last_n > 0
+            && (sp.penalty_repeat != 1.0 || sp.penalty_freq != 0.0 || sp.penalty_present != 0.0);
+        let mut pen_hist: Vec<u32> = if pen_on {
+            prompt.iter().rev().take(64).rev().cloned().collect()  // llama-parity: history spans prompt tail too
+        } else { Vec::new() };
+        let mut pen_hist_d: Option<CudaSlice<u32>> = None;
+        let mut pcol_buf: Option<CudaSlice<f32>> = None;          // penalized p-column scratch
         let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut *cache)?;
         let mut last_pred = argmax(&init_logits) as u32;
         // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
         let mut last_col_logits: Option<CudaSlice<f32>> = if sampled { Some(e.htod(&init_logits)?) } else { None };
+        let mut last_col_stats: Option<(f32, f32, f32)> = None;
         // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
         // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
         // stable pointer for the graph-draft round-start copy.
@@ -1483,7 +1516,12 @@ impl HybridModel {
         let mut g_perturb = e.zeros(if sampled { d_vocab } else { 1 })?;
         let mut q_slots: Vec<CudaSlice<f32>> = Vec::new();
         let mut draft_graph_s: Option<cudarc::driver::CudaGraph> = None;
-        if graph_draft && sampled {
+        // COMPOSITION RULE (fspec x gsd merge): the in-graph chain samples from the RAW
+        // softmax — it can hold neither per-row filter stats nor the varying penalty history.
+        // The sampled graph therefore engages only in the PURE-TEMP regime; filters/penalties
+        // force the eager draft (which computes stats/penalties per row).
+        let pure_temp = sp.top_k == 0 && sp.top_p >= 1.0 && sp.min_p <= 0.0 && !pen_on;
+        if graph_draft && sampled && pure_temp {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
                                           &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
@@ -1577,11 +1615,15 @@ impl HybridModel {
             // base0 - 1); this single set_len IS the draft-side rollback (drops last round's
             // rejected drafts and p-min extras via the len mechanism).
             scratch.set_len(e, pos + base0 - 1)?;
+            if pen_on {
+                let w0 = pen_hist.len().saturating_sub(sp.penalty_last_n);
+                pen_hist_d = Some(e.htod_u32_v(&pen_hist[w0..])?);
+            }
             let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             let mut draft_idx: Vec<u32> = Vec::with_capacity(k);   // trimmed-vocab ids (== draft when untrimmed)
-            if sampled { draft_logits.clear(); }
-            if let (false, Some(gr)) = (sampled, &draft_graph) {
+            if sampled { draft_logits.clear(); draft_stats.clear(); }
+            if let (false, Some(gr)) = (sampled || pen_on, &draft_graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
                 // inc'd in-graph); the host only reads 4B token (+4B p) and decides the break.
@@ -1633,6 +1675,15 @@ impl HybridModel {
                     // trimmed head: the NEXT embed must read the TARGET id (see the greedy arm).
                     if d != idx { e.set_u32_one(&mut g_tok, d)?; }
                 }
+                // uniform accept path: fill draft_stats per used slot (pure-temp regime — the
+                // stats degenerate to th=0 / full-Z; one filter_stats launch per slot, tiny).
+                for j in 0..draft.len().max(draft_idx.len()) {
+                    let rows0 = e.htod_i32(&[0])?;
+                    let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                    e.filter_stats(&q_slots[j], d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                   d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                    draft_stats.push((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
+                }
             } else {
                 // EAGER DRAFT (fallback: MoE head/trunk, huge k, BW24_SPEC_NOGRAPH, capture fail).
                 let mut e_tok = last_token;
@@ -1643,12 +1694,26 @@ impl HybridModel {
                     let mtp_pos = pos + base0 + j;
                     let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut *scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
                     let tok_d = if sampled {
-                        // Gumbel-max: argmax(logits/T + G) == one categorical sample at T.
+                        // FILTERED Gumbel-max: stats -> masked perturb -> argmax = one draw from
+                        // the filtered softmax (filters off => th=0, exact v1 semantics).
                         if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                        let mut q_row = e.clone_dtod(&dl_d)?;      // retained q (penalized when on)
+                        if pen_on {
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits(&mut q_row, h, nh, sp.penalty_repeat, sp.penalty_freq,
+                                              sp.penalty_present, d_vocab)?;
+                        }
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        e.filter_stats(&q_row, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        let (th, z, mx) = (e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0], e.dtoh(&mx_d)?[0]);
                         let pb = perturb_buf.as_mut().unwrap();
-                        e.gumbel_perturb(&dl_d, pb, d_vocab, sp_seed, sctr, sp_temp)?;
+                        e.gumbel_perturb_filtered(&q_row, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th)?;
                         sctr += 1;
-                        draft_logits.push(e.clone_dtod(&dl_d)?);   // retain q for accept/residual
+                        draft_logits.push(q_row);
+                        draft_stats.push((mx, th, z));
                         e.argmax_token_device(pb, d_vocab)?
                     } else {
                         e.argmax_token_device(&dl_d, d_vocab)?
@@ -1711,8 +1776,10 @@ impl HybridModel {
             } else {
                 // --- SAMPLED ACCEPT (rejection sampling): u_j < p_j(x_j)/q_j(x_j) walk ---
                 if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
-                // p_j: verify columns in ONE gather (col base+j-1); j==0&&base==0 from last_col.
+                // FILTERED p_j: per-verify-col stats (one batched filter_stats call), then the
+                // filtered gather. j==0&&base==0 reads last_col (its own stats row appended).
                 let mut pj = vec![0f32; k_round.max(1)];
+                let mut col_stats: Vec<(f32, f32, f32)> = Vec::new();  // (max, th, z) per verify col used
                 if k_round > 0 {
                     let mut ids: Vec<u32> = Vec::new();
                     let mut rows: Vec<i32> = Vec::new();
@@ -1720,46 +1787,112 @@ impl HybridModel {
                         if j > 0 || base == 1 { ids.push(draft[j]); rows.push((base + j) as i32 - 1); }
                     }
                     if !ids.is_empty() {
+                        let nr = rows.len();
+                        // penalties: materialize the used columns into one contiguous penalized
+                        // buffer (rows remapped 0..nr) so stats+gathers see the penalized p.
+                        // penalties: materialize used columns contiguously, penalize all rows in
+                        // one launch, and point stats+gathers at the penalized buffer (rows 0..nr).
+                        let p_rows: Vec<i32> = if pen_on { (0..nr as i32).collect() } else { rows.clone() };
+                        if pen_on {
+                            if pcol_buf.as_ref().map(|b| b.len()).unwrap_or(0) < nr * n_vocab {
+                                pcol_buf = Some(e.zeros(nr * n_vocab)?);
+                            }
+                            let pc = pcol_buf.as_mut().unwrap();
+                            for (i2, &r) in rows.iter().enumerate() {
+                                let c = r as usize;
+                                e.copy_view_into(pc, i2 * n_vocab,
+                                                 &tlogits_d.slice(c * n_vocab..(c + 1) * n_vocab), n_vocab)?;
+                            }
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits_rows(pc, h, nh, sp.penalty_repeat, sp.penalty_freq,
+                                                   sp.penalty_present, n_vocab, nr)?;
+                        }
+                        let p_src: &CudaSlice<f32> = if pen_on { pcol_buf.as_ref().unwrap() } else { &tlogits_d };
+                        let rowsd = e.htod_i32(&p_rows)?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
+                        e.filter_stats(p_src, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, nr, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
                         let idsd = e.htod_u32_v(&ids)?;
-                        let rowsd = e.htod_i32(&rows)?;
-                        let mut outd = e.zeros(ids.len())?;
-                        e.softmax_gather(&tlogits_d, n_vocab, &idsd, &rowsd, &mut outd, n_vocab, ids.len(), sp_temp)?;
+                        let mut outd = e.zeros(nr)?;
+                        e.softmax_gather_filtered(p_src, n_vocab, &idsd, &rowsd, &th_d, &z_d,
+                                                  &mut outd, n_vocab, nr, sp_temp)?;
                         let outv = e.dtoh(&outd)?;
+                        let (thv, zv, mxv) = (e.dtoh(&th_d)?, e.dtoh(&z_d)?, e.dtoh(&mx_d)?);
                         let mut oi = 0usize;
                         for j in 0..k_round { if j > 0 || base == 1 { pj[j] = outv[oi]; oi += 1; } }
+                        col_stats = (0..nr).map(|i| (mxv[i], thv[i], zv[i])).collect();
                     }
                     if base == 0 {
-                        let lc = last_col_logits.as_ref().expect("sampled: last_col_logits unset");
+                        let lc: &CudaSlice<f32> = if pen_on {
+                            if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
+                            let cb = col_buf.as_mut().unwrap();
+                            e.copy_into(cb, 0, last_col_logits.as_ref().expect("sampled: last_col_logits unset"), n_vocab)?;
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                            col_buf.as_ref().unwrap()
+                        } else {
+                            last_col_logits.as_ref().expect("sampled: last_col_logits unset")
+                        };
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        e.filter_stats(lc, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
                         let idsd = e.htod_u32_v(&[draft[0]])?;
-                        let rowsd = e.htod_i32(&[0])?;
                         let mut outd = e.zeros(1)?;
-                        e.softmax_gather(lc, n_vocab, &idsd, &rowsd, &mut outd, n_vocab, 1, sp_temp)?;
+                        e.softmax_gather_filtered(lc, n_vocab, &idsd, &rows0, &th_d, &z_d,
+                                                  &mut outd, n_vocab, 1, sp_temp)?;
                         pj[0] = e.dtoh(&outd)?[0];
+                        last_col_stats = Some((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
                     }
                 }
                 // q source: the graph arm retained the head logits in the persistent q_slots;
                 // the eager arm in per-round draft_logits clones. Same raw-logit values either way.
+                // FILTERED q_j: stats from draft_stats (eager pushes in-chain; the graph arm
+                // computes them post-replay — graph engages only filter/penalty-free, so the
+                // stats degenerate to th=0/full-Z there, keeping ONE accept path).
                 let q_bufs: &[CudaSlice<f32>] =
                     if draft_graph_s.is_some() { &q_slots } else { &draft_logits };
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
+                    let (qmx, qth, qz) = draft_stats[j];
                     let idsd = e.htod_u32_v(&[draft_idx[j]])?;
                     let rowsd = e.htod_i32(&[0])?;
+                    let thd = e.htod(&[qth])?; let zd = e.htod(&[qz])?;
+                    let _ = qmx;
                     let mut outd = e.zeros(1)?;
-                    e.softmax_gather(&q_bufs[j], d_vocab, &idsd, &rowsd, &mut outd, d_vocab, 1, sp_temp)?;
+                    e.softmax_gather_filtered(&q_bufs[j], d_vocab, &idsd, &rowsd, &thd, &zd,
+                                              &mut outd, d_vocab, 1, sp_temp)?;
                     let qj = e.dtoh(&outd)?[0];
                     let u = host_u01(sp_seed, uctr); uctr += 1;
                     if (u as f64) * (qj as f64) < pj[j] as f64 { n_acc += 1; } else { break; }
                 }
                 let bonus = if n_acc == k_round {
-                    // FULL ACCEPT: bonus ~ softmax_T(p) at the last verify column (gumbel-max).
+                    // FULL ACCEPT: bonus ~ FILTERED softmax at the last verify column.
                     let col = base + k_round - 1;
                     let cb = col_buf.as_mut().unwrap();
                     e.copy_view_into(cb, 0, &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab), n_vocab)?;
+                    if pen_on {
+                        let h = pen_hist_d.as_ref().unwrap();
+                        let nh = h.len();
+                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                    }
                     if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                    // stats for the last used col: reuse col_stats when it covers it, else compute.
+                    let (mx, th, _z) = if !col_stats.is_empty() {
+                        *col_stats.last().unwrap()
+                    } else {
+                        let rows0 = e.htod_i32(&[0])?;
+                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+                        let cb0 = col_buf.as_ref().unwrap();
+                        e.filter_stats(cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0])
+                    };
                     let pb = perturb_buf.as_mut().unwrap();
                     let cb2 = col_buf.as_ref().unwrap();
-                    e.gumbel_perturb(cb2, pb, n_vocab, sp_seed, sctr, sp_temp)?;
+                    e.gumbel_perturb_filtered(cb2, pb, n_vocab, sp_seed, sctr, sp_temp, mx, th)?;
                     sctr += 1;
                     let td = e.argmax_token_device(pb, n_vocab)?;
                     e.dtoh_u32_one(&td)?
@@ -1773,16 +1906,33 @@ impl HybridModel {
                         let lc = last_col_logits.as_ref().unwrap();
                         e.copy_into(cb, 0, lc, n_vocab)?;
                     }
+                    if pen_on {
+                        let h = pen_hist_d.as_ref().unwrap();
+                        let nh = h.len();
+                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                    }
                     let cb2 = col_buf.as_ref().unwrap();
                     let sc = sctr; sctr += 1;
+                    // p-stats for the reject column: from col_stats when the col was gathered,
+                    // else (j==0&&base==0) from last_col_stats.
+                    let p_stats = if n_acc > 0 || base == 1 {
+                        // col index within the gathered set == number of gathered cols before n_acc
+                        let gi = if base == 1 { n_acc } else { n_acc - 1 };
+                        col_stats.get(gi).copied().unwrap_or_else(|| {
+                            (0.0, 0.0, 1.0) // unreachable: gathered cols always cover the reject slot
+                        })
+                    } else {
+                        last_col_stats.expect("sampled: last_col_stats unset at reject")
+                    };
+                    let q_stats = draft_stats[n_acc];
                     if let Some(map) = &d2t_dev {
                         if q_full_buf.is_none() { q_full_buf = Some(e.zeros(n_vocab)?); }
                         let qf = q_full_buf.as_mut().unwrap();
                         e.scatter_trim_logits(&q_bufs[n_acc], map, qf, d_vocab, n_vocab)?;
                         let qf2 = q_full_buf.as_ref().unwrap();
-                        e.residual_sample(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                        e.residual_sample_filtered(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
                     } else {
-                        e.residual_sample(cb2, Some(&q_bufs[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                        e.residual_sample_filtered(cb2, Some(&q_bufs[n_acc]), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
                     }
                     e.dtoh_u32(&sample_tok)?[0]
                 };
@@ -1809,6 +1959,10 @@ impl HybridModel {
             for j in 0..n_acc {
                 if !session_mode && out.len() >= max_new { break; }
                 out.push(draft[j]);
+            }
+            if pen_on {
+                pen_hist.extend_from_slice(&draft[0..n_acc]);
+                pen_hist.push(bonus);
             }
             let bonus_emitted = session_mode || out.len() < max_new;
             if bonus_emitted { out.push(bonus); }

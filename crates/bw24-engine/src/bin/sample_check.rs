@@ -102,6 +102,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ok = got == am;
     println!("residual p==q -> argmax fallback: got={got} want={am} {}", if ok { "OK" } else { fails += 1; "FAIL" });
 
+    // --- 5. FILTERED-SPEC kernels (feat/filtered-spec) ---
+    {
+        let t = 0.8f32;
+        let nv2 = 512usize;
+        let x2: Vec<f32> = (0..nv2).map(|i| ((i * 48271) % 977) as f32 / 61.0 - 6.0).collect();
+        let x2d = e.htod(&x2)?;
+        let rows0 = e.htod_i32(&[0])?;
+        // CPU filtered-softmax reference for (top_k, top_p, min_p)
+        let cpu_filtered = |top_k: usize, top_p: f64, min_p: f64| -> Vec<f64> {
+            let sm = cpu_softmax(&x2, t);
+            let mut idx: Vec<usize> = (0..nv2).collect();
+            idx.sort_by(|&a, &b| sm[b].partial_cmp(&sm[a]).unwrap().then(a.cmp(&b)));
+            let mut keep = vec![false; nv2];
+            let mut mass = 0f64;
+            for (r, &i) in idx.iter().enumerate() {
+                let need_k = top_k > 0 && r < top_k;
+                let need_p = top_p < 1.0 && mass < top_p;
+                let plain = top_k == 0 && top_p >= 1.0;
+                if need_k || need_p || plain { keep[i] = true; mass += sm[i]; } else { break; }
+            }
+            if min_p > 0.0 {
+                let mx = sm.iter().cloned().fold(0.0, f64::max);
+                for i in 0..nv2 { if sm[i] < min_p * mx { keep[i] = false; } }
+            }
+            let z: f64 = (0..nv2).filter(|&i| keep[i]).map(|i| sm[i]).sum();
+            (0..nv2).map(|i| if keep[i] { sm[i] / z } else { 0.0 }).collect()
+        };
+        for (tk, tp, mp, name) in [(0i32, 0.9f32, 0.0f32, "top_p=0.9"),
+                                   (40, 1.0, 0.0, "top_k=40"),
+                                   (0, 1.0, 0.05, "min_p=0.05"),
+                                   (0, 1.0, 0.0, "no-filter")] {
+            let (mut thd, mut zd, mut mxd) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+            e.filter_stats(&x2d, nv2, &rows0, &mut thd, &mut zd, &mut mxd, nv2, 1, t, tk, tp, mp)?;
+            let refp = cpu_filtered(tk as usize, tp as f64, mp as f64);
+            // gather a spread of ids and compare
+            let ids: Vec<u32> = vec![0, 7, 100, 255, 511];
+            let rows: Vec<i32> = vec![0; 5];
+            let idsd = e.htod_u32_v(&ids)?; let rowsd = e.htod_i32(&rows)?;
+            // broadcast th/z to per-pair arrays
+            let thv = e.dtoh(&thd)?[0]; let zv = e.dtoh(&zd)?[0];
+            let thp = e.htod(&vec![thv; 5])?; let zp = e.htod(&vec![zv; 5])?;
+            let mut outd = e.zeros(5)?;
+            e.softmax_gather_filtered(&x2d, nv2, &idsd, &rowsd, &thp, &zp, &mut outd, nv2, 5, t)?;
+            let out = e.dtoh(&outd)?;
+            let mut maxerr = 0f64;
+            for (k2, &id) in ids.iter().enumerate() {
+                maxerr = maxerr.max((out[k2] as f64 - refp[id as usize]).abs());
+            }
+            let ok = maxerr < 2e-3;   // binary-search threshold quantization near set boundaries
+            println!("filter {name}: maxabs={maxerr:.2e} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+        }
+        // filtered residual: empirical vs CPU on top_p=0.9 filtered p/q
+        let q2: Vec<f32> = (0..nv2).map(|i| ((i * 16807) % 977) as f32 / 61.0 - 6.0).collect();
+        let q2d = e.htod(&q2)?;
+        let fp = cpu_filtered(0, 0.9, 0.0);
+        let fq = {
+            let hold = x2.clone(); let _ = hold;
+            // rebuild reference helper over q2
+            let sm = cpu_softmax(&q2, t);
+            let mut idx: Vec<usize> = (0..nv2).collect();
+            idx.sort_by(|&a, &b| sm[b].partial_cmp(&sm[a]).unwrap().then(a.cmp(&b)));
+            let mut keep = vec![false; nv2]; let mut mass = 0f64;
+            for &i in idx.iter() { if mass < 0.9 { keep[i] = true; mass += sm[i]; } else { break; } }
+            let z: f64 = (0..nv2).filter(|&i| keep[i]).map(|i| sm[i]).sum();
+            let v: Vec<f64> = (0..nv2).map(|i| if keep[i] { sm[i] / z } else { 0.0 }).collect(); v
+        };
+        let mut r: Vec<f64> = fp.iter().zip(&fq).map(|(a, b)| (a - b).max(0.0)).collect();
+        let rs: f64 = r.iter().sum();
+        for v in &mut r { *v /= rs; }
+        let stats = |v: &[f32], tk: i32, tp: f32| -> Result<(f32, f32, f32), Box<dyn std::error::Error>> {
+            let vd = e.htod(v)?;
+            let (mut thd, mut zd, mut mxd) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
+            e.filter_stats(&vd, v.len(), &rows0, &mut thd, &mut zd, &mut mxd, v.len(), 1, t, tk, tp, 0.0)?;
+            Ok((e.dtoh(&mxd)?[0], e.dtoh(&thd)?[0], e.dtoh(&zd)?[0]))
+        };
+        let ps = stats(&x2, 0, 0.9)?;
+        let qs = stats(&q2, 0, 0.9)?;
+        let mut tokd2 = e.alloc_u32_zeroed(1)?;
+        let draws = 8000usize;
+        let mut freq = vec![0f64; nv2];
+        for i in 0..draws {
+            e.residual_sample_filtered(&x2d, Some(&q2d), nv2, t, 99, i as u32, ps, qs, &mut tokd2)?;
+            freq[e.dtoh_u32(&tokd2)?[0] as usize] += 1.0 / draws as f64;
+        }
+        let maxerr = freq.iter().zip(&r).map(|(f, p)| (f - p).abs()).fold(0.0, f64::max);
+        let ok = maxerr < 0.025;
+        println!("filtered residual empirical (8k draws): maxerr={maxerr:.4} {}", if ok { "OK" } else { fails += 1; "FAIL" });
+    }
+
     println!("{}", if fails == 0 { "=== sample-check ALL GREEN ===" } else { "=== sample-check FAILURES ===" });
     std::process::exit(if fails == 0 { 0 } else { 1 });
 }

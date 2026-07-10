@@ -421,6 +421,109 @@ impl Engine {
         Ok(())
     }
 
+    // ---- FILTERED-SPEC (feat/filtered-spec): top-k/p/min-p transforms applied symmetrically
+    // to p and q — rejection sampling stays distribution-exact for the filtered target. ----
+
+    /// Per-row filtered-softmax stats: out[r] = (threshold_e, renorm_mass_e, row_max) for the
+    /// filter (top_k, top_p, min_p) at `temp`. Rows index into x with row_stride f32s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn filter_stats(&self, x: &CudaSlice<f32>, row_stride: usize, rows: &CudaSlice<i32>,
+                        out_th: &mut CudaSlice<f32>, out_z: &mut CudaSlice<f32>,
+                        out_max: &mut CudaSlice<f32>, n: usize, nrow: usize,
+                        temp: f32, top_k: i32, top_p: f32, min_p: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("filter_stats_f32");
+        let (ni, nr, rs) = (n as i32, nrow as i32, row_stride as i64);
+        let cfg = LaunchConfig { grid_dim: (nrow as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&rs).arg(rows).arg(&mut *out_th).arg(&mut *out_z).arg(&mut *out_max)
+         .arg(&ni).arg(&nr).arg(&temp).arg(&top_k).arg(&top_p).arg(&min_p);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// out[pair] = filtered-softmax prob of ids[pair] in row rows[pair] (th/z per PAIR).
+    #[allow(clippy::too_many_arguments)]
+    pub fn softmax_gather_filtered(&self, x: &CudaSlice<f32>, row_stride: usize,
+                                   ids: &CudaSlice<u32>, rows: &CudaSlice<i32>,
+                                   th: &CudaSlice<f32>, z: &CudaSlice<f32>,
+                                   out: &mut CudaSlice<f32>, n: usize, npair: usize, temp: f32)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("softmax_gather_filtered_f32");
+        let (ni, np, rs) = (n as i32, npair as i32, row_stride as i64);
+        let cfg = LaunchConfig { grid_dim: (npair as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&rs).arg(ids).arg(rows).arg(th).arg(z).arg(&mut *out).arg(&ni).arg(&np).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Filtered residual sample: token ~ norm(max(0, fp - fq)) with fp/fq the filtered softmaxes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn residual_sample_filtered(&self, p: &CudaSlice<f32>, q: Option<&CudaSlice<f32>>, n: usize,
+                                    temp: f32, seed: u64, stream_pos: u32,
+                                    p_stats: (f32, f32, f32), q_stats: (f32, f32, f32),
+                                    out_tok: &mut CudaSlice<u32>)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("residual_sample_filtered_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let has_q: i32 = q.is_some() as i32;
+        let qbuf = q.unwrap_or(p);
+        let (pm, pth, pz) = p_stats; let (qm, qth, qz) = q_stats;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(p).arg(qbuf).arg(&has_q).arg(&ni).arg(&temp).arg(&slo).arg(&shi).arg(&stream_pos)
+         .arg(&pm).arg(&pth).arg(&pz).arg(&qm).arg(&qth).arg(&qz).arg(&mut *out_tok);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Gumbel-max draw from the FILTERED distribution (masked perturb; argmax after).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gumbel_perturb_filtered(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize,
+                                   seed: u64, stream_pos: u32, temp: f32, row_max: f32, th: f32)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gumbel_perturb_filtered_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(&stream_pos).arg(&temp).arg(&row_max).arg(&th);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Keskar penalties applied IN PLACE to a logits buffer: history token ids get
+    /// rep-divided/multiplied + freq*count + presence subtracted. Symmetric p/q usage keeps
+    /// filtered rejection sampling exact for the penalized target.
+    #[allow(clippy::too_many_arguments)]
+    pub fn penalize_logits(&self, x: &mut CudaSlice<f32>, hist: &CudaSlice<u32>, n_hist: usize,
+                           rep: f32, freq: f32, present: f32, n: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        if n_hist == 0 { return Ok(()); }
+        let f = self.func("penalize_logits_f32");
+        let (nh, ni) = (n_hist as i32, n as i32);
+        let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Rows variant: penalize `nrow` contiguous rows of length n in one launch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn penalize_logits_rows(&self, x: &mut CudaSlice<f32>, hist: &CudaSlice<u32>, n_hist: usize,
+                                rep: f32, freq: f32, present: f32, n: usize, nrow: usize)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        if n_hist == 0 || nrow == 0 { return Ok(()); }
+        let f = self.func("penalize_logits_rows_f32");
+        let (nh, ni, nr) = (n_hist as i32, n as i32, nrow as i32);
+        let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, nrow as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni).arg(&nr);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================
     // Counter-based randomness: every call takes (seed, stream_pos) — the caller owns the
     // event counter (one per sampled token). temp <= 0 arms are exact greedy limits.
