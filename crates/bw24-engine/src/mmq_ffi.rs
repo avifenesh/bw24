@@ -69,18 +69,6 @@ unsafe extern "C" {
         out_scale: f32,
         rp: i32,
     ) -> i32;
-    /// K32-imma variant (BW24_MMQ_K32): one int8 m16n8k32 MMA per step, per-32 ratio-folded
-    /// weight scales (x8 headroom recode). Same contract as bw24_mmq_nvfp4_w4a8.
-    pub fn bw24_mmq_nvfp4_k32(
-        w_nvfp4_blocks: *const core::ffi::c_void,
-        act_f32: *const f32,
-        y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
-        act_scratch: *mut core::ffi::c_void,
-        stream: *mut core::ffi::c_void,
-        out_scale: f32,
-        rp: i32,
-    ) -> i32;
     /// Bytes needed for the block_q8_1_mmq activation scratch (shared by Q4_K and Q5_K).
     pub fn bw24_mmq_q45k_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Run the Q4_K W4A8 MMQ prefill GEMM. Same contract as bw24_mmq_nvfp4 (raw ggml block_q4_K
@@ -376,21 +364,8 @@ impl Engine {
             // Scratch layouts are footprint-identical, so only the entry point swaps.
             static F8F4: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let f8f4 = *F8F4.get_or_init(|| std::env::var("BW24_MMQ_F8F4").as_deref() == Ok("1"));
-            static K32: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let k32 = *K32.get_or_init(|| std::env::var("BW24_MMQ_K32").as_deref() == Ok("1"));
             let rc = unsafe {
-                if k32 {
-                    bw24_mmq_nvfp4_k32(
-                        w_p as *const core::ffi::c_void,
-                        x_p as *const f32,
-                        y_p as *mut f32,
-                        in_f as i32, out_f as i32, m as i32,
-                        s_p as *mut core::ffi::c_void,
-                        stream.cu_stream() as *mut core::ffi::c_void,
-                        scale,
-                        rp as i32,
-                    )
-                } else if f8f4 {
+                if f8f4 {
                     bw24_mmq_nvfp4_f8f4(
                         w_p as *const core::ffi::c_void,
                         x_p as *const f32,
