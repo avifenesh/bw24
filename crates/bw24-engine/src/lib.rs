@@ -551,6 +551,36 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (c) 2: verify-chain device-pos entries.
+    pub fn pos_iota(&self, pos0: &CudaSlice<i32>, out: &mut CudaSlice<i32>, t: usize)
+                    -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("pos_iota_i32");
+        let ti = t as i32;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (t.max(1) as u32, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(pos0).arg(out).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_kv_quantized_rows_dc(&self, k_rows: &CudaSlice<f32>, v_rows: &CudaSlice<f32>,
+                                       kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
+                                       t0_dev: &CudaSlice<i32>, t: usize,
+                                       kv_dim_k: usize, kv_dim_v: usize,
+                                       k_tok_bytes: usize, v_tok_bytes: usize)
+                                       -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("append_quantize_kv_q8_0_q5_1_rows_dc");
+        let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
+        let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_rows).arg(v_rows).arg(kc).arg(vc).arg(t0_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 1: device verify-token assembly + p-min break derivation.
     #[allow(clippy::too_many_arguments)]
     pub fn spec_assemble_verify(&self, tokp: &CudaSlice<u32>, pend: &CudaSlice<u32>,

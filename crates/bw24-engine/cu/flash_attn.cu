@@ -412,6 +412,30 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows(
     }
 }
 
+// ROUND-STREAM stage (c) 2: rows append with the write offset from a DEVICE counter (the
+// pre-issued verify's t0 = len_d, unknown to the host at issue time). Body identical to
+// append_quantize_kv_q8_0_q5_1_rows.
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows_dc(
+        const float* __restrict__ k_rows, const float* __restrict__ v_rows,
+        uint8_t* __restrict__ K, uint8_t* __restrict__ V,
+        const int* __restrict__ t0_dev, int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int b    = blockIdx.x;
+    const int tt   = blockIdx.y;
+    const int lane = threadIdx.x;
+    const int eidx = b * 32 + lane;
+    const int t    = t0_dev[0] + tt;
+    if (b * 32 < kv_dim_k) {
+        float x = (eidx < kv_dim_k) ? k_rows[(size_t)tt * kv_dim_k + eidx] : 0.0f;
+        quant_K_block(x, lane, K + (size_t)t * k_tok_bytes + (size_t)b * K_BLK_B);
+    }
+    if (b * 32 < kv_dim_v) {
+        float x = (eidx < kv_dim_v) ? v_rows[(size_t)tt * kv_dim_v + eidx] : 0.0f;
+        quant_V_block(x, lane, V + (size_t)t * v_tok_bytes + (size_t)b * V_BLK_B);
+    }
+}
+
 // ----- DEVICE-COUNTER variant (CUDA-GRAPH-PLAN Phase 2): identical math to
 // append_quantize_kv_q8_0_q5_1, but the per-step WRITE OFFSET `t` is read from a
 // device int[1] counter (t_dev[0]) instead of a host int arg. This is the only
@@ -2354,6 +2378,28 @@ extern "C" __global__ void fa_decode_vec_q_v2(
     if (lane == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
 }
 
+static __device__ __forceinline__ void fa_rows_v3_body(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, int T_kv,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes, int r);
+
+// ROUND-STREAM stage (c) 2: rows FA with the causal base from a DEVICE counter (pre-issued
+// verify: t_kv_base = len_d value at execution time, unknown at issue). Same body.
+extern "C" __global__ void fa_decode_vec_q_rows_v3_dc(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int r    = blockIdx.z;
+    const int T_kv = t_kv_base_dev[0] + r + 1;
+    fa_rows_v3_body(Q, K, V, partO, partM, partL, head_dim, n_head, n_head_kv, T_kv,
+                    scale, n_splits_max, split_keys, k_tok_bytes, v_tok_bytes, r);
+}
+
 // Multi-row (spec-verify) twin: grid.z = query row, causal bound per row —
 // same frame as fa_decode_vec_q_rows/_smem, same walk body as the T=1 twin
 // above (the spec-exactness law: eager decode and verify must never diverge).
@@ -2761,6 +2807,18 @@ extern "C" __global__ void fa_decode_vec_q_rows_v3(
 {
     const int r        = blockIdx.z;             // query row (verify column)
     const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
+    fa_rows_v3_body(Q, K, V, partO, partM, partL, head_dim, n_head, n_head_kv, T_kv,
+                    scale, n_splits_max, split_keys, k_tok_bytes, v_tok_bytes, r);
+}
+// shared body: everything below the causal bound is row-local (extracted so the _dc twin is
+// call-site-identical; the original kernel's remaining body was moved here VERBATIM).
+static __device__ __forceinline__ void fa_rows_v3_body(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, int T_kv,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes, int r)
+{
     const int n_splits = (T_kv + split_keys - 1) / split_keys;  // == host fa_split_keys sizing
     const int kv_head  = blockIdx.x;
     const int split    = blockIdx.y;

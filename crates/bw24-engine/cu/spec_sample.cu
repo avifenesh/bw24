@@ -501,3 +501,10 @@ extern "C" __global__ void spec_assemble_verify(
     brk[0] = (unsigned int)k_used;
     brk[1] = (unsigned int)base;
 }
+
+// ROUND-STREAM stage (c) 2: verify rope positions from a device pos counter (pos evolves by
+// n_acc per pre-issued round; the host can't know it at issue time).
+extern "C" __global__ void pos_iota_i32(const int* __restrict__ pos0, int* __restrict__ out, int t) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < t) out[i] = pos0[0] + i;
+}
