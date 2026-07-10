@@ -87,9 +87,18 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
                     if src.has(n) { HostExps::load_stacked_from_source(e, src, n) }
                     else { HostExps::load_from_source(e, src, n, n_expert) }
                 };
+                // gemma4: gate+up ship FUSED (ffn_gate_up_exps, gate rows first) — split at load.
+                let fused = p("ffn_gate_up_exps.weight");
+                if !src.has(&p("ffn_gate_exps.weight")) && src.has(&fused) {
+                    let ff = moe.expert_ff_length as usize;
+                    (HostExps::load_stacked_split_from_source(e, src, &fused, 0, ff)?,
+                     HostExps::load_stacked_split_from_source(e, src, &fused, ff, 2 * ff)?,
+                     exps(e, &p("ffn_down_exps.weight"))?)
+                } else {
                 (exps(e, &p("ffn_gate_exps.weight"))?,
                  exps(e, &p("ffn_up_exps.weight"))?,
                  exps(e, &p("ffn_down_exps.weight"))?)
+                }
             }
         };
         // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs to device when a global

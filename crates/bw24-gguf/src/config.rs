@@ -63,7 +63,7 @@ impl Arch {
     }
     /// True for arches with a routed-expert FFN. `Olmoe` is dense-attention + MoE-FFN.
     pub fn is_moe(&self) -> bool {
-        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3)
+        matches!(self, Arch::Qwen3Moe | Arch::Qwen35Moe | Arch::Olmoe | Arch::MinimaxM3 | Arch::Hy3 | Arch::Gemma4)
     }
     /// MiniMax-M3: sigmoid router (+e_score_correction_bias), gemma-norm, swigluoai clamp,
     /// Mixtral-style expert tensor names. Full attention v0 (MSA is bit-exact-degenerate <=2048

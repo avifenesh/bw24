@@ -685,6 +685,47 @@ impl HostExps {
     /// experts this way; the source returns the same mmap bytes (`GgufSource::find` == `tensor_data`),
     /// so the GGUF path is byte-identical to the prior direct-`GgufFile` loader. (Safetensors stores N
     /// 2D tensors instead — those go through `load_from_source`, which gathers them.)
+    /// Row-range variant for FUSED stacked tensors (gemma4 ffn_gate_up_exps: gate = rows
+    /// [0,ff), up = [ff,2ff) per expert — llama-graph view convention). Copies only the range.
+    pub fn load_stacked_split_from_source(e: &Engine, src: &dyn TensorSource, name: &str,
+                                          row0: usize, row1: usize)
+                                    -> Result<Self, Box<dyn std::error::Error>> {
+        let t = src.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
+        assert_eq!(t.ne.len(), 3, "{name} is not 3D (ne={:?})", t.ne);
+        let qtype = match t.ggml_type {
+            GgmlType::Q8_0 => QT_Q8_0, GgmlType::Q4_K => QT_Q4_K, GgmlType::Q6_K => QT_Q6_K,
+            GgmlType::Q5_K => QT_Q5_K, GgmlType::Q3_K => QT_Q3_K, GgmlType::IQ4_XS => QT_IQ4_XS,
+            GgmlType::IQ3_S => QT_IQ3_S, GgmlType::NVFP4 => QT_NVFP4, GgmlType::Q4_0 => QT_Q4_0,
+            other => panic!("exps {name} unsupported quant {other:?}"),
+        };
+        let raw: &[u8] = &t.bytes;
+        let in_f = t.ne[0] as usize;
+        let out_full = t.ne[1] as usize;
+        let n_expert = t.ne[2] as usize;
+        let full_stride = raw.len() / n_expert;
+        let row_bytes = raw.len() / (out_full * n_expert);
+        assert_eq!(full_stride, out_full * row_bytes, "{name} stride mismatch");
+        let out_f = row1 - row0;
+        let expert_stride = out_f * row_bytes;
+        let mut buf = vec![0u8; n_expert * expert_stride];
+        for ex in 0..n_expert {
+            let s0 = ex * full_stride + row0 * row_bytes;
+            buf[ex * expert_stride..(ex + 1) * expert_stride]
+                .copy_from_slice(&raw[s0..s0 + expert_stride]);
+        }
+        let pinned = std::env::var("BW24_MOE_PINNED").is_ok()
+            || std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0");
+        let bytes = if pinned {
+            let mut pn = unsafe { e.ctx().alloc_pinned::<u8>(buf.len())? };
+            { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&buf); }
+            let base = pn.as_ptr()? as *const u8;
+            let len = buf.len();
+            HostBuf::Pinned { slice: pn, base, len }
+        } else { HostBuf::Paged(buf) };
+        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, macros: None })
+    }
+
     pub fn load_stacked_from_source(e: &Engine, src: &dyn TensorSource, name: &str)
                                     -> Result<Self, Box<dyn std::error::Error>> {
         let t = src.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
@@ -708,6 +749,7 @@ impl HostExps {
                 GgmlType::IQ4_XS => QT_IQ4_XS,
                 GgmlType::IQ3_S => QT_IQ3_S,
                 GgmlType::NVFP4 => QT_NVFP4,
+                GgmlType::Q4_0 => QT_Q4_0,
                 other => panic!("exps {name} unsupported quant {other:?}"),
             };
             let in_f = t.ne[0] as usize;
@@ -734,6 +776,7 @@ impl HostExps {
             GgmlType::IQ4_XS => QT_IQ4_XS,
             GgmlType::IQ3_S => QT_IQ3_S,
             GgmlType::NVFP4 => QT_NVFP4,
+            GgmlType::Q4_0 => QT_Q4_0,
             other => panic!("exps {name} unsupported quant {other:?}"),
         };
         let in_f = t.ne[0] as usize;
@@ -784,6 +827,7 @@ impl HostExps {
             GgmlType::IQ4_XS => QT_IQ4_XS,
             GgmlType::IQ3_S => QT_IQ3_S,
             GgmlType::NVFP4 => QT_NVFP4,
+            GgmlType::Q4_0 => QT_Q4_0,
             other => panic!("exps {name} unsupported quant {other:?}"),
         };
         let in_f = t.ne[0] as usize;
