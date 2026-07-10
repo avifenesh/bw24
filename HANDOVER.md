@@ -12,9 +12,13 @@ the fixed-shape price (always-K drafts, K+1-wide verify, no refresh fills) beats
 round host-trip savings at real acceptance rates. With that, every engine lever on the spec
 round has a measured verdict: kernel space (07-06 m-small arc + router GEMV + CSR gate_up),
 dedup spaces (down x2 negative, FA shared-K L2-absorbed), host paths (envc wash, readback
-shapes x3 negative, stream negative), verify bytes, deep-K. **The three sub-bar cells (27B p2
-1.04x, 35B p2 1.05x, 35B p3 1.07x) are ACCEPTANCE-GATED — engine closed with proof (rig5090
-.jsonl trail); the lever is draft/head quality = the owner's research lane (mtpheal platform).**
+shapes x3 negative, stream negative), verify bytes, deep-K. **CORRECTION (owner, 2026-07-10: "94% of wall is not 100%"): NOT closed — the wall-gap ledger
+was mislabeled. Measured gaps (35B d6257, bytes/time): gate_up_v t=1 at 56% of wall (482GB/s,
+10.7% share -> +4.7% e2e recoverable), down8_w8h2v at 63% (542GB/s, +2.2%), trunk 94% (+1.3%).
+Expert-pair kernel redesign = the open front (HANDOVER's own unexecuted note: g/u row-interleave
+repack / cp.async group staging — the _rp recipe that fixed the b4 tier's identical latency
+signature). Depth cell 1.02x -> ~1.09x + spec verify shares drop if closed. The acceptance
+lever remains the owner's lane IN ADDITION, not instead.**
 Machinery kept behind documented seams: BW24_SPEC_DEVACC (stages a/b, neutral), BW24_SPEC_STREAM
 (+_M, stage c, negative) — the rpks force-seam precedent. Also unlocked en route: the 35B
 resident-MoE NextN head IS graph-capturable (moe_ffn_il in capture — the Dense-only rejection
