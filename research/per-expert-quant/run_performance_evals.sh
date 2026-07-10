@@ -77,6 +77,10 @@ for arm in "${ARMS[@]}"; do
   directory_bytes=$(du -sb "$artifact" | cut -f1)
   printf '%s\t%s\t%s\n' "$arm" "$artifact_bytes" "$directory_bytes" >> "$RUN_DIR/sizes.tsv"
 
+  BW24_NGEN=1 "$ROOT/target/release/run-gen" "$artifact" "${prompt[@]:0:32}" \
+    > "$RUN_DIR/$arm-correctness.log" 2>&1
+  grep -q 'verify-prefill .* MATCH' "$RUN_DIR/$arm-correctness.log"
+
   BW24_PP_ONLY=1 BW24_PP_WARMUP=2 BW24_PP_REPS=3 \
     /usr/bin/time -v "$ROOT/target/release/run-gen" "$artifact" "${prompt[@]}" \
     > "$RUN_DIR/$arm-prefill.log" 2>&1
