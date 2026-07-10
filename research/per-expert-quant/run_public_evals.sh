@@ -12,10 +12,20 @@ BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
+EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-14400}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
+
+[[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || {
+  echo "EVAL_TIMEOUT_S must be a positive integer (got $EVAL_TIMEOUT_S)" >&2
+  exit 2
+}
+command -v timeout >/dev/null || {
+  echo "GNU timeout is required" >&2
+  exit 2
+}
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
@@ -53,12 +63,13 @@ if [[ ! -x "$HARNESS_CLI" ]]; then
 fi
 
 SERVER_ROOT=${BASE_URL%/v1/completions}
-curl -fsS "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
+curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
+python3 "$HERE/validate_server_health.py" "$RUN_DIR/health.json" "$MODEL"
 cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS
+export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -89,6 +100,7 @@ metadata = {
     "artifact_identity_sha256": sha256(identity),
     "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
+    "eval_timeout_s": int(os.environ["EVAL_TIMEOUT_S"]),
     "max_gen_toks_override": (
         int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
     ),
@@ -110,4 +122,5 @@ if [[ -n ${LIMIT:-} ]]; then ARGS+=(--limit "$LIMIT"); fi
 if [[ -n ${MAX_GEN_TOKS:-} ]]; then ARGS+=(--gen_kwargs "max_gen_toks=$MAX_GEN_TOKS"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
 
-"$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
+  "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
