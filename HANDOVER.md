@@ -581,3 +581,18 @@ Queue order:
    applied symmetrically to p and q — retires the legacy serve path to a rollback seam). Gates:
    filter-parity unit checks vs host sampler + serve smoke top-p.
 5. Board move + release with whatever survived.
+
+## FORMAT DECISION — GGUF (owner, 2026-07-10, FINAL)
+
+GGUF NVFP4 is THE format; ST drops to best-effort support (README note, HF configs stay, no
+board rows, no headlines). Decider: the owner's primary workload is LONG-context serving, and
+the 27B p3 robustness matrix (2 long prompts x 3 seeds, temp 0.7) showed the ST checkpoint
+looping seed/prompt-sensitively (2-3 of 6 runs) while GGUF ran coherent 6/6 — a reliability
+class difference no speed cell offsets (ST had won pp +12%, TTFT -4.4%, spec p2 +8% derived;
+GGUF held spec p1 +5% and long p3 +24% with quality). ST-only wins that remain live as
+best-effort: NVIDIA-official checkpoints, no-conversion loads, the f8f4-adopted ST serve config.
+
+FOCUS ORDER (owner): squeeze GGUF NVFP4 Qwen (9B/27B/35B) to the margin bar everywhere ->
+then Gemma-4. Open GGUF cells: 27B spec p2 0.95x (llama's strongest spot), 35B spec p2/p3
+1.02/1.03x, 35B plain 1.06x, 9B plain 1.07x, prefill 0.59-0.78x (tile-algorithm arc, ncu-spec'd:
+per-CTA serialization — not occupancy, not DRAM, not MMA class).
