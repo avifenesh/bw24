@@ -19,6 +19,10 @@ RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
+  candidate)
+    TASKS=gpqa_diamond_cot_zeroshot,hendrycks_math500,mmlu_pro_history,mmlu_pro_other,mmlu_pro_economics,mmlu_pro_law,mmlu_pro_psychology
+    LIMIT=${LIMIT:-3}
+    ;;
   code)
     if [[ ${BW24_UNSAFE_EVALS:-0} != 1 ]]; then
       echo "code evals execute model-generated Python; run in an isolated sandbox and set BW24_UNSAFE_EVALS=1" >&2
@@ -26,7 +30,7 @@ case "$SUITE" in
     fi
     TASKS=humaneval_instruct,mbpp_instruct
     ;;
-  *) echo "unknown SUITE=$SUITE (expected core or code)" >&2; exit 2 ;;
+  *) echo "unknown SUITE=$SUITE (expected candidate, core, or code)" >&2; exit 2 ;;
 esac
 
 mkdir -p "$CACHE_DIR" "$RUN_DIR"
