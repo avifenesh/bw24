@@ -41,6 +41,12 @@ the other, and report spill performance separately from model-quality comparison
 - Model loading, spill correctness, performance measurements, artifact generation, and public evals
   run on the provisioned G7e target machine. Do not merge or tag this lane until its remote raw logs
   and four-arm eval report exist.
+- Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
+  the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
+  staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.
+- Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
+  the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
+  staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.
 
 Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
 pruned id dereferences nonexistent weights; and a local performance or quality claim would be

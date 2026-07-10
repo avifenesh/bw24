@@ -65,6 +65,12 @@ prefetch/overlap, and mixed-layout dispatch without changing the frozen precisio
 spill hit/miss counts, bytes transferred, peak host/VRAM, and throughput separately from quality.
 Public eval examples must never tune cache size, prefetch policy, REAP masks, or precision tiers.
 
+`/data` is the durable artifact store on the target host. Before calibration, public evaluation, or
+spill measurement, copy the selected artifact to `/scratch/artifacts/<arm>` on the G7e local NVMe
+and confirm its `manifest.json` hash matches the durable copy. The persistent EBS volume is suitable
+for sequential artifact construction but its 4 KiB mmap-fault throughput is not a valid bw24 spill
+benchmark.
+
 ## Calibration and plan generation
 
 Calibration data and public evaluation data must be disjoint. Use a representative private or
