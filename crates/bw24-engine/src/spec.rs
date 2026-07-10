@@ -1608,9 +1608,20 @@ impl HybridModel {
         // checks every emitted token against the target -> exactness holds by construction; only
         // DRAFT QUALITY can shift, which the acceptance numbers arbitrate.
         let mut pending: Option<u32> = None;   // bonus emitted but not yet committed to cache
+        // BW24_SPEC_PHASE=1: per-round wall decomposition (draft / verify / accept+commit) —
+        // no tracing, no extra syncs (each phase is naturally sync-bounded: draft readbacks,
+        // the verify accept readback). Printed once at loop end via spec-stats.
+        let phase_on = std::env::var("BW24_SPEC_PHASE").as_deref() == Ok("1");
+        let (mut ph_draft, mut ph_verify, mut ph_rest) = (0f64, 0f64, 0f64);
+        let mut ph_t = std::time::Instant::now();
+        let mut ph_mark = |acc: &mut f64, on: bool| {
+            if on { let now = std::time::Instant::now();
+                    *acc += (now - ph_t).as_secs_f64(); ph_t = now; }
+        };
         while out.len() < max_new {
             let pos = cache.pos;            // #tokens committed (EXCLUDES a pending bonus)
             cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
+            ph_mark(&mut ph_rest, phase_on);
 
             // --- 1. DRAFT k tokens with the NextN head (autoregressive, T=1 each) ---
             // p-min semantics (both paths): stop the chain early when the head's confidence in
@@ -1740,6 +1751,7 @@ impl HybridModel {
             }
             let k_round = draft.len();
 
+            ph_mark(&mut ph_draft, phase_on);
             // --- 2. VERIFY: one batched target forward. With a pending bonus, it rides as col 0
             //         (committing its KV/recur inside the SAME weight read); drafts follow. ---
             let verify_tokens: Vec<u32> = match pending {
@@ -1754,6 +1766,7 @@ impl HybridModel {
                                                           Some((embd_gpu, embd_qt, embd_rb)),
                                                           ckpt.as_mut())?;
 
+            ph_mark(&mut ph_verify, phase_on);
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
             // DEVICE-ARGMAX ACCEPT: argmax every verify column ON DEVICE (same 2-pass kernels +
             // smallest-index tie-break as host argmax, argmax_gate-validated) and read back ONE
@@ -2128,6 +2141,7 @@ impl HybridModel {
                 e.copy_into(&mut fill_prev, 0, &rh_last, n_embd)?;
                 if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
             }
+            ph_mark(&mut ph_rest, phase_on);
             round += 1;
         }
 
@@ -2143,6 +2157,13 @@ impl HybridModel {
                        tok_per_round={:.3}",
                       per_slot.join(" "),
                       (total_accepted + round) as f64 / round.max(1) as f64);
+        }
+        if phase_on {
+            let tot = ph_draft + ph_verify + ph_rest;
+            eprintln!("[spec-phase] draft={:.1}ms ({:.1}%) verify-issue={:.1}ms ({:.1}%)                        accept+commit(+verify-wait)={:.1}ms ({:.1}%) rounds={round}",
+                      ph_draft * 1e3, ph_draft / tot * 100.0,
+                      ph_verify * 1e3, ph_verify / tot * 100.0,
+                      ph_rest * 1e3, ph_rest / tot * 100.0);
         }
         // SESSION TAIL: leave the session in the exact invariant the next turn's suffix prime
         // expects — every row in `committed` has trunk KV/recur state AND an exact draft-KV row.
