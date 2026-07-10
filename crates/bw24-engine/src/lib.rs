@@ -1529,6 +1529,32 @@ impl Engine {
         Ok(())
     }
 
+    /// Async device u32 store (value rides the kernel ARG — no host-memory transfer/sync).
+    pub fn u32_set_k(&self, dst: &mut CudaSlice<u32>, v: u32, idx: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("u32_set_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let ii = idx as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(dst).arg(&v).arg(&ii);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Pack a[off..off+n1] ++ b[0..n2] into one buffer (single dtoh follows).
+    #[allow(clippy::too_many_arguments)]
+    pub fn u32_pack2(&self, a: &CudaSlice<u32>, off_a: usize, n1: usize,
+                     b_in: &CudaSlice<u32>, n2: usize, out: &mut CudaSlice<u32>)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("u32_pack2");
+        let cfg = LaunchConfig::for_num_elems((n1 + n2) as u32);
+        let (oa, i1, i2) = (off_a as i32, n1 as i32, n2 as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(&oa).arg(&i1).arg(b_in).arg(&i2).arg(out);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// gemma4 R3 device fold: w[i] *= s[sel[i]] over the router's [n] (sel, w) pair.
     pub fn moe_w_exscale(&self, w: &mut CudaSlice<f32>, sel: &CudaSlice<i32>,
                          s: &CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -2365,6 +2391,21 @@ impl Engine {
     /// T-token embed gather from a DEVICE token buffer (round-stream stage c: the verify tokens
     /// are assembled on-device from the draft-chain pack slots; no host round trip). Same kernel
     /// as embed_gather_device_t — bit-identical rows.
+    /// embed_gather over a token VIEW (spec round: tokens live in the round's batch buffer).
+    pub fn embed_gather_device_tv(&self, embd: &CudaSlice<u8>, tok_v: &cudarc::driver::CudaView<u32>,
+                                  t: usize, n_embd: usize, qtype: i32, row_bytes: usize)
+                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let f = self.func("embed_gather_u32_t");
+        let mut x = self.alloc_uninit::<f32>(t * n_embd)?;
+        let cfg = LaunchConfig { grid_dim: (((n_embd as u32 + 255) / 256).max(1), t as u32, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ne, qt, rb, ti) = (n_embd as i32, qtype, row_bytes as i64, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(embd).arg(tok_v).arg(&mut x).arg(&ne).arg(&qt).arg(&rb).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(x)
+    }
+
     pub fn embed_gather_device_td(&self, embd: &CudaSlice<u8>, tok_d: &CudaSlice<u32>, t: usize,
                                   n_embd: usize, qtype: i32, row_bytes: usize)
                                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {

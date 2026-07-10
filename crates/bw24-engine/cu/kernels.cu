@@ -811,6 +811,19 @@ extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restri
     base[j + half] = x0 * sn + x1 * c;
 }
 
+// ---- tiny async setters/packers (gemma spec round: zero host-memory transfers) ----
+extern "C" __global__ void u32_set_k(unsigned int* __restrict__ dst, unsigned int v, int idx) {
+    dst[idx] = v;
+}
+// pack: out[0..n1) = a[off_a..], out[n1..n1+n2) = b[0..n2) (single dtoh follows).
+extern "C" __global__ void u32_pack2(const unsigned int* __restrict__ a, int off_a, int n1,
+                                     const unsigned int* __restrict__ b, int n2,
+                                     unsigned int* __restrict__ out) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n1) out[i] = a[off_a + i];
+    else if (i < n1 + n2) out[i] = b[i - n1];
+}
+
 // ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
 // SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
 extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,

@@ -174,21 +174,46 @@ impl HybridModel {
         Ok((logits, h_next))
     }
 
+    /// Drafter trunk with the token in DEVICE memory (a 1-elem view of the round's batch
+    /// buffer) — zero host traffic.
+    fn gemma4_draft_trunk_dev(&self, e: &Engine, d: &GemmaDraft,
+                              tok_v: &cudarc::driver::CudaView<u32>,
+                              h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let nb = d.n_backbone;
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(nb);
+        let mut xs = e.embed_gather_device_tv(embd_gpu, tok_v, 1, nb, qt, rb)?;
+        e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
+        self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache)
+    }
+
     /// Drafter trunk: returns (post-output_norm hidden [1024], h_next [2816]).
     fn gemma4_draft_trunk(&self, e: &Engine, d: &GemmaDraft, token: u32,
                           h: &CudaSlice<f32>, pos: usize, cache: &Cache)
                           -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let nb = d.n_backbone;
+        let mut xs = e.htod(&self.embd.gather(nb, &[token]))?;
+        e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
+        return self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache);
+    }
+
+    /// Trunk body from the pre-scaled main-embed row.
+    fn gemma4_draft_trunk_from_x(&self, e: &Engine, d: &GemmaDraft, xs: &CudaSlice<f32>,
+                                 h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                                 -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let eps = self.cfg.rms_eps;
         let nb = d.n_backbone;
         let ne = d.n_embd;
         let pos_d = e.htod_i32(&[pos as i32])?;
         let n_main = self.layers.len();
 
-        // x = MAIN embd row * sqrt(2816); xh = concat(x, h) [5632]
-        let mut xs = e.htod(&self.embd.gather(nb, &[token]))?;
-        e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
+        // xh = concat(x, h) [5632]
+        let nb = d.n_backbone;
         let mut xh = e.uninit(2 * nb)?;
-        e.copy_into(&mut xh, 0, &xs, nb)?;
+        e.copy_into(&mut xh, 0, xs, nb)?;
         e.copy_into(&mut xh, nb, h, nb)?;
 
         let mut cur = e.matmul(&d.pre_proj, &xh, 1)?;   // [1024]
@@ -311,26 +336,33 @@ impl HybridModel {
                 let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let (mut drafted, mut accepted, mut rounds) = (0usize, 0usize, 0usize);
 
+        // ASYNC ROUND v2 (dc class): the whole draft chain + verify enqueue with ZERO host
+        // syncs — token seeds via kernel-arg store (u32_set_k, no host-memory transfer), draft
+        // argmaxes land in the batch buffer, verify argmaxes in vam_d; ONE pack + ONE dtoh of
+        // (k drafts + k+1 vam) closes the round. (v1 with memcpy_htod seeding measured
+        // NEGATIVE — the pageable-copy sync; this is the retry with the sync removed.)
+        let mut batch_d = e.stream().alloc_zeros::<u32>(k + 1)?;
+        let mut packed = e.stream().alloc_zeros::<u32>(2 * k + 1)?;
         'outer: while out.len() < max_new {
-            // draft K tokens chained off the frozen cache
-            let mut dtoks: Vec<u32> = Vec::with_capacity(k);
+            e.u32_set_k(&mut batch_d, last, 0)?;
             let mut hc = e.clone_dtod(&h)?;
-            let mut tok = last;
             for j in 0..k {
-                let (dt, hn) = self.gemma4_draft_step_greedy(e, d, tok, &hc, cache.pos + j, &cache)?;
-                dtoks.push(dt);
-                hc = hn;
-                tok = dt;
+                let tv = batch_d.slice(j..j + 1);
+                let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
+                let ld = e.matmul(&d.head, &hn, 1)?;
+                e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
+                hc = h_next;
             }
             drafted += k;
             rounds += 1;
-            // verify [last, d1..dK] in one batch
-            let mut batch: Vec<u32> = Vec::with_capacity(k + 1);
-            batch.push(last);
-            batch.extend_from_slice(&dtoks);
             let pos0 = cache.pos;
-            let (vam, vh) = self.gemma4_decode_step_t_am(e, &batch, pos0, &mut cache)?;
+            let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, k + 1, pos0, &mut cache)?;
+            e.u32_pack2(&batch_d, 1, k, &vam_d, k + 1, &mut packed)?;
+            let host = e.dtoh_u32(&packed)?;           // the round's ONE sync
+            let dtoks: Vec<u32> = host[..k].to_vec();
+            let vam: Vec<u32> = host[k..].to_vec();
             // longest accepted prefix: d_i accepted iff d_i == argmax(verify[i-1])
+            debug_assert!(d.d2t.is_none(), "async round requires an untrimmed draft head");
             let mut m = 0usize;
             while m < k {
                 if dtoks[m] == vam[m] { m += 1; } else { break; }

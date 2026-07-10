@@ -2888,7 +2888,7 @@ impl HybridModel {
     pub(crate) fn gemma4_decode_step_t_am(&self, e: &Engine, tokens: &[u32], pos0: usize,
                                           cache: &mut Cache)
                                           -> Result<(Vec<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        let (ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache)?;
+        let (ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache, None)?;
         let t = tokens.len();
         let n_vocab = self.output.out_features();
         let mut toks = e.stream().alloc_zeros::<u32>(t)?;
@@ -2898,12 +2898,26 @@ impl HybridModel {
         Ok((e.dtoh_u32(&toks)?, hn))
     }
 
+    /// Device-token verify (async spec round): tokens live in tok_d[0..t]; per-row argmax
+    /// lands in a DEVICE buffer (no host logits). Returns (vam_d [t] u32 device, hn stack).
+    pub(crate) fn gemma4_decode_step_t_am_dev(&self, e: &Engine, tok_d: &CudaSlice<u32>, t: usize,
+                                              pos0: usize, cache: &mut Cache)
+                                              -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (ld, hn) = self.gemma4_verify_trunk(e, &vec![0u32; t], pos0, cache, Some(tok_d))?;
+        let n_vocab = self.output.out_features();
+        let mut vam = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut vam, i)?;
+        }
+        Ok((vam, hn))
+    }
+
     /// gemma4 verify + the POST-output_norm hidden stack [t, n_embd] (the drafter's h input —
     /// llama's h_nextn convention).
     pub(crate) fn gemma4_decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize,
                                          cache: &mut Cache)
                                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        let (mut ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache)?;
+        let (mut ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache, None)?;
         let t = tokens.len();
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, t * self.output.out_features())?;
@@ -2912,14 +2926,24 @@ impl HybridModel {
 
     /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
     /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
-    fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
+    fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
+                           tok_dev: Option<&CudaSlice<u32>>)
                            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
         let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
-        let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
+        let mut x = match tok_dev {
+            Some(td) => {
+                let embd_gpu = self.embd_gpu.get_or_init(|| {
+                    e.upload_u8(&self.embd.raw).expect("embed table upload")
+                });
+                let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+                e.embed_gather_device_td(embd_gpu, td, t, n_embd, qt, rb)?
+            }
+            None => e.htod(&self.embd.gather(n_embd, tokens))?,
+        };
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         let n_layers = self.layers.len();
