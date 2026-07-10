@@ -66,6 +66,15 @@ GATES to keep green: run-gen argmax MATCH (id prompt 2 818 5279 529 7001 563 -> 
 spec stream agreement == plain, tokenizer fuzz. Bench: nice -n 19, single-load, check
 compute-apps first (owner's BGE server 260MB must live).
 
+## GEMMA4 31B (DENSE) — first light 2026-07-10
+Loads + argmax MATCH + chat 'Paris' via the dense arm (Gemma4MoeBits Option split; load_ffn
+tensor-presence override; dense tail = add_rms_norm(ffn_norm) -> GELU_PAR -> post_ffw_norm).
+N=3 decode 38.2 vs llama-bench tg 40.39 (0.95x; 16GB/step floor ~53); pp511 464.5 vs llama
+1157.6. Profile: 80% trunk mmvq AT 92-100% of the byte wall (fused2 ffn pair 143.5us vs 152
+wall; fused3 swa qkv 92%) — the remaining gap is norm/latency mass on 60 layers (123 norms
+x 5.2us + 186 quantizes + head 1.35ms at wall). NO 31B MTP drafter on disk (only 26B);
+E4B not downloaded (needs the per-layer-embed machinery too — llama gemma4.cpp inp_per_layer).
+
 ## GEMMA4 MTP DRAFTER — VERIFIED WIRING (llama gemma4-assistant.cpp + llama-model.cpp:2162, read 2026-07-10)
 
 Files: /data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/drafter/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf
