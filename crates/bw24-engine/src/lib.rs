@@ -2456,6 +2456,24 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4: res = (a+b)*c AND the next layer's attn_norm EMITTED q8_1 in one launch.
+    /// Quantize epilogue bit-identical to quantize_q8_1 (the rms_norm_q8_1 form).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_scale_rms_norm_q8_1(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
+                                   w: &CudaSlice<f32>, res: &mut CudaSlice<f32>,
+                                   ncols: usize, nrows: usize, eps: f32)
+                                   -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("add_scale_rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
     /// gemma4: res = a+b AND the three rms_norms of res in one launch.
     #[allow(clippy::too_many_arguments)]
     pub fn add_rms_norm3(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>,

@@ -1,0 +1,32 @@
+#!/usr/bin/env shuck
+// End-to-end dequant validation: ggml oracle + CPU + GPU checks.
+
+let ll = env("HOME") + "/projects/llama.cpp"
+let bw = env("BW24_ROOT") or (env("HOME") + "/projects/bw24")
+let g9b = env("G9B") or "/home/avifenesh/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf"
+let g35b = env("G35B") or "/home/avifenesh/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+
+let ld = env("LD_LIBRARY_PATH") or ""
+env("LD_LIBRARY_PATH", ll + "/build/bin:" + ld)
+env("BW24_TOOLS", bw + "/tools")
+
+echo("### 1/3 build ggml oracle ###")
+run("bash", bw + "/tools/build_dequant_ref.sh").or_die()
+
+echo("### 1b dump ggml references (real tensors, 64 superblocks each) ###")
+mkdir_p("/tmp/dq")
+let ref = bw + "/tools/ggml_dequant_ref"
+run(ref, g9b, "blk.0.ffn_gate.weight", "256", "/tmp/dq/nvfp4").or_die()
+run(ref, g9b, "blk.0.attn_gate.weight", "64", "/tmp/dq/q5k").or_die()
+run(ref, g35b, "blk.0.ffn_gate_exps.weight", "64", "/tmp/dq/iq3s").or_die()
+run(ref, g35b, "blk.0.ffn_down_exps.weight", "64", "/tmp/dq/iq4xs").or_die()
+run(ref, g35b, "blk.40.ffn_gate_exps.weight", "64", "/tmp/dq/q3k").or_die()
+
+echo("")
+echo("### 2/3 CPU dequant vs ggml byte-for-byte ###")
+cd(bw)
+run("cargo", "run", "-q", "-p", "bw24-gguf", "--example", "dequant_oracle_diff").or_die()
+
+echo("")
+echo("### 3/3 GPU qmatvec (Stage-A + dp4a) vs ggml-equivalent oracle ###")
+run("cargo", "run", "-q", "-p", "bw24-engine", "--bin", "dtype_gpu_check5").or_die()

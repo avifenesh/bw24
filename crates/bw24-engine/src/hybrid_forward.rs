@@ -2311,6 +2311,29 @@ impl HybridModel {
                                next_norm: Option<&CudaSlice<f32>>)
                                -> Result<(CudaSlice<f32>, Option<CudaSlice<f32>>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let (sn, attn_out) = self.gemma4_layer_tail_core(e, layer, cur, x, t)?;
+        let mut xn = e.uninit(t * n_embd)?;
+        match next_norm {
+            Some(w) => {
+                let mut hn = e.uninit(t * n_embd)?;
+                e.add_scale_rms_norm(&sn, &attn_out, bits.layer_scale, w, &mut xn, &mut hn,
+                                     n_embd, t, self.cfg.rms_eps)?;
+                Ok((xn, Some(hn)))
+            }
+            None => {
+                e.add_scale(&sn, &attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
+                Ok((xn, None))
+            }
+        }
+    }
+
+    /// Tail core: attn_out = cur+x (fused with the 3 norms), both FFN branches, the combine
+    /// norm — returns (sn, attn_out) for the closing add+scale variants.
+    fn gemma4_layer_tail_core(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                              cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize)
+                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
         // attn_out = cur + x fused with the three attn_out norms (ffn_norm + router-scale +
@@ -2322,7 +2345,8 @@ impl HybridModel {
         e.add_rms_norm3(cur, x, bits.ffn_norm.float_data(), &bits.router_scale_pre,
                         bits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
                         &mut router_in, &mut moe_in, n_embd, t, eps)?;
-        let attn_out = &attn_out;
+        let attn_out2 = attn_out;
+        let attn_out = &attn_out2;
         let n_ff = bits.shared_gate.out_features();
         let (gate, up) = if t == 1 {
             let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
@@ -2351,16 +2375,26 @@ impl HybridModel {
         let mut sn = e.uninit(t * n_embd)?;
         e.add_rms_norm(&mlp, &moe, bits.post_ffw_norm.float_data(), &mut sum, &mut sn,
                        n_embd, t, eps)?;
+        Ok((sn, attn_out2))
+    }
+
+    /// tail_add with the next attn_norm emitted PRE-QUANTIZED q8_1 (decode/verify loops).
+    fn gemma4_layer_tail_add_nq(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
+                                next_norm: Option<&CudaSlice<f32>>)
+                                -> Result<(CudaSlice<f32>, Option<(CudaSlice<i8>, CudaSlice<f32>)>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let (sn, attn_out) = self.gemma4_layer_tail_core(e, layer, cur, x, t)?;
         let mut xn = e.uninit(t * n_embd)?;
         match next_norm {
             Some(w) => {
-                let mut hn = e.uninit(t * n_embd)?;
-                e.add_scale_rms_norm(&sn, attn_out, bits.layer_scale, w, &mut xn, &mut hn,
-                                     n_embd, t, self.cfg.rms_eps)?;
-                Ok((xn, Some(hn)))
+                let pair = e.add_scale_rms_norm_q8_1(&sn, &attn_out, bits.layer_scale, w, &mut xn,
+                                                     n_embd, t, self.cfg.rms_eps)?;
+                Ok((xn, Some(pair)))
             }
             None => {
-                e.add_scale(&sn, attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
+                e.add_scale(&sn, &attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
                 Ok((xn, None))
             }
         }
@@ -2450,17 +2484,18 @@ impl HybridModel {
 
     /// gemma4 T=1 decode attention: per-layer geometry, quantized-KV append + fa_decode
     /// (vec kernels at hd 256, generic scalar at the globals' hd 512), weightless V-norm,
-    /// dual rope, scale 1.0.
+    /// dual rope, scale 1.0. Takes the attn-normed input PRE-QUANTIZED (the cross-layer
+    /// fused norm emits q8 directly — the f32 h never materializes).
     fn gemma4_decode_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
-                          h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &mut Cache)
+                          hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                          pos_d: &CudaSlice<i32>, cache: &mut Cache)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
-
-        // ONE h quantize + ONE fused launch for q/k/v (block-offset triple; globals pair
-        // wq+wk then V := K clone). Falls back to matmul_pre when the fused arm declines.
-        let (hq, hdq) = e.quantize_q8_1(h, 1, self.cfg.n_embd as usize)?;
+        let (hq, hdq) = (hq, hdq);
+        let h0 = e.zeros(0)?;
+        let h = &h0;
         let (q0, k0, v0) = if swa {
             match e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hdq)? {
                 Some(t3) => t3,
@@ -2559,25 +2594,21 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos)?;
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
-        let mut h_carry: Option<CudaSlice<f32>> = None;
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         let n_layers = self.layers.len();
         for (il, layer) in self.layers.iter().enumerate() {
-            let h = match h_carry.take() {
-                Some(h) => h,
-                None => {
-                    let mut h = e.uninit(t * n_embd)?;
-                    e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-                    h
-                }
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, t, eps)?,
             };
             let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
-            let o = self.gemma4_verify_attn(e, fa, il, &h, &pos_d, t, cache)?;
+            let o = self.gemma4_verify_attn(e, fa, il, &hq, &hdq, &pos_d, t, cache)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             let next_norm = if il + 1 < n_layers {
                 Some(self.layers[il + 1].attn_norm.float_data())
             } else { None };
-            let (xn, hn) = self.gemma4_layer_tail_add_n(e, layer, &cur, &x, t, next_norm)?;
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
             x = xn;
             h_carry = hn;
         }
@@ -2591,18 +2622,21 @@ impl HybridModel {
     /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
     /// row causally over [win_off_i .. base+i] via the SAME fa_decode dispatch as T=1 decode.
     fn gemma4_verify_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
-                          h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                          pos_d: &CudaSlice<i32>, t: usize,
                           cache: &mut Cache)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
         let n_embd = self.cfg.n_embd as usize;
+        let _ = n_embd;
 
-        let (hq, hdq) = e.quantize_q8_1(h, t, n_embd)?;
-        let q0 = e.matmul_pre(&fa.wq, &hq, &hdq, h, t)?;
-        let k0 = e.matmul_pre(&fa.wk, &hq, &hdq, h, t)?;
-        let v0 = if swa { e.matmul_pre(&fa.wv, &hq, &hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        let h0 = e.zeros(0)?;
+        let h = &h0;
+        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
@@ -2660,27 +2694,23 @@ impl HybridModel {
         let pos_d = e.htod_i32(&[cache.pos as i32])?;
         let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
-        // cross-layer fusion: each tail's closing add+scale also produces the NEXT layer's
-        // attn-normed h (h carried; first layer norms explicitly).
-        let mut h_carry: Option<CudaSlice<f32>> = None;
+        // cross-layer fusion: each tail's closing add+scale also EMITS the next layer's
+        // attn-normed input pre-quantized q8_1 (the mixer consumes only quantized matmuls).
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         let n_layers = self.layers.len();
         for (il, layer) in self.layers.iter().enumerate() {
-            let h = match h_carry.take() {
-                Some(h) => h,
-                None => {
-                    let mut h = e.uninit(n_embd)?;
-                    e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, 1, eps)?;
-                    h
-                }
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, 1, eps)?,
             };
             let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
-            let o = self.gemma4_decode_attn(e, fa, il, &h, &pos_d, cache)?;
+            let o = self.gemma4_decode_attn(e, fa, il, &hq, &hdq, &pos_d, cache)?;
             let mut cur = e.uninit(n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, 1, eps)?;
             let next_norm = if il + 1 < n_layers {
                 Some(self.layers[il + 1].attn_norm.float_data())
             } else { None };
-            let (xn, hn) = self.gemma4_layer_tail_add_n(e, layer, &cur, &x, 1, next_norm)?;
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, 1, next_norm)?;
             x = xn;
             h_carry = hn;
         }
