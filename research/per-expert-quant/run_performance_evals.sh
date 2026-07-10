@@ -9,7 +9,7 @@ RUN_DIR="$OUT_ROOT/$RUN_ID"
 PREFILL_TOKENS=${PREFILL_TOKENS:-512}
 DECODE_TOKENS=${DECODE_TOKENS:-128}
 DECODE_REPS=${DECODE_REPS:-3}
-ARMS=(plain-quant plain-reap-quant plain-reap-mix-quant mix-quant)
+ARMS=(plain-quant plain-reap-quant plain-reap-mix-quant mix-quant mix-quant-prune25)
 
 for bin in run-gen decode-bench; do
   test -x "$ROOT/target/release/$bin" || {

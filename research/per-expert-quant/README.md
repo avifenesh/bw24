@@ -1,7 +1,7 @@
 # Hy3 spilling and quantization research pack
 
 This lane owns two deliverables: spill-path improvements for large expert banks and a controlled
-four-arm quantization study. Every retained routed expert is quantized; there is no BF16 expert
+five-arm quantization study. Every retained routed expert is quantized; there is no BF16 expert
 evaluation arm or BF16 expert fallback. Model loading, CUDA correctness, artifact generation,
 research measurement, calibration, and public evaluation happen on the provisioned G7e machine.
 The local RTX 5090 rig remains bw24's deployment and final performance target; runtime defaults are
@@ -30,6 +30,8 @@ The scored arms are fixed:
    remaining 48 NVFP4.
 4. `mix_quant`: full bank ranked separately per layer; hottest 25% NVFP4, middle 50% Q3_K,
    coldest 25% Q2_K, and zero-count experts pruned.
+5. `mix_quant_prune25`: full bank ranked separately per layer; hottest 25% NVFP4, next 25% Q3_K,
+   next 25% Q2_K, and coldest 25% pruned.
 
 BF16 Hy3 is common source material only. It is never scored. The public MLX REAP50 checkpoint is a
 mask donor only; none of its already-quantized expert weights enter a scored artifact.
@@ -168,6 +170,19 @@ For a full 192-expert Hy3 source, build the usage pyramid and prune zero-count e
       --prune-unused \
       --out /data/plans/mix-quant.json
 
+Build the fixed usage-quartile variant from the same full-bank trace. Each layer has exactly 48
+NVFP4, 48 Q3_K, 48 Q2_K, and 48 pruned experts:
+
+    python3 tools/build_expert_tier_plan.py \
+      --trace /data/runs/hy3-calibration.trace \
+      --recipe quartile-prune \
+      --expert-count 192 \
+      --original-expert-count 192 \
+      --top-k 8 \
+      --expected-tokens 163409 \
+      --layers 1-79 \
+      --out /data/plans/mix-quant-prune25.json
+
 For the masked REAP50 bank, build the exact 48 Q2_K / 48 NVFP4 split. The trace retains original
 expert ids because bw24 masks the full-width router instead of renumbering it:
 
@@ -195,7 +210,7 @@ Create at least three matched random controls without changing tier counts or pr
 
 ## Artifact preparation
 
-Build all four scored artifacts from the same pinned BF16 source. The recovered mask controls which
+Build all five scored artifacts from the same pinned BF16 source. The recovered mask controls which
 original source experts are omitted; no intermediate BF16-pruned checkpoint and no MLX expert
 weights are used.
 
@@ -223,7 +238,12 @@ weights are used.
       --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant.json \
       --workers 4 --resume
 
-    for arm in plain-quant plain-reap-quant plain-reap-mix-quant mix-quant; do
+    python3 tools/prepare_mixed_expert_repack.py prepare \
+      /data/models/hy3-source /data/artifacts/mix-quant-prune25 \
+      --fallback-dir /data/models/hy3-source --plan /data/plans/mix-quant-prune25.json \
+      --workers 4 --resume
+
+    for arm in plain-quant plain-reap-quant plain-reap-mix-quant mix-quant mix-quant-prune25; do
       python3 research/per-expert-quant/validate_artifact.py \
         "/data/artifacts/$arm" --verify-sources
     done
@@ -238,10 +258,11 @@ makes trace ids and cross-arm comparisons stable.
 
 ## Experimental arms
 
-The only scored arms are `plain_quant`, `plain_reap_quant`, `plain_reap_mix_quant`, and
-`mix_quant`, in that predeclared order. Matched random-budget controls are diagnostic appendices,
-not replacements for the four arms. No BF16 arm is scored. Keep router, attention, shared experts,
-tokenizer, prompt template, sampling, dense fallback, runtime commit, and calibration trace fixed.
+The only scored arms are `plain_quant`, `plain_reap_quant`, `plain_reap_mix_quant`, `mix_quant`, and
+`mix_quant_prune25`, in that predeclared order. Matched random-budget controls are diagnostic
+appendices, not replacements for the five arms. No BF16 arm is scored. Keep router, attention,
+shared experts, tokenizer, prompt template, sampling, dense fallback, runtime commit, and
+calibration trace fixed.
 
 ## Target-machine bring-up
 
@@ -272,7 +293,7 @@ Before public evaluation, retain raw logs from the required CUDA gates:
 required artifact before trusting the Q2 tier. No correctness, quality, or throughput claim is made
 from the development host.
 
-Run the four arms through one matched performance invocation after staging them under the same
+Run the five arms through one matched performance invocation after staging them under the same
 local-NVMe root:
 
     ARTIFACT_ROOT=/scratch/artifacts \
@@ -318,13 +339,14 @@ lane only in a disposable sandbox.
       ARTIFACT=/data/artifacts/plain-reap-mix-quant \
     SUITE=code BW24_UNSAFE_EVALS=1 research/per-expert-quant/run_public_evals.sh
 
-Run all four arms in the predeclared order. Compare them with:
+Run all five arms in the predeclared order. Compare them with:
 
     python3 research/per-expert-quant/summarize_results.py \
       --baseline research/per-expert-quant/results/plain_quant/RUN_ID \
       --candidate plain_reap_quant=research/per-expert-quant/results/plain_reap_quant/RUN_ID \
       --candidate plain_reap_mix_quant=research/per-expert-quant/results/plain_reap_mix_quant/RUN_ID \
       --candidate mix_quant=research/per-expert-quant/results/mix_quant/RUN_ID \
+      --candidate mix_quant_prune25=research/per-expert-quant/results/mix_quant_prune25/RUN_ID \
       --out research/per-expert-quant/results/comparison.md
 
 Publish per-task scores, paired 95% bootstrap intervals, artifact bytes, tier counts, pruned

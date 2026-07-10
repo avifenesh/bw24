@@ -62,6 +62,7 @@
   ],
   "trace_arms": {
     "mix_quant": "plain_quant",
+    "mix_quant_prune25": "plain_quant",
     "plain_reap_mix_quant": "plain_reap_quant"
   },
   "public_eval_exclusions": [

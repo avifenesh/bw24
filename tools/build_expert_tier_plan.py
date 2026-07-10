@@ -14,7 +14,7 @@ from typing import Any
 
 
 FORMAT = "bw24-expert-tier-plan-v2"
-RECIPES = ("uniform-nvfp4", "usage-pyramid", "reap50-plus25")
+RECIPES = ("uniform-nvfp4", "usage-pyramid", "reap50-plus25", "quartile-prune")
 
 
 def sha256(path: Path) -> str:
@@ -121,6 +121,18 @@ def _take_ranked(ids: list[int], counts: list[int], n: int, hottest: bool) -> se
 
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     layers = parse_layers(args.layers)
+    if args.recipe == "quartile-prune":
+        if args.mask is not None:
+            raise ValueError("quartile-prune requires the full expert bank and does not accept a mask")
+        if args.prune_unused:
+            raise ValueError("quartile-prune uses a fixed coldest quartile prune, not --prune-unused")
+        if args.expert_count != args.original_expert_count:
+            raise ValueError(
+                "quartile-prune requires expert_count to equal original_expert_count "
+                f"({args.expert_count} vs {args.original_expert_count})"
+            )
+        if args.expert_count % 4 != 0:
+            raise ValueError("quartile-prune requires an expert count divisible by 4")
     masked_pruned = (
         read_mask(args.mask, layers, args.expert_count)
         if args.mask is not None
@@ -168,7 +180,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             remaining = [ex for ex in retained if ex not in hot]
             low = _take_ranked(remaining, c, low_n, hottest=False)
             tiers = {"NVFP4": hot, "Q2_K": low, "Q3_K": set(retained) - hot - low}
-        else:
+        elif args.recipe == "reap50-plus25":
             if args.mask is None:
                 raise ValueError("reap50-plus25 requires a recovered REAP mask")
             if len(retained) * 2 != args.original_expert_count:
@@ -181,6 +193,22 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             q2_n = round(args.original_expert_count * 0.25)
             low = _take_ranked(retained, c, q2_n, hottest=False)
             tiers = {"Q2_K": low, "NVFP4": set(retained) - low}
+        elif args.recipe == "quartile-prune":
+            quartile = len(retained) // 4
+            if 3 * quartile < args.top_k:
+                raise ValueError(
+                    f"layer {layer}: quartile pruning leaves {3 * quartile} experts, "
+                    f"below top_k={args.top_k}"
+                )
+            ranked = sorted(retained, key=lambda ex: (-c[ex], ex))
+            tiers = {
+                "NVFP4": set(ranked[:quartile]),
+                "Q3_K": set(ranked[quartile : 2 * quartile]),
+                "Q2_K": set(ranked[2 * quartile : 3 * quartile]),
+            }
+            inactive.update(ranked[3 * quartile :])
+        else:
+            raise ValueError(f"unknown recipe {args.recipe!r}")
 
         for qtype in ("NVFP4", "Q3_K", "Q2_K"):
             ids = sorted(tiers.get(qtype, set()))
@@ -204,6 +232,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "uniform-nvfp4": "All retained experts NVFP4; no calibration or pruning",
             "usage-pyramid": "Top 25% NVFP4, middle 50% Q3_K, bottom 25% Q2_K, zero-count experts pruned",
             "reap50-plus25": "REAP50 source: least-used 25% of original bank Q2_K, remaining 25% NVFP4",
+            "quartile-prune": "Usage-ranked full bank: top 25% NVFP4, next 25% Q3_K, next 25% Q2_K, coldest 25% pruned",
         }[args.recipe],
         "model": {
             "expert_count": args.expert_count,
@@ -215,6 +244,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "rank_metric": None if args.recipe == "uniform-nvfp4" else "router_selection_count",
             "hot_fraction": args.hot_fraction if args.recipe == "usage-pyramid" else None,
             "low_fraction": args.low_fraction if args.recipe == "usage-pyramid" else None,
+            "fixed_tier_fractions": (
+                {"NVFP4": 0.25, "Q3_K": 0.25, "Q2_K": 0.25}
+                if args.recipe == "quartile-prune"
+                else None
+            ),
+            "fixed_prune_fraction": 0.25 if args.recipe == "quartile-prune" else None,
             "prune_unused": args.prune_unused,
             "expert_mask": str(args.mask.resolve()) if args.mask is not None else None,
             "tie_break": "ascending expert id",
@@ -308,6 +343,32 @@ def self_test() -> None:
         ))
         assert reap_uniform["layer_summary"]["1"]["nvfp4"] == 96
         assert reap_uniform["pruned_experts"]["1"] == list(range(1, 192, 2))
+        quartile_trace = root / "quartile.trace"
+        quartile_trace.write_text(json.dumps({
+            "layer": 1,
+            "tokens": 18,
+            "experts": [
+                {"expert": expert, "count": count}
+                for expert, count in enumerate(range(8, 0, -1))
+            ],
+        }) + "\n")
+        quartile = build_plan(argparse.Namespace(
+            trace=[quartile_trace], recipe="quartile-prune", expert_count=8,
+            original_expert_count=8, top_k=2, layers="1",
+            hot_fraction=0.25, low_fraction=0.25, prune_unused=False,
+            mask=None, expected_tokens=18,
+        ))
+        quartile_summary = quartile["layer_summary"]["1"]
+        assert quartile_summary == {
+            "assignments": 36, "observed_experts": 8, "pruned": 2,
+            "nvfp4": 2, "q3_k": 2, "q2_k": 2,
+        }
+        assert quartile["assignments"] == [
+            {"layer": 1, "experts": [0, 1], "qtype": "NVFP4"},
+            {"layer": 1, "experts": [2, 3], "qtype": "Q3_K"},
+            {"layer": 1, "experts": [4, 5], "qtype": "Q2_K"},
+        ]
+        assert quartile["pruned_experts"] == {"1": [6, 7]}
         print("expert tier plan self-test: PASS")
 
 
