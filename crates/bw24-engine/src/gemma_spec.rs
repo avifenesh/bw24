@@ -316,12 +316,11 @@ impl HybridModel {
             batch.push(last);
             batch.extend_from_slice(&dtoks);
             let pos0 = cache.pos;
-            let (vl, vh) = self.gemma4_decode_step_t_h(e, &batch, pos0, &mut cache)?;
+            let (vam, vh) = self.gemma4_decode_step_t_am(e, &batch, pos0, &mut cache)?;
             // longest accepted prefix: d_i accepted iff d_i == argmax(verify[i-1])
             let mut m = 0usize;
             while m < k {
-                let am = crate::forward::argmax(&vl[m * n_vocab..(m + 1) * n_vocab]) as u32;
-                if dtoks[m] == am { m += 1; } else { break; }
+                if dtoks[m] == vam[m] { m += 1; } else { break; }
             }
             accepted += m;
             // emit last + accepted drafts; the correction token comes from verify row m.
@@ -332,7 +331,7 @@ impl HybridModel {
                 if eos.contains(&dt) { break 'outer; }
                 if out.len() >= max_new { break 'outer; }
             }
-            let next = crate::forward::argmax(&vl[m * n_vocab..(m + 1) * n_vocab]) as u32;
+            let next = vam[m];
             // roll back rejected rows: batch appended k+1 rows; keep m+1 (positions of
             // last + accepted drafts). SWA layers cap t_kv by the window view, so a plain
             // len rewind is safe for every layer.

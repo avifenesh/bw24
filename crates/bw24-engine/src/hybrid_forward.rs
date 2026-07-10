@@ -2487,11 +2487,38 @@ impl HybridModel {
         Ok(self.gemma4_decode_step_t_h(e, tokens, pos0, cache)?.0)
     }
 
+    /// GREEDY verify: per-row DEVICE argmax (t x 4B host traffic instead of the t x 1MB logits
+    /// stack — softcap skipped: tanh is monotonic, per-row argmax unaffected). Returns
+    /// (argmax ids [t], post-output_norm hidden stack [t, n_embd]).
+    pub(crate) fn gemma4_decode_step_t_am(&self, e: &Engine, tokens: &[u32], pos0: usize,
+                                          cache: &mut Cache)
+                                          -> Result<(Vec<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache)?;
+        let t = tokens.len();
+        let n_vocab = self.output.out_features();
+        let mut toks = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut toks, i)?;
+        }
+        Ok((e.dtoh_u32(&toks)?, hn))
+    }
+
     /// gemma4 verify + the POST-output_norm hidden stack [t, n_embd] (the drafter's h input —
     /// llama's h_nextn convention).
     pub(crate) fn gemma4_decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize,
                                          cache: &mut Cache)
                                          -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let (mut ld, hn) = self.gemma4_verify_trunk(e, tokens, pos0, cache)?;
+        let t = tokens.len();
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        Ok((e.dtoh(&ld)?, hn))
+    }
+
+    /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
+    /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
+    fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
+                           -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
@@ -2512,12 +2539,9 @@ impl HybridModel {
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let mut ld = e.matmul(&self.output, &hn, t)?;
-        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        e.softcap(&mut ld, cap, t * self.output.out_features())?;
-        let logits = e.dtoh(&ld)?;
+        let ld = e.matmul(&self.output, &hn, t)?;
         cache.pos += t;
-        Ok((logits, hn))
+        Ok((ld, hn))
     }
 
     /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
