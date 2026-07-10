@@ -2346,6 +2346,7 @@ impl HybridModel {
                         bits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
                         &mut router_in, &mut moe_in, n_embd, t, eps)?;
         let attn_out2 = attn_out;
+        #[allow(unused_variables)]
         let attn_out = &attn_out2;
         let n_ff = bits.shared_gate.out_features();
         let (gate, up) = if t == 1 {

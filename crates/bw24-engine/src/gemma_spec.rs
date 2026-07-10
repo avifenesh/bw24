@@ -38,7 +38,9 @@ pub struct GemmaDraft {
     pub pre_proj: GpuTensor,   // [5632 -> 1024]
     pub post_proj: GpuTensor,  // [1024 -> 2816]
     pub output_norm: GpuTensor,
-    pub head: GpuTensor,       // tied drafter token_embd [1024, n_vocab]
+    pub head: GpuTensor,       // tied drafter token_embd [1024, n_vocab] (or FR-trimmed rows)
+    /// FR-Spec trim map: draft-row index -> target token id (None = full head, identity).
+    pub d2t: Option<Vec<u32>>,
     pub rope_freqs: CudaSlice<f32>,
     pub ones: CudaSlice<f32>,  // weightless-norm weight (max hd 512)
     pub n_embd: usize,         // 1024
@@ -109,29 +111,38 @@ impl GemmaDraft {
             e.htod(&bw24_gguf::dequant::dequantize(
                 t.ggml_type, &t.bytes, t.ne.iter().product::<u64>() as usize))?
         };
-        // Head trim seam (BW24_GEMMA_DRAFT_VOCAB, DEFAULT 0 = full head): top-N-ids trim
-        // MEASURED NEGATIVE (32k: acceptance .520 -> .339, spec 175 -> 143 — the id order is
-        // NOT frequency for this 262k vocab). Real FR-Spec needs a corpus-ranked row gather +
-        // d2t map; the seam stays for that experiment.
-        let head = {
-            let trim: usize = std::env::var("BW24_GEMMA_DRAFT_VOCAB").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(0);
+        // FR-Spec head trim (BW24_GEMMA_DRAFT_RANKS=<ids file, rank order>): gather the ranked
+        // rows of the drafter head + d2t map. (Top-N-IDS truncation measured NEGATIVE — id
+        // order is not frequency; the CORPUS-ranked gather is the real FR-Spec.)
+        let (head, d2t) = {
             let t = src.find("token_embd.weight").ok_or("drafter missing token_embd")?;
             let in_f = t.ne[0] as usize;
             let n_vocab = t.ne[1] as usize;
-            if trim > 0 && trim < n_vocab {
-                assert_eq!(t.ggml_type, bw24_gguf::GgmlType::Q4_0, "drafter head trim expects Q4_0");
-                let row_bytes = in_f / 32 * 18;
-                let bytes = e.htod_bytes(&t.bytes[..trim * row_bytes])?;
-                GpuTensor::Quant {
-                    bytes, qtype: crate::QT_Q4_0, row_bytes,
-                    ne: vec![in_f as u64, trim as u64], scale: 1.0, rp: false,
-                    #[cfg(bw24_cutlass)]
-                    cutlass: None,
-                    fp8: None,
+            match std::env::var("BW24_GEMMA_DRAFT_RANKS").ok() {
+                Some(path) => {
+                    assert_eq!(t.ggml_type, bw24_gguf::GgmlType::Q4_0, "drafter head trim expects Q4_0");
+                    let ids: Vec<u32> = std::fs::read_to_string(&path)?
+                        .lines().filter_map(|l| l.trim().parse().ok())
+                        .filter(|&id| (id as usize) < n_vocab).collect();
+                    let row_bytes = in_f / 32 * 18;
+                    let mut gathered = Vec::with_capacity(ids.len() * row_bytes);
+                    for &id in &ids {
+                        let off = id as usize * row_bytes;
+                        gathered.extend_from_slice(&t.bytes[off..off + row_bytes]);
+                    }
+                    let bytes = e.htod_bytes(&gathered)?;
+                    eprintln!("[gemma-draft] FR head trim: {} rows ({} MB vs {} MB full)",
+                              ids.len(), ids.len() * row_bytes / 1_000_000,
+                              n_vocab * row_bytes / 1_000_000);
+                    (GpuTensor::Quant {
+                        bytes, qtype: crate::QT_Q4_0, row_bytes,
+                        ne: vec![in_f as u64, ids.len() as u64], scale: 1.0, rp: false,
+                        #[cfg(bw24_cutlass)]
+                        cutlass: None,
+                        fp8: None,
+                    }, Some(ids))
                 }
-            } else {
-                load_t(e, &src, "token_embd.weight")?
+                None => (load_t(e, &src, "token_embd.weight")?, None),
             }
         };
         Ok(GemmaDraft {
@@ -140,6 +151,7 @@ impl GemmaDraft {
             post_proj: load_t(e, &src, "nextn.post_projection.weight")?,
             output_norm: load_t(e, &src, "output_norm.weight")?,
             head,
+            d2t,
             rope_freqs,
             ones: e.htod(&[1.0f32; 512])?,
             n_embd,
@@ -245,7 +257,9 @@ impl HybridModel {
         let (hn, h_next) = self.gemma4_draft_trunk(e, d, token, h, pos, cache)?;
         let ld = e.matmul(&d.head, &hn, 1)?;
         let tok_d = e.argmax_token_device(&ld, d.head.out_features())?;
-        Ok((e.dtoh_u32(&tok_d)?[0], h_next))
+        let idx = e.dtoh_u32(&tok_d)?[0];
+        let tok = match &d.d2t { Some(map) => map[idx as usize], None => idx };
+        Ok((tok, h_next))
     }
 }
 

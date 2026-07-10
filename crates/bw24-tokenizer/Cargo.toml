@@ -13,3 +13,7 @@ path = "src/bin/tok_check.rs"
 [[bin]]
 name = "tok-trim"
 path = "src/bin/tok_trim.rs"
+
+[[bin]]
+name = "tok-freq"
+path = "src/bin/tok_freq.rs"
