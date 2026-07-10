@@ -1,0 +1,7 @@
+=== llama 27b p1-code-short ===
+prompt: 28 tok @ 164.1 tok/s | gen: 256 tok @ 86.46 tok/s
+=== llama 27b p2-code-medium ===
+prompt: 1845 tok @ 1971.0 tok/s | gen: 256 tok @ 91.59 tok/s
+=== llama 27b p3-agentic-long ===
+prompt: 6257 tok @ 2090.2 tok/s | gen: 256 tok @ 75.10 tok/s
+180 MHz, 66

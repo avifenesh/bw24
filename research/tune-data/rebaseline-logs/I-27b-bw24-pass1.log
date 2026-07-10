@@ -1,0 +1,13 @@
+=== bw24 27b p1-code-short (K=3) ===
+text prompt (145 chars) -> 27 tokens
+[generate]   255 tok in 5.329s = 47.85 tok/s (gen-only; this run's prime 0.096s)
+[generate_spec K=3] 256 tok in 2.368s = 107.71 tok/s (2.25x vs generate; this run's prime 0.100s)
+=== bw24 27b p2-code-medium (K=3) ===
+text prompt (6257 chars) -> 1845 tokens
+[generate]   255 tok in 5.457s = 46.73 tok/s (gen-only; this run's prime 1.359s)
+[generate_spec K=3] 256 tok in 2.679s = 95.17 tok/s (2.04x vs generate; this run's prime 1.365s)
+=== bw24 27b p3-agentic-long (K=3) ===
+text prompt (22822 chars) -> 6257 tokens
+[generate]   255 tok in 5.564s = 45.83 tok/s (gen-only; this run's prime 4.641s)
+[generate_spec K=3] 256 tok in 3.219s = 79.21 tok/s (1.73x vs generate; this run's prime 4.668s)
+180 MHz, 67
