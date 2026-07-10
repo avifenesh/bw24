@@ -271,7 +271,11 @@ pub const QT_NVFP4_RP: i32 = 9;
 /// Unquantized f32 weight (safetensors MoE Path A: experts dequantized to f32 host-resident).
 pub const QT_F32: i32 = 8;
 pub const QT_BF16: i32 = 11;
-pub const QT_Q4_0: i32 = 12;   // gemma-4 QAT GGUF weight format (18B/32: fp16 d + nibbles)   // raw bf16 rows (FULL_PREC embed gather; exact bits<<16 in-kernel)
+pub const QT_Q4_0: i32 = 12; // gemma-4 QAT GGUF weight format (18B/32: fp16 d + nibbles)
+/// GGUF Q2_K. Appended after the existing Q4_0 code so kernel ABI values do not move.
+/// Mixed-expert artifacts use the generic f32-dequant staged kernel until a target-rig-gated
+/// dp4a/MMQ implementation exists.
+pub const QT_Q2_K: i32 = 13;
 
 /// Engine device context: CUDA context, stream, loaded kernel modules, cuBLASLt (via runtime::Gpu).
 pub struct Engine {

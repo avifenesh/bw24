@@ -145,7 +145,7 @@ def markdown(report: dict[str, Any]) -> str:
                 f"- **{name}**: macro delta {summary['macro_delta']:+.4f}; "
                 f"worst task delta {summary['worst_delta']:+.4f}"
             )
-    lines += ["", "| Metric | BF16 reference | " + " | ".join(names) + " |",
+    lines += ["", "| Metric | Baseline | " + " | ".join(names) + " |",
               "|---|---:|" + "---:|" * len(names)]
     for row in report["metrics"]:
         cells = [row["label"], f"{row['baseline']['value']:.4f}"]
@@ -162,7 +162,7 @@ def markdown(report: dict[str, Any]) -> str:
         lines.append("| " + " | ".join(cells) + " |")
     lines += [
         "",
-        "Deltas are candidate minus BF16. Confidence intervals are paired by lm-eval document hashes",
+        "Deltas are candidate minus the selected baseline. Confidence intervals are paired by lm-eval document hashes",
         "and bootstrap the per-document metric difference with seed 42.",
     ]
     return "\n".join(lines) + "\n"

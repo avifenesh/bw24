@@ -825,9 +825,10 @@ impl HybridModel {
         // Per-token (sel[8], w[8]) — sigmoid host oracle (M3/Hy3), else fused-router/softmax.
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(sig))?
+                                m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
         } else {
-            Self::moe_route(e, &logits, t, n_expert, n_used)?
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                None, None, m.active_experts.as_deref())?
         };
 
         // BW24_MOE_TRACE=<path>: append one line per (layer, step) with the selected expert ids —
@@ -1123,7 +1124,7 @@ impl HybridModel {
     /// indexes HostExps.bytes on the CPU to choose the DMA source (§A.2 output staging).
     fn moe_route(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
-        Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None)
+        Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None, None)
     }
 
     /// DeepSeek-V3-class sigmoid routing (MiniMax-M3, Hy3), host oracle. Reference:
@@ -1134,7 +1135,7 @@ impl HybridModel {
     /// `sig` = (scaling_factor, route_norm) from `cfg.sigmoid_router()`; softmax archs pass
     /// None -> the qwen35moe/OLMoE path below.
     fn moe_route_cfg(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize,
-                     bias: Option<&[f32]>, sig: Option<(f32, bool)>)
+                     bias: Option<&[f32]>, sig: Option<(f32, bool)>, active: Option<&[bool]>)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
         if let Some((sf, route_norm)) = sig {
             // sigmoid routing. Host path only for now (fused-router kernel is softmax-top-k).
@@ -1149,7 +1150,8 @@ impl HybridModel {
                     Some(b) => scores.iter().zip(b).map(|(s, bb)| s + bb).collect(),
                     None => scores.clone(),
                 };
-                let mut idx: Vec<usize> = (0..n_expert).collect();
+                let mut idx: Vec<usize> = (0..n_expert)
+                    .filter(|&i| active.is_none_or(|mask| mask[i])).collect();
                 idx.sort_by(|&a, &b| selsc[b].total_cmp(&selsc[a]).then(a.cmp(&b)));
                 let sl = &idx[..n_used];
                 let mut wv: Vec<f32> = sl.iter().map(|&i| scores[i]).collect();
@@ -1169,7 +1171,7 @@ impl HybridModel {
         // LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router DEFAULT ON (BW24_FUSED_ROUTER=0
         // rollback) via the single-sync pinned readback — softmax arch only; the M3 sigmoid arm
         // above returns before this (host path until a sigmoid fused-router kernel exists).
-        if !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
+        if active.is_none() && !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
             return e.moe_router_topk_host(logits, t, n_expert, n_used);
         }
         // Host oracle (the §D bit-identity reference).
@@ -1179,13 +1181,19 @@ impl HybridModel {
         for tok in 0..t {
             let row = &lg[tok * n_expert..(tok + 1) * n_expert];
             // softmax over ALL n_expert (stable: subtract max)
-            let maxl = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let maxl = row.iter().enumerate()
+                .filter(|(i, _)| active.is_none_or(|mask| mask[*i]))
+                .map(|(_, &x)| x).fold(f32::NEG_INFINITY, f32::max);
             let mut probs = vec![0f32; n_expert];
             let mut den = 0f32;
-            for i in 0..n_expert { let x = (row[i] - maxl).exp(); probs[i] = x; den += x; }
+            for i in 0..n_expert {
+                if active.is_some_and(|mask| !mask[i]) { continue; }
+                let x = (row[i] - maxl).exp(); probs[i] = x; den += x;
+            }
             for p in probs.iter_mut() { *p /= den; }
             // stable DESC sort: prob DESC, ascending-index tiebreak.
-            let mut idx: Vec<usize> = (0..n_expert).collect();
+            let mut idx: Vec<usize> = (0..n_expert)
+                .filter(|&i| active.is_none_or(|mask| mask[i])).collect();
             idx.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
             let sl = &idx[..n_used];
             let mut wv: Vec<f32> = sl.iter().map(|&i| probs[i]).collect();
@@ -1820,9 +1828,10 @@ impl HybridModel {
         let logits = e.matmul(&m.gate_inp, z, t)?;
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(sig))?
+                                m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
         } else {
-            Self::moe_route(e, &logits, t, n_expert, n_used)?
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                None, None, m.active_experts.as_deref())?
         };
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).

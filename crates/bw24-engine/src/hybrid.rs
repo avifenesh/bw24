@@ -115,10 +115,12 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
         let exp_probs_b = src.find(&p("exp_probs_b.bias")).map(|v| {
             bw24_gguf::dequant::dequantize(v.ggml_type, &v.bytes, n_expert)
         });
+        let active_experts = src.active_experts(il).map(<[bool]>::to_vec);
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, src, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_opt(e, src, &p("ffn_gate_inp_shexp.weight"))?,
             exp_probs_b,
+            active_experts,
             gate_exps, up_exps, down_exps,
             gate_shexp: load_opt(e, src, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_opt(e, src, &p("ffn_up_shexp.weight"))?,
@@ -246,6 +248,9 @@ pub struct MoeWeights {
     /// for expert SELECTION only; the routing weights use the un-biased scores. Kept host-side —
     /// routing's top-k is a host loop and this is n_expert floats.
     pub exp_probs_b: Option<Vec<f32>>,
+    /// Original-width router mask for physically pruned expert overlays. Inactive ids never enter
+    /// top-k, so their absent weight files cannot be dispatched.
+    pub active_experts: Option<Vec<bool>>,
     pub gate_exps: HostExps,        // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub up_exps: HostExps,          // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub down_exps: HostExps,        // [n_ff_exp, n_embd, n_expert] TRANSPOSED (HOST)

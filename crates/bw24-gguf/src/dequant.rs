@@ -54,6 +54,7 @@ pub fn dequantize(ty: GgmlType, raw: &[u8], n_elems: usize) -> Vec<f32> {
         }
         GgmlType::Q8_0 => dequant_q8_0(raw, n_elems, &mut out),
         GgmlType::Q4_0 => dequant_q4_0(raw, n_elems, &mut out),
+        GgmlType::Q2_K => dequant_q2_k(raw, n_elems, &mut out),
         GgmlType::Q4_K => dequant_q4_k(raw, n_elems, &mut out),
         GgmlType::Q5_K => dequant_q5_k(raw, n_elems, &mut out),
         GgmlType::Q6_K => dequant_q6_k(raw, n_elems, &mut out),
@@ -64,6 +65,34 @@ pub fn dequantize(ty: GgmlType, raw: &[u8], n_elems: usize) -> Vec<f32> {
         other => panic!("dequantize not implemented for {other:?}"),
     }
     out
+}
+
+// ============================ Q2_K ============================
+
+/// block_q2_K (QK_K=256): { u8 scales[16]; u8 qs[64]; fp16 d; fp16 dmin } => 84 bytes.
+/// Port of ggml's `dequantize_row_q2_K`. Each 16-value group has a 4-bit scale and 4-bit
+/// minimum; four groups share each 32-byte quant plane through 2-bit lanes.
+fn dequant_q2_k(raw: &[u8], n: usize, out: &mut [f32]) {
+    const QK_K: usize = 256;
+    const BYTES: usize = 84;
+    let nb = n / QK_K;
+    for i in 0..nb {
+        let base = i * BYTES;
+        let scales = &raw[base..base + 16];
+        let qs = &raw[base + 16..base + 80];
+        let d = fp16_to_f32(rd_u16(raw, base + 80));
+        let dmin = fp16_to_f32(rd_u16(raw, base + 82));
+        for j in 0..QK_K {
+            let group = j / 16;
+            let half = j / 128;
+            let within = j % 128;
+            let shift = 2 * (within / 32);
+            let q = (qs[half * 32 + within % 32] >> shift) & 3;
+            let sc = scales[group];
+            out[i * QK_K + j] = d * (sc & 0x0f) as f32 * q as f32
+                - dmin * (sc >> 4) as f32;
+        }
+    }
 }
 
 /// block_q8_0: { fp16 d; int8 qs[32] } => 34 bytes / 32 elems. y = d * qs.
@@ -516,6 +545,25 @@ mod tests {
         for j in 0..32 { raw[2 + j] = (j as i8 * 2) as u8; }
         let out = dequantize(GgmlType::Q8_0, &raw, 32);
         for j in 0..32 { assert!((out[j] - (j as f32)).abs() < 1e-4, "j={j} got {}", out[j]); }
+    }
+
+    #[test]
+    fn q2k_planes_scales_and_minimum() {
+        // scale=1, minimum multiplier=2, d=1, dmin=0.5 -> value = q - 1.
+        // Each repeated 0b11_10_01_00 byte makes the four 32-value planes q=0,1,2,3.
+        let mut raw = vec![0u8; 84];
+        raw[..16].fill(0x21);
+        raw[16..80].fill(0b11_10_01_00);
+        raw[80..82].copy_from_slice(&0x3c00u16.to_le_bytes());
+        raw[82..84].copy_from_slice(&0x3800u16.to_le_bytes());
+        let out = dequantize(GgmlType::Q2_K, &raw, 256);
+        for half in 0..2 {
+            for plane in 0..4 {
+                for j in 0..32 {
+                    assert_eq!(out[half * 128 + plane * 32 + j], plane as f32 - 1.0);
+                }
+            }
+        }
     }
 
     #[test]

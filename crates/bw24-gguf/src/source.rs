@@ -81,6 +81,10 @@ pub trait TensorSource {
     /// contract and must be retained even when every expert happens to use the same encoding.
     /// Sparse overlays use this so an all-Q4_K control does not get normalized back to F32.
     fn preserve_expert_encodings(&self) -> bool { false }
+    /// Optional per-layer routed-expert mask. A false entry is physically absent from a pruned
+    /// overlay and must be excluded before top-k routing. Keeping the original router width makes
+    /// usage-driven pruning possible without rewriting router tensors or expert ids.
+    fn active_experts(&self, _layer: u32) -> Option<&[bool]> { None }
     /// Zero-copy mmap window for a STACKED 3D expert tensor (the disk-spill tier's byte source):
     /// `(shared file mmap, byte offset of expert 0, total expert bytes)`. `Some` only when the
     /// source's on-disk layout IS already the engine's expert layout (expert-axis-slowest,
@@ -112,20 +116,64 @@ impl<'g> TensorSource for GgufSource<'g> {
 #[derive(Debug, Clone)]
 struct RepackTensor {
     file: PathBuf,
+    offset: usize,
     ggml_type: GgmlType,
     ne: Vec<u64>,
     bytes: usize,
     expert_stride: Option<usize>,
 }
 
+enum RepackFallback {
+    Safetensors(SafetensorsSource),
+    Repack(Box<Hy3RepackSource>),
+}
+
+impl RepackFallback {
+    fn config(&self) -> ModelConfig {
+        match self {
+            Self::Safetensors(source) => source.config(),
+            Self::Repack(source) => source.config(),
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<TensorView<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find(name),
+            Self::Repack(source) => source.find(name),
+        }
+    }
+
+    fn find_nvfp4_native(&self, name: &str) -> Option<Nvfp4Native<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find_nvfp4_native(name),
+            Self::Repack(source) => source.find_nvfp4_native(name),
+        }
+    }
+
+    fn find_fp8_native(&self, name: &str) -> Option<Fp8Native<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find_fp8_native(name),
+            Self::Repack(source) => source.find_fp8_native(name),
+        }
+    }
+
+    fn st_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Safetensors(source) => source.st_dir(),
+            Self::Repack(source) => source.st_dir(),
+        }
+    }
+}
+
 /// Manifest-backed source for bw24 repack directories and sparse per-expert overlays.
 ///
 /// The transcoder writes one file per tensor (including stacked expert slabs) plus a manifest with
 /// ggml-style names. This source presents those bytes directly to the existing loaders without a
-/// single-file GGUF wrapper. Sparse overlays fall back to their `source_dir` HF checkpoint for
-/// unlisted tensors. Files are mmap'd lazily by the OS; opening the 80G repack maps address space
-/// but does not fault tensor pages into RAM. The public type retains its historical Hy3 name for
-/// compatibility with existing callers.
+/// single-file GGUF wrapper. Expert overlays may fall back to either an HF checkpoint or another
+/// manifest-backed repack; the latter lets a multi-tier expert artifact reuse the established Hy3
+/// dense/router repack without copying it. Files are mmap'd lazily by the OS; opening the 80G
+/// repack maps address space but does not fault tensor pages into RAM. The public type retains its
+/// historical Hy3 name for compatibility with existing callers.
 pub struct Hy3RepackSource {
     cfg: ModelConfig,
     dir: PathBuf,
@@ -134,9 +182,10 @@ pub struct Hy3RepackSource {
     // Arc so stacked expert slabs can be handed to the engine's HostBuf::Mmap tier zero-copy
     // (find_expert_mmap) while `find` keeps borrowing the same mapping.
     files: BTreeMap<PathBuf, std::sync::Arc<Mmap>>,
-    // Sparse expert overlays store only the experts selected for quantization. Everything else
-    // resolves from the original HF checkpoint, so an unlisted expert remains in its source dtype.
-    fallback: Option<SafetensorsSource>,
+    // Expert overlays store only overridden tensors. Everything else resolves from either the
+    // original HF checkpoint (v1) or a complete manifest repack (v2).
+    fallback: Option<RepackFallback>,
+    active_experts: BTreeMap<u32, Vec<bool>>,
 }
 
 impl Hy3RepackSource {
@@ -159,6 +208,7 @@ impl Hy3RepackSource {
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing bytes")))? as usize;
             tensors.insert(name.to_string(), RepackTensor {
                 file: PathBuf::from(file),
+                offset: obj.u64("offset").unwrap_or(0) as usize,
                 ggml_type: manifest_qtype(&qtype)
                     .ok_or_else(|| invalid_data(format!("manifest tensor {name} unsupported qtype {qtype}")))?,
                 ne,
@@ -170,20 +220,66 @@ impl Hy3RepackSource {
         let source_dir = top.string("source_dir").map(PathBuf::from).map(|path| {
             if path.is_absolute() { path } else { dir.join(path) }
         });
-        let cfg_path = source_dir.clone()
-            .map(|p| p.join("config.json"))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| dir.join("config.json"));
-        let mut cfg = ModelConfig::from_config_json(&cfg_path)?;
-        apply_stripped_mtp_override(&mut cfg, &tensors);
-        let fallback = if top.string("format").as_deref() == Some("bw24-expert-overlay-v1") {
+        let format = top.string("format");
+        let is_overlay = matches!(
+            format.as_deref(),
+            Some("bw24-expert-overlay-v1" | "bw24-expert-overlay-v2")
+        );
+        let fallback = if is_overlay {
             let source = source_dir.as_deref().ok_or_else(|| {
-                invalid_data("bw24-expert-overlay-v1 manifest missing source_dir")
+                invalid_data("expert overlay manifest missing source_dir")
             })?;
-            Some(SafetensorsSource::open(source)?)
+            if source.join("manifest.json").exists() {
+                Some(RepackFallback::Repack(Box::new(Hy3RepackSource::open(source)?)))
+            } else {
+                Some(RepackFallback::Safetensors(SafetensorsSource::open(source)?))
+            }
         } else {
             None
         };
+        let mut cfg = if let Some(source) = &fallback {
+            source.config()
+        } else {
+            let cfg_path = source_dir.clone()
+                .map(|p| p.join("config.json"))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| dir.join("config.json"));
+            ModelConfig::from_config_json(&cfg_path)?
+        };
+        apply_stripped_mtp_override(&mut cfg, &tensors);
+        let mut active_experts = BTreeMap::new();
+        if let Some(pruned) = top.object("pruned_experts") {
+            let moe = cfg.moe.as_ref().ok_or_else(|| {
+                invalid_data("pruned_experts is present but the model config has no MoE")
+            })?;
+            let n_expert = moe.expert_count as usize;
+            let n_used = moe.expert_used_count as usize;
+            for (layer, raw) in pruned.fields() {
+                let layer: u32 = layer.parse().map_err(|_| {
+                    invalid_data(format!("invalid pruned_experts layer key {layer:?}"))
+                })?;
+                let wrapper = JsonObj::parse(&format!("{{\"v\":{raw}}}"));
+                let ids = wrapper.u64_array("v").ok_or_else(|| {
+                    invalid_data(format!("pruned_experts.{layer} must be an integer array"))
+                })?;
+                let mut mask = vec![true; n_expert];
+                for id in ids {
+                    let id = id as usize;
+                    if id >= n_expert {
+                        return Err(invalid_data(format!(
+                            "pruned_experts.{layer} contains {id}, expert_count={n_expert}"
+                        )));
+                    }
+                    mask[id] = false;
+                }
+                if mask.iter().filter(|&&active| active).count() < n_used {
+                    return Err(invalid_data(format!(
+                        "pruned_experts.{layer} leaves fewer than top-k {n_used} experts"
+                    )));
+                }
+                active_experts.insert(layer, mask);
+            }
+        }
 
         let mut files = BTreeMap::new();
         let mut seen = BTreeSet::new();
@@ -207,15 +303,15 @@ impl Hy3RepackSource {
             let len = files.get(&t.file)
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} file not mapped")))?
                 .len();
-            if len < t.bytes {
+            if len < t.offset + t.bytes {
                 return Err(invalid_data(format!(
-                    "manifest tensor {name} declares {} bytes but {:?} has {len}",
-                    t.bytes, t.file
+                    "manifest tensor {name} declares offset {} + {} bytes but {:?} has {len}",
+                    t.offset, t.bytes, t.file
                 )));
             }
         }
 
-        Ok(Self { cfg, dir, source_dir, tensors, files, fallback })
+        Ok(Self { cfg, dir, source_dir, tensors, files, fallback, active_experts })
     }
 
     pub fn dir(&self) -> &Path {
@@ -225,7 +321,11 @@ impl Hy3RepackSource {
     /// The original HF checkpoint dir recorded by the transcoder (tokenizer files live there —
     /// the repack dir carries only weights + manifest).
     pub fn source_dir(&self) -> Option<&Path> {
-        self.source_dir.as_deref()
+        match self.fallback.as_ref() {
+            Some(RepackFallback::Safetensors(source)) => source.st_dir(),
+            Some(RepackFallback::Repack(source)) => source.source_dir(),
+            None => self.source_dir.as_deref(),
+        }
     }
 
     pub fn tensor_count(&self) -> usize {
@@ -245,7 +345,7 @@ impl TensorSource for Hy3RepackSource {
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         if let Some(t) = self.tensors.get(ggml_name) {
             let map = self.files.get(&t.file)?;
-            let raw = &map[..t.bytes];
+            let raw = &map[t.offset..t.offset + t.bytes];
             if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
                 let n: u64 = t.ne.iter().product();
                 let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
@@ -265,6 +365,16 @@ impl TensorSource for Hy3RepackSource {
                 ne: t.ne.clone(),
             });
         }
+        // A v2 overlay stores mixed experts separately while its fallback may contain the old
+        // uniform stacked slab. Do not let that slab bypass the per-expert override loader.
+        if ggml_name.contains("_exps.weight") {
+            let prefix = format!("{}.", ggml_name.strip_suffix(".weight")?);
+            if self.tensors.range(prefix.clone()..).next()
+                .is_some_and(|(name, _)| name.starts_with(&prefix))
+            {
+                return None;
+            }
+        }
         self.fallback.as_ref()?.find(ggml_name)
     }
 
@@ -279,11 +389,15 @@ impl TensorSource for Hy3RepackSource {
     }
 
     fn st_dir(&self) -> Option<&Path> {
-        self.fallback.as_ref().and_then(TensorSource::st_dir)
+        self.fallback.as_ref().and_then(RepackFallback::st_dir)
     }
 
     fn preserve_expert_encodings(&self) -> bool {
         self.fallback.is_some()
+    }
+
+    fn active_experts(&self, layer: u32) -> Option<&[bool]> {
+        self.active_experts.get(&layer).map(Vec::as_slice)
     }
 
     /// Stacked expert slabs live one-per-file with expert 0 at byte 0 (the transcoder's layout);
@@ -293,7 +407,7 @@ impl TensorSource for Hy3RepackSource {
         let t = self.tensors.get(ggml_name)?;
         t.expert_stride?;
         let map = self.files.get(&t.file)?;
-        Some((map.clone(), 0, t.bytes))
+        Some((map.clone(), t.offset, t.bytes))
     }
 }
 
@@ -303,6 +417,7 @@ fn manifest_qtype(s: &str) -> Option<GgmlType> {
         "F16" => GgmlType::F16,
         "BF16" => GgmlType::BF16,
         "Q8_0" => GgmlType::Q8_0,
+        "Q2_K" => GgmlType::Q2_K,
         "Q4_K" => GgmlType::Q4_K,
         "Q5_K" => GgmlType::Q5_K,
         "Q6_K" => GgmlType::Q6_K,
@@ -860,6 +975,47 @@ mod tests {
         assert_eq!(fallback.ggml_type, GgmlType::F32);
         assert_eq!(fallback.ne, vec![2, 4]);
         assert_eq!(src.st_dir(), Some(base.as_path()));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn v2_overlay_supports_repack_fallback_offsets_and_prune_mask() {
+        let root = std::env::temp_dir().join(format!("bw24_overlay_v2_test_{}", std::process::id()));
+        let base = root.join("base");
+        let overlay = root.join("overlay");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(overlay.join("experts")).unwrap();
+        let cfg = r#"{"model_type":"qwen3_moe","num_hidden_layers":1,"hidden_size":4,"num_attention_heads":2,"num_key_value_heads":1,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128,"num_experts":3,"num_experts_per_tok":2,"moe_intermediate_size":4}"#;
+        std::fs::write(base.join("config.json"), cfg).unwrap();
+        std::fs::write(base.join("dense.bin"), [9u8, 8, 7, 1, 2, 3, 4, 6]).unwrap();
+        std::fs::write(base.join("manifest.json"), r#"{
+            "format":"bw24-test-repack-v1","source_dir":".",
+            "tensors":{"blk.0.attn_norm.weight":{
+                "file":"dense.bin","offset":3,"qtype":"F32","ne":[1],"bytes":4
+            }}
+        }"#).unwrap();
+
+        let mut expert_blob = vec![0x55u8, 0x66];
+        expert_blob.extend(vec![0x22u8; 84]);
+        std::fs::write(overlay.join("experts/mixed.bin"), expert_blob).unwrap();
+        let manifest = format!(r#"{{
+            "format":"bw24-expert-overlay-v2","source_dir":"{}",
+            "pruned_experts":{{"0":[1]}},
+            "tensors":{{"blk.0.ffn_gate_exps.0.weight":{{
+                "file":"experts/mixed.bin","offset":2,"qtype":"Q2_K","ne":[256,1],"bytes":84
+            }}}}
+        }}"#, base.display());
+        std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
+
+        let src = Hy3RepackSource::open(&overlay).unwrap();
+        assert_eq!(src.config().moe.as_ref().unwrap().expert_count, 3);
+        assert_eq!(src.active_experts(0), Some(&[true, false, true][..]));
+        let expert = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(expert.ggml_type, GgmlType::Q2_K);
+        assert_eq!(&*expert.bytes, &[0x22u8; 84]);
+        let dense = src.find("blk.0.attn_norm.weight").unwrap();
+        assert_eq!(&*dense.bytes, &[1, 2, 3, 4]);
 
         std::fs::remove_dir_all(&root).ok();
     }

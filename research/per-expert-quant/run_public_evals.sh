@@ -5,8 +5,9 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 LOCK="$HERE/suite.lock.json"
 
-: "${ARM:?set ARM to the experiment arm name, e.g. bf16_reference or selected_q4k}"
+: "${ARM:?set ARM to the experiment arm name, e.g. uniform_q4k_control or reap50_plus25}"
 : "${MODEL:?set MODEL to the name configured in BW24_MODELS}"
+: "${ARTIFACT:?set ARTIFACT to the served model file or overlay directory}"
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
@@ -40,9 +41,12 @@ python3 "$HERE/prepare_harness.py" "$HARNESS_DIR" --lock "$LOCK"
 SERVER_ROOT=${BASE_URL%/v1/completions}
 curl -fsS "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
 cp "$LOCK" "$RUN_DIR/suite.lock.json"
-export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT
+if [[ -f "$ARTIFACT/manifest.json" ]]; then
+  cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
+fi
+export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
-import json, os, pathlib, platform, subprocess, sys
+import hashlib, json, os, pathlib, platform, subprocess, sys
 
 def command(*args):
     try:
@@ -51,11 +55,24 @@ def command(*args):
         return f"unavailable: {exc}"
 
 root = pathlib.Path(os.environ["ROOT"])
+artifact = pathlib.Path(os.environ["ARTIFACT"]).resolve()
+identity = artifact / "manifest.json" if artifact.is_dir() else artifact
+
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(16 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 metadata = {
     "arm": os.environ["ARM"],
     "model": os.environ["MODEL"],
     "suite": os.environ["SUITE"],
     "base_url": os.environ["BASE_URL"],
+    "artifact": str(artifact),
+    "artifact_identity_file": str(identity),
+    "artifact_identity_sha256": sha256(identity),
     "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
     "platform": platform.platform(),
