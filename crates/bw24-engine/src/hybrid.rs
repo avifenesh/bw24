@@ -69,7 +69,11 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
     // Hy3: `first_k_dense_replace` leading layers are dense-FFN (REAP50: layer 0 only).
     let dense_override = cfg.m3.as_ref()
         .is_some_and(|m| m.moe_layer_freq.get(il as usize).copied() == Some(0))
-        || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace);
+        || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace)
+        // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
+        // expert tensors at all — tensor presence decides.
+        || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
+            && !src.has(&p("ffn_gate_up_exps.weight")));
     Ok(if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
         let n_expert = moe.expert_count as usize;
         // Expert loader. `spill` carries an optional (GgufFile, SpillCtx) — only the GGUF on-disk
@@ -286,11 +290,18 @@ pub struct HybridLayer {
 /// FFN branch, the four extra norms, the router prologue scale vector, per-expert output
 /// scales, and the layer output scalar.
 pub struct Gemma4LayerBits {
-    pub ffn_norm: GpuTensor,           // shared-branch pre-norm
+    pub ffn_norm: GpuTensor,           // ffn pre-norm (dense: THE ffn norm; moe: shared branch)
+    pub post_ffw_norm: GpuTensor,      // combined post (before the attn_out residual)
+    /// MoE-layer extras (None on the dense gemma4 variants — 31B/E4B): the parallel shared
+    /// branch norms + tensors, the router prologue vector, per-expert output scales.
+    pub moe_bits: Option<Gemma4MoeBits>,
+    pub layer_scale: f32,              // layer_output_scale [1]
+}
+
+pub struct Gemma4MoeBits {
     pub post_ffw_norm_1: GpuTensor,    // shared-branch post
     pub pre_ffw_norm_2: GpuTensor,     // moe-branch pre
     pub post_ffw_norm_2: GpuTensor,    // moe-branch post
-    pub post_ffw_norm: GpuTensor,      // combined post (before the attn_out residual)
     pub shared_gate: GpuTensor,
     pub shared_up: GpuTensor,
     pub shared_down: GpuTensor,
@@ -301,7 +312,6 @@ pub struct Gemma4LayerBits {
     pub router_scale_pre: CudaSlice<f32>,
     pub per_expert_scale: Vec<f32>,    // ffn_down_exps.scale [n_expert] (host)
     pub per_expert_scale_d: CudaSlice<f32>,  // device copy (router-weight fold kernel)
-    pub layer_scale: f32,              // layer_output_scale [1]
 }
 
 /// Qwen3.5 NextN/MTP head: a full transformer block (attn+FFN, same tensors as a trunk layer)
@@ -476,22 +486,27 @@ impl HybridModel {
                         bw24_gguf::dequant::dequantize(t.ggml_type, &t.bytes,
                                                        t.ne.iter().product::<u64>() as usize)
                     };
+                    let moe_bits = if src.find(&p("ffn_gate_inp.scale")).is_some() {
+                        Some(crate::hybrid::Gemma4MoeBits {
+                            post_ffw_norm_1: load_t(e, src, &p("post_ffw_norm_1.weight"))?,
+                            pre_ffw_norm_2: load_t(e, src, &p("pre_ffw_norm_2.weight"))?,
+                            post_ffw_norm_2: load_t(e, src, &p("post_ffw_norm_2.weight"))?,
+                            shared_gate: load_t(e, src, &p("ffn_gate.weight"))?,
+                            shared_up: load_t(e, src, &p("ffn_up.weight"))?,
+                            shared_down: load_t(e, src, &p("ffn_down.weight"))?,
+                            router_scale_pre: {
+                                let inv = 1.0 / (cfg.n_embd as f32).sqrt();
+                                let v: Vec<f32> = vecf("ffn_gate_inp.scale").iter().map(|x| x * inv).collect();
+                                e.htod(&v)?
+                            },
+                            per_expert_scale: vecf("ffn_down_exps.scale"),
+                            per_expert_scale_d: e.htod(&vecf("ffn_down_exps.scale"))?,
+                        })
+                    } else { None };
                     Some(Gemma4LayerBits {
                         ffn_norm: load_t(e, src, &p("ffn_norm.weight"))?,
-                        post_ffw_norm_1: load_t(e, src, &p("post_ffw_norm_1.weight"))?,
-                        pre_ffw_norm_2: load_t(e, src, &p("pre_ffw_norm_2.weight"))?,
-                        post_ffw_norm_2: load_t(e, src, &p("post_ffw_norm_2.weight"))?,
                         post_ffw_norm: load_t(e, src, &p("post_ffw_norm.weight"))?,
-                        shared_gate: load_t(e, src, &p("ffn_gate.weight"))?,
-                        shared_up: load_t(e, src, &p("ffn_up.weight"))?,
-                        shared_down: load_t(e, src, &p("ffn_down.weight"))?,
-                        router_scale_pre: {
-                            let inv = 1.0 / (cfg.n_embd as f32).sqrt();
-                            let v: Vec<f32> = vecf("ffn_gate_inp.scale").iter().map(|x| x * inv).collect();
-                            e.htod(&v)?
-                        },
-                        per_expert_scale: vecf("ffn_down_exps.scale"),
-                        per_expert_scale_d: e.htod(&vecf("ffn_down_exps.scale"))?,
+                        moe_bits,
                         layer_scale: scalar("layer_output_scale.weight"),
                     })
                 } else { None },

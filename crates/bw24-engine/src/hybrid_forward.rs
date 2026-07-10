@@ -2081,7 +2081,7 @@ impl HybridModel {
     /// Sequential host-staged v0 — softmax gating + renorm (moe_route, the qwen recipe), GELU
     /// experts, scale folded into the accumulate weight (post-matmul linear scale, exact fold).
     fn gemma4_moe(&self, e: &Engine, m: &crate::hybrid::MoeWeights,
-                  bits: &crate::hybrid::Gemma4LayerBits, moe_in: &CudaSlice<f32>,
+                  bits: &crate::hybrid::Gemma4MoeBits, moe_in: &CudaSlice<f32>,
                   router_in: &CudaSlice<f32>, t: usize)
                   -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -2336,39 +2336,68 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
-        // attn_out = cur + x fused with the three attn_out norms (ffn_norm + router-scale +
-        // pre_ffw_norm_2): ONE launch, per-element chains = add then rms_norm3 verbatim.
+
+        // DENSE gemma4 variants (31B/E4B — no MoE, no parallel branch): attn_out = cur + x
+        // fused with the single ffn_norm; GELU_PAR ffn; post_ffw_norm.
+        let Some(mbits) = bits.moe_bits.as_ref() else {
+            let crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &layer.ffn
+            else { panic!("gemma4 dense layer without Dense ffn") };
+            let mut attn_out = e.uninit(t * n_embd)?;
+            let mut zsh = e.uninit(t * n_embd)?;
+            e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out, &mut zsh,
+                           n_embd, t, eps)?;
+            let n_ff = ffn_gate.out_features();
+            let (gate, up) = if t == 1 {
+                let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
+                match e.matmul_q4_fused2(ffn_gate, ffn_up, &zq, &zd)? {
+                    Some(p) => p,
+                    None => (e.matmul_pre(ffn_gate, &zq, &zd, &zsh, 1)?,
+                             e.matmul_pre(ffn_up, &zq, &zd, &zsh, 1)?),
+                }
+            } else {
+                (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
+            };
+            let mut act = e.uninit(t * n_ff)?;
+            e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
+            let f0 = e.matmul(ffn_down, &act, t)?;
+            let mut sn = e.uninit(t * n_embd)?;
+            e.rms_norm(&f0, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
+            return Ok((sn, attn_out));
+        };
+
+        // MoE variant (26B): attn_out = cur + x fused with the three attn_out norms
+        // (ffn_norm + router-scale + pre_ffw_norm_2): ONE launch, chains verbatim.
         let mut attn_out = e.uninit(t * n_embd)?;
         let mut zsh = e.uninit(t * n_embd)?;
         let mut router_in = e.uninit(t * n_embd)?;
         let mut moe_in = e.uninit(t * n_embd)?;
-        e.add_rms_norm3(cur, x, bits.ffn_norm.float_data(), &bits.router_scale_pre,
-                        bits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
+        e.add_rms_norm3(cur, x, bits.ffn_norm.float_data(), &mbits.router_scale_pre,
+                        mbits.pre_ffw_norm_2.float_data(), &mut attn_out, &mut zsh,
                         &mut router_in, &mut moe_in, n_embd, t, eps)?;
         let attn_out2 = attn_out;
         #[allow(unused_variables)]
         let attn_out = &attn_out2;
-        let n_ff = bits.shared_gate.out_features();
+        let n_ff = mbits.shared_gate.out_features();
         let (gate, up) = if t == 1 {
             let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
-            match e.matmul_q4_fused2(&bits.shared_gate, &bits.shared_up, &zq, &zd)? {
+            match e.matmul_q4_fused2(&mbits.shared_gate, &mbits.shared_up, &zq, &zd)? {
                 Some(p) => p,
-                None => (e.matmul_pre(&bits.shared_gate, &zq, &zd, &zsh, 1)?,
-                         e.matmul_pre(&bits.shared_up, &zq, &zd, &zsh, 1)?),
+                None => (e.matmul_pre(&mbits.shared_gate, &zq, &zd, &zsh, 1)?,
+                         e.matmul_pre(&mbits.shared_up, &zq, &zd, &zsh, 1)?),
             }
         } else {
-            (e.matmul(&bits.shared_gate, &zsh, t)?, e.matmul(&bits.shared_up, &zsh, t)?)
+            (e.matmul(&mbits.shared_gate, &zsh, t)?, e.matmul(&mbits.shared_up, &zsh, t)?)
         };
         let mut act = e.uninit(t * n_ff)?;
         e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
-        let mlp0 = e.matmul(&bits.shared_down, &act, t)?;
+        let mlp0 = e.matmul(&mbits.shared_down, &act, t)?;
         let crate::hybrid::Ffn::Moe(m) = &layer.ffn else { panic!("gemma4 layer not MoE") };
-        let moe0 = self.gemma4_moe(e, m, bits, &moe_in, &router_in, t)?;
+        let moe0 = self.gemma4_moe(e, m, mbits, &moe_in, &router_in, t)?;
         // post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0): one fused launch, per-row verbatim.
         let mut mlp = e.uninit(t * n_embd)?;
         let mut moe = e.uninit(t * n_embd)?;
-        e.rms_norm2x(&mlp0, &moe0, bits.post_ffw_norm_1.float_data(),
-                     bits.post_ffw_norm_2.float_data(), &mut mlp, &mut moe, n_embd, t, eps)?;
+        e.rms_norm2x(&mlp0, &moe0, mbits.post_ffw_norm_1.float_data(),
+                     mbits.post_ffw_norm_2.float_data(), &mut mlp, &mut moe, n_embd, t, eps)?;
 
         // combine: rms_norm(mlp + moe, post_ffw_norm) + attn_out, then the layer output scalar.
         // add+norm fused (add_rms_norm == add then rms_norm, kernel-check-pinned identity).
