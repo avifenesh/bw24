@@ -21,8 +21,14 @@ _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA
   checks compute-apps first + caps BW24_MOE_RESIDENT_GB. (2) ncu crashes live GPU apps incl.
   the session-hosting desktop app — ncu ONLY with per-run owner approval (nsys is safe).
   (3) Codex desktop had an unrelated spinning Electron gpu-process (93% CPU) — restarted.
-- **IN FLIGHT:** down-csr2 kernel (warp-parallel pairs + SMEM-staged decode + combine chain)
-  built, gates queued behind the clean-idle standings re-run (G-logs, Sonnet lane).
+- **down-csr2: NEGATIVE, killed** (-14% e2e despite bit-identity; with v1 this CLOSES the
+  down-dedup space — 16-group rows can't amortize any dedup structure).
+- **BOARD REFRESHED (v0.14.0):** 35B spec 293.6 / 233.1 / 265.9 (+4.7/+3.1/+4.0% — router GEMV
+  + CSR gate_up transfer fine at serve config; the earlier "wash" was colbert/llama CONTENTION).
+  Ratios vs marked llama floor: p1 1.17x, p2 1.05x, p3 1.07x. H-logs N=2, 1590MHz, idle GPU.
+- **REMAINING ENGINE LEVER (measured):** the ~10-15% draft-roundtrip gap (device-side
+  acceptance / conditional round-graph). Everything else on the 35B spec round is
+  measured-closed. p2/p3 to 1.1x also reachable via acceptance (owner's head research).
 
 ## NIGHT 2026-07-10 (session continued): ROUTER GEMV + CSR DEDUP SHIPPED; SERVE-CONFIG TRANSFER MAP
 
