@@ -16,6 +16,31 @@ re-open REFUSED (the 21% profile gap was nsys inflation; production gap ~1%; the
 negative closure stands). Plain cells move materially only via fewer bytes (W4A4 =
 quality-blocked by owner policy) or the fusion slice.
 
+## GEMMA-4 PORT PLAN (opened by owner 2026-07-10 after Qwen closure; family brief in
+## research/gemma4-family-brief.md, gap list in gemma4-nvfp4-port-scope.md)
+
+ROUTE: **official QAT-q4_0 GGUF primary** (Google-endorsed 4-bit quality answers the quality
+question; the MTP DRAFTER ships in the same format; llama.cpp pairs on the IDENTICAL file =
+cleanest floor pairing yet). NVFP4-ST 26B (on disk) = later perf arm (no drafter there).
+TARGETS: 26B-A4B (+drafter), 31B dense (+drafter), E4B (+drafter; the one llama-MTP-mature
+cell = the honest fight). Downloads running -> /data/ai-ml/hf-models/gemma4-{26b-a4b,31b}-qat-gguf.
+OPENING: llama's gemma-4 MTP = E2B/E4B-only, server-only, 1.2-1.3x on the 26B MoE.
+
+SEQUENCE (gaps tagged per the scope doc):
+- P0 census: GGUF metadata/tensor map/qtypes/drafter format when downloads land; verify Q4_0
+  dequant + gguf-spm tokenizer coverage in bw24 (gap 9 may dissolve via from_gguf).
+- P1 config: per-layer attn geometry parse (R5 groundwork), gguf tokenizer arm if needed (N1).
+- P2 forward v0: R8 block graph (parallel shared-MLP + MoE branches, dual post-norms,
+  layer_scalar, embed scale, softcap R4) + R1 gelu_tanh_mul(_scaled) + R2 router prologue +
+  R3 per_expert_scale. Full-attention-everywhere v0 (SWA as mask later) at short ctx.
+- P3 attention: R5 per-layer geometry (hd512/2kv globals!), R7 K=V + weightless V-norm,
+  R9 p-RoPE per-layer (base 10k/1M, partial 0.25 on globals).
+- P4 SWA: masked v0 -> ring-buffer KV (25/30 layers capped at 1024 = huge KV win at depth).
+- P5 spec: drafter integration through the existing MTP machinery (persistent draft KV, trims
+  n/a initially, HPOST survey, PMIN sweep) — the 128-expert MoE gets CSR dedup + router kernel
+  + resident slab for free.
+- P6 batteries + llama pairing on the same QAT file; board rows per protocol (N=2 interleaved).
+
 ## BAR MAP AFTER v0.17.0 (FA-v4 shipped default — TWO CELLS CROSSED THE BAR)
 
 FA-v4 (key-per-lane score phase) adopted default after the full 3-model battery: 35B spec
