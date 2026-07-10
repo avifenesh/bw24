@@ -35,24 +35,70 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
     model = plan["model"]
     n_expert = int(model["expert_count"])
     layers = [int(x) for x in model["moe_layers"]]
-    pruned = {int(layer): set(ids) for layer, ids in plan.get("pruned_experts", {}).items()}
+    layer_set = set(layers)
+    pruned: dict[int, set[int]] = {}
+    for raw_layer, raw_ids in plan.get("pruned_experts", {}).items():
+        layer = int(raw_layer)
+        ids = [int(expert) for expert in raw_ids]
+        if layer not in layer_set:
+            raise ValueError(f"prune mask contains layer {layer} outside the model")
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"layer {layer}: duplicate expert in prune mask")
+        if any(expert < 0 or expert >= n_expert for expert in ids):
+            raise ValueError(f"layer {layer}: prune mask contains an expert outside 0..{n_expert - 1}")
+        pruned[layer] = set(ids)
     manifest_pruned = {
         int(layer): set(ids) for layer, ids in manifest.get("pruned_experts", {}).items()
     }
     if manifest_pruned != pruned:
         raise ValueError("manifest prune mask differs from its embedded plan")
-    expected = {
-        f"blk.{layer}.ffn_{proj}_exps.{expert}.weight"
+
+    allowed_qtypes = {"Q2_K", "Q3_K", "NVFP4"}
+    expected_experts = {
+        (layer, expert)
         for layer in layers
         for expert in range(n_expert)
         if expert not in pruned.get(layer, set())
+    }
+    assigned_qtypes: dict[tuple[int, int], str] = {}
+    for assignment_index, assignment in enumerate(plan.get("assignments", [])):
+        layer = int(assignment["layer"])
+        qtype = assignment["qtype"]
+        experts = [int(expert) for expert in assignment["experts"]]
+        if layer not in layer_set:
+            raise ValueError(f"assignment {assignment_index}: layer {layer} is outside the model")
+        if qtype not in allowed_qtypes:
+            raise ValueError(f"assignment {assignment_index}: forbidden expert qtype {qtype}")
+        if len(experts) != len(set(experts)):
+            raise ValueError(f"assignment {assignment_index}: duplicate expert id")
+        for expert in experts:
+            key = (layer, expert)
+            if expert < 0 or expert >= n_expert:
+                raise ValueError(
+                    f"assignment {assignment_index}: expert {expert} outside 0..{n_expert - 1}"
+                )
+            if expert in pruned.get(layer, set()):
+                raise ValueError(f"assignment {assignment_index}: pruned expert {layer}:{expert}")
+            if key in assigned_qtypes:
+                raise ValueError(f"overlapping assignments for expert {layer}:{expert}")
+            assigned_qtypes[key] = qtype
+    assigned_experts = set(assigned_qtypes)
+    if assigned_experts != expected_experts:
+        raise ValueError(
+            f"expert assignment mismatch: missing={len(expected_experts - assigned_experts)} "
+            f"extra={len(assigned_experts - expected_experts)}"
+        )
+
+    expected_qtypes = {
+        f"blk.{layer}.ffn_{proj}_exps.{expert}.weight": assigned_qtypes[(layer, expert)]
+        for layer, expert in expected_experts
         for proj in ("gate", "up", "down")
     }
     tensors = manifest.get("tensors", {})
-    if set(tensors) != expected:
+    if set(tensors) != set(expected_qtypes):
         raise ValueError(
-            f"expert coverage mismatch: missing={len(expected - set(tensors))} "
-            f"extra={len(set(tensors) - expected)}"
+            f"expert coverage mismatch: missing={len(set(expected_qtypes) - set(tensors))} "
+            f"extra={len(set(tensors) - set(expected_qtypes))}"
         )
 
     ranges: dict[Path, list[tuple[int, int, str]]] = defaultdict(list)
@@ -60,8 +106,12 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
     total = 0
     for name, rec in tensors.items():
         qtype = rec["qtype"]
-        if qtype not in {"Q2_K", "Q3_K", "NVFP4"}:
+        if qtype not in allowed_qtypes:
             raise ValueError(f"{name}: forbidden expert qtype {qtype}")
+        if qtype != expected_qtypes[name]:
+            raise ValueError(
+                f"{name}: qtype {qtype} differs from plan assignment {expected_qtypes[name]}"
+            )
         path = root / rec["file"]
         start = int(rec.get("offset", 0))
         end = start + int(rec["bytes"])
@@ -87,7 +137,7 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
                     raise ValueError(f"source fingerprint mismatch: {path}")
     return {
         "layers": len(layers),
-        "retained_experts": len(expected) // 3,
+        "retained_experts": len(expected_experts),
         "pruned_experts": sum(len(x) for x in pruned.values()),
         "expert_projections": len(tensors),
         "artifact_bytes": total,
@@ -103,21 +153,30 @@ def self_test() -> None:
         for offset, proj in enumerate(("gate", "up", "down")):
             tensors[f"blk.1.ffn_{proj}_exps.0.weight"] = {
                 "file": "experts.bin", "offset": offset * 2, "bytes": 2,
-                "qtype": ("NVFP4", "Q3_K", "Q2_K")[offset],
+                "qtype": "NVFP4",
             }
         plan = {
             "format": "bw24-expert-tier-plan-v2",
             "model": {"expert_count": 2, "moe_layers": [1]},
             "pruned_experts": {"1": [1]},
-            "assignments": [],
+            "assignments": [{"layer": 1, "experts": [0], "qtype": "NVFP4"}],
             "calibration": {"public_eval_data_used_for_selection": False},
         }
-        (root / "manifest.json").write_text(json.dumps({
+        manifest = {
             "format": "bw24-expert-overlay-v2", "plan": plan, "plan_sha256": "test",
             "pruned_experts": {"1": [1]}, "artifact_bytes": 6, "tensors": tensors,
-        }))
+        }
+        (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
         assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 6
+        tensors["blk.1.ffn_up_exps.0.weight"]["qtype"] = "Q3_K"
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        try:
+            validate(root, False)
+        except ValueError as exc:
+            assert "differs from plan assignment" in str(exc)
+        else:
+            raise AssertionError("manifest qtype mismatch was accepted")
         print("artifact validator self-test: PASS")
 
 
