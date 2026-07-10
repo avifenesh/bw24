@@ -10,9 +10,11 @@ gates there.
 
 Mmap is a fallback, not the endpoint. The cold G7e result and bounded explicit-read promotion probe
 are recorded in [`evidence/spill-prefetch-g7e-20260710.md`](evidence/spill-prefetch-g7e-20260710.md).
-The next implementation step is an opt-in bounded pinned-buffer `pread` proof backend; io_uring then
-reuses that source/cache/H2D contract as specified in
-[`io-uring-spill-design.md`](io-uring-spill-design.md).
+An opt-in bounded pinned-buffer `pread` demand backend now proves the explicit-I/O source/cache/H2D
+contract. After its live GPU gate, the production candidate is a small worker-filled pinned ring so
+disk lookahead does not block the CUDA owner thread. Test buffered and `O_DIRECT` reads through the
+same state machine; add io_uring only if it beats that simpler baseline. The deferred ring design is
+specified in [`io-uring-spill-design.md`](io-uring-spill-design.md).
 
 GGUF remains bw24's general runtime and delivery focus. This study reads the pinned Hy3
 safetensors checkpoint as common quantization source material and uses repack overlays to represent
@@ -94,6 +96,26 @@ spill measurement, copy the selected artifact to `/scratch/artifacts/<arm>` on t
 and confirm its `manifest.json` hash matches the durable copy. The persistent EBS volume is suitable
 for sequential artifact construction but its 4 KiB mmap-fault throughput is not a valid bw24 spill
 benchmark.
+
+### Backend ladder beyond mmap
+
+1. `pread` into a bounded CUDA-pinned pool is the correctness and storage-ceiling proof. Its first
+   version is demand-blocking and therefore not the throughput endpoint.
+2. A small disk worker pool fills the same pinned buffers while the CUDA owner continues compute;
+   only the CUDA owner submits H2D and publishes GPU-cache residency. Start at depth 2 on the local
+   5090 and depth 8 on G7e.
+3. A/B buffered reads against `O_DIRECT`. Every offset and length in all five current Hy3 staged
+   artifacts is 4 KiB aligned, while `/scratch` reports 512-byte direct-I/O alignment, so this study
+   needs no artifact rewrite. General GGUF must query `STATX_DIOALIGN` and use aligned over-read or
+   an aligned sidecar when a tensor extent is not directly readable.
+4. Compare io_uring registered files/buffers against the winning worker implementation. The local
+   8 MiB memlock limit bounds the current 3,538,944-byte expert ring to depth 2; G7e is unlimited.
+5. Test mapped pinned-host reads only as a cold, read-once bypass. Recurrent experts belong in HBM;
+   direct kernel reads from host memory repeatedly cross PCIe.
+
+Do not plan around cuFile/GDS. Both current hosts report compatibility rather than direct mode, the
+local target is GeForce, and the currently qualified NVMe P2PDMA list does not cover either target
+GPU. Reconsider only if `gdscheck` proves an actual direct path on the deployment machine.
 
 ## Calibration and plan generation
 

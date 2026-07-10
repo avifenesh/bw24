@@ -15,8 +15,11 @@
 //! Gated behind `BW24_MOE_CACHE` (default off => current stage-every-token behavior).
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use cudarc::driver::{CudaEvent, CudaSlice};
+use std::sync::Arc;
+use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, HostSlice, SyncOnDrop};
 use crate::Engine;
+use crate::model::{ExpertKeepalive, ExpertSource};
+use crate::spill_pread::{PreadPool, PreadStats};
 
 /// Which projection of an expert (gate/up/down are three distinct GGUF blocks per expert).
 pub const PROJ_GATE: u8 = 0;
@@ -51,10 +54,31 @@ pub struct MoeSlotCache {
     probation: VecDeque<usize>,       // SLRU segment 1 (slot indices, LRU front = coldest)
     protected: VecDeque<usize>,       // SLRU segment 2 (hot; capped at ~0.8*N)
     free: Vec<usize>,                 // unused slot indices (startup)
-    /// Copy-stream admissions that have reserved a slot but are not visible in `table` until the
+    /// Copy-stream prefetches that have reserved a slot but are not visible in `table` until the
     /// consumer inserts an explicit compute-stream wait for `ready`. Pending slots are absent from
     /// both SLRU queues, so neither synchronous admission nor another prefetch can evict them.
     pending: HashMap<BlockId, PendingBlock>,
+    /// Source owners whose copy completed submission but not yet DMA completion. They are reaped
+    /// only after the recorded copy-stream event reports complete.
+    inflight_sources: Vec<(Arc<CudaEvent>, ExpertKeepalive)>,
+    /// Owners for copies whose completion could not be proved. Kept until a whole-stream drain;
+    /// leaked with the GPU slots if teardown cannot establish safety.
+    quarantined_sources: Vec<ExpertKeepalive>,
+    /// Unique owners used by demand/fallback H2D on the compute stream. `stage_expert` receives a
+    /// raw byte slice, so cudarc cannot attach its own source-lifetime event. Retain each backing
+    /// allocation once until cache teardown instead of paying one CUDA event per miss.
+    compute_sources: HashMap<KeepaliveKey, ExpertKeepalive>,
+    /// Opt-in blocking positioned-read proof backend. Its pinned buffers remain owned here until
+    /// their explicit compute-stream completion events fire.
+    pread: Option<PreadPool>,
+    pread_requested: bool,
+    pread_fallbacks: u64,
+    /// Retained so an event-creation failure after copy submission can be drained again during
+    /// teardown. A slot touched by an unprovable copy is quarantined outside every cache queue.
+    copy_stream: Arc<CudaStream>,
+    copy_stream_unknown: bool,
+    compute_stream: Arc<CudaStream>,
+    compute_stream_unknown: bool,
 
     n: usize,
     protected_cap: usize,
@@ -84,7 +108,92 @@ pub struct MoeSlotCache {
 
 struct PendingBlock {
     slot: usize,
-    ready: CudaEvent,
+    ready: Arc<CudaEvent>,
+    keepalive: Option<ExpertKeepalive>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum KeepaliveKey {
+    Pinned(usize),
+    Buffer(usize),
+    Mmap(usize),
+}
+
+impl KeepaliveKey {
+    fn from_owner(owner: &ExpertKeepalive) -> Self {
+        match owner {
+            ExpertKeepalive::Pinned(value) => Self::Pinned(Arc::as_ptr(value) as usize),
+            ExpertKeepalive::Buffer(value) => Self::Buffer(Arc::as_ptr(value) as usize),
+            ExpertKeepalive::Mmap(value) => Self::Mmap(Arc::as_ptr(value) as usize),
+        }
+    }
+}
+
+/// Exact-length view over one CUDA-pinned pool allocation. cudarc's raw `&[u8]` HostSlice waits
+/// for the whole stream before returning, while passing `PinnedHostSlice` would copy its full
+/// capacity. This wrapper submits exactly the expert prefix; the caller records and retains the
+/// completion event before the backing allocation can be reused.
+struct ExactPinnedPrefix<'a>(&'a [u8]);
+
+impl HostSlice<u8> for ExactPinnedPrefix<'_> {
+    fn len(&self) -> usize { self.0.len() }
+
+    unsafe fn stream_synced_slice<'a>(
+        &'a self,
+        _stream: &'a CudaStream,
+    ) -> (&'a [u8], SyncOnDrop<'a>) {
+        // SAFETY: stage_pread_on_compute_stream records an explicit event immediately after the
+        // async memcpy and PreadPool retains both allocation and event until it completes.
+        (self.0, SyncOnDrop::Record(None))
+    }
+
+    unsafe fn stream_synced_mut_slice<'a>(
+        &'a mut self,
+        _stream: &'a CudaStream,
+    ) -> (&'a mut [u8], SyncOnDrop<'a>) {
+        panic!("ExactPinnedPrefix is a source-only HostSlice")
+    }
+}
+
+fn stage_on_copy_stream(
+    e: &Engine,
+    host_bytes: &[u8],
+    slot: &mut CudaSlice<u8>,
+) -> Result<Arc<CudaEvent>, (Box<dyn std::error::Error>, bool)> {
+    // Protect all earlier compute-stream users of a reused slot before the copy stream overwrites it.
+    let prior = match e.stream().record_event(None) {
+        Ok(prior) => prior,
+        Err(err) => return Err((err.into(), true)),
+    };
+    if let Err(err) = e.copy_stream.wait(&prior) {
+        return Err((err.into(), true));
+    }
+    match e.stage_expert_async(host_bytes, slot, 0) {
+        Ok(ready) => Ok(Arc::new(ready)),
+        Err(err) => {
+            // The H2D may have been submitted before event creation failed. Never release either the
+            // destination slot or pinned source until the copy stream has drained.
+            match e.copy_stream.synchronize() {
+                Ok(()) => Err((err, true)),
+                Err(sync_err) => Err((std::io::Error::other(format!(
+                    "copy-stream H2D setup failed ({err}); stream drain also failed ({sync_err})"
+                )).into(), false)),
+            }
+        }
+    }
+}
+
+fn stage_pread_on_compute_stream(
+    e: &Engine,
+    host_bytes: &[u8],
+    slot: &mut CudaSlice<u8>,
+) -> Result<Arc<CudaEvent>, Box<dyn std::error::Error>> {
+    let ready = Arc::new(e.ctx().new_event(None)?);
+    let source = ExactPinnedPrefix(host_bytes);
+    let mut dst = slot.slice_mut(0..host_bytes.len());
+    e.stream().memcpy_htod(&source, &mut dst)?;
+    ready.record(e.stream())?;
+    Ok(ready)
 }
 
 impl MoeSlotCache {
@@ -120,11 +229,25 @@ impl MoeSlotCache {
             free_list.push(n - 1 - s); // push reversed so pop() yields 0,1,2,... (deterministic fill)
         }
         let protected_cap = ((n as f64 * 0.8) as usize).max(1);
+        let pread_requested = crate::spill_pread::enabled();
+        let pread = if pread_requested {
+            match PreadPool::try_new(e, max_block_bytes) {
+                Ok(pool) => Some(pool),
+                Err(err) => {
+                    eprintln!("[spill-pread] pinned-buffer initialization failed ({err}); using mmap");
+                    None
+                }
+            }
+        } else { None };
 
         Ok(MoeSlotCache {
             slots, occupant, table: HashMap::with_capacity(n * 2),
             probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
-            pending: HashMap::new(),
+            pending: HashMap::new(), inflight_sources: Vec::new(),
+            quarantined_sources: Vec::new(), compute_sources: HashMap::new(),
+            pread, pread_requested, pread_fallbacks: 0,
+            copy_stream: e.copy_stream.clone(), copy_stream_unknown: false,
+            compute_stream: e.stream().clone(), compute_stream_unknown: false,
             n, protected_cap, max_block_bytes,
             per_layer: HashMap::new(), dev_rows: HashMap::new(), prewarm_tried: HashSet::new(),
             hits: 0, misses: 0, staged_bytes: 0,
@@ -222,20 +345,139 @@ impl MoeSlotCache {
         self.dev_rows.remove(&layer);
     }
 
+    fn reserve_slot(&mut self) -> usize {
+        if let Some(slot) = self.free.pop() { slot } else { self.evict_one() }
+    }
+
+    fn release_reserved_slot(&mut self, slot: usize) {
+        debug_assert!(self.occupant[slot].is_none());
+        self.free.push(slot);
+    }
+
+    fn publish(&mut self, id: BlockId, slot: usize) {
+        self.occupant[slot] = Some(id);
+        self.table.insert(id, slot);
+        self.probation.push_back(slot);
+        *self.per_layer.entry(id.layer).or_insert(0) += 1;
+    }
+
+    fn reap_copy_sources(&mut self) {
+        self.inflight_sources.retain(|(ready, _)| !ready.is_complete());
+    }
+
+    fn retain_compute_source(&mut self, owner: Option<ExpertKeepalive>) {
+        if let Some(owner) = owner {
+            let key = KeepaliveKey::from_owner(&owner);
+            self.compute_sources.entry(key).or_insert(owner);
+        }
+    }
+
     /// Admit a block: evict a victim, stage `host_bytes` into its slot, register residency, place in
     /// probation (new admissions enter probation — they earn promotion on a later hit).
     fn admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
              -> Result<usize, Box<dyn std::error::Error>> {
-        let slot = if let Some(s) = self.free.pop() { s } else { self.evict_one() };
+        let slot = self.reserve_slot();
         // Pending copy-stream admissions are not in either SLRU queue, so `evict_one` cannot return
         // an in-flight slot. This synchronous copy and its consumer remain ordered on gpu.stream.
-        e.stage_expert(host_bytes, &mut self.slots[slot], 0)?;
+        if let Err(err) = e.stage_expert(host_bytes, &mut self.slots[slot], 0) {
+            return match e.stream().synchronize() {
+                Ok(()) => {
+                    self.release_reserved_slot(slot);
+                    Err(err)
+                }
+                Err(sync_err) => {
+                    // Keep the slot outside free/table/SLRU. Drop retries the stream drain and
+                    // leaks every slot if CUDA never provides a completion proof.
+                    self.compute_stream_unknown = true;
+                    Err(std::io::Error::other(format!(
+                        "compute-stream H2D setup failed ({err}); stream drain also failed ({sync_err})"
+                    )).into())
+                }
+            };
+        }
         self.staged_bytes += host_bytes.len() as u64;
-        self.occupant[slot] = Some(id);
-        self.table.insert(id, slot);
-        self.probation.push_back(slot);
-        *self.per_layer.entry(id.layer).or_insert(0) += 1;  // STAGE 3 residency count
+        self.publish(id, slot);
         Ok(slot)
+    }
+
+    fn note_pread_fallback(&mut self, reason: &dyn std::fmt::Display) {
+        self.pread_fallbacks += 1;
+        if let Some(pool) = self.pread.as_mut() {
+            pool.note_fallback();
+        }
+        if self.pread_fallbacks <= 3 {
+            eprintln!("[spill-pread] falling back to mmap: {reason}");
+        }
+    }
+
+    fn dispatch_disk(
+        &mut self,
+        id: BlockId,
+        file: &Arc<std::fs::File>,
+        offset: u64,
+        len: usize,
+        fallback: &[u8],
+        e: &Engine,
+    ) -> Result<DispatchSlot, Box<dyn std::error::Error>> {
+        if self.pread.is_none() {
+            if self.pread_requested {
+                self.note_pread_fallback(&"pinned-buffer backend unavailable");
+            }
+            return Ok(DispatchSlot::Resident(self.admit(id, fallback, e)?));
+        }
+
+        let read = self.pread.as_mut().unwrap().read(file.as_ref(), offset, len);
+        let index = match read {
+            Ok(index) => index,
+            Err(err) => {
+                self.note_pread_fallback(err.as_ref());
+                return Ok(DispatchSlot::Resident(self.admit(id, fallback, e)?));
+            }
+        };
+
+        // The blocking read happens before eviction, so an I/O failure leaves cache residency
+        // untouched and can safely use the mmap oracle.
+        let slot = self.reserve_slot();
+        let ready = {
+            let bytes = match self.pread.as_ref().unwrap().bytes(index, len) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    self.pread.as_mut().unwrap().abort_read(index);
+                    self.release_reserved_slot(slot);
+                    self.note_pread_fallback(err.as_ref());
+                    return Ok(DispatchSlot::Resident(self.admit(id, fallback, e)?));
+                }
+            };
+            stage_pread_on_compute_stream(e, bytes, &mut self.slots[slot])
+        };
+        let ready = match ready {
+            Ok(ready) => ready,
+            Err(err) => {
+                // A memcpy or event-record failure can occur after submission. Synchronize the
+                // retained compute stream before either source or destination is reused. If CUDA
+                // cannot prove completion, quarantine both and fail instead of risking UAF.
+                match e.stream().synchronize() {
+                    Ok(()) => {
+                        self.pread.as_mut().unwrap().abort_read(index);
+                        self.release_reserved_slot(slot);
+                        self.note_pread_fallback(err.as_ref());
+                        return Ok(DispatchSlot::Resident(self.admit(id, fallback, e)?));
+                    }
+                    Err(sync_err) => {
+                        self.pread.as_mut().unwrap().mark_unknown_h2d(index);
+                        return Err(std::io::Error::other(format!(
+                            "pread H2D setup failed ({err}); CUDA stream drain also failed ({sync_err})"
+                        )).into());
+                    }
+                }
+            }
+        };
+        self.pread.as_mut().unwrap().mark_h2d(index, ready);
+        // Copy and dependent GEMM share the compute stream, so stream order is the consumer fence.
+        // Publish only after both memcpy submission and explicit completion-event recording.
+        self.staged_bytes += len as u64;
+        self.publish(id, slot);
+        Ok(DispatchSlot::Resident(slot))
     }
 
     /// The dispatch decision for one (BlockId, host_bytes). Returns where the block landed; resolve
@@ -247,21 +489,29 @@ impl MoeSlotCache {
     /// - MISS: admit (stage into a retained slot, evicting an SLRU victim when full).
     pub fn dispatch(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
                     -> Result<DispatchSlot, Box<dyn std::error::Error>> {
+        self.dispatch_source(id, ExpertSource::Memory { bytes: host_bytes, keepalive: None }, e)
+    }
+
+    pub(crate) fn dispatch_source(&mut self, id: BlockId, source: ExpertSource<'_>, e: &Engine)
+                                  -> Result<DispatchSlot, Box<dyn std::error::Error>> {
+        self.reap_copy_sources();
         if let Some(s) = self.table.get(&id).copied() {
             self.hits += 1;
             self.on_hit(s);
             return Ok(DispatchSlot::Resident(s));
         }
         if let Some(pending) = self.pending.remove(&id) {
-            if let Err(err) = e.compute_wait(&pending.ready) {
+            if let Err(err) = e.compute_wait(pending.ready.as_ref()) {
                 self.pending.insert(id, pending);
                 return Err(err);
             }
             self.misses += 1;
-            self.table.insert(id, pending.slot);
-            self.probation.push_back(pending.slot);
-            *self.per_layer.entry(id.layer).or_insert(0) += 1;
-            return Ok(DispatchSlot::Resident(pending.slot));
+            let slot = pending.slot;
+            if let Some(keepalive) = pending.keepalive {
+                self.inflight_sources.push((pending.ready, keepalive));
+            }
+            self.publish(id, slot);
+            return Ok(DispatchSlot::Resident(slot));
         }
         self.misses += 1;
         // FIRST-MISS ADMIT (the only policy since 2026-07-08; the second-miss "ghost" filter and
@@ -273,8 +523,21 @@ impl MoeSlotCache {
         // tok/s with it off, 2026-07-06). First-miss admit evicts an SLRU victim when full; the
         // SLRU probation segment still protects the protected set. Bit-identity unchanged: the
         // slot holds byte-for-byte the same GGUF block (D.2 gate).
-        let s = self.admit(id, host_bytes, e)?;
-        Ok(DispatchSlot::Resident(s))
+        match source {
+            ExpertSource::Memory { bytes, keepalive } => {
+                // Retain before H2D submission so even the setup-error path cannot release a
+                // pinned/mapped source while CUDA may still be reading it.
+                self.retain_compute_source(keepalive);
+                let slot = self.admit(id, bytes, e)?;
+                Ok(DispatchSlot::Resident(slot))
+            }
+            ExpertSource::Disk { file, offset, len, fallback, keepalive } => {
+                // The owner is only needed when dispatch_disk falls back to mmap, but retaining
+                // the usually shared mmap Arc once keeps every fallback branch simple and safe.
+                self.retain_compute_source(Some(keepalive));
+                self.dispatch_disk(id, file, offset, len, fallback, e)
+            }
+        }
     }
 
     /// Deterministically stage a known-future block on the copy stream. The slot is reserved but is
@@ -287,44 +550,68 @@ impl MoeSlotCache {
     /// let the normal synchronous miss path handle the block.
     pub fn prefetch(&mut self, id: BlockId, host_bytes: &[u8], keep: &[BlockId], e: &Engine)
                     -> Result<bool, Box<dyn std::error::Error>> {
-        if self.table.contains_key(&id) || self.pending.contains_key(&id) {
-            return Ok(false);
-        }
-        let slot = if let Some(s) = self.free.pop() {
-            s
-        } else if let Some(s) = self.evict_one_excluding(keep) {
-            s
-        } else {
-            return Ok(false);
-        };
+        self.prefetch_source(
+            id,
+            ExpertSource::Memory { bytes: host_bytes, keepalive: None },
+            keep,
+            e,
+        )
+    }
 
-        // Store-before-reuse: every earlier compute-stream consumer of this slot is before `prior`.
-        // The copy stream waits for that point, then records a completion event for the future GEMM.
-        let prior = match e.stream().record_event(None) {
-            Ok(ev) => ev,
-            Err(err) => {
-                self.free.push(slot);
-                return Err(err.into());
-            }
-        };
-        if let Err(err) = e.copy_stream.wait(&prior) {
-            self.free.push(slot);
-            return Err(err.into());
-        }
-        let ready = match e.stage_expert_async(host_bytes, &mut self.slots[slot], 0) {
-            Ok(ev) => ev,
-            Err(err) => {
-                // A copy may have been queued before event creation failed. Drain before making the
-                // slot reusable, then leave it free rather than exposing partially-copied bytes.
-                let _ = e.copy_stream.synchronize();
-                self.free.push(slot);
+    fn reserve_prefetch_slot(&mut self, keep: &[BlockId]) -> Option<usize> {
+        self.free.pop().or_else(|| self.evict_one_excluding(keep))
+    }
+
+    fn prefetch_bytes(&mut self, id: BlockId, host_bytes: &[u8],
+                      keepalive: Option<ExpertKeepalive>, keep: &[BlockId], e: &Engine)
+                      -> Result<bool, Box<dyn std::error::Error>> {
+        let Some(slot) = self.reserve_prefetch_slot(keep) else { return Ok(false) };
+        let ready = match stage_on_copy_stream(e, host_bytes, &mut self.slots[slot]) {
+            Ok(ready) => ready,
+            Err((err, reusable)) => {
+                if reusable {
+                    self.release_reserved_slot(slot);
+                } else {
+                    // The slot is absent from free/table/SLRU and cannot be reused. Drop retries a
+                    // whole copy-stream drain and leaks all slots if CUDA still cannot prove safety.
+                    self.copy_stream_unknown = true;
+                    if let Some(keepalive) = keepalive {
+                        self.quarantined_sources.push(keepalive);
+                    }
+                    eprintln!("[moe-cache] quarantining slot {slot} after unprovable copy completion");
+                }
                 return Err(err);
             }
         };
         self.occupant[slot] = Some(id);
-        self.pending.insert(id, PendingBlock { slot, ready });
+        self.pending.insert(id, PendingBlock { slot, ready, keepalive });
         self.staged_bytes += host_bytes.len() as u64;
         Ok(true)
+    }
+
+    pub(crate) fn prefetch_source(
+        &mut self,
+        id: BlockId,
+        source: ExpertSource<'_>,
+        keep: &[BlockId],
+        e: &Engine,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.reap_copy_sources();
+        if self.table.contains_key(&id) || self.pending.contains_key(&id) {
+            return Ok(false);
+        }
+        match source {
+            ExpertSource::Memory { bytes, keepalive } => {
+                self.prefetch_bytes(id, bytes, keepalive, keep, e)
+            }
+            // A FileExt read here would block the GPU worker before the current expert launches.
+            // True explicit-I/O lookahead needs a worker/io_uring runtime; v1 leaves demand to
+            // dispatch. In mmap mode retain the existing fallback-byte prefetch behavior.
+            ExpertSource::Disk { fallback, keepalive, .. } => {
+                if self.pread.is_some() { Ok(false) }
+                else { self.prefetch_bytes(id, fallback, Some(keepalive), keep, e) }
+            }
+        }
     }
 
     /// Pre-warm: force-admit a block (used by the §D.2 bit-identity gate to make all blocks resident).
@@ -343,6 +630,15 @@ impl MoeSlotCache {
                          -> Result<(), Box<dyn std::error::Error>> {
         if !self.prewarm_tried.insert(layer) { return Ok(()); }
         let n_expert = m.gate_exps.n_expert;
+        if self.pread.is_some() && (0..n_expert).any(|ex| {
+            matches!(m.gate_exps.expert_source(ex), ExpertSource::Disk { .. })
+                || matches!(m.up_exps.expert_source(ex), ExpertSource::Disk { .. })
+                || matches!(m.down_exps.expert_source(ex), ExpertSource::Disk { .. })
+        }) {
+            // Prewarm is a whole-layer scan. It must not silently turn explicit demand I/O back
+            // into an mmap walk; organic misses will populate the cache through dispatch_source.
+            return Ok(());
+        }
         let resident = self.per_layer.get(&layer).copied().unwrap_or(0) as usize;
         let missing = 3 * n_expert - resident;
         if self.free.len() < missing { return Ok(()); }  // won't evict for a prewarm
@@ -351,7 +647,16 @@ impl MoeSlotCache {
                                  (PROJ_DOWN, &m.down_exps)] {
                 let id = BlockId::new(layer, proj, ex as u16);
                 if self.table.contains_key(&id) { continue; }
-                self.admit(id, exps.expert_bytes(ex), e)?;
+                match exps.expert_source(ex) {
+                    ExpertSource::Memory { bytes, keepalive } => {
+                        self.retain_compute_source(keepalive);
+                        self.admit(id, bytes, e)?;
+                    }
+                    ExpertSource::Disk { fallback, keepalive, .. } => {
+                        self.retain_compute_source(Some(keepalive));
+                        self.admit(id, fallback, e)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -407,5 +712,69 @@ impl MoeSlotCache {
     /// Reset the per-window perf counters (lets the run print steady-state vs warmup separately).
     pub fn reset_counters(&mut self) {
         self.hits = 0; self.misses = 0; self.staged_bytes = 0;
+    }
+
+    pub(crate) fn pread_stats(&self) -> Option<PreadStats> {
+        if !self.pread_requested { return None; }
+        let mut stats = self.pread.as_ref().map(PreadPool::stats).unwrap_or_default();
+        stats.fallbacks = self.pread_fallbacks;
+        Some(stats)
+    }
+}
+
+impl Drop for MoeSlotCache {
+    fn drop(&mut self) {
+        // Event tracking is intentionally disabled in Engine. Drain explicit copy-stream handoffs
+        // before either the destination slots or pinned read buffers begin field destruction.
+        let mut safe_to_drop_slots = true;
+        if self.compute_stream_unknown || !self.compute_sources.is_empty() {
+            if let Err(err) = self.compute_stream.synchronize() {
+                safe_to_drop_slots = false;
+                eprintln!("[moe-cache] unknown compute-stream drain failed ({err}); leaking GPU slots for safety");
+                for (_, keepalive) in self.compute_sources.drain() {
+                    std::mem::forget(keepalive);
+                }
+            } else {
+                self.compute_stream_unknown = false;
+                self.compute_sources.clear();
+            }
+        }
+        let need_copy_drain = self.copy_stream_unknown || !self.pending.is_empty()
+            || !self.inflight_sources.is_empty() || !self.quarantined_sources.is_empty();
+        if need_copy_drain {
+            if let Err(err) = self.copy_stream.synchronize() {
+                safe_to_drop_slots = false;
+                eprintln!("[moe-cache] unknown copy-stream drain failed ({err}); leaking GPU slots for safety");
+                for (_, keepalive) in self.inflight_sources.drain(..) {
+                    std::mem::forget(keepalive);
+                }
+                for keepalive in self.quarantined_sources.drain(..) {
+                    std::mem::forget(keepalive);
+                }
+                for (_, pending) in self.pending.drain() {
+                    if let Some(keepalive) = pending.keepalive {
+                        std::mem::forget(keepalive);
+                    }
+                }
+            } else {
+                self.copy_stream_unknown = false;
+                self.inflight_sources.clear();
+                self.quarantined_sources.clear();
+                self.pending.clear();
+            }
+        }
+        if let Some(pool) = self.pread.as_mut() {
+            safe_to_drop_slots &= pool.drain();
+        } else if self.pread_requested && self.pread_fallbacks != 0 {
+            eprintln!(
+                "[spill-pread] backend unavailable; mmap_fallbacks={}",
+                self.pread_fallbacks
+            );
+        }
+        if !safe_to_drop_slots {
+            for slot in self.slots.drain(..) {
+                std::mem::forget(slot);
+            }
+        }
     }
 }

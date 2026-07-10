@@ -1,7 +1,33 @@
 # Buffered io_uring spill backend design
 
-Status: implementation-ready design, intentionally not implemented. Land only if the rolling
-`MADV_WILLNEED` window still leaves material `folio_wait` time in a matched cold-cache A/B.
+Status: deferred implementation-ready design. The explicit-read probe justified moving beyond
+mmap, but a worker-thread `pread`/`O_DIRECT` pipeline is now the required baseline. Implement this
+ring only if it improves end-to-end wall time over that simpler asynchronous worker path.
+
+## Backend order and capability evidence
+
+The common contract is fixed regardless of submission mechanism:
+
+```text
+GPU SLRU -> bounded hot page/host cache -> pinned read buffers -> copy-stream H2D -> GPU slot
+```
+
+Use these promotion rungs:
+
+1. blocking buffered `pread` for byte/lifetime/fallback proof;
+2. worker-thread buffered `pread` for real disk/compute overlap;
+3. worker-thread `O_DIRECT` through the same buffers;
+4. buffered and direct io_uring against the winning worker baseline;
+5. mapped pinned-host zero-copy only for cold one-shot experts.
+
+All expert offsets and lengths in the five staged Hy3 artifacts are 4 KiB aligned. G7e `/scratch`
+ext4 reports 512-byte memory and offset alignment via `STATX_DIOALIGN`, so direct I/O can be tested
+without repacking those artifacts. Native/general GGUF still needs a per-file capability check plus
+aligned over-read or an aligned sidecar.
+
+cuFile/GDS is outside this ladder. Both machines currently report compatibility mode; the local
+GeForce target is not a supported direct-storage deployment, and G7e has not passed a direct-mode
+capability probe. A compatibility-mode cuFile result would only benchmark another CPU bounce path.
 
 ## Decision and scope
 
@@ -9,13 +35,14 @@ The second backend is **buffered** `io_uring` `READ_FIXED` into a bounded CUDA-p
 followed by the existing copy-stream H2D into a reserved `MoeSlotCache` slot. It does not use
 `O_DIRECT` initially:
 
-- buffered reads accept the artifact's exact, unaligned expert offsets and lengths;
+- buffered reads remain the portability baseline and accept arbitrary native-GGUF extents;
 - they preserve the mmap/page-cache backend as a cheap correctness fallback;
-- `O_DIRECT` would require aligned offsets, lengths, and padded artifact layout, which is a separate
-  experiment after buffered io_uring proves useful.
+- the five current Hy3 artifacts are already 4 KiB aligned, so `O_DIRECT` can be tested through the
+  same buffers before deciding whether io_uring is justified.
 
-The runtime remains opt-in. `BW24_SPILL_IO=mmap` is the default. `BW24_SPILL_IO=uring` attempts the
-capability gate below and falls back to mmap for the whole process if initialization fails.
+The runtime remains opt-in. `BW24_SPILL_IO=mmap` is the default and `pread` selects the implemented
+blocking proof backend. A future `BW24_SPILL_IO=uring` mode would attempt the capability gate below
+and fall back to mmap for the whole process if initialization fails.
 
 The current research artifacts contain 237 expert files (one file per layer/projection) and expert
 blocks no larger than 3,538,944 bytes. A bounded sparse registered-file table of 256 or 512 entries
@@ -23,11 +50,11 @@ therefore covers the current artifacts without a hot-path registered-file LRU.
 
 ## Current seams that must change
 
-`HostBuf::Mmap` currently retains only `Arc<Mmap>`, offset, and length. The file descriptor used to
-create the map has already been closed. `MoeSlotCache::{dispatch,prefetch}` receive only `&[u8]`, so
-they cannot distinguish a pinned source from a disk extent.
+The prerequisite seams are now implemented: `HostBuf::Mmap` retains the opened file plus its map,
+`ExpertSource` distinguishes memory from disk extents, and `MoeSlotCache` accepts source-aware
+dispatch/prefetch calls. `expert_bytes()` remains the byte oracle and compatibility API.
 
-Keep `expert_bytes()` unchanged as the oracle/fallback API, and add a source-aware twin:
+The resulting source contract is equivalent to:
 
 ```rust
 // bw24-gguf/src/source.rs
@@ -121,7 +148,7 @@ and immediately before a pending block is consumed.
 Recommended initial knobs:
 
 ```text
-BW24_SPILL_IO=mmap|uring       default mmap
+BW24_SPILL_IO=mmap|pread|uring default mmap (`uring` is future)
 BW24_SPILL_URING_DEPTH=8       number of fixed buffers and maximum disk reads in flight
 BW24_SPILL_URING_SQ=32         SQ/CQ entries, power of two and >= 2*depth
 ```
@@ -294,7 +321,7 @@ Keep io_uring only if it improves end-to-end wall time without reducing steady-s
 
 ## Implementation sequence
 
-1. Retain files in `GgufFile`/`Hy3RepackSource`; add `DiskExtent` and `expert_source()` with tests.
+1. Done: retain files in `GgufFile`/`Hy3RepackSource`; add `DiskExtent` and `expert_source()` with tests.
 2. Add Linux-only `spill_uring.rs` plus fixed-buffer state-machine tests; no cache integration yet.
 3. Add the capability gate and byte-for-byte temporary-file/readback probe.
 4. Integrate disk tickets into `MoeSlotCache::prefetch/dispatch` behind `BW24_SPILL_IO=uring`.

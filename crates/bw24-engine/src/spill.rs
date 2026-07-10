@@ -123,7 +123,7 @@ pub fn place_expert(
         let mut p = unsafe { e.ctx().alloc_pinned::<u8>(len)? };
         { let dst = p.as_mut_slice()?; dst.copy_from_slice(raw); }
         let base = p.as_ptr()? as *const u8;
-        Ok(HostBuf::Pinned { slice: p, base, len })
+        Ok(HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len })
     } else {
         // Tier 2: mmap the GGUF region — demand-faulted from NVMe on first H2D. Zero RAM cost.
         ctx.n_mmap += 1;

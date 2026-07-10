@@ -30,6 +30,7 @@ pub fn router_kernel_on() -> bool {
 }
 pub mod moe_cache;
 pub mod spill;
+mod spill_pread;
 #[cfg(bw24_cutlass)]
 pub mod cutlass_ffi;
 pub mod mmq_ffi;
@@ -380,14 +381,12 @@ impl Engine {
         // that is ~19k cuStreamWaitEvent + ~9k cuEventRecord + ~6k event create/destroy per token
         // (~7 ms/tok host time, measured nsys 2026-07-04 g7e), and +4.6% measured on 27B decode —
         // protecting NOTHING: every hot-path kernel/memcpy runs on the ONE gpu.stream.
-        // CROSS-STREAM HAZARD AUDIT (2026-07-05, default-flip gate): copy_stream is touched by
-        // exactly two sites — (a) stage_expert_async (lib.rs), which has ZERO callers (grep-verified;
-        // the MoE async-prefetch stage is unbuilt), and (b) the store-before-evict barrier in
-        // moe_cache::admit, gated on `prefetch_active` whose setter is never called. The graph-capture
-        // sites (capture_graph, spec.rs, decode.rs) use `was_tracking` guards that read the live state,
-        // so they degrade to no-ops. If the async-prefetch stage ever wires stage_expert_async, its
-        // event handoff (record on copy_stream -> compute_wait on gpu.stream) is EXPLICIT and does not
-        // rely on cudarc's implicit tracking — but re-audit this flip then.
+        // CROSS-STREAM HAZARD AUDIT: MoeSlotCache in-memory prefetch uses copy_stream. Every
+        // overwrite explicitly records the prior compute point and makes copy_stream wait; every
+        // consumer explicitly waits for the copy completion event. The opt-in positioned-read
+        // proof stays on gpu.stream and retains an explicit event solely to guard pinned-source
+        // reuse. Graph-capture sites use only gpu.stream, so these handoffs never rely on cudarc's
+        // implicit event tracking.
         // SAFETY: single-stream ordering is total; the runtime mem-pool is configured with
         // internal-dependency reuse (bw24-runtime), so alloc reuse is stream-ordered too.
         if std::env::var("BW24_EVT").map(|v| v == "1").unwrap_or(false) {
@@ -662,6 +661,20 @@ impl Engine {
     pub fn moe_cache_stats(&self) -> Option<(u64, u64, u64, usize)> {
         let guard = self.moe_cache.lock().unwrap();
         guard.as_ref().map(|c| (c.hits, c.misses, c.staged_bytes, c.n_slots()))
+    }
+
+    /// Positioned-read proof-backend counters:
+    /// `(reads, bytes, read_errors, short_reads, mmap_fallbacks, buffer_waits)`.
+    pub fn moe_pread_stats(&self) -> Option<(u64, u64, u64, u64, u64, u64)> {
+        let guard = self.moe_cache.lock().unwrap();
+        guard.as_ref().and_then(|cache| cache.pread_stats()).map(|stats| (
+            stats.reads,
+            stats.bytes,
+            stats.read_errors,
+            stats.short_reads,
+            stats.fallbacks,
+            stats.buffer_waits,
+        ))
     }
 
     /// Reset the MoE cache perf counters (to separate warmup from steady-state windows).
