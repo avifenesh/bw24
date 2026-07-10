@@ -109,9 +109,13 @@ fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Erro
 pub struct SpecSampling {
     pub temp: f32,
     pub seed: u64,
-    pub top_k: i32,   // 0 = off
-    pub top_p: f32,   // 1.0 = off
-    pub min_p: f32,   // 0.0 = off
+    pub top_k: i32,        // 0 = off
+    pub top_p: f32,        // 1.0 = off
+    pub min_p: f32,        // 0.0 = off
+    pub penalty_last_n: usize, // 0 = penalties off
+    pub penalty_repeat: f32,
+    pub penalty_freq: f32,
+    pub penalty_present: f32,
 }
 
 pub struct SpecSession {
@@ -1347,6 +1351,10 @@ impl HybridModel {
             top_k: std::env::var("BW24_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             top_p: std::env::var("BW24_TOP_P").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             min_p: std::env::var("BW24_MIN_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            penalty_last_n: std::env::var("BW24_PENALTY_LAST_N").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+            penalty_repeat: std::env::var("BW24_PENALTY_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+            penalty_freq: std::env::var("BW24_PENALTY_FREQ").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            penalty_present: std::env::var("BW24_PENALTY_PRESENT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
         });
         let (sp_temp, sp_seed) = (sp.temp, sp.seed);
         let sampled = sp_temp > 0.0;
@@ -1380,6 +1388,15 @@ impl HybridModel {
         let mut perturb_buf: Option<CudaSlice<f32>> = None;       // gumbel scratch (max(n_vocab,d_vocab))
         let mut sample_tok = e.alloc_u32_zeroed(1)?;              // residual/bonus sample out
         let mut col_buf: Option<CudaSlice<f32>> = None;           // materialized verify column
+        // Penalties (v2.1): applied to COPIES of q rows and p columns symmetrically (exactness
+        // for the penalized+filtered target). History = generated tokens, host-tracked window.
+        let pen_on = sampled && sp.penalty_last_n > 0
+            && (sp.penalty_repeat != 1.0 || sp.penalty_freq != 0.0 || sp.penalty_present != 0.0);
+        let mut pen_hist: Vec<u32> = if pen_on {
+            prompt.iter().rev().take(64).rev().cloned().collect()  // llama-parity: history spans prompt tail too
+        } else { Vec::new() };
+        let mut pen_hist_d: Option<CudaSlice<u32>> = None;
+        let mut pcol_buf: Option<CudaSlice<f32>> = None;          // penalized p-column scratch
         let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut *cache)?;
         let mut last_pred = argmax(&init_logits) as u32;
         // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
@@ -1532,11 +1549,15 @@ impl HybridModel {
             // base0 - 1); this single set_len IS the draft-side rollback (drops last round's
             // rejected drafts and p-min extras via the len mechanism).
             scratch.set_len(e, pos + base0 - 1)?;
+            if pen_on {
+                let w0 = pen_hist.len().saturating_sub(sp.penalty_last_n);
+                pen_hist_d = Some(e.htod_u32_v(&pen_hist[w0..])?);
+            }
             let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
             let mut draft_idx: Vec<u32> = Vec::with_capacity(k);   // trimmed-vocab ids (== draft when untrimmed)
             if sampled { draft_logits.clear(); draft_stats.clear(); }
-            if let (false, Some(gr)) = (sampled, &draft_graph) {
+            if let (false, Some(gr)) = (sampled || pen_on, &draft_graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
                 // inc'd in-graph); the host only reads 4B token (+4B p) and decides the break.
@@ -1571,15 +1592,22 @@ impl HybridModel {
                         // FILTERED Gumbel-max: stats -> masked perturb -> argmax = one draw from
                         // the filtered softmax (filters off => th=0, exact v1 semantics).
                         if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                        let mut q_row = e.clone_dtod(&dl_d)?;      // retained q (penalized when on)
+                        if pen_on {
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits(&mut q_row, h, nh, sp.penalty_repeat, sp.penalty_freq,
+                                              sp.penalty_present, d_vocab)?;
+                        }
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
-                        e.filter_stats(&dl_d, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
+                        e.filter_stats(&q_row, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
                                        d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
                         let (th, z, mx) = (e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0], e.dtoh(&mx_d)?[0]);
                         let pb = perturb_buf.as_mut().unwrap();
-                        e.gumbel_perturb_filtered(&dl_d, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th)?;
+                        e.gumbel_perturb_filtered(&q_row, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th)?;
                         sctr += 1;
-                        draft_logits.push(e.clone_dtod(&dl_d)?);   // retain q for accept/residual
+                        draft_logits.push(q_row);
                         draft_stats.push((mx, th, z));
                         e.argmax_token_device(pb, d_vocab)?
                     } else {
@@ -1654,14 +1682,35 @@ impl HybridModel {
                         if j > 0 || base == 1 { ids.push(draft[j]); rows.push((base + j) as i32 - 1); }
                     }
                     if !ids.is_empty() {
-                        let rowsd = e.htod_i32(&rows)?;
                         let nr = rows.len();
+                        // penalties: materialize the used columns into one contiguous penalized
+                        // buffer (rows remapped 0..nr) so stats+gathers see the penalized p.
+                        // penalties: materialize used columns contiguously, penalize all rows in
+                        // one launch, and point stats+gathers at the penalized buffer (rows 0..nr).
+                        let p_rows: Vec<i32> = if pen_on { (0..nr as i32).collect() } else { rows.clone() };
+                        if pen_on {
+                            if pcol_buf.as_ref().map(|b| b.len()).unwrap_or(0) < nr * n_vocab {
+                                pcol_buf = Some(e.zeros(nr * n_vocab)?);
+                            }
+                            let pc = pcol_buf.as_mut().unwrap();
+                            for (i2, &r) in rows.iter().enumerate() {
+                                let c = r as usize;
+                                e.copy_view_into(pc, i2 * n_vocab,
+                                                 &tlogits_d.slice(c * n_vocab..(c + 1) * n_vocab), n_vocab)?;
+                            }
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits_rows(pc, h, nh, sp.penalty_repeat, sp.penalty_freq,
+                                                   sp.penalty_present, n_vocab, nr)?;
+                        }
+                        let p_src: &CudaSlice<f32> = if pen_on { pcol_buf.as_ref().unwrap() } else { &tlogits_d };
+                        let rowsd = e.htod_i32(&p_rows)?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
-                        e.filter_stats(&tlogits_d, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d,
+                        e.filter_stats(p_src, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d,
                                        n_vocab, nr, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
                         let idsd = e.htod_u32_v(&ids)?;
                         let mut outd = e.zeros(nr)?;
-                        e.softmax_gather_filtered(&tlogits_d, n_vocab, &idsd, &rowsd, &th_d, &z_d,
+                        e.softmax_gather_filtered(p_src, n_vocab, &idsd, &rowsd, &th_d, &z_d,
                                                   &mut outd, n_vocab, nr, sp_temp)?;
                         let outv = e.dtoh(&outd)?;
                         let (thv, zv, mxv) = (e.dtoh(&th_d)?, e.dtoh(&z_d)?, e.dtoh(&mx_d)?);
@@ -1670,7 +1719,17 @@ impl HybridModel {
                         col_stats = (0..nr).map(|i| (mxv[i], thv[i], zv[i])).collect();
                     }
                     if base == 0 {
-                        let lc = last_col_logits.as_ref().expect("sampled: last_col_logits unset");
+                        let lc: &CudaSlice<f32> = if pen_on {
+                            if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
+                            let cb = col_buf.as_mut().unwrap();
+                            e.copy_into(cb, 0, last_col_logits.as_ref().expect("sampled: last_col_logits unset"), n_vocab)?;
+                            let h = pen_hist_d.as_ref().unwrap();
+                            let nh = h.len();
+                            e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                            col_buf.as_ref().unwrap()
+                        } else {
+                            last_col_logits.as_ref().expect("sampled: last_col_logits unset")
+                        };
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
                         e.filter_stats(lc, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
@@ -1703,6 +1762,11 @@ impl HybridModel {
                     let col = base + k_round - 1;
                     let cb = col_buf.as_mut().unwrap();
                     e.copy_view_into(cb, 0, &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab), n_vocab)?;
+                    if pen_on {
+                        let h = pen_hist_d.as_ref().unwrap();
+                        let nh = h.len();
+                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                    }
                     if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
                     // stats for the last used col: reuse col_stats when it covers it, else compute.
                     let (mx, th, _z) = if !col_stats.is_empty() {
@@ -1730,6 +1794,11 @@ impl HybridModel {
                     } else {
                         let lc = last_col_logits.as_ref().unwrap();
                         e.copy_into(cb, 0, lc, n_vocab)?;
+                    }
+                    if pen_on {
+                        let h = pen_hist_d.as_ref().unwrap();
+                        let nh = h.len();
+                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
                     }
                     let cb2 = col_buf.as_ref().unwrap();
                     let sc = sctr; sctr += 1;
@@ -1779,6 +1848,10 @@ impl HybridModel {
             for j in 0..n_acc {
                 if !session_mode && out.len() >= max_new { break; }
                 out.push(draft[j]);
+            }
+            if pen_on {
+                pen_hist.extend_from_slice(&draft[0..n_acc]);
+                pen_hist.push(bonus);
             }
             let bonus_emitted = session_mode || out.len() < max_new;
             if bonus_emitted { out.push(bonus); }

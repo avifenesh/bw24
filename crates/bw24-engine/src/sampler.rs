@@ -53,6 +53,10 @@ impl Sampler {
             && self.cfg.penalty_present == 0.0
     }
     pub fn top_k(&self) -> usize { self.cfg.top_k }
+    pub fn penalty_last_n(&self) -> usize { self.cfg.penalty_last_n }
+    pub fn penalty_repeat(&self) -> f32 { self.cfg.penalty_repeat }
+    pub fn penalty_freq(&self) -> f32 { self.cfg.penalty_freq }
+    pub fn penalty_present(&self) -> f32 { self.cfg.penalty_present }
     pub fn top_p(&self) -> f32 { self.cfg.top_p }
     pub fn min_p(&self) -> f32 { self.cfg.min_p }
     pub fn temperature(&self) -> f32 { self.cfg.temperature }

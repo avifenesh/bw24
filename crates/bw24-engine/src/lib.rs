@@ -492,6 +492,38 @@ impl Engine {
         Ok(())
     }
 
+    /// Keskar penalties applied IN PLACE to a logits buffer: history token ids get
+    /// rep-divided/multiplied + freq*count + presence subtracted. Symmetric p/q usage keeps
+    /// filtered rejection sampling exact for the penalized target.
+    #[allow(clippy::too_many_arguments)]
+    pub fn penalize_logits(&self, x: &mut CudaSlice<f32>, hist: &CudaSlice<u32>, n_hist: usize,
+                           rep: f32, freq: f32, present: f32, n: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        if n_hist == 0 { return Ok(()); }
+        let f = self.func("penalize_logits_f32");
+        let (nh, ni) = (n_hist as i32, n as i32);
+        let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, 1, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Rows variant: penalize `nrow` contiguous rows of length n in one launch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn penalize_logits_rows(&self, x: &mut CudaSlice<f32>, hist: &CudaSlice<u32>, n_hist: usize,
+                                rep: f32, freq: f32, present: f32, n: usize, nrow: usize)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        if n_hist == 0 || nrow == 0 { return Ok(()); }
+        let f = self.func("penalize_logits_rows_f32");
+        let (nh, ni, nr) = (n_hist as i32, n as i32, nrow as i32);
+        let cfg = LaunchConfig { grid_dim: (n_hist.div_ceil(128) as u32, nrow as u32, 1), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&mut *x).arg(hist).arg(&nh).arg(&rep).arg(&freq).arg(&present).arg(&ni).arg(&nr);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================
     // Counter-based randomness: every call takes (seed, stream_pos) — the caller owns the
     // event counter (one per sampled token). temp <= 0 arms are exact greedy limits.

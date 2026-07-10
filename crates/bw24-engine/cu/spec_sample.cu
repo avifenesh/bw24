@@ -399,3 +399,23 @@ extern "C" __global__ void gumbel_perturb_filtered_f32(
     uint32_t v = (i & 3) == 0 ? r.x : (i & 3) == 1 ? r.y : (i & 3) == 2 ? r.z : r.w;
     y[i] = x[i] / temp + (-__logf(-__logf(u01(v))));
 }
+
+// Rows variant: penalize nrow contiguous rows of length n in one launch (grid.y = row).
+extern "C" __global__ void penalize_logits_rows_f32(
+        float* __restrict__ x, const uint32_t* __restrict__ hist, int n_hist,
+        float rep, float freq, float present, int n, int nrow) {
+    const int r = blockIdx.y;
+    if (r >= nrow) return;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_hist) return;
+    const uint32_t id = hist[i];
+    if (id >= (uint32_t) n) return;
+    for (int j = 0; j < i; ++j) if (hist[j] == id) return;
+    int cnt = 1;
+    for (int j = i + 1; j < n_hist; ++j) if (hist[j] == id) ++cnt;
+    float* xr = x + (size_t) r * n;
+    float v = xr[id];
+    if (rep != 1.0f) v = v > 0.0f ? v / rep : v * rep;
+    v -= freq * (float) cnt + present;
+    xr[id] = v;
+}
