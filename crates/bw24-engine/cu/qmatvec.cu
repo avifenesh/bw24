@@ -2848,6 +2848,102 @@ __device__ __forceinline__ void q4_0_mmvq_batched(
         if (lane == 0) y[(size_t)c * out_f + o] = a;
     }
 }
+// Q4_0 batched MULTIROW (verify trunk lever): 2 rows/warp — activation int4 loads AND the
+// row-independent ones-sums computed ONCE per (col, group), reused across both rows. Per
+// (token, row) float chain identical to q4_0_mmvq_batched (d4*(sumi-8*sums)*d8 in g order).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    if (o0 >= out_f) return;
+    bool two = (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* w0 = W + (long)o0 * row_bytes;
+    const unsigned char* w1 = W + (long)(o0 + 1) * row_bytes;
+    float acc0[MCOLS], acc1[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            const unsigned char* b = w0 + (long)blk * 18;
+            const unsigned char* qs = b + 2;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+                lo0[k] = (int)(raw & 0x0F0F0F0Fu);
+                hi0[k] = (int)((raw >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            const unsigned char* b = w1 + (long)blk * 18;
+            const unsigned char* qs = b + 2;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                uint32_t raw; memcpy(&raw, qs + 4 * k, 4);
+                lo1[k] = (int)(raw & 0x0F0F0F0Fu);
+                hi1[k] = (int)((raw >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(*(const unsigned short*)(w0 + (long)blk * 18));
+        float d41 = two ? half_to_float(*(const unsigned short*)(w1 + (long)blk * 18)) : 0.0f;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const signed char* arow = aq + (size_t)c * in_f;
+            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            int a[8];
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            float d8 = ad[(size_t)c * nblk + blk];
+            int s0 = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) { s0 = dp4a(lo0[k], a[k], s0); s0 = dp4a(hi0[k], a[4 + k], s0); }
+            acc0[c] += d40 * (float)(s0 - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) { s1 = dp4a(lo1[k], a[k], s1); s1 = dp4a(hi1[k], a[4 + k], s1); }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float v0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)c * out_f + o0] = v0;
+        if (two) {
+            float v1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + 1] = v1;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 extern "C" __global__ void qmatvec_q4_0_mmvq_b2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

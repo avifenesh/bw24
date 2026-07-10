@@ -3547,7 +3547,17 @@ impl Engine {
             Ok("base") => "base", Ok("r2") => "r2", Ok("r2w8") => "r2w8",
             _ => "auto",
         });
-        let variant: &'static str = if qtype != QT_NVFP4 && !kq_r2 {
+        let variant: &'static str = if qtype == QT_Q4_0 {
+            // Q4_0 r2 (gemma verify trunk, 2026-07-10): shared activation loads + the
+            // row-independent ones-sum computed once per (col,group) for 2 rows. Same
+            // fill rule as q4_K: r2 when the halved grid still fills the SMs.
+            static Q40BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+            let q40 = *Q40BV.get_or_init(|| match std::env::var("BW24_Q40_BV").as_deref() {
+                Ok("base") => "base", Ok("r2") => "r2", _ => "auto",
+            });
+            if q40 != "auto" { q40 }
+            else if (out_f as u32).div_ceil(8) >= 4 * sms as u32 { "r2" } else { "base" }
+        } else if qtype != QT_NVFP4 && !kq_r2 {
             "base"
         } else if kq_r2 {
             // k-quant r2w8 only exists at b4 (b2_r2 already 8-resident; b8 has no w8 twin) ->
