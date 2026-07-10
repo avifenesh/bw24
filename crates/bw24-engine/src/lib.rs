@@ -2350,6 +2350,18 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4 R4: in-place final-logit softcap y = cap*tanh(y/cap).
+    pub fn softcap(&self, y: &mut CudaSlice<f32>, cap: f32, n: usize)
+                   -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("softcap_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(y).arg(&cap).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// dst = (a + b) * c (residual add + layer scale, one launch).
     pub fn add_scale(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
                      dst: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {

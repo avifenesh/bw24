@@ -568,6 +568,12 @@ extern "C" __global__ void add_scale_f32(const float* __restrict__ a, const floa
     if (i < n) dst[i] = (a[i] + b[i]) * c;
 }
 
+// ---- gemma4 R4: final-logit softcap, y = cap * tanh(y / cap), in place. ----
+extern "C" __global__ void softcap_f32(float* __restrict__ y, float cap, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = cap * tanhf(y[i] / cap);
+}
+
 // ---- gemma4 R1: GELU(tanh approx) * up GLU epilogue. Constants = ggml's GELU_COEF_A /
 // SQRT_2_OVER_PI so the activation matches llama.cpp's CUDA gelu op float-for-float. ----
 extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,

@@ -2268,17 +2268,21 @@ impl HybridModel {
         }
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, self.cfg.rms_eps)?;
-        let mut logits = if last_only {
+        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+        let n_vocab = self.output.out_features();
+        let logits = if last_only {
             let hv = e.view(&hn, t * n_embd);
             let last_row = hv.slice((t - 1) * n_embd..t * n_embd);
             let mut hlast = e.zeros(n_embd)?;
             e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
-            e.dtoh(&e.matmul(&self.output, &hlast, 1)?)?
+            let mut ld = e.matmul(&self.output, &hlast, 1)?;
+            e.softcap(&mut ld, cap, n_vocab)?;
+            e.dtoh(&ld)?
         } else {
-            e.dtoh(&e.matmul(&self.output, &hn, t)?)?
+            let mut ld = e.matmul(&self.output, &hn, t)?;
+            e.softcap(&mut ld, cap, t * n_vocab)?;
+            e.dtoh(&ld)?
         };
-        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
         Ok(logits)
     }
 
@@ -2315,9 +2319,10 @@ impl HybridModel {
         e.copy_view_into(&mut h_seed, 0, &last_row, n_embd)?;
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&h_seed, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
-        let mut logits = e.dtoh(&e.matmul(&self.output, &hn, 1)?)?;
+        let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
+        e.softcap(&mut ld, cap, self.output.out_features())?;
+        let logits = e.dtoh(&ld)?;
         Ok((logits, h_seed, hiddens))
     }
 
@@ -2385,9 +2390,10 @@ impl HybridModel {
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
         let h_seed = e.clone_dtod(&x)?;
-        let mut logits = e.dtoh(&e.matmul(&self.output, &hn, 1)?)?;
+        let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        for v in logits.iter_mut() { *v = cap * (*v / cap).tanh(); }
+        e.softcap(&mut ld, cap, self.output.out_features())?;   // R4 on device (262k host tanh ~ms/step)
+        let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, h_seed))
     }
