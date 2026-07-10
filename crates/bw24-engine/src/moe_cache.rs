@@ -19,7 +19,7 @@ use std::sync::Arc;
 use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, HostSlice, SyncOnDrop};
 use crate::Engine;
 use crate::model::{ExpertKeepalive, ExpertSource};
-use crate::spill_pread::{PreadPool, PreadStats};
+use crate::spill_pread::{PreadPool, PreadStats, ReadTicket, SpillIoMode};
 
 /// Which projection of an expert (gate/up/down are three distinct GGUF blocks per expert).
 pub const PROJ_GATE: u8 = 0;
@@ -68,9 +68,12 @@ pub struct MoeSlotCache {
     /// raw byte slice, so cudarc cannot attach its own source-lifetime event. Retain each backing
     /// allocation once until cache teardown instead of paying one CUDA event per miss.
     compute_sources: HashMap<KeepaliveKey, ExpertKeepalive>,
-    /// Opt-in blocking positioned-read proof backend. Its pinned buffers remain owned here until
-    /// their explicit compute-stream completion events fire.
+    /// Opt-in positioned-read backends. Pinned buffers remain owned here until their explicit
+    /// compute-stream completion events fire.
     pread: Option<PreadPool>,
+    /// Known-next reads submitted to disk workers but not yet consumed by dispatch. They own pinned
+    /// buffers, not GPU slots; all CUDA submission remains on the caller thread.
+    worker_reads: HashMap<BlockId, ReadTicket>,
     pread_requested: bool,
     pread_fallbacks: u64,
     /// Retained so an event-creation failure after copy submission can be drained again during
@@ -229,9 +232,10 @@ impl MoeSlotCache {
             free_list.push(n - 1 - s); // push reversed so pop() yields 0,1,2,... (deterministic fill)
         }
         let protected_cap = ((n as f64 * 0.8) as usize).max(1);
-        let pread_requested = crate::spill_pread::enabled();
+        let pread_mode = crate::spill_pread::configured_mode();
+        let pread_requested = pread_mode != SpillIoMode::Mmap;
         let pread = if pread_requested {
-            match PreadPool::try_new(e, max_block_bytes) {
+            match PreadPool::try_new(e, max_block_bytes, pread_mode) {
                 Ok(pool) => Some(pool),
                 Err(err) => {
                     eprintln!("[spill-pread] pinned-buffer initialization failed ({err}); using mmap");
@@ -245,7 +249,7 @@ impl MoeSlotCache {
             probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
             pending: HashMap::new(), inflight_sources: Vec::new(),
             quarantined_sources: Vec::new(), compute_sources: HashMap::new(),
-            pread, pread_requested, pread_fallbacks: 0,
+            pread, worker_reads: HashMap::new(), pread_requested, pread_fallbacks: 0,
             copy_stream: e.copy_stream.clone(), copy_stream_unknown: false,
             compute_stream: e.stream().clone(), compute_stream_unknown: false,
             n, protected_cap, max_block_bytes,
@@ -410,6 +414,17 @@ impl MoeSlotCache {
         }
     }
 
+    /// Start one MoE forward's worker-I/O scope. Any ticket left by an earlier error/early return is
+    /// no longer a valid lookahead target; cancel it before this scope submits its own known-next
+    /// reads. In-flight CPU reads keep their buffers until completion restores them safely.
+    pub(crate) fn begin_worker_scope(&mut self) {
+        if self.worker_reads.is_empty() { return; }
+        let tickets: Vec<_> = self.worker_reads.drain().map(|(_, ticket)| ticket).collect();
+        if let Some(pool) = self.pread.as_mut().filter(|pool| pool.is_worker()) {
+            for ticket in tickets { let _ = pool.cancel_worker(ticket); }
+        }
+    }
+
     fn dispatch_disk(
         &mut self,
         id: BlockId,
@@ -426,7 +441,30 @@ impl MoeSlotCache {
             return Ok(DispatchSlot::Resident(self.admit(id, fallback, e)?));
         }
 
-        let read = self.pread.as_mut().unwrap().read(file.as_ref(), offset, len);
+        let pending = self.worker_reads.remove(&id);
+        let pool = self.pread.as_mut().unwrap();
+        let read = if pool.is_worker() {
+            let ticket = match pending {
+                Some(ticket) => Ok(Some(ticket)),
+                None => pool.submit_worker(file.clone(), offset, len),
+            };
+            match ticket {
+                Ok(Some(ticket)) => match pool.wait_worker(ticket) {
+                    Ok(index) => Ok(index),
+                    Err(err) => {
+                        // Read errors normally release in wait_worker. A worker/channel failure may
+                        // return earlier; cancel defensively so the next scope cannot lose the slot.
+                        let _ = pool.cancel_worker(ticket);
+                        Err(err)
+                    }
+                },
+                Ok(None) => Err(std::io::Error::other("worker read ring is busy").into()),
+                Err(err) => Err(err),
+            }
+        } else {
+            debug_assert!(pending.is_none());
+            pool.read(file.as_ref(), offset, len)
+        };
         let index = match read {
             Ok(index) => index,
             Err(err) => {
@@ -597,19 +635,33 @@ impl MoeSlotCache {
         e: &Engine,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         self.reap_copy_sources();
-        if self.table.contains_key(&id) || self.pending.contains_key(&id) {
+        if self.table.contains_key(&id) || self.pending.contains_key(&id)
+            || self.worker_reads.contains_key(&id) {
             return Ok(false);
         }
         match source {
             ExpertSource::Memory { bytes, keepalive } => {
                 self.prefetch_bytes(id, bytes, keepalive, keep, e)
             }
-            // A FileExt read here would block the GPU worker before the current expert launches.
-            // True explicit-I/O lookahead needs a worker/io_uring runtime; v1 leaves demand to
-            // dispatch. In mmap mode retain the existing fallback-byte prefetch behavior.
-            ExpertSource::Disk { fallback, keepalive, .. } => {
-                if self.pread.is_some() { Ok(false) }
-                else { self.prefetch_bytes(id, fallback, Some(keepalive), keep, e) }
+            ExpertSource::Disk { file, offset, len, fallback, keepalive } => {
+                if self.pread.as_ref().is_some_and(PreadPool::is_worker) {
+                    match self.pread.as_mut().unwrap().submit_worker(file.clone(), offset, len) {
+                        Ok(Some(ticket)) => {
+                            self.worker_reads.insert(id, ticket);
+                            Ok(true)
+                        }
+                        Ok(None) => Ok(false),
+                        Err(err) => {
+                            self.note_pread_fallback(err.as_ref());
+                            Ok(false)
+                        }
+                    }
+                } else if self.pread.is_some() {
+                    // Blocking `pread` remains demand-only so it cannot delay current compute.
+                    Ok(false)
+                } else {
+                    self.prefetch_bytes(id, fallback, Some(keepalive), keep, e)
+                }
             }
         }
     }

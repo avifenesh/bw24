@@ -15,11 +15,12 @@ fn gdec_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
 }
 
-/// Deterministic in-token expert prefetch. Off until the target-rig correctness and throughput gates
-/// pass; `BW24_MOE_PREFETCH=1` overlaps the next expert's cache misses on the copy stream.
+/// Deterministic in-token expert prefetch. `BW24_MOE_PREFETCH=1` overlaps memory-source H2D on the
+/// copy stream; selecting the opt-in worker spill backend enables the same known-next hook for disk.
 fn moe_prefetch_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1"))
+    *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1")
+        || crate::spill_pread::worker_enabled())
 }
 
 /// Best-effort OS page-cache prefetch distance for mmap-backed expert ranges. Independent of the
@@ -61,6 +62,13 @@ fn page_prefetch_positions(
     };
     let start = start.min(len);
     start..start.saturating_add(count).min(len)
+}
+
+/// Grouped worker-I/O schedule: prime the first active expert before the loop, then queue exactly
+/// one known-next expert at each iteration. Returning positions keeps expert ordering authoritative.
+fn grouped_worker_prefetch_position(order_len: usize, current: Option<usize>) -> Option<usize> {
+    let position = current.map_or(0, |position| position.saturating_add(1));
+    (position < order_len).then_some(position)
 }
 
 /// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
@@ -704,6 +712,12 @@ impl HybridModel {
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if Engine::moe_cache_enabled() && crate::spill_pread::worker_enabled() {
+            e.with_moe_cache(max_block, |cache, _| {
+                cache.begin_worker_scope();
+                Ok(())
+            })?;
+        }
         // A2: Expert-grouped dispatch for prefill (T>1). BW24_MOE_GROUPED=1 routes here.
         if t > 1 && std::env::var("BW24_MOE_GROUPED").is_ok() {
             let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
@@ -1849,6 +1863,25 @@ impl HybridModel {
         })
     }
 
+    /// Worker-mode disk lookahead for grouped prefill. Memory sources are deliberately skipped so
+    /// selecting `worker` changes only storage scheduling here; all CUDA work stays in dispatch.
+    fn moe_prefetch_disk_expert(e: &Engine, il: u16, ex: usize, m: &MoeWeights,
+                                max_block: usize, keep: &[crate::moe_cache::BlockId])
+                                -> Result<(), Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+        e.with_moe_cache(max_block, |c, eng| {
+            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+                                 (PROJ_DOWN, &m.down_exps)] {
+                let source = exps.expert_source(ex);
+                if let crate::model::ExpertSource::Disk { .. } = &source {
+                    let id = BlockId::new(il, proj, ex as u16);
+                    let _ = c.prefetch_source(id, source, keep, eng)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     #[inline]
     fn moe_prefetch_host_expert(ex: usize, m: &MoeWeights) {
         let _ = m.gate_exps.prefetch_expert_pages(ex);
@@ -1953,9 +1986,26 @@ impl HybridModel {
             .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
         let page_window = moe_page_prefetch_window();
+        let worker_disk_prefetch = use_cache && crate::spill_pread::worker_enabled();
+        if worker_disk_prefetch {
+            if let Some(first) = grouped_worker_prefetch_position(order.len(), None) {
+                Self::moe_prefetch_disk_expert(e, il, order[first], m, max_block, &[])?;
+            }
+        }
         for (order_pos, &ex) in order.iter().enumerate() {
             for next in page_prefetch_positions(order_pos, order.len(), page_window) {
                 Self::moe_prefetch_host_expert(order[next], m);
+            }
+            if worker_disk_prefetch {
+                if let Some(next) = grouped_worker_prefetch_position(order.len(), Some(order_pos)) {
+                    use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+                    let keep = [
+                        BlockId::new(il, PROJ_GATE, ex as u16),
+                        BlockId::new(il, PROJ_UP, ex as u16),
+                        BlockId::new(il, PROJ_DOWN, ex as u16),
+                    ];
+                    Self::moe_prefetch_disk_expert(e, il, order[next], m, max_block, &keep)?;
+                }
             }
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
@@ -2085,7 +2135,8 @@ impl HybridModel {
 
 #[cfg(test)]
 mod page_prefetch_tests {
-    use super::{page_prefetch_positions, page_prefetch_window_from_values};
+    use super::{grouped_worker_prefetch_position, page_prefetch_positions,
+                page_prefetch_window_from_values};
 
     #[test]
     fn page_prefetch_window_keeps_existing_opt_in_default() {
@@ -2109,5 +2160,17 @@ mod page_prefetch_tests {
             .collect();
         assert_eq!(one_ahead, vec![1, 2, 3]);
         assert!(page_prefetch_positions(0, 4, 0).is_empty());
+    }
+
+    #[test]
+    fn grouped_worker_prefetch_primes_first_then_each_known_next_once() {
+        assert_eq!(grouped_worker_prefetch_position(0, None), None);
+        let positions: Vec<_> = std::iter::once(grouped_worker_prefetch_position(4, None).unwrap())
+            .chain((0..4).filter_map(|position| {
+                grouped_worker_prefetch_position(4, Some(position))
+            }))
+            .collect();
+        assert_eq!(positions, vec![0, 1, 2, 3]);
+        assert_eq!(grouped_worker_prefetch_position(1, Some(0)), None);
     }
 }
