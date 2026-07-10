@@ -6213,12 +6213,10 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_csr_iq4(
 // Q4_0 mr2 (gemma trunk lane): 2 rows/warp — the activation int4 loads AND the row-independent
 // ones-sum (sums) are computed ONCE per group and reused across both rows' dp4a chains.
 // Per-row accumulation chain identical to qmatvec_q4_0_mmvq (bit-identical per row).
-extern "C" __global__ void qmatvec_q4_0_mmvq_mr2(
+__device__ __forceinline__ void q4_0_mmvq_row2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
-        int in_f, int out_f, int m, long row_bytes) {
-    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y) * 2;
-    int t = blockIdx.y;
+        int in_f, int out_f, int m, long row_bytes, int o0, int t) {
     if (o0 >= out_f || t >= m) return;
     int lane = threadIdx.x;
     int nsb = in_f >> 5;
@@ -6269,6 +6267,48 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_mr2(
         y[(size_t)t * out_f + o0] = acc0;
         if (two) y[(size_t)t * out_f + o0 + 1] = acc1;
     }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_mr2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_row2(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                   (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, blockIdx.y);
+}
+// ----- FUSED Q4_0 m=1 PAIR/TRIPLE (gemma: gate+up / wq+wk+wv share the quantized input).
+// Block-offset partition over the mr2 row pairs; per (tensor,row) chain = mr2 VERBATIM. -----
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused2(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, long rb0, long rb1) {
+    int pairs0 = (out0 + 1) / 2;
+    int nb0 = (pairs0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    if (b < nb0) {
+        q4_0_mmvq_row2(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                       (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    } else {
+        b -= nb0;
+        q4_0_mmvq_row2(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                       (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused3(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
+    int nb0 = ((out0 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int nb1 = ((out1 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
+    int b = blockIdx.x;
+    const unsigned char* W; float* y; int out_f; long rb;
+    if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+    else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+    q4_0_mmvq_row2(W, aq, ad, y, in_f, out_f, 1, rb,
+                   (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
 }
 
 extern "C" __global__ void qmatvec_q4_0_mmvq(

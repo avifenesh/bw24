@@ -2441,6 +2441,37 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4: res = (a+b)*c AND dst = rms_norm(res, w) in one launch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_scale_rms_norm(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
+                              w: &CudaSlice<f32>, res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                              ncols: usize, nrows: usize, eps: f32)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_scale_rms_norm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(dst).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// gemma4: res = a+b AND the three rms_norms of res in one launch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_rms_norm3(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>,
+                         w0: &CudaSlice<f32>, w1: &CudaSlice<f32>, w2: &CudaSlice<f32>,
+                         res: &mut CudaSlice<f32>, d0: &mut CudaSlice<f32>, d1: &mut CudaSlice<f32>,
+                         d2: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_rms_norm3_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(w0).arg(w1).arg(w2).arg(res).arg(d0).arg(d1).arg(d2).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// dst = (a + b) * c (residual add + layer scale, one launch).
     pub fn add_scale(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
                      dst: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -3122,6 +3153,83 @@ impl Engine {
     /// FUSED Q8_0 m=1 matvec TRIPLE (wq+wk+wv on the 35B full-attn layers: out_f 8192/512/512).
     /// Same block-offset recipe as `matmul_q8_fused2` with three ranges. BIT-IDENTICAL per
     /// (tensor,row) to three separate m=1 MMVQ launches.
+    /// FUSED Q4_0 m=1 TRIPLE (gemma q/k/v — same quantized input; per (tensor,row) chain
+    /// identical to the mr2 kernel). Returns None unless all three are Q4_0 with equal in_f.
+    pub fn matmul_q4_fused3(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                            w2: &crate::model::GpuTensor,
+                            aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let q4 = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, .. } if *qtype == QT_Q4_0 =>
+                    Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((rb1, o1)), Some((rb2, o2))) = (q4(w0), q4(w1), q4(w2))
+        else { return Ok(None) };
+        if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
+            return Ok(None);
+        }
+        let (b0, b1, b2) = match (w0, w1, w2) {
+            (GpuTensor::Quant { bytes: b0, .. }, GpuTensor::Quant { bytes: b1, .. },
+             GpuTensor::Quant { bytes: b2, .. }) => (b0, b1, b2),
+            _ => unreachable!(),
+        };
+        const RPB: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+        let grid = nb(o0) + nb(o1) + nb(o2);
+        let mut y0 = self.alloc_uninit::<f32>(o0)?;
+        let mut y1 = self.alloc_uninit::<f32>(o1)?;
+        let mut y2 = self.alloc_uninit::<f32>(o2)?;
+        let f = self.func("qmatvec_q4_0_mmvq_fused3");
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
+        let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some((y0, y1, y2)))
+    }
+
+    /// FUSED Q4_0 m=1 PAIR (gemma shared gate+up).
+    pub fn matmul_q4_fused2(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                            aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let q4 = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, .. } if *qtype == QT_Q4_0 =>
+                    Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(None) };
+        if w0.in_features() != w1.in_features() { return Ok(None); }
+        let (b0, b1) = match (w0, w1) {
+            (GpuTensor::Quant { bytes: b0, .. }, GpuTensor::Quant { bytes: b1, .. }) => (b0, b1),
+            _ => unreachable!(),
+        };
+        const RPB: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+        let grid = nb(o0) + nb(o1);
+        let mut y0 = self.alloc_uninit::<f32>(o0)?;
+        let mut y1 = self.alloc_uninit::<f32>(o1)?;
+        let f = self.func("qmatvec_q4_0_mmvq_fused2");
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1) = (o0 as i32, o1 as i32);
+        let (r0, r1) = (rb0 as i64, rb1 as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some((y0, y1)))
+    }
+
     pub fn matmul_q8_fused3(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
                             w2: &crate::model::GpuTensor,
                             aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
