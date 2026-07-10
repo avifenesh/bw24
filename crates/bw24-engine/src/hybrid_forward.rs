@@ -2670,6 +2670,21 @@ impl HybridModel {
                                  embd_qt: i32, embd_rb: usize, cache: &mut Cache,
                                  n_vocab: usize, cap_bucket_max: Option<usize>)
                                  -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
+        self.gemma4_decode_step_dc_into(e, token_d, pos_d, embd_gpu, embd_qt, embd_rb, cache,
+                                        n_vocab, cap_bucket_max, &mut tok_out)?;
+        Ok(tok_out)
+    }
+
+    /// CAPTURE body: argmax lands in the PERSISTENT `tok_out` (same buffer = same address on
+    /// every replay; pass `token_d` itself for the self-feeding graph loop).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_decode_step_dc_into(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                      pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                      embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                      n_vocab: usize, cap_bucket_max: Option<usize>,
+                                      tok_out: &mut CudaSlice<u32>)
+                                      -> Result<(), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
@@ -2695,10 +2710,10 @@ impl HybridModel {
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
         let logits = e.matmul(&self.output, &hn, 1)?;
-        let next_tok = e.argmax_token_device(&logits, n_vocab)?;
+        e.argmax_token_device_into(&logits, tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         if cap_bucket_max.is_none() { cache.pos += 1; }
-        Ok(next_tok)
+        Ok(())
     }
 
     /// dc attention: same math as gemma4_decode_attn, KV slot/lengths from device counters.
@@ -2759,6 +2774,87 @@ impl HybridModel {
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, bucket_max,
                        scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
         Ok(e.matmul(&fa.wo, &attn, 1)?)
+    }
+
+    /// gemma4 GRAPH-REPLAY greedy loop: per (swa-key, global-key) fa bucket, capture ONE full
+    /// dc step (self-feeding: argmax writes token_d in-graph) and replay it — one graph launch
+    /// per token, one 4B dtoh. V1 scope: whole generation under the sliding window (no window
+    /// views in-graph); caller gates and falls back to the dc-eager loop.
+    pub fn gemma4_generate_graph(&self, e: &Engine, prompt_pos: usize, first_token: u32,
+                                 cache: &mut Cache, max_new: usize, eos: &[u32],
+                                 mut on_token: impl FnMut(u32) -> bool)
+                                 -> Result<(Vec<u32>, crate::decode::StopReason), Box<dyn std::error::Error>> {
+        use crate::decode::StopReason;
+        let n_vocab = self.output.out_features();
+        let n_embd = self.cfg.n_embd as usize;
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        let mut token_d = e.stream().clone_htod(&[first_token])?;
+        let mut pos_d = e.htod_i32(&[prompt_pos as i32])?;
+        let g4 = self.cfg.gemma4.as_ref().unwrap();
+        let (hd_s, hd_g) = (g4.key_length_swa as usize, g4.key_length_global as usize);
+        // per-layer nkv: swa vs global counts from the pattern (uniform within class).
+        let nkv_s = g4.head_count_kv.iter().zip(g4.swa_pattern.iter())
+            .find(|p| *p.1).map(|p| *p.0 as usize).unwrap_or(8);
+        let nkv_g = g4.head_count_kv.iter().zip(g4.swa_pattern.iter())
+            .find(|p| !*p.1).map(|p| *p.0 as usize).unwrap_or(2);
+        let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize)),
+                                                  cudarc::driver::CudaGraph> = Default::default();
+        let mut out = Vec::with_capacity(max_new);
+        let mut reason = StopReason::MaxNew;
+        let mut next = first_token;
+        let mut captures = 0usize;
+        for _ in 0..max_new {
+            out.push(next);
+            if eos.contains(&next) { reason = StopReason::Eos; break; }
+            if !on_token(next) { reason = StopReason::Callback; break; }
+            let t_kv = cache.pos + 1;
+            let key = (e.fa_bucket_key(t_kv, hd_s, nkv_s), e.fa_bucket_key(t_kv, hd_g, nkv_g));
+            if !graphs.contains_key(&key) {
+                let bucket_max = t_kv;
+                // snapshot device+host state (the 3 capture-warmup runs leave no residue).
+                let snap = cache.snapshot(e)?;
+                let pos_save = e.dtoh_i32_one(&pos_d)?;
+                let len_save: Vec<Option<i32>> = cache.kv.iter()
+                    .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+                let tok_save = e.dtoh_u32_one(&token_d)?;
+                let graph = {
+                    let tok_ref = &mut token_d;
+                    let pos_ref = &mut pos_d;
+                    let cache_ref = &mut *cache;
+                    e.capture_graph(|e| {
+                        // self-feeding: the argmax writes token_d itself.
+                        let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
+                        self.gemma4_decode_step_dc_into(e, tok_in, pos_ref, embd_gpu, qt, rb,
+                                                        cache_ref, n_vocab, Some(bucket_max),
+                                                        tok_ref)
+                    })?
+                };
+                cache.rollback(e, &snap, 0)?;
+                e.set_i32_one(&mut pos_d, pos_save)?;
+                for (il, ls) in len_save.iter().enumerate() {
+                    if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                        e.set_i32_one(&mut kvl.len_d, *v)?;
+                    }
+                }
+                e.set_u32_one(&mut token_d, tok_save)?;
+                graphs.insert(key, graph);
+                captures += 1;
+            }
+            graphs.get(&key).unwrap().launch()?;
+            cache.pos += 1;
+            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
+            next = e.dtoh_u32_one(&token_d)?;
+        }
+        if std::env::var("BW24_GRAPH_STATS").is_ok() {
+            eprintln!("[gemma-graph] captures={captures} buckets={}", graphs.len());
+        }
+        Ok((out, reason))
     }
 
     /// gemma4 VERIFY step (spec decode): t tokens batched through the trunk at positions

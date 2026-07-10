@@ -8,6 +8,49 @@ use bw24_gguf::GgufFile;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: gemma-gate <model.gguf> <tok ids...>");
     let mut toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+    // BW24_GRAPH_GATE=N: graph-replay gate — stream identity vs eager + throughputs.
+    if let Ok(nn) = std::env::var("BW24_GRAPH_GATE") {
+        let n: usize = nn.parse().unwrap_or(96);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        // eager reference
+        let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + n + 8)?;
+        let mut ll = Vec::new();
+        for &t in &toks { ll = model.decode_step(&e, t, &mut c1)?; }
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let mut eager: Vec<u32> = Vec::new();
+        let mut next = bw24_engine::forward::argmax(&ll) as u32;
+        for _ in 0..n {
+            eager.push(next);
+            ll = model.decode_step(&e, next, &mut c1)?;
+            next = bw24_engine::forward::argmax(&ll) as u32;
+        }
+        e.stream().synchronize()?;
+        let dt_e = t0.elapsed().as_secs_f64();
+        // graph loop
+        let mut c2 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + n + 8)?;
+        let mut ll2 = Vec::new();
+        for &t in &toks { ll2 = model.decode_step(&e, t, &mut c2)?; }
+        let first = bw24_engine::forward::argmax(&ll2) as u32;
+        e.stream().synchronize()?;
+        let t1 = std::time::Instant::now();
+        let (graph, _reason) = model.gemma4_generate_graph(&e, c2.pos, first, &mut c2, n, &[],
+                                                           |_| true)?;
+        e.stream().synchronize()?;
+        let dt_g = t1.elapsed().as_secs_f64();
+        let same = eager.iter().zip(&graph).take_while(|(a, b)| a == b).count();
+        println!("GRAPH-GATE: eager {:.2} tok/s | graph {:.2} tok/s | stream {}/{} {}",
+                 n as f64 / dt_e, graph.len() as f64 / dt_g, same, n,
+                 if same == n.min(graph.len()) { "IDENTICAL" } else { "MISMATCH" });
+        if same < n.min(graph.len()) {
+            println!("eager: {:?}", &eager[..8.min(eager.len())]);
+            println!("graph: {:?}", &graph[..8.min(graph.len())]);
+        }
+        return Ok(());
+    }
     // BW24_DC_GATE=N: device-counter decode gate — the dc chain's N-token greedy stream must
     // be IDENTICAL to the eager decode_step chain; prints both throughputs.
     if let Ok(nn) = std::env::var("BW24_DC_GATE") {
