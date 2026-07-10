@@ -1,0 +1,66 @@
+{
+  "format": "bw24-hy3-routing-calibration-v1",
+  "generated_utc": "2026-07-10T00:00:00Z",
+  "method": "equal-stratum deterministic sample from the six training-side sources recommended by REAP",
+  "seed": 20260710,
+  "samples_per_stratum": 32,
+  "shuffle_buffer": 4096,
+  "max_input_tokens": 1024,
+  "add_generation_prompt": false,
+  "sources": [
+    {
+      "name": "theblackcat102/evol-codealpaca-v1",
+      "config": null,
+      "split": "train",
+      "revision": "c75242318519b5470635e84064baed7c78594020",
+      "stratum": "general_code"
+    },
+    {
+      "name": "Salesforce/xlam-function-calling-60k",
+      "config": null,
+      "split": "train",
+      "revision": "26d14ebfe18b1f7b524bd39b404b50af5dc97866",
+      "stratum": "single_turn_tools"
+    },
+    {
+      "name": "open-r1/Mixture-of-Thoughts",
+      "config": "code",
+      "split": "train",
+      "revision": "e55fa28006c0d0ec60fb3547520f775dd42d02cd",
+      "stratum": "reasoning_code"
+    },
+    {
+      "name": "open-r1/Mixture-of-Thoughts",
+      "config": "math",
+      "split": "train",
+      "revision": "e55fa28006c0d0ec60fb3547520f775dd42d02cd",
+      "stratum": "reasoning_math"
+    },
+    {
+      "name": "open-r1/Mixture-of-Thoughts",
+      "config": "science",
+      "split": "train",
+      "revision": "e55fa28006c0d0ec60fb3547520f775dd42d02cd",
+      "stratum": "reasoning_science"
+    },
+    {
+      "name": "SWE-bench/SWE-smith-trajectories",
+      "config": null,
+      "split": "tool",
+      "revision": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+      "stratum": "agentic_code_tools"
+    }
+  ],
+  "trace_arms": {
+    "mix_quant": "plain_quant",
+    "plain_reap_mix_quant": "plain_reap_quant"
+  },
+  "public_eval_exclusions": [
+    "ifeval",
+    "gsm8k_cot",
+    "bbh_cot_fewshot",
+    "drop",
+    "humaneval_instruct",
+    "mbpp_instruct"
+  ]
+}
