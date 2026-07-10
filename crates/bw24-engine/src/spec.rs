@@ -63,6 +63,10 @@ pub(crate) fn spec_m2() -> bool {
     // 35B p2 +3.4% / p3 +3.6%; the profitable-K plateau widens (new optimum K=3 at 223).
     *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
 }
+pub(crate) fn spec_devacc() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_SPEC_DEVACC").as_deref() == Ok("1"))
+}
 
 /// VERIFY-TIER TRUNK LAUNCH-FUSION (default ON since 2026-07-09; BW24_SPEC_FUSED_T=0 reverts — lane/close35b): extend
 /// the t=1 fused2/fused3 Q8_0 trunk launches to the batched verify tier (t=2-4, the K=1..3
@@ -1788,6 +1792,17 @@ impl HybridModel {
                 if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
             };
             let (n_acc, bonus) = if !sampled {
+                // ROUND-STREAM stage (a) (BW24_SPEC_DEVACC=1 opt-in): the walk runs ON DEVICE
+                // (spec_accept_greedy, verbatim rule) and the host reads back 8B (n_acc, bonus)
+                // instead of the [T] preds. Same sync count — machinery for stages (b)/(c),
+                // gated on token identity vs the host walk (the arms below are bit-equal rules).
+                if crate::spec::spec_devacc() && k_round > 0 {
+                    let draft_d = e.htod_u32_v(&draft)?;
+                    let mut acc_out = e.alloc_u32_zeroed(2)?;
+                    e.spec_accept_greedy(&preds_d, &draft_d, last_pred, base, k_round, &mut acc_out)?;
+                    let ab = e.dtoh_u32(&acc_out)?;
+                    (ab[0] as usize, ab[1])
+                } else {
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
                     if t_pred(j) == draft[j] { n_acc += 1; } else { break; }
@@ -1795,6 +1810,7 @@ impl HybridModel {
                 // bonus = target's own token at the first non-accepted slot. n_acc in 0..=k; t_pred
                 // is defined for j in 0..=k (j==0 -> last_logits, j>=1 -> col j-1, last col = k-1).
                 (n_acc, t_pred(n_acc))
+                }
             } else {
                 // --- SAMPLED ACCEPT (rejection sampling): u_j < p_j(x_j)/q_j(x_j) walk ---
                 if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }

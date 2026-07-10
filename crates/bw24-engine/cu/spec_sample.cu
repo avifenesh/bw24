@@ -419,3 +419,23 @@ extern "C" __global__ void penalize_logits_rows_f32(
     v -= freq * (float) cnt + present;
     xr[id] = v;
 }
+
+// ROUND-STREAM stage (a) (2026-07-10, HANDOVER design): the greedy accept walk ON DEVICE —
+// verbatim replication of the host rule (walk j in 0..k_round, accept while t_pred(j) ==
+// draft[j]; t_pred(0) = last_pred when base==0; bonus = t_pred(n_acc)). Stage (a) value is
+// machinery, not speed (host still reads 8B back); stages (b)/(c) consume n_acc on-device.
+extern "C" __global__ void spec_accept_greedy(
+        const unsigned int* __restrict__ preds,   // [t_v] verify device argmaxes
+        const unsigned int* __restrict__ draft,   // [k_round] draft token ids
+        unsigned int last_pred, int base, int k_round,
+        unsigned int* __restrict__ out) {         // out[0] = n_acc, out[1] = bonus
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int n_acc = 0;
+    for (int j = 0; j < k_round; j++) {
+        unsigned int tp = (j == 0 && base == 0) ? last_pred : preds[base + j - 1];
+        if (tp == draft[j]) n_acc++; else break;
+    }
+    unsigned int bonus = (n_acc == 0 && base == 0) ? last_pred : preds[base + n_acc - 1];
+    out[0] = (unsigned int)n_acc;
+    out[1] = bonus;
+}

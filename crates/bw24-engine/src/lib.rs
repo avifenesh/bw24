@@ -551,6 +551,20 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (a): device greedy accept walk (see spec_accept_greedy header).
+    pub fn spec_accept_greedy(&self, preds: &CudaSlice<u32>, draft: &CudaSlice<u32>,
+                              last_pred: u32, base: usize, k_round: usize,
+                              out: &mut CudaSlice<u32>)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_accept_greedy");
+        let (b, k) = (base as i32, k_round as i32);
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut bl = self.gpu.stream.launch_builder(&f);
+        bl.arg(preds).arg(draft).arg(&last_pred).arg(&b).arg(&k).arg(out);
+        unsafe { bl.launch(cfg)?; }
+        Ok(())
+    }
+
     // ================= SAMPLED-SPEC PRIMITIVES (spec_sample.cu, piece A) =================
     // Counter-based randomness: every call takes (seed, stream_pos) — the caller owns the
     // event counter (one per sampled token). temp <= 0 arms are exact greedy limits.
