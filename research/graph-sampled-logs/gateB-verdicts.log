@@ -1,0 +1,9 @@
+seed=42 arm=graph exit=0 self-consistency: PASS
+seed=42 arm=eager exit=0 self-consistency: PASS
+seed=7 arm=graph exit=0 self-consistency: PASS
+seed=7 arm=eager exit=0 self-consistency: PASS
+seed=1234 arm=graph exit=0 self-consistency: PASS
+seed=1234 arm=eager exit=0 self-consistency: PASS
+IDENTITY seed=42: IDENTICAL
+IDENTITY seed=7: IDENTICAL
+IDENTITY seed=1234: IDENTICAL

@@ -1,0 +1,25 @@
+loaded safetensors (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   127 tok in 0.999s = 127.12 tok/s (gen-only; this run's prime 0.007s)
+  tokens: [268, 43159, 220, 95726, 98858, 97152, 110560, 109960, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 95726, 98858, 97152, 110560, 109960, 1710, 99924, 3709, 128595, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 95761, 103745, 141098, 98143, 103962, 3709, 96336, 109712, 103028, 98114, 122, 95726, 120932, 99466, 1710, 97237, 135622, 111085, 97902, 97424, 104076, 3709, 108552, 98858, 97033, 112841, 95873, 109054, 97152, 1710, 271, 108697, 3709, 97237, 96539, 102487, 109542, 99123, 100661, 1710, 97433, 95880, 98007, 98419, 4960, 114762, 98858, 97891, 3709, 96200, 113887, 120932, 140325, 24178, 137575, 120932, 97710, 3709, 99123, 120932, 96448, 24178, 137575, 120932, 96448, 96147, 122770, 97710, 103648, 95789, 3709, 96580, 95845, 96809, 99123, 97152, 24178, 143127, 97152, 95772, 97710, 103648, 95789, 95845, 96809, 99123, 97152, 1710, 271, 98118]
+
+[generate_spec K=1] 128 tok in 0.979s = 129.75 tok/s (1.02x vs generate; this run's prime 0.007s)
+  acceptance: 49/78 = 62.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 128 tok in 0.972s = 130.65 tok/s (1.03x vs generate; this run's prime 0.008s)
+  acceptance: 57/140 = 40.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 128 tok in 1.067s = 119.05 tok/s (0.94x vs generate; this run's prime 0.007s)
+  acceptance: 64/195 = 32.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 128 tok in 1.277s = 99.49 tok/s (0.78x vs generate; this run's prime 0.007s)
+  acceptance: 63/264 = 23.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 128 tok in 1.562s = 81.31 tok/s (0.64x vs generate; this run's prime 0.007s)
+  acceptance: 64/378 = 16.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 128 tok in 3.383s = 37.54 tok/s (0.30x vs generate; this run's prime 0.007s)
+  acceptance: 64/504 = 12.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

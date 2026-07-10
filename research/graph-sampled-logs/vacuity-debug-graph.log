@@ -1,0 +1,17 @@
+loaded safetensors (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   15 tok in 0.120s = 124.73 tok/s (gen-only; this run's prime 0.007s)
+  tokens: [268, 43159, 220, 95726, 98858, 97152, 110560, 109960, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55]
+[R0] pos=2 out_len=1 last_tok=268 draft=[1227, 287, 318] n_acc=0 bonus=3595 t_pred0=43159
+  -> PARTIAL(replay=[3595]), next_pred=5464
+[R1] pos=3 out_len=2 last_tok=3595 draft=[318, 75060, 8] n_acc=0 bonus=198 t_pred0=5464
+  -> PARTIAL(replay=[198]), next_pred=55
+[R2] pos=4 out_len=3 last_tok=198 draft=[590, 271, 7] n_acc=0 bonus=42 t_pred0=55
+  -> PARTIAL(replay=[42]), next_pred=1413
+[R3] pos=5 out_len=4 last_tok=42 draft=[1413, 63414, 36663] n_acc=1 bonus=772 t_pred0=1413
+  -> PARTIAL(replay-free j=1, bonus pending, prev-h seed)
+
+thread 'main' (3161836) panicked at crates/bw24-engine/src/spec.rs:1701:66:
+index out of bounds: the len is 0 but the index is 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

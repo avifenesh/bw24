@@ -141,6 +141,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  acceptance: {accepted}/{drafted} = {:.1}%   self-consistency: {}",
                  acc_rate * 100.0,
                  if pass { if sampled { "PASS (seeded rerun identical)" } else { "PASS (identical to generate)" } } else { "FAIL" });
+        // Sampled stream printed on PASS too: the graph-vs-eager identity gate (same seed,
+        // BW24_SPEC_NOGRAPH=1 vs default) diffs these token ids across separate invocations.
+        if sampled { println!("  sampled tokens: {spec:?}"); }
         if !pass {
             let idx = first_divergence(&gold, &spec).unwrap();
             println!("  FIRST DIVERGENCE at index {idx}:");

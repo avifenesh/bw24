@@ -450,12 +450,20 @@ impl HybridModel {
     /// the pseudo pass only needs h_nextn (op 10) + the scratch append — the lm_head read
     /// (~1.06ms q6_K on the 9B), argmax and prob are dead weight there. h_nextn's inputs are
     /// untouched, so the seed value is identical; round-start resets overwrite tok_d/p_d anyway.
+    /// `sampled_cap` = Some((ctr_d, perturb_d, q_out_d, seed, temp)) captures the SAMPLED twin
+    /// (step 3 of the sampled-spec arc): head logits are retained in the persistent `q_out_d`
+    /// (host D2Ds them to the round's q slot after each replay), the DEVICE event counter is
+    /// bumped in-graph, and the argmax reads GUMBEL-PERTURBED logits — one categorical draw per
+    /// replay, bit-identical to the eager arm's gumbel_perturb at the same (seed, sctr, temp).
+    /// seed/temp are capture-time constants (fixed per generate call, like p_min).
     #[allow(clippy::too_many_arguments)]
     fn mtp_head_forward_cap(&self, e: &Engine, mtp: &MtpHead,
                             tok_d: &mut CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
                             h_seed_d: &mut CudaSlice<f32>, p_d: &mut CudaSlice<f32>,
                             scratch: &mut MtpScratch, with_prob: bool, with_head: bool,
-                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize)
+                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize,
+                            sampled_cap: Option<(&mut CudaSlice<u32>, &mut CudaSlice<f32>,
+                                                 &mut CudaSlice<f32>, u64, f32)>)
                             -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
@@ -506,9 +514,23 @@ impl HybridModel {
         if with_head {
             let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
             let logits = e.matmul(head, final_h.as_ref().unwrap(), 1)?;
-            // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
-            e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
-            if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+            if let Some((ctr_d, perturb_d, q_out_d, seed, temp)) = sampled_cap {
+                // SAMPLED chain: retain q (raw head logits -> persistent q_out_d; the matmul's
+                // own buffer is pool-recycled after the capture body returns, so it can't be the
+                // retention target), bump the device event counter, gumbel-perturb reading it,
+                // and argmax the PERTURBED logits into tok_d — the in-graph categorical draw.
+                e.copy_into(q_out_d, 0, &logits, d_vocab)?;
+                e.sctr_inc(ctr_d)?;
+                e.gumbel_perturb_ctr(&logits, perturb_d, d_vocab, seed, ctr_d, temp)?;
+                e.argmax_token_device_into(perturb_d, tok_d, d_vocab)?;
+                // p-min prob = the head's RAW softmax confidence in the SAMPLED pick — same
+                // semantics as the eager sampled arm's prob_of_token_device(dl_d, tok_d).
+                if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+            } else {
+                // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
+                e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
+                if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+            }
         }
         // Next draft step's h_seed: pre-norm h_nextn (default) or post-norm final_h (HPOST).
         if spec_hpost() {
@@ -1119,6 +1141,10 @@ impl HybridModel {
     /// Event tracking is disabled for the whole call (generate_graph pattern) so every buffer the
     /// captured graph references is event-free; the spec loop is strictly single-stream.
     /// BW24_SPEC_NOGRAPH=1 forces the eager draft chain.
+    /// SAMPLED mode (BW24_SPEC_TEMP>0) has its OWN capture (gumbel-perturbed in-graph argmax,
+    /// device Philox event counter, persistent q retention) — graph-vs-eager sampled streams are
+    /// bit-identical for the same (seed, prompt, K, temp); see the sampled-graph setup in
+    /// generate_spec_inner2.
     /// Multi-turn session: trunk cache + MTP draft scratch persist across generate calls, so
     /// turn N+1 primes ONLY its new suffix (the 124k-conversation daily pattern — re-priming a
     /// 32k history costs ~54s; a suffix prime costs seconds). APPEND-ONLY by construction: the
@@ -1344,9 +1370,10 @@ impl HybridModel {
         } else { None };
         let mut q_full_buf: Option<CudaSlice<f32>> = None;
         // Counters resume from the session (burst continuity: randomness must never repeat
-        // across generate_spec_session calls); one-shot callers start at (0,0).
-        let mut sctr: u32 = sess.as_ref().map(|s| s.sctr).unwrap_or(0);
-        let mut uctr: u32 = sess.as_ref().map(|s| s.uctr).unwrap_or(0);
+        // across generate_spec_session calls); one-shot callers start at (0,0). Read through
+        // sess_tail — `sess` was take()n into it above, so sess.as_ref() here is always None.
+        let mut sctr: u32 = sess_tail.as_ref().map(|(_, _, _, s, _)| **s).unwrap_or(0);
+        let mut uctr: u32 = sess_tail.as_ref().map(|(_, _, _, _, u)| **u).unwrap_or(0);
         // host Philox4x32-10 (mirrors spec_sample.cu; independent stream via ctr_lo tag)
         let host_u01 = |seed: u64, ctr: u32| -> f32 {
             let (m0, m1) = (0xD2511F53u32, 0xCD9E8D57u32);
@@ -1428,17 +1455,51 @@ impl HybridModel {
         let mut g_seed = e.zeros(n_embd)?;
         let mut g_p = e.zeros(1)?;
         let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
-        if graph_draft {
+        if graph_draft && !sampled {
             let cap_res = e.capture_graph(|e| {
                 self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
                                           &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
-                                          embd_rb, d_vocab)
+                                          embd_rb, d_vocab, None)
             });
             match cap_res {
                 Ok(g) => { scratch.set_len(e, 0)?; draft_graph = Some(g); }
                 Err(err) => {
                     scratch.set_len(e, 0)?;
                     if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
+                }
+            }
+        }
+        // --- SAMPLED GRAPH DRAFT setup (step 3 of the sampled-spec arc): a SECOND capture, own
+        // graph object, built only when sampled && graph-eligible — the greedy capture above is
+        // untouched (and skipped when sampled: its graph would never be launched). Same head
+        // forward, but the in-graph argmax reads GUMBEL-PERTURBED logits; the Philox event
+        // counter lives in the persistent device g_ctr (bumped in-graph, host-seeded from sctr
+        // once per round); the raw head logits land in the persistent g_q for the host's
+        // per-replay async D2D into the round's q slot (q_slots, K x d_vocab, allocated once).
+        // seed/temp are capture-time constants — capture happens once per generate call, exactly
+        // like the greedy graph (no extra recapture cost beyond today's per-call capture).
+        let mut g_ctr = e.alloc_u32_zeroed(1)?;
+        let mut g_q = e.zeros(if sampled { d_vocab } else { 1 })?;
+        let mut g_perturb = e.zeros(if sampled { d_vocab } else { 1 })?;
+        let mut q_slots: Vec<CudaSlice<f32>> = Vec::new();
+        let mut draft_graph_s: Option<cudarc::driver::CudaGraph> = None;
+        if graph_draft && sampled {
+            let cap_res = e.capture_graph(|e| {
+                self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
+                                          &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
+                                          embd_rb, d_vocab,
+                                          Some((&mut g_ctr, &mut g_perturb, &mut g_q,
+                                                sp_seed, sp_temp)))
+            });
+            match cap_res {
+                Ok(g) => {
+                    scratch.set_len(e, 0)?;
+                    for _ in 0..k { q_slots.push(e.zeros(d_vocab)?); }
+                    draft_graph_s = Some(g);
+                }
+                Err(err) => {
+                    scratch.set_len(e, 0)?;
+                    if debug_spec { eprintln!("[spec] sampled draft-graph capture failed ({err}); eager fallback"); }
                 }
             }
         }
@@ -1540,6 +1601,36 @@ impl HybridModel {
                     draft.push(d);
                     // with a trimmed head the NEXT embed must read the TARGET id, not the draft
                     // index the argmax wrote — patch the persistent token buffer (4B htod).
+                    if d != idx { e.set_u32_one(&mut g_tok, d)?; }
+                }
+            } else if let (true, Some(gr)) = (sampled, &draft_graph_s) {
+                // SAMPLED GRAPH DRAFT: one replay per drafted token — head forward + gumbel +
+                // argmax in ONE dispatch; the host reads 4B token (+4B p), D2Ds q into slot j,
+                // and decides the break. Event-counter continuity: g_ctr is host-seeded to
+                // sctr-1 ONCE per round (outside the graph); the in-graph bump runs BEFORE the
+                // perturb, so replay j consumes counter sctr+j — exactly the eager arm's Philox
+                // stream. Host sctr advances in lockstep (computed, no readback needed).
+                e.set_i32_one(&mut g_pos, (pos + base0) as i32)?;
+                e.set_u32_one(&mut g_tok, last_token)?;
+                e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
+                e.set_u32_one(&mut g_ctr, sctr.wrapping_sub(1))?;
+                for j in 0..k_this {
+                    gr.launch()?;
+                    scratch.kv.len += 1;   // host mirror (len_d advanced in-graph)
+                    sctr += 1;             // mirrors the in-graph g_ctr bump (eager parity:
+                                           // counts the p-min-discarded token too)
+                    // q retention: ONE async D2D of the persistent head-logits buffer into this
+                    // round's slot j (stream-ordered after the replay, before the next one).
+                    e.copy_into(&mut q_slots[j], 0, &g_q, d_vocab)?;
+                    let idx = e.dtoh_u32_one(&g_tok)?;
+                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    draft_idx.push(idx);
+                    if p_min > 0.0 {
+                        let p = e.dtoh(&g_p)?[0];
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
+                    }
+                    draft.push(d);
+                    // trimmed head: the NEXT embed must read the TARGET id (see the greedy arm).
                     if d != idx { e.set_u32_one(&mut g_tok, d)?; }
                 }
             } else {
@@ -1646,12 +1737,16 @@ impl HybridModel {
                         pj[0] = e.dtoh(&outd)?[0];
                     }
                 }
+                // q source: the graph arm retained the head logits in the persistent q_slots;
+                // the eager arm in per-round draft_logits clones. Same raw-logit values either way.
+                let q_bufs: &[CudaSlice<f32>] =
+                    if draft_graph_s.is_some() { &q_slots } else { &draft_logits };
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
                     let idsd = e.htod_u32_v(&[draft_idx[j]])?;
                     let rowsd = e.htod_i32(&[0])?;
                     let mut outd = e.zeros(1)?;
-                    e.softmax_gather(&draft_logits[j], d_vocab, &idsd, &rowsd, &mut outd, d_vocab, 1, sp_temp)?;
+                    e.softmax_gather(&q_bufs[j], d_vocab, &idsd, &rowsd, &mut outd, d_vocab, 1, sp_temp)?;
                     let qj = e.dtoh(&outd)?[0];
                     let u = host_u01(sp_seed, uctr); uctr += 1;
                     if (u as f64) * (qj as f64) < pj[j] as f64 { n_acc += 1; } else { break; }
@@ -1683,11 +1778,11 @@ impl HybridModel {
                     if let Some(map) = &d2t_dev {
                         if q_full_buf.is_none() { q_full_buf = Some(e.zeros(n_vocab)?); }
                         let qf = q_full_buf.as_mut().unwrap();
-                        e.scatter_trim_logits(&draft_logits[n_acc], map, qf, d_vocab, n_vocab)?;
+                        e.scatter_trim_logits(&q_bufs[n_acc], map, qf, d_vocab, n_vocab)?;
                         let qf2 = q_full_buf.as_ref().unwrap();
                         e.residual_sample(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
                     } else {
-                        e.residual_sample(cb2, Some(&draft_logits[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
+                        e.residual_sample(cb2, Some(&q_bufs[n_acc]), n_vocab, sp_temp, sp_seed, sc, &mut sample_tok)?;
                     }
                     e.dtoh_u32(&sample_tok)?[0]
                 };
