@@ -596,3 +596,18 @@ FOCUS ORDER (owner): squeeze GGUF NVFP4 Qwen (9B/27B/35B) to the margin bar ever
 then Gemma-4. Open GGUF cells: 27B spec p2 0.95x (llama's strongest spot), 35B spec p2/p3
 1.02/1.03x, 35B plain 1.06x, 9B plain 1.07x, prefill 0.59-0.78x (tile-algorithm arc, ncu-spec'd:
 per-CTA serialization — not occupancy, not DRAM, not MMA class).
+
+## PP GAP ROOT-CAUSED (2026-07-10) — it is a precision-class contract, not efficiency
+
+nsys on llama-bench pp1845 (27B NVFP4): llama quantizes ACTIVATIONS to NVFP4
+(`quantize_mmq_nvfp4`, 13.5% of its GPU time) and runs `mul_mat_q<type 40>` on the FP4
+block-scale pipe (762-TF class). Its MMQ kernel time 783ms/1845tok vs our W4A8 1310ms = 1.67x
+= the whole pp gap. Our in-tree W4A4 (BW24_MMQ) already beats llama 1.03-1.06x — blocked only
+by the GREEDY exactness contract (long-prompt argmax forks, 1/8 agent-loop self-consistency).
+Eliminated efficiency levers this session (all JSONL-recorded): k32-imma (+4.3% pp, dominated,
+deleted), ilpswap (-10.5%), y64 (-8%), epilogue hoist (killed by pipe data), pipe staging (wash).
+DECISION PENDING (owner): W4A4 prefill as a SAMPLED-SERVE-ONLY config — the sampled protocol's
+gates (seeded reproducibility, distribution-level) never invoke greedy token-identity, so the
+blocker does not apply to that mode; it also matches llama's own bench numeric class (fair
+fight). Alternative: keep the absolute contract; the board documents the pp column as a
+precision-class difference.
