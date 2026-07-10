@@ -36,6 +36,15 @@ DEPTH-1736 (degenerate long prompt, id file in scratchpad/long-ids.txt):
 - depth standing: plain 146.7 / spec K2 187.6 (acc .775) vs llama MTP 252-285 (this prompt
   inflates acceptance for both; honest depth pairs need battery-class content).
 
+FR-TRIM RECIPE (next draft lever, ~+6% spec): drafter head = 151MB read/draft. Build a
+corpus rank: tokenize ~5-10MB of mixed text (repo md/code + any English corpus on disk) with
+tok-check/Tokenizer, count id freqs, take top-32768 ids -> gather those drafter token_embd
+ROWS (Q4_0 row_bytes each) into a trimmed head + d2t: Vec<u32> map; draft argmax index maps
+through d2t to the target id. The BW24_GEMMA_DRAFT_VOCAB seam + head-build code exist in
+gemma_spec.rs (currently contiguous-truncation; replace with the ranked gather + d2t).
+Acceptance re-gate on the chat prompt (top-N-ids truncation lost .52 -> .34; ranked gather
+is the real FR-Spec).
+
 NEXT LEVERS (ranked; 1-3 of the old list DONE):
 1. Round tail: draft steps' own latency (2-3 chained: head 151MB each = 0.35-0.5ms; trunk
    small; corpus-ranked FR trim would cut the head), h-row copies, per-round htod/dtoh syncs.
