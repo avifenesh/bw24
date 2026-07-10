@@ -118,6 +118,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_PREFETCH=1` | pipeline the next routed expert's cache misses on the copy stream | experimental; target-rig gate required |
 | `BW24_MOE_PAGE_PREFETCH=1` | issue rolling `MADV_WILLNEED` for mmap-backed GGUF/repack ranges | experimental; cold-cache G7e + RTX 5090 A/B required |
 | `BW24_MOE_PAGE_PREFETCH_WINDOW` | future experts kept in the rolling page-prefetch window (default `1`; `0` disables) | only read when `BW24_MOE_PAGE_PREFETCH=1`; tune to storage latency/page-cache budget |
+| `BW24_MOE_MMAP_ADVICE` | whole-map expert advice: `random` (default) or `normal` | `normal` restores ordinary Linux readahead; invalid values warn and fall back to `random` |
 | `BW24_NO_FA_VEC` (set) | scalar `fa_decode_f32` bit-reference (eager + rows + graph in lockstep) | vec default-on 2026-06-28 |
 | `BW24_FA_V2=0` | per-key online-softmax FA twins (v2 = tile-batched, own numeric config) | default-on 2026-07-08, the depth-slope fix |
 | `BW24_FA_ROWS_OFF=1` | per-row verify FA loop instead of the fused rows kernel | rows landed 2026-07-03 (+13.8% 9B p2) |

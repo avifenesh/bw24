@@ -34,6 +34,7 @@ export BW24_MOE_PREWARM=${BW24_MOE_PREWARM:-1}
 export BW24_MOE_PREFETCH=${BW24_MOE_PREFETCH:-1}
 export BW24_MOE_PAGE_PREFETCH=${BW24_MOE_PAGE_PREFETCH:-1}
 export BW24_MOE_PAGE_PREFETCH_WINDOW=${BW24_MOE_PAGE_PREFETCH_WINDOW:-1}
+export BW24_MOE_MMAP_ADVICE=${BW24_MOE_MMAP_ADVICE:-random}
 
 python3 - "$RUN_DIR/metadata.json" "$ARTIFACT_ROOT" <<'PY'
 import json, os, pathlib, platform, subprocess, sys
@@ -54,7 +55,7 @@ metadata = {
         for key in (
             "BW24_FAST", "BW24_MMVQ", "BW24_MOE_CACHE", "BW24_MOE_GROUPED",
             "BW24_MOE_PREWARM", "BW24_MOE_PREFETCH", "BW24_MOE_PAGE_PREFETCH",
-            "BW24_MOE_PAGE_PREFETCH_WINDOW",
+            "BW24_MOE_PAGE_PREFETCH_WINDOW", "BW24_MOE_MMAP_ADVICE",
         )
     },
     "nvidia_smi": command(

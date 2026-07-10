@@ -14,6 +14,59 @@ use crate::config::{Arch, JsonObj, ModelConfig};
 use crate::safetensors::StModel;
 use crate::{GgufFile, GgmlType};
 
+/// Whole-map access advice for expert slab files. `Random` preserves the original spill behavior;
+/// `Normal` lets Linux use its ordinary mmap readahead for each multi-megabyte expert access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpertMmapAdvice {
+    Random,
+    Normal,
+}
+
+/// Pure parser kept separate from the cached environment lookup so invalid/default behavior is
+/// unit-testable without mutating process-global environment state.
+pub fn parse_expert_mmap_advice(value: Option<&str>) -> Result<ExpertMmapAdvice, &'static str> {
+    match value.unwrap_or("random") {
+        "random" => Ok(ExpertMmapAdvice::Random),
+        "normal" => Ok(ExpertMmapAdvice::Normal),
+        _ => Err("expected random or normal"),
+    }
+}
+
+pub fn expert_mmap_advice() -> ExpertMmapAdvice {
+    static MODE: std::sync::OnceLock<ExpertMmapAdvice> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        let raw = std::env::var("BW24_MOE_MMAP_ADVICE").ok();
+        match parse_expert_mmap_advice(raw.as_deref()) {
+            Ok(mode) => mode,
+            Err(reason) => {
+                eprintln!(
+                    "[spill] invalid BW24_MOE_MMAP_ADVICE={:?} ({reason}); using random",
+                    raw.as_deref().unwrap_or("")
+                );
+                ExpertMmapAdvice::Random
+            }
+        }
+    })
+}
+
+/// Apply the selected policy to one expert mmap. `MADV_NORMAL` explicitly clears a prior
+/// `MADV_RANDOM` VMA policy, so this is safe for maps reused across loader paths.
+pub fn apply_expert_mmap_advice(map: &Mmap) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let advice = match expert_mmap_advice() {
+            ExpertMmapAdvice::Random => memmap2::Advice::Random,
+            ExpertMmapAdvice::Normal => memmap2::Advice::Normal,
+        };
+        map.advise(advice)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = map;
+        Ok(())
+    }
+}
+
 /// A view of one tensor's data, source-agnostic.
 ///
 /// `bytes` is a `Cow`: the GGUF path and the zero-copy dense safetensors path BORROW the mmap
@@ -290,14 +343,10 @@ impl Hy3RepackSource {
             let p = dir.join(&t.file);
             let f = std::fs::File::open(&p)?;
             let map = unsafe { Mmap::map(&f)? };
-            // Expert slab files back the disk-spill tier (routing-driven random access):
-            // MADV_RANDOM kills readahead waste, same as the GGUF/M3 spill mmaps.
-            #[cfg(target_os = "linux")]
+            // Expert slabs use the configured whole-map policy. Default random is the historical
+            // behavior; normal restores Linux readahead for multi-megabyte expert reads.
             if t.expert_stride.is_some() || expert_files.contains(&t.file) {
-                unsafe {
-                    unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
-                    let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
-                }
+                let _ = apply_expert_mmap_advice(&map);
             }
             files.insert(t.file.clone(), std::sync::Arc::new(map));
         }
@@ -900,6 +949,15 @@ impl TensorSource for SafetensorsSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expert_mmap_advice_parser_preserves_random_default() {
+        assert_eq!(parse_expert_mmap_advice(None), Ok(ExpertMmapAdvice::Random));
+        assert_eq!(parse_expert_mmap_advice(Some("random")), Ok(ExpertMmapAdvice::Random));
+        assert_eq!(parse_expert_mmap_advice(Some("normal")), Ok(ExpertMmapAdvice::Normal));
+        assert!(parse_expert_mmap_advice(Some("sequential")).is_err());
+        assert!(parse_expert_mmap_advice(Some("")).is_err());
+    }
 
     #[test]
     fn safetensors_source_find_maps_names() {
