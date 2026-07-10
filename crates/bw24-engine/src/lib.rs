@@ -4884,15 +4884,14 @@ impl Engine {
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
         let mut sp = fa_split_keys(window, n_head_kv);
-        // windowed split (BW24_FA_SPW, default 64 — 2026-07-11 depth sweep N=2: plain
-        // 156.6->159.3, depth spec 251.2->253.4; sp48 trades +3 plain for -10.7 spec, sp16
-        // collapses spec — v4_w's per-block staging scales with splits x verify rows while
-        // t=1 occupancy prefers fewer, bigger splits; 64 lifts BOTH). Same parity-law
-        // freedom as BW24_FA_SP512: every windowed caller shares this wrapper.
+        // windowed split (BW24_FA_SPW, default 48 — re-swept 2026-07-11 after the K=V global
+        // twin shifted the round balance: 48 = plain 167-169 AND spec 275-276 both best;
+        // 32=164/276, 64=165/262, 96=159/269, 16 collapses spec on v4_w staging x rows.
+        // Same parity-law freedom as BW24_FA_SP512: every windowed caller shares this wrapper.
         {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(64));
+                .and_then(|x| x.parse().ok()).unwrap_or(48));
             if v >= 8 { sp = v; }
         }
         let n_splits_max = (window + sp - 1) / sp;
