@@ -63,6 +63,15 @@ pub(crate) fn spec_m2() -> bool {
     // 35B p2 +3.4% / p3 +3.6%; the profitable-K plateau widens (new optimum K=3 at 223).
     *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
 }
+pub(crate) fn spec_stream() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_SPEC_STREAM").as_deref() == Ok("1"))
+}
+pub(crate) fn spec_stream_m() -> usize {
+    static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *M.get_or_init(|| std::env::var("BW24_SPEC_STREAM_M").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(4))
+}
 pub(crate) fn spec_devacc() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("BW24_SPEC_DEVACC").as_deref() == Ok("1"))
@@ -519,7 +528,14 @@ impl HybridModel {
                 Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, n_ff)?;
                 e.matmul(ffn_down, &act, 1)?
             }
-            crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense MTP FFN".into()),
+            // ROUND-STREAM: the 35B NextN block carries a MoE FFN. With RESIDENT experts the
+            // dev path is pure device launches (device top-k + rows kernels, ZERO-DtoH by
+            // design) — capture-legal. Non-resident (SLRU-lock) stays rejected: the capture
+            // error arm degrades the caller to eager/stream-off.
+            crate::hybrid::Ffn::Moe(m) if m.dev_exps.is_some() => {
+                self.moe_ffn_il(e, m, &z, 1, u16::MAX)?
+            }
+            crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense (or resident-MoE) MTP FFN".into()),
         };
         let mut h_nextn = e.zeros(n_embd)?;
         e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
@@ -766,7 +782,8 @@ impl HybridModel {
         let mut hn = vbuf(e, t * n_embd)?;   // fully written by rms_norm_decode
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
-        cache.pos += t;
+        // stream: the device pos counter owns position; host mirror reconciles at drain.
+        if stream.is_none() { cache.pos += t; }
         // Hidden stack for seeds/refresh-fills: pre-norm x (default) or post-norm hn (HPOST).
         Ok((logits, if spec_hpost() { hn } else { x }))
     }
@@ -960,6 +977,37 @@ impl HybridModel {
             }
         }
         cache.pos = snap.pos + j;
+        Ok(())
+    }
+
+    /// ROUND-STREAM: recur restore with device-j (the _dc twins; full accept early-exits
+    /// in-kernel). Requires the batched-linear stash on every linear layer (stream gate).
+    fn commit_verified_prefix_stream(&self, e: &Engine, cache: &mut Cache,
+                                     snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt,
+                                     acc: &CudaSlice<u32>, base: usize, t_v: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let ssm = cfg.ssm.as_ref().unwrap();
+        let d_state = ssm.state_size as usize;
+        let num_k = ssm.group_count as usize;
+        let num_v = ssm.time_step_rank as usize;
+        let d_conv = ssm.conv_kernel as usize;
+        let conv_dim = d_state * num_k * 2 + d_state * num_v;
+        let scale = 1.0 / (d_state as f32).sqrt();
+        for il in 0..self.layers.len() {
+            if let Some(rl) = cache.recur[il].as_mut() {
+                let st = ckpt.gdn[il].as_ref()
+                    .ok_or("stream restore: batched-linear stash missing")?;
+                let ring_old = snap.conv[il].as_ref().expect("snapshot missing conv");
+                let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
+                e.ssm_conv_ring_rebuild_dc(&st.qkv_mixed, ring_old, &mut rl.conv_state,
+                                           conv_dim, acc, base, t_v, d_conv)?;
+                let mut o = e.uninit(d_state * num_v * t_v)?;
+                e.gdn_scan_s128_dc(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
+                                   state_in, &mut rl.ssm_state, &mut o, num_v,
+                                   acc, base, t_v, scale)?;
+            }
+        }
         Ok(())
     }
 
@@ -1454,7 +1502,7 @@ impl HybridModel {
         // Trimmed heads: q lives on the trimmed vocab; accept gathers use the TRIMMED index and
         // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
         // those, so their residual mass is p(x), correct by construction).
-        let d2t_dev: Option<CudaSlice<u32>> = if sampled {
+        let d2t_dev: Option<CudaSlice<u32>> = if sampled || crate::spec::spec_stream() {
             match &mtp.d2t { Some(map) => Some(e.htod_u32_v(map)?), None => None }
         } else { None };
         let mut q_full_buf: Option<CudaSlice<f32>> = None;
@@ -1660,6 +1708,62 @@ impl HybridModel {
             unsafe extern "C" { fn cudaProfilerStart() -> i32; }
             unsafe { cudaProfilerStart(); }
         }
+        // ROUND-STREAM stage (c) 4 (BW24_SPEC_STREAM=1, experimental): pre-issued M-round
+        // bursts with ZERO per-round host readbacks — the accept/seed/rollback/ring kernels
+        // consume each other's device outputs; the host drains the ring every M rounds. v1
+        // constraints: greedy, !spec_replay, single-shot, batched-linear layers, no refresh
+        // fills (acceptance effect A/B-arbitrated), enters from round 1 (pending guaranteed).
+        // NOTE: not gated on the caller's graph_draft (its trunk_dense conjunct turns the 35B
+        // MoE off) — the stream capture encloses ONLY the dense MTP head; the head-dense /
+        // full-prec / k gates are re-derived here and a failed capture degrades to stream-off.
+        let stream_on = crate::spec::spec_stream() && !sampled && !spec_replay && !session_mode
+            && !crate::model::full_prec_enabled() && k + 2 < 96;
+        let mut stream_graph: Option<cudarc::driver::CudaGraph> = None;
+        let mut g_tokp2k = e.alloc_u32_zeroed(2 * k.max(1))?;
+        if stream_on {
+            let cap = e.capture_graph(|e| {
+                for j in 0..k.max(1) {
+                    self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed,
+                                              &mut g_p, &mut *scratch, true, true,
+                                              embd_gpu, embd_qt, embd_rb, d_vocab, None,
+                                              Some((&mut g_tokp2k, j, d2t_dev.as_ref())))?;
+                }
+                Ok(())
+            });
+            match cap {
+                Ok(g) => { scratch.set_len(e, 0)?; stream_graph = Some(g); }
+                Err(err) => {
+                    scratch.set_len(e, 0)?;
+                    if debug_spec { eprintln!("[spec] stream-graph capture failed ({err}); stream off"); }
+                }
+            }
+        }
+        let stream_active = stream_on && stream_graph.is_some();
+        if debug_spec {
+            eprintln!("[spec] stream_on={stream_on} env={} samp={sampled} dg={} captured={} active={stream_active} session={session_mode} replay={spec_replay}",
+                      crate::spec::spec_stream(), draft_graph.is_some(), stream_graph.is_some());
+        }
+        let t_v_s = k + 1;
+        let mut vtok_d = e.alloc_u32_zeroed(t_v_s)?;
+        let mut brk_d = e.alloc_u32_zeroed(2)?;
+        let mut pend_d = e.alloc_u32_zeroed(1)?;
+        let last_pred_d = e.alloc_u32_zeroed(1)?;
+        let mut pos_ctr = e.htod_i32(&[0])?;
+        let mut pos_start_d = e.htod_i32(&[0])?;
+        let m_rounds = crate::spec::spec_stream_m();
+        let ring_cap = m_rounds * (k + 1) + 1;
+        let mut ring_d = e.alloc_u32_zeroed(ring_cap)?;
+        let mut stream_acc = e.alloc_u32_zeroed(2)?;
+        let stream_ptrs: Option<CudaSlice<u64>> = if stream_active {
+            use cudarc::driver::DevicePtr;
+            let mut ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
+                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
+                None => 0u64,
+            }).collect();
+            { let (p, _g) = pos_ctr.device_ptr(e.stream()); ptrs.push(p as u64); }
+            Some(e.htod_u64(&ptrs)?)
+        } else { None };
+
         let mut round = 0usize;
         // (Adaptive-K — BW24_SPEC_ADAPT, acceptance-EMA draft length — measured an HONEST LOSS
         // to static per-class optima on 2026-07-07 (115.0/85.8/73.4 vs 121.6/92.7/75.6, EMA lag)
@@ -1697,6 +1801,63 @@ impl HybridModel {
                     *acc += (now - ph_t).as_secs_f64(); ph_t = now; }
         };
         while out.len() < max_new {
+            // ROUND-STREAM BURST: from round 1 (pending guaranteed by every non-replay arm),
+            // issue M rounds with zero readbacks, then drain the ring + reconcile mirrors.
+            if let (true, Some(sg), Some(ptrs)) =
+                (stream_active && round >= 1 && pending.is_some(), &stream_graph, &stream_ptrs) {
+                if debug_spec {
+                    static ONCE: std::sync::Once = std::sync::Once::new();
+                    ONCE.call_once(|| eprintln!("[bw24] ROUND-STREAM burst engaged (M={m_rounds} k={k})"));
+                }
+                e.set_i32_one(&mut pos_ctr, cache.pos as i32)?;
+                e.set_u32_one(&mut pend_d, pending.unwrap())?;
+                e.set_u32_one(&mut ring_d, 0)?;   // ring count = 0 (writes element 0)
+                for _mi in 0..m_rounds {
+                    e.i32_copy_add(&pos_ctr, &mut pos_start_d, 0)?;
+                    cache.snapshot_into(e, &mut snap)?;             // device D2Ds, stream-ordered
+                    e.i32_copy_add(&pos_ctr, &mut scratch.kv.len_d, 0)?;   // draft-KV rollback
+                    e.i32_copy_add(&pos_ctr, &mut g_pos, 1)?;              // rope pos = pos + base
+                    e.u32_copy(&pend_d, &mut g_tok)?;
+                    e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
+                    sg.launch()?;
+                    e.spec_assemble_verify(&g_tokp2k, &pend_d, d2t_dev.as_ref(), &mut vtok_d,
+                                           &mut brk_d, p_min, k, pmin0)?;
+                    let mut ck = VerifyCkpt::new(self.layers.len());
+                    let dummy = vec![0u32; t_v_s];
+                    let (tl_d, vx) = self.decode_step_t_core_stream(
+                        e, &dummy, 0, &mut *cache, Some((embd_gpu, embd_qt, embd_rb)),
+                        Some(&mut ck), Some((&vtok_d, &pos_ctr)))?;
+                    for j in 0..t_v_s {
+                        e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?;
+                    }
+                    e.spec_accept_greedy_dc(&preds_d, &vtok_d, &last_pred_d, &brk_d, &mut stream_acc)?;
+                    e.spec_seed_gather(&vx, &fill_prev, &stream_acc, &mut h_seed_buf, 1, n_embd)?;
+                    e.copy_into(&mut fill_prev, 0, &h_seed_buf, n_embd)?;
+                    self.commit_verified_prefix_stream(e, &mut *cache, &snap, &ck, &stream_acc,
+                                                       1, t_v_s)?;
+                    e.spec_rollback_stream(ptrs, &pos_start_d, &stream_acc, 1,
+                                           self.layers.len() + 1)?;
+                    e.spec_ring_commit(&vtok_d, &stream_acc, &brk_d, &mut ring_d, &mut pend_d)?;
+                }
+                e.stream().synchronize()?;
+                let ring_h = e.dtoh_u32(&ring_d)?;
+                let cnt = ring_h[0] as usize;
+                for i in 0..cnt {
+                    if out.len() < max_new { out.push(ring_h[1 + i]); }
+                }
+                let pos_h = e.dtoh_i32(&pos_ctr)?[0] as usize;
+                for il in 0..self.layers.len() {
+                    if let Some(kvl) = cache.kv[il].as_mut() { kvl.len = pos_h; }
+                }
+                cache.pos = pos_h;
+                scratch.kv.len = pos_h;
+                pending = Some(ring_h[cnt]);            // last drained token = the live bonus
+                last_token = ring_h[cnt];
+                total_drafted += k * m_rounds;          // upper bound (p-min breaks uncounted)
+                total_accepted += cnt.saturating_sub(m_rounds);
+                round += m_rounds;
+                continue;
+            }
             let pos = cache.pos;            // #tokens committed (EXCLUDES a pending bonus)
             cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
             ph_mark(&mut ph_rest, phase_on);
