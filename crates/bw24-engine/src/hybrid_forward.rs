@@ -22,12 +22,45 @@ fn moe_prefetch_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1"))
 }
 
-/// Best-effort OS page-cache prefetch for mmap-backed expert ranges. Independent of the H2D
-/// copy-stream experiment so storage->RAM and RAM->HBM overlap can be measured separately.
-/// Default off until matched cold-cache A/Bs pass on G7e and the final RTX 5090 target.
-fn moe_page_prefetch_enabled() -> bool {
-    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| std::env::var("BW24_MOE_PAGE_PREFETCH").as_deref() == Ok("1"))
+/// Best-effort OS page-cache prefetch distance for mmap-backed expert ranges. Independent of the
+/// H2D copy-stream experiment so storage->RAM and RAM->HBM overlap can be measured separately.
+/// The opt-in default stays one expert to preserve the original experiment; spill rigs can widen
+/// it with `BW24_MOE_PAGE_PREFETCH_WINDOW` to cover NVMe latency.
+fn moe_page_prefetch_window() -> usize {
+    static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *W.get_or_init(|| page_prefetch_window_from_values(
+        std::env::var("BW24_MOE_PAGE_PREFETCH").as_deref() == Ok("1"),
+        std::env::var("BW24_MOE_PAGE_PREFETCH_WINDOW").ok().as_deref(),
+    ))
+}
+
+fn page_prefetch_window_from_values(enabled: bool, raw_window: Option<&str>) -> usize {
+    if !enabled {
+        return 0;
+    }
+    raw_window
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1)
+}
+
+/// Return only the newly exposed positions in a rolling lookahead window. Position zero seeds the
+/// full window; each later position adds one expert at the far edge. Thus widening the window does
+/// not repeatedly issue `MADV_WILLNEED` for the same range.
+fn page_prefetch_positions(
+    position: usize,
+    len: usize,
+    window: usize,
+) -> std::ops::Range<usize> {
+    if window == 0 || position >= len {
+        return len..len;
+    }
+    let (start, count) = if position == 0 {
+        (1, window)
+    } else {
+        (position.saturating_add(window), 1)
+    };
+    let start = start.min(len);
+    start..start.saturating_add(count).min(len)
 }
 
 /// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
@@ -893,6 +926,7 @@ impl HybridModel {
         // the copy stream before launching the current expert's compute. Pending slots stay invisible
         // to cache hits until dispatch inserts the completion-event wait; current gate/up/down ids are
         // protected from eviction. This changes scheduling only, never the GGUF bytes or GEMM path.
+        let page_window = moe_page_prefetch_window();
 
         // 2. PER TOKEN: routed-expert loop. The ONE dispatch change vs Stage-1: a resident slot
         //    (cache HIT, no H2D) OR a staged slot (MISS) feeds the SAME unchanged qmatvec_view.
@@ -942,8 +976,8 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
-                if moe_page_prefetch_enabled() && j + 1 < sel.len() {
-                    Self::moe_prefetch_host_expert(sel[j + 1] as usize, m);
+                for next in page_prefetch_positions(j, sel.len(), page_window) {
+                    Self::moe_prefetch_host_expert(sel[next] as usize, m);
                 }
                 if use_cache && moe_prefetch_enabled() && j + 1 < sel.len() {
                     let keep = [
@@ -1918,9 +1952,10 @@ impl HybridModel {
         order.sort_by(|&a, &b| groups[b].tok_indices.len()
             .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
+        let page_window = moe_page_prefetch_window();
         for (order_pos, &ex) in order.iter().enumerate() {
-            if moe_page_prefetch_enabled() && order_pos + 1 < order.len() {
-                Self::moe_prefetch_host_expert(order[order_pos + 1], m);
+            for next in page_prefetch_positions(order_pos, order.len(), page_window) {
+                Self::moe_prefetch_host_expert(order[next], m);
             }
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
@@ -2045,5 +2080,34 @@ impl HybridModel {
         }
 
         Ok(moe_out)
+    }
+}
+
+#[cfg(test)]
+mod page_prefetch_tests {
+    use super::{page_prefetch_positions, page_prefetch_window_from_values};
+
+    #[test]
+    fn page_prefetch_window_keeps_existing_opt_in_default() {
+        assert_eq!(page_prefetch_window_from_values(false, None), 0);
+        assert_eq!(page_prefetch_window_from_values(false, Some("8")), 0);
+        assert_eq!(page_prefetch_window_from_values(true, None), 1);
+        assert_eq!(page_prefetch_window_from_values(true, Some("bad")), 1);
+        assert_eq!(page_prefetch_window_from_values(true, Some("0")), 0);
+        assert_eq!(page_prefetch_window_from_values(true, Some("8")), 8);
+    }
+
+    #[test]
+    fn rolling_page_prefetch_advises_each_future_expert_once() {
+        let advised: Vec<_> = (0..7)
+            .flat_map(|position| page_prefetch_positions(position, 7, 3))
+            .collect();
+        assert_eq!(advised, vec![1, 2, 3, 4, 5, 6]);
+
+        let one_ahead: Vec<_> = (0..4)
+            .flat_map(|position| page_prefetch_positions(position, 4, 1))
+            .collect();
+        assert_eq!(one_ahead, vec![1, 2, 3]);
+        assert!(page_prefetch_positions(0, 4, 0).is_empty());
     }
 }
