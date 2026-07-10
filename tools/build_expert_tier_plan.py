@@ -34,8 +34,15 @@ def parse_layers(raw: str) -> list[int]:
     return [int(x) for x in raw.split(",") if x]
 
 
-def read_trace(paths: list[Path], layers: list[int], n_expert: int) -> tuple[dict[int, list[int]], int]:
+def read_trace(
+    paths: list[Path],
+    layers: list[int],
+    n_expert: int,
+    top_k: int,
+    expected_tokens: int | None,
+) -> tuple[dict[int, list[int]], int, dict[int, int]]:
     counts = {layer: [0] * n_expert for layer in layers}
+    tokens_by_layer = {layer: 0 for layer in layers}
     events = 0
     for path in paths:
         with path.open() as handle:
@@ -46,6 +53,7 @@ def read_trace(paths: list[Path], layers: list[int], n_expert: int) -> tuple[dic
                 if line.startswith("{"):
                     row = json.loads(line)
                     layer = int(row["layer"])
+                    tokens = int(row["tokens"])
                     if "experts" in row:
                         pairs = [(int(x["expert"]), int(x["count"])) for x in row["experts"]]
                     else:
@@ -55,15 +63,34 @@ def read_trace(paths: list[Path], layers: list[int], n_expert: int) -> tuple[dic
                     if len(fields) != 3:
                         raise ValueError(f"{path}:{line_no}: expected 'LAYER TOKENS ID,ID,...'")
                     layer = int(fields[0])
+                    tokens = int(fields[1])
                     pairs = [(int(x), 1) for x in fields[2].split(",") if x]
+                assignments = sum(count for _, count in pairs)
+                if assignments != tokens * top_k:
+                    raise ValueError(
+                        f"{path}:{line_no}: {assignments} assignments != "
+                        f"tokens={tokens} * top_k={top_k}"
+                    )
                 if layer not in counts:
                     continue
                 for expert, count in pairs:
                     if expert < 0 or expert >= n_expert:
                         raise ValueError(f"{path}:{line_no}: expert {expert} outside 0..{n_expert - 1}")
                     counts[layer][expert] += count
+                tokens_by_layer[layer] += tokens
                 events += 1
-    return counts, events
+    if expected_tokens is not None:
+        drift = {
+            layer: tokens
+            for layer, tokens in tokens_by_layer.items()
+            if tokens != expected_tokens
+        }
+        if drift:
+            preview = ", ".join(f"{layer}={tokens}" for layer, tokens in list(drift.items())[:8])
+            raise ValueError(
+                f"trace token coverage differs from expected {expected_tokens} per layer: {preview}"
+            )
+    return counts, events, tokens_by_layer
 
 
 def read_mask(path: Path, layers: list[int], n_expert: int) -> dict[int, set[int]]:
@@ -106,8 +133,15 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("uniform-nvfp4 cannot prune experts")
         counts = {layer: [0] * args.expert_count for layer in layers}
         events = 0
+        tokens_by_layer = {layer: 0 for layer in layers}
     else:
-        counts, events = read_trace(args.trace, layers, args.expert_count)
+        counts, events, tokens_by_layer = read_trace(
+            args.trace,
+            layers,
+            args.expert_count,
+            args.top_k,
+            args.expected_tokens,
+        )
         if events == 0:
             raise ValueError("no trace records matched the selected layers")
     assignments: list[dict[str, Any]] = []
@@ -195,6 +229,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 else None
             ),
             "matched_events": events,
+            "expected_prompt_tokens_per_layer": args.expected_tokens,
+            "matched_prompt_tokens_by_layer": {
+                str(layer): tokens_by_layer[layer] for layer in layers
+            },
             "public_eval_data_used_for_selection": False,
         },
         "pruned_experts": pruned,
@@ -207,11 +245,11 @@ def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="bw24-tier-plan-") as tmp:
         root = Path(tmp)
         trace = root / "usage.trace"
-        trace.write_text("1 1 0,0,1,2\n1 1 0,1,2,3\n")
+        trace.write_text("1 2 0,0,1,2\n1 2 0,1,2,3\n")
         args = argparse.Namespace(
             trace=[trace], recipe="usage-pyramid", expert_count=5, original_expert_count=5,
             top_k=2, layers="1", hot_fraction=0.25, low_fraction=0.25, prune_unused=True,
-            mask=None,
+            mask=None, expected_tokens=4,
         )
         plan = build_plan(args)
         summary = plan["layer_summary"]["1"]
@@ -220,17 +258,31 @@ def self_test() -> None:
             "nvfp4": 1, "q3_k": 2, "q2_k": 1,
         }
         assert plan["pruned_experts"] == {"1": [4]}
+        try:
+            read_trace([trace], [1], 5, top_k=2, expected_tokens=5)
+        except ValueError as exc:
+            assert "token coverage" in str(exc)
+        else:
+            raise AssertionError("truncated trace coverage was accepted")
+        malformed = root / "malformed.trace"
+        malformed.write_text("1 2 0,1,2\n")
+        try:
+            read_trace([malformed], [1], 5, top_k=2, expected_tokens=None)
+        except ValueError as exc:
+            assert "assignments" in str(exc)
+        else:
+            raise AssertionError("malformed trace assignment count was accepted")
         uniform = build_plan(argparse.Namespace(
             trace=[], recipe="uniform-nvfp4", expert_count=4, original_expert_count=4,
             top_k=2, layers="1", hot_fraction=0.25, low_fraction=0.25,
-            prune_unused=False, mask=None,
+            prune_unused=False, mask=None, expected_tokens=None,
         ))
         uniform_summary = uniform["layer_summary"]["1"]
         assert uniform_summary["nvfp4"] == 4
         assert uniform_summary["q3_k"] == 0 and uniform_summary["q2_k"] == 0
         assert uniform["calibration"]["trace_files"] == []
         reap_trace = root / "reap.trace"
-        reap_trace.write_text("1 1 " + ",".join(str(x) for x in range(0, 192, 2)) + "\n")
+        reap_trace.write_text("1 12 " + ",".join(str(x) for x in range(0, 192, 2)) + "\n")
         reap_mask = root / "reap-mask.json"
         reap_mask.write_text(json.dumps({
             "format": "bw24-hy3-reap-mask-v1",
@@ -243,6 +295,7 @@ def self_test() -> None:
             trace=[reap_trace], recipe="reap50-plus25", expert_count=192,
             original_expert_count=192, top_k=8, layers="1",
             hot_fraction=0.25, low_fraction=0.25, prune_unused=False, mask=reap_mask,
+            expected_tokens=12,
         ))
         reap_summary = reap["layer_summary"]["1"]
         assert reap_summary["q2_k"] == 48 and reap_summary["nvfp4"] == 48
@@ -251,7 +304,7 @@ def self_test() -> None:
             trace=[], recipe="uniform-nvfp4", expert_count=192,
             original_expert_count=192, top_k=8, layers="1",
             hot_fraction=0.25, low_fraction=0.25, prune_unused=False,
-            mask=reap_mask,
+            mask=reap_mask, expected_tokens=None,
         ))
         assert reap_uniform["layer_summary"]["1"]["nvfp4"] == 96
         assert reap_uniform["pruned_experts"]["1"] == list(range(1, 192, 2))
@@ -266,6 +319,11 @@ def main() -> int:
     parser.add_argument("--expert-count", type=int)
     parser.add_argument("--original-expert-count", type=int)
     parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument(
+        "--expected-tokens",
+        type=int,
+        help="require every selected MoE layer to cover exactly this many prompt tokens",
+    )
     parser.add_argument("--layers", help="inclusive range (1-79) or comma-separated ids")
     parser.add_argument("--hot-fraction", type=float, default=0.25)
     parser.add_argument("--low-fraction", type=float, default=0.25)
