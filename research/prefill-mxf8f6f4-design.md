@@ -186,3 +186,26 @@ the ST_E4M3 lineage already gates green. R-A remains the fallback if the fold ta
 - Still to port: mul_mat_q body (lines ~560-812: xy tiling, need_check arms, PP_PIPE ring),
   mmq_write_back (drop out_scale? keep — it's the global alpha), host launcher ABI
   (bw24_mmq_nvfp4_f8f4 entry, mirror w4a8's, plus fold needs the ue4m3->f32 LUT constant).
+
+## THE WALL, MEASURED (2026-07-10, ncu WarpStateStats on the int8 tile)
+
+Warp Cycles/Issued Instruction 3.85; top stall = MATH PIPE THROTTLE, 32.6% of cycles (est.
+speedup 32.6% — approximately the whole remaining llama pp gap). Occupancy 16.67% is a red
+herring (y64 2-CTA arm: -8%); DRAM 7.4%; ilpswap (accumulator-chain theory): -10.5% REFUTED.
+Root imbalance: per k32 the tile issues 2 tensor MMAs vs ~24 FP32 ops (LUT dequant + per-16
+dA/dB scale epilogue) — the FP32 pipe saturates while tensor idles at ~16% of class.
+
+Lever ladder (rebalance FP32:tensor):
+1. Hoisted epilogue products: precompute the 4 dA*dB combos per (n,k01) -> 2 FMAs/l instead of
+   mul+fma+mul (~17% fewer FP32 ops). CHANGES FP add order -> new numeric config, full battery.
+2. int8 m16n8k32 MMA (halve MMA issue + merge epilogues) requires per-32 scales: either requant
+   per-16->per-32 (the KQ asym-tax class — battery decides) or fold scales into values in the
+   int8 domain (impossible losslessly; int8 grid too coarse) — likely blocked, probe cheaply.
+3. Shift dequant ALU off the FP32 pipe: LUT gather is byte-perm (fine); the ue4m3->f32 +
+   FMA-heavy epilogue could partially move to the int domain (scale as int shift when ue8m0-like
+   — NVFP4 scales are e4m3, not power-2: blocked).
+4. The f8f4 tile already rebalances (values folded, epilogue halved) — its +6-12% pp is this
+   lever partially cashed; its 9B acceptance flip blocks GGUF adoption. A GGUF-side f8f4 with
+   the ACCEPTANCE-NEUTRAL property (exact per-16 via R-A' ratio fold, values exact where pairs
+   equal) was measured — the flip is prompt-KV lineage, not fixable in-tile.
+Next concrete step: lever 1 (smallest, bounded, measurable same-day).
