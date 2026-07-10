@@ -4816,8 +4816,12 @@ impl Engine {
         let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
         let smem_rows = head_dim <= 256 && !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if head_dim == 512 && kv_shared { "fa_decode_vec_q_rows_dpl16_kv" }
-                    else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
+        // kv_shared twin RETIRED (2026-07-11 depth run-gen gate): the wv:=wk premise fails
+        // POST-cache — cached K is k-normed+roped, cached V is not; the twin fed roped keys
+        // in as values. Verify/decode/stream gates were blind (both sides shared the wrong
+        // symbol — the parity law's blind spot); only prefill-vs-decode at depth caught it.
+        let _ = kv_shared;
+        let fname = if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
@@ -4884,14 +4888,14 @@ impl Engine {
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
         let mut sp = fa_split_keys(window, n_head_kv);
-        // windowed split (BW24_FA_SPW, default 48 — re-swept 2026-07-11 after the K=V global
-        // twin shifted the round balance: 48 = plain 167-169 AND spec 275-276 both best;
-        // 32=164/276, 64=165/262, 96=159/269, 16 collapses spec on v4_w staging x rows.
-        // Same parity-law freedom as BW24_FA_SP512: every windowed caller shares this wrapper.
+        // windowed split (BW24_FA_SPW, default 64 — the honest 2026-07-11 N=2 sweep: plain
+        // 156.6->159.3, depth spec 251.2->253.4; 48 trades +3 plain for -10 spec; 16
+        // collapses spec on v4_w staging x rows. The later 48 flip was tuned on the retired
+        // kv-twin config and is VOID. Same parity-law freedom as BW24_FA_SP512.
         {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(48));
+                .and_then(|x| x.parse().ok()).unwrap_or(64));
             if v >= 8 { sp = v; }
         }
         let n_splits_max = (window + sp - 1) / sp;

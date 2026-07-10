@@ -164,7 +164,10 @@ NEXT LEVERS (ranked; 1-3 of the old list DONE):
    once spec >= llama MTP. Then E4B + 31B (DENSE gemma4 variants — graph differs: no MoE
    branch), QAT-vs-NVFP4 assessment (ST 26B at /data/ai-ml/hf-models/gemma4-26b-a4b-nvfp4/).
 
-GATES to keep green: run-gen argmax MATCH (id prompt 2 818 5279 529 7001 563 -> 9079), chat
+GATES to keep green: run-gen argmax MATCH (id prompt 2 818 5279 529 7001 563 -> 9079) AND
+run-gen on the DEPTH prompt (long-ids 1736 — the independent prefill-vs-decode oracle; the
+parity law makes verify/decode/graph share kernels, so those gates CANNOT catch a shared
+wrong kernel — the 2026-07-11 kv-twin incident proof), chat
 'water cycle'/physics prompts (NO bio — owner: blocked upstream), VERIFY-GATE K=1..7,
 spec stream agreement == plain, tokenizer fuzz. Bench: nice -n 19, single-load, check
 compute-apps first (owner's BGE server 260MB must live).
