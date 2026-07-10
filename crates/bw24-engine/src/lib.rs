@@ -551,6 +551,20 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stage (b) 3a: device per-layer KV-len rollback (see spec_rollback_kv).
+    pub fn spec_rollback_kv(&self, len_ptrs: &CudaSlice<u64>, saved: &CudaSlice<i32>,
+                            acc: &CudaSlice<u32>, base: usize, n_layer: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_rollback_kv");
+        let (b, nl) = (base as i32, n_layer as i32);
+        let cfg = LaunchConfig { grid_dim: (n_layer.div_ceil(64) as u32, 1, 1),
+                                 block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let mut bl = self.gpu.stream.launch_builder(&f);
+        bl.arg(len_ptrs).arg(saved).arg(acc).arg(&b).arg(&nl);
+        unsafe { bl.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (b): device next-round seed gather (see spec_seed_gather header).
     /// Caller D2Ds h_seed into fill_prev after (both slots carry the same value in every arm).
     pub fn spec_seed_gather(&self, vx: &CudaSlice<f32>, fill_prev: &CudaSlice<f32>,

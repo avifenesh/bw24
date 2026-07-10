@@ -881,7 +881,8 @@ impl HybridModel {
     /// - Linear layers, per-column path: restore the cloned actual state after column j-1.
     /// Caller guarantees 1 <= j <= t-1 (j==0 rounds take the legacy rollback; j==t is full accept).
     fn commit_verified_prefix(&self, e: &Engine, cache: &mut Cache,
-                              snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt, j: usize)
+                              snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt, j: usize,
+                              kv_lens_done: bool)
                               -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
@@ -894,7 +895,8 @@ impl HybridModel {
         for il in 0..self.layers.len() {
             if let (Some(kvl), Some(saved)) = (cache.kv[il].as_mut(), snap.kv_len[il]) {
                 kvl.len = saved + j;
-                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+                // devacc 3a: spec_rollback_kv already wrote len_d on-device (same value).
+                if !kv_lens_done { e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?; }
             }
             if let Some(rl) = cache.recur[il].as_mut() {
                 if let Some(st) = &ckpt.gdn[il] {
@@ -1604,6 +1606,16 @@ impl HybridModel {
         // PERSISTENT snapshot buffers: allocate ONCE, refresh in place each round (was 2 fresh
         // D2D clones per linear layer per round = 48 allocs + ~50MB of pool churn per round).
         let mut snap = cache.snapshot(e)?;
+        // ROUND-STREAM stage (b) 3a: device table of per-layer kvl.len_d pointers (stable — the
+        // cache never reallocates len_d; see cache.rs "stable pointer" note). 0 = no KV layer.
+        let kv_len_ptrs: Option<CudaSlice<u64>> = if spec_devacc() && !spec_replay {
+            use cudarc::driver::DevicePtr;
+            let ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
+                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
+                None => 0u64,
+            }).collect();
+            Some(e.htod_u64(&ptrs)?)
+        } else { None };
         // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
         // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as
         // column 0 of the NEXT round's verify batch. Under predecessor pairing the next chain
@@ -1809,6 +1821,15 @@ impl HybridModel {
                     // REFRESH reads the OLD fill_prev (predecessor of this round's verify batch);
                     // the update lands after the arms (devacc_seeded guard below).
                     e.spec_seed_gather(&vx, &fill_prev, &acc_out, &mut h_seed_buf, base, n_embd)?;
+                    // 3a: KV lens roll back on device (len = saved + base + n_acc, all arms'
+                    // unified rule; full accept rewrites the verify-left value). Host mirrors
+                    // update after the readback; commit_verified_prefix skips its len_d writes.
+                    if let Some(ptrs) = &kv_len_ptrs {
+                        let saved: Vec<i32> = (0..self.layers.len())
+                            .map(|il| snap.kv_len[il].map(|v| v as i32).unwrap_or(0)).collect();
+                        let saved_d = e.htod_i32(&saved)?;
+                        e.spec_rollback_kv(ptrs, &saved_d, &acc_out, base, self.layers.len())?;
+                    }
                     devacc_seeded = true;
                     let ab = e.dtoh_u32(&acc_out)?;
                     (ab[0] as usize, ab[1])
@@ -2087,7 +2108,8 @@ impl HybridModel {
                 // accept (never compounds: the next verify recomputes true hiddens for all
                 // committed columns).
                 let j = base + n_acc;
-                self.commit_verified_prefix(e, &mut *cache, &snap, ckpt.as_ref().unwrap(), j)?;
+                self.commit_verified_prefix(e, &mut *cache, &snap, ckpt.as_ref().unwrap(), j,
+                                            devacc_seeded)?;
                 let mut seed = e.zeros(n_embd)?;
                 e.copy_view_into(&mut seed, 0, &vx.slice((j - 1) * n_embd..j * n_embd), n_embd)?;
                 // Draft scratch: TRUE-HIDDEN REFRESH of the committed prefix (see the full-accept

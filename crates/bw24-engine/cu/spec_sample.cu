@@ -456,3 +456,20 @@ extern "C" __global__ void spec_seed_gather(
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_embd; i += gridDim.x * blockDim.x)
         h_seed[i] = src[i];
 }
+
+// ROUND-STREAM stage (b) piece 3a: per-layer KV-len rollback ON DEVICE. Unified rule for all
+// three non-replay commit arms: len[il] = saved[il] + j where j = base + n_acc (full accept
+// j == t_v rewrites the value the verify already left — harmless; partial truncates; zero-fold
+// restores the snapshot len). len_ptrs = device table of each full-attn layer's kvl.len_d;
+// saved = snapshot lens; layers without KV carry len_ptr == 0 and are skipped.
+extern "C" __global__ void spec_rollback_kv(
+        unsigned long long* __restrict__ len_ptrs,   // [n_layer] device ptrs to i32 len_d
+        const int* __restrict__ saved,               // [n_layer] snapshot lens
+        const unsigned int* __restrict__ acc,        // acc[0] = n_acc
+        int base, int n_layer) {
+    int il = blockIdx.x * blockDim.x + threadIdx.x;
+    if (il >= n_layer) return;
+    int* lp = (int*)len_ptrs[il];
+    if (lp == nullptr) return;
+    lp[0] = saved[il] + base + (int)acc[0];
+}
