@@ -309,6 +309,10 @@ fn fa_v3_on() -> bool {
 /// correct on the DEFAULT KV formats — and needs dpl % 4 == 0 consecutive quants per lane
 /// (head_dim % 128 == 0; both daily models are hd256). All three dispatch sites share this
 /// predicate so the twins can never diverge.
+fn fa_v4_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA_V4").as_deref() == Ok("1"))
+}
 fn fa_v3_active(head_dim: usize) -> bool {
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
 }
@@ -3941,7 +3945,17 @@ impl Engine {
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
                 std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
             });
-            if fa_v3_active(head_dim) {
+            if fa_v4_on() && head_dim == 256 {
+                // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
+                // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
+                let fv = self.func("fa_decode_vec_q_v4");
+                let shmem = (11520 + 32 * head_dim * 2) as u32;   // fa_v4_smem + sV
+                use cudarc::driver::sys::CUfunction_attribute_enum as A;
+                fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+                (fv,
+                 LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
+                     block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
+            } else if fa_v3_active(head_dim) {
                 // FA v3 lane: dp4a-K hybrid (register-quantized Q, raw q8_0 K, staged-V kept).
                 // smem = sV only (half of v2's).
                 let fv = self.func("fa_decode_vec_q_v3");
@@ -4038,16 +4052,19 @@ impl Engine {
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
+        let v4 = fa_v4_on() && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
         let smem_rows = !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
-        let fname = if v3 { "fa_decode_vec_q_rows_v3" }
+        let fname = if v4 { "fa_decode_vec_q_rows_v4" }
+                    else if v3 { "fa_decode_vec_q_rows_v3" }
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = self.func(fname);
-        let shmem = if v3 || smem_rows || fa_v2_on() {
-            // v3 stages sV only (16KB @hd256); v2/smem twins stage sK+sV (32KB).
-            let sh = (if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;
+        let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
+            // v4: fa_v4_smem (11.5KB) + sV; v3 stages sV only; v2/smem twins stage sK+sV.
+            let sh = (if v4 { 11520 + 32 * head_dim * 2 }
+                      else if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             sh

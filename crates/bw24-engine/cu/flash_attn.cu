@@ -3294,3 +3294,310 @@ extern "C" __global__ void fa_decode_combine_rows(
     O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
 }
 
+
+// ===================== FA V4: KEY-PER-LANE SCORE PHASE (2026-07-10) =====================
+// fa_v3 at d6257 runs at 14% of bytes-wall — latency-bound on the reduce-per-key structure:
+// per 32-key tile, 32 x (8 dp4a + 5-shfl warp_reduce) ≈ 416 warp-serial steps. V4 stages the
+// K tile INT-REPACKED to smem (qs as aligned ints + d halves separated) and each LANE computes
+// the FULL q·k_lane dot chunk-serially (8 chunks x 8 dp4a, all 32 keys in PARALLEL, zero
+// shuffles in the score phase). B2 softmax bookkeeping + B3 V-accumulation are the v3 bodies
+// verbatim (my_score lands in lane j exactly as v3's butterfly left it).
+// NEW NUMERIC CONFIG: the per-key dot accumulates chunk-serial in ONE lane (v3: lane-parallel
+// + tree reduce) — decode and verify flip TOGETHER (dispatch parity keeps self-consistency);
+// the battery + acceptance-shift check arbitrate per model. q8_0 K / q5_1 V / hd256 only.
+// smem: sQ 64 ints + 8 dQ, sK 32x(64 ints + 8 halves) ≈ 8.7KB, sV 32xhd bf16 = 16KB -> ~25KB.
+struct fa_v4_smem {
+    int   q_ints[8][64];            // [gqa<=8][64] per-warp quantized Q (8 chunks x 8 ints)
+    float q_d[8][8];                // [gqa][8] per-chunk Q scales
+    int   k_ints[FA_DEC_TILE][64];  // repacked K tile
+    float k_d[FA_DEC_TILE][8];      // per-chunk K scales
+    // sV bf16 follows in dynamic smem (v3 layout)
+};
+
+static __device__ __forceinline__ void fa_v4_stage_q(
+        const float* __restrict__ Q, size_t qoff, float scale, int lane, int wy,
+        fa_v4_smem* sm) {
+    // v3's qquant grouping verbatim (dpl=8: 4-lane groups of 32 elems), then smem publish.
+    int qq[FA_DEC_MAX_DPL / 4];
+    float dQ;
+    fa_dec_v3_qquant(Q, qoff, scale, 8, lane, qq, dQ);
+    // lane holds elems [lane*8, lane*8+8) as 2 ints; chunk c = elems [c*32,(c+1)*32) = lanes 4c..4c+3
+    sm->q_ints[wy][lane * 2]     = qq[0];
+    sm->q_ints[wy][lane * 2 + 1] = qq[1];
+    if ((lane & 3) == 0) sm->q_d[wy][lane >> 2] = dQ;
+}
+
+static __device__ __forceinline__ void fa_v4_stage_k(
+        const uint8_t* __restrict__ K, int t0, int nt, int bt, int bsz,
+        int kblk0, long k_tok_bytes, fa_v4_smem* sm) {
+    // task = (key j, chunk c): unpack q8_0 block (2B d + 32 int8) into aligned ints + half.
+    for (int task = bt; task < nt * 8; task += bsz) {
+        int j = task >> 3, c = task & 7;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        sm->k_d[j][c] = __half2float(*(const half*)blk);
+        const uint8_t* qs = blk + 2;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            uint32_t v;
+            memcpy(&v, qs + 4 * w, 4);
+            sm->k_ints[j][c * 8 + w] = (int)v;
+        }
+    }
+}
+
+extern "C" __global__ void fa_decode_vec_q_v4(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, int T_kv,
+        float scale, int n_splits, long k_tok_bytes, long v_tok_bytes)
+{
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa  = n_head / n_head_kv;
+    const int wy   = threadIdx.y;
+    const int lane = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head = kv_head * gqa + wy;
+    const int dpl  = head_dim >> 5;           // == 8 (host-gated hd256)
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    extern __shared__ unsigned char sm_raw_v4[];
+    fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
+    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+
+    fa_v4_stage_q(Q, (size_t)head * head_dim, scale, lane, wy, sm);
+    __syncthreads();
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    const int bt  = wy * WARP_SZ + lane;
+    const int bsz = WARP_SZ * gqa;
+    const int kblk0 = (kv_head * head_dim) >> 5;
+
+    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+        const int nt = min(FA_DEC_TILE, t_hi - t0);
+        // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
+        for (int b = bt; b < nt * dpl; b += bsz) {
+            const int j     = b / dpl;
+            const int blk_i = b - j * dpl;
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * 24;
+            uint32_t wdm; memcpy(&wdm, blk, 4);
+            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
+            uint32_t qh; memcpy(&qh, blk + 4, 4);
+            uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e2 = 0; e2 < 32; ++e2) {
+                const int byte = (e2 < 16) ? e2 : e2 - 16;
+                const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
+                const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
+                const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
+                out[e2] = __float2bfloat16(d * (float)q5 + m);
+            }
+        }
+        fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
+        __syncthreads();
+
+        // ---- V4 SCORE PHASE: lane j owns key j; full dot chunk-serial, zero shuffles ----
+        float my_score = NEG_INF;
+        if (lane < nt) {
+            float s = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < 8; c++) {
+                int sumi = 0;
+                #pragma unroll
+                for (int w = 0; w < 8; w++)
+                    sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+            }
+            my_score = s;
+        }
+        // tile max across lanes (one 5-shfl tree per TILE, not per key)
+        float tile_max = m_i;
+        {
+            float v = my_score;
+            #pragma unroll
+            for (int off = 16; off > 0; off >>= 1)
+                v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+            tile_max = fmaxf(tile_max, v);
+        }
+
+        // ---- B2 (v3 verbatim) ----
+        const float m_new = tile_max;
+        const float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        const float p_lane = (lane < nt) ? exp2f((my_score - m_new) * LOG2E) : 0.0f;
+        l_i = l_i * alpha + warp_reduce_sum(p_lane);
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+            if (i < dpl) acc[i] *= alpha;
+        }
+        m_i = m_new;
+
+        // ---- B3 (v3 body; unroll 8 — the MACs are independent across j, ILP hides LDS) ----
+        #pragma unroll 8
+        for (int j = 0; j < nt; ++j) {
+            const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * __bfloat162float(vv.x);
+                    acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                }
+            }
+        }
+        __syncthreads();   // tile fully consumed before restaging
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);   // paired-B3 dim map (v3)
+            partO[((size_t)head * n_splits + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) { partM[head * n_splits + split] = m_i; partL[head * n_splits + split] = l_i; }
+}
+
+// V4 rows twin (spec verify): grid.z = query row, per-row causal bound — same v4 body, so
+// verify and decode share the numeric config when BW24_FA_V4=1 flips both (dispatch parity).
+extern "C" __global__ void fa_decode_vec_q_rows_v4(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int r        = blockIdx.z;             // query row (verify column)
+    const int T_kv     = t_kv_base + r + 1;      // per-row causal bound
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa  = n_head / n_head_kv;
+    const int wy   = threadIdx.y;
+    const int lane = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head = kv_head * gqa + wy;
+    const int dpl  = head_dim >> 5;           // == 8 (host-gated hd256)
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    extern __shared__ unsigned char sm_raw_v4[];
+    fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
+    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+
+    fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
+    __syncthreads();
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    const int bt  = wy * WARP_SZ + lane;
+    const int bsz = WARP_SZ * gqa;
+    const int kblk0 = (kv_head * head_dim) >> 5;
+
+    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+        const int nt = min(FA_DEC_TILE, t_hi - t0);
+        // stage V (v3/v2 recipe verbatim, all warps) + K repack (all warps)
+        for (int b = bt; b < nt * dpl; b += bsz) {
+            const int j     = b / dpl;
+            const int blk_i = b - j * dpl;
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * 24;
+            uint32_t wdm; memcpy(&wdm, blk, 4);
+            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
+            uint32_t qh; memcpy(&qh, blk + 4, 4);
+            uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e2 = 0; e2 < 32; ++e2) {
+                const int byte = (e2 < 16) ? e2 : e2 - 16;
+                const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
+                const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
+                const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
+                out[e2] = __float2bfloat16(d * (float)q5 + m);
+            }
+        }
+        fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
+        __syncthreads();
+
+        // ---- V4 SCORE PHASE: lane j owns key j; full dot chunk-serial, zero shuffles ----
+        float my_score = NEG_INF;
+        if (lane < nt) {
+            float s = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < 8; c++) {
+                int sumi = 0;
+                #pragma unroll
+                for (int w = 0; w < 8; w++)
+                    sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+            }
+            my_score = s;
+        }
+        // tile max across lanes (one 5-shfl tree per TILE, not per key)
+        float tile_max = m_i;
+        {
+            float v = my_score;
+            #pragma unroll
+            for (int off = 16; off > 0; off >>= 1)
+                v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+            tile_max = fmaxf(tile_max, v);
+        }
+
+        // ---- B2 (v3 verbatim) ----
+        const float m_new = tile_max;
+        const float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        const float p_lane = (lane < nt) ? exp2f((my_score - m_new) * LOG2E) : 0.0f;
+        l_i = l_i * alpha + warp_reduce_sum(p_lane);
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+            if (i < dpl) acc[i] *= alpha;
+        }
+        m_i = m_new;
+
+        // ---- B3 (v3 body; unroll 8 — the MACs are independent across j, ILP hides LDS) ----
+        #pragma unroll 8
+        for (int j = 0; j < nt; ++j) {
+            const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * __bfloat162float(vv.x);
+                    acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                }
+            }
+        }
+        __syncthreads();   // tile fully consumed before restaging
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);   // paired-B3 dim map (v3)
+            partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) {
+        partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+        partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+    }
+}
