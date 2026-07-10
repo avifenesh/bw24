@@ -439,6 +439,35 @@ impl Engine {
         Ok(())
     }
 
+    /// In-graph sampling-event counter bump (spec_sample.cu kernel 5): ctr[0] += 1. The sampled
+    /// graph-draft chain replays with FIXED kernel args, so the Philox event counter must be
+    /// DEVICE data — the host seeds it once per round; every replay bumps it before the perturb
+    /// reads it (counter is data, not state — graph-replay-safe).
+    pub fn sctr_inc(&self, ctr: &mut CudaSlice<u32>) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("bw24_sctr_inc");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(&mut *ctr);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Graph-capturable `gumbel_perturb`: the sampling-event counter comes from DEVICE memory
+    /// (`ctr[0]`) instead of a host scalar. Identical math to `gumbel_perturb` at
+    /// stream_pos == ctr[0] (same Philox call, same lane mapping) — the eager and graph sampled
+    /// chains produce bit-identical perturbations for the same (seed, counter, temp).
+    pub fn gumbel_perturb_ctr(&self, x: &CudaSlice<f32>, y: &mut CudaSlice<f32>, n: usize,
+                              seed: u64, ctr: &CudaSlice<u32>, temp: f32)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gumbel_perturb_ctr_f32");
+        let (ni, slo, shi) = (n as i32, (seed & 0xFFFF_FFFF) as u32, (seed >> 32) as u32);
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut *y).arg(&ni).arg(&slo).arg(&shi).arg(ctr).arg(&temp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// out[pair] = softmax_temp(x[rows[pair]])[ids[pair]] for npair (row, id) pairs; rows index
     /// into x with `row_stride` f32s per row. temp<=0: out = 1.0 iff id is the row argmax
     /// (smallest-index tie-break — matches the argmax-gate contract).
