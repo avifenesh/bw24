@@ -16,6 +16,12 @@ disk lookahead does not block the CUDA owner thread. Test buffered and `O_DIRECT
 same state machine; add io_uring only if it beats that simpler baseline. The deferred ring design is
 specified in [`io-uring-spill-design.md`](io-uring-spill-design.md).
 
+The first Hy3 quality attempt exposed and fixed an architecture-scoping bug in RMSNorm loading.
+The official-reference layer gate, coherent generation smoke, exact mmap/pread parity result, and
+the hashes of traces invalidated by that fix are recorded in
+[`evidence/hy3-runtime-correctness-g7e-20260710.md`](evidence/hy3-runtime-correctness-g7e-20260710.md).
+Do not use a routing trace captured before commit `38a5b08`.
+
 GGUF remains bw24's general runtime and delivery focus. This study reads the pinned Hy3
 safetensors checkpoint as common quantization source material and uses repack overlays to represent
 per-expert precision experimentally. Spill, cache, prefetch, and dispatch changes must stay in the
