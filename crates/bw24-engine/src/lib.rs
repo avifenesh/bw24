@@ -4831,13 +4831,24 @@ impl Engine {
              .arg(&ktb).arg(&vtb);
             unsafe { b.launch(cfg)?; }
         }
-        let (fc, cfg2) = (self.func("fa_decode_combine_rows"),
-            LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
-                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
-        let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
-          .arg(&base_i).arg(&nspm).arg(&spk);
-        unsafe { b2.launch(cfg2)?; }
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        if head_dim == 512 {
+            // device-len combine (shared by verify/eager/graph — parity by symbol): the
+            // per-row n_splits derives from the SAME counter the rows kernel read.
+            let (bd, plus) = base_dev.unwrap();
+            let fc = self.func("fa_decode_combine_rows_dc");
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
+              .arg(bd).arg(&plus).arg(&nspm).arg(&spk);
+            unsafe { b2.launch(cfg2)?; }
+        } else {
+            let fc = self.func("fa_decode_combine_rows");
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
+              .arg(&base_i).arg(&nspm).arg(&spk);
+            unsafe { b2.launch(cfg2)?; }
+        }
         Ok(())
     }
 
@@ -4939,9 +4950,10 @@ impl Engine {
         let fc = self.func("fa_decode_combine_rows_dc");
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let plus0 = 0i32;
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
-          .arg(base_dev).arg(&nspm).arg(&spk);
+          .arg(base_dev).arg(&plus0).arg(&nspm).arg(&spk);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
@@ -5051,8 +5063,14 @@ impl Engine {
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
-        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
-        fa_vec = fa_vec && head_dim <= 256 && head_dim % 32 == 0;
+        let fa_ok = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
+        // hd512 dpl16 vec lane (gemma globals, 2026-07-11 graph-arc fix): the original key
+        // hardcoded vec = hd<=256, so for hd512 it bucketed by the SCALAR 256-key splits while
+        // the dpl16/rows_dpl16 kernels split by the ladder — n_splits changed WITHIN a bucket
+        // (mid-ctx graph mismatch at pos 19 + partials OOB at longer runs). Mirror the real
+        // fa_decode dispatch: vec512 above the fa512 floor, vec256 as before.
+        let vec512 = fa_ok && head_dim == 512 && t_kv >= fa512_min_tkv();
+        let fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)

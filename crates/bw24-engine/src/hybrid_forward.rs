@@ -2693,7 +2693,7 @@ impl HybridModel {
     pub fn gemma4_decode_step_dc(&self, e: &Engine, token_d: &CudaSlice<u32>,
                                  pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
                                  embd_qt: i32, embd_rb: usize, cache: &mut Cache,
-                                 n_vocab: usize, cap_bucket_max: Option<usize>)
+                                 n_vocab: usize, cap_bucket_max: Option<(usize, usize)>)
                                  -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
         let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
         self.gemma4_decode_step_dc_into(e, token_d, pos_d, embd_gpu, embd_qt, embd_rb, cache,
@@ -2707,7 +2707,7 @@ impl HybridModel {
     pub fn gemma4_decode_step_dc_into(&self, e: &Engine, token_d: &CudaSlice<u32>,
                                       pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
                                       embd_qt: i32, embd_rb: usize, cache: &mut Cache,
-                                      n_vocab: usize, cap_bucket_max: Option<usize>,
+                                      n_vocab: usize, cap_bucket_max: Option<(usize, usize)>,
                                       tok_out: &mut CudaSlice<u32>)
                                       -> Result<(), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
@@ -2746,7 +2746,7 @@ impl HybridModel {
     fn gemma4_decode_attn_dc(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
                              hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
                              pos_d: &CudaSlice<i32>, cache: &mut Cache,
-                             cap_bucket_max: Option<usize>)
+                             cap_bucket_max: Option<(usize, usize)>)
                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
         let eps = self.cfg.rms_eps;
@@ -2821,13 +2821,29 @@ impl HybridModel {
                                 kvl.k_tok_bytes, kvl.v_tok_bytes)?;
                 }
             }
-            Some(b) => {
-                // capture: full-buffer views + device length (V1 scope: t_kv <= window,
-                // caller gates — no window offsets in-graph).
+            Some((b_swa, b_glob)) => {
+                // capture: full-buffer views + device length. PARITY LAW port (graph arc step
+                // 3): the SAME regime branches as dc-eager, pinned per arm — b_swa is the
+                // exact-key t_kv for the dc family (n_splits constant per bucket), b_glob is
+                // the RUNG max for the rows family (kernels derive per-replay splits from
+                // kvl.len_d; grid/partials sized for the rung end, excess splits exit).
                 let k_view = e.view_u8(&kvl.k, kvl.k.len());
                 let v_view = e.view_u8(&kvl.v, kvl.v.len());
-                e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
-                               scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
+                let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+                if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
+                    e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, b_glob - 1,
+                                     1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     Some((&kvl.len_d, -1)))?;
+                } else if swa && b_swa > win && hd == 256 && rows_on {
+                    e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                       &kvl.len_d, -1, 1, scale, win,
+                                       kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    let b = if swa { b_swa } else { b_glob };
+                    e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
+                                   scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                }
             }
         }
         Ok(e.matmul(&fa.wo, &attn, 1)?)
@@ -2860,7 +2876,7 @@ impl HybridModel {
             .find(|p| *p.1).map(|p| *p.0 as usize).unwrap_or(8);
         let nkv_g = g4.head_count_kv.iter().zip(g4.swa_pattern.iter())
             .find(|p| !*p.1).map(|p| *p.0 as usize).unwrap_or(2);
-        let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize)),
+        let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize), bool, bool),
                                                   cudarc::driver::CudaGraph> = Default::default();
         let mut out = Vec::with_capacity(max_new);
         let mut reason = StopReason::MaxNew;
@@ -2871,9 +2887,25 @@ impl HybridModel {
             if eos.contains(&next) { reason = StopReason::Eos; break; }
             if !on_token(next) { reason = StopReason::Callback; break; }
             let t_kv = cache.pos + 1;
-            let key = (e.fa_bucket_key(t_kv, hd_s, nkv_s), e.fa_bucket_key(t_kv, hd_g, nkv_g));
+            // Bucket key per ARM (graph arc step 3):
+            //  - swa component: dc family under the window (exact (fa_vec, n_splits) key —
+            //    n_splits must be constant per bucket); rows_w above it (window-constant, so
+            //    the component collapses to a single marker).
+            //  - global component: dc family under the fa512 floor (exact key); rows_dpl16
+            //    at/above it — the kernel derives splits from len_d per replay, so buckets
+            //    are power-of-2 RUNGS (one capture per doubling; grid sized for the rung end).
+            let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+            let f512 = crate::fa512_min_tkv();
+            let key_s = if t_kv > win { (true, usize::MAX) } else { e.fa_bucket_key(t_kv, hd_s, nkv_s) };
+            let (key_g, rung_end) = if t_kv >= f512 {
+                // strict upper bound: the rung must ROLL at exact powers (t_kv==1024 starts
+                // the [1024,2048) bucket) — sizing covers every replayed T_kv < end.
+                let end = (t_kv + 1).next_power_of_two().max(f512 * 2);
+                ((true, end), end)
+            } else { (e.fa_bucket_key(t_kv, hd_g, nkv_g), t_kv) };
+            let key = (key_s, key_g, t_kv >= f512, t_kv > win);
             if !graphs.contains_key(&key) {
-                let bucket_max = t_kv;
+                let bucket_max = (t_kv, rung_end);
                 // snapshot device+host state (the 3 capture-warmup runs leave no residue).
                 let snap = cache.snapshot(e)?;
                 let pos_save = e.dtoh_i32_one(&pos_d)?;
