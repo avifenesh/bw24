@@ -523,6 +523,21 @@ extern "C" __global__ void spec_ring_commit(
     pend[0] = acc[1];
 }
 
+// ROUND-STREAM rollback, stream form: every tracked counter (per-layer len_d rows + the pos
+// counter itself as the last row) takes pos_start + base + n_acc — under stream all lens equal
+// the pos counter at round start, so no per-layer saved array is needed.
+extern "C" __global__ void spec_rollback_stream(
+        unsigned long long* __restrict__ len_ptrs,   // [n_rows] device ptrs to i32 counters
+        const int* __restrict__ pos_start,           // [1] pos at round start
+        const unsigned int* __restrict__ acc,        // acc[0] = n_acc
+        int base, int n_rows) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_rows) return;
+    int* lp = (int*)len_ptrs[i];
+    if (lp == nullptr) return;
+    lp[0] = pos_start[0] + base + (int)acc[0];
+}
+
 // i32 counter copy (scratch draft-KV len <- pos counter; draft rope pos <- pos + delta).
 extern "C" __global__ void i32_copy_add(const int* __restrict__ src, int* __restrict__ dst,
                                         int delta) {

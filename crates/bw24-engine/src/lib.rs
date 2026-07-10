@@ -551,6 +551,20 @@ impl Engine {
         Ok(y)
     }
 
+    /// ROUND-STREAM stream rollback: all counters <- pos_start + base + n_acc.
+    pub fn spec_rollback_stream(&self, len_ptrs: &CudaSlice<u64>, pos_start: &CudaSlice<i32>,
+                                acc: &CudaSlice<u32>, base: usize, n_rows: usize)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_rollback_stream");
+        let (b, nr) = (base as i32, n_rows as i32);
+        let cfg = LaunchConfig { grid_dim: (n_rows.div_ceil(64) as u32, 1, 1),
+                                 block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let mut bl = self.gpu.stream.launch_builder(&f);
+        bl.arg(len_ptrs).arg(pos_start).arg(acc).arg(&b).arg(&nr);
+        unsafe { bl.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 4 epilogue: ring commit + tiny counter copies.
     pub fn spec_ring_commit(&self, vtok: &CudaSlice<u32>, acc: &CudaSlice<u32>,
                             brk: &CudaSlice<u32>, ring: &mut CudaSlice<u32>,
