@@ -953,8 +953,13 @@ impl HostExps {
                 });
             }
         }
-        if src.preserve_expert_encodings()
-            || signatures.windows(2).any(|pair| pair[0] != pair[1]) {
+        let mixed_layout = signatures.windows(2).any(|pair| pair[0] != pair[1]);
+        if src.preserve_expert_encodings() && !mixed_layout {
+            if let Some(uniform) = Self::load_uniform_mmap_from_source(src, il, proj, n_expert)? {
+                return Ok(uniform);
+            }
+        }
+        if src.preserve_expert_encodings() || mixed_layout {
             return Self::load_mixed_from_source(src, il, proj, n_expert);
         }
 
@@ -1153,6 +1158,71 @@ impl HostExps {
                       expert_stride, layouts: None, macros: None })
     }
 
+    /// Coalesce a uniform v2 overlay back into the existing stacked-slab contract without copying.
+    /// The artifact stores one record per original expert for coverage validation, but a full-bank
+    /// uniform arm writes those records contiguously into one file. Keeping `layouts=None` preserves
+    /// the uniform fused kernels while `HostBuf::Mmap` keeps the >RAM artifact zero-copy.
+    fn load_uniform_mmap_from_source(src: &dyn TensorSource, il: u32, proj: &str, n_expert: usize)
+                                     -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        if src.active_experts(il).is_some_and(|mask| mask.iter().any(|&active| !active)) {
+            return Ok(None);
+        }
+        let mut first_map = None;
+        let mut base_offset = 0usize;
+        let mut expert_stride = 0usize;
+        let mut in_f = 0usize;
+        let mut out_f = 0usize;
+        let mut qtype = 0i32;
+        let mut row_bytes = 0usize;
+        let mut macros = vec![1.0f32; n_expert];
+        for ex in 0..n_expert {
+            let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+            let name = format!("{stem}.weight");
+            let Some((map, offset, len)) = src.find_expert_mmap(&name) else {
+                return Ok(None);
+            };
+            let Some(v) = src.find(&name) else { return Ok(None) };
+            if v.ne.len() != 2 { return Ok(None); }
+            let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+            let Some(cur_row_bytes) = staged_expert_row_bytes(v.ggml_type, cur_in) else {
+                return Ok(None);
+            };
+            let cur_qtype = staged_expert_qtype(v.ggml_type).unwrap();
+            if ex == 0 {
+                base_offset = offset;
+                expert_stride = len;
+                in_f = cur_in;
+                out_f = cur_out;
+                qtype = cur_qtype;
+                row_bytes = cur_row_bytes;
+                first_map = Some(map);
+            } else if !std::sync::Arc::ptr_eq(first_map.as_ref().unwrap(), &map)
+                || offset != base_offset + ex * expert_stride
+                || len != expert_stride
+                || (cur_in, cur_out, cur_qtype, cur_row_bytes) != (in_f, out_f, qtype, row_bytes) {
+                return Ok(None);
+            }
+            if let Some(scale) = src.find(&format!("{stem}.scale")) {
+                macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
+            }
+        }
+        assert_eq!(expert_stride, out_f * row_bytes);
+        let total = n_expert * expert_stride;
+        let all_one = macros.iter().all(|&scale| scale == 1.0);
+        Ok(Some(HostExps {
+            bytes: HostBuf::Mmap { map: first_map.unwrap(), off: base_offset, len: total },
+            tiers: None,
+            qtype,
+            in_f,
+            out_f,
+            n_expert,
+            row_bytes,
+            expert_stride,
+            layouts: None,
+            macros: if all_one { None } else { Some(macros) },
+        }))
+    }
+
     fn load_mixed_from_source(src: &dyn TensorSource, il: u32, proj: &str, n_expert: usize)
                               -> Result<Self, Box<dyn std::error::Error>> {
         let mut tiers = Vec::with_capacity(n_expert);
@@ -1329,6 +1399,7 @@ mod tests {
 
     impl TensorSource for MmapExpertSource {
         fn config(&self) -> ModelConfig { panic!("unused by HostExps mmap-loader test") }
+        fn preserve_expert_encodings(&self) -> bool { true }
         fn find(&self, name: &str) -> Option<TensorView<'_>> {
             let ex = match name {
                 "blk.0.ffn_gate_exps.0.weight" => 0,
@@ -1437,6 +1508,28 @@ mod tests {
         let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 2).unwrap();
         assert!(matches!(exps.tiers.as_ref().unwrap()[0], HostBuf::Mmap { .. }));
         assert!(matches!(exps.tiers.as_ref().unwrap()[1], HostBuf::Mmap { .. }));
+        assert_eq!(exps.expert_bytes(0), &bytes[..expert_len]);
+        assert_eq!(exps.expert_bytes(1), &bytes[expert_len..]);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn uniform_expert_loader_coalesces_contiguous_mmap() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-uniform-mmap-{}", std::process::id()
+        ));
+        let expert_len = 2 * 84;
+        let mut bytes = vec![0x19; expert_len];
+        bytes.extend(vec![0x91; expert_len]);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&file).unwrap() });
+        let source = MmapExpertSource { map, expert_len };
+        let exps = HostExps::load_uniform_mmap_from_source(&source, 0, "gate", 2)
+            .unwrap().expect("contiguous mmap should coalesce");
+        assert!(exps.is_uniform_layout());
+        assert!(matches!(&exps.bytes, HostBuf::Mmap { .. }));
+        assert_eq!(exps.expert_stride, expert_len);
         assert_eq!(exps.expert_bytes(0), &bytes[..expert_len]);
         assert_eq!(exps.expert_bytes(1), &bytes[expert_len..]);
         std::fs::remove_file(path).ok();
