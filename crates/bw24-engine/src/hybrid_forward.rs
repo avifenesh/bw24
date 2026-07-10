@@ -3014,8 +3014,11 @@ impl HybridModel {
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, per-row split
-        // geometry == the decode window-view chain. BW24_GEMMA_ROWS_W=0 -> per-token loop.
-        if hd == 256 && swa && base_len + 1 >= win
+        // geometry == the decode window-view chain. ONLY when v4 is the decode lane at the
+        // window (rows_smem_w measured a row-0 divergence — jsonl 2026-07-10; until root-caused
+        // the non-v4 window regime rides the per-token loop = exact decode parity).
+        // BW24_GEMMA_ROWS_W=0 -> per-token loop.
+        if hd == 256 && swa && base_len + 1 >= win && crate::fa_v4_at_pub(win)
             && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);

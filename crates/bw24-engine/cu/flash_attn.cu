@@ -2527,6 +2527,193 @@ static __device__ __forceinline__ void fa_dec_v2_walk(
 }
 
 // T=1 decode twin. Same signature/grid/block/partial-layout as fa_decode_vec_q.
+extern "C" __global__ void fa_decode_vec_q_rows_smem_w(
+        const float* __restrict__ Q,    // [T, n_head, head_dim] token-major (verify q stack)
+        const uint8_t* __restrict__ K,  // q8_0 cache [token, kv_dim_k bytes]
+        const uint8_t* __restrict__ V,  // q5_1 cache [token, kv_dim_v bytes]
+        float* __restrict__ partO,      // [T, n_head, n_splits_max, head_dim]
+        float* __restrict__ partM,      // [T, n_head, n_splits_max]
+        float* __restrict__ partL,      // [T, n_head, n_splits_max]
+        int head_dim, int n_head, int n_head_kv, int t_kv_base,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes, int window)
+{
+    const int r        = blockIdx.z;             // query row (verify column)
+    const int T_kv     = t_kv_base + r + 1;      // this row's causal key bound
+    // WINDOWED twin (gemma R6): every row attends exactly `window` keys; split geometry/key
+    // order mirror the decode window-VIEW chain (start+j absolute; host gates full-window rows).
+    const int start    = T_kv - window;
+    const int n_splits = (window + split_keys - 1) / split_keys;
+    const int kv_head  = blockIdx.x;
+    const int split    = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa     = n_head / n_head_kv;
+    const int wy      = threadIdx.y;
+    const int lane    = threadIdx.x;
+    if (wy >= gqa) return;
+    const int head    = kv_head * gqa + wy;
+    const int dpl     = head_dim >> 5;
+
+    const int per  = (window + n_splits - 1) / n_splits;
+    const int t_lo = start + split * per;
+    const int t_hi = start + min(window, split * per + per);
+
+    float q_reg[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            q_reg[i] = Q[((size_t)r * n_head + head) * head_dim + d] * scale;
+        } else q_reg[i] = 0.0f;
+    }
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
+
+    // SMEM-BROADCAST walk (deep-ctx twin of the register walk below in _rows): dequant each
+    // 32-key tile ONCE per CTA into smem, all gqa warps consume it. BIT-IDENTICAL per (token,
+    // split) to the register path: same bf16 round-trip of dequanted K/V, same ascending-i
+    // accumulation, same warp butterfly (the smem value IS the bf16-rounded dequant the register
+    // path computes inline). Dispatched by the host above BW24_FA_SMEM_TKV, mirroring fa_decode.
+    extern __shared__ __nv_bfloat16 ssh_rows[];   // sK[FA_DEC_TILE*head_dim] then sV[...]
+    __nv_bfloat16* sK = ssh_rows;
+    __nv_bfloat16* sV = sK + FA_DEC_TILE * head_dim;
+    const int bt  = wy * WARP_SZ + lane;
+    const int bsz = WARP_SZ * gqa;
+    {
+        const int kblk0 = (kv_head * head_dim) >> 5;
+        for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+            const int nt = min(FA_DEC_TILE, t_hi - t0);
+            for (int idx = bt; idx < nt * head_dim; idx += bsz) {
+                int j = idx / head_dim;
+                int d = idx - j * head_dim;
+                const uint8_t* kb = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + (d >> 5)) * K_BLK_B;
+                sK[idx] = __float2bfloat16(dq_K_lane(kb, d & 31));
+                const uint8_t* vb = V + (size_t)(t0 + j) * v_tok_bytes + (size_t)(kblk0 + (d >> 5)) * V_BLK_B;
+                sV[idx] = __float2bfloat16(dq_V_lane(vb, d & 31));
+            }
+            __syncthreads();
+            for (int j = 0; j < nt; ++j) {
+                const __nv_bfloat16* kj = sK + (size_t)j * head_dim;
+                float part = 0.0f;
+                #pragma unroll
+                for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                    if (i < dpl) part += q_reg[i] * __bfloat162float(kj[lane + (i << 5)]);
+                float score = warp_reduce_sum(part);
+                float m_new = fmaxf(m_i, score);
+                float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+                float p     = exp2f((score - m_new) * LOG2E);
+                const __nv_bfloat16* vj = sV + (size_t)j * head_dim;
+                #pragma unroll
+                for (int i = 0; i < FA_DEC_MAX_DPL; ++i)
+                    if (i < dpl) acc[i] = acc[i] * alpha + p * __bfloat162float(vj[lane + (i << 5)]);
+                l_i = l_i * alpha + p;
+                m_i = m_new;
+            }
+            __syncthreads();
+        }
+    }
+    // ---- ORIGINAL register walk removed in this twin; tail below unchanged ----
+    if (false) {
+        const int kblk0 = (kv_head * head_dim) >> 5;
+        for (int t = t_lo; t < t_hi; ++t) {
+            const uint8_t* kt = K + (size_t)t * k_tok_bytes + (size_t)kblk0 * K_BLK_B;
+            float part = 0.0f;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = kt + i * K_BLK_B;
+                    // bf16 round-trip: BIT-IDENTICAL to fa_decode_vec_q (see comment there).
+                    part += q_reg[i] * __bfloat162float(__float2bfloat16(dq_K_lane(blk, lane)));
+                }
+            }
+            float score = warp_reduce_sum(part);
+
+            float m_new = fmaxf(m_i, score);
+            float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+            float p     = exp2f((score - m_new) * LOG2E);
+            const uint8_t* vt = V + (size_t)t * v_tok_bytes + (size_t)kblk0 * V_BLK_B;
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+                if (i < dpl) {
+                    const uint8_t* blk = vt + i * V_BLK_B;
+                    // bf16 round-trip: see K above.
+                    // PINNED FP association (kvbytes refactor): FMUL(p,vv) then FFMA(acc,alpha,prod) —
+                    // the exact pre-refactor SASS. Without intrinsics ptxas flipped which product
+                    // fuses (rounds acc*alpha instead of p*vv) = silent numeric-config change.
+                    acc[i] = __fmaf_rn(acc[i], alpha, __fmul_rn(p, __bfloat162float(__float2bfloat16(dq_V_lane(blk, lane)))));
+                }
+            }
+            l_i = l_i * alpha + p;
+            m_i = m_new;
+        }
+    }
+
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
+        if (i < dpl) {
+            int d = lane + (i << 5);
+            partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+        }
+    }
+    if (lane == 0) {
+        partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+        partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+    }
+}
+
+// ===================================================================== //
+//  KERNEL 2b-v2 : fa_decode_vec_q_v2  (FAVENDOR lane, 2026-07-08)        //
+//  llama.cpp fattn-vec MECHANISM vendored into OUR frame (split          //
+//  partition, partial layout, combine kernel all unchanged).             //
+//                                                                        //
+//  What is vendored (ggml/src/ggml-cuda/fattn-vec.cuh, flash_attn_ext_   //
+//  vec<D,1,q8_0,q5_1>): TILE-BATCHED online softmax. llama's warp        //
+//  processes a tile of keys with INDEPENDENT row dots (lane j keeps row  //
+//  j's score, every lane tracks the tile max from the butterfly result), //
+//  then does the softmax bookkeeping ONCE per tile: one m update, one    //
+//  alpha, ONE VKQ rescale — vs our per-key serial chain (per key: fmaxf  //
+//  + 2 exp2f + dpl-FMA rescale, each iteration data-dependent on the     //
+//  last). At d6257/sp64 that chain is 64 deep per warp; llama's is 2     //
+//  deep per 32-key tile. llama also streams quantized K/V bytes straight //
+//  from global into registers (NO smem staging, NO __syncthreads — our   //
+//  smem twin pays 2 block syncs per 32-key tile across 8 warps).         //
+//                                                                        //
+//  What is KEPT ours (the frame): grid=(n_head_kv, n_splits), block=     //
+//  (32, gqa); contiguous [t_lo,t_hi) split partition (llama strides      //
+//  interleaved); per-lane dim ownership {lane, lane+32,...}; the per-row //
+//  DOT accumulation order (ascending dim-block i, bf16 round-trip of     //
+//  the dequanted element, full 32-lane butterfly) — so each individual   //
+//  ROW SCORE is bit-identical to fa_decode_vec_q's; ascending-t V walk;  //
+//  f32 accumulators (llama uses half2 — not vendored, exactness first);  //
+//  [head][split] partial layout -> the UNCHANGED fa_decode_combine_f32.  //
+//                                                                        //
+//  NUMERIC CONFIG: the tile-level regrouping changes WHEN alpha rescales //
+//  land (exp(score - tile_max) vs exp(score - running_max)) => partials  //
+//  differ in FP order from fa_decode_vec_q => BW24_FA_V2=1 is its own    //
+//  numeric config with its own argmax baseline (env-flagged, default     //
+//  OFF, never silent). Within the flag it is fully deterministic: the    //
+//  rows twin below calls the SAME walk body -> rows-vs-loop bitdiff==0   //
+//  (kernel-check), run-gen argmax + run-spec self-consistency arbitrate. //
+// ===================================================================== //
+
+// REVISION 2 (same day): the first v2 cut vendored llama's REGISTER STREAMING too
+// (each warp re-reads quantized K/V straight from global, no smem) — measured 2x
+// WORSE at depth (125.7 vs 65.1 us at d6257 on the fa_v2_bench probe): with gqa=8
+// warps per CTA the 8x redundant global walk loses to our stage-once smem broadcast
+// even from L1/L2. KEPT ours: the smem KV-tile broadcast (dequant once per CTA).
+// VENDORED: (a) the tile-batched online softmax, (b) llama's WIDE-LOAD dequant shape
+// for the staging phase — one thread dequants one whole 32-elem quant BLOCK from
+// 4-byte int loads (llama reads q4/q8 quants as ints and unpacks with shifts;
+// dq_*_elem re-loads d/m/qh per ELEMENT and reads qs one BYTE at a time — ~8x the
+// load instructions for the same bytes). The staged bf16 VALUES are bit-identical
+// to dq_q8_0_elem/dq_q5_1_elem (same per-element math on the same bytes).
+
+// The shared per-warp split walk over the staged smem tile (called by BOTH the T=1
+// kernel and the rows twin => per-(row,split) bit identity by construction).
+// Block-cooperative: stages [t0, t0+nt) into sK/sV (bit-identical values to the
 extern "C" __global__ void fa_decode_vec_q_v2(
         const float* __restrict__ Q,    // [head_dim, n_head, 1]
         const uint8_t* __restrict__ K,  // q8_0 cache [token, kv_dim_k bytes]

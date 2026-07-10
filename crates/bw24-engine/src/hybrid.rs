@@ -615,6 +615,10 @@ impl HybridModel {
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
             crate::FA_SP_GEMMA.store(true, std::sync::atomic::Ordering::Relaxed);
+            // v4-threshold-at-window probe NET NEGATIVE (2026-07-10: depth plain +3.4 but
+            // depth verify falls off the rows twin -> per-token loop, spec 203.5 -> 154.6;
+            // the rows_smem_w twin has an unexplained row-0 divergence). v4 stays everywhere;
+            // seams: BW24_FA_V4_MAX + BW24_FA_SP16.
         }
         // gemma4: the dc serving loop + spec draft gather read the device embed table every
         // step — upload it AT LOAD (OnceLock init) so first-use cost never lands in a timed span.

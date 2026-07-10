@@ -351,6 +351,21 @@ fn fa_v4_mode() -> &'static str {
     M.get_or_init(|| std::env::var("BW24_FA_V4").unwrap_or_default())
 }
 fn fa_v4_on() -> bool { fa_v4_mode() != "0" }   // DEFAULT ON 2026-07-10 (BW24_FA_V4=0 rollback)
+/// t_kv-conditional v4 pick (gemma depth lesson 2026-07-10: v4's key-per-lane pipeline starves
+/// at the 1024-window with short splits — BW24_FA_V4=0 measured depth plain 158.0 vs 156.7).
+/// Threshold BW24_FA_V4_MAX (default usize::MAX = unchanged behavior; gemma sets 1024 at load
+/// via FA_V4_MAX_DEFAULT). Applied at EVERY dispatch site (eager, rows, rows_w, dc) so verify
+/// stays kernel-family-identical to decode at the same t_kv.
+pub static FA_V4_MAX_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+pub fn fa_v4_at_pub(t_kv: usize) -> bool { fa_v4_at(t_kv) }
+fn fa_v4_at(t_kv: usize) -> bool {
+    static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let mx = *M.get_or_init(|| std::env::var("BW24_FA_V4_MAX").ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| FA_V4_MAX_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)));
+    fa_v4_on() && t_kv < mx
+}
 fn fa_v3_active(head_dim: usize) -> bool {
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
 }
@@ -4501,7 +4516,7 @@ impl Engine {
             let smem_tkv = *SMEM_TKV.get_or_init(|| {
                 std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
             });
-            if fa_v4_on() && head_dim == 256 {
+            if fa_v4_at(t_kv) && head_dim == 256 {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
                 // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
                 let fv = self.func(match fa_v4_mode() {
@@ -4612,7 +4627,7 @@ impl Engine {
         let smem_tkv = *SMEM_TKV_R.get_or_init(|| {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok()).unwrap_or(1024)
         });
-        let v4 = fa_v4_on() && head_dim == 256;
+        let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
         let smem_rows = !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
         let fname = if v4 { "fa_decode_vec_q_rows_v4" }
@@ -4667,8 +4682,15 @@ impl Engine {
         let ml_len = t * n_head * n_splits_max;
         let (mut part_o, mut part_m, mut part_l) =
             (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
-        let f = self.func("fa_decode_vec_q_rows_v4_w");
-        let sh = (11520 + 32 * head_dim * 2) as u32;
+        // lane pick mirrors decode at t_kv == window (the parity contract): v4_w under the
+        // v4 threshold, the smem rows twin at/above it.
+        let (f, sh) = if fa_v4_at(window) {
+            let f = self.func("fa_decode_vec_q_rows_v4_w");
+            (f, (11520 + 32 * head_dim * 2) as u32)
+        } else {
+            let f = self.func("fa_decode_vec_q_rows_smem_w");
+            (f, (2 * 32 * head_dim * 2) as u32)
+        };
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
@@ -4775,7 +4797,7 @@ impl Engine {
             (self.func("fa_decode_f32_dc"),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
-        } else if fa_vec && head_dim == 256 && fa_v4_on() {
+        } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick.
             let gqa = (n_head / n_head_kv).max(1) as u32;
             let fv = self.func("fa_decode_vec_q_v4_dc");
