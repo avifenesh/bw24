@@ -699,3 +699,14 @@ drafts...] with base=2. Feasibility (read from generate_spec_inner2):
   flush at burst end — FLUSH AT BURST END, simplest, matches today's tail commit).
 Win: removes ~0.75 full-head passes/round on PMIN0 configs (35B p3-class rounds) AND the extra
 trunk m=1 replay — est. +3-5% on the p3 cell, stacking with #1.
+
+### Verify-cost #1 — QUANTIFICATION CAVEAT (2026-07-10 final)
+
+The nsys profiles behind the target table span BOTH run-spec phases (plain-generate oracle +
+spec) — total kernel time 2.15s vs ~1.35s spec wall proves the mix. The fused2 15.2% is
+spec-only (verify-exclusive kernels) but the mmvq/q6_K/MoE shares blend oracle decode into
+spec numbers. GPU-busy across the combined run ~85% (gaps ~15% -> a verify-forward CUDA graph
+reclaims at most a few % — secondary, not primary). NEXT-SESSION FIRST STEP for #1: phase-
+isolated profile (nsys capture-range around generate_spec, or an oracle-only subtraction run)
+-> TRUE spec-phase shares -> then design (fusion vs graph vs both). Do not design from the
+current table.
