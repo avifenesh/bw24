@@ -209,3 +209,19 @@ Lever ladder (rebalance FP32:tensor):
    the ACCEPTANCE-NEUTRAL property (exact per-16 via R-A' ratio fold, values exact where pairs
    equal) was measured — the flip is prompt-KV lineage, not fixable in-tile.
 Next concrete step: lever 1 (smallest, bounded, measurable same-day).
+
+### Pipe breakdown (2026-07-10, ncu ComputeWorkloadAnalysis) — ladder update
+
+Tensor (INT) = the HIGHEST-utilized pipe at 59.6% (SM 59.6%, issue slots 51.4%, IPC 2.07);
+FP32/ALU sit below it. The math-pipe throttle stall IS tensor-pipe wait: 8 warps cannot hide
+imma latency at 60% pipe load, and adding warps loses on smem (y64 -8%).
+- Lever 1 (epilogue hoist) KILLED by measurement before implementation: FP32 is not the
+  oversubscribed pipe (and the op-count analysis showed the hoist ~neutral at ne=4 anyway).
+- Lever 2 PROMOTED with a sharper mechanism: k32 imma = 2x FLOP per issued tensor instruction.
+  If the pipe is ISSUE-limited (IPC 2.07 suggests scheduler slots are the currency), halving
+  tensor instruction count at constant FLOPs is worth up to +~50% tensor throughput — the whole
+  gap. Cost: per-16 -> per-32 weight-scale requant at tile load (values re-coded per pair like
+  R-A'; int8 grid re-code error ~lossless for NVFP4-origin values x ratio<=1) + k32 vec_dot.
+  Acceptance risk = the KQ-tax class + the prefill-KV law -> full battery + flip rules decide
+  (per-model adoption if model-signed, like f8f4).
+Next concrete step: k32-imma tile variant behind BW24_MMQ_K32=1, ~60 lines on the w4a8 TU.
