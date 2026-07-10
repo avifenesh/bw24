@@ -8,6 +8,10 @@ The local RTX 5090 rig remains bw24's deployment and final performance target; r
 not flipped until the completed code and artifacts pass the same correctness, memory, and throughput
 gates there.
 
+Mmap is a fallback, not the endpoint. If rolling readahead still leaves material spill waits, the
+next backend is the bounded pinned-buffer, buffered-io_uring pipeline specified in
+[`io-uring-spill-design.md`](io-uring-spill-design.md).
+
 GGUF remains bw24's general runtime and delivery focus. This study reads the pinned Hy3
 safetensors checkpoint as common quantization source material and uses repack overlays to represent
 per-expert precision experimentally. Spill, cache, prefetch, and dispatch changes must stay in the
