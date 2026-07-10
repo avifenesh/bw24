@@ -5,6 +5,42 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
 ## SPEC-MULTIPLIER DIAGNOSTIC + 27B PLAIN AUDIT (owner directive 2026-07-10 late)
+## GEMMA4 STATUS BOARD (2026-07-10, all on rig5090, 26B QAT-Q4_0, identical files both engines)
+
+DONE + committed (HEAD ~ea395f3..): forward CORRECT (argmax matches llama; scale=1.0 trap),
+decode (per-layer KV, fa vec-always FA_VEC_MIN_DEFAULT=1), tokenizer exact (7-case fuzz),
+<|turn> chat template + eog stops, prime (monolithic fresh-prompt), R6 SWA (windowed naive
+prefill + decode window VIEW into cache), MTP spec loop (gemma_spec.rs, stream-identical to
+greedy at every K, VERIFY-GATE K=1..7 PASS).
+
+NUMBERS (chat prompt 22 toks, n=128, greedy):
+- ours plain 172.7-174 tok/s | llama serve plain 181-182 | llama-bench tg128 191.9
+- ours spec K3 179.0 (acc .520) | llama MTP serve 241-253 (acc .517 — drafter FAITHFUL)
+- prefill pp511: ours 1419 | llama-bench pp512 5713
+- round cost: ours ~14ms vs llama ~10.1 (K3, 2.56 tok/round)
+
+NEXT LEVERS (ranked):
+1. Draft head trim (FR-Spec class): drafter head = 151MB Q4_0 read PER DRAFT (x3/round =
+   0.5ms). tok_trim/d2t machinery exists for qwen; drafter head rows = drafter token_embd.
+2. Verify MoE CSR dedup (unique experts across the K+1 tokens; qwen CSR gate_up won 55->39.7us)
+   + gelu CSR twin. gate_up_rows 87.7us / down_rows 56us per layer-round now (byte-wall for
+   pair-count; CSR cuts ~25-40%).
+3. fa verify: per-token fa_decode loop -> fa_decode_rows twins (SWA hd256 eligible; globals
+   hd512 stay looped).
+4. Plain decode continues: 174 vs llama serve 182 — mmvq 1.52ms/step vs 1.08 wall; fa hd512
+   scalar 5 layers; norms 0.55ms; graph/gaps 0.95ms (device-token loop probed NEGATIVE eager;
+   llama wins via CUDA graphs).
+5. Prefill: MMA for down proj (in_f 704 needs tail-block handling in mmq_iq_experts), fa
+   windowed prefill stamps, chunked prime for >8k prompts (monolithic-only now, asserts fresh).
+6. Batteries + board rows per protocol (N=2 interleaved, llama SERVE pairs on identical files)
+   once spec >= llama MTP. Then E4B + 31B (DENSE gemma4 variants — graph differs: no MoE
+   branch), QAT-vs-NVFP4 assessment (ST 26B at /data/ai-ml/hf-models/gemma4-26b-a4b-nvfp4/).
+
+GATES to keep green: run-gen argmax MATCH (id prompt 2 818 5279 529 7001 563 -> 9079), chat
+'water cycle'/physics prompts (NO bio — owner: blocked upstream), VERIFY-GATE K=1..7,
+spec stream agreement == plain, tokenizer fuzz. Bench: nice -n 19, single-load, check
+compute-apps first (owner's BGE server 260MB must live).
+
 ## GEMMA4 MTP DRAFTER — VERIFIED WIRING (llama gemma4-assistant.cpp + llama-model.cpp:2162, read 2026-07-10)
 
 Files: /data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/drafter/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf
