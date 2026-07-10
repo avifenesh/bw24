@@ -4,6 +4,47 @@ _Internal living document: the cold-start state for whoever (or whatever) works 
 
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
+## ROUND-STREAM DESIGN (device-side acceptance — the last measured engine lever, ~+8-15% spec)
+
+**Problem (4-bucket + util-sampled, both models):** the spec round serializes host<->GPU three
+times per round — draft chain (K graph launches, 4-8B readback each), accept decision (one [T]
+readback), commit/rollback (host len bookkeeping). GPU idles ~15% of the loop; the three cells
+under the 1.1x bar are spec cells (27B p2 1.04, 35B p2 1.05, p3 1.07) — recovering the gap
+crosses the bar WITHOUT acceptance-side gains.
+
+**Design: pre-issued multi-round command stream.** Host issues rounds r, r+1, ... r+M-1 without
+reading anything back; every inter-round dependency moves to device state:
+1. **Draft graph already self-feeds** (tok_d, h_seed_d, pos_d, scratch len_d in-graph). Its
+   per-round host inputs (pos, last_token, h_seed refresh, base0) become device-computed: the
+   ACCEPT KERNEL (below) writes them.
+2. **Verify at FIXED t=K+1 always** (pre-issuable shape). p-min breaks become a device flag
+   vector: the draft graph's pack step writes p per slot; a tiny device kernel derives
+   brk[j] = first j with p<p_min (respecting j>0 / PMIN0-base0 rules — capture-time constants).
+   Verify computes all K+1 columns (waste = 1-2 columns on ~20-30% of rounds, ~0.6-1.2ms —
+   cheaper than the ~1.5-2ms of round trips it removes; NOTE the K-chain-negative row measured
+   always-K WITHOUT the round-trip removal, so its economics don't transfer).
+3. **Device accept kernel**: reads verify device argmaxes (already device) + draft tokens +
+   brk[]; computes n_acc by the exact greedy-walk rule (stop at first mismatch, ignore j>=brk);
+   writes (a) accepted tokens + bonus into a device out-ring, (b) rolls back every layer's
+   kvl.len_d + draft scratch len_d to pos+base+n_acc (device-side set_len — counters exist),
+   (c) gathers next-round h_seed from the CORRECT verify hidden column (predecessor-pairing
+   rule — gather by n_acc), (d) writes next round's g_tok/g_pos/base0/pending flag.
+4. **Host reads the out-ring every M rounds** (or one event per emit batch) for EOS/stop-string
+   checks + streaming. EOS overshoot = at most M-1 wasted rounds (M=4-8; stop is rare).
+5. **Exactness**: the accept rule, rollback targets, and seed gather replicate the host walk
+   verbatim on device — token-identity gates (K=1..8 self-consistency + seeded sampled rerun)
+   arbitrate as always. Snapshot/ckpt machinery (VerifyCkpt, replay-free partial accept) already
+   lives device-side.
+6. **Incremental landing order**: (a) device accept kernel + device rollback with host loop
+   still reading n_acc each round (gates the kernel alone); (b) move seed-gather + next-draft
+   inputs on-device (host readback becomes optional); (c) pre-issue M rounds. Each stage battery-
+   gated; any stage can ship alone.
+
+Hazards: sampled path needs the residual-sampling chain in the stream (its kernels are already
+device; the q_slots D2D per draft step is stream-ordered — fine); zero-round fold (pending arm)
+becomes a device branch — fold it into the accept kernel's (d) outputs; BW24_SPEC_PHASE timers
+lose meaning past stage (b) — keep them stage-(a)-only.
+
 ## NIGHT 2026-07-10 PART 2: FA SHARED-K REFUTED; GPU-BOUND CORRECTION; OPS INCIDENTS
 
 - **Round loop = GPU-BOUND (correction):** the 4-bucket BW24_SPEC_PHASE split (draft /
