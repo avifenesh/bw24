@@ -1,0 +1,5 @@
+VACUITY: capture ok (no failure line in debug run)
+gateD graph n1 exit=0 :: [generate_spec K=3] 256 tok in 1.854s = 137.56 tok/s (1.10x vs generate; this run's prime 0.412s)
+gateD eager n1 exit=0 :: [generate_spec K=3] 256 tok in 1.851s = 137.75 tok/s (1.10x vs generate; this run's prime 0.412s)
+gateD graph n2 exit=0 :: [generate_spec K=3] 256 tok in 1.859s = 137.15 tok/s (1.09x vs generate; this run's prime 0.412s)
+gateD eager n2 exit=0 :: [generate_spec K=3] 256 tok in 1.853s = 137.58 tok/s (1.10x vs generate; this run's prime 0.413s)
