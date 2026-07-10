@@ -304,9 +304,19 @@ local-NVMe root:
       RUN_ID=g7e-optimized-YYYYMMDD \
       research/per-expert-quant/run_performance_evals.sh
 
-The runner fixes a 512-token synthetic prompt, three warmed prefill repetitions, and three fresh
-128-token eager-decode processes per arm. It enables the shared cache, grouped dispatch, H2D
-prefetch, and mmap page prefetch for every arm, and records exact manifest/directory bytes, the GPU
+When mmap spill is storage-bound, choose the page-readahead window with a fresh-server,
+expert-file-only cold-cache A/B before running the capability panel:
+
+    ARTIFACT=/scratch/artifacts/plain-quant \
+      PROMPT=/data/runs/spill-profile/mmlu-pro-history-doc0-5shot.txt \
+      WINDOWS="8 1 4" \
+      OUT_ROOT=/data/results/spill-prefetch \
+      research/per-expert-quant/run_spill_prefetch_ab.sh
+
+The matched performance runner fixes a 512-token synthetic prompt, three warmed prefill
+repetitions, and three fresh 128-token eager-decode processes per arm. It enables the shared cache,
+grouped dispatch, H2D prefetch, and mmap page prefetch for every arm, and records exact
+manifest/directory bytes, the GPU
 and code revision, peak process memory, and raw timing logs. G7e numbers are research-host results;
 the local RTX 5090 run remains the final deployment-performance result.
 
