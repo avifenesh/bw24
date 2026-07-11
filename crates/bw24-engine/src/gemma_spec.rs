@@ -367,11 +367,16 @@ impl HybridModel {
         // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
         // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
         let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
-        // cap ceiling 7 (owner: plain to >=1.1x first — spec parked). The b16 verify tier
-        // (t=9..16 weight-read-once kernels) is BUILT but ungated: first cap>=8 sweeps hung/
-        // crashed silently — debug when the spec lane resumes. BW24_SPEC>7 clamps here.
-        let k_cap = k.min(7);
-        let mut kc = k;
+        // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
+        // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
+        // ran UNCLAMPED (`kc = k` — verify t=K+1 entered the b16 tier while it was gated)
+        // and the b16 dispatch requested _r2 twins that were never compiled (mcols==16 now
+        // forces the base variant). Stream gates arbitrate any raised cap.
+        let cap_max: usize = std::env::var("BW24_SPEC_CAPMAX").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(7);
+        let k_cap = k.min(cap_max).max(1);
+        // clamp round 1 too (the leak above).
+        let mut kc = k_cap;
         'outer: while out.len() < max_new {
             let kr = if adapt { kc } else { k_cap };
             e.u32_set_k(&mut batch_d, last, 0)?;

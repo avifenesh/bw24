@@ -4188,6 +4188,10 @@ impl Engine {
         let variant = self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp);
         let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
+        // b16 tier (t=9..16 verify): only base/_rp b16 kernels are compiled — the b2..b8
+        // per-shape perf variants (r2/pf/...) do not apply at this width. rp is a LAYOUT,
+        // not a perf variant: it must survive (base kernel on split-plane bytes = NaN).
+        let variant = if mcols == 16 { if rp { "rp" } else { "base" } } else { variant };
         let (name, rows_per_block): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), ROWS_PER_BLOCK),
             "pf" => (format!("{base_name}_pf").into(), ROWS_PER_BLOCK),
