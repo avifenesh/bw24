@@ -2962,6 +2962,19 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_q4_0_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b16_r2(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 
 extern "C" __global__ void qmatvec_q8_0_mmvq_b2(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
@@ -3430,6 +3443,13 @@ extern "C" __global__ void qmatvec_q6_K_mmvq_b8(
         int in_f, int out_f, int m, long row_bytes) {
     q6k_mmvq_batched<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_q6_K_mmvq_b16(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q6k_mmvq_batched<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 
 // ============ k-quant batched TWO-ROWS-PER-WARP variants (2026-07-04, NVFP4 _r2 recipe port) ============
 // ncu on the DRAM-cold msweep (9B real shapes, m=4): q4_K b4 long_scoreboard 19.6/issue at DRAM
@@ -6507,6 +6527,7 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_rp(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+
 // batched 2-rows-per-warp twin — body mirrors q4_0_mmvq_batched_mr2 (row-shared activation
 // int4 loads + ones-sums, per-row chains in the same order).
 template<int MCOLS>
@@ -6607,6 +6628,19 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+extern "C" __global__ void qmatvec_q4_0_mmvq_b16_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_rp<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b16_r2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_rp<16>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
 
 extern "C" __global__ void qmatvec_q4_0_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,

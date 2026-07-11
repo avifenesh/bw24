@@ -3143,8 +3143,11 @@ impl Engine {
         // a pure function of (dtype, env) equal to the m=1 class — batched iff MMVQ. Without MMVQ
         // the verify falls to the per-m grid.y=m dp4a path below (each column = the exact m=1
         // dp4a program). BW24_MMVQ=1 (the daily config) is dispatch-unchanged.
-        if (2..=8).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err()
+        if (2..=16).contains(&m) && fast && std::env::var("BW24_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled()) {
+            // b16 tier (2026-07-11, spec K>7): only Q4_0/Q6_K have b16 kernels.
+            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, .. } if *qtype == QT_Q4_0 || *qtype == QT_Q6_K);
+            if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
                     let (bytes, rp) = match rp4 { Some(m4) => (m4, true), None => (bytes, *rp) };
@@ -3157,6 +3160,7 @@ impl Engine {
                     return Ok(y);
                 }
             }
+        }
         }
         // F8-E4M3 (BW24_ST_E4M3) catch-all for the m<16 band the arms above didn't take (m=9..15,
         // the K=8 verify tier; or m=2..8 under BW24_NO_BATCHED/BW24_B8=0): grid.y=m e4m3 mmvq —
@@ -3289,9 +3293,10 @@ impl Engine {
         // DECODE-PARITY GATE (2026-07-07): batched iff mmvq_supports — see matmul's parity note.
         // Without BW24_MMVQ, m=1 decode rides dp4a (the arm below at m=1); the verify must ride
         // the SAME class per column (grid.y=m dp4a = the exact m=1 dp4a program per column).
-        if (2..=8).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
+        if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err()
-            && (m <= 4 || Self::b8_enabled()) {
+            && (m <= 4 || Self::b8_enabled())
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -3371,9 +3376,10 @@ impl Engine {
         // DECODE-PARITY GATE (2026-07-07): batched (MMVQ-class order) only when the m=1 decode
         // chain rides MMVQ too — without BW24_MMVQ decode is dp4a, so the exact-contract here
         // must be per-column dp4a (matmul_pre fallthrough), not the MMVQ order.
-        if (2..=8).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
+        if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("BW24_NO_BATCHED").is_err()
-            && (m <= 4 || Self::b8_enabled()) {
+            && (m <= 4 || Self::b8_enabled())
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -3910,7 +3916,7 @@ impl Engine {
 
     /// Compile-time column batch for a runtime m: 2 -> b2, 3..4 -> b4, 5..8 -> b8.
     pub fn batched_mcols(m: usize) -> usize {
-        if m == 2 { 2 } else if m <= 4 { 4 } else { 8 }
+        if m == 2 { 2 } else if m <= 4 { 4 } else if m <= 8 { 8 } else { 16 }
     }
 
     /// Kernel name for the batched matvec of `(qtype, mcols)`. mcols ∈ {2,4,8}. The b8 tier is the
@@ -3926,13 +3932,13 @@ impl Engine {
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
             (QT_Q5_K, 8) => "qmatvec_q5_K_mmvq_b8",
             (QT_Q6_K, 2) => "qmatvec_q6_K_mmvq_b2", (QT_Q6_K, 4) => "qmatvec_q6_K_mmvq_b4",
-            (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8",
+            (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8", (QT_Q6_K, 16) => "qmatvec_q6_K_mmvq_b16",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
             (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
             (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
             (QT_Q4_0, 2) => "qmatvec_q4_0_mmvq_b2", (QT_Q4_0, 4) => "qmatvec_q4_0_mmvq_b4",
-            (QT_Q4_0, 8) => "qmatvec_q4_0_mmvq_b8",
+            (QT_Q4_0, 8) => "qmatvec_q4_0_mmvq_b8", (QT_Q4_0, 16) => "qmatvec_q4_0_mmvq_b16",
             _ => return None,
         })
     }

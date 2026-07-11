@@ -365,9 +365,9 @@ impl HybridModel {
         // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
         // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
         let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
-        // cap clamp 7: cap 8 (verify t=9, past the b8 tier) has an unresolved stream-identity
-        // bug (m=9 head class vs decode — 4/128 at depth, jsonl 2026-07-11); depth sweep says
-        // cap 7 is the winner anyway (284.6 vs 282.0 cap5/6, 268.5 cap3).
+        // cap ceiling 7 (owner: plain to >=1.1x first — spec parked). The b16 verify tier
+        // (t=9..16 weight-read-once kernels) is BUILT but ungated: first cap>=8 sweeps hung/
+        // crashed silently — debug when the spec lane resumes. BW24_SPEC>7 clamps here.
         let k_cap = k.min(7);
         let mut kc = k;
         'outer: while out.len() < max_new {
