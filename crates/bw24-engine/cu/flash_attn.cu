@@ -3118,6 +3118,17 @@ static __device__ __forceinline__ void fa_dec_v3_walk(
         #pragma unroll 2
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -3127,6 +3138,7 @@ static __device__ __forceinline__ void fa_dec_v3_walk(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         __syncthreads();   // tile fully consumed before the next staging overwrites sV
     }
@@ -3733,8 +3745,18 @@ struct fa_v4_smem {
     float q_d[8][8];                // [gqa][8] per-chunk Q scales
     int   k_ints[FA_DEC_TILE][64];  // repacked K tile
     float k_d[FA_DEC_TILE][8];      // per-chunk K scales
-    // sV bf16 follows in dynamic smem (v3 layout)
+    // sV follows in dynamic smem (v3 layout; element type = fa_v4_sv_t below)
 };
+
+#if BW24_KV_VFMT == 2
+// e4m3 sV tile stages the RAW BYTE, cvt at use: every e4m3 value is exactly representable
+// in bf16, so this is BIT-IDENTICAL to the bf16 tile at HALF the smem — the 27.9KB/block
+// footprint capped residency at 3 blocks/SM (12.5% theoretical occupancy, ncu 2026-07-12);
+// 19.7KB lifts the cap. Host shmem sizing mirrors this (g-module: 32*head_dim*1).
+typedef uint8_t fa_v4_sv_t;
+#else
+typedef __nv_bfloat16 fa_v4_sv_t;
+#endif
 
 static __device__ __forceinline__ void fa_v4_stage_q(
         const float* __restrict__ Q, size_t qoff, float scale, int lane, int wy,
@@ -3825,7 +3847,7 @@ extern "C" __global__ void fa_decode_vec_q_v4(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, (size_t)head * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -3853,11 +3875,11 @@ extern "C" __global__ void fa_decode_vec_q_v4(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -3934,6 +3956,17 @@ extern "C" __global__ void fa_decode_vec_q_v4(
         #pragma unroll 8
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -3943,6 +3976,7 @@ extern "C" __global__ void fa_decode_vec_q_v4(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         __syncthreads();   // tile fully consumed before restaging
     }
@@ -3981,7 +4015,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, (size_t)head * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -4009,11 +4043,11 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4090,6 +4124,17 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
         #pragma unroll 8
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -4099,6 +4144,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         __syncthreads();   // tile fully consumed before restaging
     }
@@ -4137,7 +4183,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, (size_t)head * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -4165,11 +4211,11 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4277,7 +4323,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, (size_t)head * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -4305,11 +4351,11 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4348,7 +4394,11 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
         __syncthreads();
 
         // probe: consume one staged byte per lane so staging is not eliminated
+        #if BW24_KV_VFMT == 2
+        m_i += (float)sm->k_ints[lane % FA_DEC_TILE][0] * 1e-30f + (float)*(const __nv_fp8_e4m3*)&sV[lane] * 1e-30f;
+        #else
         m_i += (float)sm->k_ints[lane % FA_DEC_TILE][0] * 1e-30f + __bfloat162float(sV[lane]) * 1e-30f;
+        #endif
         __syncthreads();   // tile fully consumed before restaging
     }
 
@@ -4391,7 +4441,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -4419,11 +4469,11 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4500,6 +4550,17 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
         #pragma unroll 8
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -4509,6 +4570,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         __syncthreads();   // tile fully consumed before restaging
     }
@@ -4556,7 +4618,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
     __syncthreads();
@@ -4584,11 +4646,11 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4665,6 +4727,17 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
         #pragma unroll 8
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -4674,6 +4747,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         __syncthreads();   // tile fully consumed before restaging
     }
@@ -4724,7 +4798,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_v4 + sizeof(fa_v4_smem));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
     if (wy == 0) fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, 0, sm);
     __syncthreads();
@@ -4752,11 +4826,11 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -4834,6 +4908,17 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
         #pragma unroll 8
         for (int j = 0; j < nt; ++j) {
             const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
             const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
             #pragma unroll
             for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -4843,6 +4928,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
                     acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                 }
             }
+            #endif
         }
         }
         __syncthreads();   // tile fully consumed before restaging
@@ -4967,7 +5053,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
 
     extern __shared__ unsigned char sm_raw_mr[];
     fa_v4_smem_mr* sm = (fa_v4_smem_mr*)sm_raw_mr;
-    __nv_bfloat16* sV = (__nv_bfloat16*)(sm_raw_mr + sizeof(fa_v4_smem_mr));
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_mr + sizeof(fa_v4_smem_mr));
 
     if (r < n_rows) {
         fa_v4_stage_q_mr(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, r, sm);
@@ -4999,11 +5085,11 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
             // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
             #pragma unroll
             for (int e0 = 0; e0 < 8; ++e0) {
                 const int e2 = sub * 8 + e0;
-                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+                out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
             #elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
@@ -5076,6 +5162,17 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
             #pragma unroll 8
             for (int j = 0; j < nt_row; ++j) {
                 const float p = __shfl_sync(0xffffffffu, p_lane, j);
+                #if BW24_KV_VFMT == 2
+                const uchar2* vj2 = (const uchar2*)(sV + (size_t)(j + r) * head_dim);
+                #pragma unroll
+                for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
+                    if (2 * i2 < dpl) {
+                        const uchar2 vv = vj2[lane + (i2 << 5)];
+                        acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                        acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                    }
+                }
+                #else
                 const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)(j + r) * head_dim);
                 #pragma unroll
                 for (int i2 = 0; i2 < FA_DEC_MAX_DPL / 2; ++i2) {
@@ -5085,6 +5182,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
                         acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
                     }
                 }
+                #endif
             }
         }
         __syncthreads();

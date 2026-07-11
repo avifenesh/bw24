@@ -4771,7 +4771,8 @@ impl Engine {
                     _ => "fa_decode_vec_q_v4",
                 };
                 let fv = if g { self.func_g(v4name) } else { self.func(v4name) };
-                let shmem = (11520 + 32 * head_dim * 2) as u32;   // fa_v4_smem + sV
+                // fa_v4_smem + sV (g: raw e4m3 sV tile = 1B/elem — half the smem, 3->5 blocks/SM)
+                let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
                 (fv,
@@ -4932,7 +4933,7 @@ impl Engine {
                 else { self.func(fname) };
         let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
             // v4: fa_v4_smem (11.5KB) + sV; v3 stages sV only; v2/smem twins stage sK+sV.
-            let sh = (if v4 { 11520 + 32 * head_dim * 2 }
+            let sh = (if v4 { 11520 + 32 * head_dim * if g { 1 } else { 2 } }
                       else if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
@@ -5039,7 +5040,7 @@ impl Engine {
         if sp2 {
             let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_sp") }
                     else { self.func("fa_decode_vec_q_rows_v4_w_sp") };
-            let sh = (11520 + 32 * head_dim * 2) as u32;
+            let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, 2, 1), shared_mem_bytes: sh };
@@ -5052,7 +5053,8 @@ impl Engine {
             let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_mr") }
                     else { self.func("fa_decode_vec_q_rows_v4_w_mr") };
             // fa_v4_smem_mr (fixed 39-slot k tile) + sV for (32 + t - 1) staged keys
-            let sh = (2048 + 256 + 39 * 256 + 39 * 32 + (32 + t - 1) * head_dim * 2) as u32;
+            let sh = (2048 + 256 + 39 * 256 + 39 * 32
+                      + (32 + t - 1) * head_dim * if wg { 1 } else { 2 }) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let nr = t as i32;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, 1),
@@ -5066,7 +5068,7 @@ impl Engine {
         let pick = |name: &str| if wg { self.func_g(name) } else { self.func(name) };
         let (f, sh) = if fa_v4_at(window) {
             let f = pick("fa_decode_vec_q_rows_v4_w");
-            (f, (11520 + 32 * head_dim * 2) as u32)
+            (f, (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32)
         } else if smem_tkv > 0 && window >= smem_tkv {
             // NOTE: the smem twin's V-stage is still q5_1-hardcoded — unreachable under wkv
             // at the gemma window (v4 covers it); revisit if the smem floor ever drops.
