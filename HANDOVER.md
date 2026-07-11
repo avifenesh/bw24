@@ -150,8 +150,16 @@ documented at the hybrid.rs build site) -> the lever is the IN-PLACE SWAP:
 3. Gates: kernel-check rp bit-identity gates (the MMQ-W4A8-RP precedent pins 0 mismatched
    bits), run-gen MATCH short+depth, 26B battery unchanged (26B keeps mirrors — or moves to
    the swap too and frees 0.7GB), then the 31B pairing.
-PRIZE: rp_q4_probe measured 1.34x at m=1 on this kernel class; 76% of decode at +25-35%
-eff -> ~44-46 tok/s vs llama 40.7 = the >=1.1x bar is reachable on this single lever.
+LANDED 2026-07-12 (02c958f): swap + gemm rp + fused-matcher fix + per-model SPW.
+RESULT: short 40.3 vs 40.2-40.3 = PARITY (was 0.95x); 1.7k 36.9 vs 37.8-38.7 = 0.96x
+(was 0.91x). ncu: the swapped FFN pair sits at DRAM 91.7% — the byte wall (~48.7 tok/s
+ceiling at 17.4GB/token); the mmvq-class launches took -7%.
+31B OPEN FRONTS:
+- plain 1.7k 0.96x: attention depth-cost vs llama (ours -8.4% short->1.7k vs their -5%)
+  — windowed rows arms + norm/launch tax; SP512 unswept on 31B geometry.
+- SPEC 0.74x (first light 2026-07-12: 83.5 short K=5, accept 0.75, stream 128/128 vs
+  llama-mtp 112): run the 26B playbook — drafter is Q8_0 (2x q4 bytes; re-quant + FR trim,
+  u32_map_k is model-generic), acceptance mechanics, adaptive floor sweep, SPW spec config.
 
 ## QWEN FP8-KV ARC — BUILD PLAN (2026-07-12, owner: "better kv in lower cost = big lever over llama")
 HISTORY THAT MUST BE RE-READ FIRST: BW24_KV_K=fp8 was FLIP-BLOCKED 2026-07-09 (e2e flat +
