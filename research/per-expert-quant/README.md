@@ -556,12 +556,31 @@ screening, then run their complete public suites only for promoted artifacts.
 The directional practical-task panel is pinned in `practical-evals.lock.json`: 12 SWE-bench
 Verified instances covering all 12 repositories and four difficulty strata, plus 12 CPU-only
 Terminal-Bench 2 tasks spanning at least nine categories. The lock records the SWE dataset,
-parquet and harness revisions and the Harbor dataset, harness and per-task content digests. Validate
-downloaded source material before running any agent:
+parquet, original harness, Harbor adapter and per-task revisions and the Terminal-Bench Harbor
+dataset, harness and per-task content digests. Both suites run through Harbor's same frozen
+Terminus-2 scaffold. Validate downloaded source material before running any agent:
 
     python3 research/per-expert-quant/validate_practical_eval_lock.py \
       --swe-parquet /data/evals/SWE-bench_Verified/data/test-00000-of-00001.parquet \
+      --swe-harbor-root /data/evals/harbor-swe-verified \
       --terminal-root /data/evals/terminal-bench-2
+
+The practical server must include `/v1/chat/completions`; it renders the full system/user/assistant
+history with the model's own GGUF chat template. Use `openai/$ARM`, API base
+`http://127.0.0.1:8080/v1`, temperature 0, JSON Terminus parser, 20 turns, 8192 input tokens, 512
+output tokens, one attempt, one concurrent trial, and zero harness retries exactly as locked. The
+OpenAI client still needs a non-empty dummy API key when `BW24_API_KEY` is unset.
+
+After source validation and candidate promotion, launch one immutable panel at a time:
+
+    ARM=plain_quant PANEL=swe RUN_ID=practical-RUN-ID \
+      SERVER_BIN=/data/bin/bw24-server-practical \
+      research/per-expert-quant/run_practical_evals.sh
+
+The runner refuses existing output, requires Docker and Harbor 0.18.0, checks exact server health
+and the chat route without generating tokens, pins all 12 task names by dataset digest, writes the
+resolved Harbor config before execution, and finalizes a hashed run receipt. Use one server and one
+runner only; repeat the identical run for the selected finalist and then for `PANEL=terminal`.
 
 Run the same deterministic scaffold, tool permissions, turn/token budgets, task order, transport
 configuration, and one trial per task for both arms. Never execute the SWE harness, generated code,

@@ -66,6 +66,19 @@ def validate_structure(lock: dict[str, Any]) -> None:
         require(protocol.get(key) is True, f"protocol must require {key}")
     require(protocol.get("mtp_or_speculation") is False, "MTP/speculation must be disabled")
     require(protocol.get("initial_trials_per_task") == 1, "directional screen must use one trial")
+    scaffold = protocol.get("agent_scaffold")
+    require(isinstance(scaffold, dict), "missing practical agent scaffold")
+    expected_scaffold = {
+        "harbor_version": "0.18.0", "agent": "terminus-2",
+        "model_name_template": "openai/{arm}", "api_base": "http://127.0.0.1:8080/v1",
+        "temperature": 0, "parser_name": "json", "max_turns": 20,
+        "proactive_summarization_threshold": 1024, "store_all_messages": True,
+        "max_input_tokens": 8192, "max_output_tokens": 512,
+        "llm_call_max_tokens": 512, "enable_summarize": True,
+        "record_terminal_session": True,
+        "n_concurrent_trials": 1, "n_attempts": 1, "max_retries": 0,
+    }
+    require(scaffold == expected_scaffold, "practical agent scaffold differs from the frozen protocol")
 
     swe = lock.get("swe_bench_verified")
     require(isinstance(swe, dict), "missing SWE-bench lock")
@@ -80,8 +93,12 @@ def validate_structure(lock: dict[str, Any]) -> None:
     )
     require(re.fullmatch(r"[0-9a-f]{40}", str(swe.get("dataset_revision"))) is not None, "invalid SWE revision")
     require(SHA256_RE.fullmatch(str(swe.get("parquet_sha256"))) is not None, "invalid parquet hash")
+    require(swe.get("harbor_dataset_revision") == 2, "SWE Harbor adapter revision must be 2")
+    require(SHA256_RE.fullmatch(str(swe.get("harbor_dataset_digest"))) is not None, "invalid SWE Harbor dataset digest")
     for row in swe_tasks:
         require(re.fullmatch(r"[0-9a-f]{40}", str(row.get("base_commit"))) is not None, f"bad SWE base commit: {row}")
+        require(row.get("harbor_task") == f"swe-bench/{row['instance_id']}", f"bad SWE Harbor task: {row}")
+        require(SHA256_RE.fullmatch(str(row.get("harbor_digest"))) is not None, f"bad SWE Harbor digest: {row}")
 
     terminal = lock.get("terminal_bench_2")
     require(isinstance(terminal, dict), "missing Terminal-Bench lock")
@@ -136,6 +153,16 @@ def validate_terminal_source(lock: dict[str, Any], root: Path) -> None:
         require(actual_digest == expected["digest"], f"Terminal task digest differs: {short_name}")
 
 
+def validate_swe_harbor_source(lock: dict[str, Any], root: Path) -> None:
+    for expected in lock["swe_bench_verified"]["tasks"]:
+        task_dir = root / expected["instance_id"]
+        require(task_dir.is_dir(), f"missing SWE Harbor task directory: {task_dir}")
+        config = tomllib.loads((task_dir / "task.toml").read_text())
+        require(config["task"]["name"] == expected["harbor_task"], f"SWE Harbor task name differs: {expected['instance_id']}")
+        actual_digest = "sha256:" + task_content_hash(task_dir)
+        require(actual_digest == expected["harbor_digest"], f"SWE Harbor task digest differs: {expected['instance_id']}")
+
+
 def self_test() -> None:
     source = Path(__file__).with_name("practical-evals.lock.json")
     if source.is_file():
@@ -155,6 +182,7 @@ def main() -> int:
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("practical-evals.lock.json"))
     parser.add_argument("--swe-parquet", type=Path)
     parser.add_argument("--terminal-root", type=Path)
+    parser.add_argument("--swe-harbor-root", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -166,6 +194,8 @@ def main() -> int:
         validate_swe_source(lock, args.swe_parquet)
     if args.terminal_root:
         validate_terminal_source(lock, args.terminal_root)
+    if args.swe_harbor_root:
+        validate_swe_harbor_source(lock, args.swe_harbor_root)
     print("practical eval lock validation: PASS")
     return 0
 

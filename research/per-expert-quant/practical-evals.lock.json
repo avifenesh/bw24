@@ -9,7 +9,26 @@
     "mtp_or_speculation": false,
     "container_isolation_required": true,
     "initial_trials_per_task": 1,
-    "full_suite_only_after_directional_promotion": true
+    "full_suite_only_after_directional_promotion": true,
+    "agent_scaffold": {
+      "harbor_version": "0.18.0",
+      "agent": "terminus-2",
+      "model_name_template": "openai/{arm}",
+      "api_base": "http://127.0.0.1:8080/v1",
+      "temperature": 0,
+      "parser_name": "json",
+      "max_turns": 20,
+      "proactive_summarization_threshold": 1024,
+      "store_all_messages": true,
+      "max_input_tokens": 8192,
+      "max_output_tokens": 512,
+      "llm_call_max_tokens": 512,
+      "enable_summarize": true,
+      "record_terminal_session": true,
+      "n_concurrent_trials": 1,
+      "n_attempts": 1,
+      "max_retries": 0
+    }
   },
   "swe_bench_verified": {
     "dataset": "princeton-nlp/SWE-bench_Verified",
@@ -19,77 +38,105 @@
     "parquet_sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd",
     "harness_repository": "https://github.com/SWE-bench/SWE-bench.git",
     "harness_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+    "harbor_dataset": "swe-bench/swe-bench-verified",
+    "harbor_dataset_revision": 2,
+    "harbor_dataset_digest": "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
+    "harbor_dataset_tasks": 500,
     "selection_method": "one fixed task per repository; assigned difficulty stratum; lowest md5(instance_id) within repository and stratum",
     "tasks": [
       {
         "repo": "astropy/astropy",
         "instance_id": "astropy__astropy-14369",
+        "harbor_task": "swe-bench/astropy__astropy-14369",
+        "harbor_digest": "sha256:be9e7e6e8df3da78f766e1372cbb122b49d546d3942ed5156af4db525d49633a",
         "base_commit": "fa4e8d1cd279acf9b24560813c8652494ccd5922",
         "difficulty": "1-4 hours"
       },
       {
         "repo": "django/django",
         "instance_id": "django__django-13033",
+        "harbor_task": "swe-bench/django__django-13033",
+        "harbor_digest": "sha256:244b30541a8accabc62bbf7116f434ae5064dfb20129adb2c28e6db88086ea0f",
         "base_commit": "a59de6e89e8dc1f3e71c9a5a5bbceb373ea5247e",
         "difficulty": "15 min - 1 hour"
       },
       {
         "repo": "matplotlib/matplotlib",
         "instance_id": "matplotlib__matplotlib-24570",
+        "harbor_task": "swe-bench/matplotlib__matplotlib-24570",
+        "harbor_digest": "sha256:c68ad152da881a683bf8113a448785c0d0922fafc142fd9ff423af586974afb6",
         "base_commit": "8f0003ae902952372824c9917975fb372c026a42",
         "difficulty": "<15 min fix"
       },
       {
         "repo": "mwaskom/seaborn",
         "instance_id": "mwaskom__seaborn-3069",
+        "harbor_task": "swe-bench/mwaskom__seaborn-3069",
+        "harbor_digest": "sha256:866e82c22b999b2758decdd49bd0fe903aaed14efeee77ffcdd1fdfbedf6c7c4",
         "base_commit": "54cab15bdacfaa05a88fbc5502a5b322d99f148e",
         "difficulty": "15 min - 1 hour"
       },
       {
         "repo": "pallets/flask",
         "instance_id": "pallets__flask-5014",
+        "harbor_task": "swe-bench/pallets__flask-5014",
+        "harbor_digest": "sha256:ec1cbb94086b650e100135585abf431332c601fd9a2fde86ad63aca305940c3c",
         "base_commit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d",
         "difficulty": "<15 min fix"
       },
       {
         "repo": "psf/requests",
         "instance_id": "psf__requests-1766",
+        "harbor_task": "swe-bench/psf__requests-1766",
+        "harbor_digest": "sha256:250108c3eddd015064b7aaf2d991e6c31aa2c71366c98cb84b73d3ea68c5a54a",
         "base_commit": "847735553aeda6e6633f2b32e14ba14ba86887a4",
         "difficulty": "<15 min fix"
       },
       {
         "repo": "pydata/xarray",
         "instance_id": "pydata__xarray-6992",
+        "harbor_task": "swe-bench/pydata__xarray-6992",
+        "harbor_digest": "sha256:000126b5cebc23b5737627b404b66c2cd33ac76fd3192ca24d2c2b7d541ea870",
         "base_commit": "45c0a114e2b7b27b83c9618bc05b36afac82183c",
         "difficulty": ">4 hours"
       },
       {
         "repo": "pylint-dev/pylint",
         "instance_id": "pylint-dev__pylint-8898",
+        "harbor_task": "swe-bench/pylint-dev__pylint-8898",
+        "harbor_digest": "sha256:a866bcb5fb09675cecf6a8dc7511553a6849cdb4924a9e82ea9b4363b2e103a7",
         "base_commit": "1f8c4d9eb185c16a2c1d881c054f015e1c2eb334",
         "difficulty": "1-4 hours"
       },
       {
         "repo": "pytest-dev/pytest",
         "instance_id": "pytest-dev__pytest-7571",
+        "harbor_task": "swe-bench/pytest-dev__pytest-7571",
+        "harbor_digest": "sha256:1dd44d359e2e319a75b1e174df2902dbfc2da01262fca57b9acdf26377e12226",
         "base_commit": "422685d0bdc110547535036c1ff398b5e1c44145",
         "difficulty": "15 min - 1 hour"
       },
       {
         "repo": "scikit-learn/scikit-learn",
         "instance_id": "scikit-learn__scikit-learn-13496",
+        "harbor_task": "swe-bench/scikit-learn__scikit-learn-13496",
+        "harbor_digest": "sha256:c7bae7264c9a44aaf83a110f7434bde6acdad76262c6ec2880395c4d2a83a338",
         "base_commit": "3aefc834dce72e850bff48689bea3c7dff5f3fad",
         "difficulty": "<15 min fix"
       },
       {
         "repo": "sphinx-doc/sphinx",
         "instance_id": "sphinx-doc__sphinx-9229",
+        "harbor_task": "swe-bench/sphinx-doc__sphinx-9229",
+        "harbor_digest": "sha256:9bcf2c35baf9719c6702ccee57bf3d93ab460900be65c00fa0671f3ba50b0879",
         "base_commit": "876fa81e0a038cda466925b85ccf6c5452e0f685",
         "difficulty": "1-4 hours"
       },
       {
         "repo": "sympy/sympy",
         "instance_id": "sympy__sympy-22456",
+        "harbor_task": "swe-bench/sympy__sympy-22456",
+        "harbor_digest": "sha256:14d24def074e43b6b7c9491608aa12e879ee558cf116195d0d2ae8dbafa93df5",
         "base_commit": "a3475b3f9ac662cd425157dd3bdb93ad7111c090",
         "difficulty": "15 min - 1 hour"
       }

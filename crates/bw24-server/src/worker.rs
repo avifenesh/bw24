@@ -54,6 +54,7 @@ pub struct Request {
     pub prompt_ids: Vec<u32>,   // already tokenized? no — worker tokenizes (it owns the Tokenizer)
     pub prompt_text: String,
     pub chat: bool,
+    pub chat_messages: Vec<(String, String)>,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
@@ -332,6 +333,12 @@ fn admit(
     // tokenize the text, optionally wrapping in the chat template.
     let prompt: Vec<u32> = if !req.prompt_ids.is_empty() {
         req.prompt_ids.clone()
+    } else if !req.chat_messages.is_empty() {
+        let messages: Vec<_> = req.chat_messages.iter()
+            .map(|(role, content)| (role.as_str(), content.as_str()))
+            .collect();
+        let rendered = lm.tok.apply_chat_template(&messages, true);
+        lm.tok.encode(&rendered, true)
     } else if req.chat {
         let rendered = lm.tok.apply_chat_template(&[("user", req.prompt_text.as_str())], true);
         lm.tok.encode(&rendered, true)
