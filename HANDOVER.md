@@ -165,6 +165,29 @@ PLAIN STANDING: short 1.00x | 1.7k ~0.965x. Remaining plain levers are ATTENTION
 and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
 90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
 e2e). The plain bar likely needs a new mechanism class, not tuning.
+31B BURST — EXECUTION STATE (2026-07-12 night): steps a/b/c LANDED (device pos slots,
+device-len drafter attention + len_d lockstep, replayable draft-chain graph + the generic
+Engine CAPTURE-RETAIN mode). REMAINING = two pieces:
+1. GEMMA VERIFY-STREAM ARM (~100 LoC, hybrid_forward): a gemma4_verify_attn variant where
+   (i) the append rides append_kv_quantized_rows_dc at the len_d slot (exists; class flag
+   as today), (ii) attention base comes from len_d (the rows arm already takes
+   base_dev/plus; the per-row fallback needs fa_decode_dc), (iii) rope pos_d fills from
+   pos_ctr via EAGER i32_copy_add per slot (in-graph fills replay stale — proven; eager
+   fills reading the DEVICE counter are correct and need no host value). Trunk wrapper:
+   gemma4_decode_step_t_am_dev already takes tok_dev + returns device vam.
+2. BURST LOOP in generate_spec_gemma (~80 LoC): per round, all enqueued — batch_d[0] <-
+   pend_d (u32_copy); pos slots <- i32_copy_add(pos_ctr, +j); draft graph replay (key kr
+   FIXED per burst = k_cap; adaptive kc pauses inside bursts); verify-stream; per-col
+   argmax -> preds_d; spec_accept_greedy_dc; spec_seed_gather(vh->g_seed);
+   spec_rollback_stream(kv_len_ptr_table incl pos_ctr); spec_ring_commit. Drain ring +
+   re-sync host len mirrors once per M rounds (StreamBufs.drain_ring). NO SNAPSHOT needed
+   — gemma KV is append-only (len truncate = full rollback; no conv/ssm states).
+GATES: stream 128/128 short+depth vs the eager round on BOTH gemma models + acceptance
+unchanged; then the perf read — the burst's real prize is draft(N+1)-overlaps-verify(N)
+(~14% of the round is drafter time currently serialized).
+PHYSICS CAUTION (today's repeated lesson): launch/sync taxes are hidden at 96.7% GPU busy
+— the burst pays ONLY via the overlap, not via sync elimination; measure that specifically.
+
 31B SPEC — M-ROUND BURST PORT MAP (recon 2026-07-12; the remaining structural lever,
 llama 2.78x own-plain vs our 2.15x):
 The qwen ROUND-STREAM pieces are MODEL-GENERIC device machinery (lib.rs/cache.rs) and port
