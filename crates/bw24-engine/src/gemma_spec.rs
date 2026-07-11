@@ -268,16 +268,37 @@ impl HybridModel {
             }
             let avail = kvl.len;
             let win = d.sliding_window;
-            let (off_tok, t_kv) = if dl.swa && avail > win { (avail - win, win) } else { (0, avail) };
-            let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
-                                         (off_tok + t_kv) * kvl.k_tok_bytes);
-            let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
-                                         (off_tok + t_kv) * kvl.v_tok_bytes);
             let mut attn = e.uninit(nhh * hd)?;
             // drafter attends the MAIN cache — its format follows the main layer's class
             // (windowed L28 = wkv arm, global L29 = gkv arm; gkv routing is hd-keyed inside).
-            e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes, dl.swa && crate::Engine::wkv_on())?;
+            // DEVICE-LEN arms (burst-arc step b, BW24_GEMMA_DRAFT_DC default ON): the length
+            // rides the main layer's len_d counter — the chain becomes replay-correct across
+            // rounds (a captured graph must see KV growth through the counter, not a frozen
+            // host arg). len_d == len in lockstep, so the eager math is value-identical; the
+            // kernel CLASS changes (dc/rows_w twins) — acceptance + streams arbitrate.
+            let draft_dc = std::env::var("BW24_GEMMA_DRAFT_DC").as_deref() != Ok("0");
+            if draft_dc {
+                let k_view = e.view_u8(&kvl.k, kvl.k.len());
+                let v_view = e.view_u8(&kvl.v, kvl.v.len());
+                if dl.swa && avail > win {
+                    e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv,
+                                       &kvl.len_d, -1, 1, 1.0, win,
+                                       kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv,
+                                   &kvl.len_d, avail.max(1), 1.0,
+                                   kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                   dl.swa && crate::Engine::wkv_on())?;
+                }
+            } else {
+                let (off_tok, t_kv) = if dl.swa && avail > win { (avail - win, win) } else { (0, avail) };
+                let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                             (off_tok + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                             (off_tok + t_kv) * kvl.v_tok_bytes);
+                e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes, dl.swa && crate::Engine::wkv_on())?;
+            }
             let o = e.matmul(&dl.wo, &attn, 1)?;
 
             let mut post = e.uninit(ne)?;
@@ -396,6 +417,10 @@ impl HybridModel {
         let cap_max: usize = std::env::var("BW24_SPEC_CAPMAX").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(7);
         let k_cap = k.min(cap_max).max(1);
+        // seed len_d before round 1 (prime went through the host-len path).
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
         // persistent per-step rope-pos slots (device; filled by set_i32_one kernel-arg stores).
         let mut pos_slots: Vec<CudaSlice<i32>> = (0..k_cap.max(1))
             .map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?;
@@ -459,6 +484,10 @@ impl HybridModel {
             let keep = m + 1;
             for kvl in cache.kv.iter_mut().flatten() {
                 kvl.len -= (k + 1) - keep;
+                // keep len_d in lockstep: the drafter's device-len attention arms read it
+                // (the gemma round appends via the HOST-len path, which doesn't maintain
+                // the counter — stale len_d gutted acceptance to 0.059 on the dc probe).
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             cache.pos -= (k + 1) - keep;
             // h for the next round = main hidden at the LAST KEPT position (verify row m).
