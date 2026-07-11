@@ -97,7 +97,8 @@ kernel exists.
   degradation retains the validated mmap extent as fallback.
 - `BW24_SPILL_PREAD_DEPTH` bounds worker threads and pinned buffers (`2` by default; the G7e A/B used
   `8`). `BW24_SPILL_STATS=1` logs cumulative reads, bytes, errors, short reads, mmap fallbacks,
-  buffer waits, and ring-full events when server requests finish.
+  buffer waits, ring-full events, expert-cache hits/misses, H2D staged bytes, and slot count when
+  server requests finish. Public-eval metadata records start/end snapshots and per-run deltas.
 - Optional pruned_experts masks preserve original router width and expert ids. Masked experts are
   excluded before top-k and have no weight bytes in the artifact.
 - HostExps carries qtype, row bytes, byte extent, and offset per expert. Mixed/pruned layers stay

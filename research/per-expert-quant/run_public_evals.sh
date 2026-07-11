@@ -187,6 +187,7 @@ server_log_raw = os.environ.get("SERVER_LOG")
 server_log = pathlib.Path(server_log_raw).resolve() if server_log_raw else None
 
 spill_keys = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
+cache_keys = ("hits", "misses", "staged_bytes", "slots")
 
 def spill_snapshot(path):
     if path is None or not path.is_file():
@@ -198,6 +199,17 @@ def spill_snapshot(path):
         if all(key in values for key in spill_keys):
             return {key: values[key] for key in spill_keys}
     return {key: 0 for key in spill_keys}
+
+def cache_snapshot(path):
+    if path is None or not path.is_file():
+        return None
+    for line in reversed(path.read_text(errors="replace").splitlines()):
+        if "[moe-cache] snapshot" not in line:
+            continue
+        values = {key: int(value) for key, value in re.findall(r"([a-z_]+)=([0-9]+)", line)}
+        if all(key in values for key in cache_keys):
+            return {key: values[key] for key in cache_keys}
+    return {key: 0 for key in cache_keys}
 
 def sha256(path):
     h = hashlib.sha256()
@@ -243,6 +255,9 @@ metadata = {
     "server_log_sha256": None,
     "spill_snapshot_start": spill_snapshot(server_log),
     "spill_snapshot_end": None,
+    "moe_cache_snapshot_start": cache_snapshot(server_log),
+    "moe_cache_snapshot_end": None,
+    "moe_cache_delta": None,
     "spill_delta": None,
     "platform": platform.platform(),
     "nvidia_smi": command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"),
@@ -283,6 +298,7 @@ metadata = json.loads(path.read_text())
 evaluator_status = int(os.environ["evaluator_status"])
 tee_status = int(os.environ["tee_status"])
 spill_keys = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
+cache_keys = ("hits", "misses", "staged_bytes", "slots")
 
 def spill_snapshot(raw_path):
     if not raw_path:
@@ -298,6 +314,20 @@ def spill_snapshot(raw_path):
             return {key: values[key] for key in spill_keys}
     return {key: 0 for key in spill_keys}
 
+def cache_snapshot(raw_path):
+    if not raw_path:
+        return None
+    cache_log = pathlib.Path(raw_path)
+    if not cache_log.is_file():
+        return None
+    for line in reversed(cache_log.read_text(errors="replace").splitlines()):
+        if "[moe-cache] snapshot" not in line:
+            continue
+        values = {key: int(value) for key, value in re.findall(r"([a-z_]+)=([0-9]+)", line)}
+        if all(key in values for key in cache_keys):
+            return {key: values[key] for key in cache_keys}
+    return {key: 0 for key in cache_keys}
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -310,6 +340,14 @@ spill_start = metadata.get("spill_snapshot_start")
 spill_delta = None
 if spill_start is not None and spill_end is not None:
     spill_delta = {key: spill_end[key] - spill_start[key] for key in spill_keys}
+cache_end = cache_snapshot(metadata.get("server_log_source"))
+cache_start = metadata.get("moe_cache_snapshot_start")
+cache_delta = None
+if cache_start is not None and cache_end is not None:
+    cache_delta = {
+        key: cache_end[key] - cache_start[key]
+        for key in ("hits", "misses", "staged_bytes")
+    }
 metadata.update({
     "completed_utc": os.environ["RUN_COMPLETED_UTC"],
     "elapsed_seconds": float(os.environ["RUN_ELAPSED_SECONDS"]),
@@ -319,6 +357,8 @@ metadata.update({
     "server_log_sha256": sha256(pathlib.Path(metadata["server_log"])),
     "spill_snapshot_end": spill_end,
     "spill_delta": spill_delta,
+    "moe_cache_snapshot_end": cache_end,
+    "moe_cache_delta": cache_delta,
 })
 path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 PY

@@ -295,6 +295,16 @@ pub fn run(
                            short_reads={short} fallbacks={fallbacks} buffer_waits={waits} \
                            ring_full={ring_full}");
             }
+            if let Some((hits, misses, staged_bytes, slots)) = engine.moe_cache_stats() {
+                let accesses = hits.saturating_add(misses);
+                let hit_rate = if accesses == 0 {
+                    0.0
+                } else {
+                    100.0 * hits as f64 / accesses as f64
+                };
+                eprintln!("[moe-cache] snapshot hits={hits} misses={misses} \
+                           hit_rate={hit_rate:.3} staged_bytes={staged_bytes} slots={slots}");
+            }
         }
     }
 }
