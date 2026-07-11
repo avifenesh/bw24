@@ -95,6 +95,9 @@ def load_arm(
     if len(manifest_payloads) != 1:
         raise ValueError(f"{arm}: artifact manifests differ across shards")
     manifest = json.loads(manifest_payloads.pop())
+    artifact_bytes = manifest.get("artifact_bytes")
+    if isinstance(artifact_bytes, bool) or not isinstance(artifact_bytes, int) or artifact_bytes < 0:
+        raise ValueError(f"{arm}: invalid artifact_bytes {artifact_bytes!r}")
     result_paths = sorted(run_dir.rglob("results_*.json"))
     if not result_paths:
         raise ValueError(f"{arm}: no result files under {run_dir}")
@@ -189,10 +192,12 @@ def load_arm(
                 value = numeric(row.get(spec["metric"]), f"{sample_path}:{line_number}")
                 if value not in (0.0, 1.0):
                     raise ValueError(f"{arm}/{task}: expected binary metric, got {value}")
-                doc_hash, target_hash = row.get("doc_hash"), row.get("target_hash")
-                if not isinstance(doc_hash, str) or not isinstance(target_hash, str):
+                doc_hash = row.get("doc_hash")
+                prompt_hash = row.get("prompt_hash")
+                target_hash = row.get("target_hash")
+                if not all(isinstance(value, str) and value for value in (doc_hash, prompt_hash, target_hash)):
                     raise ValueError(f"{arm}/{task}: missing sample identity")
-                identity = f"{doc_hash}:{target_hash}"
+                identity = f"{doc_hash}:{prompt_hash}:{target_hash}"
                 if identity in values:
                     raise ValueError(f"{arm}/{task}: duplicate sample identity {identity}")
                 values[identity] = value
@@ -207,7 +212,7 @@ def load_arm(
         values_by_task[task] = values
     macro = sum(task["rate"] for task in tasks.values()) / len(tasks)
     return {
-        "artifact_bytes": int(manifest["artifact_bytes"]),
+        "artifact_bytes": artifact_bytes,
         "result_file": str(result_paths[0]) if len(result_paths) == 1 else None,
         "result_files": [str(path) for path in result_paths],
         "receipt_files": [str(path) for path in receipt_paths],
@@ -397,7 +402,9 @@ def self_test(lock: dict[str, Any]) -> None:
                     value = float((i + task_index + arm_index) % 3 == 0)
                     rows.append({
                         "filter": spec["filter"], spec["metric"]: value,
-                        "doc_hash": f"doc-{task_index}-{i}", "target_hash": f"target-{task_index}-{i}",
+                        "doc_hash": f"doc-{task_index}-{i}",
+                        "prompt_hash": f"prompt-{task_index}-{i}",
+                        "target_hash": f"target-{task_index}-{i}",
                     })
                 results.setdefault(spec["result_section"], {})[spec["result_task"]] = {
                     f"{spec['metric']},{spec['filter']}": sum(row[spec["metric"]] for row in rows) / 4,
