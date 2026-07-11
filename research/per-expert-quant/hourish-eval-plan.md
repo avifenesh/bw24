@@ -25,6 +25,8 @@ using the same source weights and NVFP4 runtime as the other bw24 arms.
 revision, and the same panel and lm-eval identities. Run that reference with greedy decoding,
 one request at a time, and no draft model. Compare its paired quality outcomes to the NVIDIA arms,
 but keep it outside the artifact-size Pareto calculation because its format and runtime differ.
+`run_hourish_mlx_reference.sh` applies that lock to an already-running pinned MLX server and refuses
+an artifact manifest, runtime receipt, or draft-model declaration that differs from the lock.
 
 ## Frozen question budget
 

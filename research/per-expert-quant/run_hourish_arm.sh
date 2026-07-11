@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 PANEL_LOCK=${PANEL_LOCK:-$HERE/hourish-panel.lock.json}
 PANEL_SHA256=770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1
+RUNTIME_KIND=${RUNTIME_KIND:-bw24}
 
 : "${ARM:?set ARM}"
 : "${MODEL:?set MODEL}"
@@ -12,10 +13,17 @@ PANEL_SHA256=770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1
 : "${RUN_ID:?set one shared RUN_ID for every arm}"
 : "${SERVER_BIN:?set SERVER_BIN}"
 : "${SERVER_LOG:?set SERVER_LOG}"
-: "${BW24_SPILL_IO:?set BW24_SPILL_IO}"
-: "${BW24_SPILL_PREAD_DEPTH:?set BW24_SPILL_PREAD_DEPTH}"
-: "${BW24_SPILL_STATS:?set BW24_SPILL_STATS}"
-: "${BW24_SERVE_SPEC:?set BW24_SERVE_SPEC}"
+if [[ "$RUNTIME_KIND" == bw24 ]]; then
+  : "${BW24_SPILL_IO:?set BW24_SPILL_IO}"
+  : "${BW24_SPILL_PREAD_DEPTH:?set BW24_SPILL_PREAD_DEPTH}"
+  : "${BW24_SPILL_STATS:?set BW24_SPILL_STATS}"
+  : "${BW24_SERVE_SPEC:?set BW24_SERVE_SPEC}"
+elif [[ "$RUNTIME_KIND" == external_openai ]]; then
+  : "${RUNTIME_IDENTITY:?set RUNTIME_IDENTITY}"
+else
+  echo "unknown RUNTIME_KIND=$RUNTIME_KIND (expected bw24 or external_openai)" >&2
+  exit 2
+fi
 
 OUT_ROOT=${OUT_ROOT:-$HERE/results-hourish}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
@@ -109,9 +117,10 @@ for row in "${TASK_ROWS[@]}"; do
   echo "starting hourish shard: arm=$ARM task=$task samples=$samples_json"
   ARM="$ARM" MODEL="$MODEL" ARTIFACT="$ARTIFACT" \
     SERVER_BIN="$SERVER_BIN" SERVER_LOG="$SERVER_LOG" \
-    BW24_SPILL_IO="$BW24_SPILL_IO" \
-    BW24_SPILL_PREAD_DEPTH="$BW24_SPILL_PREAD_DEPTH" \
-    BW24_SPILL_STATS="$BW24_SPILL_STATS" BW24_SERVE_SPEC="$BW24_SERVE_SPEC" \
+    RUNTIME_KIND="$RUNTIME_KIND" RUNTIME_IDENTITY="${RUNTIME_IDENTITY:-}" \
+    BW24_SPILL_IO="${BW24_SPILL_IO:-}" \
+    BW24_SPILL_PREAD_DEPTH="${BW24_SPILL_PREAD_DEPTH:-}" \
+    BW24_SPILL_STATS="${BW24_SPILL_STATS:-}" BW24_SERVE_SPEC="${BW24_SERVE_SPEC:-}" \
     BASE_URL="$BASE_URL" OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" RUN_ID="$RUN_ID" \
     SUITE="$suite" TASKS_OVERRIDE="$task" SHARD_ID="$task" \
     SAMPLES_JSON="$samples_json" PANEL_LOCK="$PANEL_LOCK" \

@@ -4,16 +4,25 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 LOCK="$HERE/suite.lock.json"
+RUNTIME_KIND=${RUNTIME_KIND:-bw24}
 
 : "${ARM:?set ARM to the experiment arm name, e.g. uniform_q4k_control or reap50_plus25}"
 : "${MODEL:?set MODEL to the name configured in BW24_MODELS}"
 : "${ARTIFACT:?set ARTIFACT to the served model file or overlay directory}"
 : "${SERVER_BIN:?set SERVER_BIN to the active server binary}"
 : "${SERVER_LOG:?set SERVER_LOG to the active server log}"
-: "${BW24_SPILL_IO:?declare the active spill backend}"
-: "${BW24_SPILL_PREAD_DEPTH:?declare the active worker depth}"
-: "${BW24_SPILL_STATS:?declare spill telemetry state}"
-: "${BW24_SERVE_SPEC:?declare speculative serving state}"
+case "$RUNTIME_KIND" in
+  bw24)
+    : "${BW24_SPILL_IO:?declare the active spill backend}"
+    : "${BW24_SPILL_PREAD_DEPTH:?declare the active worker depth}"
+    : "${BW24_SPILL_STATS:?declare spill telemetry state}"
+    : "${BW24_SERVE_SPEC:?declare speculative serving state}"
+    ;;
+  external_openai)
+    : "${RUNTIME_IDENTITY:?set RUNTIME_IDENTITY to an immutable external-runtime receipt}"
+    ;;
+  *) echo "unknown RUNTIME_KIND=$RUNTIME_KIND (expected bw24 or external_openai)" >&2; exit 2 ;;
+esac
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
@@ -30,13 +39,17 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 [[ -e "$ARTIFACT" ]] || { echo "ARTIFACT does not exist: $ARTIFACT" >&2; exit 2; }
 [[ -x "$SERVER_BIN" ]] || { echo "SERVER_BIN is not executable: $SERVER_BIN" >&2; exit 2; }
 [[ -f "$SERVER_LOG" ]] || { echo "SERVER_LOG does not exist: $SERVER_LOG" >&2; exit 2; }
-[[ "$BW24_SPILL_IO" == worker ]] || { echo "BW24_SPILL_IO must be worker" >&2; exit 2; }
-[[ "$BW24_SPILL_PREAD_DEPTH" =~ ^[1-9][0-9]*$ ]] || {
-  echo "BW24_SPILL_PREAD_DEPTH must be a positive integer" >&2
-  exit 2
-}
-[[ "$BW24_SPILL_STATS" == 1 ]] || { echo "BW24_SPILL_STATS must be 1" >&2; exit 2; }
-[[ "$BW24_SERVE_SPEC" == 0 ]] || { echo "BW24_SERVE_SPEC must be 0" >&2; exit 2; }
+if [[ "$RUNTIME_KIND" == bw24 ]]; then
+  [[ "$BW24_SPILL_IO" == worker ]] || { echo "BW24_SPILL_IO must be worker" >&2; exit 2; }
+  [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^[1-9][0-9]*$ ]] || {
+    echo "BW24_SPILL_PREAD_DEPTH must be a positive integer" >&2
+    exit 2
+  }
+  [[ "$BW24_SPILL_STATS" == 1 ]] || { echo "BW24_SPILL_STATS must be 1" >&2; exit 2; }
+  [[ "$BW24_SERVE_SPEC" == 0 ]] || { echo "BW24_SERVE_SPEC must be 0" >&2; exit 2; }
+else
+  [[ -f "$RUNTIME_IDENTITY" ]] || { echo "RUNTIME_IDENTITY does not exist: $RUNTIME_IDENTITY" >&2; exit 2; }
+fi
 [[ "$PREDICT_ONLY" == 0 || "$PREDICT_ONLY" == 1 ]] || {
   echo "PREDICT_ONLY must be 0 or 1" >&2
   exit 2
@@ -164,9 +177,23 @@ if ! curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$HEALTH_TMP"; then
   echo "server health request failed: $SERVER_ROOT/health" >&2
   exit 2
 fi
-if ! python3 "$HERE/validate_server_health.py" "$HEALTH_TMP" "$MODEL" --exact; then
-  rm -f "$HEALTH_TMP"
-  exit 2
+if [[ "$RUNTIME_KIND" == bw24 ]]; then
+  if ! python3 "$HERE/validate_server_health.py" "$HEALTH_TMP" "$MODEL" --exact; then
+    rm -f "$HEALTH_TMP"
+    exit 2
+  fi
+else
+  if ! python3 - "$HEALTH_TMP" <<'PY'
+import json, sys
+
+health = json.load(open(sys.argv[1]))
+if health != {"status": "ok"}:
+    raise SystemExit(f"unexpected external server health payload: {health!r}")
+PY
+  then
+    rm -f "$HEALTH_TMP"
+    exit 2
+  fi
 fi
 mkdir -p "$CACHE_DIR" "$(dirname "$RUN_DIR")"
 if ! mkdir "$RUN_DIR"; then
@@ -210,9 +237,12 @@ fi
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
+if [[ "$RUNTIME_KIND" == external_openai ]]; then
+  cp "$RUNTIME_IDENTITY" "$RUN_DIR/runtime-identity.json"
+fi
 RUN_STARTED_UTC=$(date -u +%FT%TZ)
 RUN_STARTED_NS=$(date +%s%N)
-export ROOT RUN_DIR ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC SAMPLES_JSON PREDICT_ONLY PANEL_LOCK
+export ROOT RUN_DIR ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC SAMPLES_JSON PREDICT_ONLY PANEL_LOCK RUNTIME_KIND RUNTIME_IDENTITY
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, re, subprocess, sys
 
@@ -265,6 +295,7 @@ def sha256(path):
 metadata = {
     "arm": os.environ["ARM"],
     "model": os.environ["MODEL"],
+    "runtime_kind": os.environ["RUNTIME_KIND"],
     "suite": os.environ["SUITE"],
     "tasks": os.environ["TASKS"].split(","),
     "limit": os.environ.get("LIMIT") or None,
@@ -283,6 +314,10 @@ metadata = {
     "artifact": str(artifact),
     "artifact_identity_file": str(identity),
     "artifact_identity_sha256": sha256(identity),
+    "runtime_identity_sha256": (
+        sha256(pathlib.Path(os.environ["RUN_DIR"]) / "runtime-identity.json")
+        if os.environ["RUNTIME_KIND"] == "external_openai" else None
+    ),
     "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
     "eval_timeout_s": int(os.environ["EVAL_TIMEOUT_S"]),
