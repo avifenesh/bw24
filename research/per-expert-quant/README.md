@@ -417,6 +417,11 @@ when deliberately expanding it. Set `LIMIT=all` only for the final promoted arti
 available sample in the candidate tasks. This is a promotion gate, not a leaderboard score; run the
 full suites only after the size/quality direction is clear.
 
+With the revisions pinned in `suite.lock.json`, `LIMIT=all` is 4,746 requests per arm: 198 GPQA
+Diamond, 500 MATH-500, and 4,048 across the five selected MMLU-Pro domains. Estimate runtime from
+the completed matched screen before launching the final pair; this is intentionally much larger
+than the 350-request `LIMIT=50` screen.
+
 The pinned candidate tasks contain 4,746 evaluation documents per arm: GPQA Diamond 198,
 MATH-500 500, and MMLU-Pro history/other/economics/law/psychology
 381/924/844/1,101/798. At roughly 70 seconds per generation on the current G7e spill setup, a full
