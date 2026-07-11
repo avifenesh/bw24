@@ -22,9 +22,12 @@ record, for each target token:
 - selected expert IDs and router weights for every MoE layer;
 - the existing gate-weighted expert-output norm used by the REAP-style trace.
 
-Only *low-confidence, full-model-correct* tokens contribute to the primary criticality score. This
-avoids protecting experts merely because they participate when the model is confidently wrong. A
-separate diagnostic retains the wrong-token population so this choice can be audited.
+Split tokens into frozen confidence bands using percentiles computed separately for each calibration
+domain. Domain-local bands prevent naturally lower-confidence domains such as code or math from
+consuming the entire protection budget. Only *low-confidence, full-model-correct* tokens contribute
+to the primary rescue score. This avoids protecting experts merely because they participate when
+the model is confidently wrong. A separate diagnostic retains the wrong-token population so this
+choice can be audited.
 
 For token `t`, define a bounded uncertainty weight from the reference-token margin:
 
@@ -32,11 +35,19 @@ For token `t`, define a bounded uncertainty weight from the reference-token marg
 u_t = 1[argmax(p_t) == y_t] * min(u_max, 1 / (margin_t + epsilon))
 ```
 
-For expert `e`, accumulate confidence-conditioned contribution:
+For expert `e`, accumulate low-confidence rescue mass and high-confidence easy-token mass:
 
 ```text
-C_e = sum_t u_t * router_weight(t,e) * normalized_output_norm(t,e)
+L_e = sum_(t in low) u_t * router_weight(t,e) * normalized_output_norm(t,e)
+H_e = sum_(t in high)     router_weight(t,e) * normalized_output_norm(t,e)
+S_e = L_e / (L_e + H_e + epsilon)
 ```
+
+`L_e` preserves experts with large absolute impact on hard-but-correct tokens. `S_e` exposes rare
+experts that specialize in those tokens instead of allowing total traffic to dominate again. Use a
+frozen convex combination of normalized `L_e` and `S_e` as `C_e`; select its coefficient on the
+private calibration split, never on public evaluation results. Report both components so a winning
+allocation remains interpretable.
 
 Independently measure each expert's weight reconstruction error under Q2_K, NVFP4, and Q8_0 from
 the source weights. The allocation cost for format `q` is:
@@ -56,8 +67,9 @@ At each selected byte budget compare:
 1. confidence-conditioned global allocation;
 2. traffic-only allocation using the same format counts;
 3. quantization-error-only allocation using the same format counts;
-4. at least three random assignments with the same per-format counts;
-5. the existing uniform/mixed and plain-quant baselines.
+4. low-confidence rescue mass without the hard/easy specialization term;
+5. at least three random assignments with the same per-format counts;
+6. the existing uniform/mixed and plain-quant baselines.
 
 Freeze calibration hashes, format counts, byte totals, tie-breaking, and the plan before any public
 evaluation. First use the locked hourish screen. Only candidates passing its existing promotion
