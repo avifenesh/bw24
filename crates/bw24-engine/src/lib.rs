@@ -4539,6 +4539,55 @@ impl Engine {
         Ok(())
     }
 
+    /// Correctness fallback for quantized resident K/V views. Dequantizes K and V once into f32
+    /// workspaces, then calls `sdpa_naive`. This is an explicit API: the optimized prefill view
+    /// dispatch remains unchanged, so callers can use it as a reference or compatibility path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_naive_quantized_view(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &cudarc::driver::CudaView<u8>,
+        v: &cudarc::driver::CudaView<u8>,
+        o: &mut CudaSlice<f32>,
+        head_dim: usize,
+        n_head: usize,
+        n_head_kv: usize,
+        t: usize,
+        t_kv: usize,
+        scale: f32,
+        causal: bool,
+        k_tok_bytes: usize,
+        v_tok_bytes: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kv_dim = n_head_kv * head_dim;
+        let mut kf = self.uninit(t_kv * kv_dim)?;
+        let mut vf = self.uninit(t_kv * kv_dim)?;
+        let f = self.func("fa_dequant_kv_ws_f32");
+        let total = (2 * t_kv * kv_dim) as u64;
+        let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (nblk.max(1), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let (kv_dim_i, t_kv_i) = (kv_dim as i32, t_kv as i32);
+        let (k_tok_bytes_i, v_tok_bytes_i) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k)
+            .arg(v)
+            .arg(&mut kf)
+            .arg(&mut vf)
+            .arg(&kv_dim_i)
+            .arg(&kv_dim_i)
+            .arg(&t_kv_i)
+            .arg(&k_tok_bytes_i)
+            .arg(&v_tok_bytes_i);
+        unsafe { b.launch(cfg)? };
+        self.sdpa_naive(
+            q, &kf, &vf, o, head_dim, n_head, n_head_kv, t, t_kv, scale, causal,
+        )
+    }
+
     /// Hand-written FlashAttention prefill (sm_120, FA-2 online softmax on validated mma.sync,
     /// head_dim 256 or 128 (template-stamped twins), GQA, causal). Replaces sdpa_naive for T>1.
     /// Q/K/V/O [head_dim, n_head(_kv), T].
