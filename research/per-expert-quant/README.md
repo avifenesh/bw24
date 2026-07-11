@@ -447,18 +447,37 @@ The clean depth-8 N=50 run showed material buffer waits and ring-full fallbacks,
 pool uses only about 28 MiB of pinned memory. Run matched `LIMIT=5`, `NUM_CONCURRENT=1` preflights
 at depths 8, 16, and 32 on the plain artifact, restarting the server for every depth. Require all 35
 documents, identical raw and filtered generations, zero server/spill errors and short reads, and
-completed receipts. Choose the fastest passing depth by receipt wall time; retain depth 8 unless a
-larger pool produces a real wall-time improvement. Preserve the spill-counter deltas because lower
-ring pressure without lower elapsed time is not sufficient promotion evidence.
+completed receipts. Validate and select the setting with `select_transport_preflight.py`, retaining
+depth 8 unless a larger passing pool improves wall time by at least 5%. Preserve the spill-counter
+deltas because lower ring pressure without lower elapsed time is not sufficient promotion evidence.
 
-At the selected depth, measure `NUM_CONCURRENT=2,4` on the plain artifact with `LIMIT=10`. Accept a
-higher value only when the server has no errors and the raw generations remain identical to the
-matched subset of concurrency 1:
+    python3 research/per-expert-quant/select_transport_preflight.py \
+      --baseline /data/results/per-expert-quant/promoted-n50/plain_quant/RUN_ID \
+      --candidate d8=/data/results/per-expert-quant/spill-depth-preflight/plain-d8/RUN_ID \
+      --candidate d16=/data/results/per-expert-quant/spill-depth-preflight/plain-d16/RUN_ID \
+      --candidate d32=/data/results/per-expert-quant/spill-depth-preflight/plain-d32/RUN_ID \
+      --expected-limit 5 --dimension spill_depth --safe-setting 8
+
+At the selected depth, measure `NUM_CONCURRENT=1,2,4` on the plain artifact with `LIMIT=10`. Accept
+a higher value only when the server has no errors, it improves matched wall time by at least 5%,
+and the raw generations remain identical to the matched N=50 subset:
 
     python3 research/per-expert-quant/compare_eval_generations.py \
       --baseline /data/results/per-expert-quant/promoted-n50/plain_quant/RUN_ID \
       --candidate /data/results/per-expert-quant/concurrency-preflight/plain-c2/RUN_ID \
       --candidate-subset
+
+    python3 research/per-expert-quant/select_transport_preflight.py \
+      --baseline /data/results/per-expert-quant/promoted-n50/plain_quant/RUN_ID \
+      --candidate c1=/data/results/per-expert-quant/concurrency-preflight/plain-c1/RUN_ID \
+      --candidate c2=/data/results/per-expert-quant/concurrency-preflight/plain-c2/RUN_ID \
+      --candidate c4=/data/results/per-expert-quant/concurrency-preflight/plain-c4/RUN_ID \
+      --expected-limit 10 --dimension num_concurrent --safe-setting 1
+
+The selector rejects incomplete receipts, wrong task/count/config settings, non-identical raw or
+filtered generations, missing results/logs, retries and runtime errors, and invalid spill deltas.
+It also requires one fixed spill depth across a concurrency comparison, records evidence hashes,
+and refuses to overwrite JSON or Markdown reports.
 
 Use the selected depth and fastest passing concurrency for both final arms and record both in each
 run receipt. These are transport optimizations, not model-quality variables; fall back to depth 8
