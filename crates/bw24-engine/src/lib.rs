@@ -5156,13 +5156,17 @@ impl Engine {
                         v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                         head_dim: usize, n_head: usize, n_head_kv: usize,
                         t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
-                        k_tok_bytes: usize, v_tok_bytes: usize)
+                        k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                         -> Result<(), Box<dyn std::error::Error>> {
         // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
         // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
         // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
+        // `g` = this layer's cache is e4m3 (gemma windowed under wkv) — every pick below must
+        // mirror fa_decode_kvmod's g-routing or the graph diverges from eager (short/mid 1/96,
+        // 2026-07-12).
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
+        if g && !(fa_v4_at(bucket_max) && head_dim == 256) { fa_vec = false; }
         let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
@@ -5187,10 +5191,11 @@ impl Engine {
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
-            // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick.
+            // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
+            // incl the g-module route + raw-e4m3 sV sizing.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v4_dc");
-            let shmem = (11520 + 32 * head_dim * 2) as u32;
+            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") } else { self.func("fa_decode_vec_q_v4_dc") };
+            let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5199,7 +5204,7 @@ impl Engine {
             // FA v3 lane _dc twin: the captured graph must run the SAME walk body as eager
             // under BW24_FA_V3=1 (eager, rows-verify and graph switch together).
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v3_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_v3_dc") } else { self.func("fa_decode_vec_q_v3_dc") };
             let shmem = (32 * head_dim * 2) as u32;       // sV bf16 [FA_DEC_TILE=32][hd]
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5209,7 +5214,7 @@ impl Engine {
             // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
             // a numeric config; eager, rows-verify and graph all switch together).
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v2_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_v2_dc") } else { self.func("fa_decode_vec_q_v2_dc") };
             let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5217,12 +5222,12 @@ impl Engine {
         } else if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // REGISTER-DEQUANT twin: zero dynamic smem (see fa_decode above).
-            let fv = self.func("fa_decode_vec_q_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_dc") } else { self.func("fa_decode_vec_q_dc") };
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else {
-            (self.func("fa_decode_f32_dc"),
+            (if g { self.func_g("fa_decode_f32_dc") } else { self.func("fa_decode_f32_dc") },
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         };
@@ -5230,7 +5235,7 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = self.fa_func("fa_decode_combine_f32", head_dim);
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
@@ -5243,7 +5248,7 @@ impl Engine {
     /// bucket on the same `(kernel, n_splits)` pair and pass a `bucket_max` that reproduces eager's
     /// n_splits bit-for-bit. (Per = ceil(t_kv/n_splits) is then recomputed from the DEVICE t_kv inside
     /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
-    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
+    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize, g: bool) -> (bool, usize) {
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
@@ -5254,7 +5259,10 @@ impl Engine {
         // (mid-ctx graph mismatch at pos 19 + partials OOB at longer runs). Mirror the real
         // fa_decode dispatch: vec512 above the fa512 floor, vec256 as before.
         let vec512 = fa_ok && head_dim == 512 && t_kv >= fa512_min_tkv();
-        let fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
+        let mut fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
+        // g (fp8-windowed): mirror kvmod's clamp — only the v4 lane parses e4m3 in the vec
+        // family; everything else falls to the g-module scalar.
+        if g && !(fa_v4_at(t_kv) && head_dim == 256) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
@@ -5265,8 +5273,8 @@ impl Engine {
     /// launcher derives both from `bucket_max` via the same formulas, we just hand it `t_kv` itself:
     /// the n_splits is then identical, and the per-split boundaries (computed from the DEVICE t_kv in
     /// the kernel) match eager exactly. The bucket KEY (for the graph HashMap) is `(fa_vec, n_splits)`.
-    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
-        self.fa_geom_eager(t_kv, head_dim, n_head_kv)
+    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize, n_head_kv: usize, g: bool) -> (bool, usize) {
+        self.fa_geom_eager(t_kv, head_dim, n_head_kv, g)
     }
 
     /// CUDA-graph capture wrapper (CUDA-GRAPH-PLAN §3.2, llama.cpp warmup pattern). Runs `step`

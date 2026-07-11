@@ -560,7 +560,7 @@ impl HybridModel {
         for _ in 0..max_new {
             // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
             let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize);
+            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, false);
             if !gs.graphs.contains_key(&key) {
                 // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
                 let bucket_max = t_kv;
@@ -742,7 +742,7 @@ impl HybridModel {
         }
         // (3) fa_decode reads t_kv from kvl.len_d; bucket_max yields the eager n_splits -> bit-identical.
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kvl.len_d, bucket_max, scale, ktb, vtb)?;
+                       &kvl.len_d, bucket_max, scale, ktb, vtb, false)?;
 
         let attn_g = match &gate {
             Some(gate) => {
@@ -789,6 +789,10 @@ impl HybridModel {
         // E4B: dc/graph serving arms UNWIRED (HANDOVER-E4B.md) — the eager loop below routes
         // through gemma4_e4b_decode_step_h.
         if self.cfg.gemma4.is_some() && !self.is_gemma4_e4b() {
+            // Graph serving probed FLAT vs this dc loop (2026-07-12, 1.7k N=2: 174.6/174.2 vs
+            // 174.5/174.3) — the GRAPH-GATE's +2.5% is over the plain-eager loop, and the dc
+            // arc already banked that; the gate (IDENTICAL at every ctx since the wkv
+            // capture-arm fix) stays as the correctness harness.
             // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
             let n_vocab = self.output.out_features();
             let embd_gpu = self.embd_gpu.get_or_init(|| {

@@ -378,7 +378,7 @@ impl HybridModel {
         let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
         let mut attn = e.zeros(n_head * head_dim)?;
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kv.len_d, bucket_max, scale, ktb, vtb)?;
+                       &kv.len_d, bucket_max, scale, ktb, vtb, false)?;
 
         let attn_g = match &gate {
             Some(gate) => {

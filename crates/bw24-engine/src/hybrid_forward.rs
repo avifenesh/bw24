@@ -2853,7 +2853,8 @@ impl HybridModel {
                 } else {
                     let b = if swa { b_swa } else { b_glob };
                     e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
-                                   scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                   scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                   swa && crate::Engine::wkv_on())?;
                 }
             }
         }
@@ -2907,13 +2908,14 @@ impl HybridModel {
             //    are power-of-2 RUNGS (one capture per doubling; grid sized for the rung end).
             let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
             let f512 = crate::fa512_min_tkv();
-            let key_s = if t_kv > win { (true, usize::MAX) } else { e.fa_bucket_key(t_kv, hd_s, nkv_s) };
+            let key_s = if t_kv > win { (true, usize::MAX) }
+                        else { e.fa_bucket_key(t_kv, hd_s, nkv_s, crate::Engine::wkv_on()) };
             let (key_g, rung_end) = if t_kv >= f512 {
                 // strict upper bound: the rung must ROLL at exact powers (t_kv==1024 starts
                 // the [1024,2048) bucket) — sizing covers every replayed T_kv < end.
                 let end = (t_kv + 1).next_power_of_two().max(f512 * 2);
                 ((true, end), end)
-            } else { (e.fa_bucket_key(t_kv, hd_g, nkv_g), t_kv) };
+            } else { (e.fa_bucket_key(t_kv, hd_g, nkv_g, false), t_kv) };
             let key = (key_s, key_g, t_kv >= f512, t_kv > win);
             if !graphs.contains_key(&key) {
                 let bucket_max = (t_kv, rung_end);
