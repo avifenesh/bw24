@@ -442,19 +442,27 @@ project the pinned full counts with:
 The projector rejects incomplete runs, unexpected task order/counts, and missing task-boundary
 snapshots. Recompute it after any accepted concurrency or spill-setting change.
 
-Before committing roughly eight machine-days to the two full arms, measure `NUM_CONCURRENT=2,4`
-on the plain artifact with `LIMIT=10`. The completed plain N=50 run is the concurrency-1 reference,
-so it does not need to be repeated. Accept a higher value only when the server has no errors and
-the raw generations remain identical to the matched subset of concurrency 1:
+Before committing multiple machine-days to the two full arms, first tune the bounded worker ring.
+The clean depth-8 N=50 run showed material buffer waits and ring-full fallbacks, while each depth-8
+pool uses only about 28 MiB of pinned memory. Run matched `LIMIT=5`, `NUM_CONCURRENT=1` preflights
+at depths 8, 16, and 32 on the plain artifact, restarting the server for every depth. Require all 35
+documents, identical raw and filtered generations, zero server/spill errors and short reads, and
+completed receipts. Choose the fastest passing depth by receipt wall time; retain depth 8 unless a
+larger pool produces a real wall-time improvement. Preserve the spill-counter deltas because lower
+ring pressure without lower elapsed time is not sufficient promotion evidence.
+
+At the selected depth, measure `NUM_CONCURRENT=2,4` on the plain artifact with `LIMIT=10`. Accept a
+higher value only when the server has no errors and the raw generations remain identical to the
+matched subset of concurrency 1:
 
     python3 research/per-expert-quant/compare_eval_generations.py \
       --baseline /data/results/per-expert-quant/promoted-n50/plain_quant/RUN_ID \
       --candidate /data/results/per-expert-quant/concurrency-preflight/plain-c2/RUN_ID \
       --candidate-subset
 
-Use the fastest passing concurrency for both final arms and record it in each run receipt. This is
-a transport optimization, not a model-quality variable; fall back to 1 on any response mismatch,
-retry, server error, or spill error.
+Use the selected depth and fastest passing concurrency for both final arms and record both in each
+run receipt. These are transport optimizations, not model-quality variables; fall back to depth 8
+and concurrency 1 on any response mismatch, retry, server error, or spill error.
 
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh
