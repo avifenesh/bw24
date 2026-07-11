@@ -711,7 +711,7 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         // (1) append at the device write slot kvl.len_d (== old len).
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
         // (2) advance the device counter: kvl.len_d now holds new len == t_kv.
         e.inc_seqlen(&mut kvl.len_d)?;
         // n_splits sizing + K/V view extent:
@@ -981,7 +981,7 @@ impl HybridModel {
         // q5_1 V, on-device append-quantize kernel; no host round-trip). KVQUANT-PLAN §C/E2.
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
         kvl.len += 1;
         let t_kv = kvl.len;
 

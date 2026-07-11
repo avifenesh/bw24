@@ -366,7 +366,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert!(kvl.len + t <= cache.max_ctx, "prime_cache: KV overflow");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
             kvl.len += t;
             let new_len = kvl.len as i32;
             e.set_i32_one(&mut kvl.len_d, new_len)?;
@@ -2052,7 +2052,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert_eq!(kvl.len, 0, "gemma4 prime is fresh-prompt only (v0)");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
             kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
@@ -2650,7 +2650,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
         kvl.len += 1;
         // R6 decode: SWA layers attend only the last `sliding_window` keys — a token-aligned
         // VIEW OFFSET into the quantized cache (keys carry absolute rope; the mask is purely
@@ -2791,7 +2791,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
         match cap_bucket_max {
@@ -3082,7 +3082,7 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
-                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
         kvl.len += t;
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
@@ -3305,7 +3305,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
                                        kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                       kvl.v_tok_bytes)?;
+                                       kvl.v_tok_bytes, false)?;
             kvl.len += t;
         }
         // attention: per-row causal fa over the (own or target) quantized cache. The cache

@@ -280,6 +280,10 @@ pub struct Engine {
     hybrid: Arc<CudaModule>,
     qmatvec: Arc<CudaModule>,
     flash: Arc<CudaModule>,
+    /// FP8-GLOBALS module (2026-07-11): the kf8vf8 fatbin loaded ALONGSIDE the default —
+    /// gemma GLOBAL layers (hd512) append + attend in e4m3 (dequant-latency arc, HANDOVER).
+    /// Lazy: loaded on first global-format use; None until then.
+    flash_g: std::sync::OnceLock<Arc<CudaModule>>,
     gemm: Arc<CudaModule>,
     router: Arc<CudaModule>,
     /// Sampled-spec kernels (research/sampled-spec-impl-map.md piece A).
@@ -460,7 +464,7 @@ impl Engine {
         } else {
             unsafe { gpu.ctx.disable_event_tracking(); }
         }
-        Ok(Self { gpu, module, hybrid, qmatvec, flash, gemm, router, sample,
+        Ok(Self { gpu, module, hybrid, qmatvec, flash, flash_g: std::sync::OnceLock::new(), gemm, router, sample,
                   moe_cache: Mutex::new(None), copy_stream,
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
@@ -472,6 +476,29 @@ impl Engine {
 
     pub fn ctx(&self) -> &Arc<CudaContext> { &self.gpu.ctx }
     pub fn stream(&self) -> &Arc<CudaStream> { &self.gpu.stream }
+    /// FP8-GLOBALS switch (BW24_GEMMA_GKV, default ON): gemma global (hd512) layers keep
+    /// their KV in e4m3 — the dequant-latency arc (HANDOVER). Windowed layers stay q8_0/q5_1.
+    pub fn gkv_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
+    }
+
+    /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
+    /// when the fp8-globals arm is on; everything else from the default flash module.
+    fn fa_func(&self, name: &str, head_dim: usize) -> CudaFunction {
+        if head_dim == 512 && Self::gkv_on() { self.func_g(name) } else { self.func(name) }
+    }
+
+    /// Kernel from the FP8-GLOBALS (kf8vf8) flash module — gemma global-layer arm only.
+    fn func_g(&self, name: &str) -> CudaFunction {
+        let m = self.flash_g.get_or_init(|| {
+            self.gpu.ctx.load_module(cudarc::nvrtc::Ptx::from_file(FLASH_FATBIN_KF8VF8))
+                .expect("load kf8vf8 flash fatbin (fp8-globals arm)")
+        });
+        m.load_function(name)
+            .unwrap_or_else(|_| panic!("kernel {name} not in the kf8vf8 flash fatbin"))
+    }
+
     fn func(&self, name: &str) -> CudaFunction {
         self.module.load_function(name)
             .or_else(|_| self.hybrid.load_function(name))
@@ -991,9 +1018,9 @@ impl Engine {
     pub fn append_kv_quantized(&self, k_row: &CudaSlice<f32>, v_row: &CudaSlice<f32>,
                                kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t: usize,
                                kv_dim_k: usize, kv_dim_v: usize,
-                               k_tok_bytes: usize, v_tok_bytes: usize)
+                               k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1") } else { self.func("append_quantize_kv_q8_0_q5_1") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
@@ -1010,9 +1037,9 @@ impl Engine {
     pub fn append_kv_quantized_dc(&self, k_row: &CudaSlice<f32>, v_row: &CudaSlice<f32>,
                                   kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t_dev: &CudaSlice<i32>,
                                   kv_dim_k: usize, kv_dim_v: usize,
-                                  k_tok_bytes: usize, v_tok_bytes: usize)
-                                  -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1_dc");
+                                  k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc") } else { self.func("append_quantize_kv_q8_0_q5_1_dc") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
@@ -1033,8 +1060,8 @@ impl Engine {
     pub fn append_kv_quantized_rows(&self, k_rows: &CudaSlice<f32>, v_rows: &CudaSlice<f32>,
                                     kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
                                     t0: usize, t: usize, kv_dim_k: usize, kv_dim_v: usize,
-                                    k_tok_bytes: usize, v_tok_bytes: usize)
-                                    -> Result<(), Box<dyn std::error::Error>> {
+                                    k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
+                               -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("BW24_PRIME_APPEND_LOOP").is_ok() {
             for i in 0..t {
                 let k_row = k_rows.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
@@ -1044,7 +1071,7 @@ impl Engine {
             }
             return Ok(());
         }
-        let f = self.func("append_quantize_kv_q8_0_q5_1_rows");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_rows") } else { self.func("append_quantize_kv_q8_0_q5_1_rows") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (t0i, kdk, kdv) = (t0 as i32, kv_dim_k as i32, kv_dim_v as i32);
@@ -4682,7 +4709,7 @@ impl Engine {
             // gemma4 globals (hd 512): the DPL16 register twin (fa_decode_vec_q body with a
             // 16-slot accumulator ceiling). Scalar fallback measured 82.5us/layer at 1736 ctx.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_dpl16");
+            let fv = self.fa_func("fa_decode_vec_q_dpl16", head_dim);
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else if fa_vec && head_dim <= 256 {
@@ -4750,7 +4777,7 @@ impl Engine {
                      block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
             }
         } else {
-            (self.func("fa_decode_f32"),
+            (self.fa_func("fa_decode_f32", head_dim),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         };
@@ -4758,7 +4785,7 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let (fc, cfg2) = (self.func("fa_decode_combine_f32"),
+        let (fc, cfg2) = (self.fa_func("fa_decode_combine_f32", head_dim),
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
@@ -4851,7 +4878,7 @@ impl Engine {
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
-        let f = self.func(fname);
+        let f = if head_dim == 512 { self.fa_func(fname, head_dim) } else { self.func(fname) };
         let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
             // v4: fa_v4_smem (11.5KB) + sV; v3 stages sV only; v2/smem twins stage sK+sV.
             let sh = (if v4 { 11520 + 32 * head_dim * 2 }
@@ -4881,7 +4908,7 @@ impl Engine {
             // device-len combine (shared by verify/eager/graph — parity by symbol): the
             // per-row n_splits derives from the SAME counter the rows kernel read.
             let (bd, plus) = base_dev.unwrap();
-            let fc = self.func("fa_decode_combine_rows_dc");
+            let fc = self.fa_func("fa_decode_combine_rows_dc", head_dim);
             let mut b2 = self.gpu.stream.launch_builder(&fc);
             b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
               .arg(bd).arg(&plus).arg(&nspm).arg(&spk);
@@ -5069,12 +5096,12 @@ impl Engine {
         } {
             // gemma globals dc twin (mirror the eager dpl16 pick incl the crossover floor).
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            (self.func("fa_decode_vec_q_dpl16_dc"),
+            (self.fa_func("fa_decode_vec_q_dpl16_dc", head_dim),
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else if fa_vec && head_dim == 512 {
             // under the 512 floor eager runs scalar — mirror it (same geometry as the scalar arm).
-            (self.func("fa_decode_f32_dc"),
+            (self.fa_func("fa_decode_f32_dc", head_dim),
              LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
                  block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
@@ -5121,7 +5148,7 @@ impl Engine {
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = self.func("fa_decode_combine_f32");
+        let fc = self.fa_func("fa_decode_combine_f32", head_dim);
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);

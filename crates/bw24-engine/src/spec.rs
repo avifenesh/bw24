@@ -369,7 +369,7 @@ impl HybridModel {
         let kv = &mut scratch.kv;
         // append at the DEVICE slot (kv.len_d == old len), then advance the counter in-graph.
         e.append_kv_quantized_dc(&k, &v, &mut kv.k, &mut kv.v, &kv.len_d,
-                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
         e.inc_seqlen(&mut kv.len_d)?;
         // full-buffer views (any in-round t_kv stays in range on replay); the kernel bounds the
         // key range from the device counter.

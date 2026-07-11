@@ -222,7 +222,7 @@ impl Eagle3Draft {
 
         let kv = &mut scratch.kv;
         e.append_kv_quantized(&k, &v, &mut kv.k, &mut kv.v, kv.len,
-                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
         kv.len += 1;
         let t_kv = kv.len;
         let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
