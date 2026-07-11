@@ -28,6 +28,9 @@ but keep it outside the artifact-size Pareto calculation because its format and 
 `run_hourish_mlx_reference.sh` applies that lock to an already-running pinned MLX server and refuses
 an artifact manifest, runtime receipt, or draft-model declaration that differs from the lock.
 On macOS, run it with Homebrew Bash 4+ and GNU coreutils (`gtimeout` is detected automatically).
+After both runs are complete, `summarize_hourish_external_reference.py` independently validates
+the MLX artifact/runtime receipts and produces a paired quality comparison against `plain_quant`.
+It records MLX size for context but marks it as excluded from the NVIDIA artifact-size Pareto.
 
 ## Frozen question budget
 
