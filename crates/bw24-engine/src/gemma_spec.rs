@@ -423,7 +423,7 @@ impl HybridModel {
         // Keyed on (kr, rung, over_win): a new depth/rung/window regime captures lazily.
         let graph_on = std::env::var("BW24_GEMMA_DRAFT_GRAPH").as_deref() == Ok("1");
         let mut draft_graphs: std::collections::HashMap<(usize, usize, bool),
-                                                        cudarc::driver::CudaGraph> = Default::default();
+            (cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>)> = Default::default();
         let mut g_seed = e.zeros(n_embd)?;
         let mut pos_base = e.htod_i32(&[0])?;
         // seed len_d before round 1 (prime went through the host-len path).
@@ -454,7 +454,11 @@ impl HybridModel {
                              p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
                              pos_slots: &Vec<CudaSlice<i32>>|
                              -> Result<(), Box<dyn std::error::Error>> {
-                let mut hc = e.clone_dtod(g_seed)?;
+                // uninit+copy (NOT clone_dtod): clone_dtod's internal alloc bypasses the
+                // capture-retain hooks — its address got pool-reused between replays and the
+                // replayed chain read a corrupted seed (accept 0.52 vs 0.76).
+                let mut hc = e.uninit(n_embd)?;
+                e.copy_into(&mut hc, 0, g_seed, n_embd)?;
                 for j in 0..kr {
                     let tv = batch_d.slice(j..j + 1);
                     let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, &pos_slots[j],
@@ -482,21 +486,23 @@ impl HybridModel {
             if graph_on && dc_bucket.is_some() {
                 let key = (kr, dc_bucket.unwrap(), over_win);
                 if !draft_graphs.contains_key(&key) {
-                    // in-graph pos fill + chain; capture_graph warmups twice (allocator-stable).
-                    let g = e.capture_graph(|e| {
-                        for (j, slot) in pos_slots.iter().take(kr).enumerate() {
-                            let mut sm = slot.clone();
-                            e.i32_copy_add(&pos_base, &mut sm, j as i32)?;
-                        }
+                    // chain-only capture; pos slots are graph INPUTS (filled eagerly before
+                    // each launch, like g_seed — the in-graph copy_add fills replayed one
+                    // round stale, see jsonl).
+                    let g = e.capture_graph_retained(|e| {
                         run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
                     })?;
                     draft_graphs.insert(key, g);
                 }
-                e.set_i32_one(&mut pos_base, cache.pos as i32)?;
-                draft_graphs.get(&key).unwrap().launch()?;
+                for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
+                    e.set_i32_one(slot, (cache.pos + j) as i32)?;
+                }
+                draft_graphs.get(&key).unwrap().0.launch()?;
                 // BW24_DRAFT_GRAPH_CHECK=1: re-run the chain eagerly from the same state and
                 // diff the drafted slots (replay-vs-eager divergence bisect).
                 if std::env::var("BW24_DRAFT_GRAPH_CHECK").as_deref() == Ok("1") {
+                    // NON-DESTRUCTIVE: compare, then restore the graph's tokens so the round
+                    // proceeds exactly as it would without the check.
                     let gtoks = e.dtoh_u32(&batch_d)?;
                     for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                         e.set_i32_one(slot, (cache.pos + j) as i32)?;
@@ -506,6 +512,9 @@ impl HybridModel {
                     if gtoks[..=kr] != etoks[..=kr] {
                         eprintln!("[draft-graph] DIVERGE round={rounds} graph={:?} eager={:?}",
                                   &gtoks[..=kr], &etoks[..=kr]);
+                    }
+                    for (j, &t) in gtoks.iter().enumerate().take(kr + 1) {
+                        e.u32_set_k(&mut batch_d, t, j)?;
                     }
                 }
             } else {

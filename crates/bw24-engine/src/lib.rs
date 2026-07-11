@@ -302,6 +302,13 @@ pub struct Engine {
     /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
     /// memcpy-issue (µs), NOT the GEMM, so streams still overlap. `None` => cache disabled.
     moe_cache: Mutex<Option<crate::moe_cache::MoeSlotCache>>,
+    /// CAPTURE-RETAIN mode (graph arc, 2026-07-12): while a graph capture (and its allocator
+    /// warmups) runs, every Engine allocation is ALSO kept alive here — a captured graph's
+    /// transient buffers must never return to the pool, or later allocations (e.g. the spec
+    /// verify between replays) reuse their addresses and the replay reads/writes live memory
+    /// (the draft-graph corruption root cause). Fast-path cost when off: one relaxed atomic.
+    capture_keep_on: std::sync::atomic::AtomicBool,
+    capture_keep: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
     /// EDGE-1 §C.2: dedicated H2D copy stream for async prefetch (event-synced to the compute stream).
     pub copy_stream: Arc<CudaStream>,
     /// Resident CUTLASS NVFP4 prefill scratch (workspace + a_packed + sfa_linear + sfa_sw + y + alpha),
@@ -479,6 +486,8 @@ impl Engine {
         }
         Ok(Self { gpu, module, hybrid, qmatvec, flash, flash_g: std::sync::OnceLock::new(), gemm, router, sample,
                   moe_cache: Mutex::new(None), copy_stream,
+                  capture_keep_on: std::sync::atomic::AtomicBool::new(false),
+                  capture_keep: Mutex::new(Vec::new()),
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
@@ -1194,14 +1203,18 @@ impl Engine {
 
     /// Allocate a reusable u8 GPU scratch buffer (for staged expert weights).
     pub fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<u8>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<u8>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Uninitialized u8 scratch — skips alloc_zeros' memset. ONLY for staging buffers whose read
     /// range is fully overwritten by a stage_expert H2D before any kernel reads it (LAUNCH-STRUCTURE
     /// STAGE 2: the per-layer MoE scratch trio was 3 dead ~1MB memsets per layer per decode token).
     pub fn alloc_u8_uninit(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(unsafe { self.gpu.stream.alloc::<u8>(n)? })
+        let s = unsafe { self.gpu.stream.alloc::<u8>(n)? };
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Zero a SUB-RANGE of an f32 buffer (CudaViewMut) — the row-sized memset the moe_out
@@ -2438,7 +2451,9 @@ impl Engine {
         Ok(v)
     }
     pub fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<f32>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<f32>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// GPU-resident greedy argmax (CUDA-GRAPH-PLAN Phase 1): logits[n_vocab] -> token id in a
@@ -2601,7 +2616,9 @@ impl Engine {
     }
     /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
     pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<u32>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<u32>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
     /// embed_gather into a PERSISTENT `x_out` buffer (stable pointer) for CUDA-graph capture (the
     /// embed output starts the per-step kernel chain and must be at a fixed address across replays).
@@ -2734,9 +2751,18 @@ impl Engine {
     /// capture. Use ONLY for buffers a kernel FULLY overwrites (every element written, no `+=`).
     /// SAFETY: caller guarantees the producing kernel writes every element before any read.
     #[inline]
-    fn alloc_uninit<T: cudarc::driver::DeviceRepr>(&self, n: usize)
+    /// Keep an allocation alive for the current capture (no-op when retain mode is off).
+    fn keep_if_capturing<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, s: &CudaSlice<T>) {
+        if self.capture_keep_on.load(std::sync::atomic::Ordering::Relaxed) {
+            self.capture_keep.lock().unwrap().push(Box::new(s.clone()));
+        }
+    }
+
+    fn alloc_uninit<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, n: usize)
             -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
-        Ok(unsafe { self.gpu.stream.alloc::<T>(n)? })
+        let s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Public f32 uninitialized scratch (see `alloc_uninit`). For decode/forward scratch a kernel
@@ -5408,6 +5434,22 @@ impl Engine {
     /// must enqueue ONLY device work on `e.stream()` (no dtoh / no synchronize / no host branch on
     /// device data) — every per-step varying scalar must come from a device counter. Returns the
     /// instantiated graph; `CudaGraph::launch()` replays the whole step in one dispatch.
+    /// `capture_graph` with CAPTURE-RETAIN: every Engine allocation made during the warmups
+    /// and the capture is kept alive in the returned keeper — hold it as long as the graph
+    /// replays (transients returning to the pool get reused by unrelated work and corrupt
+    /// replays; the draft-graph root cause). Model-generic, next capture reuses it.
+    pub fn capture_graph_retained<F>(&self, step: F)
+        -> Result<(cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>), Box<dyn std::error::Error>>
+        where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
+    {
+        self.capture_keep.lock().unwrap().clear();
+        self.capture_keep_on.store(true, std::sync::atomic::Ordering::Relaxed);
+        let res = self.capture_graph(step);
+        self.capture_keep_on.store(false, std::sync::atomic::Ordering::Relaxed);
+        let keeper = std::mem::take(&mut *self.capture_keep.lock().unwrap());
+        Ok((res?, keeper))
+    }
+
     pub fn capture_graph<F>(&self, mut step: F) -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>>
         where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
     {
