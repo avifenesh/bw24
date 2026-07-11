@@ -41,6 +41,9 @@ pub struct GemmaDraft {
     pub head: GpuTensor,       // tied drafter token_embd [1024, n_vocab] (or FR-trimmed rows)
     /// FR-Spec trim map: draft-row index -> target token id (None = full head, identity).
     pub d2t: Option<Vec<u32>>,
+    /// Device copy of `d2t` — the async round translates each drafted trim-idx in place
+    /// (u32_map_k) before it seeds the next draft step or meets the verify argmax.
+    pub d2t_dev: Option<CudaSlice<u32>>,
     pub rope_freqs: CudaSlice<f32>,
     pub ones: CudaSlice<f32>,  // weightless-norm weight (max hd 512)
     pub n_embd: usize,         // 1024
@@ -159,6 +162,7 @@ impl GemmaDraft {
                 }
             }
         }
+        let d2t_dev = match &d2t { Some(m) => Some(e.stream().clone_htod(&m[..])?), None => None };
         Ok(GemmaDraft {
             layers,
             pre_proj,
@@ -166,6 +170,7 @@ impl GemmaDraft {
             output_norm: load_t(e, &src, "output_norm.weight")?,
             head,
             d2t,
+            d2t_dev,
             rope_freqs,
             ones: e.htod(&[1.0f32; 512])?,
             n_embd,
@@ -386,6 +391,11 @@ impl HybridModel {
                 let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
                 let ld = e.matmul(&d.head, &hn, 1)?;
                 e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
+                // FR-trimmed head: the argmax is a TRIM-space index — translate to the full
+                // vocab id in place (next draft step embeds it; verify compares against it).
+                if let Some(map) = &d.d2t_dev {
+                    e.u32_map_k(&mut batch_d, map, j + 1)?;
+                }
                 hc = h_next;
             }
             drafted += kr;
@@ -398,7 +408,9 @@ impl HybridModel {
             let dtoks: Vec<u32> = host[..k].to_vec();
             let vam: Vec<u32> = host[k..2 * k + 1].to_vec();
             // longest accepted prefix: d_i accepted iff d_i == argmax(verify[i-1])
-            debug_assert!(d.d2t.is_none(), "async round requires an untrimmed draft head");
+            // (trimmed heads: batch_d slots were d2t-translated in the draft loop, so dtoks
+            // are full-vocab ids here — the 2026-07-10 async rewrite silently dropped this
+            // and the trim probes read accept=0.000 through it.)
             let mut m = 0usize;
             while m < k {
                 if dtoks[m] == vam[m] { m += 1; } else { break; }

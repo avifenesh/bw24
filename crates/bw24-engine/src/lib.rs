@@ -1751,6 +1751,18 @@ impl Engine {
         Ok(())
     }
 
+    /// In-place trim-id translate: buf[idx] = map[buf[idx]] (FR-Spec d2t, async single-slot).
+    pub fn u32_map_k(&self, buf: &mut CudaSlice<u32>, map: &CudaSlice<u32>, idx: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("u32_map_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let ii = idx as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(buf).arg(map).arg(&ii);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Pack a[off..off+n1] ++ b[0..n2] into one buffer (single dtoh follows).
     #[allow(clippy::too_many_arguments)]
     pub fn u32_pack2(&self, a: &CudaSlice<u32>, off_a: usize, n1: usize,

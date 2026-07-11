@@ -827,6 +827,13 @@ extern "C" __global__ void u32_set_k(unsigned int* __restrict__ dst, unsigned in
     dst[idx] = v;
 }
 
+// FR-Spec trim id translate (gemma async draft round): buf[idx] holds a TRIM-space argmax --
+// map it to the full-vocab token id in place (d2t = ranked-id table). Single-slot, async.
+extern "C" __global__ void u32_map_k(unsigned int* __restrict__ buf,
+                                     const unsigned int* __restrict__ map, int idx) {
+    buf[idx] = map[buf[idx]];
+}
+
 // i32 twin (device-len counters, graph arc): async single-slot store, value rides the arg.
 extern "C" __global__ void i32_set_k(int* dst, int v, int idx) {
     if (threadIdx.x == 0 && blockIdx.x == 0) dst[idx] = v;
