@@ -14,6 +14,11 @@ from typing import Any
 from summarize_directional_results import candidate_specs, exactly_one, numeric
 
 
+# The promoted artifacts are expert overlays for the same frozen BW24 GGUF body.
+# Keep this explicit so reports compare the finished logical model, not just the overlay.
+DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
+
+
 def wilson(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
     p = successes / n
     den = 1.0 + z * z / n
@@ -113,6 +118,7 @@ def build_report(
     baseline: str,
     expected_n: int,
     lock: dict[str, Any],
+    shared_model_bytes: int = DEFAULT_SHARED_MODEL_BYTES,
 ) -> dict[str, Any]:
     specs = candidate_specs(lock)
     loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_n) for arm in arms}
@@ -144,13 +150,33 @@ def build_report(
         }
     for data in loaded.values():
         data.pop("values")
+        data["logical_model_bytes"] = shared_model_bytes + data["artifact_bytes"]
+    baseline_bytes = loaded[baseline]["logical_model_bytes"]
+    for data in loaded.values():
+        data["size_reduction_vs_baseline"] = 1.0 - data["logical_model_bytes"] / baseline_bytes
+    pareto_arms = []
+    for arm, data in loaded.items():
+        dominated = any(
+            other["logical_model_bytes"] <= data["logical_model_bytes"]
+            and other["macro"] >= data["macro"]
+            and (
+                other["logical_model_bytes"] < data["logical_model_bytes"]
+                or other["macro"] > data["macro"]
+            )
+            for other_arm, other in loaded.items()
+            if other_arm != arm
+        )
+        if not dominated:
+            pareto_arms.append(arm)
     return {
         "format": "bw24-promoted-candidate-v1",
         "run_id": run_id,
         "n_per_task": expected_n,
         "baseline": baseline,
+        "shared_model_bytes": shared_model_bytes,
         "arms": loaded,
         "paired_vs_baseline": paired,
+        "point_estimate_pareto_arms": pareto_arms,
         "tasks": [{"task": spec["result_task"], "label": spec["label"]} for spec in specs],
     }
 
@@ -161,22 +187,35 @@ def markdown(report: dict[str, Any]) -> str:
         "",
         f"Run ID: `{report['run_id']}` · N={report['n_per_task']} per task · baseline `{report['baseline']}`",
         "",
-        "| Arm | Expert overlay bytes | Macro accuracy | Delta vs baseline | Paired W/L | 95% paired-bootstrap CI | Exact sign p |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Arm | Logical size | Reduction vs baseline | Expert overlay bytes | Macro accuracy | Delta vs baseline | Paired W/L | 95% paired-bootstrap CI | Exact sign p |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for arm, data in report["arms"].items():
         pair = report["paired_vs_baseline"].get(arm)
         if pair is None:
-            cells = [arm, f"{data['artifact_bytes']:,}", f"{data['macro']:.1%}", "—", "—", "—", "—"]
+            cells = [
+                arm, f"{data['logical_model_bytes']:,} ({data['logical_model_bytes'] / 2**30:.3f} GiB)",
+                f"{data['size_reduction_vs_baseline']:.1%}", f"{data['artifact_bytes']:,}",
+                f"{data['macro']:.1%}", "—", "—", "—", "—",
+            ]
         else:
             lo, hi = pair["bootstrap_ci95"]
             cells = [
-                arm, f"{data['artifact_bytes']:,}", f"{data['macro']:.1%}",
+                arm, f"{data['logical_model_bytes']:,} ({data['logical_model_bytes'] / 2**30:.3f} GiB)",
+                f"{data['size_reduction_vs_baseline']:.1%}", f"{data['artifact_bytes']:,}", f"{data['macro']:.1%}",
                 f"{pair['macro_delta']:+.1%}", f"{pair['paired_wins']}/{pair['paired_losses']}",
                 f"[{lo:+.1%}, {hi:+.1%}]", f"{pair['exact_sign_p']:.4f}",
             ]
         lines.append("| " + " | ".join(cells) + " |")
-    lines += ["", "## Per-task accuracy (Wilson 95% CI)", ""]
+    lines += [
+        "",
+        "Point-estimate quality/size Pareto frontier: "
+        + ", ".join(f"`{arm}`" for arm in report["point_estimate_pareto_arms"])
+        + ". This is descriptive; use the paired intervals above for uncertainty.",
+        "",
+        "## Per-task accuracy (Wilson 95% CI)",
+        "",
+    ]
     for task in report["tasks"]:
         lines += [f"### {task['label']}", "", "| Arm | Correct/N | Accuracy | Wilson 95% CI |", "|---|---:|---:|---:|"]
         for arm, data in report["arms"].items():
@@ -218,6 +257,9 @@ def self_test(lock: dict[str, Any]) -> None:
         report = build_report(root, "fixture", arms, "plain_quant", 4, lock)
         assert report["n_per_task"] == 4
         assert report["paired_vs_baseline"]["candidate"]["paired_wins"] > 0
+        assert report["arms"]["plain_quant"]["logical_model_bytes"] == DEFAULT_SHARED_MODEL_BYTES + 100
+        assert report["arms"]["candidate"]["size_reduction_vs_baseline"] < 0
+        assert report["point_estimate_pareto_arms"] == ["plain_quant"]
         assert "Wilson 95% CI" in markdown(report)
         print("promoted result summarizer self-test: PASS")
 
@@ -229,6 +271,7 @@ def main() -> int:
     parser.add_argument("--arms", help="comma-separated arm names")
     parser.add_argument("--baseline", default="plain_quant")
     parser.add_argument("--expected-n", type=int, default=50)
+    parser.add_argument("--shared-model-bytes", type=int, default=DEFAULT_SHARED_MODEL_BYTES)
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("suite.lock.json"))
     parser.add_argument("--out", type=Path)
     parser.add_argument("--self-test", action="store_true")
@@ -242,7 +285,11 @@ def main() -> int:
     arms = [arm for arm in args.arms.split(",") if arm]
     if args.baseline not in arms:
         parser.error("--baseline must be present in --arms")
-    report = build_report(args.out_root, args.run_id, arms, args.baseline, args.expected_n, lock)
+    if args.shared_model_bytes < 0:
+        parser.error("--shared-model-bytes must be non-negative")
+    report = build_report(
+        args.out_root, args.run_id, arms, args.baseline, args.expected_n, lock, args.shared_model_bytes
+    )
     out = args.out or args.out_root / "_runs" / args.run_id / "promoted-results.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(markdown(report))

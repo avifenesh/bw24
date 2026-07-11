@@ -435,6 +435,20 @@ the strict N=1 table (explicitly without confidence intervals) with:
       --out-root /data/results/per-expert-quant/candidate \
       --run-id RUN_ID
 
+After promotion, keep one run ID and identical N for every surviving arm. The promoted summarizer
+rejects missing, duplicate, or mismatched samples; reports Wilson and stratified paired-bootstrap
+intervals; adds the frozen 24,999,514,624-byte non-expert GGUF body to each expert overlay; and
+prints the point-estimate quality/size Pareto frontier:
+
+    python3 research/per-expert-quant/summarize_promoted_results.py \
+      --out-root /data/results/per-expert-quant/promoted-n50 \
+      --run-id RUN_ID \
+      --arms plain_quant,mix_quant_prune25,traffic_mix_quant \
+      --expected-n 50
+
+The Pareto label is descriptive, not evidence of equivalence. Use the paired intervals and the
+full promoted-candidate evaluation before making the final quality-retention claim.
+
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
 screening, then run their complete public suites only for promoted artifacts.
