@@ -17,9 +17,9 @@ MAX_GEN_TOKS=${MAX_GEN_TOKS:-256}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-14400}
 HEALTH_TIMEOUT_S=${HEALTH_TIMEOUT_S:-600}
 PAGE_PREFETCH_WINDOW=${PAGE_PREFETCH_WINDOW:-8}
-BW24_SPILL_IO=${BW24_SPILL_IO:-mmap}
-BW24_SPILL_PREAD_DEPTH=${BW24_SPILL_PREAD_DEPTH:-2}
-BW24_SPILL_STATS=${BW24_SPILL_STATS:-0}
+BW24_SPILL_IO=${BW24_SPILL_IO:-worker}
+BW24_SPILL_PREAD_DEPTH=${BW24_SPILL_PREAD_DEPTH:-8}
+BW24_SPILL_STATS=${BW24_SPILL_STATS:-1}
 
 ARMS=(plain_quant plain_reap_quant plain_reap_mix_quant mix_quant mix_quant_prune25)
 ARTIFACTS=(plain-quant plain-reap-quant plain-reap-mix-quant mix-quant mix-quant-prune25)
@@ -39,14 +39,10 @@ positive_integer "$MAX_GEN_TOKS" || die "MAX_GEN_TOKS must be a positive integer
 positive_integer "$EVAL_TIMEOUT_S" || die "EVAL_TIMEOUT_S must be a positive integer"
 positive_integer "$HEALTH_TIMEOUT_S" || die "HEALTH_TIMEOUT_S must be a positive integer"
 positive_integer "$PAGE_PREFETCH_WINDOW" || die "PAGE_PREFETCH_WINDOW must be a positive integer"
-case "$BW24_SPILL_IO" in
-  mmap|pread|worker) ;;
-  *) die "BW24_SPILL_IO must be mmap, pread, or worker" ;;
-esac
+[[ "$BW24_SPILL_IO" == worker ]] || die "BW24_SPILL_IO must be worker"
 [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] \
   || die "BW24_SPILL_PREAD_DEPTH must be an integer from 1 through 64"
-[[ "$BW24_SPILL_STATS" == 0 || "$BW24_SPILL_STATS" == 1 ]] \
-  || die "BW24_SPILL_STATS must be 0 or 1"
+[[ "$BW24_SPILL_STATS" == 1 ]] || die "BW24_SPILL_STATS must be 1"
 [[ -x "$SERVER_BIN" ]] || die "missing executable server: $SERVER_BIN"
 [[ -x "$PUBLIC_RUNNER" ]] || die "missing executable public-eval runner: $PUBLIC_RUNNER"
 command -v curl >/dev/null || die "curl is required"
@@ -64,6 +60,8 @@ CONTROL_PARENT="$OUT_ROOT/_runs"
 CONTROL_DIR="$CONTROL_PARENT/$RUN_ID"
 mkdir -p "$CONTROL_PARENT"
 mkdir "$CONTROL_DIR" 2>/dev/null || die "refusing to reuse control output: $CONTROL_DIR"
+SERVER_CONTROL_ROOT="$CONTROL_DIR/servers"
+mkdir "$SERVER_CONTROL_ROOT"
 printf 'arm\tstatus\n' > "$CONTROL_DIR/status.tsv"
 {
   printf 'BW24_SPILL_IO=%s\n' "$BW24_SPILL_IO"
@@ -130,9 +128,8 @@ fi
 for index in "${!ARMS[@]}"; do
   arm=${ARMS[$index]}
   artifact="$ARTIFACT_ROOT/${ARTIFACTS[$index]}"
-  run_dir="$OUT_ROOT/$arm/$RUN_ID"
-  mkdir -p "$OUT_ROOT/$arm"
-  mkdir "$run_dir"
+  server_dir="$SERVER_CONTROL_ROOT/$arm"
+  mkdir "$server_dir"
 
   {
     printf 'BW24_COMPAT=openai\n'
@@ -155,7 +152,7 @@ for index in "${!ARMS[@]}"; do
     printf 'BW24_SPILL_STATS=%s\n' "$BW24_SPILL_STATS"
     printf 'BW24_MODELS=%s=%s\n' "$arm" "$artifact"
     printf 'BW24_ADDR=%s\n' "$ADDR"
-  } > "$run_dir/server.env"
+  } > "$server_dir/server.env"
 
   echo "[$arm] starting fresh server"
   env \
@@ -186,10 +183,10 @@ for index in "${!ARMS[@]}"; do
     BW24_SPILL_STATS="$BW24_SPILL_STATS" \
     BW24_MODELS="$arm=$artifact" \
     BW24_ADDR="$ADDR" \
-    "$SERVER_BIN" > "$run_dir/server.log" 2>&1 &
+    "$SERVER_BIN" > "$server_dir/server.log" 2>&1 &
   SERVER_PID=$!
-  printf '%s\n' "$SERVER_PID" > "$run_dir/server.pid"
-  wait_for_health "$run_dir" "$arm"
+  printf '%s\n' "$SERVER_PID" > "$server_dir/server.pid"
+  wait_for_health "$server_dir" "$arm"
 
   eval_status=0
   env \
@@ -201,6 +198,11 @@ for index in "${!ARMS[@]}"; do
     MAX_GEN_TOKS="$MAX_GEN_TOKS" \
     EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
     SERVER_BIN="$SERVER_BIN" \
+    SERVER_LOG="$server_dir/server.log" \
+    BW24_SPILL_IO="$BW24_SPILL_IO" \
+    BW24_SPILL_PREAD_DEPTH="$BW24_SPILL_PREAD_DEPTH" \
+    BW24_SPILL_STATS="$BW24_SPILL_STATS" \
+    BW24_SERVE_SPEC=0 \
     BASE_URL="$BASE_URL" \
     OUT_ROOT="$OUT_ROOT" \
     CACHE_DIR="$CACHE_DIR" \

@@ -8,6 +8,12 @@ LOCK="$HERE/suite.lock.json"
 : "${ARM:?set ARM to the experiment arm name, e.g. uniform_q4k_control or reap50_plus25}"
 : "${MODEL:?set MODEL to the name configured in BW24_MODELS}"
 : "${ARTIFACT:?set ARTIFACT to the served model file or overlay directory}"
+: "${SERVER_BIN:?set SERVER_BIN to the active server binary}"
+: "${SERVER_LOG:?set SERVER_LOG to the active server log}"
+: "${BW24_SPILL_IO:?declare the active spill backend}"
+: "${BW24_SPILL_PREAD_DEPTH:?declare the active worker depth}"
+: "${BW24_SPILL_STATS:?declare spill telemetry state}"
+: "${BW24_SERVE_SPEC:?declare speculative serving state}"
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
@@ -17,6 +23,17 @@ NUM_CONCURRENT=${NUM_CONCURRENT:-1}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+
+[[ -e "$ARTIFACT" ]] || { echo "ARTIFACT does not exist: $ARTIFACT" >&2; exit 2; }
+[[ -x "$SERVER_BIN" ]] || { echo "SERVER_BIN is not executable: $SERVER_BIN" >&2; exit 2; }
+[[ -f "$SERVER_LOG" ]] || { echo "SERVER_LOG does not exist: $SERVER_LOG" >&2; exit 2; }
+[[ "$BW24_SPILL_IO" == worker ]] || { echo "BW24_SPILL_IO must be worker" >&2; exit 2; }
+[[ "$BW24_SPILL_PREAD_DEPTH" =~ ^[1-9][0-9]*$ ]] || {
+  echo "BW24_SPILL_PREAD_DEPTH must be a positive integer" >&2
+  exit 2
+}
+[[ "$BW24_SPILL_STATS" == 1 ]] || { echo "BW24_SPILL_STATS must be 1" >&2; exit 2; }
+[[ "$BW24_SERVE_SPEC" == 0 ]] || { echo "BW24_SERVE_SPEC must be 0" >&2; exit 2; }
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
@@ -38,6 +55,7 @@ case "$SUITE" in
 esac
 
 SUITE_TASKS=$TASKS
+requested_tasks=()
 if [[ -n ${TASKS_OVERRIDE:-} ]]; then
   IFS=',' read -r -a requested_tasks <<< "$TASKS_OVERRIDE"
   declare -A seen_tasks=()
@@ -59,6 +77,12 @@ if [[ -n ${SHARD_ID:-} && (
 ) ]]; then
   echo "SHARD_ID must contain only letters, digits, dot, underscore, or dash" >&2
   exit 2
+fi
+if [[ -n ${SHARD_ID:-} ]]; then
+  [[ ${#requested_tasks[@]} == 1 && "$SHARD_ID" == "${requested_tasks[0]}" ]] || {
+    echo "SHARD_ID requires exactly one matching TASKS_OVERRIDE task" >&2
+    exit 2
+  }
 fi
 
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
@@ -95,7 +119,19 @@ if [[ -e "$RUN_DIR" ]]; then
   fi
   exit 3
 fi
+SERVER_ROOT=${BASE_URL%/v1/completions}
+HEALTH_TMP=$(mktemp)
+if ! curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$HEALTH_TMP"; then
+  rm -f "$HEALTH_TMP"
+  echo "server health request failed: $SERVER_ROOT/health" >&2
+  exit 2
+fi
+if ! python3 "$HERE/validate_server_health.py" "$HEALTH_TMP" "$MODEL" --exact; then
+  rm -f "$HEALTH_TMP"
+  exit 2
+fi
 mkdir -p "$CACHE_DIR" "$RUN_DIR"
+mv "$HEALTH_TMP" "$RUN_DIR/health.json"
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
   git init --quiet "$HARNESS_DIR"
   git -C "$HARNESS_DIR" remote add origin https://github.com/EleutherAI/lm-evaluation-harness.git
@@ -121,9 +157,6 @@ if [[ ! -x "$HARNESS_CLI" ]]; then
   "$UV_BIN" pip install --python "$HARNESS_PYTHON" -e "$HARNESS_DIR[api,ifeval]"
 fi
 
-SERVER_ROOT=${BASE_URL%/v1/completions}
-curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$RUN_DIR/health.json"
-python3 "$HERE/validate_server_health.py" "$RUN_DIR/health.json" "$MODEL"
 cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"

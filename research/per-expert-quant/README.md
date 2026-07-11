@@ -484,7 +484,15 @@ run receipt. These are transport optimizations, not model-quality variables; fal
 and concurrency 1 on any response mismatch, retry, server error, or spill error.
 
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
+      SERVER_BIN=/data/bin/bw24-server-0c9817c \
+      SERVER_LOG=/data/logs/plain-quant-server.log \
+      BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH=SELECTED_DEPTH \
+      BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh
+
+The runner rejects missing runtime declarations, non-worker spill, disabled telemetry, speculative
+serving, a non-exact health model set, and mismatched `SHARD_ID`/`TASKS_OVERRIDE` before creating an
+output directory.
 
 For the matched first-pass screen, use the orchestrator. It refuses existing outputs and stale
 listeners, starts a fresh exactly-one-model server for each arm, fixes the spill/cache environment,
