@@ -119,7 +119,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN
+export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -157,6 +157,10 @@ metadata = {
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
     "eval_timeout_s": int(os.environ["EVAL_TIMEOUT_S"]),
     "num_concurrent": int(os.environ["NUM_CONCURRENT"]),
+    "declared_spill_io": os.environ.get("BW24_SPILL_IO") or None,
+    "declared_spill_pread_depth": os.environ.get("BW24_SPILL_PREAD_DEPTH") or None,
+    "declared_spill_stats": os.environ.get("BW24_SPILL_STATS") or None,
+    "declared_serve_spec": os.environ.get("BW24_SERVE_SPEC") or None,
     "max_gen_toks_override": (
         int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
     ),

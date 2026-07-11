@@ -17,6 +17,27 @@ from summarize_directional_results import candidate_specs, exactly_one, numeric
 # The promoted artifacts are expert overlays for the same frozen BW24 GGUF body.
 # Keep this explicit so reports compare the finished logical model, not just the overlay.
 DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
+FULL_SHARED_RECEIPT_KEYS = (
+    "suite",
+    "base_url",
+    "bw24_commit",
+    "lm_eval_commit",
+    "eval_timeout_s",
+    "max_gen_toks_override",
+    "num_concurrent",
+    "server_binary_sha256",
+    "platform",
+    "nvidia_smi",
+    "declared_spill_io",
+    "declared_spill_pread_depth",
+    "declared_spill_stats",
+    "declared_serve_spec",
+)
+FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
+    "arm",
+    "model",
+    "artifact_identity_sha256",
+)
 
 
 def wilson(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
@@ -60,6 +81,7 @@ def load_arm(
     arm: str,
     specs: list[dict[str, str]],
     expected_counts: dict[str, int],
+    full_run: bool,
 ) -> dict[str, Any]:
     run_dir = out_root / arm / run_id
     manifest_paths = sorted(run_dir.rglob("artifact-manifest.json"))
@@ -73,6 +95,41 @@ def load_arm(
     if not result_paths:
         raise ValueError(f"{arm}: no result files under {run_dir}")
     result_payloads = [(path, json.loads(path.read_text())) for path in result_paths]
+    receipt_paths = sorted(run_dir.rglob("run-metadata.json"))
+    if not receipt_paths:
+        raise ValueError(f"{arm}: no run receipts under {run_dir}")
+    receipts = [(path, json.loads(path.read_text())) for path in receipt_paths]
+    shared_config = None
+    if full_run:
+        expected_tasks = set(expected_counts)
+        observed_tasks: set[str] = set()
+        reference = receipts[0][1]
+        for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
+            if reference.get(key) is None:
+                raise ValueError(f"{arm}: full receipt missing {key}")
+        for path, receipt in receipts:
+            for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
+                if receipt.get(key) != reference.get(key):
+                    raise ValueError(f"{arm}: receipt {path} differs on {key}")
+            if receipt.get("limit") != "all":
+                raise ValueError(f"{arm}: receipt {path} does not record limit=all")
+            tasks = receipt.get("tasks")
+            if not isinstance(tasks, list) or not tasks or not all(isinstance(task, str) for task in tasks):
+                raise ValueError(f"{arm}: receipt {path} has invalid tasks")
+            shard_id = receipt.get("shard_id")
+            if len(receipts) == 1:
+                if set(tasks) != expected_tasks or shard_id is not None:
+                    raise ValueError(f"{arm}: monolithic full receipt has wrong tasks or shard ID")
+            else:
+                if len(tasks) != 1 or shard_id != tasks[0]:
+                    raise ValueError(f"{arm}: receipt {path} does not match its single task shard")
+            for task in tasks:
+                if task in observed_tasks:
+                    raise ValueError(f"{arm}: duplicate task receipt {task}")
+                observed_tasks.add(task)
+        if observed_tasks != expected_tasks:
+            raise ValueError(f"{arm}: receipt tasks differ from pinned suite")
+        shared_config = {key: reference[key] for key in FULL_SHARED_RECEIPT_KEYS}
     tasks = {}
     values_by_task: dict[str, dict[str, float]] = {}
     for spec in specs:
@@ -122,6 +179,8 @@ def load_arm(
         "artifact_bytes": int(manifest["artifact_bytes"]),
         "result_file": str(result_paths[0]) if len(result_paths) == 1 else None,
         "result_files": [str(path) for path in result_paths],
+        "receipt_files": [str(path) for path in receipt_paths],
+        "shared_run_config": shared_config,
         "tasks": tasks,
         "macro": macro,
         "values": values_by_task,
@@ -151,7 +210,13 @@ def build_report(
         if isinstance(expected_n, bool) or not isinstance(expected_n, int) or expected_n <= 0:
             raise ValueError(f"expected_n must be a positive integer or 'all', got {expected_n!r}")
         expected_counts = {spec["result_task"]: expected_n for spec in specs}
-    loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_counts) for arm in arms}
+    full_run = expected_n == "all"
+    loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_counts, full_run) for arm in arms}
+    if full_run:
+        reference_config = loaded[arms[0]]["shared_run_config"]
+        for arm in arms[1:]:
+            if loaded[arm]["shared_run_config"] != reference_config:
+                raise ValueError(f"{arm}: full run configuration differs from {arms[0]}")
     for task in (spec["result_task"] for spec in specs):
         identities = {arm: set(data["values"][task]) for arm, data in loaded.items()}
         first = identities[arms[0]]
@@ -275,6 +340,18 @@ def self_test(lock: dict[str, Any]) -> None:
             model_dir = run_dir / arm
             model_dir.mkdir(parents=True)
             (run_dir / "artifact-manifest.json").write_text(json.dumps({"artifact_bytes": 100 + arm_index}))
+            receipt = {
+                "suite": "candidate", "base_url": "http://127.0.0.1:8080/v1/completions",
+                "bw24_commit": "bw24", "lm_eval_commit": "harness", "eval_timeout_s": 100,
+                "max_gen_toks_override": 256, "num_concurrent": 1,
+                "server_binary_sha256": "server", "platform": "linux", "nvidia_smi": "gpu",
+                "declared_spill_io": "worker",
+                "declared_spill_pread_depth": "8", "declared_spill_stats": "1",
+                "declared_serve_spec": "0", "arm": arm, "model": arm,
+                "artifact_identity_sha256": f"artifact-{arm}", "limit": "all",
+                "tasks": [spec["result_task"] for spec in specs], "shard_id": None,
+            }
+            (run_dir / "run-metadata.json").write_text(json.dumps(receipt))
             results = {}
             for task_index, spec in enumerate(specs):
                 rows = []
@@ -309,6 +386,8 @@ def self_test(lock: dict[str, Any]) -> None:
         candidate_results_path = candidate_model / "results_fixture.json"
         candidate_results = json.loads(candidate_results_path.read_text())
         manifest_text = (candidate_run / "artifact-manifest.json").read_text()
+        candidate_receipt_path = candidate_run / "run-metadata.json"
+        candidate_receipt = json.loads(candidate_receipt_path.read_text())
         for spec in specs:
             task = spec["result_task"]
             shard = candidate_run / "shards" / task
@@ -320,8 +399,11 @@ def self_test(lock: dict[str, Any]) -> None:
             shard_results = {section: {task: candidate_results[section][task]}}
             (shard_model / f"results_{task}.json").write_text(json.dumps(shard_results))
             (shard / "artifact-manifest.json").write_text(manifest_text)
+            shard_receipt = dict(candidate_receipt, tasks=[task], shard_id=task)
+            (shard / "run-metadata.json").write_text(json.dumps(shard_receipt))
         candidate_results_path.unlink()
         (candidate_run / "artifact-manifest.json").unlink()
+        candidate_receipt_path.unlink()
         sharded_report = build_report(root, "fixture", arms, "plain_quant", 4, lock)
         assert len(sharded_report["arms"]["candidate"]["result_files"]) == len(specs)
         print("promoted result summarizer self-test: PASS")

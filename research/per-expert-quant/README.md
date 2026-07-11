@@ -487,13 +487,18 @@ only tasks from the selected suite, and `SHARD_ID` creates an isolated receipt/r
       OUT_ROOT=/data/results/per-expert-quant/final-full-candidate RUN_ID=RUN_ID \
       SUITE=candidate LIMIT=all TASKS_OVERRIDE=gpqa_diamond_cot_zeroshot \
       SHARD_ID=gpqa_diamond_cot_zeroshot EVAL_TIMEOUT_S=432000 \
+      SERVER_BIN=/data/bin/bw24-server-0c9817c \
+      BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH=8 BW24_SPILL_STATS=1 \
+      BW24_SERVE_SPEC=0 \
       research/per-expert-quant/run_public_evals.sh
 
 Repeat for each pinned candidate task, skipping only a shard that already has a validated
 `results_*.json`. The full summarizer accepts either one monolithic result or these task shards,
 requires byte-identical artifact manifests across shards, and requires exactly one aggregate and
 sample log for every pinned task. Never combine shards from different model, server, harness,
-artifact, generation, concurrency, or spill configurations.
+artifact, generation, concurrency, or spill configurations. Full reporting rejects missing receipt
+fields and compares the declared server/harness/tooling hashes, timeout, generation cap,
+concurrency, spill depth, and spec setting across every shard and both arms.
 
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
