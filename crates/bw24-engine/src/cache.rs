@@ -128,8 +128,11 @@ impl Cache {
             match cfg.layer_kind(il) {
                 LayerKind::FullAttention => {
                     kv.push(Some(KvLayer {
-                        k: e.alloc_u8(max_ctx * k_tok_bytes)?,
-                        v: e.alloc_u8(max_ctx * v_tok_bytes)?,
+                        // +8B tail pad: the v4 stage's aligned funnelshift window reads up to
+                        // 4B past the final block (PR #3's finding, adopted pad-style — the
+                        // expert-dot precedent; zero hot-loop branches, values discarded).
+                        k: e.alloc_u8(max_ctx * k_tok_bytes + 8)?,
+                        v: e.alloc_u8(max_ctx * v_tok_bytes + 8)?,
                         kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
                         len_d: e.htod_i32(&[0])?,
                     }));

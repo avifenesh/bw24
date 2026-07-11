@@ -249,7 +249,12 @@ extern "C" __global__ void ssm_conv1d_silu_f32(
     for (int t = blockIdx.y * blockDim.x + threadIdx.x; t < T; t += gridDim.y * blockDim.x) {
         float acc = 0.0f;
         #pragma unroll
-        for (int j = 0; j < 8; j++) acc += xc[t + j] * wreg[j];
+        for (int j = 0; j < 8; j++) {
+            // d_conv < 8: xc[t+j] past the window is an OOB read (PR #1, adopted) — the
+            // predicated select keeps the unroll and zeroes the tail lanes.
+            float xv = (j < d_conv) ? xc[t + j] : 0.0f;
+            acc += xv * wreg[j];
+        }
         yc[t] = apply_silu ? silu(acc) : acc;
     }
 }
