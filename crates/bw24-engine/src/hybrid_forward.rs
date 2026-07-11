@@ -2669,7 +2669,8 @@ impl HybridModel {
             let base = kvl.len as i32;
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false)?;
+                             kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false,
+                             false)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
@@ -2812,7 +2813,7 @@ impl HybridModel {
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
                     e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
                                      scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false)?;
+                                     Some((&kvl.len_d, -1)), false, false)?;
                 } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
@@ -2844,7 +2845,7 @@ impl HybridModel {
                 if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
                     e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, b_glob - 1,
                                      1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false)?;
+                                     Some((&kvl.len_d, -1)), false, false)?;
                 } else if swa && b_swa > win && hd == 256 && rows_on {
                     e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                        &kvl.len_d, -1, 1, scale, win,
@@ -3104,7 +3105,8 @@ impl HybridModel {
                 Some((&kvl.len_d, 0))
             } else { None };
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes, bd, false)?;
+                             kvl.k_tok_bytes, kvl.v_tok_bytes, bd, false,
+                             swa && crate::Engine::wkv_on())?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, ABSOLUTE-index
@@ -3152,7 +3154,7 @@ impl HybridModel {
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                 Some((&kvl.len_d, 0)), false)?;
+                                 Some((&kvl.len_d, 0)), false, false)?;
             } else {
                 e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
                             kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;

@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut kc = e.alloc_u8(t_kv_max * k_tok_bytes)?;
     let mut vc = e.alloc_u8(t_kv_max * v_tok_bytes)?;
     e.append_kv_quantized_rows(&krd, &vrd, &mut kc, &mut vc, 0, t_kv_max,
-                               kv_dim, kv_dim, k_tok_bytes, v_tok_bytes)?;
+                               kv_dim, kv_dim, k_tok_bytes, v_tok_bytes, false)?;
     let qh: Vec<f32> = (0..n_head * head_dim).map(|_| rng.unit()).collect();
     let qd = e.htod(&qh)?;
 

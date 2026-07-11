@@ -1230,7 +1230,7 @@ impl HybridModel {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                             base_len, t, scale, ktb, vtb, None, false)?;
+                             base_len, t, scale, ktb, vtb, None, false, false)?;
         } else {
             for r in 0..t {
                 let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)

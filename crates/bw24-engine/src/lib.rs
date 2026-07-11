@@ -4863,7 +4863,11 @@ impl Engine {
                           base_dev: Option<(&CudaSlice<i32>, i32)>,
                           // K and V planes hold the same values (gemma globals, wv:=wk): pick
                           // the _kv twin — V plane never read, value rides the q8_0 key dq.
-                          kv_shared: bool)
+                          kv_shared: bool,
+                          // this layer's cache is e4m3 (gemma windowed under wkv): resolve the
+                          // hd256 rows kernel from the kf8vf8 module. PER-CALL — a global env
+                          // check here hijacked qwen/kernel-check hd256 rows (8 FAILs, 230ebbe).
+                          g: bool)
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
@@ -4917,7 +4921,7 @@ impl Engine {
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
-                else if Self::wkv_on() && head_dim == 256 {
+                else if g && head_dim == 256 {
                     // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module. v4 AND the
                     // smem twin excluded (v4 staging + smem V-stage are q5_1/q8_0-hardcoded).
                     self.func_g(if v4 || smem_rows { "fa_decode_vec_q_rows" } else { fname })
