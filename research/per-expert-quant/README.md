@@ -425,6 +425,18 @@ timeout; bounded screens retain the 14,400-second default. Override `EVAL_TIMEOU
 when measured throughput changes. Every run receipt records the task list, requested limit, and
 effective timeout.
 
+Before committing roughly eight machine-days to the two full arms, measure `NUM_CONCURRENT=1,2,4`
+on the same promoted artifact and bounded matched sample set. Accept a higher value only when the
+server has no errors and the raw generations remain identical to concurrency 1:
+
+    python3 research/per-expert-quant/compare_eval_generations.py \
+      --baseline /data/results/per-expert-quant/concurrency-preflight/plain-c1/RUN_ID \
+      --candidate /data/results/per-expert-quant/concurrency-preflight/plain-c2/RUN_ID
+
+Use the fastest passing concurrency for both final arms and record it in each run receipt. This is
+a transport optimization, not a model-quality variable; fall back to 1 on any response mismatch,
+retry, server error, or spill error.
+
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh
 

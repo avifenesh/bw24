@@ -13,6 +13,7 @@ SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-}
+NUM_CONCURRENT=${NUM_CONCURRENT:-1}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -46,6 +47,10 @@ if [[ -z "$EVAL_TIMEOUT_S" ]]; then
 fi
 [[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || {
   echo "EVAL_TIMEOUT_S must be a positive integer (got $EVAL_TIMEOUT_S)" >&2
+  exit 2
+}
+[[ "$NUM_CONCURRENT" =~ ^[1-9][0-9]*$ ]] || {
+  echo "NUM_CONCURRENT must be a positive integer (got $NUM_CONCURRENT)" >&2
   exit 2
 }
 command -v timeout >/dev/null || {
@@ -86,7 +91,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE TASKS LIMIT BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S SERVER_BIN
+export ROOT ARM MODEL SUITE TASKS LIMIT BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -122,6 +127,7 @@ metadata = {
     "bw24_commit": command("git", "-C", str(root), "rev-parse", "HEAD"),
     "lm_eval_commit": os.environ["HARNESS_COMMIT"],
     "eval_timeout_s": int(os.environ["EVAL_TIMEOUT_S"]),
+    "num_concurrent": int(os.environ["NUM_CONCURRENT"]),
     "max_gen_toks_override": (
         int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
     ),
@@ -137,7 +143,7 @@ PY
 
 ARGS=(
   --model local-completions
-  --model_args "model=$MODEL,base_url=$BASE_URL,num_concurrent=1,max_retries=3,tokenized_requests=False,tokenizer_backend=none"
+  --model_args "model=$MODEL,base_url=$BASE_URL,num_concurrent=$NUM_CONCURRENT,max_retries=3,tokenized_requests=False,tokenizer_backend=none"
   --tasks "$TASKS"
   --batch_size 1
   --log_samples
