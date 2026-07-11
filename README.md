@@ -102,7 +102,7 @@ construction; `VERIFY-GATE` prints 0.000e0 logit maxdiff at short, mid, and dept
 - **NVFP4 / Q4_0 decode** — split-plane repacked matvecs, warp-level dp4a, int8 W4A8 tensor-core prefill GEMM, per-shape auto-dispatch.
 - **MTP speculative decoding** — embedded draft head, one batched K+1 verify, zero-sync async rounds, adaptive draft depth; K=1..8 self-consistency gate.
 - **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, SLRU expert residency with VRAM→host→disk spill.
-- **Quantized-KV attention** — fused prefill/decode FlashAttention-class kernels (q8_0/q5_1 KV), split-K, device-length counters for graph replay.
+- **Quantized-KV attention** — fused prefill/decode FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3 KV per layer class), split-K, device-length counters for graph replay.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic.
 - **Hybrid + sigmoid-router architectures** — gated-delta-net mixes (Qwen3.6), MiniMax/DeepSeek-style routing.
 - **Safetensors loader** — modelopt NVFP4 repacks byte-exact; FP8/BF16 re-encode at load; disk-tier expert streaming.
