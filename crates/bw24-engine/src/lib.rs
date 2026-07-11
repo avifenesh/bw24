@@ -4713,7 +4713,11 @@ impl Engine {
         // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
         // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
+        // g + no-v4: the g-module REGISTER twin mis-decodes the gemma windowed shape
+        // (root-cause open, jsonl) — only reachable by forcing v4 off (BW24_FA_V4_MAX);
+        // fall to the exact scalar there instead of the broken register arm.
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
+        if g && !(fa_v4_at(t_kv) && head_dim == 256) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
@@ -4789,9 +4793,11 @@ impl Engine {
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
-            } else if smem_tkv > 0 && t_kv >= smem_tkv && !g {
-                // (!g: the smem twin's V-stage is q5_1-hardcoded — under the fp8 modules it
-                // would silently mis-decode; BW24_FA_SMEM_TKV cannot force it onto fp8 layers.)
+            } else if smem_tkv > 0 && t_kv >= smem_tkv && !g
+                && !(head_dim == 512 && Self::gkv_on()) {
+                // (fp8 exclusions: the smem twin's V-stage is q5_1-hardcoded — neither the wkv
+                // windowed layers (g) nor the gkv globals (hd512) may be forced onto it via
+                // BW24_FA_SMEM_TKV; they fall through to the format-clean register/scalar arms.)
                 let fv = if g { self.func_g("fa_decode_vec_q_smem") } else { self.func("fa_decode_vec_q_smem") };
                 let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -4911,8 +4917,9 @@ impl Engine {
                     else { "fa_decode_vec_q_rows" };
         let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
                 else if Self::wkv_on() && head_dim == 256 {
-                    // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module, v4 excluded.
-                    self.func_g(if v4 { "fa_decode_vec_q_rows" } else { fname })
+                    // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module. v4 AND the
+                    // smem twin excluded (v4 staging + smem V-stage are q5_1/q8_0-hardcoded).
+                    self.func_g(if v4 || smem_rows { "fa_decode_vec_q_rows" } else { fname })
                 }
                 else { self.func(fname) };
         let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
