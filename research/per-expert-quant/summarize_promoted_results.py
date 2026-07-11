@@ -79,6 +79,16 @@ def bootstrap_delta(
     return samples[int(0.025 * iterations)], samples[int(0.975 * iterations)]
 
 
+def select_finalist(loaded: dict[str, dict[str, Any]], arms: list[str], baseline: str) -> str:
+    candidate_arms = [arm for arm in arms if arm != baseline]
+    if not candidate_arms:
+        raise ValueError("at least one non-baseline candidate arm is required")
+    return max(
+        candidate_arms,
+        key=lambda arm: (loaded[arm]["macro"], -loaded[arm]["logical_model_bytes"]),
+    )
+
+
 def load_arm(
     out_root: Path,
     run_id: str,
@@ -299,6 +309,11 @@ def build_report(
         )
         if not dominated:
             pareto_arms.append(arm)
+    # Freeze the N=50 down-selection rule before looking at the result. Quality is primary; exact
+    # point-estimate ties go to the smaller finished model. The baseline is always retained for the
+    # full comparison, and the uncertainty fields remain separate so this choice cannot be read as
+    # a claim of equivalence or statistically proven superiority.
+    selected_finalist = select_finalist(loaded, arms, baseline)
     return {
         "format": "bw24-promoted-candidate-v1",
         "run_id": run_id,
@@ -309,6 +324,12 @@ def build_report(
         "arms": loaded,
         "paired_vs_baseline": paired,
         "point_estimate_pareto_arms": pareto_arms,
+        "selection": {
+            "rule": "highest candidate macro point estimate; exact tie chooses smaller logical model",
+            "selected_finalist": selected_finalist,
+            "full_eval_arms": [baseline, selected_finalist],
+            "note": "Directional down-selection only; uncertainty is reported separately and this is not an equivalence claim.",
+        },
         "tasks": [{"task": spec["result_task"], "label": spec["label"]} for spec in specs],
     }
 
@@ -350,6 +371,11 @@ def markdown(report: dict[str, Any]) -> str:
         + ", ".join(f"`{arm}`" for arm in report["point_estimate_pareto_arms"])
         + ". This is descriptive; use the paired intervals above for uncertainty.",
         "",
+        f"Selected finalist: **`{report['selection']['selected_finalist']}`**. "
+        f"Full comparison arms: **`{'` and `'.join(report['selection']['full_eval_arms'])}`**.",
+        "",
+        report["selection"]["note"],
+        "",
         "## Per-task accuracy (Wilson 95% CI)",
         "",
     ]
@@ -367,6 +393,14 @@ def markdown(report: dict[str, Any]) -> str:
 
 
 def self_test(lock: dict[str, Any]) -> None:
+    selection_fixture = {
+        "plain": {"macro": 0.8, "logical_model_bytes": 200},
+        "larger": {"macro": 0.7, "logical_model_bytes": 120},
+        "smaller": {"macro": 0.7, "logical_model_bytes": 100},
+        "better": {"macro": 0.71, "logical_model_bytes": 150},
+    }
+    assert select_finalist(selection_fixture, ["plain", "larger", "smaller"], "plain") == "smaller"
+    assert select_finalist(selection_fixture, ["plain", "smaller", "better"], "plain") == "better"
     specs = candidate_specs(lock)
     with tempfile.TemporaryDirectory(prefix="bw24-promoted-summary-") as tmp:
         root = Path(tmp)
@@ -419,6 +453,9 @@ def self_test(lock: dict[str, Any]) -> None:
         assert report["arms"]["plain_quant"]["logical_model_bytes"] == DEFAULT_SHARED_MODEL_BYTES + 100
         assert report["arms"]["candidate"]["size_reduction_vs_baseline"] < 0
         assert report["point_estimate_pareto_arms"] == ["plain_quant"]
+        assert report["selection"]["selected_finalist"] == "candidate"
+        assert report["selection"]["full_eval_arms"] == ["plain_quant", "candidate"]
+        assert "Selected finalist" in markdown(report)
         assert "Wilson 95% CI" in markdown(report)
         full_lock = dict(lock)
         full_lock["eval_documents"] = {spec["result_task"]: 4 for spec in specs}

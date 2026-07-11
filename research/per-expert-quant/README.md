@@ -512,8 +512,11 @@ prints the point-estimate quality/size Pareto frontier:
       --arms plain_quant,mix_quant_prune25,traffic_mix_quant \
       --expected-n 50
 
-The Pareto label is descriptive, not evidence of equivalence. Use the paired intervals and the
-full promoted-candidate evaluation before making the final quality-retention claim.
+The N=50 down-selection is frozen in the report: among non-baseline candidates, choose the highest
+macro point estimate, breaking an exact tie with the smaller logical model. The report always keeps
+`plain_quant` as the full-eval baseline and labels the choice directional. The Pareto label is
+descriptive, not evidence of equivalence. Use the paired intervals and the full promoted-candidate
+evaluation before making the final quality-retention claim.
 
 For `LIMIT=all`, replace `--expected-n 50` with `--expected-n all`. The summarizer then requires
 the pinned per-task counts from `suite.lock.json`—198/500/381/924/844/1,101/798, totaling 4,746
