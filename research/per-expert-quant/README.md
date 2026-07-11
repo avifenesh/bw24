@@ -574,13 +574,30 @@ OpenAI client still needs a non-empty dummy API key when `BW24_API_KEY` is unset
 After source validation and candidate promotion, launch one immutable panel at a time:
 
     ARM=plain_quant PANEL=swe RUN_ID=practical-RUN-ID \
+      ARTIFACT=/scratch/artifacts/plain-quant \
       SERVER_BIN=/data/bin/bw24-server-practical \
+      SERVER_LOG=/data/logs/practical-plain-server.log \
+      BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH=SELECTED_DEPTH \
+      BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
       research/per-expert-quant/run_practical_evals.sh
 
 The runner refuses existing output, requires Docker and Harbor 0.18.0, checks exact server health
 and the chat route without generating tokens, pins all 12 task names by dataset digest, writes the
 resolved Harbor config before execution, and finalizes a hashed run receipt. Use one server and one
-runner only; repeat the identical run for the selected finalist and then for `PANEL=terminal`.
+runner only; the receipt binds the exact artifact manifest, server binary, transport declarations,
+and per-panel spill deltas. Repeat the identical run for the selected finalist and then for
+`PANEL=terminal`.
+
+After both arms finish a panel, validate every receipt, resolved agent config, task/digest, trial,
+reward, exception, retry and spill invariant and produce the paired size/quality table with:
+
+    python3 research/per-expert-quant/summarize_practical_results.py \
+      --baseline /data/results/practical/plain_quant/swe/RUN_ID \
+      --candidate /data/results/practical/FINALIST/swe/RUN_ID \
+      --panel swe --json-out practical-swe.json --markdown-out practical-swe.md
+
+The report includes exact finished logical bytes, paired wins/losses/ties and an exact sign test.
+It remains a directional 12-task panel, not evidence of full-suite equivalence.
 
 Run the same deterministic scaffold, tool permissions, turn/token budgets, task order, transport
 configuration, and one trial per task for both arms. Never execute the SWE harness, generated code,
