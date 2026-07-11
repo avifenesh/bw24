@@ -2471,6 +2471,32 @@ impl Engine {
     /// Like `prob_of_token_device` but writes into a PERSISTENT `p_out` buffer (stable pointer).
     /// Required for CUDA-graph capture of the draft chain: the captured prob kernels must write
     /// where the host reads the p-min confidence between replays. Same kernels, same math.
+    /// Slot-addressed twin of `prob_of_token_device_into`: token read from `tok_all[tok_idx]`
+    /// (a view at the slot), probability written to `p_out[p_idx]` — same two kernels, the
+    /// pointers just land mid-buffer. Zero-sync (gemma confidence-adaptive draft depth).
+    pub fn prob_of_token_device_col(&self, logits: &CudaSlice<f32>,
+                                    tok_all: &CudaSlice<u32>, tok_idx: usize,
+                                    p_out: &mut CudaSlice<f32>, p_idx: usize, n_vocab: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let tok_v = tok_all.slice(tok_idx..tok_idx + 1);
+        let mut p_v = p_out.slice_mut(p_idx..p_idx + 1);
+        let nb = ARGMAX_NB;
+        let mut part = self.alloc_uninit::<f32>(nb)?;
+        let f1 = self.func("prob_of_token_partial_f32");
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(logits).arg(&tok_v).arg(&mut part).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let f2 = self.func("prob_of_token_final_f32");
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nbi = nb as i32;
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&part).arg(&mut p_v).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     pub fn prob_of_token_device_into(&self, logits: &CudaSlice<f32>, tok: &CudaSlice<u32>,
                                      p_out: &mut CudaSlice<f32>, n_vocab: usize)
                                      -> Result<(), Box<dyn std::error::Error>> {

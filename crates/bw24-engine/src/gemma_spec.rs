@@ -370,6 +370,10 @@ impl HybridModel {
         // NEGATIVE — the pageable-copy sync; this is the retry with the sync removed.)
         let mut batch_d = e.stream().alloc_zeros::<u32>(k + 1)?;
         let mut packed = e.stream().alloc_zeros::<u32>(2 * k + 1)?;
+        // confidence-adaptive depth (BW24_SPEC_PMIN, default 0 = off): per-draft probs.
+        let pmin: f32 = std::env::var("BW24_SPEC_PMIN").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut p_d = e.stream().alloc_zeros::<f32>(k.max(1))?;
         // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
         // draft-mtp reaches 0.64-0.70 acceptance on the SAME drafter (ours fixed-K: 0.52) by
         // drafting fewer tokens when unconfident (p-min gate). Zero-sync host proxy: next
@@ -397,6 +401,14 @@ impl HybridModel {
                 let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
                 let ld = e.matmul(&d.head, &hn, 1)?;
                 e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
+                // confidence-adaptive depth (BW24_SPEC_PMIN): record the drafted token's
+                // softmax prob (TRIM-space, before the d2t translate) — the host cuts the
+                // NEXT round's depth at the first low-confidence draft (llama's p-min class,
+                // applied one round late to keep the zero-sync enqueue).
+                if pmin > 0.0 {
+                    e.prob_of_token_device_col(&ld, &batch_d, j + 1, &mut p_d, j,
+                                               d.head.out_features())?;
+                }
                 // FR-trimmed head: the argmax is a TRIM-space index — translate to the full
                 // vocab id in place (next draft step embeds it; verify compares against it).
                 if let Some(map) = &d.d2t_dev {
@@ -450,6 +462,15 @@ impl HybridModel {
                 let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(1);
                 kc = (m + 1).clamp(floor.min(k_cap), k_cap);
+                // confidence cut (BW24_SPEC_PMIN > 0): next round drafts no deeper than one
+                // past the first low-confidence draft of THIS round (llama's p-min class,
+                // one round late — the zero-sync enqueue stays intact). One extra tiny dtoh.
+                if pmin > 0.0 {
+                    let ph = e.dtoh(&p_d)?;
+                    if let Some(fl) = ph[..kr].iter().position(|&p| p < pmin) {
+                        kc = kc.min((fl + 1).max(floor.min(k_cap)));
+                    }
+                }
             }
         }
         eprintln!("[gemma-spec] rounds={rounds} drafted={drafted} accepted={accepted}                    accept-rate={:.3} tok/round={:.2}",
