@@ -103,7 +103,18 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## FP8-GLOBALS ARC — ACTIVE BUILD PLAN (2026-07-11 late, the 26B depth-plain margin lever)
+## 26B STATUS (2026-07-11 night): PLAIN BAR PASSED ON EVERY CELL
+short 1.07x | 1.7k 1.03-1.05x | 4.9k 1.09-1.11x (interleaved same-window pairings; fp8-globals
+= the decisive lever, lead widens with depth). CONFIG LAW: plain serving = BW24_GEMMA_GKV
+default ON; spec serving = GKV=0 (drafter acceptance 0.915-vs-0.869 / 0.626-vs-0.582 — real
+drift, attributed). SPEC = the open front per the owner's ladder: depth 283.6 (K=7) vs llama
+303-306 = 0.93x; short 241.5 (K=2) vs 290 = 0.83x. Ranked spec levers: (a) acceptance
+mechanics (llama's per-token p-min adaptivity; our Markov-K got +10% depth — the confidence
+pack/prob_of_token_device path is built but unexploited), (b) full-acceptance-under-fp8 would
+be ~318 (per-layer L29-in-q8 scheme parked: needs per-layer fa routing), (c) round graphs
+parked (GPU-bound).
+
+## FP8-GLOBALS ARC — BUILD PLAN (EXECUTED, see status above) (2026-07-11 late, the 26B depth-plain margin lever)
 ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound
 (rows_dpl16_i2 30GB/s eff, rows_v4_w 73GB/s eff; L2 sectors match theory — bytes clean).
 llama serves f16 KV (2x bytes, zero dq) and wins depth (4.9k pairing 0.987x). FP8 e4m3 KV
