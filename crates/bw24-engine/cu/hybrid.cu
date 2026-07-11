@@ -249,7 +249,10 @@ extern "C" __global__ void ssm_conv1d_silu_f32(
     for (int t = blockIdx.y * blockDim.x + threadIdx.x; t < T; t += gridDim.y * blockDim.x) {
         float acc = 0.0f;
         #pragma unroll
-        for (int j = 0; j < 8; j++) acc += xc[t + j] * wreg[j];
+        for (int j = 0; j < 8; j++) {
+            float xv = (j < d_conv) ? xc[t + j] : 0.0f;
+            acc += xv * wreg[j];
+        }
         yc[t] = apply_silu ? silu(acc) : acc;
     }
 }
