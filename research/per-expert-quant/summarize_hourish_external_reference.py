@@ -233,6 +233,25 @@ def build_report(
     lock = json.loads(lock_path.read_text())
     baseline = core.load_arm(baseline_root, baseline_run_id, baseline_arm, panel)
     external = load_external_arm(external_root, external_run_id, external_arm, panel, lock)
+
+    comparison = paired_comparison(baseline, external)
+    for data in (baseline, external):
+        data.pop("values")
+    return {
+        "format": "bw24-hourish-external-reference-comparison-v1",
+        "purpose": "paired quality reference; excluded from NVIDIA artifact-size Pareto",
+        "panel_lock_sha256": core.PANEL_SHA256,
+        "external_lock_sha256": LOCK_SHA256,
+        "baseline": {"arm": baseline_arm, "run_id": baseline_run_id, **baseline},
+        "external": {"arm": external_arm, "run_id": external_run_id, **external},
+        "comparison_to_baseline": comparison,
+        "included_in_nvidia_size_pareto": False,
+    }
+
+
+def paired_comparison(
+    baseline: dict[str, Any], external: dict[str, Any]
+) -> dict[str, Any]:
     if external["task_hashes"] != baseline["task_hashes"]:
         raise ValueError("external task definitions differ from baseline")
     if external["suite_lock_sha256"] != baseline["suite_lock_sha256"]:
@@ -248,7 +267,7 @@ def build_report(
             wins += delta > 0
             losses += delta < 0
             ties += delta == 0
-    comparison = {
+    return {
         "domain_macro_delta": external["domain_macro"] - baseline["domain_macro"],
         "domain_macro_delta_bootstrap_ci95": core.bootstrap_domain_macro_delta(
             baseline["values"], external["values"]
@@ -258,18 +277,6 @@ def build_report(
         "paired_losses": losses,
         "paired_ties": ties,
         "paired_exact_sign_p": core.exact_sign_p(wins, losses),
-    }
-    for data in (baseline, external):
-        data.pop("values")
-    return {
-        "format": "bw24-hourish-external-reference-comparison-v1",
-        "purpose": "paired quality reference; excluded from NVIDIA artifact-size Pareto",
-        "panel_lock_sha256": core.PANEL_SHA256,
-        "external_lock_sha256": LOCK_SHA256,
-        "baseline": {"arm": baseline_arm, "run_id": baseline_run_id, **baseline},
-        "external": {"arm": external_arm, "run_id": external_run_id, **external},
-        "comparison_to_baseline": comparison,
-        "included_in_nvidia_size_pareto": False,
     }
 
 
@@ -292,6 +299,53 @@ def main() -> None:
     if args.self_test:
         assert core.sha256(args.external_lock) == LOCK_SHA256
         assert core.exact_sign_p(3, 0) == 0.25
+        task_hashes = {task: f"hash-{task}" for task in core.TASKS}
+        baseline_values = {task: {f"sample-{task}": 0.0} for task in core.TASKS}
+        external_values = {task: dict(values) for task, values in baseline_values.items()}
+        external_values["humaneval_instruct"]["sample-humaneval_instruct"] = 1.0
+        shared = {
+            "task_hashes": task_hashes,
+            "suite_lock_sha256": "suite",
+            "code_scorer": {"tool_sha256": "scorer"},
+        }
+        comparison = paired_comparison(
+            {
+                **shared,
+                "values": baseline_values,
+                "domain_macro": 0.0,
+                "question_weighted": 0.0,
+            },
+            {
+                **shared,
+                "values": external_values,
+                "domain_macro": 0.25,
+                "question_weighted": 0.25,
+            },
+        )
+        assert comparison["paired_wins"] == 1
+        assert comparison["paired_losses"] == 0
+        assert comparison["paired_ties"] == 3
+        assert comparison["domain_macro_delta"] == 0.25
+        try:
+            paired_comparison(
+                {
+                    **shared,
+                    "values": baseline_values,
+                    "domain_macro": 0.0,
+                    "question_weighted": 0.0,
+                },
+                {
+                    **shared,
+                    "task_hashes": {**task_hashes, "hendrycks_math500": "wrong"},
+                    "values": external_values,
+                    "domain_macro": 0.25,
+                    "question_weighted": 0.25,
+                },
+            )
+        except ValueError as exc:
+            assert "task definitions" in str(exc)
+        else:
+            raise AssertionError("task-hash mismatch was not rejected")
         print("hourish external reference summarizer self-test: PASS")
         return
     if not all((args.baseline_root, args.baseline_run_id, args.external_root, args.external_run_id)):
