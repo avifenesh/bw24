@@ -69,9 +69,9 @@ Live campaign (`research/gemma4-bringup/rig5090-gemma4.jsonl` is the record; num
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| 26B-A4B plain, short ctx | 197.8 | 179.3 | **1.10x** |
-| 26B-A4B plain, 1.7k ctx | 176.9 | 163.0 | **1.09x** |
-| 26B-A4B plain, 4.9k ctx | 161.5 | 143.4 | **1.13x** |
+| 26B-A4B plain, short ctx | 198.3 | 180.0 | **1.10x** |
+| 26B-A4B plain, 1.7k ctx | 177.8 | 161.3 | **1.10x** |
+| 26B-A4B plain, 4.9k ctx | 162.6 | 142.0 | **1.14x** |
 | 26B-A4B MTP spec, 1.7k ctx (K=7 adaptive) | 294.1 | 303-305 | 0.96x |
 | 31B dense plain | 38.9 | 40.4 | 0.96x |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
@@ -85,7 +85,7 @@ Gemma runs the full stack: MTP drafter over the main KV, adaptive draft depth, p
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma depth cells above are the open tuning front.
+- Gemma 26B plain clears every cell; the MTP spec cell and the 31B/E4B lanes are the open tuning front.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
 
 ## What's inside

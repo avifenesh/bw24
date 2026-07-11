@@ -103,18 +103,18 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## 26B STATUS (2026-07-12): WKV DEFAULTED + PARITY BUG FIXED; short + 4.9k CLEAR the 1.1x bar, 1.7k = the one open cell
-Paired rows (interleaved same-window, N=2, validity-gated at short 193-196; VALIDITY gate:
-run-gen short NGEN=256 must read ~193, 1.7k long-ids ~174 under the new defaults):
-short **197.9/197.7 vs 178.1/180.5 = 1.10-1.11x CLEAR** | 1.7k 177.1/176.6 vs 164.0/161.9 =
-**1.08-1.09x (open)** | 4.9k 161.8/161.1 vs 144.3/142.4 = **1.12-1.13x CLEAR**.
-Levers landed this window: BW24_GEMMA_WKV default ON (fp8-windowed KV, 9266ab7) and
-BW24_FA_SPW default 48 (1d6cc16, +2 plain at 1.7k AND 4.9k; spec serving sets SPW=64).
-Doors closed at 1.7k: SP512 re-sweep under e4m3 (16 stands), i2 on/off (noise), t-keyed SPW
-(REJECTED — depth stream 9/128, split width must be uniform across decode/verify), windowed
-kernel structural probes (2t/wi2/mr/sp2 — near local optimum). NEXT 1.7k lever = the GRAPH
-ARC (llama's depth edge is its CUDA-graphed step; our step-3 port is correct but -7..8%,
-re-profile before the arena step).
+## 26B STATUS (2026-07-12 night): PLAIN >=1.1x ON EVERY CELL — THE OWNER BAR IS CROSSED
+Validity-gated window (gate 193.94 >= 193), interleaved same-window pairs:
+short **198.4/198.2 vs 179.8/180.1 = 1.10x** | 1.7k **177.8 x3 vs 160.8-162.2 = 1.10x**
+(pairs 1.096/1.106/1.104, median 1.104) | 4.9k **162.5/162.6 vs 141.3/142.6 = 1.14-1.15x**.
+Today's levers, in order (each bit-identical or battery-arbitrated, jsonl per row):
+BW24_GEMMA_WKV default ON (9266ab7) -> v4-rows parity fix (a0903d0) -> raw-e4m3 sV tile
+(610ad37, occupancy 3->4 blocks/SM) -> SPW default 32 (1b500e8, grid-fill at t=1) ->
+graph capture-arm wkv fix (362bc64, GRAPH-GATE IDENTICAL at every ctx) -> Q4_0 wide-load
+expert dot (b6f0ffe, funnelshift, +2.2%/1.7k +1.7%/4.9k).
+Killed arms (jsonl): t-keyed SPW (parity 9/128), gate_up block packing (flat), graph
+serving (flat vs the dc loop), SP512 re-sweep (16 stands), i2 (noise).
+PER THE OWNER LADDER: plain passed >=1.1x -> the SPEC LANE OPENS.
 
 **PARITY BUG (2026-07-12, fixed a0903d0):** fa_decode_rows' g-dispatch excluded the v4 rows
 twin (stale — predates the format-aware wkv-v4 merge fda9790), so under the wkv default
@@ -125,10 +125,10 @@ only the smem twin excluded). STANDING BATTERY NOW INCLUDES: VERIFY-GATE at SHOR
 DEPTH (all must read 0.000e0) and spec stream at SHORT + DEPTH.
 
 CONFIG LAW: plain serving = GKV+WKV default ON, SPW=48; spec serving = BW24_GEMMA_GKV=0
-(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC (parked per owner ladder, resumes
-after 1.7k plain): post-fix gate reads jumped — short K=2 309.5 (was 241 broken/239.9
-pre-wkv), depth K=7 294.1 at SPW=64 — the correct rows_v4 verify is also the faster one;
-re-pair vs llama MTP (303-306 depth, ~290 short) when the lane resumes. Ranked spec levers:
+(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC (LANE NOW OPEN — plain bar crossed): gate reads under the new kernels — short K=2
+312.4, depth K=7 294.1 at SPW=64 / 261.6 at default 32 (spec serving config = GKV=0 +
+SPW=64); llama MTP bars ~290 short / 303-306 depth (re-pair them fresh first). Ranked spec
+levers:
 (a) acceptance mechanics (p-min adaptivity; confidence pack built but unexploited),
 (b) full-acceptance-under-fp8 ~318 prize, (c) round graphs.
 
