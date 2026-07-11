@@ -103,27 +103,34 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## NEXT VALID WINDOW: wkv-v4 A/B (the 1.7k-bar decider) — FOREGROUND, chassis-cold
-Correctness fully green (fda9790 + 2546c0d: every reachable AND forceable lane exact).
-THREE background attempts externally stopped — run FOREGROUND on a fresh chassis:
-1. VALIDITY: run-gen short (2 818 5279 529 7001 563, NGEN=256) must read ~193 and 1.7k
-   (long-ids) ~168 — below that the window is INVALID (rig law: chassis thermal budget,
-   see memory + jsonl 2026-07-12), rest and retry, never measure through it.
-2. A/B: BW24_GEMMA_WKV=1 vs default, 1.7k + 4.9k, N=3 blocks per arm.
-3. wkv wins -> flip BW24_GEMMA_WKV default for gemma + re-pair llama (validity-gated) ->
-   the 1.7k cell moves toward the 1.1x bar. wkv loses -> door closes on a measurement;
-   1.7k stands at 1.05x architectural.
+## 26B STATUS (2026-07-12): WKV DEFAULTED + PARITY BUG FIXED; short + 4.9k CLEAR the 1.1x bar, 1.7k = the one open cell
+Paired rows (interleaved same-window, N=2, validity-gated at short 193-196; VALIDITY gate:
+run-gen short NGEN=256 must read ~193, 1.7k long-ids ~174 under the new defaults):
+short **197.9/197.7 vs 178.1/180.5 = 1.10-1.11x CLEAR** | 1.7k 177.1/176.6 vs 164.0/161.9 =
+**1.08-1.09x (open)** | 4.9k 161.8/161.1 vs 144.3/142.4 = **1.12-1.13x CLEAR**.
+Levers landed this window: BW24_GEMMA_WKV default ON (fp8-windowed KV, 9266ab7) and
+BW24_FA_SPW default 48 (1d6cc16, +2 plain at 1.7k AND 4.9k; spec serving sets SPW=64).
+Doors closed at 1.7k: SP512 re-sweep under e4m3 (16 stands), i2 on/off (noise), t-keyed SPW
+(REJECTED — depth stream 9/128, split width must be uniform across decode/verify), windowed
+kernel structural probes (2t/wi2/mr/sp2 — near local optimum). NEXT 1.7k lever = the GRAPH
+ARC (llama's depth edge is its CUDA-graphed step; our step-3 port is correct but -7..8%,
+re-profile before the arena step).
 
-## 26B STATUS (2026-07-11 night): PLAIN BAR PASSED ON EVERY CELL (>=1.0x; owner bar 1.1x open at 1.7k)
-short 1.07x | 1.7k 1.03-1.05x | 4.9k 1.09-1.11x (interleaved same-window pairings; fp8-globals
-= the decisive lever, lead widens with depth). CONFIG LAW: plain serving = BW24_GEMMA_GKV
-default ON; spec serving = GKV=0 (drafter acceptance 0.915-vs-0.869 / 0.626-vs-0.582 — real
-drift, attributed). SPEC = the open front per the owner's ladder: depth 283.6 (K=7) vs llama
-303-306 = 0.93x; short 241.5 (K=2) vs 290 = 0.83x. Ranked spec levers: (a) acceptance
-mechanics (llama's per-token p-min adaptivity; our Markov-K got +10% depth — the confidence
-pack/prob_of_token_device path is built but unexploited), (b) full-acceptance-under-fp8 would
-be ~318 (per-layer L29-in-q8 scheme parked: needs per-layer fa routing), (c) round graphs
-parked (GPU-bound).
+**PARITY BUG (2026-07-12, fixed a0903d0):** fa_decode_rows' g-dispatch excluded the v4 rows
+twin (stale — predates the format-aware wkv-v4 merge fda9790), so under the wkv default
+batched verify rode g-module BASE rows while decode rode g-module V4: short/mid VERIFY-GATE
+maxdiff 1.2-2.8, short spec stream 0/128 (round 1 accepted garbage). Depth-only battery was
+blind (windowed rides rows_w there). Fix: g-route mirrors kvmod's symbol choice (rows_v4 in;
+only the smem twin excluded). STANDING BATTERY NOW INCLUDES: VERIFY-GATE at SHORT + MID +
+DEPTH (all must read 0.000e0) and spec stream at SHORT + DEPTH.
+
+CONFIG LAW: plain serving = GKV+WKV default ON, SPW=48; spec serving = BW24_GEMMA_GKV=0
+(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC (parked per owner ladder, resumes
+after 1.7k plain): post-fix gate reads jumped — short K=2 309.5 (was 241 broken/239.9
+pre-wkv), depth K=7 294.1 at SPW=64 — the correct rows_v4 verify is also the faster one;
+re-pair vs llama MTP (303-306 depth, ~290 short) when the lane resumes. Ranked spec levers:
+(a) acceptance mechanics (p-min adaptivity; confidence pack built but unexploited),
+(b) full-acceptance-under-fp8 ~318 prize, (c) round graphs.
 
 ## FP8-GLOBALS ARC — BUILD PLAN (EXECUTED, see status above) (2026-07-11 late, the 26B depth-plain margin lever)
 ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound

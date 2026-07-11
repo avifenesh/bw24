@@ -69,13 +69,18 @@ Live campaign (`research/gemma4-bringup/rig5090-gemma4.jsonl` is the record; num
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| 26B-A4B plain, short ctx | 193.9 | 181.3 | **1.07x** |
-| 26B-A4B plain, 1.7k ctx | 161.4 | 161.6 | 1.00x (parity, interleaved + clock-locked) |
-| 26B-A4B MTP spec, 1.7k ctx (K=7 adaptive) | 284.6 | 303-305 | 0.94x |
+| 26B-A4B plain, short ctx | 197.8 | 179.3 | **1.10x** |
+| 26B-A4B plain, 1.7k ctx | 176.9 | 163.0 | **1.09x** |
+| 26B-A4B plain, 4.9k ctx | 161.5 | 143.4 | **1.13x** |
+| 26B-A4B MTP spec, 1.7k ctx (K=7 adaptive) | 294.1 | 303-305 | 0.96x |
 | 31B dense plain | 38.9 | 40.4 | 0.96x |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
 
-Gemma runs the full stack: MTP drafter over the main KV, adaptive draft depth, per-model kernel dispatch under a shared-symbol parity law (decode/verify/graph launch the same kernels — bit-exact by construction, `VERIFY-GATE` prints 0.000e0 logit maxdiff at depth).
+All 26B cells are interleaved same-window N=2 medians, validity-gated against the chassis
+thermal budget. FP8 (e4m3) KV on both layer classes is the depth lever — half the bytes of
+llama's f16 KV at near-zero dequant cost; the lead widens with context.
+
+Gemma runs the full stack: MTP drafter over the main KV, adaptive draft depth, per-model kernel dispatch under a shared-symbol parity law (decode/verify/graph launch the same kernels — bit-exact by construction, `VERIFY-GATE` prints 0.000e0 logit maxdiff at short, mid, and depth contexts).
 
 ## Known gaps
 
