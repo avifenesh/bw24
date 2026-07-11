@@ -694,6 +694,12 @@ impl Tokenizer {
     }
 
     pub fn decode_special(&self, ids: &[u32], special: bool) -> String {
+        String::from_utf8_lossy(&self.decode_bytes_special(ids, special)).into_owned()
+    }
+
+    /// Decode token ids to their exact byte stream. Streaming callers must retain incomplete
+    /// UTF-8 suffixes across token boundaries instead of replacing them prematurely.
+    pub fn decode_bytes_special(&self, ids: &[u32], special: bool) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();
         for &id in ids {
             let i = id as usize;
@@ -738,7 +744,7 @@ impl Tokenizer {
                 TokAttr::Other => {}
             }
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        bytes
     }
 
     fn piece_to_bytes(&self, piece: &str, out: &mut Vec<u8>) {

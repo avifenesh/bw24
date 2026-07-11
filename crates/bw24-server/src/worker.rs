@@ -134,7 +134,7 @@ struct Session {
     params: GenParams,
     stop_strings: Vec<String>,
     /// detokenized text already emitted (to compute incremental deltas + stop-string matching).
-    emitted_text: String,
+    emitted_bytes: usize,
     budget: usize,        // max tokens we may still generate
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     t0: Instant,
@@ -511,11 +511,50 @@ fn admit(
         generated: Vec::new(),
         params,
         stop_strings: req.stop_strings,
-        emitted_text: String::new(),
+        emitted_bytes: 0,
         budget,
         tx: req.tx,
         t0: Instant::now(),
     })
+}
+
+/// Return only the newly completed UTF-8 text. Tokenizer byte-fallback sequences may span token
+/// boundaries; retain an incomplete suffix until a later token completes it instead of emitting a
+/// permanent replacement character. Truly invalid bytes are consumed as U+FFFD so they cannot
+/// stall every later delta.
+fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
+    if *emitted_bytes > decoded.len() {
+        return String::new();
+    }
+    let mut cursor = *emitted_bytes;
+    let mut delta = String::new();
+    while cursor < decoded.len() {
+        match std::str::from_utf8(&decoded[cursor..]) {
+            Ok(text) => {
+                delta.push_str(text);
+                cursor = decoded.len();
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid != 0 {
+                    // SAFETY: `valid_up_to` is the exact valid UTF-8 prefix certified by Rust.
+                    delta.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&decoded[cursor..cursor + valid])
+                    });
+                    cursor += valid;
+                }
+                match err.error_len() {
+                    None => break,
+                    Some(invalid) => {
+                        delta.push('\u{fffd}');
+                        cursor += invalid;
+                    }
+                }
+            }
+        }
+    }
+    *emitted_bytes = cursor;
+    delta
 }
 
 /// One scheduler tick for one session. Returns Ok(true) if still running, Ok(false) if retired.
@@ -580,11 +619,9 @@ fn step_session(
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
         // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
-        let full = lm.tok.decode(&s.generated);
-        let delta = if full.len() >= s.emitted_text.len() && full.starts_with(&s.emitted_text) {
-            full[s.emitted_text.len()..].to_string()
-        } else { String::new() };
-        s.emitted_text = full.clone();
+        let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+        let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+        let full = String::from_utf8_lossy(&decoded);
         if !delta.is_empty() {
             let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
         }
@@ -645,14 +682,9 @@ fn step_session(
     }
 
     // Detokenize the full generated tail, compute the incremental text delta vs what we've emitted.
-    let full = lm.tok.decode(&s.generated);
-    let delta = if full.len() >= s.emitted_text.len() && full.starts_with(&s.emitted_text) {
-        full[s.emitted_text.len()..].to_string()
-    } else {
-        // detok is not strictly prefix-stable across multibyte boundaries; fall back to last-piece.
-        lm.tok.decode(&[next])
-    };
-    s.emitted_text = full.clone();
+    let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+    let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+    let full = String::from_utf8_lossy(&decoded);
     let _ = s.tx.send(Event::Token { id: next, text: delta });
 
     // stop-string match on the detokenized tail.
@@ -696,5 +728,27 @@ pub fn spawn(models: Vec<(String, String)>) -> Result<(Sender<Cmd>, Arc<Vec<Stri
         Ok(Ok(names)) => Ok((cmd_tx, Arc::new(names))),
         Ok(Err(err)) => Err(err),
         Err(_) => Err("worker died during init".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utf8_delta;
+
+    #[test]
+    fn streaming_utf8_waits_for_a_complete_multibyte_sequence() {
+        let mut emitted = 0;
+        assert_eq!(utf8_delta(b"caf\xc3", &mut emitted), "caf");
+        assert_eq!(emitted, 3);
+        assert_eq!(utf8_delta(b"caf\xc3\xa9\n", &mut emitted), "é\n");
+        assert_eq!(emitted, 6);
+    }
+
+    #[test]
+    fn streaming_utf8_consumes_truly_invalid_bytes_once() {
+        let mut emitted = 0;
+        assert_eq!(utf8_delta(b"a\xffb", &mut emitted), "a\u{fffd}b");
+        assert_eq!(emitted, 3);
+        assert_eq!(utf8_delta(b"a\xffbc", &mut emitted), "c");
     }
 }
