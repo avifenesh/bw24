@@ -4789,7 +4789,9 @@ impl Engine {
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
-            } else if smem_tkv > 0 && t_kv >= smem_tkv {
+            } else if smem_tkv > 0 && t_kv >= smem_tkv && !g {
+                // (!g: the smem twin's V-stage is q5_1-hardcoded — under the fp8 modules it
+                // would silently mis-decode; BW24_FA_SMEM_TKV cannot force it onto fp8 layers.)
                 let fv = if g { self.func_g("fa_decode_vec_q_smem") } else { self.func("fa_decode_vec_q_smem") };
                 let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
