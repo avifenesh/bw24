@@ -507,7 +507,9 @@ intervals; adds the frozen 24,999,514,624-byte non-expert GGUF body to each expe
 prints the point-estimate quality/size Pareto frontier. It also validates the exact lm-eval model,
 endpoint, concurrency, retry, generation, seed, limit, harness/runtime and artifact identity
 contracts; records SHA-256 evidence for every manifest, receipt, result and sample file; and refuses
-to overwrite either report output:
+to overwrite either report output. It also binds every arm to the same copied suite lock and
+lm-eval task hashes/versions. The only accepted lock evolution is the later additive
+`eval_documents` map, which is required exactly for `--expected-n all`:
 
     python3 research/per-expert-quant/summarize_promoted_results.py \
       --out-root /data/results/per-expert-quant/promoted-n50 \

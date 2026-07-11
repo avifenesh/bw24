@@ -69,6 +69,19 @@ def evidence(paths: list[Path]) -> list[dict[str, Any]]:
     return [{"path": str(path), "sha256": sha256(path)} for path in paths]
 
 
+def canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def frozen_suite_contract(lock: dict[str, Any]) -> dict[str, Any]:
+    # eval_documents was added after the frozen directional/N=50 harness checkout solely to pin
+    # later full-run counts. Every other suite field must remain byte-semantically identical.
+    return {key: value for key, value in lock.items() if key != "eval_documents"}
+
+
 def wilson(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
     p = successes / n
     den = 1.0 + z * z / n
@@ -121,6 +134,7 @@ def load_arm(
     specs: list[dict[str, str]],
     expected_counts: dict[str, int],
     full_run: bool,
+    lock: dict[str, Any],
 ) -> dict[str, Any]:
     run_dir = out_root / arm / run_id
     manifest_paths = sorted(run_dir.rglob("artifact-manifest.json"))
@@ -141,6 +155,20 @@ def load_arm(
     if not receipt_paths:
         raise ValueError(f"{arm}: no run receipts under {run_dir}")
     receipts = [(path, json.loads(path.read_text())) for path in receipt_paths]
+    lock_paths = [path.parent / "suite.lock.json" for path in receipt_paths]
+    copied_locks: list[dict[str, Any]] = []
+    for path in lock_paths:
+        if not path.is_file():
+            raise ValueError(f"{arm}: copied suite lock missing: {path}")
+        copied = json.loads(path.read_text())
+        if frozen_suite_contract(copied) != frozen_suite_contract(lock):
+            raise ValueError(f"{arm}: frozen suite contract differs: {path}")
+        if full_run and copied.get("eval_documents") != lock.get("eval_documents"):
+            raise ValueError(f"{arm}: full-run document counts differ: {path}")
+        copied_locks.append(copied)
+    copied_lock_hashes = {canonical_json_sha256(value) for value in copied_locks}
+    if len(copied_lock_hashes) != 1:
+        raise ValueError(f"{arm}: copied suite locks differ across shards")
     shared_config = None
     reference = receipts[0][1]
     if full_run:
@@ -226,6 +254,8 @@ def load_arm(
         "tokenized_requests": False,
         "tokenizer_backend": "none",
     }
+    task_hashes: dict[str, str] = {}
+    task_versions: dict[str, Any] = {}
     for path, result in result_payloads:
         config = result.get("config", {})
         limit = config.get("limit")
@@ -257,6 +287,28 @@ def load_arm(
             or evaluation_seconds <= 0
         ):
             raise ValueError(f"{arm}: result configuration/completion evidence differs in {path}")
+        hashes = result.get("task_hashes")
+        versions = result.get("versions")
+        sample_counts = result.get("n-samples")
+        if not all(isinstance(value, dict) for value in (hashes, versions, sample_counts)):
+            raise ValueError(f"{arm}: result lacks task provenance in {path}")
+        if set(hashes) != set(versions) or set(hashes) != set(sample_counts):
+            raise ValueError(f"{arm}: task provenance keys differ in {path}")
+        for task, task_hash in hashes.items():
+            if task not in expected_counts or task in task_hashes:
+                raise ValueError(f"{arm}: unexpected or duplicate task provenance for {task}")
+            counts = sample_counts[task]
+            if (
+                not isinstance(task_hash, str)
+                or not task_hash
+                or not isinstance(counts, dict)
+                or counts.get("effective") != expected_counts[task]
+            ):
+                raise ValueError(f"{arm}: invalid task hash/count for {task}")
+            task_hashes[task] = task_hash
+            task_versions[task] = versions[task]
+    if set(task_hashes) != set(expected_counts):
+        raise ValueError(f"{arm}: result task provenance differs from pinned suite")
     tasks = {}
     values_by_task: dict[str, dict[str, float]] = {}
     sample_paths: list[Path] = []
@@ -315,6 +367,11 @@ def load_arm(
         "result_evidence": evidence(result_paths),
         "receipt_evidence": evidence(receipt_paths),
         "sample_evidence": evidence(sample_paths),
+        "suite_lock_evidence": evidence(lock_paths),
+        "suite_lock_canonical_sha256": copied_lock_hashes.pop(),
+        "analysis_lock_canonical_sha256": canonical_json_sha256(lock),
+        "task_hashes": task_hashes,
+        "task_versions": task_versions,
         "shared_run_config": shared_config,
         "tasks": tasks,
         "macro": macro,
@@ -346,12 +403,22 @@ def build_report(
             raise ValueError(f"expected_n must be a positive integer or 'all', got {expected_n!r}")
         expected_counts = {spec["result_task"]: expected_n for spec in specs}
     full_run = expected_n == "all"
-    loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_counts, full_run) for arm in arms}
+    loaded = {
+        arm: load_arm(out_root, run_id, arm, specs, expected_counts, full_run, lock)
+        for arm in arms
+    }
     reference_config = loaded[arms[0]]["shared_run_config"]
     for arm in arms[1:]:
         if loaded[arm]["shared_run_config"] != reference_config:
             label = "full" if full_run else "N=50"
             raise ValueError(f"{arm}: {label} run configuration differs from {arms[0]}")
+        if (
+            loaded[arm]["task_hashes"] != loaded[arms[0]]["task_hashes"]
+            or loaded[arm]["task_versions"] != loaded[arms[0]]["task_versions"]
+        ):
+            raise ValueError(f"{arm}: task definitions differ from {arms[0]}")
+        if loaded[arm]["suite_lock_canonical_sha256"] != loaded[arms[0]]["suite_lock_canonical_sha256"]:
+            raise ValueError(f"{arm}: copied suite lock differs from {arms[0]}")
     for task in (spec["result_task"] for spec in specs):
         identities = {arm: set(data["values"][task]) for arm, data in loaded.items()}
         first = identities[arms[0]]
@@ -534,6 +601,7 @@ def self_test(lock: dict[str, Any]) -> None:
             model_dir.mkdir(parents=True)
             manifest_path = run_dir / "artifact-manifest.json"
             manifest_path.write_text(json.dumps({"artifact_bytes": 100 + arm_index}))
+            (run_dir / "suite.lock.json").write_text(json.dumps(lock))
             receipt = {
                 "suite": "candidate", "base_url": "http://127.0.0.1:8080/v1/completions",
                 "bw24_commit": "bw24", "lm_eval_commit": "harness", "eval_timeout_s": 100,
@@ -572,8 +640,13 @@ def self_test(lock: dict[str, Any]) -> None:
                     "random_seed": 0, "numpy_seed": 1234,
                     "torch_seed": 1234, "fewshot_seed": 1234,
                 },
+                "task_hashes": {}, "versions": {}, "n-samples": {},
             }
             for task_index, spec in enumerate(specs):
+                task = spec["result_task"]
+                results["task_hashes"][task] = f"task-hash-{task_index}"
+                results["versions"][task] = task_index + 1
+                results["n-samples"][task] = {"original": 100 + task_index, "effective": 4}
                 rows = []
                 for i in range(4):
                     value = float((i + task_index + arm_index) % 3 == 0)
@@ -629,6 +702,7 @@ def self_test(lock: dict[str, Any]) -> None:
             result = json.loads(result_path.read_text())
             result["config"]["limit"] = None
             result_path.write_text(json.dumps(result))
+            (root / arm / "fixture" / "suite.lock.json").write_text(json.dumps(full_lock))
         full_report = build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
@@ -652,9 +726,12 @@ def self_test(lock: dict[str, Any]) -> None:
                 key: value for key, value in candidate_results.items()
                 if key not in {spec["result_section"] for spec in specs}
             }
+            for key in ("task_hashes", "versions", "n-samples"):
+                shard_results[key] = {task: candidate_results[key][task]}
             shard_results[section] = {task: candidate_results[section][task]}
             (shard_model / f"results_{task}.json").write_text(json.dumps(shard_results))
             (shard / "artifact-manifest.json").write_text(manifest_text)
+            (shard / "suite.lock.json").write_text(json.dumps(full_lock))
             shard_receipt = dict(candidate_receipt, tasks=[task], shard_id=task)
             (shard / "run-metadata.json").write_text(json.dumps(shard_receipt))
         candidate_results_path.unlink()
