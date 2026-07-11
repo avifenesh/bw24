@@ -135,6 +135,32 @@ serving, K=6 both cells, BW24_GEMMA_DRAFT_RANKS=research/gemma4-bringup/
 gemma4-frspec-ranks-32768.txt. b16 tier (t=9..16) correct + open via BW24_SPEC_CAPMAX but
 perf-negative (K8-10 depth 283-293 vs K6 301-306) — cap 7 stands on a measurement.
 
+## QWEN FP8-KV ARC — BUILD PLAN (2026-07-12, owner: "better kv in lower cost = big lever over llama")
+HISTORY THAT MUST BE RE-READ FIRST: BW24_KV_K=fp8 was FLIP-BLOCKED 2026-07-09 (e2e flat +
+9B ST spec acceptance 74% -> 20.5%, "drift accumulates across K reads"). That verdict
+PREDATES the format-aware v4 arms AND the v4-rows parity fix — the acceptance-collapse
+signature is EXACTLY what the gemma parity bug produced (verify and decode on different
+kernels/formats). Treat the block as UNPROVEN, re-run through the gemma recipe.
+RECIPE (all infra exists from the gemma campaign):
+1. Cache dims: qwen full-attn layers get (32,32) blk bytes under BW24_KV_FP8 (uniform —
+   no window/global split; hybrid GDN layers carry no KV).
+2. Appends: the class flag already threads through append_kv_quantized/_rows/_dc — qwen
+   sites flip from `false` to the flag (incl spec.rs append_kv_quantized_view — that one
+   has NO flag param yet, add it).
+3. FA: pass g=flag at qwen fa_decode/kvmod/rows/dc sites. BRING-UP ORDER: hd128 + g rides
+   the g-module SCALAR first (the kvmod clamp already forces fa_vec=false for g at
+   hd!=256) — correctness before speed; then open the register/v2/v3 g-module lanes one
+   at a time (the macro layer dq_K_lane/dq_V_lane serves them; NOTE the open g-module
+   REGISTER-twin bug at the gemma hd256 shape — verify whether hd128 shares it).
+4. Gates (the 2026-07-09 failure mode is the target): kernel-check, run-gen MATCH 9B/27B/
+   35B + DEPTH oracle, run-spec K=1..8 self-consistency, acceptance A/B vs q8_0/q5_1
+   config (any drop >1pt = parity suspect, bisect verify-vs-decode kernel identity),
+   VERIFY-GATE-class bit checks where the parity law applies.
+5. Perf: depth cells are the prize (gemma gained +6-9% at 1.7k-4.9k from dequant-latency);
+   pair vs llama at 512/6.3k. Positive -> per-model default flip + board refresh.
+PREREQ CLEANUP: root-cause the g-module register twin at the gemma windowed shape (parked
+env-unreachable for gemma; it becomes load-bearing if hd128 register lane opens).
+
 QWEN LANE PICKUPS from this campaign (for the NVFP4-publish arc, memory file):
 1. e4m3 KV (GKV/WKV recipe + kf8vf8 module + format-aware v4 arms) — qwen still runs
    q8_0/q5_1 KV; the gemma depth lever should port (qwen depth cells are the thinnest).
