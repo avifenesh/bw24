@@ -258,8 +258,10 @@ impl HybridModel {
             let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                          (off_tok + t_kv) * kvl.v_tok_bytes);
             let mut attn = e.uninit(nhh * hd)?;
-            e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            // drafter attends the MAIN cache — its format follows the main layer's class
+            // (windowed L28 = wkv arm, global L29 = gkv arm; gkv routing is hd-keyed inside).
+            e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
+                        kvl.k_tok_bytes, kvl.v_tok_bytes, dl.swa && crate::Engine::wkv_on())?;
             let o = e.matmul(&dl.wo, &attn, 1)?;
 
             let mut post = e.uninit(ne)?;

@@ -2052,7 +2052,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert_eq!(kvl.len, 0, "gemma4 prime is fresh-prompt only (v0)");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
             kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
@@ -2650,7 +2650,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         kvl.len += 1;
         // R6 decode: SWA layers attend only the last `sliding_window` keys — a token-aligned
         // VIEW OFFSET into the quantized cache (keys carry absolute rope; the mask is purely
@@ -2685,8 +2685,8 @@ impl HybridModel {
                                      (off_tok + t_kv) * kvl.k_tok_bytes);
         let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                      (off_tok + t_kv) * kvl.v_tok_bytes);
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
-                    kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                    kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
 
@@ -2791,7 +2791,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
         match cap_bucket_max {
@@ -2824,8 +2824,8 @@ impl HybridModel {
                                                  (off_tok + t_kv) * kvl.k_tok_bytes);
                     let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                                  (off_tok + t_kv) * kvl.v_tok_bytes);
-                    e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
-                                kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                                kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
                 }
             }
             Some((b_swa, b_glob)) => {
@@ -3082,7 +3082,7 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
-                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         kvl.len += t;
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
@@ -3151,8 +3151,8 @@ impl HybridModel {
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
                                  Some((&kvl.len_d, 0)), false)?;
             } else {
-                e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                            kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
             }
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
@@ -3327,8 +3327,8 @@ impl HybridModel {
             let mut q_one = e.uninit(nh * hd)?;
             e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
             let mut a_one = e.uninit(nh * hd)?;
-            e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                        kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
         Ok(e.matmul(&fa.wo, &attn, t)?)

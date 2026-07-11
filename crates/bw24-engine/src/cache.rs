@@ -117,7 +117,9 @@ impl Cache {
             // both planes — the dequant-latency arc); windowed layers keep the default pair.
             let g4_global_fp8 = crate::Engine::gkv_on()
                 && cfg.gemma4.as_ref().is_some_and(|g| !g.swa_pattern[il as usize]);
-            let (kbb_l, vbb_l) = if g4_global_fp8 { (32, 32) } else { (kbb, vbb) };
+            let g4_windowed_fp8 = crate::Engine::wkv_on()
+                && cfg.gemma4.as_ref().is_some_and(|g| g.swa_pattern[il as usize]);
+            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 { (32, 32) } else { (kbb, vbb) };
             let k_tok_bytes = (kv_dim_k / 32) * kbb_l;
             let v_tok_bytes = (kv_dim_v / 32) * vbb_l;
             match cfg.layer_kind(il) {
