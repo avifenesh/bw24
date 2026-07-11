@@ -98,6 +98,11 @@ def render_svg(board):
     all_rows = [(r["model"], ratio_of(r)) for r in plain_rows] + [
         (r["model"] + " (spec)", ratio_of(r)) for r in spec_rows
     ]
+    # card-only rows (families whose table lives outside the generated blocks, e.g. Gemma):
+    # {model, bw24, llama, spec?: true} — appended in order, "(spec)" suffix when spec.
+    for r in board.get("extra_card_rows", []):
+        label = r["model"] + (" (spec)" if r.get("spec") else "")
+        all_rows.append((label, ratio_of(r)))
     height = top + row_height * len(all_rows) + 40
 
     row_svg = []
