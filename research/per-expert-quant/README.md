@@ -553,6 +553,22 @@ SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesse
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
 screening, then run their complete public suites only for promoted artifacts.
 
+The directional practical-task panel is pinned in `practical-evals.lock.json`: 12 SWE-bench
+Verified instances covering all 12 repositories and four difficulty strata, plus 12 CPU-only
+Terminal-Bench 2 tasks spanning at least nine categories. The lock records the SWE dataset,
+parquet and harness revisions and the Harbor dataset, harness and per-task content digests. Validate
+downloaded source material before running any agent:
+
+    python3 research/per-expert-quant/validate_practical_eval_lock.py \
+      --swe-parquet /data/evals/SWE-bench_Verified/data/test-00000-of-00001.parquet \
+      --terminal-root /data/evals/terminal-bench-2
+
+Run the same deterministic scaffold, tool permissions, turn/token budgets, task order, transport
+configuration, and one trial per task for both arms. Never execute the SWE harness, generated code,
+or terminal agents on the host; Docker isolation is mandatory. These 12+12 scores are directional,
+not full-benchmark estimates. Promote to the complete 500-task SWE-bench Verified and 89-task
+Terminal-Bench 2 suites only after the matched panel supports the finalist.
+
 The generation-only core suite contains IFEval, GSM8K CoT, BBH CoT few-shot, and DROP. HumanEval
 and MBPP are isolated as a code suite because their scorers execute generated Python. Run that
 lane only in a disposable sandbox.
