@@ -103,7 +103,14 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## 26B STATUS (2026-07-11 night): PLAIN BAR PASSED ON EVERY CELL
+## PENDING MEASUREMENT (2026-07-12): wkv-v4 A/B — the 1.7k-bar decider
+Correctness fully green (merged fda9790, default bit-unchanged). Two background attempts
+were stopped externally; protocol script ready at the session scratchpad `clean-ab.sh`
+(25-min cooldown, def-1.7k validity gate ~164+, then wkv-vs-def at 1.7k/4.9k/short N=3).
+Run it in any clean window. If wkv wins -> 1.7k moves toward the 1.1x bar; if it loses ->
+the fp8-windowed door closes on a measurement.
+
+## 26B STATUS (2026-07-11 night): PLAIN BAR PASSED ON EVERY CELL (>=1.0x; owner bar 1.1x open at 1.7k)
 short 1.07x | 1.7k 1.03-1.05x | 4.9k 1.09-1.11x (interleaved same-window pairings; fp8-globals
 = the decisive lever, lead widens with depth). CONFIG LAW: plain serving = BW24_GEMMA_GKV
 default ON; spec serving = GKV=0 (drafter acceptance 0.915-vs-0.869 / 0.626-vs-0.582 — real
