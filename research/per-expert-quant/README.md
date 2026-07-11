@@ -558,7 +558,9 @@ fields and compares the declared server/harness/tooling hashes, timeout, generat
 concurrency, spill depth, and spec setting across every shard and both arms.
 Each receipt is written as incomplete before generation and finalized with wall time plus evaluator
 and log-pipeline exit codes. Full reporting rejects receipts that are unfinished, timed out, failed,
-or missing a positive elapsed time; concurrency preflights use that recorded wall time.
+or missing a positive elapsed time; concurrency preflights use that recorded wall time. At shard
+completion the runner snapshots the active server log into the immutable shard directory and binds
+its SHA-256 in the receipt; the live source-log path remains a separate matched configuration field.
 The runner refuses every pre-existing run/shard directory, whether complete or partial. Preserve a
 failed attempt by renaming it with a timestamp before retrying; never overwrite or mix evidence.
 Pass the active server log to every runner. Receipts capture spill counters before and after each

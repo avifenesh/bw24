@@ -168,7 +168,7 @@ if [[ -f "$ARTIFACT/manifest.json" ]]; then
 fi
 RUN_STARTED_UTC=$(date -u +%FT%TZ)
 RUN_STARTED_NS=$(date +%s%N)
-export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
+export ROOT RUN_DIR ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, re, subprocess, sys
 
@@ -238,7 +238,9 @@ metadata = {
     "server_binary_sha256": (
         sha256(server_bin) if server_bin and server_bin.is_file() else None
     ),
-    "server_log": str(server_log) if server_log else None,
+    "server_log_source": str(server_log) if server_log else None,
+    "server_log": str(pathlib.Path(os.environ["RUN_DIR"]) / "server.log"),
+    "server_log_sha256": None,
     "spill_snapshot_start": spill_snapshot(server_log),
     "spill_snapshot_end": None,
     "spill_delta": None,
@@ -271,9 +273,10 @@ RUN_COMPLETED_UTC=$(date -u +%FT%TZ)
 RUN_COMPLETED_NS=$(date +%s%N)
 RUN_ELAPSED_SECONDS=$(python3 -c 'import sys; print((int(sys.argv[2]) - int(sys.argv[1])) / 1e9)' \
   "$RUN_STARTED_NS" "$RUN_COMPLETED_NS")
+cp "$SERVER_LOG" "$RUN_DIR/server.log"
 export RUN_COMPLETED_UTC RUN_ELAPSED_SECONDS evaluator_status tee_status
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
-import json, os, pathlib, re, sys
+import hashlib, json, os, pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
 metadata = json.loads(path.read_text())
@@ -295,7 +298,14 @@ def spill_snapshot(raw_path):
             return {key: values[key] for key in spill_keys}
     return {key: 0 for key in spill_keys}
 
-spill_end = spill_snapshot(metadata.get("server_log"))
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(16 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+spill_end = spill_snapshot(metadata.get("server_log_source"))
 spill_start = metadata.get("spill_snapshot_start")
 spill_delta = None
 if spill_start is not None and spill_end is not None:
@@ -306,6 +316,7 @@ metadata.update({
     "evaluator_exit_code": evaluator_status,
     "tee_exit_code": tee_status,
     "completed_successfully": evaluator_status == 0 and tee_status == 0,
+    "server_log_sha256": sha256(pathlib.Path(metadata["server_log"])),
     "spill_snapshot_end": spill_end,
     "spill_delta": spill_delta,
 })

@@ -50,7 +50,7 @@ FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
     "arm",
     "model",
     "artifact_identity_sha256",
-    "server_log",
+    "server_log_source",
 )
 SPILL_COUNTER_KEYS = (
     "reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full",
@@ -155,6 +155,7 @@ def load_arm(
     if not receipt_paths:
         raise ValueError(f"{arm}: no run receipts under {run_dir}")
     receipts = [(path, json.loads(path.read_text())) for path in receipt_paths]
+    server_log_paths: list[Path] = []
     lock_paths = [path.parent / "suite.lock.json" for path in receipt_paths]
     copied_locks: list[dict[str, Any]] = []
     for path in lock_paths:
@@ -196,6 +197,13 @@ def load_arm(
                 or not isinstance(receipt.get("completed_utc"), str)
             ):
                 raise ValueError(f"{arm}: receipt {path} is not a successful timed completion")
+            server_log = Path(receipt.get("server_log") or "")
+            if (
+                not server_log.is_file()
+                or receipt.get("server_log_sha256") != sha256(server_log)
+            ):
+                raise ValueError(f"{arm}: receipt {path} has invalid server-log evidence")
+            server_log_paths.append(server_log)
             spill_delta = receipt.get("spill_delta")
             if not isinstance(spill_delta, dict) or set(spill_delta) != set(SPILL_COUNTER_KEYS):
                 raise ValueError(f"{arm}: receipt {path} has invalid spill delta")
@@ -367,6 +375,7 @@ def load_arm(
         "result_evidence": evidence(result_paths),
         "receipt_evidence": evidence(receipt_paths),
         "sample_evidence": evidence(sample_paths),
+        "server_log_evidence": evidence(server_log_paths),
         "suite_lock_evidence": evidence(lock_paths),
         "suite_lock_canonical_sha256": copied_lock_hashes.pop(),
         "analysis_lock_canonical_sha256": canonical_json_sha256(lock),
@@ -602,6 +611,8 @@ def self_test(lock: dict[str, Any]) -> None:
             manifest_path = run_dir / "artifact-manifest.json"
             manifest_path.write_text(json.dumps({"artifact_bytes": 100 + arm_index}))
             (run_dir / "suite.lock.json").write_text(json.dumps(lock))
+            server_log_path = run_dir / "server.log"
+            server_log_path.write_text(f"server evidence for {arm}\n")
             receipt = {
                 "suite": "candidate", "base_url": "http://127.0.0.1:8080/v1/completions",
                 "bw24_commit": "bw24", "lm_eval_commit": "harness", "eval_timeout_s": 100,
@@ -614,7 +625,9 @@ def self_test(lock: dict[str, Any]) -> None:
                 "tasks": [spec["result_task"] for spec in specs], "shard_id": None,
                 "started_utc": "start", "completed_utc": "end", "elapsed_seconds": 1.0,
                 "evaluator_exit_code": 0, "tee_exit_code": 0, "completed_successfully": True,
-                "server_log": f"server-{arm}.log",
+                "server_log_source": f"source-server-{arm}.log",
+                "server_log": str(server_log_path),
+                "server_log_sha256": sha256(server_log_path),
                 "spill_delta": {
                     "reads": 1, "bytes": 1, "errors": 0, "short_reads": 0,
                     "fallbacks": 0, "buffer_waits": 0, "ring_full": 0,
@@ -707,6 +720,16 @@ def self_test(lock: dict[str, Any]) -> None:
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
         assert "full pinned" in markdown(full_report)
+        plain_server_log = root / "plain_quant" / "fixture" / "server.log"
+        original_server_log = plain_server_log.read_text()
+        plain_server_log.write_text(original_server_log + "tampered\n")
+        try:
+            build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
+        except ValueError as exc:
+            assert "invalid server-log evidence" in str(exc)
+        else:
+            raise AssertionError("tampered full-run server log was accepted")
+        plain_server_log.write_text(original_server_log)
         candidate_run = root / "candidate" / "fixture"
         candidate_model = candidate_run / "candidate"
         candidate_results_path = candidate_model / "results_fixture.json"
@@ -732,7 +755,15 @@ def self_test(lock: dict[str, Any]) -> None:
             (shard_model / f"results_{task}.json").write_text(json.dumps(shard_results))
             (shard / "artifact-manifest.json").write_text(manifest_text)
             (shard / "suite.lock.json").write_text(json.dumps(full_lock))
-            shard_receipt = dict(candidate_receipt, tasks=[task], shard_id=task)
+            shard_server_log = shard / "server.log"
+            shard_server_log.write_text(f"server evidence for candidate/{task}\n")
+            shard_receipt = dict(
+                candidate_receipt,
+                tasks=[task],
+                shard_id=task,
+                server_log=str(shard_server_log),
+                server_log_sha256=sha256(shard_server_log),
+            )
             (shard / "run-metadata.json").write_text(json.dumps(shard_receipt))
         candidate_results_path.unlink()
         (candidate_run / "artifact-manifest.json").unlink()
