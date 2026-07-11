@@ -37,6 +37,10 @@ FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
     "arm",
     "model",
     "artifact_identity_sha256",
+    "server_log",
+)
+SPILL_COUNTER_KEYS = (
+    "reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full",
 )
 
 
@@ -126,6 +130,20 @@ def load_arm(
                 or not isinstance(receipt.get("completed_utc"), str)
             ):
                 raise ValueError(f"{arm}: receipt {path} is not a successful timed completion")
+            spill_delta = receipt.get("spill_delta")
+            if not isinstance(spill_delta, dict) or set(spill_delta) != set(SPILL_COUNTER_KEYS):
+                raise ValueError(f"{arm}: receipt {path} has invalid spill delta")
+            if any(
+                isinstance(spill_delta[key], bool)
+                or not isinstance(spill_delta[key], int)
+                or spill_delta[key] < 0
+                for key in SPILL_COUNTER_KEYS
+            ):
+                raise ValueError(f"{arm}: receipt {path} has non-monotonic spill counters")
+            if spill_delta["reads"] <= 0 or spill_delta["bytes"] <= 0:
+                raise ValueError(f"{arm}: receipt {path} did not record spill reads")
+            if spill_delta["errors"] != 0 or spill_delta["short_reads"] != 0:
+                raise ValueError(f"{arm}: receipt {path} recorded spill I/O failure")
             tasks = receipt.get("tasks")
             if not isinstance(tasks, list) or not tasks or not all(isinstance(task, str) for task in tasks):
                 raise ValueError(f"{arm}: receipt {path} has invalid tasks")
@@ -365,6 +383,11 @@ def self_test(lock: dict[str, Any]) -> None:
                 "tasks": [spec["result_task"] for spec in specs], "shard_id": None,
                 "started_utc": "start", "completed_utc": "end", "elapsed_seconds": 1.0,
                 "evaluator_exit_code": 0, "tee_exit_code": 0, "completed_successfully": True,
+                "server_log": f"server-{arm}.log",
+                "spill_delta": {
+                    "reads": 1, "bytes": 1, "errors": 0, "short_reads": 0,
+                    "fallbacks": 0, "buffer_waits": 0, "ring_full": 0,
+                },
             }
             (run_dir / "run-metadata.json").write_text(json.dumps(receipt))
             results = {}

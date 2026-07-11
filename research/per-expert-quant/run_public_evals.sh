@@ -130,9 +130,9 @@ if [[ -f "$ARTIFACT/manifest.json" ]]; then
 fi
 RUN_STARTED_UTC=$(date -u +%FT%TZ)
 RUN_STARTED_NS=$(date +%s%N)
-export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
+export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
-import hashlib, json, os, pathlib, platform, subprocess, sys
+import hashlib, json, os, pathlib, platform, re, subprocess, sys
 
 def command(*args):
     try:
@@ -145,6 +145,21 @@ artifact = pathlib.Path(os.environ["ARTIFACT"]).resolve()
 identity = artifact / "manifest.json" if artifact.is_dir() else artifact
 server_bin_raw = os.environ.get("SERVER_BIN")
 server_bin = pathlib.Path(server_bin_raw).resolve() if server_bin_raw else None
+server_log_raw = os.environ.get("SERVER_LOG")
+server_log = pathlib.Path(server_log_raw).resolve() if server_log_raw else None
+
+spill_keys = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
+
+def spill_snapshot(path):
+    if path is None or not path.is_file():
+        return None
+    for line in reversed(path.read_text(errors="replace").splitlines()):
+        if "[spill-pread] snapshot" not in line:
+            continue
+        values = {key: int(value) for key, value in re.findall(r"([a-z_]+)=([0-9]+)", line)}
+        if all(key in values for key in spill_keys):
+            return {key: values[key] for key in spill_keys}
+    return {key: 0 for key in spill_keys}
 
 def sha256(path):
     h = hashlib.sha256()
@@ -185,6 +200,10 @@ metadata = {
     "server_binary_sha256": (
         sha256(server_bin) if server_bin and server_bin.is_file() else None
     ),
+    "server_log": str(server_log) if server_log else None,
+    "spill_snapshot_start": spill_snapshot(server_log),
+    "spill_snapshot_end": None,
+    "spill_delta": None,
     "platform": platform.platform(),
     "nvidia_smi": command("nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"),
 }
@@ -216,18 +235,41 @@ RUN_ELAPSED_SECONDS=$(python3 -c 'import sys; print((int(sys.argv[2]) - int(sys.
   "$RUN_STARTED_NS" "$RUN_COMPLETED_NS")
 export RUN_COMPLETED_UTC RUN_ELAPSED_SECONDS evaluator_status tee_status
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
-import json, os, pathlib, sys
+import json, os, pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
 metadata = json.loads(path.read_text())
 evaluator_status = int(os.environ["evaluator_status"])
 tee_status = int(os.environ["tee_status"])
+spill_keys = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
+
+def spill_snapshot(raw_path):
+    if not raw_path:
+        return None
+    spill_log = pathlib.Path(raw_path)
+    if not spill_log.is_file():
+        return None
+    for line in reversed(spill_log.read_text(errors="replace").splitlines()):
+        if "[spill-pread] snapshot" not in line:
+            continue
+        values = {key: int(value) for key, value in re.findall(r"([a-z_]+)=([0-9]+)", line)}
+        if all(key in values for key in spill_keys):
+            return {key: values[key] for key in spill_keys}
+    return {key: 0 for key in spill_keys}
+
+spill_end = spill_snapshot(metadata.get("server_log"))
+spill_start = metadata.get("spill_snapshot_start")
+spill_delta = None
+if spill_start is not None and spill_end is not None:
+    spill_delta = {key: spill_end[key] - spill_start[key] for key in spill_keys}
 metadata.update({
     "completed_utc": os.environ["RUN_COMPLETED_UTC"],
     "elapsed_seconds": float(os.environ["RUN_ELAPSED_SECONDS"]),
     "evaluator_exit_code": evaluator_status,
     "tee_exit_code": tee_status,
     "completed_successfully": evaluator_status == 0 and tee_status == 0,
+    "spill_snapshot_end": spill_end,
+    "spill_delta": spill_delta,
 })
 path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 PY

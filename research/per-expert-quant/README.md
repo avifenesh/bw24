@@ -488,6 +488,7 @@ only tasks from the selected suite, and `SHARD_ID` creates an isolated receipt/r
       SUITE=candidate LIMIT=all TASKS_OVERRIDE=gpqa_diamond_cot_zeroshot \
       SHARD_ID=gpqa_diamond_cot_zeroshot EVAL_TIMEOUT_S=432000 \
       SERVER_BIN=/data/bin/bw24-server-0c9817c \
+      SERVER_LOG=/data/logs/final-full-plain-quant-server.log \
       BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH=8 BW24_SPILL_STATS=1 \
       BW24_SERVE_SPEC=0 \
       research/per-expert-quant/run_public_evals.sh
@@ -504,6 +505,10 @@ and log-pipeline exit codes. Full reporting rejects receipts that are unfinished
 or missing a positive elapsed time; concurrency preflights use that recorded wall time.
 The runner refuses every pre-existing run/shard directory, whether complete or partial. Preserve a
 failed attempt by renaming it with a timestamp before retrying; never overwrite or mix evidence.
+Pass the active server log to every runner. Receipts capture spill counters before and after each
+preflight/shard and store the delta. Full reporting requires positive reads/bytes, monotonic
+counters, and zero read errors and short reads; fallbacks, waits, and ring-full events remain
+reported performance evidence rather than automatic correctness failures.
 
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
