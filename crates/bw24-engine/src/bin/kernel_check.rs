@@ -1573,7 +1573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for j in 0..32 { vin[32 + j] = j as f32 * step; }
         let kd = e.htod(&kin)?; let vd = e.htod(&vin)?;
         let mut kc = e.alloc_u8(k_tok_bytes)?; let mut vc = e.alloc_u8(v_tok_bytes)?;
-        e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+        e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         let kbytes = e.dtoh_u8(&kc)?; let vbytes = e.dtoh_u8(&vc)?;
         let f16_to_f32 = |b: &[u8]| -> f32 { fp16_to_f32(u16::from_le_bytes([b[0], b[1]])) };
         // CPU e4m3 decode (raw-fp8 arms): sign / 4-bit exp (bias 7) / 3-bit mantissa, subnormals.

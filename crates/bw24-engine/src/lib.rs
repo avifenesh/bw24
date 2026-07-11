@@ -483,12 +483,13 @@ impl Engine {
         *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
     }
 
-    /// FP8-WINDOWED switch (BW24_GEMMA_WKV, default OFF until measured): gemma windowed
-    /// (hd256 SWA) layers hold e4m3 KV and ride the register i2 lane from the kf8vf8 module
-    /// (v4 cannot parse fp8 — its staging hardcodes q8_0/q5_1).
+    /// FP8-WINDOWED switch (BW24_GEMMA_WKV, default ON — measured 2026-07-12 in a validity-
+    /// gated window: 1.7k 174.1-174.4 vs 168.6-169.4 default (+3%), 4.9k 158.7-160.4; vs
+    /// llama same-window 159.5-160.2 / 140.6 = 1.09x / 1.13x): gemma windowed (hd256 SWA)
+    /// layers hold e4m3 KV and ride the format-aware v4 lane from the kf8vf8 module.
     pub fn wkv_on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v == "1").unwrap_or(false))
+        *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0").unwrap_or(true))
     }
 
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
