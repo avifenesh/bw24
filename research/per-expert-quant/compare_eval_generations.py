@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 
-def load_samples(run_dir: Path) -> dict[tuple[str, str, str, str], dict[str, Any]]:
-    samples: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+def load_samples(run_dir: Path) -> dict[tuple[str, str, str, str, str], dict[str, Any]]:
+    samples: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     paths = sorted(run_dir.rglob("samples_*.jsonl"))
     if not paths:
         raise ValueError(f"no sample logs under {run_dir}")
@@ -23,7 +23,10 @@ def load_samples(run_dir: Path) -> dict[tuple[str, str, str, str], dict[str, Any
                 hashes = tuple(row.get(key) for key in ("doc_hash", "prompt_hash", "target_hash"))
                 if not all(isinstance(value, str) for value in hashes):
                     raise ValueError(f"{path}:{line_number}: missing sample hashes")
-                identity = (task, *hashes)
+                filter_name = row.get("filter")
+                if not isinstance(filter_name, str):
+                    raise ValueError(f"{path}:{line_number}: missing filter name")
+                identity = (task, filter_name, *hashes)
                 if identity in samples:
                     raise ValueError(f"{path}:{line_number}: duplicate sample identity {identity}")
                 samples[identity] = {
@@ -54,7 +57,7 @@ def self_test() -> None:
         candidate.mkdir()
         row = {
             "doc_hash": "doc", "prompt_hash": "prompt", "target_hash": "target",
-            "resps": [["answer"]], "filtered_resps": ["answer"],
+            "filter": "fixture", "resps": [["answer"]], "filtered_resps": ["answer"],
         }
         for directory in (baseline, candidate):
             (directory / "samples_task_fixture.jsonl").write_text(json.dumps(row) + "\n")
