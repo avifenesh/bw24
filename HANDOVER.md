@@ -103,7 +103,7 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## FIRST ACTION NEXT SESSION: wkv-v4 A/B (the 1.7k-bar decider) — FOREGROUND, chassis-cold
+## NEXT VALID WINDOW: wkv-v4 A/B (the 1.7k-bar decider) — FOREGROUND, chassis-cold
 Correctness fully green (fda9790 + 2546c0d: every reachable AND forceable lane exact).
 THREE background attempts externally stopped — run FOREGROUND on a fresh chassis:
 1. VALIDITY: run-gen short (2 818 5279 529 7001 563, NGEN=256) must read ~193 and 1.7k
