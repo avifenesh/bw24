@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 PANEL_LOCK=${PANEL_LOCK:-$HERE/hourish-panel.lock.json}
-PANEL_SHA256=52596541d81f9ff4039854fada54f57934c95c77028d7bbc7654a3fc9dca1ace
+PANEL_SHA256=770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1
 
 : "${ARM:?set ARM}"
 : "${MODEL:?set MODEL}"
@@ -39,7 +39,6 @@ import json, sys
 panel = json.load(open(sys.argv[1]))
 expected = [
     "humaneval_instruct",
-    "mbpp_instruct",
     "hendrycks_math500",
     "mmlu_pro_history",
     "mmlu_pro_other",
@@ -97,7 +96,7 @@ for row in "${TASK_ROWS[@]}"; do
   predict_only=0
   unsafe=0
   timeout_s=2700
-  if [[ "$task" == humaneval_instruct || "$task" == mbpp_instruct ]]; then
+  if [[ "$task" == humaneval_instruct ]]; then
     suite=code
     predict_only=1
     unsafe=1

@@ -9,9 +9,8 @@ RUN_DIR=$(realpath "$1")
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 
 mapfile -t human < <(find "$RUN_DIR/shards/humaneval_instruct" -name 'samples_humaneval_instruct_*.jsonl' -type f)
-mapfile -t mbpp < <(find "$RUN_DIR/shards/mbpp_instruct" -name 'samples_mbpp_instruct_*.jsonl' -type f)
-[[ ${#human[@]} == 1 && ${#mbpp[@]} == 1 ]] || {
-  echo "expected exactly one HumanEval and one MBPP sample file" >&2
+[[ ${#human[@]} == 1 ]] || {
+  echo "expected exactly one HumanEval sample file" >&2
   exit 2
 }
 
@@ -43,8 +42,7 @@ docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --mount "type=bind,src=$RUN_DIR,dst=/inputs,readonly" \
   "$image" \
-  "/inputs/${human[0]#"$RUN_DIR/"}" \
-  "/inputs/${mbpp[0]#"$RUN_DIR/"}" > "$tmp"
+  "/inputs/${human[0]#"$RUN_DIR/"}" > "$tmp"
 
 python3 - "$tmp" <<'PY'
 import json, sys
@@ -52,11 +50,10 @@ import json, sys
 report = json.load(open(sys.argv[1]))
 if report.get("format") != "bw24-hourish-code-score-v1":
     raise SystemExit("wrong code-score format")
-if report.get("total") != 12:
-    raise SystemExit(f"expected 12 code samples, got {report.get('total')}")
-for task in ("humaneval_instruct", "mbpp_instruct"):
-    if report.get("by_task", {}).get(task, {}).get("total") != 6:
-        raise SystemExit(f"expected six samples for {task}")
+if report.get("total") != 14:
+    raise SystemExit(f"expected 14 code samples, got {report.get('total')}")
+if report.get("by_task", {}).get("humaneval_instruct", {}).get("total") != 14:
+    raise SystemExit("expected fourteen HumanEval samples")
 PY
 mv "$tmp" "$OUTPUT"
 trap - EXIT

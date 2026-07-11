@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score frozen HumanEval/MBPP samples inside a locked-down container."""
+"""Score frozen HumanEval samples inside a locked-down container."""
 
 from __future__ import annotations
 
@@ -39,27 +39,7 @@ def limits() -> None:
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
-def single_response(row: dict[str, Any], key: str) -> str:
-    value = row.get(key)
-    if (
-        not isinstance(value, list)
-        or len(value) != 1
-        or not isinstance(value[0], list)
-        or len(value[0]) != 1
-        or not isinstance(value[0][0], str)
-    ):
-        raise ValueError(f"expected exactly one {key} candidate")
-    return value[0][0]
-
-
-def candidate_from(row: dict[str, Any], task: str) -> str:
-    if task == "mbpp_instruct":
-        # The task's gen_prefix already opens a Python fence but lm-eval does not include that
-        # prefix in `resps`. Its upstream filter prepends "```" without a newline, causing the
-        # regex to consume a leading `def` as though it were a Markdown language tag. The code is
-        # the raw response up to the model's first closing fence.
-        raw = single_response(row, "resps")
-        return raw.split("```", 1)[0].rstrip()
+def candidate_from(row: dict[str, Any]) -> str:
     filtered = row.get("filtered_resps")
     if (
         not isinstance(filtered, list)
@@ -116,7 +96,7 @@ def evaluate_candidate(candidate: str, target: str) -> dict[str, Any]:
 
 def task_from_path(path: pathlib.Path) -> str:
     name = path.name
-    for task in ("humaneval_instruct", "mbpp_instruct"):
+    for task in ("humaneval_instruct",):
         if name.startswith(f"samples_{task}_") and name.endswith(".jsonl"):
             return task
     raise ValueError(f"unrecognized code sample file: {path}")
@@ -142,7 +122,7 @@ def score(paths: list[pathlib.Path]) -> dict[str, Any]:
                 target = row.get("target")
                 if not isinstance(doc_id, int) or not isinstance(target, str):
                     raise ValueError(f"invalid sample identity at {path}:{line_number}")
-                outcome = evaluate_candidate(candidate_from(row, task), target)
+                outcome = evaluate_candidate(candidate_from(row), target)
                 results.append(
                     {
                         "task": task,
@@ -177,8 +157,6 @@ def self_test() -> None:
     assert evaluate_candidate("def f(): return 3", "assert f() == 3")["passed"]
     assert not evaluate_candidate("def f(): return 4", "assert f() == 3")["passed"]
     assert not evaluate_candidate("while True: pass", "")["passed"]
-    row = {"resps": [["def f():\n    return 3\n```\nignored"]]}
-    assert candidate_from(row, "mbpp_instruct") == "def f():\n    return 3"
     print("hourish code scorer self-test: PASS")
 
 

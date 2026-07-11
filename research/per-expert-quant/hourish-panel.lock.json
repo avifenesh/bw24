@@ -3,10 +3,6 @@
     "humaneval_instruct": [
       0,
       1
-    ],
-    "mbpp_instruct": [
-      0,
-      1
     ]
   },
   "code_execution": "network-disabled sandbox required for scoring",
@@ -18,10 +14,6 @@
     "humaneval_instruct": {
       "repo": "openai/openai_humaneval",
       "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
-    },
-    "mbpp_instruct": {
-      "repo": "google-research-datasets/mbpp",
-      "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c"
     },
     "mmlu_pro_history": {
       "repo": "TIGER-Lab/MMLU-Pro",
@@ -37,7 +29,6 @@
   "max_gen_toks": {
     "hendrycks_math500": 256,
     "humaneval_instruct": 512,
-    "mbpp_instruct": 512,
     "mmlu_pro_history": 256,
     "mmlu_pro_other": 256
   },
@@ -79,20 +70,20 @@
       481
     ],
     "humaneval_instruct": [
+      27,
       32,
+      53,
       54,
+      68,
       73,
+      85,
+      96,
+      115,
       116,
       119,
-      135
-    ],
-    "mbpp_instruct": [
-      67,
-      82,
-      93,
-      141,
-      149,
-      364
+      127,
+      135,
+      142
     ],
     "mmlu_pro_history": [
       16,
@@ -467,12 +458,28 @@
     ],
     "humaneval_instruct": [
       {
+        "document_sha256": "7ce9c6b2dbb728f107b894e5cfa6ecb3a74b6b54daf8ebfc3eba91f5f3714930",
+        "id": "HumanEval/27",
+        "index": 27,
+        "prompt_sha256": "31024afa05f14c5f28986c7d106e343d242ba5da305ae43b73edbc8e21bcc789",
+        "stratum": null,
+        "target_sha256": "6b72bd486d2a28de7ad44cc641ba93745c50be47a42dd6bf1cb110a6e7d81b97"
+      },
+      {
         "document_sha256": "b9495082aa66c0d5b00bb10a9aff9d2941a9fb3a9add0bddbe990e514eeeeee9",
         "id": "HumanEval/32",
         "index": 32,
         "prompt_sha256": "e35b1d7a19fe57e41ceae9d782f40a503b5094e2b9bc9e10369da6d73e424b9a",
         "stratum": null,
         "target_sha256": "d19b6b09bea563951969b4444ebcf13da610c7b085c2517d01f9d82e53e89fd4"
+      },
+      {
+        "document_sha256": "d90f8141e072764e14272a117bcd028d8f43ac8f81af0eb1220a750151eb3e2a",
+        "id": "HumanEval/53",
+        "index": 53,
+        "prompt_sha256": "5e40f417cd18764bac02377da8c09bdc6bb97ba9563199142bcb77ae11469b69",
+        "stratum": null,
+        "target_sha256": "e08c51651f0424df891957a4980ec86b9e888add752f79c899479cbde8a147c6"
       },
       {
         "document_sha256": "1ec4170ebb55eba931ecffd2514583556ca00e904a84e4f8d62efe054d6e49a6",
@@ -483,12 +490,44 @@
         "target_sha256": "34724c8700f462c3fb83778755cc7f8b8c66b739711f37f76945741d5c453e53"
       },
       {
+        "document_sha256": "0859312e08bcc033ffda9dfa3ef0f688edd474d333d61af0966424a40b2c0c7f",
+        "id": "HumanEval/68",
+        "index": 68,
+        "prompt_sha256": "a72d5c08a6f5fe611b75ff41affe5bc0aa021f34bc4228c908605be190c17397",
+        "stratum": null,
+        "target_sha256": "f1e40f59c42a5d53c259855aacc6760ff7ec2bce2f549027732db613613928a1"
+      },
+      {
         "document_sha256": "c9af02a1cc2f7d253350edaed8fb9d73955d08cf994a814449b897fc86704f66",
         "id": "HumanEval/73",
         "index": 73,
         "prompt_sha256": "245dbf87499a3d50f4507d0ddc7ec60bd1f04e4859071e12e0712aba00497a08",
         "stratum": null,
         "target_sha256": "2a636453407987e4f050279c43bc585c4b7a5eabc4e60744db9eeee560f3b1df"
+      },
+      {
+        "document_sha256": "ee773872c4756faee9d437b93d1a580bbf478f156b8075931762404d50defafb",
+        "id": "HumanEval/85",
+        "index": 85,
+        "prompt_sha256": "0a6054e7d8969add187e39aa35b4bb43520865f7f92c2893a192c1703980b2cc",
+        "stratum": null,
+        "target_sha256": "8cd0e91cf11176099ab6cd84d13648253f5652ab4c6a6497f5cb9f0a0334125f"
+      },
+      {
+        "document_sha256": "a7c27ead86353a3740da919f4af0637c8f92407c2b8bb518617a363db60e0326",
+        "id": "HumanEval/96",
+        "index": 96,
+        "prompt_sha256": "c30d8b85b41039836b1552af249031ebef25c9d2d7efb8b69cbb757b45096b01",
+        "stratum": null,
+        "target_sha256": "bf8bc166ec429c3a6f70924dacbf58838f5532d7df387e346a3f8c1c8de8273c"
+      },
+      {
+        "document_sha256": "a3947b74578cd53bd491606fa3dc1375e3cd1ad40b0e05d753cf348a7d69cbf3",
+        "id": "HumanEval/115",
+        "index": 115,
+        "prompt_sha256": "07198a0e97b9eee3fdc5328444c0d5e56a6637a291b2545b67eec2c3923bbae1",
+        "stratum": null,
+        "target_sha256": "e517493cd224714d085d771e03a1649833625a2d17607c2eba3576c96562554e"
       },
       {
         "document_sha256": "b16d2daab0997421aa1eb24ca70c44d892175a7634942fbaa3a9c5fc619a04ce",
@@ -507,62 +546,28 @@
         "target_sha256": "0c5d828dad0417927fe20bb8f65f5ba8908fb6669de52613716cf1205cbb2ab8"
       },
       {
+        "document_sha256": "7283829b22a2c9be74c623596b7ff5fd74baa0e9c3ddf228fde9c3912d9ad121",
+        "id": "HumanEval/127",
+        "index": 127,
+        "prompt_sha256": "3c81838fac0784498d7fa49b6869ff176c2fc42a29e7134aea344981814a7ab1",
+        "stratum": null,
+        "target_sha256": "96299eba074cf4850135cb9db24431b920fc9007a305582ae538d789af4b14d7"
+      },
+      {
         "document_sha256": "955c5b0d8b06351b3410f615c5fb0585941ab686896d7f35b5c913b96ddd4e02",
         "id": "HumanEval/135",
         "index": 135,
         "prompt_sha256": "f501dc155402e6ff455c08be6e0ee8440c598c9f5960f2340e1227e7d2af5537",
         "stratum": null,
         "target_sha256": "a79216ace610aaa3c8ac2e2095cb10aa461bb76c7a87eedc66a827f737e364c2"
-      }
-    ],
-    "mbpp_instruct": [
-      {
-        "document_sha256": "a6ccdf3b8137d134e3bfe8a4787ad9bb86047f858f9f6203a9fb6e01b5ed21d3",
-        "id": 78,
-        "index": 67,
-        "prompt_sha256": "f19c2fb9a01e1d29efee61d460201c9b20055475dee91851637525aaacd134aa",
-        "stratum": null,
-        "target_sha256": "a4c746f1868980b7604c2fee9300f5332559a90740d3e0ad1f295ca84d42ca3a"
       },
       {
-        "document_sha256": "85903a429f608c7570d91bc0baa4a1e59088e5608eff8874c57b42b837369ed3",
-        "id": 93,
-        "index": 82,
-        "prompt_sha256": "9e51b4d8f3fe5dc97819cd810ff417389800828de25cb3f694f02cc5d4c96dc9",
+        "document_sha256": "42b19607cbc8beae7570b247bf0b6472de063a4e24359c6b0ec070d7986223d5",
+        "id": "HumanEval/142",
+        "index": 142,
+        "prompt_sha256": "edcd640c719fc983daa316be985ff157bbb494e06d029899506fdf31a7a26b41",
         "stratum": null,
-        "target_sha256": "221b3bb7189946b7467f2b9436f2d992370ea7fc4f407b8403a7d69f3f8860f1"
-      },
-      {
-        "document_sha256": "73e11dbf659df16f1259db8e67ad48e11736aa694f2a93011edc1d9677cf8948",
-        "id": 104,
-        "index": 93,
-        "prompt_sha256": "ba1edcc074a384e8c2f69cfe18871f6db40a63feae8eefe7229c0fe6033d04a2",
-        "stratum": null,
-        "target_sha256": "7eb25584e84858be67287428f184ba24813edc992f325442f80067167a9a294c"
-      },
-      {
-        "document_sha256": "830e66d0296b43d19871466070b2075c64c0b4b43dd1662064f3ca83970a8f2b",
-        "id": 152,
-        "index": 141,
-        "prompt_sha256": "c80b74fd6b015deb56a67a9cf6b7620318f648b7239ec2fddd07276190e22a0d",
-        "stratum": null,
-        "target_sha256": "a281c964723cbc9ab9da70c58bd0e60317034a3b6a645b915dc36d3c0d70d429"
-      },
-      {
-        "document_sha256": "b36171a22cafc55429f1c4634aab64e3aad949fb0f26030a34254492b0c2ea4a",
-        "id": 160,
-        "index": 149,
-        "prompt_sha256": "b24fba0d15ee56d2406041f3928000215256eb2a6e9c8d38e91587e4a0d7a664",
-        "stratum": null,
-        "target_sha256": "ff4f2ec7a4c88284d3a21a0e460171fe57ce6cd2cde0f138f42a760645d7a169"
-      },
-      {
-        "document_sha256": "7b5d17ab7d69acfb5c5f7c4a4abafd53ed73348ce9982257fb5a7be55a5bafd1",
-        "id": 375,
-        "index": 364,
-        "prompt_sha256": "59902c307a86c3f4c31549376ce108a17ac7b3be5c593a0a53d13dd3ba7ec9bf",
-        "stratum": null,
-        "target_sha256": "b245fcdae85a270eb5026c10741843ad52c61b51e4c90de1f9640b39c7078a68"
+        "target_sha256": "384ccca660dca8cfa3f0b268d5db246f2ec5fa76afaed151c588a56b6089542d"
       }
     ],
     "mmlu_pro_history": [
@@ -678,15 +683,13 @@
   },
   "task_counts": {
     "hendrycks_math500": 32,
-    "humaneval_instruct": 6,
-    "mbpp_instruct": 6,
+    "humaneval_instruct": 14,
     "mmlu_pro_history": 5,
     "mmlu_pro_other": 5
   },
   "task_document_counts": {
     "hendrycks_math500": 500,
     "humaneval_instruct": 164,
-    "mbpp_instruct": 500,
     "mmlu_pro_history": 381,
     "mmlu_pro_other": 924
   },

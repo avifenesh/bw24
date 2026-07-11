@@ -19,24 +19,18 @@ FORMAT = "bw24-hourish-eval-panel-v1"
 SEED = "bw24-hourish-panel-v1-20260711"
 HARNESS_COMMIT = "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176"
 TASK_COUNTS = {
-    "humaneval_instruct": 6,
-    "mbpp_instruct": 6,
+    "humaneval_instruct": 14,
     "hendrycks_math500": 32,
     "mmlu_pro_history": 5,
     "mmlu_pro_other": 5,
 }
 CALIBRATION_INDICES = {
     "humaneval_instruct": [0, 1],
-    "mbpp_instruct": [0, 1],
 }
 DATASETS = {
     "humaneval_instruct": {
         "repo": "openai/openai_humaneval",
         "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
-    },
-    "mbpp_instruct": {
-        "repo": "google-research-datasets/mbpp",
-        "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
     },
     "hendrycks_math500": {
         "repo": "HuggingFaceH4/MATH-500",
@@ -53,7 +47,6 @@ DATASETS = {
 }
 MAX_GEN_TOKS = {
     "humaneval_instruct": 512,
-    "mbpp_instruct": 512,
     "hendrycks_math500": 256,
     "mmlu_pro_history": 256,
     "mmlu_pro_other": 256,

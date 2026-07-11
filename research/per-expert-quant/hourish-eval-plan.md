@@ -29,11 +29,11 @@ deterministic and excludes the held-out programming calibration documents.
 
 | Domain | Public task | Questions | Generation ceiling | Plain-quant projection |
 |---|---|---:|---:|---:|
-| Programming | HumanEval instruct + MBPP instruct | 6 + 6 | 512 tokens | ~27.5 min |
+| Programming | HumanEval instruct | 14 | 512 tokens | ~29.5 min |
 | Math | MATH-500, balanced across subject and level | 32 | 256 tokens | ~15 min |
 | History | MMLU-Pro history, source-stratified | 5 | 256 tokens | ~10.8 min |
 | Other knowledge | MMLU-Pro other, source-stratified | 5 | 256 tokens | ~9.7 min |
-| **Total** | | **54** | | **~63 min** |
+| **Total** | | **56** | | **~65 min** |
 
 Model loading adds about three minutes for `plain_quant`; smaller arms may load or answer faster.
 There is no wall-clock truncation. Every arm must finish every frozen question even when it takes
@@ -74,9 +74,11 @@ survivors advance to a larger trusted evaluation.
 
 ## Calibration evidence
 
-Plain-quant programming calibration used held-out indices 0 and 1 from each code task, with the
-same greedy 512-token ceiling. Prediction-only generation completed four questions in 566.823
-seconds end-to-end. The generation progress was 2/4 at 253 seconds and 4/4 at 541 seconds, giving a
-projected 12-question generation time of roughly 27 minutes plus harness setup. No generated code
-was executed. The calibration output is preserved under
+Plain-quant programming calibration used held-out indices 0 and 1 from HumanEval and MBPP, with the
+same greedy 512-token ceiling. The HumanEval pair completed in 253 seconds, projecting 14 frozen
+HumanEval questions to roughly 29.5 minutes plus harness setup. Both HumanEval answers passed the
+isolated scorer. MBPP was excluded before any candidate run because the harness filter removed a
+leading `def` and the model emitted replacement characters at code line endings; the screen does
+not normalize or repair model output. No generated code was executed during calibration. The
+calibration output is preserved under
 `/data/results/per-expert-quant/hourish-calibration/plain_quant/` on the G7e host.
