@@ -3589,6 +3589,9 @@ impl HybridModel {
         } else {
             Ok(lh)
         }
+    }
+}
+
 #[cfg(test)]
 mod page_prefetch_tests {
     use super::{grouped_worker_prefetch_position, page_prefetch_positions,
