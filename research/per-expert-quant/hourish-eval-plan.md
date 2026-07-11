@@ -21,6 +21,11 @@ not one of the first NVIDIA arms. It is MLX affine-4-bit and requires an Apple S
 least 128 GB unified memory. The NVIDIA control above isolates the public REAP50 expert selection
 using the same source weights and NVFP4 runtime as the other bw24 arms.
 
+`mlx-reap50-reference.lock.json` pins the public checkpoint revision, the Hy3-capable MLX runtime
+revision, and the same panel and lm-eval identities. Run that reference with greedy decoding,
+one request at a time, and no draft model. Compare its paired quality outcomes to the NVIDIA arms,
+but keep it outside the artifact-size Pareto calculation because its format and runtime differ.
+
 ## Frozen question budget
 
 `hourish-panel.lock.json` records exact dataset revisions, lm-eval commit, document indices,

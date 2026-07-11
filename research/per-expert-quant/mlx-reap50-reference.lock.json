@@ -1,0 +1,28 @@
+{
+  "format": "bw24-hourish-external-reference-v1",
+  "purpose": "Public MLX REAP50 quality reference on the frozen 56-question panel",
+  "model": {
+    "repo": "pipenetwork/Hy3-REAP50-MLX-4bit",
+    "revision": "e054317b43aa601484a219a53e33e02e46caa970",
+    "repo_storage_bytes": 85437733295,
+    "kept_experts_per_layer": 96,
+    "total_experts_per_layer": 192,
+    "quantization": "MLX affine 4-bit"
+  },
+  "runtime": {
+    "repo": "https://github.com/kernelpool/mlx-lm.git",
+    "revision": "b7635e9cff3a953a89505aee1e029073810f777f",
+    "branch_at_lock_time": "add-hy3-preview",
+    "server": "mlx_lm.server",
+    "endpoint": "/v1/completions",
+    "request_model": "default_model"
+  },
+  "evaluation": {
+    "panel_lock_sha256": "770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1",
+    "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+    "temperature": 0,
+    "num_concurrent": 1,
+    "mtp_or_draft_model": false,
+    "note": "External quality reference only; do not include it in the NVIDIA artifact-size Pareto calculation."
+  }
+}
