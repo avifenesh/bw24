@@ -164,9 +164,11 @@ STATUS 2026-07-12 night: LANE COMPLETE TO OPT-IN — foundation + full site thre
 the hd128 register g-lane landed; correctness green everywhere (9B run-gen MATCH at
 1.7k/4.9k/12k, run-spec K=1..6 PASS, 27B MATCH; default path bit-unchanged). Perf: 9B
 +0.7% (1.7k) -> +2-4% (4.9k-12k), 27B flat at 1.7k (weight-bound); KV bytes 58->32/blk
-(~45%) = the 64k-serving prize. REMAINING before default/serve adoption: p1-p3 acceptance
-battery (short probe: K1 88->72, K2 69->69, K3 56->46 w/ q8 scratch), fa_prefill_view g
-route (un-force monolithic prime), 35B hybrid check, deep-ctx (32k+) pairing vs llama.
+(~45%) = the 64k-serving prize. ARC CLOSED TO A PER-MODEL VERDICT (2026-07-12): prefill g-route landed (12k chunked
+prime MATCH), 35B checked — fp8 LOSES -2% there (format-gates the v3 dp4a lane off; the
+hybrid's small KV share cannot repay it). 9B +0.7-4% w/ depth, 27B flat, 35B -2%.
+BW24_KV_FP8 = per-model opt-in door. Acceptance battery p1-p3 + 32k pairing + serve
+adoption ride the NVFP4-PUBLISH arc (the swap replaces these dailies + re-baselines).
 (original notes:) foundation LANDED (Engine::kv_fp8_on + cache.rs (32,32) class for non-gemma
 full-attn; default OFF = zero behavior change). REMAINING SITES (enumerated 2026-07-12):
 - append flag threading: decode.rs:713 (_dc), decode.rs:987, spec.rs:371 (_dc),
