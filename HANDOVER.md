@@ -160,7 +160,14 @@ RECIPE (all infra exists from the gemma campaign):
    pair vs llama at 512/6.3k. Positive -> per-model default flip + board refresh.
 PREREQ CLEANUP: root-cause the g-module register twin at the gemma windowed shape (parked
 env-unreachable for gemma; it becomes load-bearing if hd128 register lane opens).
-STATUS: foundation LANDED (Engine::kv_fp8_on + cache.rs (32,32) class for non-gemma
+STATUS 2026-07-12 night: LANE COMPLETE TO OPT-IN — foundation + full site threading +
+the hd128 register g-lane landed; correctness green everywhere (9B run-gen MATCH at
+1.7k/4.9k/12k, run-spec K=1..6 PASS, 27B MATCH; default path bit-unchanged). Perf: 9B
++0.7% (1.7k) -> +2-4% (4.9k-12k), 27B flat at 1.7k (weight-bound); KV bytes 58->32/blk
+(~45%) = the 64k-serving prize. REMAINING before default/serve adoption: p1-p3 acceptance
+battery (short probe: K1 88->72, K2 69->69, K3 56->46 w/ q8 scratch), fa_prefill_view g
+route (un-force monolithic prime), 35B hybrid check, deep-ctx (32k+) pairing vs llama.
+(original notes:) foundation LANDED (Engine::kv_fp8_on + cache.rs (32,32) class for non-gemma
 full-attn; default OFF = zero behavior change). REMAINING SITES (enumerated 2026-07-12):
 - append flag threading: decode.rs:713 (_dc), decode.rs:987, spec.rs:371 (_dc),
   hybrid_forward.rs:368 (prime rows) — pass kv_fp8_on() && !gemma;
