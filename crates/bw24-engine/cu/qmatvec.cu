@@ -6475,16 +6475,24 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1,
         int in_f, int out0, int out1, long rb0, long rb1) {
+    // GRID-STRIDE (2026-07-12, 31B wave-quantization fix): the flat launch ran 5.46 waves/SM
+    // — the 0.46 tail wave idled ~54% of the card for ~8% of the duration (ncu, DRAM capped
+    // at 92.9%). Striding distributes the tail one iteration wide across every SM. Per-row
+    // math and each warp's row assignment order are untouched — bit-identical outputs.
+    const int rpb = (int)blockDim.y;   // host BW24_FUSED_RPB knob (tail-wave granularity)
     int pairs0 = (out0 + 1) / 2;
-    int nb0 = (pairs0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int b = blockIdx.x;
-    if (b < nb0) {
-        q4_0_mmvq_row2_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
-                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
-    } else {
-        b -= nb0;
-        q4_0_mmvq_row2_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
-                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    int nb0 = (pairs0 + rpb - 1) / rpb;
+    int nb1 = ((out1 + 1) / 2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1; vb += gridDim.x) {
+        int b = vb;
+        if (b < nb0) {
+            q4_0_mmvq_row2_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                              (b * rpb + (int)threadIdx.y) * 2, 0);
+        } else {
+            b -= nb0;
+            q4_0_mmvq_row2_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                              (b * rpb + (int)threadIdx.y) * 2, 0);
+        }
     }
 }
 extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_rp(
@@ -6493,15 +6501,19 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
         int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
-    int nb0 = ((out0 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int nb1 = ((out1 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int b = blockIdx.x;
-    const unsigned char* W; float* y; int out_f; long rb;
-    if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
-    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
-    else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
-    q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, 1, rb,
-                      (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    const int rpb = (int)blockDim.y;   // host BW24_FUSED_RPB knob
+    int nb0 = ((out0 + 1) / 2 + rpb - 1) / rpb;
+    int nb1 = ((out1 + 1) / 2 + rpb - 1) / rpb;
+    int nb2 = ((out2 + 1) / 2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1 + nb2; vb += gridDim.x) {
+        int b = vb;
+        const unsigned char* W; float* y; int out_f; long rb;
+        if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+        else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+        else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+        q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, 1, rb,
+                          (b * rpb + (int)threadIdx.y) * 2, 0);
+    }
 }
 // batched (weight-read-once, m<=MCOLS) twin — body mirrors q4_0_mmvq_batched.
 template<int MCOLS>

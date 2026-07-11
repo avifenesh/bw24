@@ -3612,14 +3612,14 @@ impl Engine {
         let ((b0, rp0), (b1, rp1), (b2, rp2)) = (eff(w0), eff(w1), eff(w2));
         if rp0 != rp1 || rp1 != rp2 { return Ok(None); }
         let rp = rp0;
-        const RPB: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
         let grid = nb(o0) + nb(o1) + nb(o2);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let mut y2 = self.alloc_uninit::<f32>(o2)?;
         let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused3_rp" } else { "qmatvec_q4_0_mmvq_fused3" });
-        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
@@ -3657,13 +3657,13 @@ impl Engine {
         let ((b0, rp0), (b1, rp1)) = (eff(w0), eff(w1));
         if rp0 != rp1 { return Ok(None); }
         let rp = rp0;
-        const RPB: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
         let grid = nb(o0) + nb(o1);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused2_rp" } else { "qmatvec_q4_0_mmvq_fused2" });
-        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
