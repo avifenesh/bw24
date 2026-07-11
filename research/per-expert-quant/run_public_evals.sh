@@ -12,20 +12,11 @@ BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 SUITE=${SUITE:-core}
 OUT_ROOT=${OUT_ROOT:-$HERE/results}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
-EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-14400}
+EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
-
-[[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || {
-  echo "EVAL_TIMEOUT_S must be a positive integer (got $EVAL_TIMEOUT_S)" >&2
-  exit 2
-}
-command -v timeout >/dev/null || {
-  echo "GNU timeout is required" >&2
-  exit 2
-}
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
@@ -45,6 +36,22 @@ case "$SUITE" in
     ;;
   *) echo "unknown SUITE=$SUITE (expected candidate, core, or code)" >&2; exit 2 ;;
 esac
+
+if [[ -z "$EVAL_TIMEOUT_S" ]]; then
+  if [[ "$SUITE" == candidate && ${LIMIT:-} == all ]]; then
+    EVAL_TIMEOUT_S=432000
+  else
+    EVAL_TIMEOUT_S=14400
+  fi
+fi
+[[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || {
+  echo "EVAL_TIMEOUT_S must be a positive integer (got $EVAL_TIMEOUT_S)" >&2
+  exit 2
+}
+command -v timeout >/dev/null || {
+  echo "GNU timeout is required" >&2
+  exit 2
+}
 
 mkdir -p "$CACHE_DIR" "$RUN_DIR"
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
@@ -79,7 +86,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S SERVER_BIN
+export ROOT ARM MODEL SUITE TASKS LIMIT BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S SERVER_BIN
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -106,6 +113,8 @@ metadata = {
     "arm": os.environ["ARM"],
     "model": os.environ["MODEL"],
     "suite": os.environ["SUITE"],
+    "tasks": os.environ["TASKS"].split(","),
+    "limit": os.environ.get("LIMIT") or None,
     "base_url": os.environ["BASE_URL"],
     "artifact": str(artifact),
     "artifact_identity_file": str(identity),

@@ -417,6 +417,14 @@ when deliberately expanding it. Set `LIMIT=all` only for the final promoted arti
 available sample in the candidate tasks. This is a promotion gate, not a leaderboard score; run the
 full suites only after the size/quality direction is clear.
 
+The pinned candidate tasks contain 4,746 evaluation documents per arm: GPQA Diamond 198,
+MATH-500 500, and MMLU-Pro history/other/economics/law/psychology
+381/924/844/1,101/798. At roughly 70 seconds per generation on the current G7e spill setup, a full
+arm is about 93 hours. `LIMIT=all` therefore defaults to a 432,000-second (five-day) external
+timeout; bounded screens retain the 14,400-second default. Override `EVAL_TIMEOUT_S` deliberately
+when measured throughput changes. Every run receipt records the task list, requested limit, and
+effective timeout.
+
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh
 
