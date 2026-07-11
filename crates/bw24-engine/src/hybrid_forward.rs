@@ -3313,9 +3313,14 @@ impl HybridModel {
             e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
             e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
             let kvl = cache.kv[il].as_mut().unwrap();
+            // class flag must match the cache dims (the g-threading sweep hardcoded `false`
+            // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
+            // degenerate tok-0 stream, 2026-07-12).
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
                                        kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                       kvl.v_tok_bytes, false)?;
+                                       kvl.v_tok_bytes,
+                                       (!swa && crate::Engine::gkv_on())
+                                           || (swa && crate::Engine::wkv_on()))?;
             kvl.len += t;
         }
         // attention: per-row causal fa over the (own or target) quantized cache. The cache
