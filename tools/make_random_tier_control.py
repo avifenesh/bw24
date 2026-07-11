@@ -24,7 +24,7 @@ def random_control(plan: dict, seed: int) -> dict:
         ids = [ex for ex in range(n_expert) if ex not in pruned.get(layer, set())]
         random.Random((seed << 16) ^ layer).shuffle(ids)
         offset = 0
-        for qtype in ("NVFP4", "Q3_K", "Q2_K"):
+        for qtype in ("Q8_0", "NVFP4", "Q3_K", "Q2_K"):
             count = by_layer[layer][qtype]
             if count:
                 assignments.append({

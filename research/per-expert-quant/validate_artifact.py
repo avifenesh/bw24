@@ -75,7 +75,13 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
     if manifest_pruned != pruned:
         raise ValueError("manifest prune mask differs from its embedded plan")
 
-    allowed_qtypes = {"Q2_K", "Q3_K", "NVFP4"}
+    qtype_geometry = {
+        "Q8_0": (32, 34),
+        "Q2_K": (256, 84),
+        "Q3_K": (256, 110),
+        "NVFP4": (64, 36),
+    }
+    allowed_qtypes = set(qtype_geometry)
     expected_experts = {
         (layer, expert)
         for layer in layers
@@ -137,6 +143,20 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         path = root / rec["file"]
         start = int(rec.get("offset", 0))
         end = start + int(rec["bytes"])
+        ne = [int(x) for x in rec.get("ne", [])]
+        if len(ne) != 2:
+            raise ValueError(f"{name}: expected two-dimensional ne metadata")
+        block, type_size = qtype_geometry[qtype]
+        if ne[0] % block:
+            raise ValueError(f"{name}: ne[0]={ne[0]} is not aligned for {qtype}")
+        expected_row_bytes = ne[0] // block * type_size
+        if int(rec.get("row_bytes", -1)) != expected_row_bytes:
+            raise ValueError(
+                f"{name}: row_bytes {rec.get('row_bytes')} != {expected_row_bytes} for {qtype}"
+            )
+        expected_bytes = ne[1] * expected_row_bytes
+        if int(rec["bytes"]) != expected_bytes:
+            raise ValueError(f"{name}: bytes {rec['bytes']} != {expected_bytes} for {qtype}")
         if not path.is_file() or end > path.stat().st_size:
             raise ValueError(f"{name}: byte range [{start},{end}) exceeds {path}")
         ranges[path].append((start, end, name))
@@ -170,28 +190,28 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="bw24-artifact-validator-") as tmp:
         root = Path(tmp)
-        (root / "experts.bin").write_bytes(b"abcdef")
+        (root / "experts.bin").write_bytes(bytes(range(102)))
         tensors = {}
         for offset, proj in enumerate(("gate", "up", "down")):
             tensors[f"blk.1.ffn_{proj}_exps.0.weight"] = {
-                "file": "experts.bin", "offset": offset * 2, "bytes": 2,
-                "qtype": "NVFP4",
+                "file": "experts.bin", "offset": offset * 34, "bytes": 34,
+                "qtype": "Q8_0", "ne": [32, 1], "row_bytes": 34,
             }
         plan = {
             "format": "bw24-expert-tier-plan-v2",
             "model": {"expert_count": 2, "moe_layers": [1]},
             "pruned_experts": {"1": [1]},
-            "assignments": [{"layer": 1, "experts": [0], "qtype": "NVFP4"}],
+            "assignments": [{"layer": 1, "experts": [0], "qtype": "Q8_0"}],
             "calibration": {"public_eval_data_used_for_selection": False},
         }
         manifest = {
             "format": "bw24-expert-overlay-v2", "plan": plan, "plan_sha256": "test",
             "plan_canonical_sha256": canonical_json_sha256(plan),
-            "pruned_experts": {"1": [1]}, "artifact_bytes": 6, "tensors": tensors,
+            "pruned_experts": {"1": [1]}, "artifact_bytes": 102, "tensors": tensors,
         }
         (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
-        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 6
+        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 102
 
         plan["assignments"][0]["qtype"] = "Q3_K"
         (root / "manifest.json").write_text(json.dumps(manifest))
@@ -201,7 +221,7 @@ def self_test() -> None:
             assert "embedded plan hash mismatch" in str(exc)
         else:
             raise AssertionError("tampered embedded plan was accepted")
-        plan["assignments"][0]["qtype"] = "NVFP4"
+        plan["assignments"][0]["qtype"] = "Q8_0"
 
         manifest["plan_canonical_sha256"] = "0" * 64
         (root / "manifest.json").write_text(json.dumps(manifest))
@@ -217,7 +237,7 @@ def self_test() -> None:
         manifest["plan_sha256"] = legacy_pretty_json_sha256(plan)
         (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
-        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 6
+        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 102
 
         plan["assignments"][0]["qtype"] = "Q3_K"
         (root / "manifest.json").write_text(json.dumps(manifest))
@@ -227,7 +247,7 @@ def self_test() -> None:
             assert "embedded plan hash mismatch" in str(exc)
         else:
             raise AssertionError("tampered legacy embedded plan was accepted")
-        plan["assignments"][0]["qtype"] = "NVFP4"
+        plan["assignments"][0]["qtype"] = "Q8_0"
         manifest["plan_canonical_sha256"] = canonical_json_sha256(plan)
 
         tensors["blk.1.ffn_up_exps.0.weight"]["qtype"] = "Q3_K"

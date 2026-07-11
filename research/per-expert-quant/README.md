@@ -51,13 +51,19 @@ The scored arms are fixed:
 5. `mix_quant_prune25`: full bank ranked separately per layer; hottest 25% NVFP4, next 25% Q3_K,
    next 25% Q2_K, and coldest 25% pruned.
 
+The promoted follow-up `traffic_mix_quant` replaces arbitrary quartiles with boundaries measured
+from the corrected full-bank trace: hottest 16 experts Q8_0, next 37 NVFP4, next 73 Q2_K, and
+coldest 66 pruned per layer. Those boundaries capture 22.32%, 49.85%, and 84.98% cumulative routing
+traffic respectively.
+
 BF16 Hy3 is common source material only. It is never scored. The public MLX REAP50 checkpoint is a
 mask donor only; none of its already-quantized expert weights enter a scored artifact.
 
 Exact validated overlay, staged-directory, logical payload, tier, and prune counts are frozen in
 [`evidence/five-arm-artifact-sizes-g7e-20260710.md`](evidence/five-arm-artifact-sizes-g7e-20260710.md).
 
-Q2 means GGUF Q2_K (2.625 effective bits/weight), Q3 means Q3_K (3.4375 bits/weight), and
+Q8 means GGUF Q8_0 (8.5 effective bits/weight), Q2 means GGUF Q2_K (2.625 effective bits/weight),
+Q3 means Q3_K (3.4375 bits/weight), and
 NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
 first: Q2_K uses the generic staged f32-dequant kernel until a dedicated target-rig-gated fast
 kernel exists.
@@ -71,7 +77,7 @@ kernel exists.
 - tools/recover_hy3_reap_mask.py reconstructs the public REAP50 original-id mask from router rows,
   requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
-  and writes Q2_K, Q3_K, and NVFP4 byte ranges. Bounded `--workers` parallelism preserves exact
+  and writes Q8_0, Q2_K, Q3_K, and NVFP4 byte ranges. Bounded `--workers` parallelism preserves exact
   expert order and is byte-compared against the single-worker path. `--resume` only reuses files
   whose atomic completion receipt matches the exact plan, layout, source identity, shape, and byte
   count. Every active expert projection must be assigned.
@@ -236,6 +242,22 @@ NVFP4, 48 Q3_K, 48 Q2_K, and 48 pruned experts:
       --layers 1-79 \
       --out /data/plans/mix-quant-prune25.json
 
+Build the promoted traffic ladder from the corrected full-bank trace. Each layer has exactly 16
+Q8_0, 37 NVFP4, 73 Q2_K, and 66 pruned experts:
+
+    python3 tools/build_expert_tier_plan.py \
+      --trace /data/runs/hy3-calibration-normfix-66394bf-worker-d8-full.trace \
+      --recipe traffic-ladder \
+      --expert-count 192 \
+      --original-expert-count 192 \
+      --top-k 8 \
+      --expected-tokens 163409 \
+      --layers 1-79 \
+      --q8-count 16 \
+      --nvfp4-count 37 \
+      --q2-count 73 \
+      --out /data/plans/traffic-mix-quant.json
+
 For the masked REAP50 bank, build the exact 48 Q2_K / 48 NVFP4 split. The trace retains original
 expert ids because bw24 masks the full-width router instead of renumbering it:
 
@@ -320,6 +342,10 @@ The only scored arms are `plain_quant`, `plain_reap_quant`, `plain_reap_mix_quan
 appendices, not replacements for the five arms. No BF16 arm is scored. Keep router, attention,
 shared experts, tokenizer, prompt template, sampling, dense fallback, runtime commit, and
 calibration trace fixed.
+
+After that frozen screen, `traffic_mix_quant` is a promoted follow-up candidate and must reuse the
+same runtime, harness, samples, and full-bank calibration trace. It does not retroactively change
+the five-arm taxonomy.
 
 ## Target-machine bring-up
 

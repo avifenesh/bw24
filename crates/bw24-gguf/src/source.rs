@@ -1141,12 +1141,15 @@ mod tests {
 
         let mut expert_blob = vec![0x55u8, 0x66];
         expert_blob.extend(vec![0x22u8; 84]);
+        expert_blob.extend(vec![0x33u8; 34]);
         std::fs::write(overlay.join("experts/mixed.bin"), expert_blob).unwrap();
         let manifest = format!(r#"{{
             "format":"bw24-expert-overlay-v2","source_dir":"{}",
             "pruned_experts":{{"0":[1]}},
             "tensors":{{"blk.0.ffn_gate_exps.0.weight":{{
                 "file":"experts/mixed.bin","offset":2,"qtype":"Q2_K","ne":[256,1],"bytes":84
+            }},"blk.0.ffn_gate_exps.2.weight":{{
+                "file":"experts/mixed.bin","offset":86,"qtype":"Q8_0","ne":[32,1],"bytes":34
             }}}}
         }}"#, base.display());
         std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
@@ -1157,6 +1160,9 @@ mod tests {
         let expert = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
         assert_eq!(expert.ggml_type, GgmlType::Q2_K);
         assert_eq!(&*expert.bytes, &[0x22u8; 84]);
+        let q8 = src.find("blk.0.ffn_gate_exps.2.weight").unwrap();
+        assert_eq!(q8.ggml_type, GgmlType::Q8_0);
+        assert_eq!(&*q8.bytes, &[0x33u8; 34]);
         let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
         assert_eq!((off, len), (2, 84));
         assert_eq!(&map[off..off + len], &[0x22u8; 84]);
@@ -1174,13 +1180,13 @@ mod tests {
             let expert_path = overlay.join("experts/mixed.bin");
             std::fs::remove_file(&expert_path).unwrap();
             let mut replacement = vec![0x99u8, 0x98];
-            replacement.extend(vec![0x77u8; 84]);
+            replacement.extend(vec![0x77u8; 118]);
             std::fs::write(&expert_path, &replacement).unwrap();
 
             let mut direct = vec![0u8; disk.len];
             assert_eq!(disk.file.read_at(&mut direct, disk.offset).unwrap(), disk.len);
             assert_eq!(direct, vec![0x22u8; 84]);
-            assert_eq!(&std::fs::read(&expert_path).unwrap()[2..], &[0x77u8; 84]);
+            assert_eq!(&std::fs::read(&expert_path).unwrap()[2..86], &[0x77u8; 84]);
         }
 
         std::fs::remove_dir_all(&root).ok();

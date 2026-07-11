@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a bw24 expert overlay with per-expert Q2_K, Q3_K, or NVFP4 encodings.
+"""Build a bw24 expert overlay with per-expert Q8_0, Q2_K, Q3_K, or NVFP4 encodings.
 
 The quantization source may be an indexed BF16/F16/F32 Hugging Face checkpoint or the stacked
 MLX-affine Hy3 checkpoint. Dense/router tensors resolve from --fallback-dir, which may itself be
@@ -41,6 +41,7 @@ OVERLAY_FORMAT = "bw24-expert-overlay-v2"
 COMPLETION_RECEIPT_FORMAT = "bw24-expert-overlay-file-completion-v1"
 PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
+    "Q8_0": (32, 34, ".q8"),
     "Q2_K": (256, 84, ".q2k"),
     "Q3_K": (256, 110, ".q3k"),
     "NVFP4": (64, 36, ".nvfp4"),
@@ -127,6 +128,24 @@ def load_assignments(
 
 def _round(x: np.ndarray) -> np.ndarray:
     return np.rint(x)
+
+
+def quantize_q8_0_rows(rows: np.ndarray) -> bytes:
+    rows = np.asarray(rows, dtype=np.float32)
+    r, in_f = rows.shape
+    if in_f % 32:
+        raise ValueError(f"Q8_0 requires in_features divisible by 32, got {in_f}")
+    blocks = rows.reshape(r, in_f // 32, 32)
+    amax = np.max(np.abs(blocks), axis=2)
+    d = amax / 127.0
+    d16 = d.astype("<f2")
+    q = np.zeros_like(blocks, dtype=np.float32)
+    np.divide(blocks, d[..., None], out=q, where=d[..., None] > 0)
+    q = _round(q).clip(-127, 127).astype(np.int8)
+    packed = np.empty((r, in_f // 32, 34), dtype=np.uint8)
+    packed[:, :, :2] = d16.reshape(r, in_f // 32, 1).view(np.uint8).reshape(r, in_f // 32, 2)
+    packed[:, :, 2:34] = q.view(np.uint8)
+    return packed.reshape(-1).tobytes()
 
 
 def quantize_q2k_rows(rows: np.ndarray) -> bytes:
@@ -258,10 +277,18 @@ def quantize_nvfp4_rows(rows: np.ndarray) -> bytes:
 
 
 QUANTIZERS = {
+    "Q8_0": quantize_q8_0_rows,
     "Q2_K": quantize_q2k_rows,
     "Q3_K": quantize_q3k_rows,
     "NVFP4": quantize_nvfp4_rows,
 }
+
+
+def _dequant_q8_0(raw: bytes, in_f: int) -> np.ndarray:
+    b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, in_f // 32, 34)
+    d = b[:, :, :2].copy().reshape(-1, in_f // 32, 2).view("<f2").reshape(-1, in_f // 32)
+    q = b[:, :, 2:34].view(np.int8).astype(np.float32)
+    return (q * d.astype(np.float32)[..., None]).reshape(-1, in_f)
 
 
 def _dequant_q2k(raw: bytes, in_f: int) -> np.ndarray:
@@ -651,7 +678,7 @@ def self_test() -> None:
         weight_map = {}
         shard = "model-00001-of-00001.safetensors"
         for proj in PROJECTIONS:
-            for expert in range(3):
+            for expert in range(4):
                 name = f"model.layers.0.mlp.experts.{expert}.{proj}_proj.weight"
                 vals = np.sin(np.arange(512, dtype=np.float32) * (expert + 1) / 31).reshape(2, 256)
                 raw = (vals.view(np.uint32) >> 16).astype("<u2").tobytes()
@@ -663,12 +690,13 @@ def self_test() -> None:
         plan = root / "plan.json"
         plan.write_text(json.dumps({
             "format": PLAN_FORMAT,
-            "model": {"expert_count": 3, "moe_layers": [0]},
+            "model": {"expert_count": 4, "moe_layers": [0]},
             "pruned_experts": {},
             "assignments": [
-                {"layer": 0, "experts": [0], "qtype": "NVFP4"},
-                {"layer": 0, "experts": [1], "qtype": "Q3_K"},
-                {"layer": 0, "experts": [2], "qtype": "Q2_K"},
+                {"layer": 0, "experts": [0], "qtype": "Q8_0"},
+                {"layer": 0, "experts": [1], "qtype": "NVFP4"},
+                {"layer": 0, "experts": [2], "qtype": "Q3_K"},
+                {"layer": 0, "experts": [3], "qtype": "Q2_K"},
             ],
         }))
         prepare(SimpleNamespace(
@@ -680,15 +708,16 @@ def self_test() -> None:
         assert manifest["plan_sha256"] == sha256_file(plan)
         assert manifest["plan_canonical_sha256"] == canonical_json_sha256(manifest["plan"])
         assert manifest["plan_sha256"] != manifest["plan_canonical_sha256"]
-        assert len(manifest["tensors"]) == 9
+        assert len(manifest["tensors"]) == 12
         for proj in PROJECTIONS:
-            records = [manifest["tensors"][f"blk.0.ffn_{proj}_exps.{ex}.weight"] for ex in range(3)]
-            assert [r["qtype"] for r in records] == ["NVFP4", "Q3_K", "Q2_K"]
+            records = [manifest["tensors"][f"blk.0.ffn_{proj}_exps.{ex}.weight"] for ex in range(4)]
+            assert [r["qtype"] for r in records] == ["Q8_0", "NVFP4", "Q3_K", "Q2_K"]
             assert records[0]["offset"] == 0
             assert records[1]["offset"] == records[0]["bytes"]
             assert (out / records[0]["file"]).stat().st_size == sum(r["bytes"] for r in records)
         probe = np.sin(np.arange(512, dtype=np.float32) / 17).reshape(2, 256)
         for qtype, dequant, limit in (
+            ("Q8_0", _dequant_q8_0, 0.0001),
             ("Q2_K", _dequant_q2k, 0.08),
             ("Q3_K", _dequant_q3k, 0.03),
             ("NVFP4", _dequant_nvfp4, 0.03),
@@ -712,12 +741,13 @@ def self_test() -> None:
         }
         plan.write_text(json.dumps({
             "format": PLAN_FORMAT,
-            "model": {"expert_count": 3, "moe_layers": [0]},
+            "model": {"expert_count": 4, "moe_layers": [0]},
             "pruned_experts": {},
             "assignments": [
                 {"layer": 0, "experts": [0], "qtype": "Q2_K"},
-                {"layer": 0, "experts": [1], "qtype": "NVFP4"},
-                {"layer": 0, "experts": [2], "qtype": "Q3_K"},
+                {"layer": 0, "experts": [1], "qtype": "Q8_0"},
+                {"layer": 0, "experts": [2], "qtype": "NVFP4"},
+                {"layer": 0, "experts": [3], "qtype": "Q3_K"},
             ],
         }))
         prepare(SimpleNamespace(
@@ -764,7 +794,7 @@ def self_test() -> None:
         finally:
             QUANTIZERS.clear()
             QUANTIZERS.update(original_quantizers)
-        assert calls == {"Q2_K": 1, "Q3_K": 1, "NVFP4": 1}, calls
+        assert calls == {"Q8_0": 1, "Q2_K": 1, "Q3_K": 1, "NVFP4": 1}, calls
         assert stable_manifest(out) == stable_manifest(fresh_b)
         for path in sorted((fresh_b / "experts").iterdir()):
             assert path.read_bytes() == (out / "experts" / path.name).read_bytes()
