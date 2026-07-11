@@ -36,8 +36,8 @@ deterministic and excludes the held-out programming calibration documents.
 | **Total** | | **56** | | **~65 min** |
 
 Model loading adds about three minutes for `plain_quant`; smaller arms may load or answer faster.
-There is no wall-clock truncation. Every arm must finish every frozen question even when it takes
-longer than the projection.
+There is no one-hour wall-clock truncation. Every arm must finish every frozen question even when
+it takes longer than the projection; the runner has only a 12-hour per-shard failure failsafe.
 
 ## Runtime contract
 
@@ -47,17 +47,17 @@ longer than the projection.
 - Each arm starts from a fresh server and exact one-model health validation.
 - Model generation and scoring are separate for code. Generation uses lm-eval prediction-only;
   generated code is later executed in a resource-limited, network-disabled container.
-- Results are accepted only when all 54 expected sample records exist and document, prompt, target,
+- Results are accepted only when all 56 expected sample records exist and document, prompt, target,
   generation-config, runtime, artifact, and server hashes match the lock and the other arms.
 - Preserve wall time, output-token counts, spill counters, server logs, and immutable receipts, but
   quality—not speed—is the screening decision.
 
 ## Scoring and precommitted decision
 
-- Programming: pass@1 over the 12 sandboxed code questions.
+- Programming: pass@1 over the 14 sandboxed code questions.
 - Math: exact match over 32 questions.
 - History and other: exact choice match over five questions each.
-- Report each domain independently, unweighted total correct out of 54, and a domain-balanced macro
+- Report each domain independently, unweighted total correct out of 56, and a domain-balanced macro
   in which programming, math, history, and other each contribute 25%.
 - Report paired wins/losses/ties against `plain_quant`, exact sign tests, and paired bootstrap
   intervals. With this small panel these quantify direction; they do not prove equivalence.

@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import pathlib
+import random
 import tempfile
 from typing import Any
 
@@ -44,6 +45,35 @@ def finite_number(value: Any, context: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{context}: expected a finite number")
     return result
+
+
+def exact_sign_p(wins: int, losses: int) -> float:
+    n = wins + losses
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, k) for k in range(min(wins, losses) + 1)) / (2**n)
+    return min(1.0, 2.0 * tail)
+
+
+def bootstrap_domain_macro_delta(
+    baseline: dict[str, dict[str, float]],
+    candidate: dict[str, dict[str, float]],
+    iterations: int = 10_000,
+) -> list[float]:
+    rng = random.Random(20260711)
+    samples = []
+    for _ in range(iterations):
+        task_deltas = []
+        for task in TASKS:
+            identities = sorted(baseline[task])
+            draws = [identities[rng.randrange(len(identities))] for _ in identities]
+            task_deltas.append(
+                sum(candidate[task][identity] - baseline[task][identity] for identity in draws)
+                / len(draws)
+            )
+        samples.append(sum(task_deltas) / len(task_deltas))
+    samples.sort()
+    return [samples[int(0.025 * iterations)], samples[int(0.975 * iterations)]]
 
 
 def successful_receipt(
@@ -290,6 +320,8 @@ def load_arm(
         "logical_model_gib": (artifact_bytes + SHARED_MODEL_BYTES) / (1 << 30),
         "tasks": tasks,
         "domain_macro": macro,
+        "total_correct": total_successes,
+        "total_questions": total_n,
         "question_weighted": total_successes / total_n,
         "values": values,
         "task_hashes": task_hashes,
@@ -335,10 +367,16 @@ def build_report(
                     ties += delta == 0
         comparisons[arm] = {
             "domain_macro_delta": data["domain_macro"] - reference["domain_macro"],
+            "domain_macro_delta_bootstrap_ci95": (
+                [0.0, 0.0]
+                if arm == baseline
+                else bootstrap_domain_macro_delta(reference["values"], data["values"])
+            ),
             "question_weighted_delta": data["question_weighted"] - reference["question_weighted"],
             "paired_wins": wins,
             "paired_losses": losses,
             "paired_ties": ties,
+            "paired_exact_sign_p": exact_sign_p(wins, losses),
         }
     pareto = []
     for arm, data in loaded.items():
@@ -371,6 +409,8 @@ def build_report(
 def self_test() -> None:
     assert exactly_one([pathlib.Path("x")], "fixture") == pathlib.Path("x")
     assert finite_number(1, "fixture") == 1.0
+    assert exact_sign_p(0, 0) == 1.0
+    assert exact_sign_p(3, 0) == 0.25
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "x"
         path.write_bytes(b"abc")
