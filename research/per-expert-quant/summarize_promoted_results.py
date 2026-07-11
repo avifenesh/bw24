@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import random
 import tempfile
 from pathlib import Path
@@ -33,6 +35,17 @@ FULL_SHARED_RECEIPT_KEYS = (
     "declared_spill_stats",
     "declared_serve_spec",
 )
+N50_SHARED_RECEIPT_KEYS = (
+    "suite",
+    "base_url",
+    "bw24_commit",
+    "lm_eval_commit",
+    "eval_timeout_s",
+    "max_gen_toks_override",
+    "server_binary_sha256",
+    "platform",
+    "nvidia_smi",
+)
 FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
     "arm",
     "model",
@@ -42,6 +55,18 @@ FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
 SPILL_COUNTER_KEYS = (
     "reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full",
 )
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(16 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def evidence(paths: list[Path]) -> list[dict[str, Any]]:
+    return [{"path": str(path), "sha256": sha256(path)} for path in paths]
 
 
 def wilson(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
@@ -117,10 +142,10 @@ def load_arm(
         raise ValueError(f"{arm}: no run receipts under {run_dir}")
     receipts = [(path, json.loads(path.read_text())) for path in receipt_paths]
     shared_config = None
+    reference = receipts[0][1]
     if full_run:
         expected_tasks = set(expected_counts)
         observed_tasks: set[str] = set()
-        reference = receipts[0][1]
         for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
             if reference.get(key) is None:
                 raise ValueError(f"{arm}: full receipt missing {key}")
@@ -174,8 +199,67 @@ def load_arm(
         if observed_tasks != expected_tasks:
             raise ValueError(f"{arm}: receipt tasks differ from pinned suite")
         shared_config = {key: reference[key] for key in FULL_SHARED_RECEIPT_KEYS}
+    else:
+        if len(receipts) != 1:
+            raise ValueError(f"{arm}: N=50 run must have exactly one legacy receipt")
+        for key in N50_SHARED_RECEIPT_KEYS:
+            if reference.get(key) is None:
+                raise ValueError(f"{arm}: N=50 receipt missing {key}")
+        if (
+            reference.get("arm") != arm
+            or reference.get("model") != arm
+            or reference.get("suite") != "candidate"
+            or reference.get("max_gen_toks_override") != 256
+        ):
+            raise ValueError(f"{arm}: N=50 receipt has wrong arm/model/suite/generation config")
+        shared_config = {key: reference[key] for key in N50_SHARED_RECEIPT_KEYS}
+    manifest_hash = sha256(manifest_paths[0])
+    if reference.get("artifact_identity_sha256") != manifest_hash:
+        raise ValueError(f"{arm}: copied manifest does not match receipt artifact identity")
+
+    expected_limit = None if full_run else float(next(iter(expected_counts.values())))
+    expected_model_args = {
+        "model": arm,
+        "base_url": reference["base_url"],
+        "num_concurrent": reference.get("num_concurrent", 1),
+        "max_retries": 3,
+        "tokenized_requests": False,
+        "tokenizer_backend": "none",
+    }
+    for path, result in result_payloads:
+        config = result.get("config", {})
+        limit = config.get("limit")
+        if full_run:
+            limit_matches = limit is None
+        else:
+            limit_matches = (
+                isinstance(limit, (int, float))
+                and not isinstance(limit, bool)
+                and float(limit) == expected_limit
+            )
+        try:
+            evaluation_seconds = float(result.get("total_evaluation_time_seconds"))
+        except (TypeError, ValueError):
+            evaluation_seconds = math.nan
+        if (
+            result.get("model_name") != arm
+            or result.get("model_source") != "local-completions"
+            or config.get("model") != "local-completions"
+            or config.get("model_args") != expected_model_args
+            or str(config.get("batch_size")) != "1"
+            or config.get("gen_kwargs") != {"max_gen_toks": 256}
+            or config.get("random_seed") != 0
+            or config.get("numpy_seed") != 1234
+            or config.get("torch_seed") != 1234
+            or config.get("fewshot_seed") != 1234
+            or not limit_matches
+            or not math.isfinite(evaluation_seconds)
+            or evaluation_seconds <= 0
+        ):
+            raise ValueError(f"{arm}: result configuration/completion evidence differs in {path}")
     tasks = {}
     values_by_task: dict[str, dict[str, float]] = {}
+    sample_paths: list[Path] = []
     for spec in specs:
         task = spec["result_task"]
         expected_n = expected_counts[task]
@@ -193,6 +277,7 @@ def load_arm(
         aggregate = results.get(spec["result_section"], {}).get(task, {})
         aggregate_value = numeric(aggregate.get(metric_key), f"{arm}/{task} aggregate")
         sample_path = exactly_one(sorted(run_dir.rglob(spec["sample_glob"])), f"{arm}/{task} samples")
+        sample_paths.append(sample_path)
         values: dict[str, float] = {}
         with sample_path.open() as handle:
             for line_number, line in enumerate(handle, 1):
@@ -223,9 +308,13 @@ def load_arm(
     macro = sum(task["rate"] for task in tasks.values()) / len(tasks)
     return {
         "artifact_bytes": artifact_bytes,
+        "artifact_manifest_sha256": manifest_hash,
         "result_file": str(result_paths[0]) if len(result_paths) == 1 else None,
         "result_files": [str(path) for path in result_paths],
         "receipt_files": [str(path) for path in receipt_paths],
+        "result_evidence": evidence(result_paths),
+        "receipt_evidence": evidence(receipt_paths),
+        "sample_evidence": evidence(sample_paths),
         "shared_run_config": shared_config,
         "tasks": tasks,
         "macro": macro,
@@ -258,11 +347,11 @@ def build_report(
         expected_counts = {spec["result_task"]: expected_n for spec in specs}
     full_run = expected_n == "all"
     loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_counts, full_run) for arm in arms}
-    if full_run:
-        reference_config = loaded[arms[0]]["shared_run_config"]
-        for arm in arms[1:]:
-            if loaded[arm]["shared_run_config"] != reference_config:
-                raise ValueError(f"{arm}: full run configuration differs from {arms[0]}")
+    reference_config = loaded[arms[0]]["shared_run_config"]
+    for arm in arms[1:]:
+        if loaded[arm]["shared_run_config"] != reference_config:
+            label = "full" if full_run else "N=50"
+            raise ValueError(f"{arm}: {label} run configuration differs from {arms[0]}")
     for task in (spec["result_task"] for spec in specs):
         identities = {arm: set(data["values"][task]) for arm, data in loaded.items()}
         first = identities[arms[0]]
@@ -392,6 +481,40 @@ def markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def write_report_new(out: Path, markdown_text: str, json_text: str) -> tuple[Path, Path]:
+    json_out = out.with_suffix(".json")
+    if out == json_out:
+        raise ValueError("markdown and JSON report paths must be distinct")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temporary: list[Path] = []
+    linked: list[Path] = []
+    try:
+        for content in (markdown_text, json_text):
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=out.parent, prefix=".promoted-results-", delete=False
+            ) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary.append(Path(handle.name))
+            os.chmod(temporary[-1], 0o644)
+        for source, destination in zip(temporary, (out, json_out)):
+            os.link(source, destination)
+            linked.append(destination)
+    except FileExistsError as exc:
+        for path in linked:
+            path.unlink(missing_ok=True)
+        raise ValueError(f"refusing to overwrite promoted report: {out} / {json_out}") from exc
+    except Exception:
+        for path in linked:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+    return out, json_out
+
+
 def self_test(lock: dict[str, Any]) -> None:
     selection_fixture = {
         "plain": {"macro": 0.8, "logical_model_bytes": 200},
@@ -409,7 +532,8 @@ def self_test(lock: dict[str, Any]) -> None:
             run_dir = root / arm / "fixture"
             model_dir = run_dir / arm
             model_dir.mkdir(parents=True)
-            (run_dir / "artifact-manifest.json").write_text(json.dumps({"artifact_bytes": 100 + arm_index}))
+            manifest_path = run_dir / "artifact-manifest.json"
+            manifest_path.write_text(json.dumps({"artifact_bytes": 100 + arm_index}))
             receipt = {
                 "suite": "candidate", "base_url": "http://127.0.0.1:8080/v1/completions",
                 "bw24_commit": "bw24", "lm_eval_commit": "harness", "eval_timeout_s": 100,
@@ -418,7 +542,7 @@ def self_test(lock: dict[str, Any]) -> None:
                 "declared_spill_io": "worker",
                 "declared_spill_pread_depth": "8", "declared_spill_stats": "1",
                 "declared_serve_spec": "0", "arm": arm, "model": arm,
-                "artifact_identity_sha256": f"artifact-{arm}", "limit": "all",
+                "artifact_identity_sha256": sha256(manifest_path), "limit": "all",
                 "tasks": [spec["result_task"] for spec in specs], "shard_id": None,
                 "started_utc": "start", "completed_utc": "end", "elapsed_seconds": 1.0,
                 "evaluator_exit_code": 0, "tee_exit_code": 0, "completed_successfully": True,
@@ -429,7 +553,26 @@ def self_test(lock: dict[str, Any]) -> None:
                 },
             }
             (run_dir / "run-metadata.json").write_text(json.dumps(receipt))
-            results = {}
+            results = {
+                "model_name": arm,
+                "model_source": "local-completions",
+                "total_evaluation_time_seconds": "1.0",
+                "config": {
+                    "model": "local-completions",
+                    "model_args": {
+                        "model": arm,
+                        "base_url": "http://127.0.0.1:8080/v1/completions",
+                        "num_concurrent": 1,
+                        "max_retries": 3,
+                        "tokenized_requests": False,
+                        "tokenizer_backend": "none",
+                    },
+                    "batch_size": "1", "limit": 4.0,
+                    "gen_kwargs": {"max_gen_toks": 256},
+                    "random_seed": 0, "numpy_seed": 1234,
+                    "torch_seed": 1234, "fewshot_seed": 1234,
+                },
+            }
             for task_index, spec in enumerate(specs):
                 rows = []
                 for i in range(4):
@@ -457,8 +600,35 @@ def self_test(lock: dict[str, Any]) -> None:
         assert report["selection"]["full_eval_arms"] == ["plain_quant", "candidate"]
         assert "Selected finalist" in markdown(report)
         assert "Wilson 95% CI" in markdown(report)
+        report_out = root / "reports" / "promoted-results.md"
+        write_report_new(report_out, markdown(report), json.dumps(report))
+        original_markdown = report_out.read_text()
+        try:
+            write_report_new(report_out, "replacement", "replacement")
+        except ValueError as exc:
+            assert "refusing to overwrite" in str(exc)
+        else:
+            raise AssertionError("promoted report was overwritten")
+        assert report_out.read_text() == original_markdown
+        candidate_result_path = root / "candidate" / "fixture" / "candidate" / "results_fixture.json"
+        candidate_result = json.loads(candidate_result_path.read_text())
+        candidate_result["config"]["model_args"]["max_retries"] = 4
+        candidate_result_path.write_text(json.dumps(candidate_result))
+        try:
+            build_report(root, "fixture", arms, "plain_quant", 4, lock)
+        except ValueError as exc:
+            assert "result configuration/completion evidence differs" in str(exc)
+        else:
+            raise AssertionError("mismatched lm-eval config was accepted")
+        candidate_result["config"]["model_args"]["max_retries"] = 3
+        candidate_result_path.write_text(json.dumps(candidate_result))
         full_lock = dict(lock)
         full_lock["eval_documents"] = {spec["result_task"]: 4 for spec in specs}
+        for arm in arms:
+            result_path = root / arm / "fixture" / arm / "results_fixture.json"
+            result = json.loads(result_path.read_text())
+            result["config"]["limit"] = None
+            result_path.write_text(json.dumps(result))
         full_report = build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
@@ -478,7 +648,11 @@ def self_test(lock: dict[str, Any]) -> None:
             sample = exactly_one(sorted(candidate_model.glob(spec["sample_glob"])), task)
             sample.rename(shard_model / sample.name)
             section = spec["result_section"]
-            shard_results = {section: {task: candidate_results[section][task]}}
+            shard_results = {
+                key: value for key, value in candidate_results.items()
+                if key not in {spec["result_section"] for spec in specs}
+            }
+            shard_results[section] = {task: candidate_results[section][task]}
             (shard_model / f"results_{task}.json").write_text(json.dumps(shard_results))
             (shard / "artifact-manifest.json").write_text(manifest_text)
             shard_receipt = dict(candidate_receipt, tasks=[task], shard_id=task)
@@ -486,7 +660,7 @@ def self_test(lock: dict[str, Any]) -> None:
         candidate_results_path.unlink()
         (candidate_run / "artifact-manifest.json").unlink()
         candidate_receipt_path.unlink()
-        sharded_report = build_report(root, "fixture", arms, "plain_quant", 4, lock)
+        sharded_report = build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
         assert len(sharded_report["arms"]["candidate"]["result_files"]) == len(specs)
         print("promoted result summarizer self-test: PASS")
 
@@ -527,10 +701,13 @@ def main() -> int:
         args.out_root, args.run_id, arms, args.baseline, expected_n, lock, args.shared_model_bytes
     )
     out = args.out or args.out_root / "_runs" / args.run_id / "promoted-results.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(markdown(report))
-    out.with_suffix(".json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    print(f"wrote {out} and {out.with_suffix('.json')}")
+    json_out = out.with_suffix(".json")
+    write_report_new(
+        out,
+        markdown(report),
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+    )
+    print(f"wrote {out} and {json_out}")
     return 0
 
 

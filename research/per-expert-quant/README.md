@@ -504,7 +504,10 @@ the strict N=1 table (explicitly without confidence intervals) with:
 After promotion, keep one run ID and identical N for every surviving arm. The promoted summarizer
 rejects missing, duplicate, or mismatched samples; reports Wilson and stratified paired-bootstrap
 intervals; adds the frozen 24,999,514,624-byte non-expert GGUF body to each expert overlay; and
-prints the point-estimate quality/size Pareto frontier:
+prints the point-estimate quality/size Pareto frontier. It also validates the exact lm-eval model,
+endpoint, concurrency, retry, generation, seed, limit, harness/runtime and artifact identity
+contracts; records SHA-256 evidence for every manifest, receipt, result and sample file; and refuses
+to overwrite either report output:
 
     python3 research/per-expert-quant/summarize_promoted_results.py \
       --out-root /data/results/per-expert-quant/promoted-n50 \
