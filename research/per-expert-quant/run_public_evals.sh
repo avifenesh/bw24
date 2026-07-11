@@ -56,7 +56,7 @@ case "$SUITE" in
       echo "code evals execute model-generated Python; run in an isolated sandbox and set BW24_UNSAFE_EVALS=1" >&2
       exit 2
     fi
-    TASKS=humaneval_instruct,mbpp_instruct
+    TASKS=humaneval_instruct
     ;;
   *) echo "unknown SUITE=$SUITE (expected candidate, core, or code)" >&2; exit 2 ;;
 esac

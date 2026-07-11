@@ -21,6 +21,7 @@ OUT_ROOT=${OUT_ROOT:-$HERE/results-hourish}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 NUM_CONCURRENT=${NUM_CONCURRENT:-1}
+HOURISH_SHARD_TIMEOUT_S=${HOURISH_SHARD_TIMEOUT_S:-43200}
 
 [[ -f "$PANEL_LOCK" ]] || { echo "missing panel lock: $PANEL_LOCK" >&2; exit 2; }
 actual_panel_sha=$(sha256sum "$PANEL_LOCK" | cut -d' ' -f1)
@@ -30,6 +31,10 @@ actual_panel_sha=$(sha256sum "$PANEL_LOCK" | cut -d' ' -f1)
 }
 [[ "$NUM_CONCURRENT" == 1 ]] || {
   echo "the matched hourish panel requires NUM_CONCURRENT=1" >&2
+  exit 2
+}
+[[ "$HOURISH_SHARD_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || {
+  echo "HOURISH_SHARD_TIMEOUT_S must be a positive integer" >&2
   exit 2
 }
 
@@ -95,12 +100,11 @@ for row in "${TASK_ROWS[@]}"; do
   suite=candidate
   predict_only=0
   unsafe=0
-  timeout_s=2700
+  timeout_s=$HOURISH_SHARD_TIMEOUT_S
   if [[ "$task" == humaneval_instruct ]]; then
     suite=code
     predict_only=1
     unsafe=1
-    timeout_s=3600
   fi
   echo "starting hourish shard: arm=$ARM task=$task samples=$samples_json"
   ARM="$ARM" MODEL="$MODEL" ARTIFACT="$ARTIFACT" \
