@@ -383,7 +383,10 @@ fn fa_v4_at(t_kv: usize) -> bool {
     fa_v4_on() && t_kv < mx
 }
 fn fa_v3_active(head_dim: usize) -> bool {
+    // v3's dp4a-K walk reads raw q8_0 K bytes — no e4m3 arm; the fp8-KV arm (BW24_KV_FP8)
+    // must fall back like any non-default KV format (the rows_dc stream path asserts on it).
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
+        && !Engine::kv_fp8_on()
 }
 
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
@@ -754,9 +757,10 @@ impl Engine {
                                        kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
                                        t0_dev: &CudaSlice<i32>, t: usize,
                                        kv_dim_k: usize, kv_dim_v: usize,
-                                       k_tok_bytes: usize, v_tok_bytes: usize)
+                                       k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                        -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1_rows_dc");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_rows_dc") }
+                else { self.func("append_quantize_kv_q8_0_q5_1_rows_dc") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
@@ -1099,7 +1103,7 @@ impl Engine {
                 let k_row = k_rows.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
                 let v_row = v_rows.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
                 self.append_kv_quantized_view(&k_row, &v_row, kc, vc, t0 + i,
-                                              kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                              kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, g)?;
             }
             return Ok(());
         }
@@ -1132,9 +1136,10 @@ impl Engine {
                                     v_row: &cudarc::driver::CudaView<f32>,
                                     kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t: usize,
                                     kv_dim_k: usize, kv_dim_v: usize,
-                                    k_tok_bytes: usize, v_tok_bytes: usize)
+                                    k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                     -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1") }
+                else { self.func("append_quantize_kv_q8_0_q5_1") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);

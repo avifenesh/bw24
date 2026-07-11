@@ -173,7 +173,11 @@ impl MtpScratch {
                 "KVQUANT requires head_dim%32==0 (MTP scratch)");
         let kv_dim_k = head_dim_k * n_head_kv;
         let kv_dim_v = head_dim_v * n_head_kv;
-        let (kbb, vbb) = crate::kv_blk_bytes();   // env-selected KV formats (default 34/24)
+        // env-selected KV formats (default 34/24). The fp8-KV arm (BW24_KV_FP8) deliberately
+        // does NOT reach the draft scratch: fp8 drafts drifted acceptance 69-88% -> 46%
+        // (2026-07-12 A/B); the scratch is tiny, so it keeps baseline q8_0/q5_1 numerics
+        // while the TRUNK cache carries the fp8 depth win. Scratch append/fa pass g=false.
+        let (kbb, vbb) = crate::kv_blk_bytes();
         let k_tok_bytes = (kv_dim_k / 32) * kbb;
         let v_tok_bytes = (kv_dim_v / 32) * vbb;
         Ok(MtpScratch { kv: KvLayer {
@@ -369,7 +373,8 @@ impl HybridModel {
         let kv = &mut scratch.kv;
         // append at the DEVICE slot (kv.len_d == old len), then advance the counter in-graph.
         e.append_kv_quantized_dc(&k, &v, &mut kv.k, &mut kv.v, &kv.len_d,
-                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
+                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
+                                 false)?;
         e.inc_seqlen(&mut kv.len_d)?;
         // full-buffer views (any in-round t_kv stays in range on replay); the kernel bounds the
         // key range from the device counter.
@@ -456,7 +461,8 @@ impl HybridModel {
             let k_row = k.slice(i * kv.kv_dim_k..(i + 1) * kv.kv_dim_k);
             let v_row = v.slice(i * kv.kv_dim_v..(i + 1) * kv.kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kv.k, &mut kv.v, kv.len + i,
-                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
+                                       false)?;
         }
         kv.len += t;
         e.set_i32_one(&mut kv.len_d, kv.len as i32)?;
@@ -1174,13 +1180,15 @@ impl HybridModel {
             // math on a (block, token) grid, documented byte-identical); host len is a stale
             // LOWER BOUND under pre-issue (drain reconciles it).
             e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, ctr, t,
-                                          kv_dim_k, kv_dim_v, ktb, vtb)?;
+                                          kv_dim_k, kv_dim_v, ktb, vtb,
+                                          crate::Engine::kv_fp8_on())?;
         } else {
         for i in 0..t {
             let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
             let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len + i,
-                                       kv_dim_k, kv_dim_v, ktb, vtb)?;
+                                       kv_dim_k, kv_dim_v, ktb, vtb,
+                                       crate::Engine::kv_fp8_on())?;
         }
         kvl.len += t;
         }
@@ -1224,13 +1232,14 @@ impl HybridModel {
             let t_kv = base_len + 1;
             let k_view = e.view_u8(&kvl.k, t_kv * ktb);
             let v_view = e.view_u8(&kvl.v, t_kv * vtb);
-            e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                        t_kv, scale, ktb, vtb)?;
+            e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                              t_kv, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
         } else if e.fa_rows_eligible(base_len, head_dim) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                             base_len, t, scale, ktb, vtb, None, false, false)?;
+                             base_len, t, scale, ktb, vtb, None, false,
+                             crate::Engine::kv_fp8_on())?;
         } else {
             for r in 0..t {
                 let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
@@ -1241,7 +1250,8 @@ impl HybridModel {
                 let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
                 e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
                 let mut attn_row = vbuf(e, n_head * head_dim)?;   // fully written by fa_decode
-                e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
+                e.fa_decode_kvmod(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim,
+                                  n_head, n_head_kv, t_kv_r, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
                 e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
             }
         }

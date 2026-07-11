@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok * kv_dim..(tok + 1) * kv_dim);
                 let v_row = vd.slice(tok * kv_dim..(tok + 1) * kv_dim);
                 e.append_kv_quantized_view(&k_row, &v_row, &mut kc, &mut vc, tok,
-                                           kv_dim, kv_dim, k_tok_bytes, v_tok_bytes)?;
+                                           kv_dim, kv_dim, k_tok_bytes, v_tok_bytes, false)?;
             }
             let kview = e.view_u8(&kc, tkv * k_tok_bytes);
             let vview = e.view_u8(&vc, tkv * v_tok_bytes);

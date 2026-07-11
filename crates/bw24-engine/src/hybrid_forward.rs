@@ -233,8 +233,13 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(4096);
+        // fp8-KV bring-up: continuation chunks read the quantized past via fa_prefill_view,
+        // whose parse is q8_0/q5_1-only in the default module — force MONOLITHIC prime under
+        // the flag until the prefill-view kernels get their g route (HANDOVER qwen fp8-KV arc).
+        let chunk: usize = if crate::Engine::kv_fp8_on() { 0 } else {
+            std::env::var("BW24_PRIME_CHUNK").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(4096)
+        };
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache);
         }
@@ -366,7 +371,8 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert!(kvl.len + t <= cache.max_ctx, "prime_cache: KV overflow");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       crate::Engine::kv_fp8_on())?;
             kvl.len += t;
             let new_len = kvl.len as i32;
             e.set_i32_one(&mut kvl.len_d, new_len)?;

@@ -1399,7 +1399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3);
@@ -1466,7 +1466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             // reference: the per-row loop exactly as full_attn_verify's fallback runs it
             let mut o_loop = e.zeros(hd*nh*t)?;
@@ -1535,7 +1535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
             let mut o_inl = e.zeros(hd*nh*t)?;
@@ -1666,7 +1666,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let k_row = kd.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
             let v_row = vd.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kc_ref, &mut vc_ref, t0 + i,
-                                       kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                       kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         }
         // (b) batched-rows kernel, one launch.
         let mut kc_b = e.alloc_u8(cap * k_tok_bytes)?; let mut vc_b = e.alloc_u8(cap * v_tok_bytes)?;

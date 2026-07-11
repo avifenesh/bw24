@@ -560,7 +560,7 @@ impl HybridModel {
         for _ in 0..max_new {
             // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
             let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, false);
+            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
             if !gs.graphs.contains_key(&key) {
                 // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
                 let bucket_max = t_kv;
@@ -711,7 +711,8 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         // (1) append at the device write slot kvl.len_d (== old len).
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 crate::Engine::kv_fp8_on())?;
         // (2) advance the device counter: kvl.len_d now holds new len == t_kv.
         e.inc_seqlen(&mut kvl.len_d)?;
         // n_splits sizing + K/V view extent:
@@ -742,7 +743,7 @@ impl HybridModel {
         }
         // (3) fa_decode reads t_kv from kvl.len_d; bucket_max yields the eager n_splits -> bit-identical.
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kvl.len_d, bucket_max, scale, ktb, vtb, false)?;
+                       &kvl.len_d, bucket_max, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
 
         let attn_g = match &gate {
             Some(gate) => {
@@ -985,7 +986,8 @@ impl HybridModel {
         // q5_1 V, on-device append-quantize kernel; no host round-trip). KVQUANT-PLAN §C/E2.
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                              crate::Engine::kv_fp8_on())?;
         kvl.len += 1;
         let t_kv = kvl.len;
 
@@ -998,7 +1000,8 @@ impl HybridModel {
             return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
                         unset BW24_NOFA to use fa_decode".into());
         }
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv,
+                          scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj
