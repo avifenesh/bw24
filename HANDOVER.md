@@ -125,14 +125,25 @@ only the smem twin excluded). STANDING BATTERY NOW INCLUDES: VERIFY-GATE at SHOR
 DEPTH (all must read 0.000e0) and spec stream at SHORT + DEPTH.
 
 CONFIG LAW: plain serving = GKV+WKV default ON, SPW=48; spec serving = BW24_GEMMA_GKV=0
-(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC STANDING (2026-07-12 night): the v4-rows verify fix HEALED acceptance (0.91-0.94, was
-0.52-0.63) — **short spec 381 vs llama-mtp 255-263 = 1.45-1.5x ABOVE**; depth 301-306 vs
-302-304 = 0.99-1.0x parity. CONFIG (old laws STALE, corrected): GKV default-ON (GKV=0 now
-LOSES: depth 256-261 vs 292-302), SPW=64 for spec serving (sweep: 56/64/72/80/96 =
-279/301/298/261/239), K=6 both cells (short K2..K7 = 316/341/350/365/381/369). b16 tier
-(t=9..16) debugged + open via BW24_SPEC_CAPMAX (three host bugs, see jsonl 2026-07-12) but
-PERF-NEGATIVE (depth K8-10 283-293, short 351-371) — K=6/cap-7 stands on a measurement.
-Remaining depth lever = verify ROUND COST (trunk matvec class), not acceptance (healed).
+(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC DONE (2026-07-12 night): **26B beats llama on BOTH spec cells** — short 399-406 vs
+llama-mtp 255-263 = **1.55x**, depth 322 vs 302-304 = **1.06x**. Three verify-side fixes
+stacked: v4-rows parity (healed acceptance 0.52->0.91-0.94), b16 tier host bugs, and the
+FR-SPEC TRIM d2t translate (the async round had dropped it — both historical negative trim
+verdicts VOID; trim = +2.8% short/+5.8% depth at IDENTICAL acceptance, head 150->18MB).
+SPEC CONFIG: GKV default-ON (GKV=0 law stale: depth 256-261 vs 292-302), SPW=64 depth
+serving, K=6 both cells, BW24_GEMMA_DRAFT_RANKS=research/gemma4-bringup/
+gemma4-frspec-ranks-32768.txt. b16 tier (t=9..16) correct + open via BW24_SPEC_CAPMAX but
+perf-negative (K8-10 depth 283-293 vs K6 301-306) — cap 7 stands on a measurement.
+
+QWEN LANE PICKUPS from this campaign (for the NVFP4-publish arc, memory file):
+1. e4m3 KV (GKV/WKV recipe + kf8vf8 module + format-aware v4 arms) — qwen still runs
+   q8_0/q5_1 KV; the gemma depth lever should port (qwen depth cells are the thinnest).
+2. u32_map_k d2t translate — qwen trim scatters 262k-wide logits per draft
+   (scatter_trim_logits); the 1-thread in-place id map is the cheaper shape.
+3. b16-tier fixes (rp-layout preserved at mcols=16, round-1 clamp) — shared dispatch code,
+   qwen verify t=9..16 is now correct if its cap ever opens.
+4. Wide-load Q4_0 expert dot — N/A to current qwen quants (IQ4_XS already has _v; NVFP4
+   dense has its own family); applies to any future Q4_0 MoE.
 
 ## FP8-GLOBALS ARC — BUILD PLAN (EXECUTED, see status above) (2026-07-11 late, the 26B depth-plain margin lever)
 ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound
