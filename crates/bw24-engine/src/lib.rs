@@ -4841,7 +4841,8 @@ impl Engine {
         // in as values. Verify/decode/stream gates were blind (both sides shared the wrong
         // symbol — the parity law's blind spot); only prefill-vs-decode at depth caught it.
         let _ = kv_shared;
-        // i2 twin: 2-key interleaved walk (BW24_FA_I2=0 reverts to the serial walk).
+        // i2 twin: 2-key interleaved walk (BW24_FA_I2=0 reverts). i4 probed NEGATIVE
+        // (157.3 vs 161.2 depth plain — register pressure past i2's sweet spot; jsonl).
         let i2 = head_dim == 512 && std::env::var("BW24_FA_I2").as_deref() != Ok("0");
         let fname = if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
                     else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
