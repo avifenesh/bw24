@@ -4989,16 +4989,16 @@ impl Engine {
         // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
-        // windowed split (BW24_FA_SPW, default 64 — the honest 2026-07-11 N=2 sweep: plain
-        // 156.6->159.3, depth spec 251.2->253.4; 16 collapses spec on v4_w staging x rows).
-        // MUST be one value for ALL widths: a t-keyed 48/64 probe (2026-07-12) broke the
-        // decode-vs-verify partial-combine order -> depth stream 9/128. Same parity-law
-        // freedom as BW24_FA_SP512, but only uniformly.
+        // windowed split (BW24_FA_SPW, default 48 — the 2026-07-12 post-v4rows-fix N=2 sweep:
+        // plain 1.7k 176.5/175.8 vs 174.2/174.1 and 4.9k 162.0/161.9 vs 161.0/160.1; spec
+        // serving prefers 64 (depth K=7 289.0 vs 267.3) — set BW24_FA_SPW=64 there, same
+        // config law as BW24_GEMMA_GKV=0). MUST be one value for ALL widths: a t-keyed 48/64
+        // probe broke the decode-vs-verify partial-combine order -> depth stream 9/128.
         let sp = {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(64));
-            if v >= 8 { v } else { 64 }
+                .and_then(|x| x.parse().ok()).unwrap_or(48));
+            if v >= 8 { v } else { 48 }
         };
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
