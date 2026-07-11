@@ -684,6 +684,10 @@ impl HybridModel {
         if cfg.gemma4.is_some() {
             // gemma4 fa-vec crossover default (measured sweep 2026-07-10; env overrides).
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
+            // windowed split per gemma variant (2026-07-12 sweeps): MoE 26B = 32 (grid-limited
+            // t=1 under the raw-e4m3 sV ceiling), dense 31B = 64 (37.13 vs 36.87 at 1.7k, N=2).
+            crate::FA_SPW_DEFAULT.store(if cfg.moe.is_some() { 32 } else { 64 },
+                                        std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
@@ -752,6 +756,31 @@ impl HybridModel {
                 }
             }
             if nmir > 0 { eprintln!("[q4rp] split-plane decode mirrors built: {nmir} trunk tensors"); }
+            // DENSE gemma (31B / E4B trunks): the trunk is too big to MIRROR on 24GB, so the
+            // split layout replaces the GGUF bytes IN PLACE (zero steady-state VRAM; the 31B
+            // profile put 76% of decode on the non-rp q4_0 matvecs). Every consumer routes
+            // off the tensor's rp flag: mmvq/batched `_rp` twins + qmatvec_gemm_q4_0_rp
+            // prefill. The Stage-A f32 oracle reads GGUF layout, so the swap is gated on the
+            // fast path being active (BW24_FAST=0 keeps GGUF bytes end to end — exact oracle).
+            let fast_on = std::env::var("BW24_FAST").as_deref() != Ok("0");
+            if fast_on {
+                let mut nswap = 0usize;
+                for layer in layers.iter_mut() {
+                    let dense_gemma = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_none());
+                    if !dense_gemma { continue; }
+                    if let Mixer::Full(fa) = &mut layer.mixer {
+                        for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                            if e.build_q4_rp_swap(w)? { nswap += 1; }
+                        }
+                    }
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                        for w in [ffn_gate, ffn_up, ffn_down] {
+                            if e.build_q4_rp_swap(w)? { nswap += 1; }
+                        }
+                    }
+                }
+                if nswap > 0 { eprintln!("[q4rp] split-plane IN-PLACE swap: {nswap} dense trunk tensors"); }
+            }
         }
         let model = HybridModel { cfg, embd, output_norm, output, layers, mtp,
                                   embd_gpu: std::sync::OnceLock::new(), gemma4_aux };

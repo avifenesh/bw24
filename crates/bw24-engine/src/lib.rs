@@ -164,6 +164,11 @@ pub fn fa512_min_tkv() -> usize {
 /// vec-always fastest: 119.9 (96) / 130.0 (48) / 133.2 (1) tok/s tg128-regime, 2026-07-10.
 pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(FA_VEC_MIN_TKV);
+/// Per-model windowed-split default (BW24_FA_SPW overrides): gemma MoE (26B, nkv=8) measured
+/// 32 (grid-limited t=1 under the raw-e4m3 sV ceiling, 2026-07-12); dense gemma (31B)
+/// measured 64 (37.13/37.12 vs 36.87/36.86 at 1.7k, N=2 — different attention geometry).
+pub static FA_SPW_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(32);
 /// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
 /// split changes with blockDim -> different FP order -> battery-arbitrated per model).
 /// qwen keeps the shipped 256; gemma4 adopts 1024 (single-row 2816-col norms are one-block
@@ -1730,6 +1735,27 @@ impl Engine {
         unsafe { b.launch(cfg)?; }
         *rp4 = Some(dst);
         Ok(())
+    }
+
+    /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
+    /// GGUF bytes (zero extra steady-state VRAM — the transient peak is one tensor's size).
+    /// The tensor's `rp` flag then routes every consumer (mmvq/batched `_rp` twins, the
+    /// `qmatvec_gemm_q4_0_rp` prefill kernel). Callers gate on the fast path being active —
+    /// the Stage-A f32 oracle (`BW24_FAST=0`) reads GGUF layout and must never see a swap.
+    pub fn build_q4_rp_swap(&self, t: &mut crate::model::GpuTensor)
+                            -> Result<bool, Box<dyn std::error::Error>> {
+        self.build_q4_rp4(t)?;
+        self.gpu.stream.synchronize()?;   // build kernel reads the GGUF bytes — drain BEFORE dropping them
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, rp4, rp, .. } = t else { return Ok(false) };
+        match rp4.take() {
+            Some(split) => {
+                *bytes = split;   // the GGUF-layout buffer drops here
+                *rp = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     /// BW24_Q4RP seam (default ON): the Q4_0 split-plane decode mirror at model load.
@@ -3571,15 +3597,21 @@ impl Engine {
         if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
             return Ok(None);
         }
-        let (b0, b1, b2, rp) = match (w0, w1, w2) {
-            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. },
-             GpuTensor::Quant { bytes: b2, rp4: r2, .. }) => match (r0, r1, r2) {
-                // Q4_0 split-plane mirrors: all three or none (mixed -> raw layout).
-                (Some(m0), Some(m1), Some(m2)) => (m0, m1, m2, true),
-                _ => (b0, b1, b2, false),
-            },
-            _ => unreachable!(),
-        };
+        // Effective (bytes, rp) per tensor: mirror (rp4) OR the in-place swap (rp flag,
+        // bytes already split). Mixed layouts cannot share one fused launch -> fall back to
+        // the separate matvecs (each routes its own rp).
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1), (b2, rp2)) = (eff(w0), eff(w1), eff(w2));
+        if rp0 != rp1 || rp1 != rp2 { return Ok(None); }
+        let rp = rp0;
         const RPB: u32 = 4;
         let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
         let grid = nb(o0) + nb(o1) + nb(o2);
@@ -3612,14 +3644,19 @@ impl Engine {
         };
         let (Some((rb0, o0)), Some((rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(None) };
         if w0.in_features() != w1.in_features() { return Ok(None); }
-        let (b0, b1, rp) = match (w0, w1) {
-            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. }) =>
-                match (r0, r1) {
-                    (Some(m0), Some(m1)) => (m0, m1, true),
-                    _ => (b0, b1, false),
+        // Effective (bytes, rp) per tensor (mirror or in-place swap); mixed -> separate matvecs.
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
                 },
-            _ => unreachable!(),
-        };
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1)) = (eff(w0), eff(w1));
+        if rp0 != rp1 { return Ok(None); }
+        let rp = rp0;
         const RPB: u32 = 4;
         let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
         let grid = nb(o0) + nb(o1);
@@ -4350,7 +4387,7 @@ impl Engine {
         };
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
-            QT_Q4_0 => "qmatvec_gemm_q4_0",
+            QT_Q4_0 => if rp { "qmatvec_gemm_q4_0_rp" } else { "qmatvec_gemm_q4_0" },
             QT_Q5_K => "qmatvec_gemm_q5_K",
             QT_Q6_K => "qmatvec_gemm_q6_K",
             QT_NVFP4 => if rp { "qmatvec_gemm_nvfp4_rp" } else { "qmatvec_gemm_nvfp4" },
@@ -5053,8 +5090,8 @@ impl Engine {
         let sp = {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(32));
-            if v >= 8 { v } else { 32 }
+                .and_then(|x| x.parse().ok()).unwrap_or(0));
+            if v >= 8 { v } else { FA_SPW_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) }
         };
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);

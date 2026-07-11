@@ -48,6 +48,7 @@
 #define GQT_Q5_K  3
 #define GQT_NVFP4 7
 #define GQT_Q4_0  8
+#define GQT_Q4_0_RP 9   // split-plane q4_0 (in-place layout swap: qs plane [out_f*nblk*16B] then d plane [*2B])
 
 #define WARP_SZ 32
 // CTA tile: BM output rows x BN tokens x BK contraction. One mma K-step = BK=32 (one quant/q8_1 block).
@@ -334,6 +335,7 @@ template<> struct StageMeta<GQT_Q5_K>{ enum{ SB_BYTES=176, GPSB=8, RAW_W=192, PR
 template<> struct StageMeta<GQT_Q6_K>{ enum{ SB_BYTES=210, GPSB=8, RAW_W=240, PREDEC=0 }; };
 template<> struct StageMeta<GQT_NVFP4>{ enum{ SB_BYTES=36,  GPSB=2, RAW_W=64,  PREDEC=0 }; };  // 64-elem block
 template<> struct StageMeta<GQT_Q4_0>{ enum{ SB_BYTES=18,  GPSB=1, RAW_W=32,  PREDEC=0 }; };
+template<> struct StageMeta<GQT_Q4_0_RP>{ enum{ SB_BYTES=18, GPSB=1, RAW_W=32, PREDEC=0 }; };
 // superblock byte offset within a weight row for K-block g (== the `b - wrow` of the global decode)
 template<int QT> __device__ __forceinline__ long sb_byte_off(int g);
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q8_0>(int g){ return (long)g * 34; }
@@ -342,6 +344,7 @@ template<> __device__ __forceinline__ long sb_byte_off<GQT_Q5_K>(int g){ return 
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q6_K>(int g){ return (long)(g>>3) * 210; }
 template<> __device__ __forceinline__ long sb_byte_off<GQT_NVFP4>(int g){ return (long)(g>>1) * 36; }
 template<> __device__ __forceinline__ long sb_byte_off<GQT_Q4_0>(int g){ return (long)g * 18; }
+template<> __device__ __forceinline__ long sb_byte_off<GQT_Q4_0_RP>(int g){ return (long)g * 18; }  // unused (inline path decodes via planes)
 
 // --- smem-source decodes (kernel1 single-scale dtypes): `b` = staged superblock base in smem
 //     (== sWraw_row + phase), `grp` = g & (GPSB-1). Bodies VECTORIZED (4-byte int LDS + SIMD nibble/
@@ -465,6 +468,8 @@ template<> __device__ __forceinline__ float decode_block<GQT_Q8_0>(const unsigne
 template<> __device__ __forceinline__ float decode_block<GQT_Q4_K>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q4_k(w,g,o,b); }
 template<> __device__ __forceinline__ float decode_block<GQT_Q5_K>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q5_k(w,g,o,b); }
 template<> __device__ __forceinline__ float decode_block<GQT_Q4_0>(const unsigned char* w, int g, int8_t* o, float* b){ return decode_q4_0(w,g,o,b); }
+// GQT_Q4_0_RP never reaches decode_block: decode_stage_inline takes the plane-addressed branch.
+template<> __device__ __forceinline__ float decode_block<GQT_Q4_0_RP>(const unsigned char*, int, int8_t* o, float* b){ *b = 0.0f; for (int j = 0; j < 32; j++) o[j] = 0; return 0.0f; }
 
 // smem layout per CTA (double NOT buffered; correctness-first):
 //   sW   : int8 [BM][BK]      weight tile (decoded once per K-step)
@@ -597,8 +602,26 @@ __device__ void qmatvec_gemm_kernel(
             int o = rowtile + r;
             float bias = 0.0f, dw;
             if (o < out_f) {
+                if constexpr (QT == GQT_Q4_0_RP) {
+                    // split-plane q4_0 (the in-place layout swap): qs plane [flat*16B] at W,
+                    // d plane [flat*2B] after it; flat = o*nblk + g. Same bytes, same nibble
+                    // unpack, same (d, -8d) fold as decode_q4_0 -> bit-identical output.
+                    const long flat = (long)o * nblk + g;
+                    const unsigned char* qs = W + flat * 16;
+                    const unsigned char* dp = W + (long)out_f * nblk * 16 + flat * 2;
+                    float d = ghalf2float(*(const unsigned short*)dp);
+                    int8_t* out = &sW[s][r][0];
+                    #pragma unroll
+                    for (int j = 0; j < 16; j++) {
+                        out[j]      = (int8_t)(qs[j] & 0xF);
+                        out[j + 16] = (int8_t)(qs[j] >> 4);
+                    }
+                    bias = -8.0f * d;
+                    dw = d;
+                } else {
                 const unsigned char* wrow = W + (long)o * row_bytes;
                 dw = decode_block<QT>(wrow, g, &sW[s][r][0], &bias);
+                }
             } else {
                 dw = 0.0f;
                 #pragma unroll
@@ -738,6 +761,12 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q4_0(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_kernel<GQT_Q4_0>(W, aq, ad, y, in_f, out_f, T, row_bytes);
+}
+extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q4_0_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int T, long row_bytes) {
+    qmatvec_gemm_kernel<GQT_Q4_0_RP>(W, aq, ad, y, in_f, out_f, T, row_bytes);
 }
 extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_q5_K(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
