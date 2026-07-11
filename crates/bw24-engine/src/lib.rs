@@ -5009,6 +5009,7 @@ impl Engine {
         // every t (parity structural). BW24_FA_MR=0 reverts to the per-row v4_w grid.
         let mr = gqa == 1 && t <= 8 && fa_v4_at(window) && !Self::wkv_on()
             && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
+
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         if Self::wkv_on() {
             // FP8-WINDOWED lane: e4m3 cache, register i2 walk from the kf8vf8 module.

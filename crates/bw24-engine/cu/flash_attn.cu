@@ -4510,6 +4510,8 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
     }
 }
 
+
+
 // MULTI-ROW v4 windowed kernel (2026-07-11, the windowed-lane occupancy/staging fix): gemma
 // SWA has gqa==1 (nh==nkv), so v4_w ran ONE warp per block and staged the k-tile once PER
 // (row, split). Here warp wy = verify row over a WIDENED shared tile (FA_DEC_TILE + R - 1
