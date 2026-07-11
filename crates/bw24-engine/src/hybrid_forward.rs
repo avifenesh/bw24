@@ -233,13 +233,8 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        // fp8-KV bring-up: continuation chunks read the quantized past via fa_prefill_view,
-        // whose parse is q8_0/q5_1-only in the default module — force MONOLITHIC prime under
-        // the flag until the prefill-view kernels get their g route (HANDOVER qwen fp8-KV arc).
-        let chunk: usize = if crate::Engine::kv_fp8_on() { 0 } else {
-            std::env::var("BW24_PRIME_CHUNK").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(4096)
-        };
+        let chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(4096);
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache);
         }
@@ -413,10 +408,12 @@ impl HybridModel {
             let deqw = std::env::var("BW24_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
             if deqw {
                 e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     crate::Engine::kv_fp8_on())?;
             } else {
                 e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                  crate::Engine::kv_fp8_on())?;
             }
         }
 

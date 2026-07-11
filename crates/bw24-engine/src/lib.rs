@@ -4620,10 +4620,13 @@ impl Engine {
                            v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                            head_dim: usize, n_head: usize, n_head_kv: usize,
                            t: usize, t_kv: usize, scale: f32, causal: bool,
-                           k_tok_bytes: usize, v_tok_bytes: usize)
+                           k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                            -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
-        let f = self.func(&format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?));
+        // g = e4m3 cache: the kernel parses via DQ_K_ELEM/DQ_V_ELEM (format macros) — the
+        // kf8vf8-module stamp reads fp8 with the identical MMA/softmax/PV body.
+        let name = format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?);
+        let f = if g { self.func_g(&name) } else { self.func(&name) };
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
                    + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -4655,7 +4658,7 @@ impl Engine {
                               v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                               head_dim: usize, n_head: usize, n_head_kv: usize,
                               t: usize, t_kv: usize, scale: f32, causal: bool,
-                              k_tok_bytes: usize, v_tok_bytes: usize)
+                              k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                               -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         let kv_dim_k = n_head_kv * head_dim;
@@ -4676,7 +4679,8 @@ impl Engine {
         let (kw, vw) = guard.as_mut().unwrap();
         // pass 1: dequant K+V once into the bf16 workspace (grid-stride, 1 thread/elem)
         {
-            let f = self.func("fa_dequant_kv_ws_bf16");
+            // only THIS pass parses KV bytes — pass 2 reads the bf16 workspace (format-free).
+            let f = if g { self.func_g("fa_dequant_kv_ws_bf16") } else { self.func("fa_dequant_kv_ws_bf16") };
             let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
             let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
             let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };

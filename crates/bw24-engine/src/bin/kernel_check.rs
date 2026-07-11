@@ -1540,10 +1540,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
             let mut o_inl = e.zeros(hd*nh*t)?;
             e.fa_prefill_view(&qd,&kview,&vview,&mut o_inl,hd,nh,nhkv,t,tkv,scale,true,
-                              k_tok_bytes,v_tok_bytes)?;
+                              k_tok_bytes,v_tok_bytes, false)?;
             let mut o_ws = e.zeros(hd*nh*t)?;
             e.fa_prefill_view_ws(&qd,&kview,&vview,&mut o_ws,hd,nh,nhkv,t,tkv,scale,true,
-                                 k_tok_bytes,v_tok_bytes)?;
+                                 k_tok_bytes,v_tok_bytes, false)?;
             let a = e.dtoh(&o_inl)?; let b = e.dtoh(&o_ws)?;
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_prefill_view_ws vs inline-dequant T={t} Tkv={tkv}: bitdiff={bitdiff} {}",

@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
         let mut od=e.zeros(hd*nh*t)?;
-        e.fa_prefill_view(&qd,&kview,&vview,&mut od,hd,nh,nhkv,t,tkv,scale,true,k_tok_bytes,v_tok_bytes)?;
+        e.fa_prefill_view(&qd,&kview,&vview,&mut od,hd,nh,nhkv,t,tkv,scale,true,k_tok_bytes,v_tok_bytes, false)?;
         let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
         let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
         // quant twin: looser (q8_0 K / q5_1 V) — gate at q5_1 noise floor
