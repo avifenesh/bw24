@@ -132,9 +132,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         tier_counts = (args.q8_count, args.nvfp4_count, args.q2_count)
         if any(count is None for count in tier_counts):
             raise ValueError("traffic-ladder requires Q8_0, NVFP4, and Q2_K counts")
-        if args.q8_count <= 0 or args.nvfp4_count < 0 or args.q2_count <= 0:
+        if args.q8_count < 0 or args.nvfp4_count < 0 or args.q2_count <= 0:
             raise ValueError(
-                "traffic-ladder requires positive Q8_0/Q2_K counts and a non-negative NVFP4 count"
+                "traffic-ladder requires a positive Q2_K count and non-negative "
+                "Q8_0/NVFP4 counts"
             )
         if sum(tier_counts) > args.expert_count:
             raise ValueError("traffic-ladder tier counts exceed the expert bank")
@@ -458,6 +459,21 @@ def self_test() -> None:
         assert traffic_q8_q2["layer_summary"]["1"] == {
             "assignments": 36, "observed_experts": 8, "pruned": 0,
             "q8_0": 1, "nvfp4": 0, "q3_k": 0, "q2_k": 7,
+        }
+        traffic_nvfp4_q2 = build_plan(argparse.Namespace(
+            trace=[quartile_trace], recipe="traffic-ladder", expert_count=8,
+            original_expert_count=8, top_k=2, layers="1",
+            hot_fraction=0.25, low_fraction=0.25, prune_unused=False,
+            mask=None, expected_tokens=18, q8_count=0, nvfp4_count=3, q2_count=5,
+        ))
+        assert traffic_nvfp4_q2["assignments"] == [
+            {"layer": 1, "experts": [0, 1, 2], "qtype": "NVFP4"},
+            {"layer": 1, "experts": [3, 4, 5, 6, 7], "qtype": "Q2_K"},
+        ]
+        assert traffic_nvfp4_q2["pruned_experts"] == {}
+        assert traffic_nvfp4_q2["layer_summary"]["1"] == {
+            "assignments": 36, "observed_experts": 8, "pruned": 0,
+            "q8_0": 0, "nvfp4": 3, "q3_k": 0, "q2_k": 5,
         }
         print("expert tier plan self-test: PASS")
 
