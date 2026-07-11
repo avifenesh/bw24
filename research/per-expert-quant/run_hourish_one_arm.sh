@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
+PANEL_LOCK=${PANEL_LOCK:-$HERE/hourish-panel.lock.json}
 
 : "${ARM:?set ARM}"
 : "${ARTIFACT:?set ARTIFACT}"
@@ -28,6 +29,7 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid RUN_ID"
 [[ -f "$ARTIFACT/manifest.json" ]] || die "missing artifact manifest"
 [[ -x "$SERVER_BIN" ]] || die "missing executable server"
+[[ -f "$PANEL_LOCK" ]] || die "missing panel lock"
 [[ "$HEALTH_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid health timeout"
 [[ "$HOURISH_SHARD_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid shard timeout"
 [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || die "invalid spill depth"
@@ -146,17 +148,18 @@ ARM="$ARM" MODEL="$ARM" ARTIFACT="$ARTIFACT" RUN_ID="$RUN_ID" \
   BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$BW24_SPILL_PREAD_DEPTH" \
   BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 BASE_URL="$BASE_URL" \
   OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" \
+  PANEL_LOCK="$PANEL_LOCK" \
   HOURISH_SHARD_TIMEOUT_S="$HOURISH_SHARD_TIMEOUT_S" \
   "$HERE/run_hourish_arm.sh"
 
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
 if [[ ! -e "$RUN_DIR/code-score.json" && ! -e "$RUN_DIR/code-score.receipt.json" ]]; then
-  "$HERE/score_hourish_code_container.sh" "$RUN_DIR"
+  PANEL_LOCK="$PANEL_LOCK" "$HERE/score_hourish_code_container.sh" "$RUN_DIR"
 fi
 [[ -f "$RUN_DIR/code-score.json" && -f "$RUN_DIR/code-score.receipt.json" ]] \
   || die "code score evidence is incomplete"
 if [[ ! -e "$RUN_DIR/math-score.json" && ! -e "$RUN_DIR/math-score.receipt.json" ]]; then
-  "$HERE/score_hourish_math_container.sh" "$RUN_DIR"
+  PANEL_LOCK="$PANEL_LOCK" "$HERE/score_hourish_math_container.sh" "$RUN_DIR"
 fi
 [[ -f "$RUN_DIR/math-score.json" && -f "$RUN_DIR/math-score.receipt.json" ]] \
   || die "math score evidence is incomplete"

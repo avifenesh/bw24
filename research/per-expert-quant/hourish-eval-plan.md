@@ -99,3 +99,60 @@ leading `def` and the model emitted replacement characters at code line endings;
 not normalize or repair model output. No generated code was executed during calibration. The
 calibration output is preserved under
 `/data/results/per-expert-quant/hourish-calibration/plain_quant/` on the G7e host.
+
+## Expanded matched triage panel
+
+`expanded-capability-panel.lock.json` is the next-stage directional panel for parallel multi-GPU
+triage. It keeps the same four domains, pinned lm-eval commit, dataset revisions, generation
+ceilings, greedy decoding, and one-request-per-arm contract, but freezes 115 untouched questions:
+
+| Domain | Public task | Questions |
+|---|---|---:|
+| Programming | HumanEval instruct | 32 |
+| Math | MATH-500, balanced across subject and level | 56 |
+| History | MMLU-Pro history, source-stratified | 10 |
+| Other knowledge | MMLU-Pro other, source-stratified | 17 |
+| **Total** | | **115** |
+
+The seed is `bw24-expanded-panel-v1-20260712`; the frozen lock SHA-256 is
+`33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b`. Every index in the
+56-question hourish lock is explicitly recorded as excluded, as are HumanEval calibration indices
+0 and 1. The lock records selected document IDs plus document, rendered-prompt, and target hashes.
+
+Rebuild it only from the pinned harness after `prepare_harness.py` has applied `suite.lock.json`:
+
+    HF_HOME=/data/cache/huggingface \
+      /data/cache/lm-eval-97a5e2c710e2/.venv/bin/python \
+      research/per-expert-quant/build_hourish_panel.py \
+      --profile expanded \
+      --output /tmp/expanded-capability-panel.lock.json
+
+Then validate the rebuilt lock before comparing it byte-for-byte with the committed lock:
+
+    python3 research/per-expert-quant/validate_capability_panel.py \
+      /tmp/expanded-capability-panel.lock.json --print-sha
+    cmp /tmp/expanded-capability-panel.lock.json \
+      research/per-expert-quant/expanded-capability-panel.lock.json
+
+Run each arm through the existing restartable launcher by selecting the new frozen lock; no prior
+hourish result directory is edited or reused:
+
+    PANEL_LOCK=research/per-expert-quant/expanded-capability-panel.lock.json \
+      ARM=... ARTIFACT=... RUN_ID=... SERVER_BIN=... \
+      research/per-expert-quant/run_hourish_one_arm.sh
+
+The launcher, code scorer, math scorer, and summarizer derive task counts and panel SHA from that
+validated lock. Expanded scorer receipts bind the count and SHA explicitly. The summarizer accepts
+the new server binary only when every arm and shard has the same hash; pass `--server-sha256` to
+pin that hash explicitly. It also recomputes document, task-rendered prompt, target, and lm-eval
+runtime fingerprints from every logged sample before scoring. The legacy hourish lock, its fixed
+server requirement, and its existing receipts remain valid.
+
+    python3 research/per-expert-quant/summarize_hourish_results.py \
+      --out-root /data/results/per-expert-quant/expanded-v1 \
+      --run-id "$RUN_ID" \
+      --arms "$ARMS" \
+      --baseline plain_quant \
+      --panel-lock research/per-expert-quant/expanded-capability-panel.lock.json \
+      --server-sha256 "$SERVER_SHA256" \
+      --output /data/results/per-expert-quant/expanded-v1/summary.json
