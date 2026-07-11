@@ -4762,7 +4762,10 @@ impl Engine {
         // (root-cause open, jsonl) — only reachable by forcing v4 off (BW24_FA_V4_MAX);
         // fall to the exact scalar there instead of the broken register arm.
         let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
-        if g && !(fa_v4_at(t_kv) && head_dim == 256) { fa_vec = false; }
+        // hd256 under g: v4-or-scalar. hd128/other under g ride the REGISTER g-lane (the
+        // dq_K_lane/dq_V_lane macros are format-aware; v3 is format-gated off, v2/smem
+        // arms are excluded under g). Mirrored in kvmod / fa_decode_dc / fa_geom_eager.
+        if g && head_dim == 256 && !fa_v4_at(t_kv) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
@@ -4966,12 +4969,14 @@ impl Engine {
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
-                else if g && head_dim == 256 {
+                else if g {
                     // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module, SAME symbol
                     // choice as decode's kvmod dispatch (parity law: excluding v4 here paired
                     // g-module rows against decode's g-module v4 — different programs, short-VG
                     // maxdiff 2.0 / spec stream 0/128, 2026-07-12). rows_v4 is format-aware
                     // since fda9790; only the smem twin stays excluded (V-stage q5_1-only).
+                    // hd128 (qwen fp8-KV) lands on the base/register rows via fname — the
+                    // dq macros are format-aware.
                     self.func_g(if smem_rows { "fa_decode_vec_q_rows" } else { fname })
                 }
                 else { self.func(fname) };
@@ -5210,7 +5215,7 @@ impl Engine {
         // mirror fa_decode_kvmod's g-routing or the graph diverges from eager (short/mid 1/96,
         // 2026-07-12).
         let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
-        if g && !(fa_v4_at(bucket_max) && head_dim == 256) { fa_vec = false; }
+        if g && head_dim == 256 && !fa_v4_at(bucket_max) { fa_vec = false; }   // mirror kvmod/geom
         let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
@@ -5306,7 +5311,10 @@ impl Engine {
         let mut fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
         // g (fp8-windowed): mirror kvmod's clamp — only the v4 lane parses e4m3 in the vec
         // family; everything else falls to the g-module scalar.
-        if g && !(fa_v4_at(t_kv) && head_dim == 256) { fa_vec = false; }
+        // hd256 under g: v4-or-scalar. hd128/other under g ride the REGISTER g-lane (the
+        // dq_K_lane/dq_V_lane macros are format-aware; v3 is format-gated off, v2/smem
+        // arms are excluded under g). Mirrored in kvmod / fa_decode_dc / fa_geom_eager.
+        if g && head_dim == 256 && !fa_v4_at(t_kv) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
