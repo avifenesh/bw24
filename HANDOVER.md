@@ -154,12 +154,23 @@ LANDED 2026-07-12 (02c958f): swap + gemm rp + fused-matcher fix + per-model SPW.
 RESULT: short 40.3 vs 40.2-40.3 = PARITY (was 0.95x); 1.7k 36.9 vs 37.8-38.7 = 0.96x
 (was 0.91x). ncu: the swapped FFN pair sits at DRAM 91.7% — the byte wall (~48.7 tok/s
 ceiling at 17.4GB/token); the mmvq-class launches took -7%.
-31B OPEN FRONTS:
-- plain 1.7k 0.96x: attention depth-cost vs llama (ours -8.4% short->1.7k vs their -5%)
-  — windowed rows arms + norm/launch tax; SP512 unswept on 31B geometry.
-- SPEC 0.74x (first light 2026-07-12: 83.5 short K=5, accept 0.75, stream 128/128 vs
-  llama-mtp 112): run the 26B playbook — drafter is Q8_0 (2x q4 bytes; re-quant + FR trim,
-  u32_map_k is model-generic), acceptance mechanics, adaptive floor sweep, SPW spec config.
+31B LEDGER (2026-07-12 night, all jsonl'd):
+LANDED: layout swap (short 0.95->1.00x parity, 1.7k 0.91->0.96x) | per-model SPW (dense 64)
+| per-model SP512 (dense 32, +0.5%) | Q4_0 drafter requant (+2.3% spec, accept held).
+DOORS CLOSED ON MEASUREMENT: grid-stride fused (-2.7%, locality), rpb sweep (flat — tail
+doesn't starve DRAM; 92.9% = this rig's controller ceiling), graph replay (-1.2%), dense
+FFN q8 folds (flat — 759 sub-8us launches/token fully hidden at 96.7% GPU busy), 26B->31B
+trim-rank transfer (accept 0.765->0.603).
+PLAIN STANDING: short 1.00x | 1.7k ~0.965x. Remaining plain levers are ATTENTION-class
+and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
+90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
+e2e). The plain bar likely needs a new mechanism class, not tuning.
+SPEC 0.76x = THE BIGGER FRONT (85.5 K=5-6 adaptive + Q4 drafter vs llama-mtp 112; accept
+0.756 competitive): llama runs 2.78x own-plain vs our 2.12x — ROUND STRUCTURE. Levers:
+(a) p-min/confidence early-cut on the gemma zero-sync round (pack_tok_p/confidence
+machinery exists for the qwen round, unexploited on gemma; needs a device-side break so
+enqueued draft steps + verify no-op past the cut), (b) 31B-corpus FR ranks (the 26B ranks
+don't transfer), (c) verify round cost at t=6-8 (b8 tier, walled trunk).
 
 ## QWEN FP8-KV ARC — BUILD PLAN (2026-07-12, owner: "better kv in lower cost = big lever over llama")
 HISTORY THAT MUST BE RE-READ FIRST: BW24_KV_K=fp8 was FLIP-BLOCKED 2026-07-09 (e2e flat +
