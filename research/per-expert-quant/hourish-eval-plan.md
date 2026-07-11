@@ -12,7 +12,7 @@ payload. Logical size is the shared 24,999,514,624-byte body plus the expert ove
 |---|---|---:|---:|
 | `plain_quant` | all experts NVFP4 | 186,035,622,400 | 173.259 |
 | `plain_reap_quant` | public REAP50 expert selection, retained experts NVFP4 | 105,517,568,512 | 98.271 |
-| `mix_quant` | 25% NVFP4, 50% Q3/Q2, 12% pruned by measured use | 150,249,820,672 | 139.931 |
+| `mix_quant` | hottest 25% NVFP4, middle 50% Q3, coldest 25% Q2; no pruning | 150,249,820,672 | 139.931 |
 | `mix_quant_prune25` | 25% NVFP4, 25% Q3, 25% Q2, 25% pruned | 119,496,397,312 | 111.290 |
 | `traffic_mix_quant` | 22% traffic Q8, to 50% NVFP4, to 85% Q2, last 15% traffic pruned | 117,096,698,368 | 109.055 |
 
