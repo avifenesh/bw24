@@ -430,6 +430,18 @@ timeout; bounded screens retain the 14,400-second default. Override `EVAL_TIMEOU
 when measured throughput changes. Every run receipt records the task list, requested limit, and
 effective timeout.
 
+Do not reuse that rough estimate after a matched bounded run completes. Derive each task's measured
+seconds/request from the task boundaries in its frozen progress log, preserve source hashes, and
+project the pinned full counts with:
+
+    python3 research/per-expert-quant/project_full_runtime.py \
+      --run-dir /data/results/per-expert-quant/promoted-n50/plain_quant/RUN_ID \
+      --json-out /data/results/per-expert-quant/promoted-n50/_runs/RUN_ID/runtime-projection.json \
+      --markdown-out /data/results/per-expert-quant/promoted-n50/_runs/RUN_ID/runtime-projection.md
+
+The projector rejects incomplete runs, unexpected task order/counts, and missing task-boundary
+snapshots. Recompute it after any accepted concurrency or spill-setting change.
+
 Before committing roughly eight machine-days to the two full arms, measure `NUM_CONCURRENT=2,4`
 on the plain artifact with `LIMIT=10`. The completed plain N=50 run is the concurrency-1 reference,
 so it does not need to be repeated. Accept a higher value only when the server has no errors and
