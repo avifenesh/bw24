@@ -1757,24 +1757,14 @@ impl HybridModel {
                       crate::spec::spec_stream(), draft_graph.is_some(), stream_graph.is_some());
         }
         let t_v_s = k + 1;
-        let mut vtok_d = e.alloc_u32_zeroed(t_v_s)?;
-        let mut brk_d = e.alloc_u32_zeroed(2)?;
-        let mut pend_d = e.alloc_u32_zeroed(1)?;
-        let last_pred_d = e.alloc_u32_zeroed(1)?;
-        let mut pos_ctr = e.htod_i32(&[0])?;
-        let mut pos_start_d = e.htod_i32(&[0])?;
-        let m_rounds = crate::spec::spec_stream_m();
-        let ring_cap = m_rounds * (k + 1) + 1;
-        let mut ring_d = e.alloc_u32_zeroed(ring_cap)?;
-        let mut stream_acc = e.alloc_u32_zeroed(2)?;
+        // ROUND-STREAM buffers + ptr tables now live in the model-generic round_stream
+        // module (extracted 2026-07-12; the gemma burst reuses them).
+        let sb = crate::round_stream::StreamBufs::new(e, k, crate::spec::spec_stream_m())?;
+        let crate::round_stream::StreamBufs {
+            mut vtok_d, mut brk_d, mut pend_d, last_pred_d, mut pos_ctr, mut pos_start_d,
+            mut ring_d, acc_d: mut stream_acc, m_rounds, k: _ } = sb;
         let stream_ptrs: Option<CudaSlice<u64>> = if stream_active {
-            use cudarc::driver::DevicePtr;
-            let mut ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
-                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
-                None => 0u64,
-            }).collect();
-            { let (p, _g) = pos_ctr.device_ptr(e.stream()); ptrs.push(p as u64); }
-            Some(e.htod_u64(&ptrs)?)
+            Some(crate::round_stream::kv_len_ptr_table(e, cache, Some(&pos_ctr))?)
         } else { None };
 
         let mut round = 0usize;
@@ -1787,12 +1777,7 @@ impl HybridModel {
         // ROUND-STREAM stage (b) 3a: device table of per-layer kvl.len_d pointers (stable — the
         // cache never reallocates len_d; see cache.rs "stable pointer" note). 0 = no KV layer.
         let kv_len_ptrs: Option<CudaSlice<u64>> = if spec_devacc() && !spec_replay {
-            use cudarc::driver::DevicePtr;
-            let ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
-                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
-                None => 0u64,
-            }).collect();
-            Some(e.htod_u64(&ptrs)?)
+            Some(crate::round_stream::kv_len_ptr_table(e, cache, None)?)
         } else { None };
         // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
         // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as

@@ -15,6 +15,7 @@ pub mod cache;
 pub mod decode;
 pub mod spec;
 pub mod gemma_spec;
+pub mod round_stream;
 pub mod eagle;
 pub mod sampler;
 
