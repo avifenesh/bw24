@@ -202,7 +202,7 @@ def load_code_task(
     run_dir: pathlib.Path,
     arm: str,
     panel: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, float], list[pathlib.Path]]:
+) -> tuple[dict[str, Any], dict[str, float], list[pathlib.Path], dict[str, Any]]:
     score_path = run_dir / "code-score.json"
     receipt_path = run_dir / "code-score.receipt.json"
     if not score_path.is_file() or not receipt_path.is_file():
@@ -220,6 +220,15 @@ def load_code_task(
         or receipt.get("sandbox", {}).get("read_only_root") is not True
         or receipt.get("sandbox", {}).get("capabilities") != "all dropped"
         or receipt.get("sandbox", {}).get("no_new_privileges") is not True
+        or receipt.get("sandbox", {}).get("pids_limit") != 32
+        or receipt.get("sandbox", {}).get("memory_bytes") != 768 * 1024 * 1024
+        or receipt.get("sandbox", {}).get("cpus") != 1
+        or score.get("limits")
+        != {"cpu_seconds": 5, "wall_seconds": 10, "address_space_bytes": 512 * 1024 * 1024}
+        or not isinstance(receipt.get("tool_sha256"), str)
+        or not receipt["tool_sha256"]
+        or not isinstance(receipt.get("image_id"), str)
+        or not receipt["image_id"]
     ):
         raise ValueError(f"{arm}: invalid code score or sandbox receipt")
     values: dict[str, float] = {}
@@ -237,13 +246,31 @@ def load_code_task(
         doc_ids.append(row.get("doc_id"))
     if sorted(doc_ids) != sorted(panel["samples"]["humaneval_instruct"]):
         raise ValueError(f"{arm}: code sample indices differ from panel")
+    sample_path = exactly_one(
+        sorted(run_dir.rglob("samples_humaneval_instruct_*.jsonl")),
+        f"{arm}/humaneval_instruct samples",
+    )
+    generated_identities = {}
+    with sample_path.open() as handle:
+        for line_number, line in enumerate(handle, 1):
+            row = json.loads(line)
+            identity = sample_identity(row, f"{sample_path}:{line_number}")
+            if identity in generated_identities:
+                raise ValueError(f"{arm}: duplicate generated code sample")
+            generated_identities[identity] = row.get("doc_id")
+    if (
+        set(generated_identities) != set(values)
+        or sorted(generated_identities.values()) != sorted(panel["samples"]["humaneval_instruct"])
+    ):
+        raise ValueError(f"{arm}: generated and scored code samples differ")
     successes = int(sum(values.values()))
     if score.get("passed") != successes:
         raise ValueError(f"{arm}: code pass total differs from samples")
     return (
         {"successes": successes, "n": expected_n, "rate": successes / expected_n},
         values,
-        [score_path, receipt_path],
+        [sample_path, score_path, receipt_path],
+        {"tool_sha256": receipt["tool_sha256"], "image_id": receipt["image_id"]},
     )
 
 
@@ -257,16 +284,19 @@ def load_arm(
     if set(shard_dirs) != set(TASKS):
         raise ValueError(f"{arm}: shard set differs from panel")
     manifest_payloads = set()
+    suite_lock_payloads = set()
     shared_config = None
     task_hashes = {}
     evidence = []
     result_by_task = {}
     for task, shard_dir in shard_dirs.items():
         panel_copy = shard_dir / "panel.lock.json"
+        suite_copy = shard_dir / "suite.lock.json"
         manifest_path = shard_dir / "artifact-manifest.json"
         metadata_path = shard_dir / "run-metadata.json"
         if sha256(panel_copy) != PANEL_SHA256:
             raise ValueError(f"{arm}/{task}: copied panel lock differs")
+        suite_lock_payloads.add(suite_copy.read_bytes())
         manifest_payloads.add(manifest_path.read_bytes())
         manifest_sha = sha256(manifest_path)
         receipt = successful_receipt(metadata_path, arm, task, panel, manifest_sha)
@@ -287,9 +317,12 @@ def load_arm(
         validate_result_config(result, arm, task, panel)
         task_hashes[task] = result["task_hashes"][task]
         result_by_task[task] = result
-        evidence.extend((panel_copy, manifest_path, metadata_path, result_path))
+        evidence.extend((panel_copy, suite_copy, manifest_path, metadata_path, result_path))
     if len(manifest_payloads) != 1:
         raise ValueError(f"{arm}: artifact manifests differ across shards")
+    if len(suite_lock_payloads) != 1:
+        raise ValueError(f"{arm}: suite locks differ across shards")
+    suite_lock_sha = hashlib.sha256(suite_lock_payloads.pop()).hexdigest()
     manifest = json.loads(manifest_payloads.pop())
     artifact_bytes = manifest.get("artifact_bytes")
     if isinstance(artifact_bytes, bool) or not isinstance(artifact_bytes, int) or artifact_bytes <= 0:
@@ -297,7 +330,7 @@ def load_arm(
 
     tasks = {}
     values = {}
-    code_task, code_values, code_evidence = load_code_task(run_dir, arm, panel)
+    code_task, code_values, code_evidence, code_scorer = load_code_task(run_dir, arm, panel)
     tasks["humaneval_instruct"] = code_task
     values["humaneval_instruct"] = code_values
     evidence.extend(code_evidence)
@@ -325,6 +358,8 @@ def load_arm(
         "question_weighted": total_successes / total_n,
         "values": values,
         "task_hashes": task_hashes,
+        "suite_lock_sha256": suite_lock_sha,
+        "code_scorer": code_scorer,
         "shared_config": shared_config,
         "evidence": [{"path": str(path), "sha256": sha256(path)} for path in sorted(set(evidence))],
     }
@@ -351,6 +386,10 @@ def build_report(
             raise ValueError(f"{arm}: run configuration differs from baseline")
         if data["task_hashes"] != reference["task_hashes"]:
             raise ValueError(f"{arm}: task definitions differ from baseline")
+        if data["suite_lock_sha256"] != reference["suite_lock_sha256"]:
+            raise ValueError(f"{arm}: suite lock differs from baseline")
+        if data["code_scorer"] != reference["code_scorer"]:
+            raise ValueError(f"{arm}: code scorer identity differs from baseline")
         for task in TASKS:
             if set(data["values"][task]) != set(reference["values"][task]):
                 raise ValueError(f"{arm}/{task}: paired sample identities differ")
