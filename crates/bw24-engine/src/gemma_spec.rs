@@ -205,7 +205,7 @@ impl HybridModel {
     /// buffer) — zero host traffic.
     fn gemma4_draft_trunk_dev(&self, e: &Engine, d: &GemmaDraft,
                               tok_v: &cudarc::driver::CudaView<u32>,
-                              h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                              h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &Cache)
                               -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let nb = d.n_backbone;
         let embd_gpu = self.embd_gpu.get_or_init(|| {
@@ -214,7 +214,7 @@ impl HybridModel {
         let (qt, rb) = self.embd.qt_and_row_bytes(nb);
         let mut xs = e.embed_gather_device_tv(embd_gpu, tok_v, 1, nb, qt, rb)?;
         e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
-        self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache)
+        self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos_d, cache)
     }
 
     /// Drafter trunk: returns (post-output_norm hidden [1024], h_next [2816]).
@@ -224,17 +224,20 @@ impl HybridModel {
         let nb = d.n_backbone;
         let mut xs = e.htod(&self.embd.gather(nb, &[token]))?;
         e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
-        return self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache);
+        let pos_d = e.htod_i32(&[pos as i32])?;
+        return self.gemma4_draft_trunk_from_x(e, d, &xs, h, &pos_d, cache);
     }
 
     /// Trunk body from the pre-scaled main-embed row.
     fn gemma4_draft_trunk_from_x(&self, e: &Engine, d: &GemmaDraft, xs: &CudaSlice<f32>,
-                                 h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                                 h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &Cache)
                                  -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        // pos rides a DEVICE slot (burst-arc step a, 2026-07-12): the round fills persistent
+        // slots via set_i32_one (kernel-arg stores — no per-step htod/alloc) and the chain
+        // becomes graph-capturable (an in-graph i32_copy_add can feed the slots later).
         let eps = self.cfg.rms_eps;
         let nb = d.n_backbone;
         let ne = d.n_embd;
-        let pos_d = e.htod_i32(&[pos as i32])?;
         let n_main = self.layers.len();
 
         // xh = concat(x, h) [5632]
@@ -259,9 +262,9 @@ impl HybridModel {
             let mut q = e.uninit(nhh * hd)?;
             e.rms_norm(&q0, dl.q_norm.float_data(), &mut q, hd, nhh, eps)?;
             if dl.swa {
-                e.rope_neox(&mut q, &pos_d, hd, hd, nhh, 1, base, 1.0)?;
+                e.rope_neox(&mut q, pos_d, hd, hd, nhh, 1, base, 1.0)?;
             } else {
-                e.rope_neox_ff(&mut q, &pos_d, hd, hd, nhh, 1, base, 1.0, &d.rope_freqs)?;
+                e.rope_neox_ff(&mut q, pos_d, hd, hd, nhh, 1, base, 1.0, &d.rope_freqs)?;
             }
             let avail = kvl.len;
             let win = d.sliding_window;
@@ -376,6 +379,7 @@ impl HybridModel {
         let pmin: f32 = std::env::var("BW24_SPEC_PMIN").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(0.0);
         let mut p_d = e.stream().alloc_zeros::<f32>(k.max(1))?;
+
         // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
         // draft-mtp reaches 0.64-0.70 acceptance on the SAME drafter (ours fixed-K: 0.52) by
         // drafting fewer tokens when unconfident (p-min gate). Zero-sync host proxy: next
@@ -392,6 +396,9 @@ impl HybridModel {
         let cap_max: usize = std::env::var("BW24_SPEC_CAPMAX").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(7);
         let k_cap = k.min(cap_max).max(1);
+        // persistent per-step rope-pos slots (device; filled by set_i32_one kernel-arg stores).
+        let mut pos_slots: Vec<CudaSlice<i32>> = (0..k_cap.max(1))
+            .map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?;
         // clamp round 1 too (the leak above).
         let mut kc = k_cap;
         'outer: while out.len() < max_new {
@@ -400,7 +407,8 @@ impl HybridModel {
             let mut hc = e.clone_dtod(&h)?;
             for j in 0..kr {
                 let tv = batch_d.slice(j..j + 1);
-                let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
+                e.set_i32_one(&mut pos_slots[j], (cache.pos + j) as i32)?;
+                let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, &pos_slots[j], &cache)?;
                 let ld = e.matmul(&d.head, &hn, 1)?;
                 e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
                 // confidence-adaptive depth (BW24_SPEC_PMIN): record the drafted token's
