@@ -4990,16 +4990,18 @@ impl Engine {
         // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
-        // windowed split (BW24_FA_SPW, default 48 — the 2026-07-12 post-v4rows-fix N=2 sweep:
-        // plain 1.7k 176.5/175.8 vs 174.2/174.1 and 4.9k 162.0/161.9 vs 161.0/160.1; spec
-        // serving prefers 64 (depth K=7 289.0 vs 267.3) — set BW24_FA_SPW=64 there, same
-        // config law as BW24_GEMMA_GKV=0). MUST be one value for ALL widths: a t-keyed 48/64
-        // probe broke the decode-vs-verify partial-combine order -> depth stream 9/128.
+        // windowed split (BW24_FA_SPW, default 32 — re-swept 2026-07-12 under the raw-e4m3 sV
+        // occupancy ceiling (4 blocks/SM): t=1 decode is GRID-limited (win/sp splits x nkv
+        // blocks), so smaller splits fill the ceiling — 1.7k 174.4/174.0 vs 48's 170.7/170.3,
+        // 4.9k 159.8 vs 157.4 (N=2 interleaved, stable window). Spec serving prefers 64
+        // (verify t=K+1 fills the grid via grid.z=t; depth K=7 281.3 vs 249.3 at 32) — set
+        // BW24_FA_SPW=64 there, same config law as BW24_GEMMA_GKV=0. MUST be one value for
+        // ALL widths: a t-keyed probe broke decode-vs-verify combine order (stream 9/128).
         let sp = {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(48));
-            if v >= 8 { v } else { 48 }
+                .and_then(|x| x.parse().ok()).unwrap_or(32));
+            if v >= 8 { v } else { 32 }
         };
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
