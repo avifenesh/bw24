@@ -57,4 +57,5 @@ ARM="$ARM" MODEL="$MODEL" ARTIFACT="$ARTIFACT" RUN_ID="$RUN_ID" \
 
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
 "$HERE/score_hourish_code_container.sh" "$RUN_DIR"
+"$HERE/score_hourish_math_container.sh" "$RUN_DIR"
 echo "MLX hourish reference complete: $ARM/$RUN_ID"

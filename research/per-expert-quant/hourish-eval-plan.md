@@ -58,6 +58,11 @@ it takes longer than the projection; the runner has only a 12-hour per-shard fai
 - Each arm starts from a fresh server and exact one-model health validation.
 - Model generation and scoring are separate for code. Generation uses lm-eval prediction-only;
   generated code is later executed in a resource-limited, network-disabled container.
+- MATH generation and scoring are also separate. The API server did not enforce the task's
+  `Problem:` stop marker, so the raw harness aggregate is excluded. A network-disabled container
+  scores only the first non-empty answer line (or an `answer:` clause on that same line), ignores
+  all later corrections and leaked prompts, and verifies equivalence with pinned Math-Verify
+  0.9.0 plus narrow MATH-style literal normalization. No answer is regenerated or repaired.
 - Results are accepted only when all 56 expected sample records exist and document, prompt, target,
   generation-config, runtime, artifact, and server hashes match the lock and the other arms.
 - Preserve wall time, output-token counts, spill counters, server logs, and immutable receipts, but
@@ -66,7 +71,8 @@ it takes longer than the projection; the runner has only a 12-hour per-shard fai
 ## Scoring and precommitted decision
 
 - Programming: pass@1 over the 14 sandboxed code questions.
-- Math: exact match over 32 questions.
+- Math: strict first-answer equivalence over 32 questions, from the locked scorer receipt rather
+  than the invalid raw harness aggregate.
 - History and other: exact choice match over five questions each.
 - Report each domain independently, unweighted total correct out of 56, and a domain-balanced macro
   in which programming, math, history, and other each contribute 25%.

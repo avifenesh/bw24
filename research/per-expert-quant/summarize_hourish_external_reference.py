@@ -186,8 +186,14 @@ def load_external_arm(
     tasks["humaneval_instruct"] = code_task
     values["humaneval_instruct"] = code_values
     evidence.extend(code_evidence)
+    math_task, math_values, math_evidence, math_scorer = core.load_math_task(
+        run_dir, arm, panel
+    )
+    tasks["hendrycks_math500"] = math_task
+    values["hendrycks_math500"] = math_values
+    evidence.extend(math_evidence)
     for task in core.TASKS:
-        if task == "humaneval_instruct":
+        if task in ("humaneval_instruct", "hendrycks_math500"):
             continue
         task_result, task_values, sample_path = core.load_regular_task(
             run_dir, arm, task, result_by_task[task], panel
@@ -210,6 +216,7 @@ def load_external_arm(
         "task_hashes": task_hashes,
         "suite_lock_sha256": hashlib.sha256(suite_payloads.pop()).hexdigest(),
         "code_scorer": code_scorer,
+        "math_scorer": math_scorer,
         "shared_config": shared_config,
         "evidence": [
             {"path": str(path), "sha256": core.sha256(path)} for path in sorted(set(evidence))
@@ -258,6 +265,8 @@ def paired_comparison(
         raise ValueError("external suite lock differs from baseline")
     if external["code_scorer"]["tool_sha256"] != baseline["code_scorer"]["tool_sha256"]:
         raise ValueError("external code scorer tool differs from baseline")
+    if external["math_scorer"] != baseline["math_scorer"]:
+        raise ValueError("external math scorer differs from baseline")
     wins = losses = ties = 0
     for task in core.TASKS:
         if set(external["values"][task]) != set(baseline["values"][task]):
@@ -307,6 +316,7 @@ def main() -> None:
             "task_hashes": task_hashes,
             "suite_lock_sha256": "suite",
             "code_scorer": {"tool_sha256": "scorer"},
+            "math_scorer": {"tool_sha256": "math-scorer"},
         }
         comparison = paired_comparison(
             {

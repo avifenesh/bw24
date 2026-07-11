@@ -155,6 +155,11 @@ if [[ ! -e "$RUN_DIR/code-score.json" && ! -e "$RUN_DIR/code-score.receipt.json"
 fi
 [[ -f "$RUN_DIR/code-score.json" && -f "$RUN_DIR/code-score.receipt.json" ]] \
   || die "code score evidence is incomplete"
+if [[ ! -e "$RUN_DIR/math-score.json" && ! -e "$RUN_DIR/math-score.receipt.json" ]]; then
+  "$HERE/score_hourish_math_container.sh" "$RUN_DIR"
+fi
+[[ -f "$RUN_DIR/math-score.json" && -f "$RUN_DIR/math-score.receipt.json" ]] \
+  || die "math score evidence is incomplete"
 
 stop_server
 date -u +%FT%TZ > "$CONTROL_DIR/complete"

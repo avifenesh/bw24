@@ -22,6 +22,19 @@ TASKS = {
     "mmlu_pro_history": ("MMLU-Pro history", "exact_match", "custom-extract"),
     "mmlu_pro_other": ("MMLU-Pro other", "exact_match", "custom-extract"),
 }
+MATH_SCORE_POLICY = {
+    "answer_selection": "first_nonempty_line_then_same_line_answer_clause",
+    "later_lines_ignored": True,
+    "max_answer_chars": 4096,
+    "verification_timeout_seconds": 5,
+}
+MATH_SCORE_VERSIONS = {
+    "antlr4-python3-runtime": "4.11.0",
+    "latex2sympy2-extended": "1.11.0",
+    "math-verify": "0.9.0",
+    "mpmath": "1.3.0",
+    "sympy": "1.14.0",
+}
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -274,6 +287,99 @@ def load_code_task(
     )
 
 
+def load_math_task(
+    run_dir: pathlib.Path,
+    arm: str,
+    panel: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, float], list[pathlib.Path], dict[str, Any]]:
+    score_path = run_dir / "math-score.json"
+    receipt_path = run_dir / "math-score.receipt.json"
+    if not score_path.is_file() or not receipt_path.is_file():
+        raise ValueError(f"{arm}: missing math score evidence")
+    score = json.loads(score_path.read_text())
+    receipt = json.loads(receipt_path.read_text())
+    expected_n = panel["task_counts"]["hendrycks_math500"]
+    if (
+        score.get("format") != "bw24-hourish-math-score-v1"
+        or score.get("total") != expected_n
+        or score.get("by_task", {}).get("hendrycks_math500", {}).get("total") != expected_n
+        or score.get("policy") != MATH_SCORE_POLICY
+        or score.get("versions") != MATH_SCORE_VERSIONS
+        or receipt.get("format") != "bw24-hourish-math-score-receipt-v1"
+        or receipt.get("output_sha256") != sha256(score_path)
+        or receipt.get("sandbox", {}).get("network") != "none"
+        or receipt.get("sandbox", {}).get("read_only_root") is not True
+        or receipt.get("sandbox", {}).get("capabilities") != "all dropped"
+        or receipt.get("sandbox", {}).get("no_new_privileges") is not True
+        or receipt.get("sandbox", {}).get("pids_limit") != 32
+        or receipt.get("sandbox", {}).get("memory_bytes") != 1024 * 1024 * 1024
+        or receipt.get("sandbox", {}).get("cpus") != 1
+        or not isinstance(receipt.get("tool_sha256"), str)
+        or not receipt["tool_sha256"]
+        or not isinstance(receipt.get("image_id"), str)
+        or not receipt["image_id"]
+    ):
+        raise ValueError(f"{arm}: invalid math score or sandbox receipt")
+    sample_path = exactly_one(
+        sorted(run_dir.rglob("samples_hendrycks_math500_*.jsonl")),
+        f"{arm}/hendrycks_math500 samples",
+    )
+    input_files = score.get("input_files")
+    if (
+        not isinstance(input_files, list)
+        or len(input_files) != 1
+        or input_files[0].get("sha256") != sha256(sample_path)
+    ):
+        raise ValueError(f"{arm}: math score input hash differs from generation")
+    generated_identities = {}
+    with sample_path.open() as handle:
+        for line_number, line in enumerate(handle, 1):
+            row = json.loads(line)
+            identity = sample_identity(row, f"{sample_path}:{line_number}")
+            if identity in generated_identities:
+                raise ValueError(f"{arm}: duplicate generated math sample")
+            generated_identities[identity] = row.get("doc_id")
+    values: dict[str, float] = {}
+    doc_ids = []
+    for row in score.get("samples", []):
+        if (
+            row.get("task") != "hendrycks_math500"
+            or not isinstance(row.get("passed"), bool)
+            or row.get("method") not in ("math_verify", "normalized_literal", "none")
+            or not isinstance(row.get("answer"), str)
+            or not isinstance(row.get("normalized_answer"), str)
+        ):
+            raise ValueError(f"{arm}: malformed math sample")
+        hashes = (row.get("doc_hash"), row.get("prompt_hash"), row.get("target_hash"))
+        if not all(isinstance(value, str) and value for value in hashes):
+            raise ValueError(f"{arm}: missing math sample hashes")
+        identity = ":".join(hashes)
+        if identity in values:
+            raise ValueError(f"{arm}: duplicate scored math sample")
+        values[identity] = float(row["passed"])
+        doc_ids.append(row.get("doc_id"))
+    if (
+        set(values) != set(generated_identities)
+        or sorted(doc_ids) != sorted(panel["samples"]["hendrycks_math500"])
+        or sorted(generated_identities.values()) != sorted(panel["samples"]["hendrycks_math500"])
+    ):
+        raise ValueError(f"{arm}: generated and scored math samples differ")
+    successes = int(sum(values.values()))
+    if score.get("passed") != successes:
+        raise ValueError(f"{arm}: math pass total differs from samples")
+    return (
+        {"successes": successes, "n": expected_n, "rate": successes / expected_n},
+        values,
+        [sample_path, score_path, receipt_path],
+        {
+            "tool_sha256": receipt["tool_sha256"],
+            "image_id": receipt["image_id"],
+            "policy": score["policy"],
+            "versions": score["versions"],
+        },
+    )
+
+
 def load_arm(
     out_root: pathlib.Path, run_id: str, arm: str, panel: dict[str, Any]
 ) -> dict[str, Any]:
@@ -334,8 +440,14 @@ def load_arm(
     tasks["humaneval_instruct"] = code_task
     values["humaneval_instruct"] = code_values
     evidence.extend(code_evidence)
+    math_task, math_values, math_evidence, math_scorer = load_math_task(
+        run_dir, arm, panel
+    )
+    tasks["hendrycks_math500"] = math_task
+    values["hendrycks_math500"] = math_values
+    evidence.extend(math_evidence)
     for task in TASKS:
-        if task == "humaneval_instruct":
+        if task in ("humaneval_instruct", "hendrycks_math500"):
             continue
         task_result, task_values, sample_path = load_regular_task(
             run_dir, arm, task, result_by_task[task], panel
@@ -360,6 +472,7 @@ def load_arm(
         "task_hashes": task_hashes,
         "suite_lock_sha256": suite_lock_sha,
         "code_scorer": code_scorer,
+        "math_scorer": math_scorer,
         "shared_config": shared_config,
         "evidence": [{"path": str(path), "sha256": sha256(path)} for path in sorted(set(evidence))],
     }
@@ -390,6 +503,8 @@ def build_report(
             raise ValueError(f"{arm}: suite lock differs from baseline")
         if data["code_scorer"] != reference["code_scorer"]:
             raise ValueError(f"{arm}: code scorer identity differs from baseline")
+        if data["math_scorer"] != reference["math_scorer"]:
+            raise ValueError(f"{arm}: math scorer identity differs from baseline")
         for task in TASKS:
             if set(data["values"][task]) != set(reference["values"][task]):
                 raise ValueError(f"{arm}/{task}: paired sample identities differ")
