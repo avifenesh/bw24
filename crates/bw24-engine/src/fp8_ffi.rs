@@ -81,6 +81,7 @@ impl crate::Engine {
     pub fn try_fp8_gemm(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
                         -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        if cfg!(bw24_portable_cuda) { return Ok(None); }
         // Two e4m3 operand sources, one GEMM:
         //  * QT_F8_E4M3 (BW24_ST_E4M3): the RESIDENT decode bytes ARE the raw checkpoint e4m3 —
         //    prefill rides them directly (one copy, no budget). Unconditional: this dtype has no

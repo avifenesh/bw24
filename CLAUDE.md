@@ -97,6 +97,14 @@ Same three gates as CONTRIBUTING.md: `kernel-check`, the `run-gen` argmax gate, 
 K=1..8 self-consistency. A kernel change without before/after numbers measured per
 `research/benchmarks.md` isn't done.
 
+## Additional accelerator backends
+
+Blackwell remains bw24's primary optimized target. When research or deployment needs another
+accelerator, prefer an explicitly gated bw24 backend over changing the model or quantization
+artifact. Secondary backends must preserve the model bytes, default off at build time, document
+disabled target-specific kernels, and pass a same-prompt golden-output gate before producing
+scored evidence. They do not change the naked sm_120a build or its performance defaults.
+
 ## Evidence discipline (measurement lanes)
 
 - Raw sweep output is part of the deliverable: commit the per-run JSONL/log next to the summary

@@ -52,6 +52,8 @@ const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
 /// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
 /// compile-time default (zero behavior change).
 fn gemm_fatbin_path() -> String {
+    assert!(!(cfg!(bw24_portable_cuda) && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
+            "BW24_GEMM_FATBIN overrides are not allowed in the portable CUDA lane");
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
 }
 
@@ -4238,6 +4240,7 @@ impl Engine {
                     in_f: usize, out_f: usize)
                     -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        if cfg!(bw24_portable_cuda) { return Ok(None); }
         if std::env::var("BW24_FP4").is_err() { return Ok(None); }
         // CUTLASS prefill branch (m>=128 + BW24_FP4_CUTLASS + a repacked CutlassWeight present): route
         // to the CUTLASS sm120 NVFP4 GEMM, folding the per-tensor macro-scale into the epilogue alpha
@@ -4595,6 +4598,10 @@ impl Engine {
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
+                                   t, t_kv, scale, causal);
+        }
         // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
         // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).
         // Edge 5a (DEFAULT): fa_prefill_f32_pp — register-resident softmax (no sSw smem
@@ -4636,6 +4643,11 @@ impl Engine {
                            t: usize, t_kv: usize, scale: f32, causal: bool,
                            k_tok_bytes: usize, v_tok_bytes: usize)
                            -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                  t, t_kv, scale, causal,
+                                                  k_tok_bytes, v_tok_bytes);
+        }
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         let f = self.func(&format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?));
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
@@ -4671,6 +4683,11 @@ impl Engine {
                               t: usize, t_kv: usize, scale: f32, causal: bool,
                               k_tok_bytes: usize, v_tok_bytes: usize)
                               -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                  t, t_kv, scale, causal,
+                                                  k_tok_bytes, v_tok_bytes);
+        }
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         let kv_dim_k = n_head_kv * head_dim;
         let kv_dim_v = n_head_kv * head_dim;
@@ -5550,14 +5567,14 @@ impl Engine {
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
-        if c <= 64 {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+        if c <= 64 && !cfg!(bw24_portable_cuda) {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
             b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
-        } else {       // K2 generic (C = 128)
+        } else {       // K2 generic (C = 128, or the portable target's low-smem fallback)
             let f = self.func("gdn_chunk_attn_g_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
