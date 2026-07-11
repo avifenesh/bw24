@@ -4713,10 +4713,7 @@ impl Engine {
         // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
         // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
-        // FP8-WINDOWED (g): the g-module register/smem twins mis-decode the gemma windowed
-        // shape (scalar + rows twins are exact — root-cause open, jsonl); the under-window
-        // regime rides the scalar until then. Depth traffic goes through the rows lanes.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv() && !g;
+        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
@@ -4759,14 +4756,16 @@ impl Engine {
                 std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
                     .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
             });
-            if fa_v4_at(t_kv) && head_dim == 256 && !g {
+            if fa_v4_at(t_kv) && head_dim == 256 {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
                 // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
-                let fv = self.func(match fa_v4_mode() {
+                // g (fp8-windowed): the v4 staging is format-aware (2026-07-12) — kf8vf8 module.
+                let v4name = match fa_v4_mode() {
                     "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
                     "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
                     _ => "fa_decode_vec_q_v4",
-                });
+                };
+                let fv = if g { self.func_g(v4name) } else { self.func(v4name) };
                 let shmem = (11520 + 32 * head_dim * 2) as u32;   // fa_v4_smem + sV
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
@@ -5007,16 +5006,22 @@ impl Engine {
         // k-tile — one staging per (split, tile) instead of per (row, split, tile), and t=1
         // blocks pack t warps. Per-row tile grouping matches v4_w exactly; ONE symbol serves
         // every t (parity structural). BW24_FA_MR=0 reverts to the per-row v4_w grid.
-        let mr = gqa == 1 && t <= 8 && fa_v4_at(window) && !Self::wkv_on()
+        let mr = gqa == 1 && t <= 8 && fa_v4_at(window)
             && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
 
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        // FP8-WINDOWED (wkv): the v4 family is format-aware (2026-07-12 KFMT/VFMT staging
+        // arms) — wkv rides the SAME lane logic, resolved from the kf8vf8 module. One symbol
+        // per (lane, format-module) keeps parity structural; the old register-i2 detour
+        // (-33%) is retired.
+        let wg = Self::wkv_on();
         // STAGING-PARALLEL v4 (BW24_FA_SPW2, default ON at gqa==1): warp 1 = staging helper
         // (v4 is 61% staging); score phases identical to v4_w. Same symbol all t.
-        let sp2 = gqa == 1 && fa_v4_at(window) && !Self::wkv_on()
+        let sp2 = gqa == 1 && fa_v4_at(window)
             && std::env::var("BW24_FA_SPW2").as_deref() != Ok("0");
         if sp2 {
-            let f = self.func("fa_decode_vec_q_rows_v4_w_sp");
+            let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_sp") }
+                    else { self.func("fa_decode_vec_q_rows_v4_w_sp") };
             let sh = (11520 + 32 * head_dim * 2) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
@@ -5026,18 +5031,9 @@ impl Engine {
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
              .arg(&ktb).arg(&vtb).arg(&wini);
             unsafe { b.launch(cfg)?; }
-        } else if Self::wkv_on() {
-            // FP8-WINDOWED lane: e4m3 cache, register i2 walk from the kf8vf8 module.
-            let f = self.func_g("fa_decode_vec_q_rows_reg_w_i2");
-            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
-                block_dim: (32, gqa, 1), shared_mem_bytes: 0 };
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
-             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
-             .arg(&ktb).arg(&vtb).arg(&wini);
-            unsafe { b.launch(cfg)?; }
         } else if mr {
-            let f = self.func("fa_decode_vec_q_rows_v4_w_mr");
+            let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_mr") }
+                    else { self.func("fa_decode_vec_q_rows_v4_w_mr") };
             // fa_v4_smem_mr (fixed 39-slot k tile) + sV for (32 + t - 1) staged keys
             let sh = (2048 + 256 + 39 * 256 + 39 * 32 + (32 + t - 1) * head_dim * 2) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
@@ -5050,13 +5046,16 @@ impl Engine {
              .arg(&ktb).arg(&vtb).arg(&wini).arg(&nr);
             unsafe { b.launch(cfg)?; }
         } else {
+        let pick = |name: &str| if wg { self.func_g(name) } else { self.func(name) };
         let (f, sh) = if fa_v4_at(window) {
-            let f = self.func("fa_decode_vec_q_rows_v4_w");
+            let f = pick("fa_decode_vec_q_rows_v4_w");
             (f, (11520 + 32 * head_dim * 2) as u32)
         } else if smem_tkv > 0 && window >= smem_tkv {
-            (self.func("fa_decode_vec_q_rows_smem_w"), (2 * 32 * head_dim * 2) as u32)
+            // NOTE: the smem twin's V-stage is still q5_1-hardcoded — unreachable under wkv
+            // at the gemma window (v4 covers it); revisit if the smem floor ever drops.
+            (pick("fa_decode_vec_q_rows_smem_w"), (2 * 32 * head_dim * 2) as u32)
         } else {
-            (self.func("fa_decode_vec_q_rows_reg_w"), 0u32)
+            (pick("fa_decode_vec_q_rows_reg_w"), 0u32)
         };
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
@@ -5067,7 +5066,8 @@ impl Engine {
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
         }
-        let (fc, cfg2) = (self.func("fa_decode_combine_rows_w"),
+        let (fc, cfg2) = (if wg { self.func_g("fa_decode_combine_rows_w") }
+                          else { self.func("fa_decode_combine_rows_w") },
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);

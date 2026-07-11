@@ -3752,6 +3752,36 @@ static __device__ __forceinline__ void fa_v4_stage_q(
 static __device__ __forceinline__ void fa_v4_stage_k(
         const uint8_t* __restrict__ K, int t0, int nt, int bt, int bsz,
         int kblk0, long k_tok_bytes, fa_v4_smem* sm) {
+#if BW24_KV_KFMT == 1
+    // fp8-e4m3 K (KFMT==1): 32 raw bytes per chunk — cvt to f32, per-chunk absmax requant
+    // to int8 so the dp4a score phase is format-agnostic (k_d = absmax/127; absmax==0 ->
+    // zeros). NEW NUMERIC CONFIG for the fp8 module only; the default arm below is verbatim.
+    for (int task = bt; task < nt * 8; task += bsz) {
+        int j = task >> 3, c = task & 7;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        float vals[32];
+        float amax = 0.0f;
+        #pragma unroll
+        for (int e = 0; e < 32; e++) {
+            vals[e] = (float)((const __nv_fp8_e4m3*)blk)[e];
+            amax = fmaxf(amax, fabsf(vals[e]));
+        }
+        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
+        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        sm->k_d[j][c] = kd;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            int packed = 0;
+            #pragma unroll
+            for (int b8 = 0; b8 < 4; b8++) {
+                const int e = w * 4 + b8;
+                const int q = __float2int_rn(vals[e] * inv);
+                packed |= (q & 0xFF) << (8 * b8);
+            }
+            sm->k_ints[j][c * 8 + w] = packed;
+        }
+    }
+#else
     // task = (key j, chunk c): unpack q8_0 block (2B d + 32 int8) into aligned ints + half.
     for (int task = bt; task < nt * 8; task += bsz) {
         int j = task >> 3, c = task & 7;
@@ -3770,6 +3800,7 @@ static __device__ __forceinline__ void fa_v4_stage_k(
             w0 = w1;
         }
     }
+#endif
 }
 
 extern "C" __global__ void fa_decode_vec_q_v4(
@@ -3818,6 +3849,30 @@ extern "C" __global__ void fa_decode_vec_q_v4(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3835,6 +3890,7 @@ extern "C" __global__ void fa_decode_vec_q_v4(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -3949,6 +4005,30 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -3966,6 +4046,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4080,6 +4161,30 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4097,6 +4202,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4195,6 +4301,30 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4212,6 +4342,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4284,6 +4415,30 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4301,6 +4456,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4424,6 +4580,30 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4441,6 +4621,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4567,6 +4748,30 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4584,6 +4789,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
@@ -4688,6 +4894,36 @@ static __device__ __forceinline__ void fa_v4_stage_q_mr(
 static __device__ __forceinline__ void fa_v4_stage_k_mr(
         const uint8_t* __restrict__ K, int t0, int nt, int bt, int bsz,
         int kblk0, long k_tok_bytes, fa_v4_smem_mr* sm) {
+#if BW24_KV_KFMT == 1
+    // fp8-e4m3 K (KFMT==1): 32 raw bytes per chunk — cvt to f32, per-chunk absmax requant
+    // to int8 so the dp4a score phase is format-agnostic (k_d = absmax/127; absmax==0 ->
+    // zeros). NEW NUMERIC CONFIG for the fp8 module only; the default arm below is verbatim.
+    for (int task = bt; task < nt * 8; task += bsz) {
+        int j = task >> 3, c = task & 7;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        float vals[32];
+        float amax = 0.0f;
+        #pragma unroll
+        for (int e = 0; e < 32; e++) {
+            vals[e] = (float)((const __nv_fp8_e4m3*)blk)[e];
+            amax = fmaxf(amax, fabsf(vals[e]));
+        }
+        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
+        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        sm->k_d[j][c] = kd;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            int packed = 0;
+            #pragma unroll
+            for (int b8 = 0; b8 < 4; b8++) {
+                const int e = w * 4 + b8;
+                const int q = __float2int_rn(vals[e] * inv);
+                packed |= (q & 0xFF) << (8 * b8);
+            }
+            sm->k_ints[j][c * 8 + w] = packed;
+        }
+    }
+#else
     for (int task = bt; task < nt * 8; task += bsz) {
         int j = task >> 3, c = task & 7;
         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
@@ -4703,6 +4939,7 @@ static __device__ __forceinline__ void fa_v4_stage_k_mr(
             w0 = w1;
         }
     }
+#endif
 }
 extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
         const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
@@ -4758,6 +4995,30 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
             const int b32   = b >> 2;
             const int j     = b32 / dpl;
             const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            // fp8-e4m3 V: raw bytes, one cvt per element (V_BLK_B = 32; no scales).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = __float2bfloat16((float)((const __nv_fp8_e4m3*)blk)[e2]);
+            }
+            #elif BW24_KV_VFMT == 1
+            // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * 24;
             uint32_t wdm; memcpy(&wdm, blk, 4);
@@ -4775,6 +5036,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_mr(
                 const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
                 out[e2] = __float2bfloat16(d * (float)q5 + m);
             }
+            #endif
         }
         fa_v4_stage_k_mr(K, t0, nt_stage, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
