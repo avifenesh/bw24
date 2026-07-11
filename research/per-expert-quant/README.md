@@ -492,7 +492,8 @@ and concurrency 1 on any response mismatch, retry, server error, or spill error.
 
 The runner rejects missing runtime declarations, non-worker spill, disabled telemetry, speculative
 serving, a non-exact health model set, and mismatched `SHARD_ID`/`TASKS_OVERRIDE` before creating an
-output directory.
+output directory. The final evidence-directory creation is one exclusive `mkdir`, so concurrent
+launchers cannot both pass a stale existence check and merge evidence.
 
 For the matched first-pass screen, use the orchestrator. It refuses existing outputs and stale
 listeners, starts a fresh exactly-one-model server for each arm, fixes the spill/cache environment,

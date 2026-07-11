@@ -130,7 +130,12 @@ if ! python3 "$HERE/validate_server_health.py" "$HEALTH_TMP" "$MODEL" --exact; t
   rm -f "$HEALTH_TMP"
   exit 2
 fi
-mkdir -p "$CACHE_DIR" "$RUN_DIR"
+mkdir -p "$CACHE_DIR" "$(dirname "$RUN_DIR")"
+if ! mkdir "$RUN_DIR"; then
+  rm -f "$HEALTH_TMP"
+  echo "lost exclusive ownership race for output directory: $RUN_DIR" >&2
+  exit 3
+fi
 mv "$HEALTH_TMP" "$RUN_DIR/health.json"
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
   git init --quiet "$HARNESS_DIR"
