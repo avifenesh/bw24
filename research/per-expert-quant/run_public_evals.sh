@@ -17,7 +17,6 @@ NUM_CONCURRENT=${NUM_CONCURRENT:-1}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
-RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
@@ -37,6 +36,35 @@ case "$SUITE" in
     ;;
   *) echo "unknown SUITE=$SUITE (expected candidate, core, or code)" >&2; exit 2 ;;
 esac
+
+SUITE_TASKS=$TASKS
+if [[ -n ${TASKS_OVERRIDE:-} ]]; then
+  IFS=',' read -r -a requested_tasks <<< "$TASKS_OVERRIDE"
+  declare -A seen_tasks=()
+  for task in "${requested_tasks[@]}"; do
+    [[ -n "$task" && ",$SUITE_TASKS," == *",$task,"* ]] || {
+      echo "TASKS_OVERRIDE contains task outside SUITE=$SUITE: $task" >&2
+      exit 2
+    }
+    [[ -z ${seen_tasks[$task]+x} ]] || {
+      echo "TASKS_OVERRIDE contains duplicate task: $task" >&2
+      exit 2
+    }
+    seen_tasks[$task]=1
+  done
+  TASKS=$TASKS_OVERRIDE
+fi
+if [[ -n ${SHARD_ID:-} && (
+  ! ${SHARD_ID} =~ ^[A-Za-z0-9._-]+$ || ${SHARD_ID} == "." || ${SHARD_ID} == ".."
+) ]]; then
+  echo "SHARD_ID must contain only letters, digits, dot, underscore, or dash" >&2
+  exit 2
+fi
+
+RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
+if [[ -n ${SHARD_ID:-} ]]; then
+  RUN_DIR="$RUN_DIR/shards/$SHARD_ID"
+fi
 
 if [[ -z "$EVAL_TIMEOUT_S" ]]; then
   if [[ "$SUITE" == candidate && ${LIMIT:-} == all ]]; then
@@ -91,7 +119,7 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE TASKS LIMIT BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN
+export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -120,6 +148,7 @@ metadata = {
     "suite": os.environ["SUITE"],
     "tasks": os.environ["TASKS"].split(","),
     "limit": os.environ.get("LIMIT") or None,
+    "shard_id": os.environ.get("SHARD_ID") or None,
     "base_url": os.environ["BASE_URL"],
     "artifact": str(artifact),
     "artifact_identity_file": str(identity),

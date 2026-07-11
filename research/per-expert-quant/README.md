@@ -480,6 +480,21 @@ For `LIMIT=all`, replace `--expected-n 50` with `--expected-n all`. The summariz
 the pinned per-task counts from `suite.lock.json`—198/500/381/924/844/1,101/798, totaling 4,746
 documents per arm—and rejects any incomplete or differently sampled result.
 
+Run a full arm as seven restartable task shards under one arm/run ID. `TASKS_OVERRIDE` may contain
+only tasks from the selected suite, and `SHARD_ID` creates an isolated receipt/result directory:
+
+    ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
+      OUT_ROOT=/data/results/per-expert-quant/final-full-candidate RUN_ID=RUN_ID \
+      SUITE=candidate LIMIT=all TASKS_OVERRIDE=gpqa_diamond_cot_zeroshot \
+      SHARD_ID=gpqa_diamond_cot_zeroshot EVAL_TIMEOUT_S=432000 \
+      research/per-expert-quant/run_public_evals.sh
+
+Repeat for each pinned candidate task, skipping only a shard that already has a validated
+`results_*.json`. The full summarizer accepts either one monolithic result or these task shards,
+requires byte-identical artifact manifests across shards, and requires exactly one aggregate and
+sample log for every pinned task. Never combine shards from different model, server, harness,
+artifact, generation, concurrency, or spill configurations.
+
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
 screening, then run their complete public suites only for promoted artifacts.

@@ -62,18 +62,33 @@ def load_arm(
     expected_counts: dict[str, int],
 ) -> dict[str, Any]:
     run_dir = out_root / arm / run_id
-    manifest_path = run_dir / "artifact-manifest.json"
-    if not manifest_path.is_file():
-        raise ValueError(f"{arm}: missing {manifest_path}")
-    manifest = json.loads(manifest_path.read_text())
-    result_path = exactly_one(sorted(run_dir.rglob("results_*.json")), f"{arm} results")
-    results = json.loads(result_path.read_text())
+    manifest_paths = sorted(run_dir.rglob("artifact-manifest.json"))
+    if not manifest_paths:
+        raise ValueError(f"{arm}: no artifact manifests under {run_dir}")
+    manifest_payloads = {path.read_bytes() for path in manifest_paths}
+    if len(manifest_payloads) != 1:
+        raise ValueError(f"{arm}: artifact manifests differ across shards")
+    manifest = json.loads(manifest_payloads.pop())
+    result_paths = sorted(run_dir.rglob("results_*.json"))
+    if not result_paths:
+        raise ValueError(f"{arm}: no result files under {run_dir}")
+    result_payloads = [(path, json.loads(path.read_text())) for path in result_paths]
     tasks = {}
     values_by_task: dict[str, dict[str, float]] = {}
     for spec in specs:
         task = spec["result_task"]
         expected_n = expected_counts[task]
         metric_key = f"{spec['metric']},{spec['filter']}"
+        matching_results = [
+            (path, result)
+            for path, result in result_payloads
+            if metric_key in result.get(spec["result_section"], {}).get(task, {})
+        ]
+        if len(matching_results) != 1:
+            raise ValueError(
+                f"{arm}/{task}: expected exactly one result across shards, found {len(matching_results)}"
+            )
+        _, results = matching_results[0]
         aggregate = results.get(spec["result_section"], {}).get(task, {})
         aggregate_value = numeric(aggregate.get(metric_key), f"{arm}/{task} aggregate")
         sample_path = exactly_one(sorted(run_dir.rglob(spec["sample_glob"])), f"{arm}/{task} samples")
@@ -105,7 +120,8 @@ def load_arm(
     macro = sum(task["rate"] for task in tasks.values()) / len(tasks)
     return {
         "artifact_bytes": int(manifest["artifact_bytes"]),
-        "result_file": str(result_path),
+        "result_file": str(result_paths[0]) if len(result_paths) == 1 else None,
+        "result_files": [str(path) for path in result_paths],
         "tasks": tasks,
         "macro": macro,
         "values": values_by_task,
@@ -288,6 +304,26 @@ def self_test(lock: dict[str, Any]) -> None:
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
         assert "full pinned" in markdown(full_report)
+        candidate_run = root / "candidate" / "fixture"
+        candidate_model = candidate_run / "candidate"
+        candidate_results_path = candidate_model / "results_fixture.json"
+        candidate_results = json.loads(candidate_results_path.read_text())
+        manifest_text = (candidate_run / "artifact-manifest.json").read_text()
+        for spec in specs:
+            task = spec["result_task"]
+            shard = candidate_run / "shards" / task
+            shard_model = shard / "candidate"
+            shard_model.mkdir(parents=True)
+            sample = exactly_one(sorted(candidate_model.glob(spec["sample_glob"])), task)
+            sample.rename(shard_model / sample.name)
+            section = spec["result_section"]
+            shard_results = {section: {task: candidate_results[section][task]}}
+            (shard_model / f"results_{task}.json").write_text(json.dumps(shard_results))
+            (shard / "artifact-manifest.json").write_text(manifest_text)
+        candidate_results_path.unlink()
+        (candidate_run / "artifact-manifest.json").unlink()
+        sharded_report = build_report(root, "fixture", arms, "plain_quant", 4, lock)
+        assert len(sharded_report["arms"]["candidate"]["result_files"]) == len(specs)
         print("promoted result summarizer self-test: PASS")
 
 
