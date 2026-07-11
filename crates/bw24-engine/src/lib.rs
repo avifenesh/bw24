@@ -169,6 +169,10 @@ pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
 /// measured 64 (37.13/37.12 vs 36.87/36.86 at 1.7k, N=2 — different attention geometry).
 pub static FA_SPW_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(32);
+/// Per-model hd512 (gemma globals) split default (BW24_FA_SP512 overrides): 26B measured 16
+/// (2026-07-11 N=2), dense 31B measured 32 (36.86/36.93 vs 36.73/36.73 at 1.7k, 2026-07-12).
+pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(16);
 /// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
 /// split changes with blockDim -> different FP order -> battery-arbitrated per model).
 /// qwen keeps the shipped 256; gemma4 adopts 1024 (single-row 2816-col norms are one-block
@@ -4970,8 +4974,8 @@ impl Engine {
             // default 16 (2026-07-11 depth sweep, N=2: plain 155.4->156.5, depth spec
             // 236.9->250.4; 12/24/32 all worse). hd512 exists only on gemma globals.
             let v = *SP512.get_or_init(|| std::env::var("BW24_FA_SP512").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(16));
-            if v >= 8 { sp = v; }
+                .and_then(|x| x.parse().ok()).unwrap_or(0));
+            sp = if v >= 8 { v } else { FA_SP512_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) };
         }
         let n_splits_max = (t_kv_max + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);

@@ -688,6 +688,9 @@ impl HybridModel {
             // t=1 under the raw-e4m3 sV ceiling), dense 31B = 64 (37.13 vs 36.87 at 1.7k, N=2).
             crate::FA_SPW_DEFAULT.store(if cfg.moe.is_some() { 32 } else { 64 },
                                         std::sync::atomic::Ordering::Relaxed);
+            // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
+            crate::FA_SP512_DEFAULT.store(if cfg.moe.is_some() { 16 } else { 32 },
+                                          std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
