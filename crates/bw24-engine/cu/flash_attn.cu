@@ -3817,7 +3817,10 @@ static __device__ __forceinline__ void fa_v4_stage_k(
         uint32_t w0 = ap[0];
         #pragma unroll
         for (int w = 0; w < 8; w++) {
-            uint32_t w1 = ap[w + 1];
+            // At an aligned final q8_0 block, word 7 is already complete in w0. Loading ap[8]
+            // would read four bytes beyond the cache even though funnelshift(sh8=0) ignores w1.
+            uint32_t w1 = 0;
+            if (w != 7 || sh8 != 0) w1 = ap[w + 1];
             sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
             w0 = w1;
         }
@@ -5020,7 +5023,9 @@ static __device__ __forceinline__ void fa_v4_stage_k_mr(
         uint32_t w0 = ap[0];
         #pragma unroll
         for (int w = 0; w < 8; w++) {
-            uint32_t w1 = ap[w + 1];
+            // Same aligned tail as fa_v4_stage_k: w0 already contains the final output word.
+            uint32_t w1 = 0;
+            if (w != 7 || sh8 != 0) w1 = ap[w + 1];
             sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
             w0 = w1;
         }
@@ -5713,7 +5718,3 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16_i2(
         partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
     }
 }
-
-
-
-
