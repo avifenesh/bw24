@@ -5011,7 +5011,22 @@ impl Engine {
             && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
 
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
-        if Self::wkv_on() {
+        // STAGING-PARALLEL v4 (BW24_FA_SPW2, default ON at gqa==1): warp 1 = staging helper
+        // (v4 is 61% staging); score phases identical to v4_w. Same symbol all t.
+        let sp2 = gqa == 1 && fa_v4_at(window) && !Self::wkv_on()
+            && std::env::var("BW24_FA_SPW2").as_deref() != Ok("0");
+        if sp2 {
+            let f = self.func("fa_decode_vec_q_rows_v4_w_sp");
+            let sh = (11520 + 32 * head_dim * 2) as u32;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+                block_dim: (32, 2, 1), shared_mem_bytes: sh };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
+             .arg(&ktb).arg(&vtb).arg(&wini);
+            unsafe { b.launch(cfg)?; }
+        } else if Self::wkv_on() {
             // FP8-WINDOWED lane: e4m3 cache, register i2 walk from the kf8vf8 module.
             let f = self.func_g("fa_decode_vec_q_rows_reg_w_i2");
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
