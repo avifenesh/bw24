@@ -2,6 +2,15 @@
   "format": "bw24-public-eval-suite-v1",
   "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
   "generated_utc": "2026-07-10T00:00:00Z",
+  "eval_documents": {
+    "gpqa_diamond_cot_zeroshot": 198,
+    "hendrycks_math500": 500,
+    "mmlu_pro_history": 381,
+    "mmlu_pro_other": 924,
+    "mmlu_pro_economics": 844,
+    "mmlu_pro_law": 1101,
+    "mmlu_pro_psychology": 798
+  },
   "suites": {
     "candidate": [
       "gpqa_diamond_cot_zeroshot",

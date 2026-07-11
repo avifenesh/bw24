@@ -59,7 +59,7 @@ def load_arm(
     run_id: str,
     arm: str,
     specs: list[dict[str, str]],
-    expected_n: int,
+    expected_counts: dict[str, int],
 ) -> dict[str, Any]:
     run_dir = out_root / arm / run_id
     manifest_path = run_dir / "artifact-manifest.json"
@@ -72,6 +72,7 @@ def load_arm(
     values_by_task: dict[str, dict[str, float]] = {}
     for spec in specs:
         task = spec["result_task"]
+        expected_n = expected_counts[task]
         metric_key = f"{spec['metric']},{spec['filter']}"
         aggregate = results.get(spec["result_section"], {}).get(task, {})
         aggregate_value = numeric(aggregate.get(metric_key), f"{arm}/{task} aggregate")
@@ -116,12 +117,25 @@ def build_report(
     run_id: str,
     arms: list[str],
     baseline: str,
-    expected_n: int,
+    expected_n: int | str,
     lock: dict[str, Any],
     shared_model_bytes: int = DEFAULT_SHARED_MODEL_BYTES,
 ) -> dict[str, Any]:
     specs = candidate_specs(lock)
-    loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_n) for arm in arms}
+    if expected_n == "all":
+        pinned = lock.get("eval_documents", {})
+        expected_counts = {}
+        for spec in specs:
+            task = spec["result_task"]
+            count = pinned.get(task)
+            if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                raise ValueError(f"{task}: missing positive eval_documents count in suite lock")
+            expected_counts[task] = count
+    else:
+        if isinstance(expected_n, bool) or not isinstance(expected_n, int) or expected_n <= 0:
+            raise ValueError(f"expected_n must be a positive integer or 'all', got {expected_n!r}")
+        expected_counts = {spec["result_task"]: expected_n for spec in specs}
+    loaded = {arm: load_arm(out_root, run_id, arm, specs, expected_counts) for arm in arms}
     for task in (spec["result_task"] for spec in specs):
         identities = {arm: set(data["values"][task]) for arm, data in loaded.items()}
         first = identities[arms[0]]
@@ -171,7 +185,8 @@ def build_report(
     return {
         "format": "bw24-promoted-candidate-v1",
         "run_id": run_id,
-        "n_per_task": expected_n,
+        "n_per_task": expected_n if expected_n != "all" else expected_counts,
+        "documents_per_arm": sum(expected_counts.values()),
         "baseline": baseline,
         "shared_model_bytes": shared_model_bytes,
         "arms": loaded,
@@ -182,10 +197,15 @@ def build_report(
 
 
 def markdown(report: dict[str, Any]) -> str:
+    n_per_task = report["n_per_task"]
+    if isinstance(n_per_task, int):
+        sample_description = f"N={n_per_task} per task"
+    else:
+        sample_description = f"full pinned N={report['documents_per_arm']:,} per arm"
     lines = [
         "# Promoted-arm matched evaluation",
         "",
-        f"Run ID: `{report['run_id']}` · N={report['n_per_task']} per task · baseline `{report['baseline']}`",
+        f"Run ID: `{report['run_id']}` · {sample_description} · baseline `{report['baseline']}`",
         "",
         "| Arm | Logical size | Reduction vs baseline | Expert overlay bytes | Macro accuracy | Delta vs baseline | Paired W/L | 95% paired-bootstrap CI | Exact sign p |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -256,11 +276,18 @@ def self_test(lock: dict[str, Any]) -> None:
             (model_dir / "results_fixture.json").write_text(json.dumps(results))
         report = build_report(root, "fixture", arms, "plain_quant", 4, lock)
         assert report["n_per_task"] == 4
+        assert report["documents_per_arm"] == 4 * len(specs)
         assert report["paired_vs_baseline"]["candidate"]["paired_wins"] > 0
         assert report["arms"]["plain_quant"]["logical_model_bytes"] == DEFAULT_SHARED_MODEL_BYTES + 100
         assert report["arms"]["candidate"]["size_reduction_vs_baseline"] < 0
         assert report["point_estimate_pareto_arms"] == ["plain_quant"]
         assert "Wilson 95% CI" in markdown(report)
+        full_lock = dict(lock)
+        full_lock["eval_documents"] = {spec["result_task"]: 4 for spec in specs}
+        full_report = build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
+        assert full_report["documents_per_arm"] == 4 * len(specs)
+        assert isinstance(full_report["n_per_task"], dict)
+        assert "full pinned" in markdown(full_report)
         print("promoted result summarizer self-test: PASS")
 
 
@@ -270,7 +297,7 @@ def main() -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--arms", help="comma-separated arm names")
     parser.add_argument("--baseline", default="plain_quant")
-    parser.add_argument("--expected-n", type=int, default=50)
+    parser.add_argument("--expected-n", default="50", help="positive integer per task, or 'all'")
     parser.add_argument("--shared-model-bytes", type=int, default=DEFAULT_SHARED_MODEL_BYTES)
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("suite.lock.json"))
     parser.add_argument("--out", type=Path)
@@ -287,8 +314,17 @@ def main() -> int:
         parser.error("--baseline must be present in --arms")
     if args.shared_model_bytes < 0:
         parser.error("--shared-model-bytes must be non-negative")
+    if args.expected_n == "all":
+        expected_n: int | str = "all"
+    else:
+        try:
+            expected_n = int(args.expected_n)
+        except ValueError:
+            parser.error("--expected-n must be a positive integer or 'all'")
+        if expected_n <= 0:
+            parser.error("--expected-n must be a positive integer or 'all'")
     report = build_report(
-        args.out_root, args.run_id, arms, args.baseline, args.expected_n, lock, args.shared_model_bytes
+        args.out_root, args.run_id, arms, args.baseline, expected_n, lock, args.shared_model_bytes
     )
     out = args.out or args.out_root / "_runs" / args.run_id / "promoted-results.md"
     out.parent.mkdir(parents=True, exist_ok=True)

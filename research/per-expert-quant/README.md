@@ -471,6 +471,10 @@ prints the point-estimate quality/size Pareto frontier:
 The Pareto label is descriptive, not evidence of equivalence. Use the paired intervals and the
 full promoted-candidate evaluation before making the final quality-retention claim.
 
+For `LIMIT=all`, replace `--expected-n 50` with `--expected-n all`. The summarizer then requires
+the pinned per-task counts from `suite.lock.json`—198/500/381/924/844/1,101/798, totaling 4,746
+documents per arm—and rejects any incomplete or differently sampled result.
+
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial
 screening, then run their complete public suites only for promoted artifacts.
