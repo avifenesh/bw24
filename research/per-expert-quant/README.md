@@ -413,8 +413,9 @@ the local RTX 5090 run remains the final deployment-performance result.
 Start with the directional candidate panel: one fixed example each from GPQA Diamond, MATH-500,
 MMLU-Pro history/other knowledge, economics, law, and psychology (`LIMIT=1`). Candidate generations
 are capped at 256 tokens so this remains a screening run; override `LIMIT` or `MAX_GEN_TOKS` only
-when deliberately expanding it. This is a promotion gate, not a leaderboard score; run the full
-suites only after the size/quality direction is clear.
+when deliberately expanding it. Set `LIMIT=all` only for the final promoted artifacts to run every
+available sample in the candidate tasks. This is a promotion gate, not a leaderboard score; run the
+full suites only after the size/quality direction is clear.
 
     ARM=plain_quant MODEL=plain_quant ARTIFACT=/scratch/artifacts/plain-quant \
       SUITE=candidate research/per-expert-quant/run_public_evals.sh

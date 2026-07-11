@@ -31,7 +31,9 @@ case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
   candidate)
     TASKS=gpqa_diamond_cot_zeroshot,hendrycks_math500,mmlu_pro_history,mmlu_pro_other,mmlu_pro_economics,mmlu_pro_law,mmlu_pro_psychology
-    LIMIT=${LIMIT:-3}
+    if [[ ${LIMIT:-} != all ]]; then
+      LIMIT=${LIMIT:-3}
+    fi
     MAX_GEN_TOKS=${MAX_GEN_TOKS:-256}
     ;;
   code)
@@ -132,7 +134,7 @@ ARGS=(
   --log_samples
   --output_path "$RUN_DIR"
 )
-if [[ -n ${LIMIT:-} ]]; then ARGS+=(--limit "$LIMIT"); fi
+if [[ -n ${LIMIT:-} && ${LIMIT} != all ]]; then ARGS+=(--limit "$LIMIT"); fi
 if [[ -n ${MAX_GEN_TOKS:-} ]]; then ARGS+=(--gen_kwargs "max_gen_toks=$MAX_GEN_TOKS"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
 
