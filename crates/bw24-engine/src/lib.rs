@@ -492,6 +492,16 @@ impl Engine {
         *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0").unwrap_or(true))
     }
 
+    /// QWEN FP8-KV switch (BW24_KV_FP8, default OFF — bring-up arc, HANDOVER "QWEN FP8-KV"):
+    /// non-gemma full-attn layers hold e4m3 K/V via the kf8vf8 module. The 2026-07-09
+    /// BW24_KV_K=fp8 block (acceptance 74->20.5%) predates the format-aware arms and the
+    /// v4-rows parity fix — this arm re-litigates it through the gemma recipe; the spec
+    /// K=1..8 + acceptance A/B battery arbitrates any default flip.
+    pub fn kv_fp8_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_KV_FP8").as_deref() == Ok("1"))
+    }
+
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
     /// when the fp8-globals arm is on; everything else from the default flash module.
     fn fa_func(&self, name: &str, head_dim: usize) -> CudaFunction {

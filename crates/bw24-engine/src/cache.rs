@@ -119,7 +119,10 @@ impl Cache {
                 && cfg.gemma4.as_ref().is_some_and(|g| !g.swa_pattern[il as usize]);
             let g4_windowed_fp8 = crate::Engine::wkv_on()
                 && cfg.gemma4.as_ref().is_some_and(|g| g.swa_pattern[il as usize]);
-            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 { (32, 32) } else { (kbb, vbb) };
+            // QWEN FP8-KV (BW24_KV_FP8, bring-up): non-gemma full-attn layers, uniform class.
+            let qwen_fp8 = crate::Engine::kv_fp8_on() && cfg.gemma4.is_none();
+            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 || qwen_fp8 { (32, 32) }
+                                 else { (kbb, vbb) };
             let k_tok_bytes = (kv_dim_k / 32) * kbb_l;
             let v_tok_bytes = (kv_dim_v / 32) * vbb_l;
             match cfg.layer_kind(il) {

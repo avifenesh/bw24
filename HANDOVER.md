@@ -160,6 +160,19 @@ RECIPE (all infra exists from the gemma campaign):
    pair vs llama at 512/6.3k. Positive -> per-model default flip + board refresh.
 PREREQ CLEANUP: root-cause the g-module register twin at the gemma windowed shape (parked
 env-unreachable for gemma; it becomes load-bearing if hd128 register lane opens).
+STATUS: foundation LANDED (Engine::kv_fp8_on + cache.rs (32,32) class for non-gemma
+full-attn; default OFF = zero behavior change). REMAINING SITES (enumerated 2026-07-12):
+- append flag threading: decode.rs:713 (_dc), decode.rs:987, spec.rs:371 (_dc),
+  hybrid_forward.rs:368 (prime rows) — pass kv_fp8_on() && !gemma;
+  spec.rs:458+1182 append_kv_quantized_view and spec.rs:1176 append_kv_quantized_rows_dc
+  need the g PARAM ADDED to the host fns first (they always resolve the default module).
+- fa g threading (qwen sites, g = kv_fp8_on()): decode.rs fa_decode/kvmod decode site,
+  decode.rs:744 fa_decode_dc, decode.rs:563 fa_bucket_key, spec.rs:380 fa_decode_dc,
+  spec.rs:1232 fa_decode_rows (arg 15), graph_decode_gate.rs:40.
+- CHUNKED PRIME: fa_prefill_view parses the quantized past (hybrid_forward.rs:214/377) —
+  needs func_g routing under the flag (or force monolithic prime at bring-up).
+- hd128 + g rides the g-module SCALAR via the existing kvmod clamp (correct, slow) —
+  bring-up gates first, then open register/v2/v3 g-lanes one at a time.
 
 QWEN LANE PICKUPS from this campaign (for the NVFP4-publish arc, memory file):
 1. e4m3 KV (GKV/WKV recipe + kf8vf8 module + format-aware v4 arms) — qwen still runs
