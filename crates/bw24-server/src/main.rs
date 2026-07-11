@@ -64,7 +64,7 @@ struct CompletionReq {
     #[serde(default)]
     seed: u64,
     #[serde(default)]
-    stop: Vec<String>,
+    stop: StopSequences,
     /// wrap the prompt in the model's chat template (single user turn).
     #[serde(default)]
     chat: bool,
@@ -82,7 +82,7 @@ struct ChatMessage {
     content: String,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(untagged)]
 enum StopSequences {
     One(String),
@@ -245,7 +245,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         chat_messages: Vec::new(),
         params,
         sampler_cfg,
-        stop_strings: req.stop.clone(),
+        stop_strings: req.stop.clone().into_vec(),
         tx,
     }
 }
@@ -294,6 +294,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let model = req.model.clone();
     let stream = req.stream;
     let request = build_request(&req, tx);
+    let stop_strings = request.stop_strings.clone();
 
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
@@ -302,7 +303,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     if stream {
         sse_response(rx, model, false).into_response()
     } else {
-        blocking_response(rx, model, false).await.into_response()
+        blocking_response(rx, model, false, stop_strings).await.into_response()
     }
 }
 
@@ -321,13 +322,15 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let model = req.model.clone();
     let stream = req.stream;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    if st.cmd_tx.send(Cmd::Generate(Box::new(build_chat_request(req, tx)))).is_err() {
+    let request = build_chat_request(req, tx);
+    let stop_strings = request.stop_strings.clone();
+    if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE, "worker unavailable").into_response();
     }
     if stream {
         sse_response(rx, model, true).into_response()
     } else {
-        blocking_response(rx, model, true).await.into_response()
+        blocking_response(rx, model, true, stop_strings).await.into_response()
     }
 }
 
@@ -390,14 +393,21 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
 }
 
 /// Blocking JSON: collect all tokens, return one {text, tokens, stop_reason} when done.
+fn truncate_at_stop(text: &mut String, stop_strings: &[String]) {
+    if let Some(offset) = stop_strings.iter().filter_map(|stop| text.find(stop)).min() {
+        text.truncate(offset);
+    }
+}
+
 async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: String,
-                           chat: bool) -> Response {
+                           chat: bool, stop_strings: Vec<String>) -> Response {
     let mut text = String::new();
     let mut tokens: Vec<u32> = Vec::new();
     while let Some(ev) = rx.recv().await {
         match ev {
             Event::Token { id, text: delta } => { tokens.push(id); text.push_str(&delta); }
             Event::Done { stop_reason, n_tokens, elapsed_s } => {
+                truncate_at_stop(&mut text, &stop_strings);
                 if chat {
                     return Json(json!({
                         "object": "chat.completion", "model": model,
@@ -479,7 +489,7 @@ mod tests {
             stop_reason: "Eos".into(), n_tokens: 1, elapsed_s: 0.5,
         }).unwrap();
         drop(tx);
-        let response = blocking_response(rx, "plain_quant".into(), true).await;
+        let response = blocking_response(rx, "plain_quant".into(), true, Vec::new()).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -487,5 +497,38 @@ mod tests {
         assert_eq!(payload["choices"][0]["message"]["role"], "assistant");
         assert_eq!(payload["choices"][0]["message"]["content"], "hello");
         assert_eq!(payload["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn completions_accept_openai_stop_forms() {
+        for (value, expected) in [
+            (serde_json::json!("Problem:"), vec!["Problem:"]),
+            (serde_json::json!(["Question:", "Problem:"]), vec!["Question:", "Problem:"]),
+            (serde_json::Value::Null, Vec::<&str>::new()),
+        ] {
+            let req: CompletionReq = serde_json::from_value(serde_json::json!({
+                "model": "plain_quant", "prompt": "task", "stop": value
+            })).unwrap();
+            assert_eq!(req.stop.into_vec(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn blocking_response_excludes_stop_text_across_token_events() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Token { id: 1, text: "answer\nPro".into() }).unwrap();
+        tx.send(Event::Token { id: 2, text: "blem: leaked prompt".into() }).unwrap();
+        tx.send(Event::Done {
+            stop_reason: "Callback".into(), n_tokens: 2, elapsed_s: 0.5,
+        }).unwrap();
+        drop(tx);
+        let response = blocking_response(
+            rx, "plain_quant".into(), false, vec!["Problem:".into()]
+        ).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["text"], "answer\n");
+        assert_eq!(payload["stop_reason"], "Callback");
     }
 }
