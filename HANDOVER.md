@@ -165,7 +165,23 @@ PLAIN STANDING: short 1.00x | 1.7k ~0.965x. Remaining plain levers are ATTENTION
 and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
 90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
 e2e). The plain bar likely needs a new mechanism class, not tuning.
-SPEC 0.76x = THE BIGGER FRONT (85.5 K=5-6 adaptive + Q4 drafter vs llama-mtp 112; accept
+31B SPEC — M-ROUND BURST PORT MAP (recon 2026-07-12; the remaining structural lever,
+llama 2.78x own-plain vs our 2.15x):
+The qwen ROUND-STREAM pieces are MODEL-GENERIC device machinery (lib.rs/cache.rs) and port
+as-is: spec_accept_greedy_dc (device longest-prefix accept), spec_ring_commit (device out
+ring + pend token), spec_rollback_stream (device len_d rollback via a u64 ptr table),
+spec_seed_gather (accepted-row hidden gather), cache.snapshot_into + commit_verified_prefix
+(the D2D snapshot/commit pair), spec_assemble_verify (verify-token assembly + p-min brk).
+GEMMA-SPECIFIC work: (1) the draft chain must become a CAPTURED GRAPH or arg-fixed launch
+sequence (qwen uses a stream-graph `sg` with g_tok/g_pos/g_seed device slots; the gemma
+drafter chain is already zero-sync eager — capture it once per kr bucket), (2) the verify
+must run the DC trunk with device tokens (gemma4_decode_step_t_am_dev EXISTS — vam already
+lands device-side), (3) per-layer len_d ptr table for the rollback (gemma cache layers have
+len_d — build the u64 table once), (4) the accept/emit loop moves fully device-side; ONE
+dtoh per M rounds drains the ring. Estimated shape: ~300-500 LoC in gemma_spec + reuse.
+PRIZE: eliminates per-round host turnaround AND enables llama-class round pipelining; the
+gap it targets is the 0.79x -> 1.0x+ spec stretch. RISK: the 26B round must stay green
+(shared loop) — gate stream 128/128 short+depth on BOTH models every step.\nSPEC 0.76x = THE BIGGER FRONT (85.5 K=5-6 adaptive + Q4 drafter vs llama-mtp 112; accept
 0.756 competitive): llama runs 2.78x own-plain vs our 2.12x — ROUND STRUCTURE. Levers:
 (a) p-min/confidence early-cut on the gemma zero-sync round (pack_tok_p/confidence
 machinery exists for the qwen round, unexploited on gemma; needs a device-side break so
