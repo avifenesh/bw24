@@ -2092,6 +2092,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // router stays the two-launch pair: THREE fuse variants measured worse (serial-dot
+        // -50%, 1024-thread warp-parallel -12% on topk sync overhead — jsonl 2026-07-11);
+        // the pair's 12us is kernel time, not launch gaps.
         let logits = if crate::router_kernel_on() {
             e.router_gemv(m.gate_inp.float_data(), router_in, n_embd, n_expert, t)?
         } else {
