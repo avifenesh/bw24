@@ -276,6 +276,22 @@ no-prune follow-up keeps the 16 Q8_0 and 37 NVFP4 traffic boundaries, then assig
       --q2-count 139 \
       --out /data/plans/traffic-mix-quant-no-prune.json
 
+The leaner ablation keeps only the hottest 16 experts at Q8_0 and assigns the other 176 to Q2_K.
+Set the middle-tier count to zero explicitly:
+
+    python3 tools/build_expert_tier_plan.py \
+      --trace /data/runs/hy3-calibration-normfix-66394bf-worker-d8-full.trace \
+      --recipe traffic-ladder \
+      --expert-count 192 \
+      --original-expert-count 192 \
+      --top-k 8 \
+      --expected-tokens 163409 \
+      --layers 1-79 \
+      --q8-count 16 \
+      --nvfp4-count 0 \
+      --q2-count 176 \
+      --out /data/plans/traffic-q8-q2-no-prune.json
+
 For the masked REAP50 bank, build the exact 48 Q2_K / 48 NVFP4 split. The trace retains original
 expert ids because bw24 masks the full-width router instead of renumbering it:
 
