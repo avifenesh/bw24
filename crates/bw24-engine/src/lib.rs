@@ -4922,9 +4922,12 @@ impl Engine {
                     else { "fa_decode_vec_q_rows" };
         let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
                 else if g && head_dim == 256 {
-                    // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module. v4 AND the
-                    // smem twin excluded (v4 staging + smem V-stage are q5_1/q8_0-hardcoded).
-                    self.func_g(if v4 || smem_rows { "fa_decode_vec_q_rows" } else { fname })
+                    // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module, SAME symbol
+                    // choice as decode's kvmod dispatch (parity law: excluding v4 here paired
+                    // g-module rows against decode's g-module v4 — different programs, short-VG
+                    // maxdiff 2.0 / spec stream 0/128, 2026-07-12). rows_v4 is format-aware
+                    // since fda9790; only the smem twin stays excluded (V-stage q5_1-only).
+                    self.func_g(if smem_rows { "fa_decode_vec_q_rows" } else { fname })
                 }
                 else { self.func(fname) };
         let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
@@ -4986,17 +4989,17 @@ impl Engine {
         // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
-        let mut sp = fa_split_keys(window, n_head_kv);
         // windowed split (BW24_FA_SPW, default 64 — the honest 2026-07-11 N=2 sweep: plain
-        // 156.6->159.3, depth spec 251.2->253.4; 48 trades +3 plain for -10 spec; 16
-        // collapses spec on v4_w staging x rows. The later 48 flip was tuned on the retired
-        // kv-twin config and is VOID. Same parity-law freedom as BW24_FA_SP512.
-        {
+        // 156.6->159.3, depth spec 251.2->253.4; 16 collapses spec on v4_w staging x rows).
+        // MUST be one value for ALL widths: a t-keyed 48/64 probe (2026-07-12) broke the
+        // decode-vs-verify partial-combine order -> depth stream 9/128. Same parity-law
+        // freedom as BW24_FA_SP512, but only uniformly.
+        let sp = {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
                 .and_then(|x| x.parse().ok()).unwrap_or(64));
-            if v >= 8 { sp = v; }
-        }
+            if v >= 8 { v } else { 64 }
+        };
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (nspm, spk, wini) = (n_splits_max as i32, sp as i32, window as i32);
