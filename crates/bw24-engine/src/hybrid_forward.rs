@@ -775,13 +775,22 @@ impl HybridModel {
     /// Append the host-visible router selection for one layer/forward when calibration tracing is
     /// enabled. Both sequential and expert-grouped prefill must call this after routing so the
     /// trace is independent of the dispatch optimization selected for the forward.
-    fn trace_moe_routes(il: u16, t: usize, sel_all: &[u32]) {
-        let Ok(path) = std::env::var("BW24_MOE_TRACE") else { return };
+    fn trace_moe_routes(il: u16, t: usize, sel_all: &[u32], weights: &[f32])
+                        -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(path) = std::env::var("BW24_MOE_TRACE") {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
             let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
-            let _ = writeln!(f, "{} {} {}", il, t, ids.join(","));
+            writeln!(f, "{} {} {}", il, t, ids.join(","))?;
         }
+        if let Ok(path) = std::env::var("BW24_MOE_WEIGHT_TRACE") {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+            let pairs: Vec<String> = sel_all.iter().zip(weights)
+                .map(|(expert, weight)| format!("{expert}:{weight:.9}"))
+                .collect();
+            writeln!(f, "{} {} {}", il, t, pairs.join(","))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -885,7 +894,8 @@ impl HybridModel {
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
         let observe_routes = std::env::var("BW24_MOE_STATS").is_ok()
-            || std::env::var("BW24_MOE_TRACE").is_ok();
+            || std::env::var("BW24_MOE_TRACE").is_ok()
+            || std::env::var("BW24_MOE_WEIGHT_TRACE").is_ok();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && !observe_routes {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
@@ -913,7 +923,7 @@ impl HybridModel {
         // BW24_MOE_TRACE=<path>: append one line per (layer, step) with the selected expert ids —
         // offline analysis derives the decode working set + step-to-step reuse (the go/no-go
         // measurement for resident-expert tiering; see rig5090.jsonl 2026-07-07 pinned-tier row).
-        Self::trace_moe_routes(il, t, &sel_all);
+        Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
 
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
@@ -1953,7 +1963,7 @@ impl HybridModel {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
                                 None, None, m.active_experts.as_deref())?
         };
-        Self::trace_moe_routes(il, t, &sel_all);
+        Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
         // For each expert e, we need: which tokens use it, their positions in z, their top-k

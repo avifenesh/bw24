@@ -74,6 +74,9 @@ struct CompletionReq {
     /// optional hard context cap.
     #[serde(default)]
     max_ctx: Option<usize>,
+    /// Stable calibration-record identity written only when confidence tracing is enabled.
+    #[serde(default)]
+    trace_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -246,6 +249,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         params,
         sampler_cfg,
         stop_strings: req.stop.clone().into_vec(),
+        trace_id: req.trace_id.clone(),
         tx,
     }
 }
@@ -272,6 +276,7 @@ fn build_chat_request(req: ChatCompletionReq,
             ..Default::default()
         },
         stop_strings: req.stop.into_vec(),
+        trace_id: None,
         tx,
     }
 }

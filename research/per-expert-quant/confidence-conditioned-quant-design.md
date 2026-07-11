@@ -19,8 +19,7 @@ every public evaluation item. Run the strongest unpruned baseline in teacher-for
 record, for each target token:
 
 - reference-token log probability, top-1 correctness, top-1/top-2 margin, and entropy;
-- selected expert IDs and router weights for every MoE layer;
-- the existing gate-weighted expert-output norm used by the REAP-style trace.
+- selected expert IDs and router weights for every MoE layer.
 
 Split tokens into frozen confidence bands using percentiles computed separately for each calibration
 domain. Domain-local bands prevent naturally lower-confidence domains such as code or math from
@@ -38,8 +37,8 @@ u_t = 1[argmax(p_t) == y_t] * min(u_max, 1 / (margin_t + epsilon))
 For expert `e`, accumulate low-confidence rescue mass and high-confidence easy-token mass:
 
 ```text
-L_e = sum_(t in low) u_t * router_weight(t,e) * normalized_output_norm(t,e)
-H_e = sum_(t in high)     router_weight(t,e) * normalized_output_norm(t,e)
+L_e = sum_(t in low) u_t * router_weight(t,e)
+H_e = sum_(t in high)     router_weight(t,e)
 S_e = L_e / (L_e + H_e + epsilon)
 ```
 
@@ -77,7 +76,7 @@ gates reach the Harbor SWE/Terminal directional panels and then full trusted sui
 
 ## Phase B: causal refinement if Phase A wins
 
-The contribution-times-error proxy is intentionally cheap. If it wins directionally, refine only
+The router-weight-times-error proxy is intentionally cheap. If it wins directionally, refine only
 the boundary experts using forward perturbations: substitute one candidate quantized expert output
 on sampled low-confidence-correct tokens and measure reference-token log-probability loss. This
 tests whether an expert is causally protective rather than merely correlated with difficult tokens.

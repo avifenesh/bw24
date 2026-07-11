@@ -71,6 +71,10 @@ kernel exists.
 ## What is implemented
 
 - BW24_MOE_TRACE=/path records routed expert ids without changing normal runs.
+- BW24_MOE_WEIGHT_TRACE=/path records the same selections with normalized router weights.
+- BW24_CONFIDENCE_TRACE=/path switches calibration requests to tokenwise teacher forcing and
+  records reference-token log probability, correctness, margin, and entropy. It is an opt-in
+  research path; normal generation and batched prefill are unchanged.
 - tools/build_expert_tier_plan.py emits calibration-independent uniform plans or aggregates frozen
   calibration traces for usage-ranked plans, accepts original-id expert masks, and records all
   trace/mask hashes.
@@ -291,6 +295,59 @@ Set the middle-tier count to zero explicitly:
       --nvfp4-count 0 \
       --q2-count 176 \
       --out /data/plans/traffic-q8-q2-no-prune.json
+
+### Confidence-conditioned no-prune follow-up
+
+Freeze a smaller domain-balanced subset from the already seeded private calibration corpus. Four
+requests from each of its six strata keeps this teacher-forced pass practical while retaining the
+same public-eval exclusion contract:
+
+    python3 research/per-expert-quant/select_confidence_calibration.py \
+      --source /data/calibration/hy3-routing-v1/requests.jsonl \
+      --per-stratum 4 \
+      --out /data/calibration/hy3-confidence-v1/requests.jsonl \
+      --manifest /data/calibration/hy3-confidence-v1/calibration.lock.json
+
+Launch the full-bank control with speculative decode and KV reuse disabled. Confidence tracing
+also enforces one active request and tokenwise prefill so each routed-expert set aligns with the
+reference token predicted by that forward:
+
+    BW24_SERVE_SPEC=0 \
+    BW24_KV_REUSE=0 \
+    BW24_CTX=1032 \
+    BW24_CONFIDENCE_TRACE=/data/calibration/hy3-confidence-v1/confidence.jsonl \
+    BW24_MOE_WEIGHT_TRACE=/data/calibration/hy3-confidence-v1/routes-weighted.trace \
+    BW24_MODELS=plain_quant=/scratch/artifacts/plain-quant \
+    ./target/release/bw24-server
+
+Submit the frozen prompt ids with the existing capture script. Its request ordinal becomes the
+stable trace id used to join confidence and routing rows:
+
+    python3 research/per-expert-quant/capture_calibration.py \
+      --requests /data/calibration/hy3-confidence-v1/requests.jsonl \
+      --model plain_quant \
+      --out /data/calibration/hy3-confidence-v1/request-results.jsonl
+
+Build the first candidate only after the two traffic no-prune screens choose their byte budget.
+The counts below reproduce the 16 Q8_0 + 37 NVFP4 + 139 Q2_K budget. Allocation is ranked globally,
+so individual layers may receive different counts while the artifact-wide totals remain exact:
+
+    python3 tools/build_confidence_tier_plan.py \
+      --requests /data/calibration/hy3-confidence-v1/requests.jsonl \
+      --confidence-trace /data/calibration/hy3-confidence-v1/confidence.jsonl \
+      --weight-trace /data/calibration/hy3-confidence-v1/routes-weighted.trace \
+      --layers 1-79 --expert-count 192 --top-k 8 \
+      --q8-count 16 --nvfp4-count 37 --q2-count 139 \
+      --out /data/plans/confidence-mix-quant-no-prune.json
+
+If the 16 Q8_0 + 176 Q2_K arm wins instead, set `--nvfp4-count 0 --q2-count 176`. The plan records
+all three input hashes, domain-local confidence bands, frozen scoring constants, exact global tier
+totals, and the top score diagnostics. Public eval results never enter allocation.
+
+Run both new self-tests before capture or plan generation:
+
+    python3 research/per-expert-quant/select_confidence_calibration.py --self-test
+    python3 tools/build_confidence_tier_plan.py --self-test
 
 For the masked REAP50 bank, build the exact 48 Q2_K / 48 NVFP4 split. The trace retains original
 expert ids because bw24 masks the full-width router instead of renumbering it:

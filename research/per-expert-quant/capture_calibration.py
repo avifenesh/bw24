@@ -40,6 +40,7 @@ def main() -> None:
                     "temperature": 0.0,
                     "stream": False,
                     "max_ctx": len(record["prompt_ids"]) + 8,
+                    "trace_id": str(record["ordinal"]),
                 }
             ).encode()
             started = time.monotonic()

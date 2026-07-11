@@ -15,6 +15,7 @@
 //! so the second produces tokens before the first finishes (not serialized end-to-end).
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
@@ -58,6 +59,7 @@ pub struct Request {
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
+    pub trace_id: Option<String>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -133,6 +135,7 @@ struct Session {
     generated: Vec<u32>,
     params: GenParams,
     stop_strings: Vec<String>,
+    trace_id: Option<String>,
     /// detokenized text already emitted (to compute incremental deltas + stop-string matching).
     emitted_bytes: usize,
     budget: usize,        // max tokens we may still generate
@@ -241,7 +244,8 @@ pub fn run(
         }
 
         // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
-        while active.len() < MAX_ACTIVE {
+        let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
+        while active.len() < max_active {
             let Some(req) = queue.pop_front() else { break };
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
                 Ok(s) => active.push(s),
@@ -381,7 +385,8 @@ fn admit(
     // (bins) pins 3-turn continuation-prime output == fresh-greedy oracle on both models, and the
     // continuation path the reuse pool takes (prime_cache with cache.pos>0 / decode_step) is
     // exactly what it validates. BW24_KV_REUSE=0 disables.
-    let reuse_on = std::env::var("BW24_KV_REUSE").map(|v| v != "0").unwrap_or(true);
+    let reuse_on = !confidence_trace_enabled()
+        && std::env::var("BW24_KV_REUSE").map(|v| v != "0").unwrap_or(true);
     if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&req.model)) {
         if let Some(idx) = pool.iter().rposition(|e|
             e.fed.len() >= REUSE_MIN_PREFIX && e.cap >= ctx_cap
@@ -412,7 +417,8 @@ fn admit(
     // session owns its own caches; folding the reuse pool into SpecSession is a follow-up) +
     // BW24_SERVE_SPEC!=0. The whole prompt goes to the spec session as turn 1's suffix; the
     // legacy prefill/decode path is bypassed entirely in step_session.
-    let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+    let serve_spec = !confidence_trace_enabled()
+        && std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut spec_resumed = 0usize;
     let mut text_suffix: Option<Vec<u32>> = None;
     // Sampled-spec serve: temperature + filters + penalties ALL ride the rejection-sampling
@@ -511,6 +517,7 @@ fn admit(
         generated: Vec::new(),
         params,
         stop_strings: req.stop_strings,
+        trace_id: req.trace_id,
         emitted_bytes: 0,
         budget,
         tx: req.tx,
@@ -646,7 +653,7 @@ fn step_session(
     if !s.prefill_done {
         const PREFILL_TICK_T: usize = 1024;
         let q = s.prefill_queue.len();
-        if q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
+        if !confidence_trace_enabled() && q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
             // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
             let mut take = q.min(PREFILL_TICK_T);
             if q - take > 0 && q - take < bw24_engine::hybrid_forward::PRIME_MIN_T { take = q; }
@@ -656,6 +663,9 @@ fn step_session(
             for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         } else if let Some(tok) = s.prefill_queue.pop_front() {
             s.last_logits = lm.model.decode_step(engine, tok, s.cache.as_mut().unwrap())?;
+            if let Some(&target) = s.prefill_queue.front() {
+                write_confidence_trace(s, tok, target, &s.last_logits)?;
+            }
             s.fed.push(tok);
             s.sampler.accept(tok);
         }
@@ -705,6 +715,77 @@ fn step_session(
     Ok(true)
 }
 
+fn confidence_trace_enabled() -> bool {
+    std::env::var("BW24_CONFIDENCE_TRACE").is_ok()
+}
+
+#[derive(Debug)]
+struct ConfidenceSummary {
+    reference_logprob: f64,
+    top1_token: u32,
+    top1_correct: bool,
+    top1_top2_margin: f32,
+    entropy: f64,
+}
+
+fn summarize_confidence(logits: &[f32], target: u32) -> Result<ConfidenceSummary, String> {
+    let target = target as usize;
+    if logits.is_empty() || target >= logits.len() {
+        return Err(format!("target token {target} outside {} logits", logits.len()));
+    }
+    let mut top1 = (0usize, f32::NEG_INFINITY);
+    let mut top2 = f32::NEG_INFINITY;
+    for (index, &logit) in logits.iter().enumerate() {
+        if logit > top1.1 {
+            top2 = top1.1;
+            top1 = (index, logit);
+        } else if logit > top2 {
+            top2 = logit;
+        }
+    }
+    let max_logit = top1.1 as f64;
+    let mut sum_exp = 0.0f64;
+    let mut weighted_logit = 0.0f64;
+    for &logit in logits {
+        let exp = ((logit as f64) - max_logit).exp();
+        sum_exp += exp;
+        weighted_logit += exp * logit as f64;
+    }
+    let logsumexp = max_logit + sum_exp.ln();
+    Ok(ConfidenceSummary {
+        reference_logprob: logits[target] as f64 - logsumexp,
+        top1_token: top1.0 as u32,
+        top1_correct: top1.0 == target,
+        top1_top2_margin: top1.1 - top2,
+        entropy: logsumexp - weighted_logit / sum_exp,
+    })
+}
+
+fn write_confidence_trace(
+    session: &Session,
+    input_token: u32,
+    target_token: u32,
+    logits: &[f32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(path) = std::env::var("BW24_CONFIDENCE_TRACE") else { return Ok(()) };
+    let summary = summarize_confidence(logits, target_token).map_err(std::io::Error::other)?;
+    let record = serde_json::json!({
+        "format": "bw24-token-confidence-v1",
+        "trace_id": session.trace_id,
+        "input_position": session.fed.len(),
+        "input_token": input_token,
+        "target_token": target_token,
+        "reference_logprob": summary.reference_logprob,
+        "top1_token": summary.top1_token,
+        "top1_correct": summary.top1_correct,
+        "top1_top2_margin": summary.top1_top2_margin,
+        "entropy": summary.entropy,
+    });
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{record}")?;
+    Ok(())
+}
+
 fn finish(s: &Session, reason: StopReason) {
     let elapsed = s.t0.elapsed().as_secs_f64();
     let reason = format!("{reason:?}");
@@ -733,7 +814,7 @@ pub fn spawn(models: Vec<(String, String)>) -> Result<(Sender<Cmd>, Arc<Vec<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::utf8_delta;
+    use super::{summarize_confidence, utf8_delta};
 
     #[test]
     fn streaming_utf8_waits_for_a_complete_multibyte_sequence() {
@@ -750,5 +831,16 @@ mod tests {
         assert_eq!(utf8_delta(b"a\xffb", &mut emitted), "a\u{fffd}b");
         assert_eq!(emitted, 3);
         assert_eq!(utf8_delta(b"a\xffbc", &mut emitted), "c");
+    }
+
+    #[test]
+    fn confidence_summary_tracks_reference_and_margin() {
+        let summary = summarize_confidence(&[0.0, 2.0, 1.0], 1).unwrap();
+        assert_eq!(summary.top1_token, 1);
+        assert!(summary.top1_correct);
+        assert!((summary.top1_top2_margin - 1.0).abs() < 1e-6);
+        let expected = 2.0f64 - (0.0f64.exp() + 2.0f64.exp() + 1.0f64.exp()).ln();
+        assert!((summary.reference_logprob - expected).abs() < 1e-12);
+        assert!(summary.entropy > 0.0);
     }
 }
