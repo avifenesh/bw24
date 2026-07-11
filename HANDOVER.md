@@ -103,6 +103,25 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
+## FP8-GLOBALS ARC — ACTIVE BUILD PLAN (2026-07-11 late, the 26B depth-plain margin lever)
+ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound
+(rows_dpl16_i2 30GB/s eff, rows_v4_w 73GB/s eff; L2 sectors match theory — bytes clean).
+llama serves f16 KV (2x bytes, zero dq) and wins depth (4.9k pairing 0.987x). FP8 e4m3 KV
+= half llama's bytes AND near-zero dq. Gemma-wide fp8 blocked: the v4/mr/rows_w WINDOWED
+family hardcodes q8_0/q5_1 parsing (stage_k funnelshift, q5_1 V stage). But GLOBAL layers
+(the depth-scaling cost: i2 155us@1.6k, ~450@4.9k) ride dq_K_lane/dq_V_lane macro kernels =
+format-clean. PLAN — per-layer-class formats:
+1. Engine loads flash_attn_kf8vf8.fatbin as a SECOND module (self.flash_g); explicit-module
+   func for: append_quantize_kv_* (global-layer appends write e4m3), rows_dpl16_i2 +
+   fa_decode_combine_rows_dc (global attention), fa_decode dpl16 (drafter L29 lookup).
+2. cache.rs gemma per-layer dims: global layers get (32, 32) blk bytes; windowed keep (34, 24).
+3. All gemma global append sites (eager/dc/rows/prime) + the drafter's global path route via
+   flash_g; parity law keeps decode/verify shared (same symbols, same module).
+4. Gates: run-gen id + DEPTH (the oracle), chat physics, VERIFY-GATE, spec stream; then the
+   4.9k pairing (est 140 -> 150+ vs llama 142) and 1.7k (161 -> ~170).
+Quality note: e4m3 K/V on globals = new numeric config; battery arbitrates. Seam:
+BW24_GEMMA_GKV=0 reverts to uniform q8_0/q5_1.
+
 ## GRAPH ARC — ACTIVE BUILD PLAN (2026-07-11, the lever for ALL red cells)
 STATUS: step 1 LANDED (3953183 — device-len rows attention, all gates green, flat). Graph
 path (gate-only, NOT shipped) now has a KNOWN MISMATCH at ctx>=512 (19/128 at mid-ids): the
