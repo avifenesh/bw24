@@ -1671,7 +1671,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (b) batched-rows kernel, one launch.
         let mut kc_b = e.alloc_u8(cap * k_tok_bytes)?; let mut vc_b = e.alloc_u8(cap * v_tok_bytes)?;
         e.append_kv_quantized_rows(&kd, &vd, &mut kc_b, &mut vc_b, t0, t,
-                                   kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                   kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         let (kr, kb) = (e.dtoh_u8(&kc_ref)?, e.dtoh_u8(&kc_b)?);
         let (vr, vb) = (e.dtoh_u8(&vc_ref)?, e.dtoh_u8(&vc_b)?);
         // compare only the written slots [t0, t0+t) — the rest is uninitialized alloc garbage.
