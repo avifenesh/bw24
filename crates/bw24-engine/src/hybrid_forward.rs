@@ -2872,6 +2872,9 @@ impl HybridModel {
                                  cache: &mut Cache, max_new: usize, eos: &[u32],
                                  mut on_token: impl FnMut(u32) -> bool)
                                  -> Result<(Vec<u32>, crate::decode::StopReason), Box<dyn std::error::Error>> {
+        if self.is_gemma4_e4b() {
+            return Err("E4B graph serving is unwired (HANDOVER-E4B.md) — dc-eager is the serving arm".into());
+        }
         use crate::decode::StopReason;
         let n_vocab = self.output.out_features();
         let n_embd = self.cfg.n_embd as usize;
@@ -3250,6 +3253,14 @@ impl HybridModel {
     /// (llama gemma4.cpp build_inp_per_layer + project_per_layer_inputs, exact order).
     fn gemma4_e4b_inp_pl(&self, e: &Engine, tokens: &[u32], x_scaled: &CudaSlice<f32>, t: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let tok_d = e.stream().clone_htod(&tokens.to_vec())?;
+        self.gemma4_e4b_inp_pl_dev(e, &tok_d, x_scaled, t)
+    }
+
+    /// Device-token prologue core (dc arm shares it: token ids never touch the host).
+    fn gemma4_e4b_inp_pl_dev(&self, e: &Engine, tok_d: &CudaSlice<u32>,
+                             x_scaled: &CudaSlice<f32>, t: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let aux = self.gemma4_aux.as_ref().unwrap();
         let m = aux.e4b.as_ref().unwrap();
         let n_embd = self.cfg.n_embd as usize;
@@ -3258,8 +3269,7 @@ impl HybridModel {
         let tbl = m.tok_tbl_gpu.get_or_init(|| {
             e.upload_u8(&m.tok_embd_bytes).expect("e4b per-layer token table upload")
         });
-        let tok_d = e.stream().clone_htod(&tokens.iter().map(|&x| x).collect::<Vec<u32>>())?;
-        let mut a = e.embed_gather_device_td(tbl, &tok_d, t, width, m.tok_embd_qt,
+        let mut a = e.embed_gather_device_td(tbl, tok_d, t, width, m.tok_embd_qt,
                                              m.tok_embd_row_bytes)?;
         e.scale_inplace(&mut a, (m.n_epl as f32).sqrt(), t * width)?;
         let mut p = e.matmul(&m.model_proj, x_scaled, t)?;
@@ -3299,6 +3309,8 @@ impl HybridModel {
             Some(aux.rope_freqs.as_ref().expect("e4b global rope needs rope_freqs.weight"))
         };
         let share = self.gemma4_e4b_kv_target(il);
+        // Own-KV arms keep the f32 (k, v) alive for the prime fa arm below.
+        let mut kv_f32: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
         if let Some(_tgt) = share {
             // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
             let mut kdummy = e.uninit(t * hd)?;
@@ -3322,6 +3334,7 @@ impl HybridModel {
                                        (!swa && crate::Engine::gkv_on())
                                            || (swa && crate::Engine::wkv_on()))?;
             kvl.len += t;
+            kv_f32 = Some((k, v));
         }
         // attention: per-row causal fa over the (own or target) quantized cache. The cache
         // already contains this forward's rows in both arms; row i attends [.., base+i].
@@ -3330,6 +3343,19 @@ impl HybridModel {
         let base_len = kvl.len - t;   // pre-append length (target appended this forward too)
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
+        // PRIME FA ARM (perf lane 3): fresh-prompt own-KV hd256 layers under the window run
+        // ONE f32 fa_prefill (full causal attention is exact there — the 26B prime pattern)
+        // instead of t per-row quantized-cache launches. Globals (hd512, no FA stamp) and
+        // KV-shared layers (no f32 k/v of their own) keep the per-row loop. Same numeric
+        // class split as the 26B prime (f32 prefill vs quantized decode); the run-gen argmax
+        // + chat gates arbitrate. BW24_NOFA=1 forces the per-row loop.
+        if let Some((kf, vf)) = &kv_f32 {
+            if t > 1 && hd == 256 && base_len == 0 && t <= win
+                && std::env::var("BW24_NOFA").is_err() {
+                e.fa_prefill(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                return Ok(e.matmul(&fa.wo, &attn, t)?);
+            }
+        }
         for i in 0..t {
             let avail = base_len + i + 1;
             let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };
@@ -3356,14 +3382,25 @@ impl HybridModel {
     fn gemma4_e4b_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
-        let eps = self.cfg.rms_eps;
         let t = tokens.len();
-        let n_layer = self.layers.len();
         let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache)
+    }
+
+    /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
+    /// here is device-driven, so the dc arm shares it verbatim (stream identity with the
+    /// eager chain by construction: SAME functions, not twins).
+    fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
+                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
+                             -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let n_layer = self.layers.len();
+        let mut x = x_in;
         let aux_e4b = self.gemma4_aux.as_ref().unwrap().e4b.as_ref().unwrap();
         let n_epl = aux_e4b.n_epl;
 
@@ -3371,7 +3408,7 @@ impl HybridModel {
             let layer = &self.layers[il];
             let mut h = e.uninit(t * n_embd)?;
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-            let o = self.gemma4_e4b_attn(e, il, &h, &pos_d, t, cache)?;
+            let o = self.gemma4_e4b_attn(e, il, &h, pos_d, t, cache)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
@@ -3400,6 +3437,33 @@ impl HybridModel {
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, t * self.output.out_features())?;
         Ok((ld, x))
+    }
+
+    /// E4B DEVICE-COUNTER decode step (the dc serving arm): token id rides `token_d`, the
+    /// greedy argmax lands in the returned device buffer — 4B/token host traffic. The layer
+    /// stack is gemma4_e4b_trunk_core, i.e. the SAME functions the eager chain runs (stream
+    /// identity by construction, not by twin-kernel parity). Host KV mirrors advance like the
+    /// 26B dc-eager arm (window views are host math); len_d stays synced by the caller's
+    /// entry sync + the appends here don't read it. Graph capture is NOT wired (no
+    /// cap_bucket_max) — the E4B graph arc comes after the perf gates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_e4b_decode_step_dc(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                     pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                     embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                     n_vocab: usize)
+                                     -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache)?;
+        let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
+        e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        cache.pos += 1;
+        let _ = eps;
+        Ok(tok_out)
     }
 
     /// E4B eager T=1 decode step (decode_step_h contract): returns (softcapped logits host,

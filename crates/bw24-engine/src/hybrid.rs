@@ -745,10 +745,30 @@ impl HybridModel {
         if cfg.gemma4.is_some() && crate::Engine::q4rp_enabled() {
             let mut nmir = 0usize;
             for layer in layers.iter_mut() {
-                let mirror_layer = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_some());
-                if !mirror_layer { continue; }
+                // 26B MoE-class trunk (moe_bits) OR the E4B dense trunk (e4b bits). E4B mirror
+                // arithmetic: attn ~7.5MB/layer (shared layers skip wk/wv via build's no-op on
+                // duplicate mirrors is NOT automatic — they alias the target's tensors as
+                // separate GpuTensors, so their mirrors double ~1.5MB/shared-layer; acceptable)
+                // + dense ffn 3 x 2560x10240 Q4_0 ~44MB + inp_gate/proj ~0.75MB => ~2.2GB for
+                // the 5.2GB model; 24GB card holds model+mirror+KV with >14GB headroom.
+                // Dense 31B stays unmirrored (15GB mirror does not fit) — its arm is the
+                // layout-swap follow-up.
+                let is_moe26 = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_some());
+                let is_e4b = layer.gemma4.as_ref().is_some_and(|g| g.e4b.is_some());
+                if !(is_moe26 || is_e4b) { continue; }
                 if let Mixer::Full(fa) = &mut layer.mixer {
                     for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                        e.build_q4_rp4(w)?; nmir += 1;
+                    }
+                }
+                if is_e4b {
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                        for w in [ffn_gate, ffn_up, ffn_down] {
+                            e.build_q4_rp4(w)?; nmir += 1;
+                        }
+                    }
+                    let e4 = layer.gemma4.as_mut().unwrap().e4b.as_mut().unwrap();
+                    for w in [&mut e4.inp_gate, &mut e4.proj] {
                         e.build_q4_rp4(w)?; nmir += 1;
                     }
                 }
