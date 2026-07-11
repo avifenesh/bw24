@@ -89,7 +89,7 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| 31B dense plain | 38.9 | 40.4 | 0.96x |
+| 31B dense plain | 38.8 | 40.8 | 0.95x (layout-swap arc open) |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
 
 ## Known gaps

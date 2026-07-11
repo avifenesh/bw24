@@ -135,6 +135,24 @@ serving, K=6 both cells, BW24_GEMMA_DRAFT_RANKS=research/gemma4-bringup/
 gemma4-frspec-ranks-32768.txt. b16 tier (t=9..16) correct + open via BW24_SPEC_CAPMAX but
 perf-negative (K8-10 depth 283-293 vs K6 301-306) — cap 7 stands on a measurement.
 
+## 31B CAMPAIGN — IN-PLACE Q4_0 LAYOUT SWAP (opened 2026-07-12, the single dominant lever)
+Fresh standing under all 26B defaults: short 38.8 vs 40.7-40.8 = 0.95x | 1.7k 35.4 vs
+38.6-38.8 = 0.91x. Gen-window profile: the q4_0 matvec trio (fused2 358ms / mr2 266ms /
+fused3 112ms per 1s window) = 76% of decode on the NON-RP kernels — the 18B-stride sector
+overfetch the 26B cured with mirrors. 31B can't mirror (15GB trunk copy vs 24GB card;
+documented at the hybrid.rs build site) -> the lever is the IN-PLACE SWAP:
+1. Loader: repack q4_0 trunk tensors to the split-plane layout AT UPLOAD (replace, not
+   mirror — zero extra VRAM; q4_0_split_rp_build already exists device-side).
+2. Route every consumer: decode mmvq/batched/fused rp twins EXIST (rp flag per tensor);
+   prefill W4A8 MMQ needs a q4_0 is_rp tile-loader arm (NVFP4 precedent:
+   load_tiles_nvfp4_w4a8 is_rp — same flat-block-index remap recipe, bit-identical);
+   Stage-A f32 oracle + any GEMM/dequant consumer need rp-aware reads or a scoped unswap.
+3. Gates: kernel-check rp bit-identity gates (the MMQ-W4A8-RP precedent pins 0 mismatched
+   bits), run-gen MATCH short+depth, 26B battery unchanged (26B keeps mirrors — or moves to
+   the swap too and frees 0.7GB), then the 31B pairing.
+PRIZE: rp_q4_probe measured 1.34x at m=1 on this kernel class; 76% of decode at +25-35%
+eff -> ~44-46 tok/s vs llama 40.7 = the >=1.1x bar is reachable on this single lever.
+
 ## QWEN FP8-KV ARC — BUILD PLAN (2026-07-12, owner: "better kv in lower cost = big lever over llama")
 HISTORY THAT MUST BE RE-READ FIRST: BW24_KV_K=fp8 was FLIP-BLOCKED 2026-07-09 (e2e flat +
 9B ST spec acceptance 74% -> 20.5%, "drift accumulates across K reads"). That verdict
