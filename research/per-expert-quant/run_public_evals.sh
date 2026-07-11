@@ -86,6 +86,15 @@ command -v timeout >/dev/null || {
   exit 2
 }
 
+if [[ -e "$RUN_DIR" ]]; then
+  if find "$RUN_DIR" -name 'results_*.json' -type f -print -quit 2>/dev/null | grep -q .; then
+    echo "refusing to rerun completed output directory: $RUN_DIR" >&2
+  else
+    echo "refusing to overwrite existing partial output directory: $RUN_DIR" >&2
+    echo "quarantine it with a timestamp before retrying this run or shard" >&2
+  fi
+  exit 3
+fi
 mkdir -p "$CACHE_DIR" "$RUN_DIR"
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
   git init --quiet "$HARNESS_DIR"
