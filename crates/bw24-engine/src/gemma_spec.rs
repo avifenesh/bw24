@@ -125,15 +125,17 @@ impl GemmaDraft {
                 Some(path) => {
                     // row gather is layout-agnostic given the per-row byte stride: Q4_0 (26B
                     // drafter) and Q8_0 (31B drafter) both ship 32-elem blocks row-major.
-                    let (qtype, blk_b) = match t.ggml_type {
-                        bw24_gguf::GgmlType::Q4_0 => (crate::QT_Q4_0, 18),
-                        bw24_gguf::GgmlType::Q8_0 => (crate::QT_Q8_0, 34),
+                    // (qtype, elems/block, bytes/block) — the gather is stride-agnostic.
+                    let (qtype, blk_e, blk_b) = match t.ggml_type {
+                        bw24_gguf::GgmlType::Q4_0 => (crate::QT_Q4_0, 32, 18),
+                        bw24_gguf::GgmlType::Q8_0 => (crate::QT_Q8_0, 32, 34),
+                        bw24_gguf::GgmlType::Q6_K => (crate::QT_Q6_K, 256, 210),
                         other => panic!("drafter head trim: unsupported head type {other:?}"),
                     };
                     let ids: Vec<u32> = std::fs::read_to_string(&path)?
                         .lines().filter_map(|l| l.trim().parse().ok())
                         .filter(|&id| (id as usize) < n_vocab).collect();
-                    let row_bytes = in_f / 32 * blk_b;
+                    let row_bytes = in_f / blk_e * blk_b;
                     let mut gathered = Vec::with_capacity(ids.len() * row_bytes);
                     for &id in &ids {
                         let off = id as usize * row_bytes;

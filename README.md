@@ -91,7 +91,7 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 |---|---|---|---|
 | 31B dense plain, short | 40.3 | 40.25 | 1.00x (campaign live) |
 | 31B dense plain, 1.7k | 36.9 | 38.3 | 0.96x |
-| 31B MTP spec, short | 83.5 | 112.1 | 0.74x |
+| 31B MTP spec, short | 88.0 | 112.1 | 0.79x |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
 
 ## Known gaps
