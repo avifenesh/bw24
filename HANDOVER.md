@@ -125,12 +125,14 @@ only the smem twin excluded). STANDING BATTERY NOW INCLUDES: VERIFY-GATE at SHOR
 DEPTH (all must read 0.000e0) and spec stream at SHORT + DEPTH.
 
 CONFIG LAW: plain serving = GKV+WKV default ON, SPW=48; spec serving = BW24_GEMMA_GKV=0
-(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC (LANE NOW OPEN — plain bar crossed): gate reads under the new kernels — short K=2
-312.4, depth K=7 294.1 at SPW=64 / 261.6 at default 32 (spec serving config = GKV=0 +
-SPW=64); llama MTP bars ~290 short / 303-306 depth (re-pair them fresh first). Ranked spec
-levers:
-(a) acceptance mechanics (p-min adaptivity; confidence pack built but unexploited),
-(b) full-acceptance-under-fp8 ~318 prize, (c) round graphs.
+(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC STANDING (2026-07-12 night): the v4-rows verify fix HEALED acceptance (0.91-0.94, was
+0.52-0.63) — **short spec 381 vs llama-mtp 255-263 = 1.45-1.5x ABOVE**; depth 301-306 vs
+302-304 = 0.99-1.0x parity. CONFIG (old laws STALE, corrected): GKV default-ON (GKV=0 now
+LOSES: depth 256-261 vs 292-302), SPW=64 for spec serving (sweep: 56/64/72/80/96 =
+279/301/298/261/239), K=6 both cells (short K2..K7 = 316/341/350/365/381/369). b16 tier
+(t=9..16) debugged + open via BW24_SPEC_CAPMAX (three host bugs, see jsonl 2026-07-12) but
+PERF-NEGATIVE (depth K8-10 283-293, short 351-371) — K=6/cap-7 stands on a measurement.
+Remaining depth lever = verify ROUND COST (trunk matvec class), not acceptance (healed).
 
 ## FP8-GLOBALS ARC — BUILD PLAN (EXECUTED, see status above) (2026-07-11 late, the 26B depth-plain margin lever)
 ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound

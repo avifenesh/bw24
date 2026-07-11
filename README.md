@@ -72,7 +72,8 @@ Live campaign (`research/gemma4-bringup/rig5090-gemma4.jsonl` is the record; num
 | 26B-A4B plain, short ctx | 198.3 | 180.0 | **1.10x** |
 | 26B-A4B plain, 1.7k ctx | 177.8 | 161.3 | **1.10x** |
 | 26B-A4B plain, 4.9k ctx | 162.6 | 142.0 | **1.14x** |
-| 26B-A4B MTP spec, 1.7k ctx (K=7 adaptive) | 294.1 | 303-305 | 0.96x |
+| 26B-A4B MTP spec, short ctx (K=6 adaptive) | 381.3 | 258.7 | **1.48x** |
+| 26B-A4B MTP spec, 1.7k ctx (K=6 adaptive) | 301.1 | 303.3 | 0.99x |
 | 31B dense plain | 38.9 | 40.4 | 0.96x |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
 
