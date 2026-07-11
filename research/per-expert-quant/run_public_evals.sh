@@ -20,6 +20,9 @@ OUT_ROOT=${OUT_ROOT:-$HERE/results}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-}
 NUM_CONCURRENT=${NUM_CONCURRENT:-1}
+SAMPLES_JSON=${SAMPLES_JSON:-}
+PREDICT_ONLY=${PREDICT_ONLY:-0}
+PANEL_LOCK=${PANEL_LOCK:-}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -34,12 +37,16 @@ RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 }
 [[ "$BW24_SPILL_STATS" == 1 ]] || { echo "BW24_SPILL_STATS must be 1" >&2; exit 2; }
 [[ "$BW24_SERVE_SPEC" == 0 ]] || { echo "BW24_SERVE_SPEC must be 0" >&2; exit 2; }
+[[ "$PREDICT_ONLY" == 0 || "$PREDICT_ONLY" == 1 ]] || {
+  echo "PREDICT_ONLY must be 0 or 1" >&2
+  exit 2
+}
 
 case "$SUITE" in
   core) TASKS=ifeval,gsm8k_cot,bbh_cot_fewshot,drop ;;
   candidate)
     TASKS=gpqa_diamond_cot_zeroshot,hendrycks_math500,mmlu_pro_history,mmlu_pro_other,mmlu_pro_economics,mmlu_pro_law,mmlu_pro_psychology
-    if [[ ${LIMIT:-} != all ]]; then
+    if [[ -z "$SAMPLES_JSON" && ${LIMIT:-} != all ]]; then
       LIMIT=${LIMIT:-3}
     fi
     MAX_GEN_TOKS=${MAX_GEN_TOKS:-256}
@@ -83,6 +90,37 @@ if [[ -n ${SHARD_ID:-} ]]; then
     echo "SHARD_ID requires exactly one matching TASKS_OVERRIDE task" >&2
     exit 2
   }
+fi
+
+if [[ -n "$SAMPLES_JSON" ]]; then
+  [[ -z ${LIMIT:-} ]] || {
+    echo "SAMPLES_JSON and LIMIT are mutually exclusive" >&2
+    exit 2
+  }
+  SAMPLES_JSON=$(python3 - "$SAMPLES_JSON" "$TASKS" <<'PY'
+import json, sys
+
+try:
+    samples = json.loads(sys.argv[1])
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"invalid SAMPLES_JSON: {exc}")
+tasks = sys.argv[2].split(",")
+if not isinstance(samples, dict) or set(samples) != set(tasks):
+    raise SystemExit(f"SAMPLES_JSON keys must exactly match tasks {tasks}")
+for task, indices in samples.items():
+    if (
+        not isinstance(indices, list)
+        or not indices
+        or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in indices)
+        or len(indices) != len(set(indices))
+    ):
+        raise SystemExit(f"SAMPLES_JSON[{task!r}] must be unique non-negative integers")
+print(json.dumps(samples, sort_keys=True, separators=(",", ":")))
+PY
+  )
+fi
+if [[ -n "$PANEL_LOCK" ]]; then
+  [[ -f "$PANEL_LOCK" ]] || { echo "PANEL_LOCK does not exist: $PANEL_LOCK" >&2; exit 2; }
 fi
 
 RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
@@ -163,12 +201,18 @@ if [[ ! -x "$HARNESS_CLI" ]]; then
 fi
 
 cp "$LOCK" "$RUN_DIR/suite.lock.json"
+if [[ -n "$PANEL_LOCK" ]]; then
+  cp "$PANEL_LOCK" "$RUN_DIR/panel.lock.json"
+fi
+if [[ -n "$SAMPLES_JSON" ]]; then
+  printf '%s\n' "$SAMPLES_JSON" > "$RUN_DIR/samples.json"
+fi
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
 RUN_STARTED_UTC=$(date -u +%FT%TZ)
 RUN_STARTED_NS=$(date +%s%N)
-export ROOT RUN_DIR ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
+export ROOT RUN_DIR ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN SERVER_LOG BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC SAMPLES_JSON PREDICT_ONLY PANEL_LOCK
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, re, subprocess, sys
 
@@ -224,6 +268,16 @@ metadata = {
     "suite": os.environ["SUITE"],
     "tasks": os.environ["TASKS"].split(","),
     "limit": os.environ.get("LIMIT") or None,
+    "samples": json.loads(os.environ["SAMPLES_JSON"]) if os.environ.get("SAMPLES_JSON") else None,
+    "samples_sha256": (
+        sha256(pathlib.Path(os.environ["RUN_DIR"]) / "samples.json")
+        if os.environ.get("SAMPLES_JSON") else None
+    ),
+    "panel_lock_sha256": (
+        sha256(pathlib.Path(os.environ["RUN_DIR"]) / "panel.lock.json")
+        if os.environ.get("PANEL_LOCK") else None
+    ),
+    "predict_only": os.environ["PREDICT_ONLY"] == "1",
     "shard_id": os.environ.get("SHARD_ID") or None,
     "base_url": os.environ["BASE_URL"],
     "artifact": str(artifact),
@@ -274,12 +328,19 @@ ARGS=(
   --output_path "$RUN_DIR"
 )
 if [[ -n ${LIMIT:-} && ${LIMIT} != all ]]; then ARGS+=(--limit "$LIMIT"); fi
+if [[ -n "$SAMPLES_JSON" ]]; then ARGS+=(--samples "$SAMPLES_JSON"); fi
 if [[ -n ${MAX_GEN_TOKS:-} ]]; then ARGS+=(--gen_kwargs "max_gen_toks=$MAX_GEN_TOKS"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
+if [[ "$PREDICT_ONLY" == 1 ]]; then ARGS+=(--predict_only); fi
 
 set +e
-timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
-  "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+if [[ "$SUITE" == code ]]; then
+  HF_ALLOW_CODE_EVAL=1 timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
+    "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+else
+  timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
+    "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+fi
 pipeline_status=("${PIPESTATUS[@]}")
 set -e
 evaluator_status=${pipeline_status[0]}
