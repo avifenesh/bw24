@@ -119,7 +119,9 @@ cp "$LOCK" "$RUN_DIR/suite.lock.json"
 if [[ -f "$ARTIFACT/manifest.json" ]]; then
   cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
 fi
-export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC
+RUN_STARTED_UTC=$(date -u +%FT%TZ)
+RUN_STARTED_NS=$(date +%s%N)
+export ROOT ARM MODEL SUITE TASKS LIMIT SHARD_ID BASE_URL HARNESS_COMMIT ARTIFACT MAX_GEN_TOKS EVAL_TIMEOUT_S NUM_CONCURRENT SERVER_BIN BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC RUN_STARTED_UTC
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, platform, subprocess, sys
 
@@ -161,6 +163,12 @@ metadata = {
     "declared_spill_pread_depth": os.environ.get("BW24_SPILL_PREAD_DEPTH") or None,
     "declared_spill_stats": os.environ.get("BW24_SPILL_STATS") or None,
     "declared_serve_spec": os.environ.get("BW24_SERVE_SPEC") or None,
+    "started_utc": os.environ["RUN_STARTED_UTC"],
+    "completed_utc": None,
+    "elapsed_seconds": None,
+    "evaluator_exit_code": None,
+    "tee_exit_code": None,
+    "completed_successfully": False,
     "max_gen_toks_override": (
         int(os.environ["MAX_GEN_TOKS"]) if os.environ.get("MAX_GEN_TOKS") else None
     ),
@@ -186,5 +194,37 @@ if [[ -n ${LIMIT:-} && ${LIMIT} != all ]]; then ARGS+=(--limit "$LIMIT"); fi
 if [[ -n ${MAX_GEN_TOKS:-} ]]; then ARGS+=(--gen_kwargs "max_gen_toks=$MAX_GEN_TOKS"); fi
 if [[ "$SUITE" == code ]]; then ARGS+=(--confirm_run_unsafe_code); fi
 
+set +e
 timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
   "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+evaluator_status=${pipeline_status[0]}
+tee_status=${pipeline_status[1]}
+RUN_COMPLETED_UTC=$(date -u +%FT%TZ)
+RUN_COMPLETED_NS=$(date +%s%N)
+RUN_ELAPSED_SECONDS=$(python3 -c 'import sys; print((int(sys.argv[2]) - int(sys.argv[1])) / 1e9)' \
+  "$RUN_STARTED_NS" "$RUN_COMPLETED_NS")
+export RUN_COMPLETED_UTC RUN_ELAPSED_SECONDS evaluator_status tee_status
+python3 - "$RUN_DIR/run-metadata.json" <<'PY'
+import json, os, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+metadata = json.loads(path.read_text())
+evaluator_status = int(os.environ["evaluator_status"])
+tee_status = int(os.environ["tee_status"])
+metadata.update({
+    "completed_utc": os.environ["RUN_COMPLETED_UTC"],
+    "elapsed_seconds": float(os.environ["RUN_ELAPSED_SECONDS"]),
+    "evaluator_exit_code": evaluator_status,
+    "tee_exit_code": tee_status,
+    "completed_successfully": evaluator_status == 0 and tee_status == 0,
+})
+path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+PY
+if (( evaluator_status != 0 )); then
+  exit "$evaluator_status"
+fi
+if (( tee_status != 0 )); then
+  exit "$tee_status"
+fi

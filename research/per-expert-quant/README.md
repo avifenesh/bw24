@@ -499,6 +499,9 @@ sample log for every pinned task. Never combine shards from different model, ser
 artifact, generation, concurrency, or spill configurations. Full reporting rejects missing receipt
 fields and compares the declared server/harness/tooling hashes, timeout, generation cap,
 concurrency, spill depth, and spec setting across every shard and both arms.
+Each receipt is written as incomplete before generation and finalized with wall time plus evaluator
+and log-pipeline exit codes. Full reporting rejects receipts that are unfinished, timed out, failed,
+or missing a positive elapsed time; concurrency preflights use that recorded wall time.
 
 SWE-bench Verified and Terminal-Bench 2.x use their containerized agent harnesses rather than
 `lm-eval`. Use small, frozen task lists with the same agent scaffold and budgets for initial

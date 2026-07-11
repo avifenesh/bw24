@@ -113,6 +113,19 @@ def load_arm(
                     raise ValueError(f"{arm}: receipt {path} differs on {key}")
             if receipt.get("limit") != "all":
                 raise ValueError(f"{arm}: receipt {path} does not record limit=all")
+            elapsed = receipt.get("elapsed_seconds")
+            if (
+                receipt.get("completed_successfully") is not True
+                or receipt.get("evaluator_exit_code") != 0
+                or receipt.get("tee_exit_code") != 0
+                or isinstance(elapsed, bool)
+                or not isinstance(elapsed, (int, float))
+                or not math.isfinite(float(elapsed))
+                or elapsed <= 0
+                or not isinstance(receipt.get("started_utc"), str)
+                or not isinstance(receipt.get("completed_utc"), str)
+            ):
+                raise ValueError(f"{arm}: receipt {path} is not a successful timed completion")
             tasks = receipt.get("tasks")
             if not isinstance(tasks, list) or not tasks or not all(isinstance(task, str) for task in tasks):
                 raise ValueError(f"{arm}: receipt {path} has invalid tasks")
@@ -350,6 +363,8 @@ def self_test(lock: dict[str, Any]) -> None:
                 "declared_serve_spec": "0", "arm": arm, "model": arm,
                 "artifact_identity_sha256": f"artifact-{arm}", "limit": "all",
                 "tasks": [spec["result_task"] for spec in specs], "shard_id": None,
+                "started_utc": "start", "completed_utc": "end", "elapsed_seconds": 1.0,
+                "evaluator_exit_code": 0, "tee_exit_code": 0, "completed_successfully": True,
             }
             (run_dir / "run-metadata.json").write_text(json.dumps(receipt))
             results = {}
