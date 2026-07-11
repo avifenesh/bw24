@@ -178,14 +178,15 @@ fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps,
                 il[dst + rbg..dst + rbg + rbu].copy_from_slice(&ub[su..su + rbu]);
             }
         }
-        let ild = e.htod_bytes(&il)?;
+        let ild = e.htod_bytes_padded(&il, 8)?;
         // `up` slot points into the same buffer via ptr math; keep a tiny placeholder alloc so
         // the struct shape is unchanged (the table below carries the real pointers).
         (ild, e.htod_bytes(&[0u8; 16])?)
     } else {
-        (e.htod_bytes(gate.bytes.as_bytes())?, e.htod_bytes(up.bytes.as_bytes())?)
+        (e.htod_bytes_padded(gate.bytes.as_bytes(), 8)?,
+         e.htod_bytes_padded(up.bytes.as_bytes(), 8)?)
     };
-    let d = e.htod_bytes(down.bytes.as_bytes())?;
+    let d = e.htod_bytes_padded(down.bytes.as_bytes(), 8)?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
         let (pg, _e0) = g.device_ptr(e.stream());

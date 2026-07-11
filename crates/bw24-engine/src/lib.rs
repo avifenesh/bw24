@@ -998,6 +998,19 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
 
+    /// `htod_bytes` with a mapped (uninit) tail pad: the wide-load expert dots read up to 6B
+    /// past the final q4_0 block through their aligned window — the bytes never reach a
+    /// result (funnelshift discards them) but must be mapped memory.
+    pub fn htod_bytes_padded(&self, v: &[u8], pad: usize)
+                             -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let mut d = self.alloc_u8_uninit(v.len() + pad)?;
+        {
+            let mut view = d.slice_mut(0..v.len());
+            self.gpu.stream.memcpy_htod(v, &mut view)?;
+        }
+        Ok(d)
+    }
+
     /// Device-to-device copy of `src` into `dst[off..off+len]` (f32). For in-place KV append.
     pub fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
