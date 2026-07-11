@@ -156,8 +156,9 @@ fi
   echo "NUM_CONCURRENT must be a positive integer (got $NUM_CONCURRENT)" >&2
   exit 2
 }
-command -v timeout >/dev/null || {
-  echo "GNU timeout is required" >&2
+TIMEOUT_BIN=${TIMEOUT_BIN:-$(command -v timeout || command -v gtimeout || true)}
+[[ -n "$TIMEOUT_BIN" && -x "$TIMEOUT_BIN" ]] || {
+  echo "GNU timeout is required (install coreutils on macOS)" >&2
   exit 2
 }
 
@@ -370,10 +371,10 @@ if [[ "$PREDICT_ONLY" == 1 ]]; then ARGS+=(--predict_only); fi
 
 set +e
 if [[ "$SUITE" == code ]]; then
-  HF_ALLOW_CODE_EVAL=1 timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
+  HF_ALLOW_CODE_EVAL=1 "$TIMEOUT_BIN" --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
     "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
 else
-  timeout --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
+  "$TIMEOUT_BIN" --signal=INT --kill-after=60s "${EVAL_TIMEOUT_S}s" \
     "$HARNESS_CLI" "${ARGS[@]}" 2>&1 | tee "$RUN_DIR/lm-eval.log"
 fi
 pipeline_status=("${PIPESTATUS[@]}")

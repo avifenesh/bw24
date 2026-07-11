@@ -18,20 +18,22 @@ BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1/completions}
 ARM=${ARM:-mlx_reap50_reference}
 MODEL=${MODEL:-default_model}
 
-[[ "$(sha256sum "$LOCK" | cut -d' ' -f1)" == "$LOCK_SHA256" ]] || {
-  echo "MLX reference lock hash mismatch" >&2
+(( BASH_VERSINFO[0] >= 4 )) || {
+  echo "Bash 4 or newer is required (install Homebrew bash on macOS)" >&2
   exit 2
 }
 [[ -f "$ARTIFACT/manifest.json" ]] || {
   echo "ARTIFACT must contain manifest.json" >&2
   exit 2
 }
-python3 - "$LOCK" "$ARTIFACT/manifest.json" "$RUNTIME_IDENTITY" <<'PY'
-import json, sys
+python3 - "$LOCK" "$LOCK_SHA256" "$ARTIFACT/manifest.json" "$RUNTIME_IDENTITY" <<'PY'
+import hashlib, json, sys
 
 lock = json.load(open(sys.argv[1]))
-manifest = json.load(open(sys.argv[2]))
-runtime = json.load(open(sys.argv[3]))
+if hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest() != sys.argv[2]:
+    raise SystemExit("MLX reference lock hash mismatch")
+manifest = json.load(open(sys.argv[3]))
+runtime = json.load(open(sys.argv[4]))
 
 if manifest.get("model_repo") != lock["model"]["repo"]:
     raise SystemExit("artifact manifest model_repo differs from the lock")

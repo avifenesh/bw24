@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 : "${1:?usage: score_hourish_code_container.sh RUN_DIR}"
-RUN_DIR=$(realpath "$1")
-[[ -d "$RUN_DIR" ]] || { echo "run directory does not exist: $RUN_DIR" >&2; exit 2; }
+[[ -d "$1" ]] || { echo "run directory does not exist: $1" >&2; exit 2; }
+(( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4 or newer is required" >&2; exit 2; }
+RUN_DIR=$(cd "$1" && pwd -P)
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
 
 mapfile -t human < <(find "$RUN_DIR/shards/humaneval_instruct" -name 'samples_humaneval_instruct_*.jsonl' -type f)
@@ -21,8 +22,19 @@ RECEIPT="$RUN_DIR/code-score.receipt.json"
   exit 3
 }
 
-tool_sha=$(sha256sum "$HERE/score_hourish_code.py" "$HERE/Dockerfile.code-score" \
-  | sha256sum | cut -d' ' -f1)
+tool_sha=$(python3 - "$HERE/score_hourish_code.py" "$HERE/Dockerfile.code-score" <<'PY'
+import hashlib, sys
+
+outer = hashlib.sha256()
+for raw_path in sys.argv[1:]:
+    digest = hashlib.sha256()
+    with open(raw_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    outer.update(f"{digest.hexdigest()}  {raw_path}\n".encode())
+print(outer.hexdigest())
+PY
+)
 image="bw24-hourish-code-score:${tool_sha:0:16}"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   docker build --pull --file "$HERE/Dockerfile.code-score" --tag "$image" "$HERE"

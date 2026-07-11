@@ -32,7 +32,16 @@ NUM_CONCURRENT=${NUM_CONCURRENT:-1}
 HOURISH_SHARD_TIMEOUT_S=${HOURISH_SHARD_TIMEOUT_S:-43200}
 
 [[ -f "$PANEL_LOCK" ]] || { echo "missing panel lock: $PANEL_LOCK" >&2; exit 2; }
-actual_panel_sha=$(sha256sum "$PANEL_LOCK" | cut -d' ' -f1)
+actual_panel_sha=$(python3 - "$PANEL_LOCK" <<'PY'
+import hashlib, sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+)
 [[ "$actual_panel_sha" == "$PANEL_SHA256" ]] || {
   echo "panel lock hash mismatch: expected $PANEL_SHA256, got $actual_panel_sha" >&2
   exit 2

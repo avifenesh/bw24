@@ -27,6 +27,7 @@ one request at a time, and no draft model. Compare its paired quality outcomes t
 but keep it outside the artifact-size Pareto calculation because its format and runtime differ.
 `run_hourish_mlx_reference.sh` applies that lock to an already-running pinned MLX server and refuses
 an artifact manifest, runtime receipt, or draft-model declaration that differs from the lock.
+On macOS, run it with Homebrew Bash 4+ and GNU coreutils (`gtimeout` is detected automatically).
 
 ## Frozen question budget
 
