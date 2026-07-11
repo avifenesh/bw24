@@ -123,11 +123,17 @@ impl GemmaDraft {
             let n_vocab = t.ne[1] as usize;
             match std::env::var("BW24_GEMMA_DRAFT_RANKS").ok() {
                 Some(path) => {
-                    assert_eq!(t.ggml_type, bw24_gguf::GgmlType::Q4_0, "drafter head trim expects Q4_0");
+                    // row gather is layout-agnostic given the per-row byte stride: Q4_0 (26B
+                    // drafter) and Q8_0 (31B drafter) both ship 32-elem blocks row-major.
+                    let (qtype, blk_b) = match t.ggml_type {
+                        bw24_gguf::GgmlType::Q4_0 => (crate::QT_Q4_0, 18),
+                        bw24_gguf::GgmlType::Q8_0 => (crate::QT_Q8_0, 34),
+                        other => panic!("drafter head trim: unsupported head type {other:?}"),
+                    };
                     let ids: Vec<u32> = std::fs::read_to_string(&path)?
                         .lines().filter_map(|l| l.trim().parse().ok())
                         .filter(|&id| (id as usize) < n_vocab).collect();
-                    let row_bytes = in_f / 32 * 18;
+                    let row_bytes = in_f / 32 * blk_b;
                     let mut gathered = Vec::with_capacity(ids.len() * row_bytes);
                     for &id in &ids {
                         let off = id as usize * row_bytes;
@@ -138,7 +144,7 @@ impl GemmaDraft {
                               ids.len(), ids.len() * row_bytes / 1_000_000,
                               n_vocab * row_bytes / 1_000_000);
                     (GpuTensor::Quant {
-                        bytes, qtype: crate::QT_Q4_0, row_bytes,
+                        bytes, qtype, row_bytes,
                         ne: vec![in_f as u64, ids.len() as u64], scale: 1.0, rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
