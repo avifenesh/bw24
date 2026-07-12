@@ -694,7 +694,9 @@ def load_arm(
         }
         if shared_config is None:
             shared_config = comparable
-        elif comparable != shared_config:
+        elif comparison_config(comparable, panel["format"]) != comparison_config(
+            shared_config, panel["format"]
+        ):
             raise ValueError(f"{arm}/{task}: shared run configuration differs")
         result_path = exactly_one(
             sorted(shard_dir.rglob("results_*.json")), f"{arm}/{task} result"
