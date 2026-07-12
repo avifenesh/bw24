@@ -54,7 +54,7 @@ def ggml_names(layer: int) -> tuple[str, str]:
     )
 
 
-def export(args: argparse.Namespace) -> dict:
+def export(args: argparse.Namespace, hash_file=sha256) -> dict:
     layers = parse_layers(args.layers)
     index_path = args.overlay_dir / "model.safetensors.index.json"
     index = json.loads(index_path.read_text())
@@ -63,6 +63,7 @@ def export(args: argparse.Namespace) -> dict:
     tmp_blob = args.blob.with_name(args.blob.name + ".tmp")
     tensors: dict[str, dict] = {}
     sources: dict[str, dict] = {}
+    shard_hashes: dict[str, str] = {}
     offset = 0
     try:
         with tmp_blob.open("wb") as output:
@@ -86,6 +87,10 @@ def export(args: argparse.Namespace) -> dict:
                         raise ValueError(f"{hf_name}: non-finite value")
                     raw = values.tobytes(order="C")
                     output.write(raw)
+                    shard_sha256 = shard_hashes.get(shard_name)
+                    if shard_sha256 is None:
+                        shard_sha256 = hash_file(args.overlay_dir / shard_name)
+                        shard_hashes[shard_name] = shard_sha256
                     tensors[ggml_name] = {
                         "source": hf_name,
                         "offset": offset,
@@ -95,7 +100,7 @@ def export(args: argparse.Namespace) -> dict:
                     }
                     sources[hf_name] = {
                         "shard": shard_name,
-                        "shard_sha256": sha256(args.overlay_dir / shard_name),
+                        "shard_sha256": shard_sha256,
                     }
                     offset += len(raw)
             output.flush()
@@ -109,13 +114,13 @@ def export(args: argparse.Namespace) -> dict:
         "overlay_dir": str(args.overlay_dir.resolve()),
         "overlay_index": {
             "path": str(index_path.resolve()),
-            "sha256": sha256(index_path),
+            "sha256": hash_file(index_path),
         },
         "layers": layers,
         "blob": {
             "path": str(args.blob.resolve()),
             "bytes": args.blob.stat().st_size,
-            "sha256": sha256(args.blob),
+            "sha256": hash_file(args.blob),
         },
         "tensors": dict(sorted(tensors.items())),
         "sources": dict(sorted(sources.items())),
@@ -142,7 +147,14 @@ def self_test() -> None:
             overlay_dir=overlay, layers="1", blob=root / "router.bin",
             receipt=root / "overrides.json",
         )
-        receipt = export(args)
+        hash_counts: dict[Path, int] = {}
+
+        def counted_sha256(path: Path) -> str:
+            hash_counts[path] = hash_counts.get(path, 0) + 1
+            return sha256(path)
+
+        receipt = export(args, hash_file=counted_sha256)
+        assert hash_counts[shard] == 1
         assert receipt["format"] == FORMAT
         assert receipt["blob"]["bytes"] == (12 + 3) * 4
         router_record = receipt["tensors"]["blk.1.ffn_gate_inp.weight"]
