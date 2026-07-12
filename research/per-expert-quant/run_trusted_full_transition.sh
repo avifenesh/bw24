@@ -8,6 +8,7 @@ PRACTICAL_READY=${PRACTICAL_READY:-/data/logs/practical-v1/complete}
 OUT_ROOT=${OUT_ROOT:-/data/results/per-expert-quant/trusted-full-v1}
 LOG_ROOT=${LOG_ROOT:-/data/logs/trusted-full-v1}
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
+FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_promoted_results.py}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 HF_HOME=${HF_HOME:-/data/cache/huggingface}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
@@ -31,6 +32,7 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -x "$SERVER_BIN" ]] || die "missing trusted-full server"
 [[ -x "$HERE/run_public_evals.sh" ]] || die "missing public-eval runner"
 [[ -x "$HERE/score_promoted_math_container.sh" ]] || die "missing trusted MATH scorer"
+[[ -f "$FULL_SUMMARIZER" ]] || die "missing trusted-full summarizer"
 [[ -f "$HERE/suite.lock.json" ]] || die "missing frozen suite lock"
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 [[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid eval timeout"
@@ -83,7 +85,10 @@ done
 
 RUN_ID="trusted-full-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
-export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE
+ARM_COUNT=${#ARMS[@]}
+BASE_LANES=$((8 / ARM_COUNT))
+EXTRA_LANES=$((8 % ARM_COUNT))
+export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -101,7 +106,11 @@ payload = {
         "mmlu_pro_other", "mmlu_pro_economics", "mmlu_pro_law", "mmlu_pro_psychology",
     ],
     "documents_per_arm": 4746,
-    "protocol": "parallel isolated loopback namespaces; one GPU and concurrency one per arm",
+    "protocol": "all eight GPUs; task-family shards balanced across isolated per-arm server lanes; concurrency one per lane",
+    "lane_allocation": {
+        arm: int(os.environ["BASE_LANES"]) + (index < int(os.environ["EXTRA_LANES"]))
+        for index, arm in enumerate(arms)
+    },
     "practical_promotion": {
         "path": os.environ["PRACTICAL_PROMOTION"],
         "sha256": sha(os.environ["PRACTICAL_PROMOTION"]),
@@ -147,11 +156,11 @@ cleanup_all() {
 }
 trap cleanup_all EXIT INT TERM
 
-run_arm() (
-  local arm=$1 gpu=$2 cpus=$3 artifact ns arm_log server_log
+run_lane() (
+  local arm=$1 gpu=$2 cpus=$3 lane=$4 lane_count=$5 artifact ns arm_log server_log
   artifact=$(artifact_for "$arm")
   ns="bw24-full-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
-  arm_log="$LOG_ROOT/$RUN_ID-$arm"
+  arm_log="$LOG_ROOT/$RUN_ID-$arm-lane$lane"
   server_log="$arm_log/server.log"
   mkdir -p "$arm_log"
   sudo ip netns del "$ns" 2>/dev/null || true
@@ -198,7 +207,9 @@ run_arm() (
   done
   [[ -f "$arm_log/health.json" ]] || die "$arm trusted-full server health timeout"
 
-  for task in "${TASKS[@]}"; do
+  for task_index in "${!TASKS[@]}"; do
+    (( task_index % lane_count == lane )) || continue
+    task=${TASKS[$task_index]}
     shard="$OUT_ROOT/$arm/$RUN_ID/shards/$task"
     completed=0
     for task_attempt in $(seq 1 "$TASK_ATTEMPTS"); do
@@ -237,12 +248,19 @@ run_arm() (
   date -u +%FT%TZ > "$arm_log/complete"
 )
 
-CPU_LANES=(0-15 16-31 32-47)
-for index in "${!ARMS[@]}"; do
-  ns="bw24-full-${RUN_ID//[^A-Za-z0-9]/-}-$index"
-  NAMESPACES+=("$ns")
-  run_arm "${ARMS[$index]}" "$index" "${CPU_LANES[$index]}" &
-  WORKER_PIDS+=("$!")
+gpu=0
+for arm_index in "${!ARMS[@]}"; do
+  lane_count=$BASE_LANES
+  (( arm_index < EXTRA_LANES )) && lane_count=$((lane_count + 1))
+  for ((lane=0; lane<lane_count; lane++)); do
+    ns="bw24-full-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
+    NAMESPACES+=("$ns")
+    cpu_start=$((gpu * 12))
+    cpu_end=$((cpu_start + 11))
+    run_lane "${ARMS[$arm_index]}" "$gpu" "$cpu_start-$cpu_end" "$lane" "$lane_count" &
+    WORKER_PIDS+=("$!")
+    gpu=$((gpu + 1))
+  done
 done
 
 failed=0
@@ -250,7 +268,7 @@ for pid in "${WORKER_PIDS[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more trusted-full workers failed"
 
 ARMS_CSV=$(IFS=,; echo "${ARMS[*]}")
-python3 "$HERE/summarize_promoted_results.py" \
+PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 "$FULL_SUMMARIZER" \
   --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARMS_CSV" \
   --baseline plain_quant --expected-n all \
   --lock "$HERE/suite.lock.json" \

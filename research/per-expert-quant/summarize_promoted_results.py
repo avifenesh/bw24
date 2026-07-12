@@ -47,11 +47,13 @@ N50_SHARED_RECEIPT_KEYS = (
     "platform",
     "nvidia_smi",
 )
+# Full runs may shard one arm across several identical GPU/server lanes. Each receipt validates
+# its own copied server log below, so the source path is intentionally lane-local rather than a
+# within-arm equality key.
 FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
     "arm",
     "model",
     "artifact_identity_sha256",
-    "server_log_source",
 )
 SPILL_COUNTER_KEYS = (
     "reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full",
@@ -899,6 +901,7 @@ def self_test(lock: dict[str, Any]) -> None:
                 candidate_receipt,
                 tasks=[task],
                 shard_id=task,
+                server_log_source=str(shard_server_log),
                 server_log=str(shard_server_log),
                 server_log_sha256=sha256(shard_server_log),
             )
