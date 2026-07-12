@@ -221,6 +221,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // BW24_VERIFY_GATE2=K: CHAINED batched-verify gate — prefix tokenwise, then TWO
+    // back-to-back decode_step_t calls of K tokens each; per-position argmax must match the
+    // tokenwise chain (the E4B spec round-2 divergence oracle: one batched verify is exact,
+    // the second sees stale state).
+    if let Ok(kk) = std::env::var("BW24_VERIFY_GATE2") {
+        let k: usize = kk.parse().unwrap_or(2);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let n_vocab = model.output.out_features();
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        assert!(toks.len() > 2 * k + 1, "prompt must exceed 2K+1");
+        let split = toks.len() - 2 * k;
+        let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        let mut ref_am: Vec<usize> = Vec::new();
+        for (i, &tk) in toks.iter().enumerate() {
+            let l = model.decode_step(&e, tk, &mut c1)?;
+            if i >= split { ref_am.push(bw24_engine::forward::argmax(&l)); }
+        }
+        let mut c2 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        for &tk in &toks[..split] { let _ = model.decode_step(&e, tk, &mut c2)?; }
+        // DEVICE-token arm (=the spec round's verify path) when BW24_VERIFY_GATE2_DEV=1.
+        let dev = std::env::var("BW24_VERIFY_GATE2_DEV").as_deref() == Ok("1");
+        let mut all_ok = true;
+        for (i, seg) in [(0usize, &toks[split..split + k]), (k, &toks[split + k..])] {
+            let ams: Vec<usize> = if dev {
+                let td = e.stream().clone_htod(seg)?;
+                let (vam_d, _vh) = model.gemma4_e4b_decode_step_t_am_dev(
+                    &e, &td, k, split + i, &mut c2)?;
+                e.dtoh_u32(&vam_d)?.iter().map(|&x| x as usize).collect()
+            } else {
+                let lv = model.decode_step_t(&e, seg, split + i, &mut c2)?;
+                (0..k).map(|j| bw24_engine::forward::argmax(&lv[j * n_vocab..(j + 1) * n_vocab]))
+                      .collect()
+            };
+            for j in 0..k {
+                let ok = ams[j] == ref_am[i + j];
+                all_ok &= ok;
+                println!("chained verify pos {}: batched={} tokenwise={} {}", i + j,
+                         ams[j], ref_am[i + j], if ok { "MATCH" } else { "MISMATCH" });
+            }
+        }
+        println!("VERIFY-GATE2 K={k} dev={dev}: {}", if all_ok { "PASS" } else { "FAIL" });
+        return Ok(());
+    }
     // BW24_VERIFY_GATE=K: batched-verify self-consistency — decode the prompt tokenwise
     // (reference), then on a fresh cache decode the prefix and run ONE decode_step_t over the
     // last K tokens; per-position argmax must match the tokenwise chain (the spec K-gate).

@@ -60,13 +60,19 @@ fn load_t(e: &Engine, src: &dyn TensorSource, name: &str)
 
 impl GemmaDraft {
     pub fn load(e: &Engine, g: &GgufFile) -> Result<Self, Box<dyn std::error::Error>> {
-        assert_eq!(g.arch(), Some("gemma4-assistant"), "not a gemma4-assistant drafter");
+        // two published spellings of the same arch: the 26B/31B drafters ship
+        // "gemma4-assistant", the E4B assistant ships "gemma4_assistant" — the metadata
+        // key prefix follows the arch string verbatim.
+        let arch = match g.arch() {
+            Some(a @ ("gemma4-assistant" | "gemma4_assistant")) => a.to_string(),
+            other => panic!("not a gemma4-assistant drafter (arch {other:?})"),
+        };
         let src = GgufSource(g);
         let meta_u = |k: &str| -> u32 {
-            g.metadata.get(&format!("gemma4-assistant.{k}")).and_then(|v| v.as_u64()).unwrap_or(0) as u32
+            g.metadata.get(&format!("{arch}.{k}")).and_then(|v| v.as_u64()).unwrap_or(0) as u32
         };
         let meta_f = |k: &str, d: f32| -> f32 {
-            match g.metadata.get(&format!("gemma4-assistant.{k}")) {
+            match g.metadata.get(&format!("{arch}.{k}")) {
                 Some(bw24_gguf::MetaValue::F32(v)) => *v,
                 Some(bw24_gguf::MetaValue::F64(v)) => *v as f32,
                 _ => d,
@@ -74,11 +80,15 @@ impl GemmaDraft {
         };
         let n_layer = meta_u("block_count") as usize;
         let n_embd = meta_u("embedding_length") as usize;
-        let n_backbone = meta_u("embedding_length_out") as usize;
+        // 26B/31B carry the target width as embedding_length_out; the E4B assistant as
+        // n_embd_backbone.
+        let n_backbone = match meta_u("embedding_length_out") as usize {
+            0 => meta_u("n_embd_backbone") as usize,
+            v => v,
+        };
         let hd_g = meta_u("attention.key_length") as usize;
         let hd_s = meta_u("attention.key_length_swa") as usize;
-        let nh = meta_u("attention.head_count") as usize;
-        let swa_pat: Vec<bool> = match g.metadata.get("gemma4-assistant.attention.sliding_window_pattern") {
+        let swa_pat: Vec<bool> = match g.metadata.get(&format!("{arch}.attention.sliding_window_pattern")) {
             Some(bw24_gguf::MetaValue::Array(a)) =>
                 a.iter().filter_map(|v| v.as_u64().map(|x| x != 0)).collect(),
             _ => return Err("drafter missing sliding_window_pattern".into()),
@@ -92,9 +102,14 @@ impl GemmaDraft {
                 let t = src.find(&p("layer_output_scale.weight")).ok_or("missing layer_output_scale")?;
                 bw24_gguf::dequant::dequantize(t.ggml_type, &t.bytes, 1)[0]
             };
+            let hd = if swa { hd_s } else { hd_g };
+            let wq = load_t(e, &src, &p("attn_q.weight"))?;
+            // heads per layer from the projection shape (the E4B assistant keeps 4 heads on
+            // BOTH classes — hd differs — while 26B/31B are uniform; the shape is the truth).
+            let nh = wq.out_features() / hd;
             layers.push(GemmaDraftLayer {
                 attn_norm: load_t(e, &src, &p("attn_norm.weight"))?,
-                wq: load_t(e, &src, &p("attn_q.weight"))?,
+                wq,
                 wo: load_t(e, &src, &p("attn_output.weight"))?,
                 q_norm: load_t(e, &src, &p("attn_q_norm.weight"))?,
                 post_attn_norm: load_t(e, &src, &p("post_attention_norm.weight"))?,
@@ -105,7 +120,7 @@ impl GemmaDraft {
                 ffn_post_norm: load_t(e, &src, &p("post_ffw_norm.weight"))?,
                 out_scale,
                 swa,
-                hd: if swa { hd_s } else { hd_g },
+                hd,
                 nh,
             });
         }
@@ -158,8 +173,12 @@ impl GemmaDraft {
         };
         // Q4_0 split-plane decode mirrors (BW24_Q4RP, same as the main trunk — see hybrid.rs):
         // the draft chain is 3 serial mmvq trips/round; the head alone is ~137MB/draft.
-        let (mut pre_proj, mut post_proj) = (load_t(e, &src, "nextn.pre_projection.weight")?,
-                                             load_t(e, &src, "nextn.post_projection.weight")?);
+        // projection tensor prefix: 26B/31B "nextn.", the E4B assistant "mtp.".
+        let proj_prefix = if src.find("nextn.pre_projection.weight").is_some() { "nextn" }
+                          else { "mtp" };
+        let (mut pre_proj, mut post_proj) =
+            (load_t(e, &src, &format!("{proj_prefix}.pre_projection.weight"))?,
+             load_t(e, &src, &format!("{proj_prefix}.post_projection.weight"))?);
         let mut head = head;
         let mut layers = layers;
         if crate::Engine::q4rp_enabled() {
@@ -191,6 +210,16 @@ impl GemmaDraft {
 }
 
 impl HybridModel {
+    /// The MAIN layer whose KV cache a drafter layer attends (llama-model.cpp:2139):
+    /// the last OWN-KV layer of the class — `boundary - 2` windowed / `boundary - 1`
+    /// global, where boundary = n_layer - shared_kv_layers. Shared across every
+    /// gemma4-assistant drafter (26B/31B: boundary = n_layer; E4B: 24).
+    pub(crate) fn gemma4_draft_kv_target(&self, swa: bool) -> usize {
+        let shared = self.cfg.gemma4.as_ref().map(|g| g.shared_kv_layers as usize).unwrap_or(0);
+        let boundary = self.layers.len() - shared;
+        boundary - if swa { 2 } else { 1 }
+    }
+
     /// One drafter step: (token, h[2816 device]) at absolute position `pos` over the FROZEN main
     /// cache. Returns (draft logits host [n_vocab], h_next [2816 device]).
     pub fn gemma4_draft_step(&self, e: &Engine, d: &GemmaDraft, token: u32,
@@ -238,11 +267,9 @@ impl HybridModel {
         // slots via set_i32_one (kernel-arg stores — no per-step htod/alloc) and the chain
         // becomes graph-capturable (an in-graph i32_copy_add can feed the slots later).
         let eps = self.cfg.rms_eps;
-        let nb = d.n_backbone;
         let ne = d.n_embd;
-        let n_main = self.layers.len();
 
-        // xh = concat(x, h) [5632]
+        // xh = concat(x, h) [2*n_backbone]
         let nb = d.n_backbone;
         let mut xh = e.uninit(2 * nb)?;
         e.copy_into(&mut xh, 0, xs, nb)?;
@@ -251,8 +278,11 @@ impl HybridModel {
         let mut cur = e.matmul(&d.pre_proj, &xh, 1)?;   // [1024]
 
         for (_il, dl) in d.layers.iter().enumerate() {
-            // attention over the shared MAIN KV: swa -> main n-2 (windowed), global -> main n-1.
-            let main_il = if dl.swa { n_main - 2 } else { n_main - 1 };
+            // attention over the shared MAIN KV: swa -> the last OWN-KV windowed layer,
+            // global -> the last OWN-KV global layer (llama-model.cpp:2139 rule). Plain
+            // 26B/31B trunks have no shared tail, so this is n-2 / n-1 there; E4B's 18
+            // KV-shared tail layers move the boundary to 24 -> targets 22 (swa) / 23.
+            let main_il = self.gemma4_draft_kv_target(dl.swa);
             let kvl = cache.kv[main_il].as_ref().unwrap();
             let (hd, nhh) = (dl.hd, dl.nh);
             let nkv = kvl.kv_dim_k / hd;
@@ -358,6 +388,23 @@ impl HybridModel {
         let (pl, h_seed) = if prompt.len() >= crate::hybrid_forward::PRIME_MIN_T {
             let (l, hs, _hh) = self.prime_cache(e, prompt, &mut cache)?;
             (l, hs)
+        } else if self.is_gemma4_e4b() {
+            // E4B short-prompt prime: TOKENWISE — the batched e4b trunk at base_len==0
+            // rides the PRIME-FA f32 arm (a different numerics class from the plain arm's
+            // tokenwise prime), and the class skew flipped near-tie streams (3/64,
+            // 2026-07-13). decode_step_h is the same chain the plain arm primes with.
+            let n_embd_ = self.cfg.n_embd as usize;
+            let mut ll = Vec::new();
+            let mut hx = e.zeros(n_embd_)?;
+            for &tok in prompt {
+                let (l, hh) = self.gemma4_e4b_decode_step_h(e, tok, &mut cache)?;
+                ll = l; hx = hh;
+            }
+            // decode_step_h returns the PRE-output_norm hidden; the short-prompt arm's
+            // h convention below is POST-norm — norm here.
+            let mut hp = e.uninit(n_embd_)?;
+            e.rms_norm(&hx, self.output_norm.float_data(), &mut hp, n_embd_, 1, eps)?;
+            (ll, hp)
         } else {
             let n_vocab = self.output.out_features();
             let (lv, hv) = self.gemma4_decode_step_t_h(e, prompt, 0, &mut cache)?;
@@ -509,7 +556,8 @@ impl HybridModel {
             let over_win = {
                 let win = d.sliding_window;
                 d.layers.iter().any(|dl| dl.swa
-                    && cache.kv[self.layers.len() - 2].as_ref().is_some_and(|kv| kv.len > win))
+                    && cache.kv[self.gemma4_draft_kv_target(true)].as_ref()
+                        .is_some_and(|kv| kv.len > win))
             };
             // ---- BURST ARM ---- (gate computed at the loop top; needs dc arms too)
             if burst_ok && dc_bucket.is_some() {
@@ -673,7 +721,7 @@ impl HybridModel {
                 }
                 Ok(out)
             };
-            let vam_s = if vcheck {
+            let vam_s = if vcheck && !self.is_gemma4_e4b() {
                 let mut ctr = e.htod_i32(&[pos0 as i32])?;
                 e.set_i32_one(&mut ctr, pos0 as i32)?;
                 let mut scr0 = self.verify_stream_scratch(e, kr + 1)?;
@@ -683,7 +731,11 @@ impl HybridModel {
                 let ss = kvsum(e, &cache)?;
                 Some((e.dtoh_u32(&vs)?, ss))
             } else { None };
-            let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?;
+            let (vam_d, vh) = if self.is_gemma4_e4b() {
+                self.gemma4_e4b_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
+            } else {
+                self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
+            };
             if let Some((vs, ss)) = vam_s {
                 let se = kvsum(e, &cache)?;
                 for (il, (a, b)) in ss.iter().zip(&se).enumerate() {
@@ -711,6 +763,11 @@ impl HybridModel {
             let mut m = 0usize;
             while m < k {
                 if dtoks[m] == vam[m] { m += 1; } else { break; }
+            }
+            if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                let l0 = cache.kv.iter().flatten().next().map(|kv| kv.len).unwrap_or(0);
+                eprintln!("[round {rounds}] pos0={pos0} post_pos={} kv0_len={l0} last={last} dtoks={dtoks:?} vam={vam:?} m={m}",
+                          cache.pos);
             }
             accepted += m;
             // emit last + accepted drafts; the correction token comes from verify row m.
