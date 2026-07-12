@@ -41,6 +41,8 @@ def merge(paths: list[Path]) -> dict[str, Any]:
     }
     seen_layers: set[int] = set()
     scores: list[dict[str, Any]] = []
+    teacher_targets: dict[str, Any] = {}
+    expect_teacher_targets = bool(first.get("teacher_targets"))
     receipts = []
     for path, shard in shards:
         if shard.get("format") != FORMAT:
@@ -56,6 +58,18 @@ def merge(paths: list[Path]) -> dict[str, Any]:
         row_layers = {int(row["layer"]) for row in shard["scores"]}
         if row_layers != layers:
             raise ValueError(f"{path}: score rows do not match declared layer coverage")
+        shard_targets = shard.get("teacher_targets", {})
+        if bool(shard_targets) != expect_teacher_targets:
+            raise ValueError(f"{path}: teacher-target presence differs from the first shard")
+        if expect_teacher_targets and {int(layer) for layer in shard_targets} != layers:
+            raise ValueError(f"{path}: teacher targets do not match declared layer coverage")
+        for layer, receipt in shard_targets.items():
+            target_path = Path(receipt["path"])
+            if target_path.stat().st_size != int(receipt["bytes"]):
+                raise ValueError(f"{path}: teacher target {target_path} size changed")
+            if sha256(target_path) != receipt["sha256"]:
+                raise ValueError(f"{path}: teacher target {target_path} hash changed")
+            teacher_targets[str(layer)] = receipt
         seen_layers.update(layers)
         scores.extend(shard["scores"])
         receipts.append({
@@ -77,6 +91,9 @@ def merge(paths: list[Path]) -> dict[str, Any]:
     result["model"] = dict(first["model"])
     result["model"]["moe_layers"] = expected_layers
     result["scores"] = scores
+    result["teacher_targets"] = dict(
+        sorted(teacher_targets.items(), key=lambda item: int(item[0]))
+    )
     result["shards"] = receipts
     return result
 
@@ -98,6 +115,7 @@ def self_test() -> None:
                 "policy": {"x": 1},
                 "calibration": {"public_eval_data_used_for_selection": False},
                 "source": {"sha256": "abc"},
+                "teacher_targets": {},
                 "scores": [
                     {"layer": layer, "expert": expert, "retain_score": layer + expert}
                     for expert in range(2)

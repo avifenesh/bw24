@@ -469,6 +469,63 @@ def _write_completion_receipt(path: Path, receipt: dict[str, Any]) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _install_tensor_overrides(
+    out_dir: Path, override_path: Path | None, manifest: dict[str, Any]
+) -> None:
+    override_dir = out_dir / "overrides"
+    if override_path is None:
+        shutil.rmtree(override_dir, ignore_errors=True)
+        return
+    receipt = json.loads(override_path.read_text())
+    if receipt.get("format") != "bw24-tensor-overrides-v1":
+        raise ValueError(f"{override_path}: unsupported tensor override format")
+    blob = receipt.get("blob")
+    tensors = receipt.get("tensors")
+    if not isinstance(blob, dict) or not isinstance(tensors, dict) or not tensors:
+        raise ValueError(f"{override_path}: missing blob or tensors")
+    blob_path = Path(blob["path"])
+    if blob_path.stat().st_size != int(blob["bytes"]):
+        raise ValueError(f"{override_path}: override blob size changed")
+    if sha256_file(blob_path) != blob["sha256"]:
+        raise ValueError(f"{override_path}: override blob hash changed")
+    override_dir.mkdir(parents=True, exist_ok=True)
+    rel = Path("overrides") / f"{blob['sha256']}.bin"
+    installed = out_dir / rel
+    shutil.copyfile(blob_path, installed)
+    allowed_suffixes = (".ffn_gate_inp.weight", ".exp_probs_b.bias")
+    for name, record in sorted(tensors.items()):
+        if not name.startswith("blk.") or not name.endswith(allowed_suffixes):
+            raise ValueError(f"{override_path}: disallowed tensor override {name}")
+        if name in manifest["tensors"]:
+            raise ValueError(f"{override_path}: tensor override collision {name}")
+        if record.get("qtype") != "F32":
+            raise ValueError(f"{override_path}: {name} must remain F32")
+        ne = record.get("ne")
+        if not isinstance(ne, list) or not ne or any(int(value) <= 0 for value in ne):
+            raise ValueError(f"{override_path}: {name} has invalid ne")
+        offset = int(record["offset"])
+        size = int(record["bytes"])
+        if offset < 0 or size != int(np.prod(ne, dtype=np.int64)) * 4:
+            raise ValueError(f"{override_path}: {name} has invalid F32 extent")
+        if offset + size > installed.stat().st_size:
+            raise ValueError(f"{override_path}: {name} exceeds override blob")
+        manifest["tensors"][name] = {
+            "source": record.get("source", "healed-router"),
+            "file": str(rel),
+            "offset": offset,
+            "qtype": "F32",
+            "ne": [int(value) for value in ne],
+            "bytes": size,
+        }
+    manifest["tensor_overrides"] = {
+        "receipt_path": str(override_path.resolve()),
+        "receipt_sha256": sha256_file(override_path),
+        "blob_sha256": blob["sha256"],
+        "bytes": int(blob["bytes"]),
+        "tensor_count": len(tensors),
+    }
+
+
 def prepare(args: argparse.Namespace) -> None:
     source_dir = Path(args.source_dir).resolve()
     fallback_dir = Path(args.fallback_dir).resolve() if args.fallback_dir else source_dir
@@ -650,7 +707,14 @@ def prepare(args: argparse.Namespace) -> None:
     finally:
         store.close()
 
+    raw_override = getattr(args, "tensor_overrides", None)
+    _install_tensor_overrides(
+        out_dir, Path(raw_override).resolve() if raw_override else None, manifest
+    )
     manifest["artifact_bytes"] = sum(v["bytes"] for v in manifest["tier_summary"].values())
+    manifest["payload_bytes"] = manifest["artifact_bytes"] + int(
+        manifest.get("tensor_overrides", {}).get("bytes", 0)
+    )
     manifest_path = out_dir / "manifest.json"
     tmp = manifest_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
@@ -701,7 +765,7 @@ def self_test() -> None:
         }))
         prepare(SimpleNamespace(
             source_dir=str(source), fallback_dir=None, out_dir=str(out), plan=str(plan),
-            max_work_mb=8, resume=False, workers=1,
+            max_work_mb=8, resume=False, workers=1, tensor_overrides=None,
         ))
         manifest = json.loads((out / "manifest.json").read_text())
         assert manifest["format"] == OVERLAY_FORMAT
@@ -709,6 +773,31 @@ def self_test() -> None:
         assert manifest["plan_canonical_sha256"] == canonical_json_sha256(manifest["plan"])
         assert manifest["plan_sha256"] != manifest["plan_canonical_sha256"]
         assert len(manifest["tensors"]) == 12
+        override_blob = root / "router-overrides.bin"
+        override_values = np.arange(12, dtype="<f4")
+        override_blob.write_bytes(override_values.tobytes())
+        override_receipt = root / "router-overrides.json"
+        override_receipt.write_text(json.dumps({
+            "format": "bw24-tensor-overrides-v1",
+            "blob": {
+                "path": str(override_blob), "bytes": override_blob.stat().st_size,
+                "sha256": sha256_file(override_blob),
+            },
+            "tensors": {
+                "blk.0.ffn_gate_inp.weight": {
+                    "source": "model.layers.0.mlp.router.gate.weight",
+                    "offset": 0, "qtype": "F32", "ne": [4, 3], "bytes": 48,
+                }
+            },
+        }))
+        override_manifest = {"tensors": {}}
+        _install_tensor_overrides(out, override_receipt, override_manifest)
+        record = override_manifest["tensors"]["blk.0.ffn_gate_inp.weight"]
+        installed = out / record["file"]
+        assert installed.read_bytes() == override_blob.read_bytes()
+        assert override_manifest["tensor_overrides"]["tensor_count"] == 1
+        _install_tensor_overrides(out, None, override_manifest)
+        assert not (out / "overrides").exists()
         for proj in PROJECTIONS:
             records = [manifest["tensors"][f"blk.0.ffn_{proj}_exps.{ex}.weight"] for ex in range(4)]
             assert [r["qtype"] for r in records] == ["Q8_0", "NVFP4", "Q3_K", "Q2_K"]
@@ -841,6 +930,10 @@ def main() -> int:
     prep.add_argument("--max-work-mb", type=int, default=512)
     prep.add_argument("--workers", type=int, default=1)
     prep.add_argument("--resume", action="store_true")
+    prep.add_argument(
+        "--tensor-overrides",
+        help="bw24-tensor-overrides-v1 receipt whose F32 router tensors override fallback",
+    )
     inspect = sub.add_parser("probe")
     inspect.add_argument("source_dir")
     inspect.add_argument("--layer", type=int, required=True)

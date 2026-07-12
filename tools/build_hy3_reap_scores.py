@@ -156,7 +156,8 @@ def score_layer(
     rare_weight: float,
     protect_per_stratum: int,
     device: torch.device,
-) -> list[dict[str, Any]]:
+    teacher_target_path: Path | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     total_tokens = selected.shape[0]
     hidden = np.memmap(hidden_path, dtype="<f4", mode="r", shape=(total_tokens, hidden_size))
     frequency = np.zeros(expert_count, dtype=np.int64)
@@ -165,6 +166,16 @@ def score_layer(
     traffic = np.zeros(expert_count, dtype=np.float64)
     stratum_mass = np.zeros((expert_count, len(strata)), dtype=np.float64)
     signatures = np.zeros((expert_count, sketch_dim), dtype=np.float64)
+    teacher_target = None
+    if teacher_target_path is not None:
+        teacher_target_path.parent.mkdir(parents=True, exist_ok=True)
+        teacher_target = np.memmap(
+            teacher_target_path,
+            dtype="<f4",
+            mode="w+",
+            shape=(total_tokens, hidden_size),
+        )
+        teacher_target[:] = 0
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed + layer)
@@ -222,15 +233,20 @@ def score_layer(
                     x_np = np.asarray(hidden[token_index[start:stop]], dtype=np.float32)
                     x = torch.from_numpy(x_np).to(device=device, dtype=torch.bfloat16)
                     output = F.linear(F.silu(F.linear(x, gate)) * F.linear(x, up), down)
-                    norms = torch.linalg.vector_norm(output.float(), dim=-1)
+                    output_f32 = output.float()
+                    norms = torch.linalg.vector_norm(output_f32, dim=-1)
                     batch_weights = torch.from_numpy(weights_np[start:stop]).to(device)
                     reap_sum[expert] += float((norms * batch_weights).sum(dtype=torch.float64).cpu())
                     norm_sum[expert] += float(norms.sum(dtype=torch.float64).cpu())
-                    sketch = F.normalize(output.float() @ projection, dim=-1)
+                    sketch = F.normalize(output_f32 @ projection, dim=-1)
                     signature_sum += (sketch * batch_weights[:, None]).sum(
                         dim=0, dtype=torch.float64
                     )
-                    del x, output, norms, batch_weights, sketch
+                    if teacher_target is not None:
+                        indices = token_index[start:stop]
+                        contribution = (output_f32 * batch_weights[:, None]).cpu().numpy()
+                        teacher_target[indices] = np.asarray(teacher_target[indices]) + contribution
+                    del x, output, output_f32, norms, batch_weights, sketch
                 signature = signature_sum.cpu().numpy()
                 signature_norm = np.linalg.norm(signature)
                 if signature_norm > 0:
@@ -238,6 +254,20 @@ def score_layer(
                 del gate, up, down, signature_sum
     del hidden, projection
     torch.cuda.empty_cache()
+    target_receipt = None
+    if teacher_target is not None:
+        teacher_target.flush()
+        del teacher_target
+        target_receipt = {
+            "format": "bw24-hy3-layer-teacher-target-v1",
+            "layer": layer,
+            "tokens": total_tokens,
+            "hidden_size": hidden_size,
+            "dtype": "float32-le",
+            "path": str(teacher_target_path.resolve()),
+            "bytes": teacher_target_path.stat().st_size,
+            "sha256": sha256(teacher_target_path),
+        }
 
     reap = np.divide(reap_sum, frequency, out=np.zeros_like(reap_sum), where=frequency > 0)
     mean_norm = np.divide(norm_sum, frequency, out=np.zeros_like(norm_sum), where=frequency > 0)
@@ -300,7 +330,7 @@ def score_layer(
                 name: float(stratum_mass[expert, index]) for index, name in enumerate(strata)
             },
         })
-    return rows
+    return rows, target_receipt
 
 
 def build_scores(args: argparse.Namespace) -> dict[str, Any]:
@@ -352,6 +382,9 @@ def build_scores(args: argparse.Namespace) -> dict[str, Any]:
         torch.backends.cuda.matmul.allow_tf32 = False
 
     rows: list[dict[str, Any]] = []
+    teacher_targets: dict[str, Any] = {}
+    if args.teacher_target_dir is not None:
+        args.teacher_target_dir.mkdir(parents=True, exist_ok=True)
     for position, layer in enumerate(layers, 1):
         file_name = f"layer-{layer:03}.f32"
         hidden_path = Path(trace_lock["trace_dir"]) / file_name
@@ -359,7 +392,7 @@ def build_scores(args: argparse.Namespace) -> dict[str, Any]:
         if not isinstance(file_lock, dict) or sha256(hidden_path) != file_lock["sha256"]:
             raise ValueError(f"hidden-state payload hash mismatch for layer {layer}")
         print(f"[{position}/{len(layers)}] scoring Hy3 layer {layer} on {device}", flush=True)
-        rows.extend(score_layer(
+        layer_rows, target_receipt = score_layer(
             layer=layer,
             hidden_path=hidden_path,
             selected=expert_ids[layer],
@@ -380,7 +413,14 @@ def build_scores(args: argparse.Namespace) -> dict[str, Any]:
             rare_weight=args.rare_weight,
             protect_per_stratum=args.protect_per_stratum,
             device=device,
-        ))
+            teacher_target_path=(
+                args.teacher_target_dir / f"layer-{layer:03}.teacher.f32"
+                if args.teacher_target_dir is not None else None
+            ),
+        )
+        rows.extend(layer_rows)
+        if target_receipt is not None:
+            teacher_targets[str(layer)] = target_receipt
     return {
         "format": FORMAT,
         "rank_metric": "hy3_reap_traffic_activation_diversity_rare_stratum_v1",
@@ -422,6 +462,7 @@ def build_scores(args: argparse.Namespace) -> dict[str, Any]:
             "config_sha256": sha256(args.source_dir / "config.json"),
             "index_sha256": sha256(index_path),
         },
+        "teacher_targets": teacher_targets,
         "scores": rows,
     }
 
@@ -471,12 +512,16 @@ def self_test() -> None:
             layers="1", expert_count=2, top_k=1, hidden_size=3, intermediate_size=2,
             batch_tokens=2, sketch_dim=2, seed=7, reap_weight=0.65, traffic_weight=0.10,
             diversity_weight=0.15, rare_weight=0.10, protect_per_stratum=1, device="cpu",
+            teacher_target_dir=root / "targets",
         )
         result = build_scores(args)
         assert len(result["scores"]) == 2
         assert sum(row["frequency"] for row in result["scores"]) == 4
         assert sum(bool(row["protected"]) for row in result["scores"]) == 1
         assert all(math.isfinite(row["retain_score"]) for row in result["scores"])
+        receipt = result["teacher_targets"]["1"]
+        target = np.memmap(receipt["path"], dtype="<f4", mode="r", shape=(4, 3))
+        assert np.isfinite(target).all() and np.linalg.norm(target) > 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -499,6 +544,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rare-weight", type=float, default=0.10)
     parser.add_argument("--protect-per-stratum", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--teacher-target-dir", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args()
 

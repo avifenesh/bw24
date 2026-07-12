@@ -1143,6 +1143,10 @@ mod tests {
         expert_blob.extend(vec![0x22u8; 84]);
         expert_blob.extend(vec![0x33u8; 34]);
         std::fs::write(overlay.join("experts/mixed.bin"), expert_blob).unwrap();
+        let router: Vec<u8> = (0..12u32)
+            .flat_map(|value| (value as f32 + 0.25).to_le_bytes())
+            .collect();
+        std::fs::write(overlay.join("router.bin"), &router).unwrap();
         let manifest = format!(r#"{{
             "format":"bw24-expert-overlay-v2","source_dir":"{}",
             "pruned_experts":{{"0":[1]}},
@@ -1150,6 +1154,8 @@ mod tests {
                 "file":"experts/mixed.bin","offset":2,"qtype":"Q2_K","ne":[256,1],"bytes":84
             }},"blk.0.ffn_gate_exps.2.weight":{{
                 "file":"experts/mixed.bin","offset":86,"qtype":"Q8_0","ne":[32,1],"bytes":34
+            }},"blk.0.ffn_gate_inp.weight":{{
+                "file":"router.bin","offset":0,"qtype":"F32","ne":[4,3],"bytes":48
             }}}}
         }}"#, base.display());
         std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
@@ -1171,6 +1177,10 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&disk.map, &map));
         let dense = src.find("blk.0.attn_norm.weight").unwrap();
         assert_eq!(&*dense.bytes, &[1, 2, 3, 4]);
+        let healed_router = src.find("blk.0.ffn_gate_inp.weight").unwrap();
+        assert_eq!(healed_router.ggml_type, GgmlType::F32);
+        assert_eq!(healed_router.ne, vec![4, 3]);
+        assert_eq!(&*healed_router.bytes, &router);
 
         // The opened inode is part of the extent, not borrowed from the loader source.
         drop(src);
