@@ -7,6 +7,16 @@ gelu_tanh_mul_q8_1 both sites (down/proj on matmul_pre); post-attn rms -> tail e
 (tail_core_pn); t=1 PLE row as contiguous view; tail entry emits zsh q8 (q8z, E4B arm only);
 PLE residual add emits q8 (add_q8_1). ALL epilogues = quantize_q8_1's program verbatim;
 battery green each wave (E4B argmax/chat/t=2, 26B/31B argmax+spec, kernel-check).
+PROFILE UPDATE (post-wave-2 nsys + RMS sweep): the matvecs are AT the wall (fused2 96% eff,
+down 14.7MB at 17.3us = floor; head 0.64ms = floor). Glue = ~1.1ms across ~350 launches whose
+EXECUTION floor is ~1-1.3us each — fusion pays exactly one launch-floor per kill, ~+1% each.
+llama 4.61ms decomposes as ~4.2 weights + ~0.4 glue => their op count is ~2x lower; parity
+needs ~6 more fold-kills OR op-count restructuring. RMS_BLOCK already 1024 for gemma (256
+measures 168 vs 186.6 — do NOT lower). Two-reduction fused kernels run 3.8-3.9us (barrier
+latency): separate smem arrays could shave one barrier (~0.3us x 90).
+Glue inventory/token (med x count): rms_pre_emit .164, q8z .160, gelu_q8 .176 (84 calls,
+2 sites), rms_f32 .158 (69 calls - AUDIT WHERE: shared-q 18 + inp_pl 1 + ???), fa_v4 .158,
+combine .084, add_q8 .066, quantize .063 (50 calls - audit), rope .060, rms_qkv .045.
 WAVE 3 (mechanical, ~1% each): (1) rope fold into rms_norm_qkv (pos+ff args in, one kernel);
 (2) wo-input quantize via a combine-q8 variant (fa_decode_combine_f32 emits (q8,d), wo rides
 matmul_pre — E4B-only call site to avoid qwen churn); (3) rope+append fold (rope epilogue
