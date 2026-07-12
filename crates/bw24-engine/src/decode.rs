@@ -848,13 +848,14 @@ impl HybridModel {
             let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
-            // E4B GRAPH SERVING (default ON under the window; BW24_E4B_GRAPH=0 reverts to
-            // dc-eager): the 42-layer stack fires ~800 tiny launches/token — launch-gap
-            // bound (nsys 2026-07-12) — so one whole-token graph replay is the lever.
-            // v1 gate mirrors the 26B graph arc: whole generation under the sliding window.
+            // E4B GRAPH SERVING (BW24_E4B_GRAPH=1, PARKED — measured FLAT 173.5 vs 173.3
+            // in a validity-gated window, 2026-07-12: the dc-eager loop already hides launch
+            // gaps by enqueue-ahead, the 26B graph-serving lesson repeated; the remaining E4B
+            // gap is glue kernel EXECUTION time, not gaps). Stream-identical 64/64 — kept as
+            // the door for a future fewer-kernels regime.
             let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
             if e4b && cache.pos + max_new + 2 < win
-                && std::env::var("BW24_E4B_GRAPH").as_deref() != Ok("0") {
+                && std::env::var("BW24_E4B_GRAPH").as_deref() == Ok("1") {
                 let mut graph: Option<(usize, cudarc::driver::CudaGraph,
                                        Vec<Box<dyn std::any::Any + Send>>)> = None;
                 for _ in 0..max_new {
