@@ -41,6 +41,13 @@ The selector maximizes retained score subject to the per-layer survivor floor an
 artifact byte ceiling. It must use tensor bytes from a source-verified manifest, not nominal bit
 rates or a guessed prune percentage.
 
+Capture the MoE input hidden states during the same sequential private calibration pass that writes
+the weighted route trace. `BW24_MOE_INPUT_TRACE_DIR` is diagnostic-only and writes one f32 payload
+per layer plus `index.jsonl`. Validate exact request/layer/token coverage, contiguous offsets,
+finite values, file sizes, and SHA-256 hashes with `tools/validate_moe_input_trace.py` before scoring.
+The REAP component uses the actual HyV3 combine coefficient: sigmoid router weights selected after
+expert-bias correction, renormalized over top-k, then multiplied by the model router scaling factor.
+
 ## Matched arms
 
 | Arm | Trainable parameters | Purpose |

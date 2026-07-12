@@ -14,6 +14,16 @@ pub(crate) struct VerifyStreamScratch {
 }
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
 
+struct MoeInputTraceWriter {
+    dir: std::path::PathBuf,
+    index: std::fs::File,
+    payloads: std::collections::HashMap<u16, (std::fs::File, u64)>,
+}
+
+static MOE_INPUT_TRACE_WRITER: std::sync::OnceLock<
+    std::sync::Mutex<Option<MoeInputTraceWriter>>,
+> = std::sync::OnceLock::new();
+
 /// STAGE-2 GROUPED DECODE gate (BW24_MOE_GDEC, default ON; `=0` restores the sequential
 /// per-expert launch chain). See `moe_gdec_token`.
 fn gdec_enabled() -> bool {
@@ -802,6 +812,64 @@ impl HybridModel {
         Ok(())
     }
 
+    /// Append the f32 input to one MoE layer for offline, layerwise calibration. This diagnostic
+    /// intentionally performs a DtoH copy and is therefore disabled unless an explicit fresh trace
+    /// directory is supplied. Each layer owns one payload file; index.jsonl records byte offsets so
+    /// a validator can prove request/layer coverage before the trace is used for pruning or healing.
+    fn trace_moe_input(e: &Engine, il: u16, t: usize, n_embd: usize, z: &CudaSlice<f32>)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let Ok(dir) = std::env::var("BW24_MOE_INPUT_TRACE_DIR") else { return Ok(()) };
+        let host = e.dtoh(z)?;
+        if host.len() != t * n_embd {
+            return Err(format!(
+                "MoE input trace shape mismatch at layer {il}: got {} values, expected {}x{}",
+                host.len(), t, n_embd
+            ).into());
+        }
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                host.as_ptr().cast::<u8>(), host.len() * std::mem::size_of::<f32>()
+            )
+        };
+        let state = MOE_INPUT_TRACE_WRITER.get_or_init(|| std::sync::Mutex::new(None));
+        let mut state = state.lock().map_err(|_| "MoE input trace writer lock is poisoned")?;
+        if state.is_none() {
+            let dir = std::path::PathBuf::from(&dir);
+            std::fs::create_dir_all(&dir)?;
+            let index = std::fs::OpenOptions::new().create(true).append(true)
+                .open(dir.join("index.jsonl"))?;
+            *state = Some(MoeInputTraceWriter {
+                dir,
+                index,
+                payloads: std::collections::HashMap::new(),
+            });
+        }
+        let writer = state.as_mut().unwrap();
+        if writer.dir != std::path::Path::new(&dir) {
+            return Err("BW24_MOE_INPUT_TRACE_DIR changed after capture started".into());
+        }
+        let file_name = format!("layer-{il:03}.f32");
+        if !writer.payloads.contains_key(&il) {
+            let payload = std::fs::OpenOptions::new().create(true).append(true)
+                .open(writer.dir.join(&file_name))?;
+            let offset = payload.metadata()?.len();
+            writer.payloads.insert(il, (payload, offset));
+        }
+        let (payload, offset) = writer.payloads.get_mut(&il).unwrap();
+        let row_offset = *offset;
+        payload.write_all(bytes)?;
+        *offset += bytes.len() as u64;
+        writeln!(
+            writer.index,
+            "{{\"format\":\"bw24-moe-input-trace-v1\",\"layer\":{il},\"tokens\":{t},\
+             \"hidden_size\":{n_embd},\"file\":\"{file_name}\",\"offset\":{row_offset},\
+             \"payload_bytes\":{}}}",
+            bytes.len()
+        )?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn moe_ffn_sequential_zq8(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
@@ -904,7 +972,8 @@ impl HybridModel {
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
         let observe_routes = std::env::var("BW24_MOE_STATS").is_ok()
             || std::env::var("BW24_MOE_TRACE").is_ok()
-            || std::env::var("BW24_MOE_WEIGHT_TRACE").is_ok();
+            || std::env::var("BW24_MOE_WEIGHT_TRACE").is_ok()
+            || std::env::var("BW24_MOE_INPUT_TRACE_DIR").is_ok();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
             && !observe_routes {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
@@ -933,6 +1002,7 @@ impl HybridModel {
         // offline analysis derives the decode working set + step-to-step reuse (the go/no-go
         // measurement for resident-expert tiering; see rig5090.jsonl 2026-07-07 pinned-tier row).
         Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
+        Self::trace_moe_input(e, il, t, n_embd, z)?;
 
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
