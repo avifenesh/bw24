@@ -58,6 +58,8 @@ artifact_for() {
     traffic_nvfp4_53_q2_139) printf '%s\n' /scratch/bw24-artifacts/traffic-nvfp4-53-q2-139 ;;
     prune100_unhealed|prune100_router_repair|prune100_joint_heal)
       printf '/scratch/bw24-artifacts-100gb-5f02c37/%s\n' "$1" ;;
+    smart100_empirical|smart100_balanced|smart100_rescue)
+      printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
     *) die "no artifact mapping for $1" ;;
   esac
 }
