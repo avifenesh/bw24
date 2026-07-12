@@ -83,6 +83,8 @@ roots=(
  /data/logs/full-agentic-smart100-v1
  /data/plans/per-expert-quant-smart100-2605fde
  /data/calibration/hy3-quant-sensitivity-53de6ca
+ /data/venvs/hy3-research.freeze.txt
+ /data/venvs/hy3-research.freeze.txt.sha256
  /data/heal/per-expert-quant-smart100-2605fde
  /data/artifacts/per-expert-quant-smart100-2605fde
 )
