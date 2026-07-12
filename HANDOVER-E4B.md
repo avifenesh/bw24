@@ -1,3 +1,19 @@
+# E4B STATUS 2026-07-12 (correctness UNBLOCKED + fusion port)
+
+- ROOT-CAUSE FIX (commit 71fb028): global layers stored HALF their K/V — the cache kv-dim
+  fallback ignored the SCALAR head_count_kv=2 (globals are 2x512=1024, not 512). Every
+  cross-mode symptom (maxdiff 20-30, chat-prompt argmax flips, "noise amplification from
+  layer ~6") was this. Gates now ALL GREEN: id maxdiff 0.67 MATCH, t=2 0.82 MATCH, chat
+  water-cycle 2.09 MATCH + coherent. 26B/31B clean.
+- FUSION PORT (commit c403a21): 26B/31B trunk structure (rms_norm_q8_1 carried pair ->
+  matmul_pre wq/wk/wv, fused rms_norm_qkv, add_scale_rms_norm_q8_1 closing emit, head on
+  matmul_pre). 164.2 -> 170.3, then 173.5 with the kv fix.
+- STANDING: short plain 173.5 vs llama 208 = 0.83x. Remaining gap ~35 tok/s: profile said
+  glue was 26% pre-port; remaining levers = per-row attention loop (fa rows arms for E4B),
+  dc/graph serving arc, prime fa (wired, NOFA seam), head Q6_K at byte floor (leave).
+- NOTE: correct-model output DIFFERS from the pre-fix stream (the old model was broken);
+  any earlier E4B "baseline" numbers/streams predate correctness.
+
 # E4B — FIRST LIGHT PASSED (2026-07-11) + PERF LANES WIRED (compile-clean, GPU-ungated)
 
 ## Perf lanes (this branch — GPU gates NOT yet run, main lane owns them)
