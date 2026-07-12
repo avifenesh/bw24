@@ -57,6 +57,13 @@ def load_source_tensor(
     return handles[weight_map[name]].get_tensor(name)
 
 
+def quantized_base(tensor: torch.Tensor, qtype: str) -> torch.Tensor:
+    """Round-trip through the artifact builder's exact bytes before repair."""
+    from build_hy3_quant_sensitivity import quant_dequant
+    restored, _ = quant_dequant(tensor, qtype)
+    return restored
+
+
 class LayerStudent(nn.Module):
     def __init__(
         self,
@@ -202,6 +209,7 @@ def load_student(
     config: dict[str, Any],
     weight_map: dict[str, str],
     device: torch.device,
+    quant_assignments: dict[tuple[int, int, str], str] | None = None,
 ) -> LayerStudent:
     names = [router_name(args.layer), bias_name(args.layer)] + [
         tensor_name(args.layer, expert, projection)
@@ -233,15 +241,15 @@ def load_student(
             dtype=torch.bfloat16, device=device,
         )
         for local, expert in enumerate(active_ids):
-            gate[local].copy_(load_source_tensor(
-                tensor_name(args.layer, expert, "gate"), args.source_dir, weight_map, handles
-            ))
-            up[local].copy_(load_source_tensor(
-                tensor_name(args.layer, expert, "up"), args.source_dir, weight_map, handles
-            ))
-            down[local].copy_(load_source_tensor(
-                tensor_name(args.layer, expert, "down"), args.source_dir, weight_map, handles
-            ))
+            for projection, destination in (("gate", gate), ("up", up), ("down", down)):
+                source = load_source_tensor(
+                    tensor_name(args.layer, expert, projection),
+                    args.source_dir, weight_map, handles,
+                )
+                if quant_assignments is not None:
+                    qtype = quant_assignments[(args.layer, expert, projection)]
+                    source = quantized_base(source, qtype)
+                destination[local].copy_(source)
     return LayerStudent(
         active_ids=active_ids,
         gate=gate,
@@ -343,7 +351,16 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
     if device.type == "cuda":
         torch.cuda.set_device(device)
         torch.backends.cuda.matmul.allow_tf32 = False
-    model = load_student(args, active_ids, config, weight_map, device).to(device)
+    quant_assignments = None
+    if args.quantization_aware:
+        from prepare_mixed_expert_repack import load_assignments
+        _, quant_assignments, plan_pruned = load_assignments(args.plan)
+        if plan_pruned[args.layer] != pruned:
+            raise ValueError("quantization-aware plan pruning differs from healer pruning")
+    model = load_student(
+        args, active_ids, config, weight_map, device,
+        quant_assignments=quant_assignments,
+    ).to(device)
 
     score_rows = {
         int(row["expert"]): row
@@ -427,6 +444,11 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
             "bias_max_delta": args.bias_max_delta,
             "router_anchor_weight": args.router_anchor_weight,
             "holdout_modulus": args.holdout_modulus,
+            "quantization_aware": args.quantization_aware,
+            "quantization_base": (
+                "exact GGUF quantizer bytes dequantized to BF16 before joint repair"
+                if args.quantization_aware else "source checkpoint precision"
+            ),
         },
         "before": before,
         "after": after,
@@ -445,6 +467,10 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
+    probe = torch.linspace(-1, 1, 512, dtype=torch.float32).reshape(2, 256).to(torch.bfloat16)
+    q2 = quantized_base(probe, "Q2_K")
+    assert q2.dtype == torch.bfloat16 and q2.shape == probe.shape
+    assert not torch.equal(q2, probe)
     with tempfile.TemporaryDirectory(prefix="bw24-hy3-layer-heal-") as tmp:
         root = Path(tmp)
         source, trace, targets = root / "source", root / "trace", root / "targets"
@@ -499,6 +525,7 @@ def self_test() -> None:
             lora_alpha=2.0, steps=3, batch_tokens=4, eval_batch_tokens=4,
             learning_rate=1e-3, bias_learning_rate=0.01, bias_max_delta=0.1,
             router_anchor_weight=1e-4,
+            quantization_aware=False,
             max_grad_norm=1.0, holdout_modulus=5, log_every=1, seed=11, device="cpu",
             out_shard=root / "healed.safetensors", receipt=root / "receipt.json",
         )
@@ -531,6 +558,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bias-learning-rate", type=float, default=0.01)
     parser.add_argument("--bias-max-delta", type=float, default=0.1)
     parser.add_argument("--router-anchor-weight", type=float, default=1e-4)
+    parser.add_argument(
+        "--quantization-aware", action="store_true",
+        help="initialize retained projections from their plan-assigned exact quantized bytes",
+    )
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--holdout-modulus", type=int, default=10)
     parser.add_argument("--log-every", type=int, default=20)
