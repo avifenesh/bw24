@@ -1,0 +1,25 @@
+{
+  "format": "bw24-100gb-promotion-gates-v1",
+  "generated_utc": "2026-07-12T19:28:00Z",
+  "purpose": "Frozen practical and trusted-full gates for measured smart-100GB candidates",
+  "practical": {
+    "fixed_reference_arms": [
+      "plain_quant",
+      "traffic_nvfp4_53_q2_139"
+    ],
+    "max_100gb_arms": 2,
+    "max_solved_deficit_per_panel_vs_strong_compact": 1,
+    "swe_directional_tasks": 12,
+    "terminal_directional_tasks": 12
+  },
+  "trusted_full": {
+    "max_arms": 3,
+    "required_reference_arm": "plain_quant",
+    "candidate_documents_per_arm": 4746,
+    "complete_swe_bench_verified_tasks": 500,
+    "complete_terminal_bench_2_tasks": 89,
+    "raw_lm_eval_math_is_forbidden_for_promotion": true
+  },
+  "mapping_allocation_and_healing_used_public_eval_data": false,
+  "practical_promotion_uses_public_eval_data": true
+}

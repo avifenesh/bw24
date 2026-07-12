@@ -70,6 +70,8 @@ artifact_for() {
     traffic_nvfp4_53_q2_139) printf '%s\n' /scratch/bw24-artifacts/traffic-nvfp4-53-q2-139 ;;
     prune100_unhealed|prune100_router_repair|prune100_joint_heal)
       printf '/scratch/bw24-artifacts-100gb-5f02c37/%s\n' "$1" ;;
+    smart100_empirical|smart100_balanced|smart100_rescue)
+      printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
     *) die "no frozen artifact mapping for $1" ;;
   esac
 }
@@ -114,7 +116,12 @@ if os.environ.get("CONFIRMATION_LOCK"):
         },
     }
 for arm in arms:
-    root = pathlib.Path("/scratch/bw24-artifacts-100gb-5f02c37" if arm.startswith("prune100_") else "/scratch/bw24-artifacts") / (arm.replace("_", "-") if arm in ("plain_quant",) else arm)
+    if arm.startswith("prune100_"):
+        root = pathlib.Path("/scratch/bw24-artifacts-100gb-5f02c37") / arm
+    elif arm.startswith("smart100_"):
+        root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm
+    else:
+        root = pathlib.Path("/scratch/bw24-artifacts") / (arm.replace("_", "-") if arm in ("plain_quant",) else arm)
     if arm == "plain_quant": root = pathlib.Path("/scratch/bw24-artifacts/plain-quant")
     if arm == "traffic_nvfp4_53_q2_139": root = pathlib.Path("/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139")
     manifest = root / "manifest.json"

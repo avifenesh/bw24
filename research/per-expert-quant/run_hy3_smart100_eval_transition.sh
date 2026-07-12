@@ -109,7 +109,20 @@ PROMOTION="$OUT_ROOT/smart100-promotion-$RUN_ID.json"
 "$PY" "$ROOT/research/per-expert-quant/select_smart100_promotions.py" \
   --frontier "$FRONTIER" --lock "$ROOT/research/per-expert-quant/smart100-promotion-gates.lock.json" \
   --output "$PROMOTION"
+PRACTICAL_INPUT="$OUT_ROOT/smart100-practical-input-$RUN_ID.json"
+"$PY" - "$PROMOTION" "$PRACTICAL_INPUT" <<'PY'
+import json,pathlib,sys
+d=json.load(open(sys.argv[1]))
+arms=d["practical_arms"]
+assert arms[:2] == ["plain_quant", "traffic_nvfp4_53_q2_139"] and 2 <= len(arms) <= 4
+pathlib.Path(sys.argv[2]).write_text(json.dumps({
+    "format":"bw24-100gb-directional-promotion-v1",
+    "source_format":d["format"],
+    "practical_arms":arms,
+    "selected_100gb_arms":d["selected_practical_candidates"],
+},indent=2,sort_keys=True)+"\n")
+PY
 sha256sum "$OUT_ROOT/run-configs/$RUN_ID.json" "$OUT_ROOT/smart100-summary-$RUN_ID.json" \
-  "$FRONTIER" "$PROMOTION" \
+  "$FRONTIER" "$PROMOTION" "$PRACTICAL_INPUT" \
   "$PRIVATE_GATE_ROOT/evidence.sha256" >"$LOG_ROOT/evidence-$RUN_ID.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
