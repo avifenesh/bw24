@@ -846,6 +846,16 @@ impl HybridModel {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             let e4b = self.is_gemma4_e4b();
+            // 26B/31B WHOLE-TOKEN GRAPH SERVING door (BW24_GEMMA_GRAPH=1): measured FLAT on
+            // the 26B (jsonl 2026-07-12) but the 31B carries ~4% launch-gap share (HANDOVER
+            // graph-arc note) and was never measured — the plain-short 1.00x cell probe.
+            if !e4b && std::env::var("BW24_GEMMA_GRAPH").as_deref() == Ok("1") {
+                let first = argmax(&last_logits) as u32;
+                let (toks, _reason) = self.gemma4_generate_graph(
+                    e, cache.pos, first, &mut cache, max_new, &[], |_| true)?;
+                out.extend(toks);
+                return Ok(out);
+            }
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
             // E4B GRAPH SERVING (BW24_E4B_GRAPH=1, PARKED — measured FLAT 173.5 vs 173.3
