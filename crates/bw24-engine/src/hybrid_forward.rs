@@ -3685,10 +3685,14 @@ impl HybridModel {
         if let Some(_tgt) = share {
             let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
             q = e.uninit(t * nh * hd)?;
-            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
-            // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
-            let mut kdummy = e.uninit(t * hd)?;
-            e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
+            // Q-only through the same fused norm+rope kernel (rk = 0: the k/v segments are
+            // empty; q0 stands in for the unused k/v pointers).
+            let mut kdummy = e.uninit(1)?;
+            let mut vdummy = e.uninit(1)?;
+            e.rms_norm_qkv_rope(&q0, &q0, &q0, fa.q_norm.float_data(),
+                                fa.q_norm.float_data(), &aux.ones,
+                                &mut q, &mut kdummy, &mut vdummy, hd, nh * t, 0,
+                                pos_d, nh, 1, base, 1.0, ff, eps)?;
         } else {
             // FUSED qkv (glue-fusion lane, 2026-07-12): one grid-fused launch for the three
             // Q4_0 matvecs at t == 1 (the gemma fused2/3 class — same per-block dot program,
