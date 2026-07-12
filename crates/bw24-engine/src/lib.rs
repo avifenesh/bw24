@@ -767,6 +767,21 @@ impl Engine {
         Ok(())
     }
 
+    /// ROUND-GRAPH adaptive depth: brk[0] <- clamp(acc[0] + 1, floor, cap) — the host
+    /// adaptive policy as a captured device op (policy-identical: the accept walk depth
+    /// caps acceptance exactly like drafting fewer tokens).
+    pub fn spec_adapt_k(&self, acc: &CudaSlice<u32>, brk: &mut CudaSlice<u32>,
+                        floor: usize, cap: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("spec_adapt_k");
+        let (fl, cp) = (floor as i32, cap as i32);
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(acc).arg(brk).arg(&fl).arg(&cp);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 3: accept walk fully device-driven (brk + assembled vtok).
     pub fn spec_accept_greedy_dc(&self, preds: &CudaSlice<u32>, vtok: &CudaSlice<u32>,
                                  last_pred: &CudaSlice<u32>, brk: &CudaSlice<u32>,
@@ -5786,9 +5801,11 @@ impl Engine {
                                                  k_tok_bytes, v_tok_bytes, g,
                                                  &mut part_o, &mut part_m, &mut part_l);
         };
+        let ski = sp as i32;   // one-partition law: the twins derive ns_eff from (T_kv, ski)
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
-         .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
+         .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ski)
+         .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
         let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };

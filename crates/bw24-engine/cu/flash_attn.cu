@@ -2066,7 +2066,7 @@ extern "C" __global__ void fa_decode_vec_q_dpl16_dc(
         float* __restrict__ partM,      // [n_head, n_splits]
         float* __restrict__ partL,      // [n_head, n_splits]
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
-        float scale, int n_splits,
+        float scale, int n_splits, int split_keys,
         long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // device-resident sequence length
@@ -2081,9 +2081,16 @@ extern "C" __global__ void fa_decode_vec_q_dpl16_dc(
     const int dpl     = head_dim >> 5;           // dims-per-lane = head_dim/32 (==8 for 256)
 
     // this split owns keys [t_lo, t_hi)
-    const int per  = (T_kv + n_splits - 1) / n_splits;
+    // ONE-PARTITION LAW (2026-07-13, extends the fa_decode_f32 unified rule to the vec
+    // dc twins): the effective split count derives from the LIVE T_kv + the caller's
+    // split-ladder value, NOT the bucket-sized n_splits — a capture at bucket B replays
+    // bit-identically to eager at any T_kv <= B (same ns_eff, same per, same combine
+    // skip). Splits >= ns_eff fall through with an empty range; the normal epilogue
+    // writes the EMPTY partial (m = NEG_INF, l = 0) the combine skips exactly.
+    const int ns_eff = max(1, (T_kv + split_keys - 1) / split_keys);
+    const int per  = (T_kv + ns_eff - 1) / ns_eff;
     const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
+    const int t_hi = (split < ns_eff) ? min(T_kv, t_lo + per) : t_lo;
 
     // stage this warp's Q row (one Q head, head_dim) into registers, PRE-SCALED by `scale`.
     // lane owns dims { lane, lane+32, ..., lane+32*(dpl-1) }.
@@ -2910,7 +2917,7 @@ extern "C" __global__ void fa_decode_vec_q_v2_dc(
         float* __restrict__ partM,
         float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
-        float scale, int n_splits,
+        float scale, int n_splits, int split_keys,
         long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
@@ -2924,9 +2931,16 @@ extern "C" __global__ void fa_decode_vec_q_v2_dc(
     const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
-    const int per  = (T_kv + n_splits - 1) / n_splits;
+    // ONE-PARTITION LAW (2026-07-13, extends the fa_decode_f32 unified rule to the vec
+    // dc twins): the effective split count derives from the LIVE T_kv + the caller's
+    // split-ladder value, NOT the bucket-sized n_splits — a capture at bucket B replays
+    // bit-identically to eager at any T_kv <= B (same ns_eff, same per, same combine
+    // skip). Splits >= ns_eff fall through with an empty range; the normal epilogue
+    // writes the EMPTY partial (m = NEG_INF, l = 0) the combine skips exactly.
+    const int ns_eff = max(1, (T_kv + split_keys - 1) / split_keys);
+    const int per  = (T_kv + ns_eff - 1) / ns_eff;
     const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
+    const int t_hi = (split < ns_eff) ? min(T_kv, t_lo + per) : t_lo;
 
     float q_reg[FA_DEC_MAX_DPL];
     #pragma unroll
@@ -3316,7 +3330,7 @@ extern "C" __global__ void fa_decode_vec_q_v3_dc(
         float* __restrict__ partM,
         float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
-        float scale, int n_splits,
+        float scale, int n_splits, int split_keys,
         long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
@@ -3330,9 +3344,16 @@ extern "C" __global__ void fa_decode_vec_q_v3_dc(
     const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
-    const int per  = (T_kv + n_splits - 1) / n_splits;
+    // ONE-PARTITION LAW (2026-07-13, extends the fa_decode_f32 unified rule to the vec
+    // dc twins): the effective split count derives from the LIVE T_kv + the caller's
+    // split-ladder value, NOT the bucket-sized n_splits — a capture at bucket B replays
+    // bit-identically to eager at any T_kv <= B (same ns_eff, same per, same combine
+    // skip). Splits >= ns_eff fall through with an empty range; the normal epilogue
+    // writes the EMPTY partial (m = NEG_INF, l = 0) the combine skips exactly.
+    const int ns_eff = max(1, (T_kv + split_keys - 1) / split_keys);
+    const int per  = (T_kv + ns_eff - 1) / ns_eff;
     const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
+    const int t_hi = (split < ns_eff) ? min(T_kv, t_lo + per) : t_lo;
 
     int qq[8]; float dQ;   // one full 32-elem Q block per lane (multi-key B1)
     fa_dec_v3_qquant(Q, (size_t)head * head_dim, scale, dpl, lane, qq, dQ);
@@ -3405,7 +3426,7 @@ extern "C" __global__ void fa_decode_vec_q_dc(
         float* __restrict__ partM,
         float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
-        float scale, int n_splits,
+        float scale, int n_splits, int split_keys,
         long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // <-- device-resident sequence length
@@ -3419,9 +3440,16 @@ extern "C" __global__ void fa_decode_vec_q_dc(
     const int head    = kv_head * gqa + wy;
     const int dpl     = head_dim >> 5;
 
-    const int per  = (T_kv + n_splits - 1) / n_splits;
+    // ONE-PARTITION LAW (2026-07-13, extends the fa_decode_f32 unified rule to the vec
+    // dc twins): the effective split count derives from the LIVE T_kv + the caller's
+    // split-ladder value, NOT the bucket-sized n_splits — a capture at bucket B replays
+    // bit-identically to eager at any T_kv <= B (same ns_eff, same per, same combine
+    // skip). Splits >= ns_eff fall through with an empty range; the normal epilogue
+    // writes the EMPTY partial (m = NEG_INF, l = 0) the combine skips exactly.
+    const int ns_eff = max(1, (T_kv + split_keys - 1) / split_keys);
+    const int per  = (T_kv + ns_eff - 1) / ns_eff;
     const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
+    const int t_hi = (split < ns_eff) ? min(T_kv, t_lo + per) : t_lo;
 
     float q_reg[FA_DEC_MAX_DPL];
     #pragma unroll
@@ -3964,7 +3992,7 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
         const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
         float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_dev,
-        float scale, int n_splits, long k_tok_bytes, long v_tok_bytes)
+        float scale, int n_splits, int split_keys, long k_tok_bytes, long v_tok_bytes)
 {
     const int T_kv    = t_kv_dev[0];             // device-resident sequence length
     const int kv_head = blockIdx.x;
@@ -3977,9 +4005,16 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
     const int head = kv_head * gqa + wy;
     const int dpl  = head_dim >> 5;           // == 8 (host-gated hd256)
 
-    const int per  = (T_kv + n_splits - 1) / n_splits;
+    // ONE-PARTITION LAW (2026-07-13, extends the fa_decode_f32 unified rule to the vec
+    // dc twins): the effective split count derives from the LIVE T_kv + the caller's
+    // split-ladder value, NOT the bucket-sized n_splits — a capture at bucket B replays
+    // bit-identically to eager at any T_kv <= B (same ns_eff, same per, same combine
+    // skip). Splits >= ns_eff fall through with an empty range; the normal epilogue
+    // writes the EMPTY partial (m = NEG_INF, l = 0) the combine skips exactly.
+    const int ns_eff = max(1, (T_kv + split_keys - 1) / split_keys);
+    const int per  = (T_kv + ns_eff - 1) / ns_eff;
     const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
+    const int t_hi = (split < ns_eff) ? min(T_kv, t_lo + per) : t_lo;
 
     extern __shared__ unsigned char sm_raw_v4[];
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
