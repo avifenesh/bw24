@@ -64,6 +64,21 @@ def _layers_from_model(model: dict[str, Any]) -> list[int]:
     return [int(x) for x in layers]
 
 
+def _parse_layer_subset(raw: str | None, available: list[int]) -> list[int]:
+    if not raw:
+        return available
+    if "-" in raw:
+        lo, hi = (int(value) for value in raw.split("-", 1))
+        requested = list(range(lo, hi + 1))
+    else:
+        requested = [int(value) for value in raw.split(",") if value]
+    if not requested or len(set(requested)) != len(requested):
+        raise ValueError("--layers must select distinct layers")
+    if not set(requested).issubset(available):
+        raise ValueError(f"--layers contains values outside the plan: {requested}")
+    return requested
+
+
 def load_assignments(
     path: Path,
 ) -> tuple[dict[str, Any], dict[tuple[int, int, str], str], dict[int, set[int]]]:
@@ -549,6 +564,11 @@ def prepare(args: argparse.Namespace) -> None:
     fallback_fingerprints = _fingerprint(
         fallback_dir, ("manifest.json", "config.json", "model.safetensors.index.json")
     )
+    available_layers = _layers_from_model(plan["model"])
+    layers = _parse_layer_subset(getattr(args, "layers", None), available_layers)
+    fragment_path = getattr(args, "manifest_fragment", None)
+    if fragment_path and getattr(args, "tensor_overrides", None):
+        raise ValueError("tensor overrides are installed only while merging complete fragments")
     manifest: dict[str, Any] = {
         "format": OVERLAY_FORMAT,
         "created_utc": dt.datetime.now(dt.UTC).isoformat(),
@@ -564,7 +584,8 @@ def prepare(args: argparse.Namespace) -> None:
         "tensors": {},
         "tier_summary": {},
     }
-    layers = _layers_from_model(plan["model"])
+    if fragment_path:
+        manifest["fragment_layers"] = layers
     n_expert = int(plan["model"]["expert_count"])
     try:
         for layer in layers:
@@ -715,7 +736,8 @@ def prepare(args: argparse.Namespace) -> None:
     manifest["payload_bytes"] = manifest["artifact_bytes"] + int(
         manifest.get("tensor_overrides", {}).get("bytes", 0)
     )
-    manifest_path = out_dir / "manifest.json"
+    manifest_path = Path(fragment_path).resolve() if fragment_path else out_dir / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = manifest_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     tmp.replace(manifest_path)
@@ -930,6 +952,14 @@ def main() -> int:
     prep.add_argument("--max-work-mb", type=int, default=512)
     prep.add_argument("--workers", type=int, default=1)
     prep.add_argument("--resume", action="store_true")
+    prep.add_argument(
+        "--layers",
+        help="optional comma-separated or inclusive range subset for a disjoint fragment build",
+    )
+    prep.add_argument(
+        "--manifest-fragment",
+        help="write an incomplete layer-fragment manifest here instead of OUT_DIR/manifest.json",
+    )
     prep.add_argument(
         "--tensor-overrides",
         help="bw24-tensor-overrides-v1 receipt whose F32 router tensors override fallback",
