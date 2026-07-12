@@ -2923,6 +2923,42 @@ impl Engine {
         Ok((out_q, out_d))
     }
 
+    /// E4B glue fusion: rms(a, wa) prologue + the add_scale_rms_norm_q8_1 program — one launch
+    /// replaces the per-layer rms_norm_f32(y) + emit pair in the PLE tail.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_pre_add_scale_rms_norm_q8_1(&self, a: &CudaSlice<f32>, wa: &CudaSlice<f32>,
+                                           b_in: &CudaSlice<f32>, c: f32,
+                                           w: &CudaSlice<f32>, res: &mut CudaSlice<f32>,
+                                           ncols: usize, nrows: usize, eps: f32)
+                                           -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("rms_pre_add_scale_rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(wa).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
+    /// GELU(tanh)*up with the activation emitted q8_1 alongside f32 (glue-fusion lane): the
+    /// consumer matmul rides matmul_pre, killing its standalone quantize_q8_1 launch.
+    pub fn gelu_tanh_mul_q8_1(&self, gate: &CudaSlice<f32>, up: &cudarc::driver::CudaView<f32>,
+                              act: &mut CudaSlice<f32>, ncols: usize, nrows: usize)
+                              -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert!(ncols % 128 == 0);
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("gelu_tanh_mul_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let nc = ncols as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(act).arg(&mut out_q).arg(&mut out_d).arg(&nc);
+        unsafe { b.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
     /// gemma4: add + rms_norm3 with outputs 0/2 emitted q8_1 (zsh + moe_in) and 1 f32 (router).
     #[allow(clippy::too_many_arguments)]
     pub fn add_rms_norm3_q8z(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>,
@@ -3050,6 +3086,23 @@ impl Engine {
         let (nc, e) = (ncols as i32, eps);
         let mut b2 = self.gpu.stream.launch_builder(&f);
         b2.arg(a).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
+        unsafe { b2.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// E4B glue fusion: rms(a, wa) prologue + add_rms_norm — folds the post-attn norm into
+    /// the tail entry (res = rms(a)*wa + b; dst = rms(res)*w).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_pre_add_rms_norm(&self, a: &CudaSlice<f32>, wa: &CudaSlice<f32>,
+                                b: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                                res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                                ncols: usize, nrows: usize, eps: f32)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_pre_add_rms_norm_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b2 = self.gpu.stream.launch_builder(&f);
+        b2.arg(a).arg(wa).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
         Ok(())
     }

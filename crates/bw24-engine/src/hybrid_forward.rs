@@ -2575,6 +2575,16 @@ impl HybridModel {
     fn gemma4_layer_tail_core(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
                               cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize)
                               -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        self.gemma4_layer_tail_core_pn(e, layer, cur, x, t, None)
+    }
+
+    /// tail_core with an optional PRE-NORM fold (glue-fusion lane): `pre_norm = Some(wa)`
+    /// means `cur` is the RAW attention output and the dense entry runs
+    /// rms(cur, wa) + residual-add + ffn_norm as ONE launch (E4B's post-attn norm fold).
+    fn gemma4_layer_tail_core_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                 cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
+                                 pre_norm: Option<&CudaSlice<f32>>)
+                                 -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
@@ -2586,8 +2596,12 @@ impl HybridModel {
             else { panic!("gemma4 dense layer without Dense ffn") };
             let mut attn_out = e.uninit(t * n_embd)?;
             let mut zsh = e.uninit(t * n_embd)?;
-            e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out, &mut zsh,
-                           n_embd, t, eps)?;
+            match pre_norm {
+                Some(wa) => e.rms_pre_add_rms_norm(cur, wa, x, bits.ffn_norm.float_data(),
+                                                   &mut attn_out, &mut zsh, n_embd, t, eps)?,
+                None => e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out,
+                                       &mut zsh, n_embd, t, eps)?,
+            }
             let n_ff = ffn_gate.out_features();
             let (gate, up) = if t == 1 {
                 let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
@@ -2600,13 +2614,23 @@ impl HybridModel {
                 (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
             };
             let mut act = e.uninit(t * n_ff)?;
-            e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
-            let f0 = e.matmul(ffn_down, &act, t)?;
+            // act quantize folds into the GELU epilogue (bit-identical q8_1 rounding);
+            // ffn_down rides matmul_pre — one quantize launch fewer per layer.
+            let f0 = if e.uses_q8_1_fast(ffn_down) {
+                let upv = e.view(&up, t * n_ff);
+                let up_all = upv.slice(0..t * n_ff);
+                let (aq, ad) = e.gelu_tanh_mul_q8_1(&gate, &up_all, &mut act, n_ff, t)?;
+                e.matmul_pre(ffn_down, &aq, &ad, &act, t)?
+            } else {
+                e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
+                e.matmul(ffn_down, &act, t)?
+            };
             let mut sn = e.uninit(t * n_embd)?;
             e.rms_norm(&f0, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
             return Ok((sn, attn_out));
         };
 
+        assert!(pre_norm.is_none(), "pre-norm fold is dense-entry only");
         // MoE variant (26B): attn_out = cur + x fused with the three attn_out norms
         // (ffn_norm + router-scale + pre_ffw_norm_2): ONE launch, chains verbatim. At small t
         // (decode + verify) the zsh and moe_in outputs are EMITTED q8_1 (both consumers are
@@ -3654,9 +3678,17 @@ impl HybridModel {
             let mut kdummy = e.uninit(t * hd)?;
             e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
         } else {
-            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-            let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-            let v0 = e.matmul_pre(&fa.wv, hq, hdq, h, t)?;   // E4B: real v (K != V)
+            // FUSED qkv (glue-fusion lane, 2026-07-12): one grid-fused launch for the three
+            // Q4_0 matvecs at t == 1 (the gemma fused2/3 class — same per-block dot program,
+            // bit-parity settled by the trunk battery). Falls back per-matvec off-class.
+            let (q0, k0, v0) = match if t == 1 {
+                e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
+            } else { None } {
+                Some(triple) => triple,
+                None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
+                         e.matmul_pre(&fa.wk, hq, hdq, h, t)?,
+                         e.matmul_pre(&fa.wv, hq, hdq, h, t)?),   // E4B: real v (K != V)
+            };
             q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
@@ -3789,33 +3821,42 @@ impl HybridModel {
                 None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
             };
             let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache, dc_bucket)?;
-            let mut cur = e.uninit(t * n_embd)?;
-            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
-            // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
-            let (sn, attn_out) = self.gemma4_layer_tail_core(e, layer, &cur, &x, t)?;
+            // dense ffn tail with the post-attn norm FOLDED into its entry (one launch for
+            // rms(o, post_attn_norm) + residual add + ffn_norm — glue-fusion lane).
+            let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
+                e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()))?;
             let mut resid = e.uninit(t * n_embd)?;
             e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
             // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
             let g = e.matmul(&e4b.inp_gate, &resid, t)?;
-            let mut inp_this = e.uninit(t * n_epl)?;
-            e.copy_rows_strided(&inp_pl, &mut inp_this, n_epl, t, n_epl * n_layer, il * n_epl)?;
+            // t == 1: this layer's PLE row is a CONTIGUOUS slice of inp_pl — no gather copy
+            // (the q8-emitting GELU takes a view; t > 1 keeps the strided gather + f32 path).
             let mut act = e.uninit(t * n_epl)?;
-            e.gelu_tanh_mul(&g, &inp_this, &mut act, t * n_epl)?;
-            let y = e.matmul(&e4b.proj, &act, t)?;
-            let mut yn = e.uninit(t * n_embd)?;
-            e.rms_norm(&y, e4b.post_norm.float_data(), &mut yn, n_embd, t, eps)?;
-            // (resid + tail) * layer_output_scale — llama order — FUSED with the next
-            // layer's attn norm + quantize (last layer: with output_norm for the head).
+            let y = if t == 1 && e.uses_q8_1_fast(&e4b.proj) {
+                let ipv = e.view(&inp_pl, n_epl * n_layer);
+                let row = ipv.slice(il * n_epl..(il + 1) * n_epl);
+                let (aq, ad) = e.gelu_tanh_mul_q8_1(&g, &row, &mut act, n_epl, 1)?;
+                e.matmul_pre(&e4b.proj, &aq, &ad, &act, t)?
+            } else {
+                let mut inp_this = e.uninit(t * n_epl)?;
+                e.copy_rows_strided(&inp_pl, &mut inp_this, n_epl, t, n_epl * n_layer,
+                                    il * n_epl)?;
+                e.gelu_tanh_mul(&g, &inp_this, &mut act, t * n_epl)?;
+                e.matmul(&e4b.proj, &act, t)?
+            };
+            // rms(y, post_norm) + (yn + resid)*layer_scale + next-layer norm+quant emit,
+            // ONE launch (glue-fusion lane; last layer emits through output_norm).
             let next_norm = if il + 1 < n_layer {
                 self.layers[il + 1].attn_norm.float_data()
             } else {
                 self.output_norm.float_data()
             };
             let mut xn = e.uninit(t * n_embd)?;
-            let pair = e.add_scale_rms_norm_q8_1(&yn, &resid, bits.layer_scale, next_norm,
-                                                 &mut xn, n_embd, t, eps)?;
+            let pair = e.rms_pre_add_scale_rms_norm_q8_1(&y, e4b.post_norm.float_data(),
+                                                         &resid, bits.layer_scale, next_norm,
+                                                         &mut xn, n_embd, t, eps)?;
             h_carry = Some(pair);
             x = xn;
         }
