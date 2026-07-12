@@ -86,7 +86,7 @@ def load_inventory(
 
 def load_scores(
     path: Path, expected: set[tuple[int, int]],
-) -> tuple[dict[str, Any], dict[tuple[int, int], float]]:
+) -> tuple[dict[str, Any], dict[tuple[int, int], float], set[tuple[int, int]]]:
     payload = json.loads(path.read_text())
     if payload.get("format") != SCORE_FORMAT:
         raise ValueError(f"score format must be {SCORE_FORMAT!r}")
@@ -99,6 +99,7 @@ def load_scores(
     if not isinstance(rows, list):
         raise ValueError("scores must be a list")
     scores: dict[tuple[int, int], float] = {}
+    protected: set[tuple[int, int]] = set()
     for index, row in enumerate(rows):
         key = (int(row["layer"]), int(row["expert"]))
         score = float(row["retain_score"])
@@ -107,13 +108,15 @@ def load_scores(
         if not math.isfinite(score) or score < 0:
             raise ValueError(f"score row {index} is negative or non-finite")
         scores[key] = score
+        if row.get("protected", False):
+            protected.add(key)
     missing, extra = expected - scores.keys(), scores.keys() - expected
     if missing or extra:
         raise ValueError(
             f"score coverage mismatch: missing={len(missing)} extra={len(extra)} "
             f"sample_missing={sorted(missing)[:5]}"
         )
-    return payload, scores
+    return payload, scores, protected
 
 
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
@@ -143,7 +146,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     if args.min_survivors_per_layer > expert_count:
         raise ValueError("minimum survivors exceeds expert count")
 
-    score_payload, scores = load_scores(args.scores, set(experts))
+    score_payload, scores, protected = load_scores(args.scores, set(experts))
     score_model = score_payload.get("model")
     if not isinstance(score_model, dict):
         raise ValueError("score file model metadata is required")
@@ -187,7 +190,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     result = milp(
         c=-retention,
         integrality=np.ones(len(experts), dtype=np.uint8),
-        bounds=Bounds(np.zeros(len(experts)), np.ones(len(experts))),
+        bounds=Bounds(
+            np.asarray([1.0 if key in protected else 0.0 for key in experts]),
+            np.ones(len(experts)),
+        ),
         constraints=LinearConstraint(matrix, np.asarray(lower), np.asarray(upper)),
         options={"mip_rel_gap": 0.0, "time_limit": float(args.time_limit_seconds)},
     )
@@ -195,6 +201,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"exact-byte selection failed: status={result.status} {result.message}")
     retained = {experts[index] for index, value in enumerate(result.x) if value >= 0.5}
     pruned = set(experts) - retained
+    if protected - retained:
+        raise AssertionError("solver output pruned a protected expert")
     retained_artifact_bytes = int(sum(
         sum(inventory[(layer, expert, projection)]["bytes"] for projection in PROJECTIONS)
         for layer, expert in retained
@@ -282,6 +290,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "selection": {
             "retained_experts": len(retained),
             "pruned_experts": len(pruned),
+            "protected_experts": len(protected),
             "retained_score": float(sum(scores[key] for key in retained)),
             "pruned_score": float(sum(scores[key] for key in pruned)),
         },
@@ -314,7 +323,12 @@ def self_test() -> None:
             "model": {"expert_count": 4, "moe_layers": [1, 2]},
             "calibration": {"public_eval_data_used_for_selection": False},
             "scores": [
-                {"layer": layer, "expert": expert, "retain_score": 10 - expert - layer / 10}
+                {
+                    "layer": layer,
+                    "expert": expert,
+                    "retain_score": 10 - expert - layer / 10,
+                    "protected": expert == 3 and layer == 2,
+                }
                 for layer in (1, 2) for expert in range(4)
             ],
         }
@@ -334,8 +348,9 @@ def self_test() -> None:
         assert all(row["retained"] >= 2 for row in plan["layer_summary"].values())
         assert plan["selection"]["retained_experts"] == 5
         assert plan["selection"]["pruned_experts"] == 3
-        assert math.isclose(plan["selection"]["retained_score"], 45.3)
-        assert math.isclose(plan["selection"]["pruned_score"], 21.5)
+        assert plan["selection"]["protected_experts"] == 1
+        assert math.isclose(plan["selection"]["retained_score"], 44.2)
+        assert math.isclose(plan["selection"]["pruned_score"], 22.6)
         from prepare_mixed_expert_repack import load_assignments
 
         _, expanded, pruned = load_assignments(plan_path)

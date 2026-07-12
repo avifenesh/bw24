@@ -47,6 +47,11 @@ per layer plus `index.jsonl`. Validate exact request/layer/token coverage, conti
 finite values, file sizes, and SHA-256 hashes with `tools/validate_moe_input_trace.py` before scoring.
 The REAP component uses the actual HyV3 combine coefficient: sigmoid router weights selected after
 expert-bias correction, renormalized over top-k, then multiplied by the model router scaling factor.
+Freeze the first composite before evaluation at 0.65 REAP, 0.10 total router-weight traffic,
+0.15 activation-signature uniqueness, and 0.10 rare-stratum specialization. Protect the top two
+router-mass experts per private stratum and layer as hard solver constraints. Score layers in eight
+disjoint GPU shards and require `tools/merge_expert_score_shards.py` to prove exact, non-overlapping
+1--79 coverage before the byte solver consumes the result.
 
 ## Matched arms
 
