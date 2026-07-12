@@ -7,6 +7,17 @@ gelu_tanh_mul_q8_1 both sites (down/proj on matmul_pre); post-attn rms -> tail e
 (tail_core_pn); t=1 PLE row as contiguous view; tail entry emits zsh q8 (q8z, E4B arm only);
 PLE residual add emits q8 (add_q8_1). ALL epilogues = quantize_q8_1's program verbatim;
 battery green each wave (E4B argmax/chat/t=2, 26B/31B argmax+spec, kernel-check).
+WAVE 4 DONE (2026-07-12 evening, merged): single-phase emit reductions (+1.2% — four
+simultaneous sums, sum(v^2) recovered algebraically, one barrier round; FP-order change
+gated MATCH) + qkv OUT-concat matvec (fused3 retired from the E4B path, flat, kept).
+STANDING 188.8 = 0.87x vs llama 216.9. Waves 3a/3b (norm+rope folds) landed flat —
+launch merges do NOT pay; the eager stream already overlaps. LESSON REFINED: wins come
+from (a) removing HBM round-trips (waves 1-2, +5.2%) and (b) shortening the per-layer
+DEPENDENCY CHAIN latency (wave 4a, +1.2%). Remaining ~28 tok/s = op-count restructure:
+the MEGA-FUSION sketch (whole PLE tail as one kernel with inline Q4_0 matvecs — the
+qmatvec_gemm decode_stage_inline pattern; 256-dim intermediate fits smem; kills ~8us of
+chain latency/layer ~= +6%) is the next big swing; attention-block fold (qkv_rope +
+append + fa at t=1, t_kv<=win) the one after.
 PROFILE UPDATE (post-wave-2 nsys + RMS sweep): the matvecs are AT the wall (fused2 96% eff,
 down 14.7MB at 17.3us = floor; head 0.64ms = floor). Glue = ~1.1ms across ~350 launches whose
 EXECUTION floor is ~1-1.3us each — fusion pays exactly one launch-floor per kill, ~+1% each.
