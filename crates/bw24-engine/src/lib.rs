@@ -57,6 +57,13 @@ fn gemm_fatbin_path() -> String {
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
 }
 
+/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a.  Keep the policy in a
+/// pure helper so the portable dispatch guard can be regression-tested without constructing an
+/// Engine or allocating a GPU tensor.
+const fn legacy_quant_gemm_allowed(portable_cuda: bool, no_gemm: bool) -> bool {
+    !portable_cuda && !no_gemm
+}
+
 // ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
 // `BW24_KV_K` = q8_0 (default, 34 B/32elem) | fp8 (raw e4m3, 32 B — the -6% K-bytes arm)
 // `BW24_KV_V` = q5_1 (default, 24 B/32elem) | q4_0 (18 B, -25% V bytes) | fp8 (32 B, +33%)
@@ -4289,10 +4296,16 @@ impl Engine {
     /// MATCH). The int8 tensor-core GEMM is unconditional (its historical BW24_GEMM opt-in gate
     /// shipped with Phase 0 — mma + smem swizzle + cp.async — and was removed). Prefill-only
     /// (m>=GEMM_M_THRESHOLD); m=1 decode keeps dp4a/MMVQ (this returns true but matmul only calls it
-    /// at m>=threshold). BW24_NO_GEMM forces the dp4a fallback (the bit-reference).
+    /// at m>=threshold). Portable CUDA targets always use the correctness fallback; on sm_120a,
+    /// BW24_NO_GEMM forces that same dp4a fallback (the bit-reference).
     pub fn gemm_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if std::env::var("BW24_NO_GEMM").is_ok() { return false; }
+        if !legacy_quant_gemm_allowed(
+            cfg!(bw24_portable_cuda),
+            std::env::var_os("BW24_NO_GEMM").is_some(),
+        ) {
+            return false;
+        }
         match w {
             GpuTensor::Quant { qtype, .. } =>
                 matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q4_0)
@@ -5862,5 +5875,24 @@ impl Engine {
         let host = self.gpu.stream.clone_dtoh(src)?;
         self.gpu.stream.synchronize()?;
         Ok(self.htod(&host[start..start + len])?)
+    }
+}
+
+#[cfg(test)]
+mod target_dispatch_tests {
+    use super::legacy_quant_gemm_allowed;
+
+    #[test]
+    fn legacy_quant_gemm_is_blackwell_only_and_honors_the_escape_hatch() {
+        assert!(legacy_quant_gemm_allowed(false, false));
+        assert!(!legacy_quant_gemm_allowed(true, false));
+        assert!(!legacy_quant_gemm_allowed(false, true));
+        assert!(!legacy_quant_gemm_allowed(true, true));
+    }
+
+    #[cfg(bw24_portable_cuda)]
+    #[test]
+    fn portable_build_disables_legacy_quant_gemm_without_an_env_override() {
+        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), false));
     }
 }
