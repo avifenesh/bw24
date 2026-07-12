@@ -1,3 +1,23 @@
+# E4B GLUE-FUSION LANE — STATE + WAVE 3 SPEC (2026-07-12, branch lane/e4b-glue-fusion, merged through wave 2)
+
+STANDING: 186.6 vs llama 216.9 same-window = 0.86x. llama serves AT the DRAM wall
+(4.61ms/token = 3.9GB trunk at 847GB/s, ~zero glue). Bar = wall-serving.
+WAVES DONE (+7.6%): fused3 qkv; PLE post_norm -> closing emit (rms_pre_add_scale_rms_norm_q8_1);
+gelu_tanh_mul_q8_1 both sites (down/proj on matmul_pre); post-attn rms -> tail entry
+(tail_core_pn); t=1 PLE row as contiguous view; tail entry emits zsh q8 (q8z, E4B arm only);
+PLE residual add emits q8 (add_q8_1). ALL epilogues = quantize_q8_1's program verbatim;
+battery green each wave (E4B argmax/chat/t=2, 26B/31B argmax+spec, kernel-check).
+WAVE 3 (mechanical, ~1% each): (1) rope fold into rms_norm_qkv (pos+ff args in, one kernel);
+(2) wo-input quantize via a combine-q8 variant (fa_decode_combine_f32 emits (q8,d), wo rides
+matmul_pre — E4B-only call site to avoid qwen churn); (3) rope+append fold (rope epilogue
+writes the quantized cache rows). WAVE 4 (the real remainder, ~0.3ms): small-matvec efficiency
+— mr2_rp at ~79% of byte floor on the 2560-in mats (wq 4.4us vs 3.5 floor); occupancy/ILP
+sweep on the mr2 tier (BW24_MMVQ_ROWS class knobs), consider fused2 for (inp_gate,proj-next?)
+no — different inputs; consider CONCAT-WEIGHTS build for wq|wk|wv into ONE tensor at load
+(single matvec, no fused3 grid split) — the fused3 grid is 3 sub-grids, a concat is one.
+GOAL MATH: enumerable glue left ~0.35ms + matvec ineff ~0.3ms; killing both -> ~4.9ms = 204;
+crossing 217 NEEDS the matvec arc to land near-fully. E4B has NO drafter (spec N/A) - plain is
+the only cell.
 # E4B STATUS 2026-07-12 (correctness UNBLOCKED + fusion port)
 
 - ROOT-CAUSE FIX (commit 71fb028): global layers stored HALF their K/V — the cache kv-dim
