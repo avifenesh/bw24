@@ -870,8 +870,12 @@ impl HybridModel {
                                        Vec<Box<dyn std::any::Any + Send>>)> = None;
                 for _ in 0..max_new {
                     out.push(e.dtoh_u32(&token_d)?[0]);
-                    let need = cache.pos + 2;
-                    let rung = need.next_power_of_two().max(64);
+                    // ONE capture for the whole under-window generation: fa_decode_dc is
+                    // bit-correct for any len <= bucket (empty splits exit), so the rung is
+                    // the window itself — the pow2 laddering forced 5 recaptures per 128
+                    // tokens and the capture cost ate the replay gain (the llama profile
+                    // shows THEIR eager token at 7.7ms vs 4.6 graphed: graphs are the win).
+                    let rung = win;
                     if graph.as_ref().map(|g| g.0) != Some(rung) {
                         let (g, keep) = e.capture_graph_retained(|e| {
                             self.gemma4_e4b_decode_step_dcg(e, &mut token_d, &mut pos_d,
