@@ -104,6 +104,7 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     agent = agents[0]
     require(agent.get("name") == "terminus-2" and agent.get("model_name") == f"openai/{arm}", f"wrong practical agent/model: {run_dir}")
     require(config.get("n_concurrent_trials") == 1, f"wrong Harbor concurrency: {run_dir}")
+    require(config.get("agent_timeout_multiplier") == 4.0, f"wrong Harbor agent timeout multiplier: {run_dir}")
     scaffold = lock["protocol"]["agent_scaffold"]
     expected_kwargs = {
         "api_base": scaffold["api_base"], "temperature": scaffold["temperature"],
@@ -301,6 +302,7 @@ def self_test() -> None:
             (run / "run-metadata.json").write_text(json.dumps(receipt))
             config = {
                 "n_concurrent_trials": 1,
+                "agent_timeout_multiplier": 4.0,
                 "agents": [{"name": "terminus-2", "model_name": f"openai/{arm}", "kwargs": {
                     "api_base": "http://server/v1", "temperature": 0, "max_turns": 2,
                     "parser_name": "json", "proactive_summarization_threshold": 1,

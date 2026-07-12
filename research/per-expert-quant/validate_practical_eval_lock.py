@@ -76,6 +76,7 @@ def validate_structure(lock: dict[str, Any]) -> None:
         "max_input_tokens": 8192, "max_output_tokens": 512,
         "llm_call_max_tokens": 512, "enable_summarize": True,
         "record_terminal_session": True,
+        "agent_timeout_multiplier": 4.0,
         "n_concurrent_trials": 1, "n_attempts": 1, "max_retries": 0,
     }
     require(scaffold == expected_scaffold, "practical agent scaffold differs from the frozen protocol")

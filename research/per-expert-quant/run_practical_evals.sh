@@ -101,6 +101,7 @@ CMD=(
   --n-concurrent-agents 1
   --n-attempts 1
   --max-retries 0
+  --agent-timeout-multiplier 4.0
   --yes
   --agent-kwarg "api_base=$BASE_URL"
   --agent-kwarg temperature=0

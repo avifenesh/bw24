@@ -94,6 +94,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         require(isinstance(datasets, list) and len(datasets) == 1 and datasets[0].get("name") == name and (datasets[0].get("version") == digest or datasets[0].get("ref") == digest), f"Harbor dataset differs: {shard}")
         require(datasets[0].get("task_names") == list(selected), f"Harbor selected tasks differ: {shard}")
         require(config.get("n_concurrent_trials") == 1, f"Harbor concurrency differs: {shard}")
+        require(config.get("agent_timeout_multiplier") == 4.0, f"Harbor agent timeout multiplier differs: {shard}")
         arm = receipt.get("arm")
         agents = config.get("agents")
         require(isinstance(agents, list) and len(agents) == 1 and agents[0].get("name") == "terminus-2" and agents[0].get("model_name") == f"openai/{arm}", f"wrong model: {shard}")

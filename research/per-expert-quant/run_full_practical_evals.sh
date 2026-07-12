@@ -108,7 +108,8 @@ CALL_KWARGS='{"max_tokens":512}'
 CMD=(
   "$HARBOR_BIN" run --dataset "$DATASET" --agent terminus-2 --model "openai/$ARM"
   --job-name "$RUN_ID" --jobs-dir "$RUN_DIR/jobs" --env docker --cpus limit --memory limit
-  --n-concurrent 1 --n-concurrent-agents 1 --n-attempts 1 --max-retries 0 --yes
+  --n-concurrent 1 --n-concurrent-agents 1 --n-attempts 1 --max-retries 0
+  --agent-timeout-multiplier 4.0 --yes
   --agent-kwarg "api_base=$BASE_URL" --agent-kwarg temperature=0
   --agent-kwarg max_turns=20 --agent-kwarg parser_name=json
   --agent-kwarg proactive_summarization_threshold=1024

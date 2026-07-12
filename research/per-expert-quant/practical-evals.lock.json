@@ -1,6 +1,8 @@
 {
   "format": "bw24-practical-evals-v1",
   "generated_utc": "2026-07-11T05:56:41Z",
+  "revised_utc": "2026-07-12T18:32:25Z",
+  "revision_reason": "Raise only Harbor's matched agent execution timeout after every arm hit the original 2400-second ceiling on the same first Terminal task; no task, turn, token, model, or verifier setting changed.",
   "protocol": {
     "purpose": "directional practical-task comparison after public capability promotion",
     "same_agent_scaffold": true,
@@ -25,6 +27,7 @@
       "llm_call_max_tokens": 512,
       "enable_summarize": true,
       "record_terminal_session": true,
+      "agent_timeout_multiplier": 4.0,
       "n_concurrent_trials": 1,
       "n_attempts": 1,
       "max_retries": 0
