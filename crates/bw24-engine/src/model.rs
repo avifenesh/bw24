@@ -380,7 +380,13 @@ impl GpuTensor {
                 // 35B: 100 dot+reduce launches/token). Q8_0 of an F32 source is the same
                 // class-lossless step every 9B GGUF already ships for these tensors.
                 if v.ne.len() == 2 && v.ne[0] % 32 == 0
-                    && (name.ends_with("ssm_beta.weight") || name.ends_with("ssm_alpha.weight")) {
+                    && (name.ends_with("ssm_beta.weight") || name.ends_with("ssm_alpha.weight")
+                        // E4B per_layer_model_proj (F16 [2560, 10752]): matmul-class — the
+                        // loader-law recipe (2026-07-12). As Float it rode cuBLAS f32 whose
+                        // m=1-vs-m=16 FP-order gap seeds inp_pl noise into EVERY layer's PLE
+                        // tail; the 42-layer stack amplifies it to logit maxdiff ~27 and the
+                        // chat-prompt prefill-vs-decode argmax gate fails.
+                        || name.ends_with("per_layer_model_proj.weight")) {
                     let q8 = bw24_gguf::nvfp4_repack::f32_to_q8_0(&f32v);
                     return GpuTensor::from_quant_bytes(e, &q8, GgmlType::Q8_0, v.ne[0], v.ne[1], 1.0);
                 }

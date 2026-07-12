@@ -3538,8 +3538,13 @@ impl HybridModel {
             let mut q_one = e.uninit(nh * hd)?;
             e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
             let mut a_one = e.uninit(nh * hd)?;
+            // read class MUST match the append class (globals are e4m3 under gkv): the
+            // swa-only flag decoded global-layer e4m3 bytes as q8_0/q5_1 — attention over
+            // garbage on EVERY E4B global layer, the cross-mode maxdiff-30 root (2026-07-12).
             e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
+                        kvl.k_tok_bytes, kvl.v_tok_bytes,
+                        (!swa && crate::Engine::gkv_on())
+                            || (swa && crate::Engine::wkv_on()))?;
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
         Ok(e.matmul(&fa.wo, &attn, t)?)

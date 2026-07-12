@@ -92,12 +92,17 @@ impl Cache {
             let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
                 Some(g) => {
                     let hd = if g.swa_pattern[il as usize] { g.key_length_swa } else { g.key_length_global } as usize;
-                    // E4B ships a SCALAR head_count_kv (per-layer vec empty): both kinds land
-                    // on 512 total (swa 2x256, global 1x512 — verified against tensor shapes
-                    // at load). 26B/31B keep the per-layer vec.
+                    // E4B ships a SCALAR head_count_kv (per-layer vec empty; scalar = 2 in
+                    // the gguf, landing in cfg.n_head_kv): kv_dim = hd * 2 for BOTH kinds —
+                    // swa 2x256 = 512, global 2x512 = 1024. The old fallback used
+                    // key_length_global (512) for both, which HALVED the global layers' K/V
+                    // (the attn writes wk.out_features = 1024 rows): every E4B global layer
+                    // stored/attended half its K/V and the batched append read row strides
+                    // wrong — THE cross-mode maxdiff-30 root (2026-07-12 bisect, il=5 slot-1
+                    // byte forensics). 26B/31B keep the per-layer vec.
                     let d = match g.head_count_kv.get(il as usize) {
                         Some(n) => hd * *n as usize,
-                        None => g.key_length_global as usize,
+                        None => hd * n_head_kv,
                     };
                     (d, d)
                 }
