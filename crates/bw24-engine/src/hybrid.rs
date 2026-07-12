@@ -328,6 +328,10 @@ pub struct Gemma4E4bLayer {
     pub inp_gate: GpuTensor,           // blk.N.inp_gate  [n_embd, n_epl]
     pub proj: GpuTensor,               // blk.N.proj      [n_epl, n_embd]
     pub post_norm: GpuTensor,          // blk.N.post_norm [n_embd]
+    /// wave-4b: wq|wk|wv concatenated along OUT (one Q4_0 matvec at t=1 instead of the
+    /// fused3 3-subgrid launch). Built at the mirror hook from the GPU byte planes (rows
+    /// are independent in Q4_0, so an out-dim concat is a byte concat); own-KV layers only.
+    pub qkv_cat: Option<GpuTensor>,
     /// Some(target_layer) on KV-shared layers (wk/wv here are the TARGET layer's tensors,
     /// loaded for shape symmetry only — the forward must skip k/v compute + append and read
     /// the target's cache; TODO dedupe the duplicate weight upload ~63MB).
@@ -640,6 +644,7 @@ impl HybridModel {
                             proj: load_t(e, src, &p("proj.weight"))?,
                             post_norm: load_t(e, src, &p("post_norm.weight"))?,
                             kv_share,
+                            qkv_cat: None,   // built at the mirror hook (wave 4b)
                         })
                     } else { None };
                     Some(Gemma4LayerBits {
@@ -830,6 +835,18 @@ impl HybridModel {
                     }
                 }
                 if is_e4b {
+                    // wave-4b: own-KV layers get the wq|wk|wv OUT-concat (one matvec at t=1).
+                    let own_kv = layer.gemma4.as_ref().unwrap().e4b.as_ref()
+                        .is_some_and(|e4| e4.kv_share.is_none());
+                    if own_kv {
+                        if let Mixer::Full(fa) = &layer.mixer {
+                            if let Some(mut cat) = e.build_q4_out_concat3(&fa.wq, &fa.wk, &fa.wv)? {
+                                e.build_q4_rp4(&mut cat)?; nmir += 1;
+                                layer.gemma4.as_mut().unwrap().e4b.as_mut().unwrap()
+                                    .qkv_cat = Some(cat);
+                            }
+                        }
+                    }
                     if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
                         for w in [ffn_gate, ffn_up, ffn_down] {
                             e.build_q4_rp4(w)?; nmir += 1;
