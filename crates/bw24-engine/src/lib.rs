@@ -52,7 +52,16 @@ const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
 /// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
 /// compile-time default (zero behavior change).
 fn gemm_fatbin_path() -> String {
+    assert!(!(cfg!(bw24_portable_cuda) && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
+            "BW24_GEMM_FATBIN overrides are not allowed in the portable CUDA lane");
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
+}
+
+/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a.  Keep the policy in a
+/// pure helper so the portable dispatch guard can be regression-tested without constructing an
+/// Engine or allocating a GPU tensor.
+const fn legacy_quant_gemm_allowed(portable_cuda: bool, no_gemm: bool) -> bool {
+    !portable_cuda && !no_gemm
 }
 
 // ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
@@ -4238,6 +4247,7 @@ impl Engine {
                     in_f: usize, out_f: usize)
                     -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
+        if cfg!(bw24_portable_cuda) { return Ok(None); }
         if std::env::var("BW24_FP4").is_err() { return Ok(None); }
         // CUTLASS prefill branch (m>=128 + BW24_FP4_CUTLASS + a repacked CutlassWeight present): route
         // to the CUTLASS sm120 NVFP4 GEMM, folding the per-tensor macro-scale into the epilogue alpha
@@ -4286,10 +4296,16 @@ impl Engine {
     /// MATCH). The int8 tensor-core GEMM is unconditional (its historical BW24_GEMM opt-in gate
     /// shipped with Phase 0 — mma + smem swizzle + cp.async — and was removed). Prefill-only
     /// (m>=GEMM_M_THRESHOLD); m=1 decode keeps dp4a/MMVQ (this returns true but matmul only calls it
-    /// at m>=threshold). BW24_NO_GEMM forces the dp4a fallback (the bit-reference).
+    /// at m>=threshold). Portable CUDA targets always use the correctness fallback; on sm_120a,
+    /// BW24_NO_GEMM forces that same dp4a fallback (the bit-reference).
     pub fn gemm_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if std::env::var("BW24_NO_GEMM").is_ok() { return false; }
+        if !legacy_quant_gemm_allowed(
+            cfg!(bw24_portable_cuda),
+            std::env::var_os("BW24_NO_GEMM").is_some(),
+        ) {
+            return false;
+        }
         match w {
             GpuTensor::Quant { qtype, .. } =>
                 matches!(*qtype, QT_Q8_0 | QT_Q4_K | QT_Q6_K | QT_Q5_K | QT_Q4_0)
@@ -4595,6 +4611,10 @@ impl Engine {
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
+                                   t, t_kv, scale, causal);
+        }
         // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
         // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).
         // Edge 5a (DEFAULT): fa_prefill_f32_pp — register-resident softmax (no sSw smem
@@ -4636,6 +4656,11 @@ impl Engine {
                            t: usize, t_kv: usize, scale: f32, causal: bool,
                            k_tok_bytes: usize, v_tok_bytes: usize)
                            -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                  t, t_kv, scale, causal,
+                                                  k_tok_bytes, v_tok_bytes);
+        }
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         let f = self.func(&format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?));
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
@@ -4671,6 +4696,11 @@ impl Engine {
                               t: usize, t_kv: usize, scale: f32, causal: bool,
                               k_tok_bytes: usize, v_tok_bytes: usize)
                               -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                  t, t_kv, scale, causal,
+                                                  k_tok_bytes, v_tok_bytes);
+        }
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         let kv_dim_k = n_head_kv * head_dim;
         let kv_dim_v = n_head_kv * head_dim;
@@ -5550,14 +5580,14 @@ impl Engine {
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
-        if c <= 64 {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+        if c <= 64 && !cfg!(bw24_portable_cuda) {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
             b.arg(q).arg(k).arg(&gcum).arg(beta).arg(&mut a).arg(&mut p).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
-        } else {       // K2 generic (C = 128)
+        } else {       // K2 generic (C = 128, or the portable target's low-smem fallback)
             let f = self.func("gdn_chunk_attn_g_f32");
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, 1), block_dim: (32, 8, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);
@@ -5845,5 +5875,24 @@ impl Engine {
         let host = self.gpu.stream.clone_dtoh(src)?;
         self.gpu.stream.synchronize()?;
         Ok(self.htod(&host[start..start + len])?)
+    }
+}
+
+#[cfg(test)]
+mod target_dispatch_tests {
+    use super::legacy_quant_gemm_allowed;
+
+    #[test]
+    fn legacy_quant_gemm_is_blackwell_only_and_honors_the_escape_hatch() {
+        assert!(legacy_quant_gemm_allowed(false, false));
+        assert!(!legacy_quant_gemm_allowed(true, false));
+        assert!(!legacy_quant_gemm_allowed(false, true));
+        assert!(!legacy_quant_gemm_allowed(true, true));
+    }
+
+    #[cfg(bw24_portable_cuda)]
+    #[test]
+    fn portable_build_disables_legacy_quant_gemm_without_an_env_override() {
+        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), false));
     }
 }

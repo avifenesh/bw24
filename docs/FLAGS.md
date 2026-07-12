@@ -94,7 +94,7 @@ HANDOVER.md sections from that date.
 | flag | default | what it does |
 |---|---|---|
 | `BW24_NVCC` | `nvcc` on PATH | nvcc binary override |
-| `BW24_CUDA_ARCH` | 120a | target arch (the sm_89 lane built with `89`; lane closed) |
+| `BW24_CUDA_ARCH` | `120a` | build target. `89` builds the secondary correctness-first L40S eval lane: native-FP4 prefill is compiled off, tiled GDN uses its generic low-shared-memory fallback, and prompt attention dequants KV once into the generic f32 SDPA path. Portable int8/qmatvec and quantized decode kernels remain available. The default Blackwell build is unchanged |
 | `BW24_CUTLASS` | off | set = compile the CUTLASS sm120 NVFP4 GEMM (`cutlass_smoke`, `BW24_FP4_CUTLASS` door) |
 | `BW24_CUTLASS_ROOT` | flashinfer venv tree | CUTLASS header tree location |
 | `BW24_MMQ_X_Q45K` | 64 | k-quant MMQ X-tile (compile-time sweep seam) |

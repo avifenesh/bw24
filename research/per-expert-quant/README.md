@@ -31,6 +31,18 @@ safetensors checkpoint as common quantization source material and uses repack ov
 per-expert precision experimentally. Spill, cache, prefetch, and dispatch changes must stay in the
 shared expert-serving path, preserve GGUF behavior, and pass the existing GGUF gates before release.
 
+### Portable research-hardware lane
+
+Blackwell and the local RTX 5090 remain the optimized product target. The parallel capability
+screen may also build bw24 for L40S with `BW24_CUDA_ARCH=89`; this keeps the exact overlay bytes and
+expert selection policy instead of replacing the model or exporting to a different quantization
+scheme. The portable build retains the existing int8/qmatvec paths, compiles off the sm_120a-only
+native-FP4 prefill kernel, routes the one oversized tiled GDN kernel through its generic
+low-shared-memory implementation, and dequants the prompt KV cache once into the generic f32 SDPA
+path. Quantized decode stays on the existing flash-decoding kernels. It is a quality-evaluation
+backend, not a new performance baseline. Before any L40S result is scored, compare a fixed greedy
+prompt against the pinned sm_120a server and preserve both raw responses and runtime hashes.
+
 ## Target model and frozen recipes
 
 The source model is `tencent/Hy3` with 192 routed experts per MoE layer, top-8 sigmoid routing, and

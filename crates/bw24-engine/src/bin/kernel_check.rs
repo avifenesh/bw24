@@ -704,6 +704,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            if cfg!(bw24_portable_cuda) {
+                println!("portable CUDA: native FP4 and static-MMQ model-backed checks — SKIP");
+            } else {
             // Stage-C FP4 (mxf4nvf4 block-scale tensor-core) vs the f32 dequant oracle on NVFP4.
             // FP4 is LOSSY (e2m1 activations + e2m1 weights; scale side is lossless ue4m3) — NOT
             // bit-equivalent. Compare to cpu_linear(dequant(W)) and expect rel ~1e-2..6e-2.
@@ -869,6 +872,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+            }
             }
             // --- Phase-1 CUTLASS FP4 GEMM: REPACK CORRECTNESS gate. ---
             // The de-interleave (GGUF -> plain packed e2m1) + SFB swizzle is the ONLY place a silent

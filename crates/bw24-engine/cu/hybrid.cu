@@ -412,6 +412,7 @@ extern "C" __global__ void gdn_chunk_cumgate_f32(
 // the block's 32 q/k j-rows live in smem (+1 row pad -> even-row reads land on distinct
 // banks). P is written FULL-width: zeros above the diagonal — K5's rectangular inner loop
 // relies on P[j][i>j] == 0. grid (NC, H, ceil(C/32)), block 256.
+#if !defined(BW24_PORTABLE_CUDA)
 extern "C" __global__ void gdn_chunk_attn_f32(
         const float* __restrict__ q, const float* __restrict__ k,
         const float* __restrict__ gcum, const float* __restrict__ beta,
@@ -481,6 +482,7 @@ extern "C" __global__ void gdn_chunk_attn_f32(
         for (int i = j + 1 + (tid % 32); i < Cc; i += 32) Prow[i] = 0.0f;
     }
 }
+#endif
 
 // K2 GENERIC (any C, used for C = 128): warp-per-pair butterfly dots with a 64-row smem
 // k sub-tile. Slower than the tiled variant — kept for the chunk-size sweep's C=128 leg.
