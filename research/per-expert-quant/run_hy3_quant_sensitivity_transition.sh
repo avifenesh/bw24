@@ -15,6 +15,7 @@ LOG_ROOT=${LOG_ROOT:-/data/logs/hy3-quant-sensitivity-53de6ca}
 MAX_TOKENS_PER_EXPERT=${MAX_TOKENS_PER_EXPERT:-16}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the detached source commit}
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
+MERGER="$ROOT/tools/merge_hy3_quant_sensitivity.py"
 
 die() { echo "quant-sensitivity transition: $*" >&2; exit 1; }
 mkdir -p "$OUT_ROOT" "$LOG_ROOT"
@@ -23,6 +24,7 @@ flock -n 9 || die "another transition owns $LOG_ROOT/transition.lock"
 echo "$(date -u +%FT%TZ) quant-sensitivity transition started" | tee -a "$LOG_ROOT/transition.log"
 
 [[ -x "$SCORER" || -f "$SCORER" ]] || die "missing scorer $SCORER"
+[[ -f "$MERGER" ]] || die "missing merger $MERGER"
 [[ $(git -C "$ROOT" rev-parse HEAD) == "$EXPECTED_COMMIT" ]] \
   || die "source commit is not $EXPECTED_COMMIT"
 
@@ -76,5 +78,9 @@ for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more sensitivity lanes failed"
 [[ $(find "$OUT_ROOT" -maxdepth 1 -name 'lane-*.json' | wc -l) -eq 8 ]] \
   || die "expected eight completed lane outputs"
+"$PY" "$MERGER" "$OUT_ROOT"/lane-*.json --out "$OUT_ROOT/quant-sensitivity.json" \
+  | tee "$LOG_ROOT/merge.log"
 sha256sum "$OUT_ROOT"/lane-*.json "$LOG_ROOT"/lane-*.log > "$OUT_ROOT/evidence.sha256"
+sha256sum "$OUT_ROOT/quant-sensitivity.json" "$LOG_ROOT/merge.log" \
+  >> "$OUT_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"

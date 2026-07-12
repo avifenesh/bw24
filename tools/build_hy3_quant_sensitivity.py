@@ -137,12 +137,18 @@ def deterministic_sample(indices: np.ndarray, limit: int) -> np.ndarray:
     return indices[positions]
 
 
-def relative_error(candidate: torch.Tensor, reference: torch.Tensor, weight: torch.Tensor) -> float:
+def error_metrics(
+    candidate: torch.Tensor, reference: torch.Tensor, weight: torch.Tensor,
+) -> dict[str, float]:
     delta = (candidate.float() - reference.float()) * weight[:, None]
     baseline = reference.float() * weight[:, None]
-    return float(torch.square(delta).sum(dtype=torch.float64).cpu()) / max(
-        float(torch.square(baseline).sum(dtype=torch.float64).cpu()), 1e-30
-    )
+    squared_error = float(torch.square(delta).sum(dtype=torch.float64).cpu())
+    baseline_energy = float(torch.square(baseline).sum(dtype=torch.float64).cpu())
+    return {
+        "squared_error": squared_error,
+        "baseline_energy": baseline_energy,
+        "normalized_mse": squared_error / max(baseline_energy, 1e-30),
+    }
 
 
 @torch.inference_mode()
@@ -190,11 +196,11 @@ def expert_metrics(
         down_only = F.linear(activated_ref.to(torch.bfloat16), down_q).float()
         joint = F.linear(activated_q.to(torch.bfloat16), down_q).float()
         result[qtype] = {
-            "joint_output_normalized_mse": relative_error(joint, output_ref, weights),
-            "projection_output_normalized_mse": {
-                "gate": relative_error(gate_only, output_ref, weights),
-                "up": relative_error(up_only, output_ref, weights),
-                "down": relative_error(down_only, output_ref, weights),
+            "joint_output_error": error_metrics(joint, output_ref, weights),
+            "projection_output_error": {
+                "gate": error_metrics(gate_only, output_ref, weights),
+                "up": error_metrics(up_only, output_ref, weights),
+                "down": error_metrics(down_only, output_ref, weights),
             },
             "projection_weight_error": {
                 "gate": gate_weight,
@@ -275,6 +281,7 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
                     "expert": expert,
                     "routed_tokens": int(len(token_index)),
                     "sampled_tokens": int(len(chosen_tokens)),
+                    "sample_scale": float(len(token_index) / len(chosen_tokens)),
                     "sampled_router_weight_mass": float(weights.sum(dtype=torch.float64)),
                     "quantization": metrics,
                 })
@@ -360,10 +367,10 @@ def self_test() -> None:
         assert len(result["scores"]) == 2
         for row in result["scores"]:
             for qtype in QTYPES:
-                value = row["quantization"][qtype]["joint_output_normalized_mse"]
+                value = row["quantization"][qtype]["joint_output_error"]["normalized_mse"]
                 assert math.isfinite(value) and value >= 0
-        assert result["scores"][0]["quantization"]["Q8_0"]["joint_output_normalized_mse"] \
-            < result["scores"][0]["quantization"]["Q2_K"]["joint_output_normalized_mse"]
+        assert result["scores"][0]["quantization"]["Q8_0"]["joint_output_error"]["normalized_mse"] \
+            < result["scores"][0]["quantization"]["Q2_K"]["joint_output_error"]["normalized_mse"]
         probe = rng.normal(size=(3, 256)).astype(np.float32)
         scalar = {
             "Q8_0": _dequant_q8_0,
