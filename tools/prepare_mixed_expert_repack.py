@@ -177,8 +177,12 @@ def quantize_q2k_rows(rows: np.ndarray) -> bytes:
     scale = np.where(scale > 1e-30, scale, 0.0)
     d = scale.max(axis=2) / 15.0
     dmin = offset.max(axis=2) / 15.0
-    sc = np.where(d[..., None] > 0, _round(scale / d[..., None]), 0).clip(0, 15).astype(np.uint8)
-    mi = np.where(dmin[..., None] > 0, _round(offset / dmin[..., None]), 0).clip(0, 15).astype(np.uint8)
+    scale_units = np.zeros_like(scale, dtype=np.float32)
+    min_units = np.zeros_like(offset, dtype=np.float32)
+    np.divide(scale, d[..., None], out=scale_units, where=d[..., None] > 0)
+    np.divide(offset, dmin[..., None], out=min_units, where=dmin[..., None] > 0)
+    sc = _round(scale_units).clip(0, 15).astype(np.uint8)
+    mi = _round(min_units).clip(0, 15).astype(np.uint8)
     d16 = d.astype("<f2")
     dm16 = dmin.astype("<f2")
     se = d16.astype(np.float32)[..., None] * sc
