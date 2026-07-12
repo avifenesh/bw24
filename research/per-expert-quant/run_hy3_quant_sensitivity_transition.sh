@@ -13,7 +13,7 @@ SOURCE=${SOURCE:-/opt/dlami/nvme/models/hy3-source}
 OUT_ROOT=${OUT_ROOT:-/data/calibration/hy3-quant-sensitivity-53de6ca}
 LOG_ROOT=${LOG_ROOT:-/data/logs/hy3-quant-sensitivity-53de6ca}
 MAX_TOKENS_PER_EXPERT=${MAX_TOKENS_PER_EXPERT:-16}
-EXPECTED_COMMIT=${EXPECTED_COMMIT:-53de6ca88d77da435a067e6b844e029e545d06ef}
+EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the detached source commit}
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
 
 die() { echo "quant-sensitivity transition: $*" >&2; exit 1; }
