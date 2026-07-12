@@ -273,8 +273,10 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         "layers": len(layers),
         "retained_experts": len(expected_experts),
         "pruned_experts": sum(len(x) for x in pruned.values()),
-        "expert_projections": len(tensors),
+        "expert_projections": len(expected_qtypes),
+        "override_tensors": len(override_names),
         "artifact_bytes": total,
+        "payload_bytes": total + override_bytes,
         **{qtype.lower() + "_projections": count for qtype, count in qtypes.items()},
     }
 
@@ -397,7 +399,12 @@ def self_test() -> None:
         manifest["payload_bytes"] = 110
         (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
-        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 102
+        assert (
+            summary["retained_experts"] == 1
+            and summary["artifact_bytes"] == 102
+            and summary["override_tensors"] == 1
+            and summary["payload_bytes"] == 110
+        )
         print("artifact validator self-test: PASS")
 
 
