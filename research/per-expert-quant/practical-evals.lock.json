@@ -25,6 +25,7 @@
       "max_input_tokens": 7168,
       "max_output_tokens": 1024,
       "llm_call_max_tokens": 1024,
+      "llm_call_timeout_seconds": 7200,
       "enable_summarize": true,
       "record_terminal_session": true,
       "agent_timeout_multiplier": 4.0,

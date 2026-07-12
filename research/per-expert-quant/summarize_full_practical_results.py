@@ -98,7 +98,27 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         arm = receipt.get("arm")
         agents = config.get("agents")
         require(isinstance(agents, list) and len(agents) == 1 and agents[0].get("name") == "terminus-2" and agents[0].get("model_name") == f"openai/{arm}", f"wrong model: {shard}")
-        expected_kwargs = {"api_base": lock["protocol"]["agent_scaffold"]["api_base"], "temperature": 0, "max_turns": 20, "parser_name": "json", "proactive_summarization_threshold": 1024, "enable_summarize": True, "store_all_messages": True, "record_terminal_session": True, "model_info": {"max_input_tokens": 8192, "max_output_tokens": 512, "input_cost_per_token": 0, "output_cost_per_token": 0}, "llm_call_kwargs": {"max_tokens": 512}}
+        scaffold = lock["protocol"]["agent_scaffold"]
+        expected_kwargs = {
+            "api_base": scaffold["api_base"],
+            "temperature": scaffold["temperature"],
+            "max_turns": scaffold["max_turns"],
+            "parser_name": scaffold["parser_name"],
+            "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
+            "enable_summarize": scaffold["enable_summarize"],
+            "store_all_messages": scaffold["store_all_messages"],
+            "record_terminal_session": scaffold["record_terminal_session"],
+            "model_info": {
+                "max_input_tokens": scaffold["max_input_tokens"],
+                "max_output_tokens": scaffold["max_output_tokens"],
+                "input_cost_per_token": 0,
+                "output_cost_per_token": 0,
+            },
+            "llm_call_kwargs": {
+                "max_tokens": scaffold["llm_call_max_tokens"],
+                "timeout": scaffold["llm_call_timeout_seconds"],
+            },
+        }
         require(agents[0].get("kwargs") == expected_kwargs, f"agent scaffold differs: {shard}")
         if reference is None:
             reference = receipt

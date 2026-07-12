@@ -86,7 +86,7 @@ CHAT_STATUS=$(curl -sS --max-time 10 -o "$RUN_DIR/chat-route-probe.json" -w '%{h
 
 export OPENAI_API_KEY=${BW24_API_KEY:-dummy}
 MODEL_INFO='{"max_input_tokens":7168,"max_output_tokens":1024,"input_cost_per_token":0,"output_cost_per_token":0}'
-CALL_KWARGS='{"max_tokens":1024}'
+CALL_KWARGS='{"max_tokens":1024,"timeout":7200}'
 CMD=(
   "$HARBOR_BIN" run
   --dataset "$DATASET"

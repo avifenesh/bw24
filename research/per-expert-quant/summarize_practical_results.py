@@ -118,7 +118,10 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
             "max_output_tokens": scaffold["max_output_tokens"],
             "input_cost_per_token": 0, "output_cost_per_token": 0,
         },
-        "llm_call_kwargs": {"max_tokens": scaffold["llm_call_max_tokens"]},
+        "llm_call_kwargs": {
+            "max_tokens": scaffold["llm_call_max_tokens"],
+            "timeout": scaffold["llm_call_timeout_seconds"],
+        },
     }
     require(agent.get("kwargs") == expected_kwargs, f"Harbor agent kwargs differ from lock: {run_dir}")
 
@@ -262,6 +265,7 @@ def self_test() -> None:
                 "enable_summarize": True, "store_all_messages": True,
                 "record_terminal_session": True, "max_input_tokens": 8,
                 "max_output_tokens": 2, "llm_call_max_tokens": 2,
+                "llm_call_timeout_seconds": 7200,
             }},
             "terminal_bench_2": {"dataset": "terminal", "dataset_digest": "digest", "tasks": [
                 {"name": "terminal-bench/a", "digest": "sha256:a"},
@@ -310,7 +314,7 @@ def self_test() -> None:
                     "record_terminal_session": True,
                     "model_info": {"max_input_tokens": 8, "max_output_tokens": 2,
                                    "input_cost_per_token": 0, "output_cost_per_token": 0},
-                    "llm_call_kwargs": {"max_tokens": 2},
+                    "llm_call_kwargs": {"max_tokens": 2, "timeout": 7200},
                 }}],
                 "datasets": [{"name": "terminal", "ref": "digest", "task_names": [
                     "terminal-bench/a", "terminal-bench/b"
