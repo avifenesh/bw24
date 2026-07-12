@@ -16,6 +16,7 @@ MAX_TOKENS_PER_EXPERT=${MAX_TOKENS_PER_EXPERT:-16}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the detached source commit}
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
 MERGER="$ROOT/tools/merge_hy3_quant_sensitivity.py"
+SUMMARIZER="$ROOT/tools/summarize_hy3_quant_effects.py"
 
 die() { echo "quant-sensitivity transition: $*" >&2; exit 1; }
 mkdir -p "$OUT_ROOT" "$LOG_ROOT"
@@ -25,6 +26,7 @@ echo "$(date -u +%FT%TZ) quant-sensitivity transition started" | tee -a "$LOG_RO
 
 [[ -x "$SCORER" || -f "$SCORER" ]] || die "missing scorer $SCORER"
 [[ -f "$MERGER" ]] || die "missing merger $MERGER"
+[[ -f "$SUMMARIZER" ]] || die "missing summarizer $SUMMARIZER"
 [[ $(git -C "$ROOT" rev-parse HEAD) == "$EXPECTED_COMMIT" ]] \
   || die "source commit is not $EXPECTED_COMMIT"
 
@@ -54,6 +56,7 @@ for path in \
 done
 
 "$PY" "$SCORER" --self-test | tee "$LOG_ROOT/self-test.log"
+"$PY" "$SUMMARIZER" --self-test | tee "$LOG_ROOT/summary-self-test.log"
 
 layers=(1-10 11-20 21-30 31-40 41-50 51-60 61-70 71-79)
 cpus=(0-11 12-23 24-35 36-47 48-59 60-71 72-83 84-95)
@@ -80,7 +83,11 @@ for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
   || die "expected eight completed lane outputs"
 "$PY" "$MERGER" "$OUT_ROOT"/lane-*.json --out "$OUT_ROOT/quant-sensitivity.json" \
   | tee "$LOG_ROOT/merge.log"
+"$PY" "$SUMMARIZER" "$OUT_ROOT/quant-sensitivity.json" \
+  --out "$OUT_ROOT/effects-map.json" --layer-csv "$OUT_ROOT/layer-effects.csv" \
+  | tee "$LOG_ROOT/effects-map.log"
 sha256sum "$OUT_ROOT"/lane-*.json "$LOG_ROOT"/lane-*.log > "$OUT_ROOT/evidence.sha256"
-sha256sum "$OUT_ROOT/quant-sensitivity.json" "$LOG_ROOT/merge.log" \
+sha256sum "$OUT_ROOT/quant-sensitivity.json" "$OUT_ROOT/effects-map.json" \
+  "$OUT_ROOT/layer-effects.csv" "$LOG_ROOT/merge.log" "$LOG_ROOT/effects-map.log" \
   >> "$OUT_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
