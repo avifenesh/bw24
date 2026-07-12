@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 PANEL_LOCK=${PANEL_LOCK:-$HERE/hourish-panel.lock.json}
-PANEL_SHA256=770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1
+SUITE_LOCK="$HERE/suite.lock.json"
 RUNTIME_KIND=${RUNTIME_KIND:-bw24}
 
 : "${ARM:?set ARM}"
@@ -32,20 +32,8 @@ NUM_CONCURRENT=${NUM_CONCURRENT:-1}
 HOURISH_SHARD_TIMEOUT_S=${HOURISH_SHARD_TIMEOUT_S:-43200}
 
 [[ -f "$PANEL_LOCK" ]] || { echo "missing panel lock: $PANEL_LOCK" >&2; exit 2; }
-actual_panel_sha=$(python3 - "$PANEL_LOCK" <<'PY'
-import hashlib, sys
-
-digest = hashlib.sha256()
-with open(sys.argv[1], "rb") as handle:
-    for chunk in iter(lambda: handle.read(1 << 20), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-PY
-)
-[[ "$actual_panel_sha" == "$PANEL_SHA256" ]] || {
-  echo "panel lock hash mismatch: expected $PANEL_SHA256, got $actual_panel_sha" >&2
-  exit 2
-}
+PANEL_SHA256=$(python3 "$HERE/validate_capability_panel.py" "$PANEL_LOCK" \
+  --suite-lock "$SUITE_LOCK" --print-sha)
 [[ "$NUM_CONCURRENT" == 1 ]] || {
   echo "the matched hourish panel requires NUM_CONCURRENT=1" >&2
   exit 2
@@ -55,40 +43,18 @@ PY
   exit 2
 }
 
-mapfile -t TASK_ROWS < <(python3 - "$PANEL_LOCK" <<'PY'
-import json, sys
-
-panel = json.load(open(sys.argv[1]))
-expected = [
-    "humaneval_instruct",
-    "hendrycks_math500",
-    "mmlu_pro_history",
-    "mmlu_pro_other",
-]
-if panel.get("format") != "bw24-hourish-eval-panel-v1":
-    raise SystemExit("unexpected panel format")
-if set(panel.get("task_counts", {})) != set(expected):
-    raise SystemExit("panel task set differs from the precommitted set")
-for task in expected:
-    indices = panel["samples"][task]
-    if len(indices) != panel["task_counts"][task]:
-        raise SystemExit(f"sample count mismatch for {task}")
-    print("\t".join((
-        task,
-        json.dumps({task: indices}, sort_keys=True, separators=(",", ":")),
-        str(panel["max_gen_toks"][task]),
-    )))
-PY
-)
+mapfile -t TASK_ROWS < <(python3 "$HERE/validate_capability_panel.py" "$PANEL_LOCK" \
+  --suite-lock "$SUITE_LOCK" --task-rows)
 
 shard_complete() {
   local task=$1
   local dir="$OUT_ROOT/$ARM/$RUN_ID/shards/$task"
   [[ -d "$dir" ]] || return 1
-  python3 - "$dir" "$task" "$PANEL_SHA256" <<'PY'
+  python3 - "$dir" "$task" "$PANEL_SHA256" "$BASE_URL" <<'PY'
 import json, pathlib, sys
 
-run_dir, task, panel_sha = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+run_dir = pathlib.Path(sys.argv[1])
+task, panel_sha, base_url = sys.argv[2:]
 metadata_path = run_dir / "run-metadata.json"
 if not metadata_path.is_file():
     raise SystemExit(1)
@@ -99,6 +65,7 @@ if not (
     and metadata.get("tee_exit_code") == 0
     and metadata.get("tasks") == [task]
     and metadata.get("panel_lock_sha256") == panel_sha
+    and metadata.get("base_url") == base_url
     and metadata.get("samples")
     and list(metadata["samples"]) == [task]
     and list(run_dir.glob("**/results_*.json"))

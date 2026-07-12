@@ -3,11 +3,23 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
+PANEL_LOCK=${PANEL_LOCK:-$HERE/hourish-panel.lock.json}
 : "${1:?usage: score_hourish_code_container.sh RUN_DIR}"
 [[ -d "$1" ]] || { echo "run directory does not exist: $1" >&2; exit 2; }
 (( BASH_VERSINFO[0] >= 4 )) || { echo "Bash 4 or newer is required" >&2; exit 2; }
 RUN_DIR=$(cd "$1" && pwd -P)
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
+[[ -f "$PANEL_LOCK" ]] || { echo "panel lock does not exist: $PANEL_LOCK" >&2; exit 2; }
+
+PANEL_SHA256=$(python3 "$HERE/validate_capability_panel.py" "$PANEL_LOCK" --print-sha)
+EXPECTED_COUNT=$(python3 "$HERE/validate_capability_panel.py" "$PANEL_LOCK" \
+  --task-count humaneval_instruct)
+COPIED_PANEL="$RUN_DIR/shards/humaneval_instruct/panel.lock.json"
+[[ -f "$COPIED_PANEL" ]] || { echo "missing copied HumanEval panel lock" >&2; exit 2; }
+[[ "$(python3 "$HERE/validate_capability_panel.py" "$COPIED_PANEL" --print-sha)" == "$PANEL_SHA256" ]] || {
+  echo "copied HumanEval panel lock differs from scoring lock" >&2
+  exit 2
+}
 
 mapfile -t human < <(find "$RUN_DIR/shards/humaneval_instruct" -name 'samples_humaneval_instruct_*.jsonl' -type f)
 [[ ${#human[@]} == 1 ]] || {
@@ -22,7 +34,8 @@ RECEIPT="$RUN_DIR/code-score.receipt.json"
   exit 3
 }
 
-tool_sha=$(python3 - "$HERE/score_hourish_code.py" "$HERE/Dockerfile.code-score" <<'PY'
+tool_sha=$(python3 - "$HERE/score_hourish_code.py" "$HERE/Dockerfile.code-score" \
+  "$HERE/score_hourish_code_container.sh" "$HERE/validate_capability_panel.py" <<'PY'
 import hashlib, sys
 
 outer = hashlib.sha256()
@@ -51,26 +64,28 @@ docker run --rm \
   --pids-limit 32 \
   --memory 768m \
   --cpus 1 \
+  --cpu-shares 2 \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --mount "type=bind,src=$RUN_DIR,dst=/inputs,readonly" \
   "$image" \
   "/inputs/${human[0]#"$RUN_DIR/"}" > "$tmp"
 
-python3 - "$tmp" <<'PY'
+python3 - "$tmp" "$EXPECTED_COUNT" <<'PY'
 import json, sys
 
 report = json.load(open(sys.argv[1]))
+expected = int(sys.argv[2])
 if report.get("format") != "bw24-hourish-code-score-v1":
     raise SystemExit("wrong code-score format")
-if report.get("total") != 14:
-    raise SystemExit(f"expected 14 code samples, got {report.get('total')}")
-if report.get("by_task", {}).get("humaneval_instruct", {}).get("total") != 14:
-    raise SystemExit("expected fourteen HumanEval samples")
+if report.get("total") != expected:
+    raise SystemExit(f"expected {expected} code samples, got {report.get('total')}")
+if report.get("by_task", {}).get("humaneval_instruct", {}).get("total") != expected:
+    raise SystemExit(f"expected {expected} HumanEval samples")
 PY
 mv "$tmp" "$OUTPUT"
 trap - EXIT
 
-export RUN_DIR OUTPUT RECEIPT image image_id tool_sha
+export RUN_DIR OUTPUT RECEIPT image image_id tool_sha PANEL_SHA256 EXPECTED_COUNT
 python3 - <<'PY'
 import hashlib, json, os, pathlib
 
@@ -89,6 +104,8 @@ receipt = {
     "image": os.environ["image"],
     "image_id": os.environ["image_id"],
     "tool_sha256": os.environ["tool_sha"],
+    "panel_lock_sha256": os.environ["PANEL_SHA256"],
+    "expected_sample_count": int(os.environ["EXPECTED_COUNT"]),
     "sandbox": {
         "network": "none",
         "read_only_root": True,
@@ -97,6 +114,7 @@ receipt = {
         "pids_limit": 32,
         "memory_bytes": 768 * 1024 * 1024,
         "cpus": 1,
+        "cpu_shares": 2,
     },
 }
 path = pathlib.Path(os.environ["RECEIPT"])
