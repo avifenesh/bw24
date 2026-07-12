@@ -89,7 +89,7 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| 31B dense plain, short | 40.3 | 40.25 | 1.00x (campaign live) |
+| 31B dense plain, short | 40.3 | 40.25 | 1.00x — parity, NOT done (bar is above) |
 | 31B dense plain, 1.7k | 36.9 | 38.3 | 0.96x |
 | 31B MTP spec, short (K=7 + FR trim) | 129.3 | 112.1 | **1.15x** |
 | 31B MTP spec, 1.7k (K=6 + FR trim) | 76.0 | 85.7 | 0.89x |
@@ -109,7 +109,7 @@ pairs, N=2 each side.
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma 31B depth cells (plain 0.96x, spec 0.87x) and E4B are the open tuning front; 26B is done and 31B short spec is above (1.09x).
+- Gemma open cells: 31B plain (1.00x short — parity is not the bar — and 0.96x at 1.7k), 31B spec 1.7k (0.89x), E4B plain (0.86x). Done/above: 26B every cell; 31B spec short 1.15x.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
 
 ## What's inside
