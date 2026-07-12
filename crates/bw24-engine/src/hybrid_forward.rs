@@ -3455,42 +3455,44 @@ impl HybridModel {
     /// and append t rows; KV-shared layers are Q-only over the target layer's cache (which
     /// already holds this forward's rows — the target runs earlier in the stack).
     #[allow(clippy::too_many_arguments)]
-    fn gemma4_e4b_attn(&self, e: &Engine, il: usize, h: &CudaSlice<f32>,
+    fn gemma4_e4b_attn(&self, e: &Engine, il: usize,
+                       hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_e4b_geom(il);
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
         let Mixer::Full(fa) = &self.layers[il].mixer else { unreachable!() };
-        let n_embd = self.cfg.n_embd as usize;
-        let _ = n_embd;
+        // pre-quantized layer input (E4B fusion port, 2026-07-12): ONE norm+quant feeds
+        // wq/wk/wv via matmul_pre — the first-light path quantized the same h three times
+        // (the profile's 342 quantize_q8_1/token; glue = 26% of the 6.1ms token).
+        let h0 = e.zeros(0)?;
+        let h = &h0;
 
-        let mut q = {
-            let q0 = e.matmul(&fa.wq, h, t)?;
-            let mut q = e.uninit(t * nh * hd)?;
-            // q_norm (per-head rms) — the qkv fused norm needs k/v operands; single-tensor
-            // norm here (rms over hd rows).
-            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
-            q
-        };
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("e4b global rope needs rope_freqs.weight"))
         };
         let share = self.gemma4_e4b_kv_target(il);
         // Own-KV arms keep the f32 (k, v) alive for the prime fa arm below.
         let mut kv_f32: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
+        let mut q;
         if let Some(_tgt) = share {
+            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+            q = e.uninit(t * nh * hd)?;
+            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
             // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
             let mut kdummy = e.uninit(t * hd)?;
             e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
         } else {
-            let k0 = e.matmul(&fa.wk, h, t)?;
-            let v0 = e.matmul(&fa.wv, h, t)?;   // E4B: real v everywhere kv exists (K != V)
+            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+            let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+            let v0 = e.matmul_pre(&fa.wv, hq, hdq, h, t)?;   // E4B: real v (K != V)
+            q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
-            e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
-            // R7: V = weightless rms (ones), never roped.
-            e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
+            // fused q/k/v norms (the 26B kernel; R7: V = ones-rms, never roped).
+            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
             e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
             let kvl = cache.kv[il].as_mut().unwrap();
             // class flag must match the cache dims (the g-threading sweep hardcoded `false`
@@ -3572,11 +3574,19 @@ impl HybridModel {
         let aux_e4b = self.gemma4_aux.as_ref().unwrap().e4b.as_ref().unwrap();
         let n_epl = aux_e4b.n_epl;
 
+        // cross-layer fusion (2026-07-12 port of the 26B/31B trunk structure): each layer's
+        // closing add_scale also EMITS the next layer's attn-normed input pre-quantized
+        // q8_1 (add_scale_rms_norm_q8_1); the LAST layer emits through output_norm so the
+        // head rides matmul_pre too. First layer's pair comes from a standalone fused
+        // norm+quant.
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         for il in 0..n_layer {
             let layer = &self.layers[il];
-            let mut h = e.uninit(t * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-            let o = self.gemma4_e4b_attn(e, il, &h, pos_d, t, cache)?;
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
+            };
+            let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
@@ -3594,14 +3604,23 @@ impl HybridModel {
             let y = e.matmul(&e4b.proj, &act, t)?;
             let mut yn = e.uninit(t * n_embd)?;
             e.rms_norm(&y, e4b.post_norm.float_data(), &mut yn, n_embd, t, eps)?;
-            // (resid + tail) * layer_output_scale — llama order (add, then scalar mul).
+            // (resid + tail) * layer_output_scale — llama order — FUSED with the next
+            // layer's attn norm + quantize (last layer: with output_norm for the head).
+            let next_norm = if il + 1 < n_layer {
+                self.layers[il + 1].attn_norm.float_data()
+            } else {
+                self.output_norm.float_data()
+            };
             let mut xn = e.uninit(t * n_embd)?;
-            e.add_scale(&yn, &resid, bits.layer_scale, &mut xn, t * n_embd)?;
+            let pair = e.add_scale_rms_norm_q8_1(&yn, &resid, bits.layer_scale, next_norm,
+                                                 &mut xn, n_embd, t, eps)?;
+            h_carry = Some(pair);
             x = xn;
         }
-        let mut hn = e.uninit(t * n_embd)?;
-        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let mut ld = e.matmul(&self.output, &hn, t)?;
+        // the head consumes the last layer's fused (output_norm) emit.
+        let (oq, odq) = h_carry.take().unwrap();
+        let h0 = e.zeros(0)?;
+        let mut ld = e.matmul_pre(&self.output, &oq, &odq, &h0, t)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, t * self.output.out_features())?;
         Ok((ld, x))
