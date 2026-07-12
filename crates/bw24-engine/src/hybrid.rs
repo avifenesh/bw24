@@ -437,12 +437,22 @@ impl MtpHead {
                     "d2t contains token id >= model n_vocab {n_vocab}");
         }
         let eh_proj = load_t(e, &src, &p("nextn.eh_proj.weight"))?;
+        // defensive load gates (review feedback): a malformed student gguf fails HERE with a
+        // named assert, not later as garbage drafts. eh_proj consumes concat(e_norm, h_norm).
+        assert_eq!(eh_proj.in_features(), 2 * main_cfg.n_embd as usize,
+                   "eh_proj in dim != 2*n_embd");
         let geom = if student {
             let out_up = load_t(e, &src, &p("nextn.out_up.weight"))?;
+            let d_inner = eh_proj.out_features();
             assert_eq!(out_up.out_features(), main_cfg.n_embd as usize,
                        "out_up out dim != n_embd");
+            assert_eq!(out_up.in_features(), d_inner,
+                       "out_up in dim != eh_proj out dim (d_inner)");
+            assert!(dcfg.n_head >= 1 && dcfg.n_head_kv >= 1
+                        && dcfg.n_head % dcfg.n_head_kv == 0,
+                    "student head counts malformed ({}/{})", dcfg.n_head, dcfg.n_head_kv);
             Some(DraftGeom {
-                d_inner: eh_proj.out_features(),
+                d_inner,
                 n_head: dcfg.n_head as usize,
                 n_head_kv: dcfg.n_head_kv as usize,
                 out_up,
