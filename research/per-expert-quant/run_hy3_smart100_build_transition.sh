@@ -58,7 +58,7 @@ for index in "${!arms[@]}"; do
     --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$TARGET_BYTES" \
     --min-survivors-per-layer 96 --retention-weight "$retention_weight" \
     --confidence-weight "$confidence_weight" --layer-weight "$layer_weight" \
-    --time-limit-seconds 3600 --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
+    --time-limit-seconds 900 --mip-rel-gap 1e-4 --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
 done
 
 "$PY" - "$PLAN_ROOT" "$TARGET_BYTES" "${arms[@]}" <<'PY'

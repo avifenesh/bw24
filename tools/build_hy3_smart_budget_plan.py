@@ -217,10 +217,22 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         integrality=np.ones(n_variables, dtype=np.uint8),
         bounds=Bounds(lb, ub),
         constraints=LinearConstraint(matrix, np.asarray(lower), np.asarray(upper)),
-        options={"mip_rel_gap": 0.0, "time_limit": float(args.time_limit_seconds)},
+        options={
+            "mip_rel_gap": float(args.mip_rel_gap),
+            "time_limit": float(args.time_limit_seconds),
+        },
     )
-    if not result.success or result.x is None:
+    if result.x is None or int(result.status) not in (0, 1):
         raise RuntimeError(f"smart budget solver failed: {result.status} {result.message}")
+    rounded = np.rint(result.x)
+    if float(np.max(np.abs(result.x - rounded), initial=0.0)) > 1e-6:
+        raise RuntimeError("smart budget solver returned a non-integral incumbent")
+    activity = matrix @ rounded
+    if np.any(activity < np.asarray(lower) - 1e-5) or np.any(
+        activity > np.asarray(upper) + 1e-5
+    ):
+        raise RuntimeError("smart budget solver incumbent violates frozen constraints")
+    result.x = rounded
     pruned = {key for key in experts if result.x[prune_index[key]] >= 0.5}
     assignments = []
     counts = {qtype: 0 for qtype in QTYPES}
@@ -282,6 +294,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "solver_status": int(result.status),
             "solver_message": str(result.message),
             "mip_gap": float(getattr(result, "mip_gap", 0.0)),
+            "mip_gap_target": args.mip_rel_gap,
+            "optimal": int(result.status) == 0,
         },
         "calibration": {
             "retention_scores": {"path": str(args.retention_scores.resolve()), "sha256": sha256(args.retention_scores)},
@@ -363,6 +377,7 @@ def self_test() -> None:
             joint_receipts=None, target_logical_bytes=100 + 6 * 3 * q2_projection,
             min_survivors_per_layer=1, retention_weight=1.0, confidence_weight=1.0,
             layer_weight=0.0, time_limit_seconds=30,
+            mip_rel_gap=1e-4,
         )
         plan = build_plan(args)
         assert plan["policy"]["result_logical_bytes"] <= args.target_logical_bytes
@@ -388,6 +403,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confidence-weight", type=float, default=1.0)
     parser.add_argument("--layer-weight", type=float, default=1.0)
     parser.add_argument("--time-limit-seconds", type=int, default=1800)
+    parser.add_argument("--mip-rel-gap", type=float, default=1e-4)
     parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args()
 
@@ -399,6 +415,8 @@ def main() -> None:
     for name in ("retention_weight", "confidence_weight", "layer_weight"):
         if getattr(args, name) < 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be non-negative")
+    if not 0 <= args.mip_rel_gap < 1:
+        raise SystemExit("--mip-rel-gap must be in [0, 1)")
     plan = build_plan(args)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
