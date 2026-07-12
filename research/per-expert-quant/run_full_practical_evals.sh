@@ -8,6 +8,7 @@ HARBOR_BIN=${HARBOR_BIN:-$(command -v harbor || true)}
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1}
 OUT_ROOT=${OUT_ROOT:-$HERE/results/practical-full}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RESUME_ATTEMPTS=${RESUME_ATTEMPTS:-3}
 
 : "${ARM:?set the exact served arm}"
 : "${PANEL:?set PANEL to swe or terminal}"
@@ -29,6 +30,7 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ "$BW24_SPILL_IO" == worker && "$BW24_SPILL_STATS" == 1 && "$BW24_SERVE_SPEC" == 0 ]] \
   || die "full practical protocol differs"
 [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
+[[ "$RESUME_ATTEMPTS" =~ ^[0-9]+$ ]] || die "invalid resume attempt count"
 docker info >/dev/null 2>&1 || die "Docker daemon unavailable"
 [[ "$($HARBOR_BIN --version)" == 0.18.0 ]] || die "Harbor version differs"
 python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" >/dev/null
@@ -141,13 +143,26 @@ statuses=("${PIPESTATUS[@]}")
 set -e
 HARBOR_EXIT=${statuses[0]}
 TEE_EXIT=${statuses[1]}
+PROCESS_RESUMES=0
+JOB_PATH="$RUN_DIR/jobs/$RUN_ID"
+while (( HARBOR_EXIT != 0 && PROCESS_RESUMES < RESUME_ATTEMPTS )) \
+  && [[ -f "$JOB_PATH/config.json" ]]; do
+  PROCESS_RESUMES=$((PROCESS_RESUMES + 1))
+  echo "process-level Harbor resume $PROCESS_RESUMES/$RESUME_ATTEMPTS" | tee -a "$RUN_DIR/harbor.log"
+  set +e
+  "$HARBOR_BIN" job resume --job-path "$JOB_PATH" 2>&1 | tee -a "$RUN_DIR/harbor.log"
+  resumed=("${PIPESTATUS[@]}")
+  set -e
+  HARBOR_EXIT=${resumed[0]}
+  (( resumed[1] == 0 )) || TEE_EXIT=${resumed[1]}
+done
 COMPLETED_UTC=$(date -u +%FT%TZ)
 COMPLETED_NS=$(date +%s%N)
 ELAPSED_SECONDS=$(python3 -c 'import sys; print((int(sys.argv[2])-int(sys.argv[1]))/1e9)' \
   "$STARTED_NS" "$COMPLETED_NS")
 cp "$SERVER_LOG" "$RUN_DIR/server.log"
 docker image ls --no-trunc --digests --format '{{json .}}' | sort > "$RUN_DIR/container-images.jsonl"
-export HARBOR_EXIT TEE_EXIT COMPLETED_UTC ELAPSED_SECONDS
+export HARBOR_EXIT TEE_EXIT PROCESS_RESUMES COMPLETED_UTC ELAPSED_SECONDS
 python3 - "$RUN_DIR" <<'PY'
 import hashlib, json, math, os, pathlib, re, sys
 
@@ -218,6 +233,7 @@ metadata.update({
     "elapsed_seconds": float(os.environ["ELAPSED_SECONDS"]),
     "harbor_exit_code": int(os.environ["HARBOR_EXIT"]), "tee_exit_code": int(os.environ["TEE_EXIT"]),
     "completed_successfully": int(os.environ["HARBOR_EXIT"]) == 0 and int(os.environ["TEE_EXIT"]) == 0,
+    "process_resume_attempts": int(os.environ["PROCESS_RESUMES"]),
     "server_log_sha256": sha(root / "server.log"),
     "resolved_harbor_config_sha256": sha(root / "resolved-harbor-config.json"),
     "container_images_sha256": sha(root / "container-images.jsonl"),
