@@ -559,6 +559,168 @@ impl HybridModel {
                     && cache.kv[self.gemma4_draft_kv_target(true)].as_ref()
                         .is_some_and(|kv| kv.len > win))
             };
+            // ---- ROUND-GRAPH ARM ---- (BW24_GEMMA_ROUND_GRAPH=1): the WHOLE round —
+            // draft chain + stream verify + device accept/seed/rollback/commit + the
+            // device adaptive-depth update — captured ONCE per (k_cap, rung, over_win)
+            // regime and replayed as ONE graph launch per round (the llama round-cost
+            // mechanism: ~600 per-round enqueues collapse to 1). The round is SELF-FEEDING
+            // (pos_ctr/pend/brk/g_seed all advance in-graph), so the capture warmups are
+            // simply two SERVED rounds — their tokens land in the ring and drain normally
+            // (no snapshot/rollback needed, unlike the E4B token door).
+            // Adaptive K rides brk[0] via spec_adapt_k: drafts always run k_cap deep (the
+            // drafter is cheap) but the accept walk depth follows the host policy exactly.
+            let round_graph_on = std::env::var("BW24_GEMMA_ROUND_GRAPH").as_deref() == Ok("1");
+            if round_graph_on && burst_m == 0 && dc_bucket.is_some() && pmin == 0.0
+                && g4_shared == 0 && !self.is_gemma4_e4b()
+                && (cache.pos + 2 * (k_cap + 1) + k_cap + 4 < win_main || cache.pos > win_main)
+                && (cache.pos + 2 * (k_cap + 1) + k_cap + 4 < crate::fa512_min_tkv()
+                    || cache.pos + 1 >= crate::fa512_min_tkv())
+                && e.fa_rows_eligible(cache.pos, 256)
+                && cache.pos + 2 * (k_cap + 1) + k_cap + 2 <= cache.max_ctx
+            {
+                if burst_state.is_none() {
+                    // ring sized for the capture warmups (2 rounds) + the live round.
+                    let bufs = crate::round_stream::StreamBufs::new(e, k_cap, 3)?;
+                    let fill_dummy = e.zeros(n_embd)?;
+                    let ptrs = crate::round_stream::kv_len_ptr_table(e, &cache,
+                                                                     Some(&bufs.pos_ctr))?;
+                    let scr = self.verify_stream_scratch(e, k_cap + 1)?;
+                    burst_state = Some((bufs, fill_dummy, ptrs, scr));
+                }
+                let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(1);
+                // entry: `last` is the pending token (emitted at drain), h is the seed.
+                let (bufs, fill_dummy, ptrs, scr) = burst_state.as_mut().unwrap();
+                let n_rows = cache.kv.len() + 1;
+                e.set_i32_one(&mut bufs.pos_ctr, cache.pos as i32)?;
+                e.u32_set_k(&mut bufs.ring_d, 0, 0)?;
+                e.u32_set_k(&mut bufs.pend_d, last, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, (if adapt { kc } else { k_cap }) as u32, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, 1, 1)?;
+                e.copy_into(&mut g_seed, 0, &h, n_embd)?;
+                // entry pend is emitted host-side (the ring only carries accepted drafts
+                // + bonuses — the burst-arm contract).
+                out.push(last);
+                if eos.contains(&last) { break 'outer; }
+                if out.len() >= max_new { break 'outer; }
+                let key = (usize::MAX - k_cap, dc_bucket.unwrap(), over_win);
+                let mut fresh_rounds = 1usize;   // rounds executed by this iteration
+                // `hint` is the verify stream's ARM-GATING upper bound — it must sit on
+                // the SAME side of every crossover as the live lengths this capture
+                // serves, INCLUDING the arms' own margins (`hint + t < f512` gates the
+                // global scalar arm; `hint + 1 >= win` gates rows_w), or the captured
+                // verify bakes a different kernel class than the eager reference
+                // (107-vs-106 / 4-64 drifts; the regime gate above guarantees the live
+                // side with the same margins).
+                let hint = if cache.pos > win_main {
+                    dc_bucket.unwrap() + k_cap + 2          // over-window: rows_w regime
+                } else if cache.pos + 1 >= crate::fa512_min_tkv() {
+                    win_main - 2                             // above f512, under window
+                } else {
+                    crate::fa512_min_tkv().saturating_sub(k_cap + 5)   // under both
+                };
+                let bufs_ptr: *mut crate::round_stream::StreamBufs = &mut *bufs;
+                let scr_ptr: *mut crate::hybrid_forward::VerifyStreamScratch = &mut *scr;
+                let cache_ptr: *mut Cache = &mut cache;
+                let batch_ptr: *mut CudaSlice<u32> = &mut batch_d;
+                let seed_ptr: *mut CudaSlice<f32> = &mut g_seed;
+                let slots_ptr: *mut Vec<CudaSlice<i32>> = &mut pos_slots;
+                let mut round_body = |e: &Engine| -> Result<(), Box<dyn std::error::Error>> {
+                    // SAFETY: single-threaded round body; the raw pointers alias the outer
+                    // &mut only within this closure (no overlapping borrows).
+                    let (bufs, scr, cache, batch_d, g_seed, pos_slots) = unsafe {
+                        (&mut *bufs_ptr, &mut *scr_ptr, &mut *cache_ptr,
+                         &mut *batch_ptr, &mut *seed_ptr, &mut *slots_ptr) };
+                    e.i32_copy_add(&bufs.pos_ctr, &mut bufs.pos_start_d, 0)?;
+                    e.u32_copy(&bufs.pend_d, batch_d)?;
+                    for (j, slot) in pos_slots.iter_mut().take(k_cap).enumerate() {
+                        e.i32_copy_add(&bufs.pos_ctr, slot, j as i32)?;
+                    }
+                    let mut hc = e.uninit(n_embd)?;
+                    e.copy_into(&mut hc, 0, g_seed, n_embd)?;
+                    for j in 0..k_cap {
+                        let tv = batch_d.slice(j..j + 1);
+                        let (hn, h_next) = self.gemma4_draft_trunk_dev(
+                            e, d, &tv, &hc, &pos_slots[j], cache, dc_bucket)?;
+                        let ld = e.matmul(&d.head, &hn, 1)?;
+                        e.argmax_token_device_col(&ld, 0, d.head.out_features(),
+                                                  batch_d, j + 1)?;
+                        if let Some(map) = &d.d2t_dev {
+                            e.u32_map_k(batch_d, map, j + 1)?;
+                        }
+                        hc = h_next;
+                    }
+                    let (vam_d, vh) = self.gemma4_verify_t_am_stream(
+                        e, batch_d, k_cap + 1, &bufs.pos_ctr, hint, cache, scr)?;
+                    e.spec_accept_greedy_dc(&vam_d, batch_d, &bufs.last_pred_d,
+                                            &bufs.brk_d, &mut bufs.acc_d)?;
+                    if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1")
+                        && std::env::var("BW24_ROUND_GRAPH_CHECK").as_deref() == Ok("1") {
+                        let vhh = e.dtoh(&vh)?;
+                        let nrm = |r: usize| vhh[r * n_embd..(r + 1) * n_embd].iter()
+                            .map(|x| x * x).sum::<f32>().sqrt();
+                        let vamh = e.dtoh_u32(&vam_d)?;
+                        eprintln!("[rg-vh] |row0|={:.3} |row1|={:.3} |row2|={:.3} vam={:?}",
+                                  nrm(0), nrm(1), nrm(2), &vamh[..(k_cap + 1).min(7)]);
+                    }
+                    e.spec_seed_gather(&vh, fill_dummy, &bufs.acc_d, g_seed, 1, n_embd)?;
+                    e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
+                    e.spec_ring_commit(batch_d, &bufs.acc_d, &bufs.brk_d,
+                                       &mut bufs.ring_d, &mut bufs.pend_d)?;
+                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, adapt_floor, k_cap)?;
+                    Ok(())
+                };
+                // BW24_ROUND_GRAPH_CHECK=1: run the body EAGERLY (no capture/replay) —
+                // splits "body semantics wrong" from "replay mechanics wrong".
+                let body_check = std::env::var("BW24_ROUND_GRAPH_CHECK").as_deref() == Ok("1");
+                if body_check {
+                    round_body(e)?;
+                    if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                        let acc = e.dtoh_u32(&bufs.acc_d)?;
+                        let brk = e.dtoh_u32(&bufs.brk_d)?;
+                        let bt = e.dtoh_u32(&batch_d)?;
+                        let tgt = self.gemma4_draft_kv_target(true);
+                        let ld = e.dtoh_i32(&cache.kv[tgt].as_ref().unwrap().len_d)?[0];
+                        let gs = e.dtoh(&g_seed)?;
+                        let gn: f32 = gs.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        eprintln!("[rg-check] pos0={} batch={bt:?} n_acc={} bonus={} brk_next={:?} len_d[L{tgt}]={ld} |g_seed|={gn:.3}",
+                                  cache.pos, acc[0], acc[1], brk);
+                    }
+                } else {
+                    if !draft_graphs.contains_key(&key) {
+                        let g = e.capture_graph_retained(&mut round_body)?;
+                        draft_graphs.insert(key, g);
+                        fresh_rounds += 2;   // the capture warmups were served rounds
+                    }
+                    draft_graphs.get(&key).unwrap().0.launch()?;
+                }
+                // drain: ONE host sync per iteration (warmup rounds included on capture).
+                let toks = bufs.drain_ring(e)?;
+                let posh = e.dtoh_i32(&bufs.pos_ctr)?[0] as usize;
+                if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                    eprintln!("[round-graph] fresh={fresh_rounds} drained={} posh={posh} toks={:?}",
+                              toks.len(), &toks[..toks.len().min(12)]);
+                }
+                drafted += fresh_rounds * k_cap;
+                rounds += fresh_rounds;
+                accepted += toks.len().saturating_sub(fresh_rounds);
+                let mut ended = false;
+                for &tk in &toks[..toks.len() - 1] {
+                    out.push(tk);
+                    if eos.contains(&tk) || out.len() >= max_new { ended = true; break; }
+                }
+                last = *toks.last().unwrap();
+                cache.pos = posh;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len = posh; }
+                // NO allocation between replays: a pool alloc here can land on a baked
+                // transient address and corrupt the next replay (the draft-graph lesson).
+                // g_seed already holds the next seed (in-graph gather); copy INTO the
+                // existing h buffer for the (possible) eager-arm handoff.
+                e.copy_into(&mut h, 0, &g_seed, n_embd)?;
+                kc = k_cap;   // device brk owns the walk depth; host kc only seeds entry
+                if ended { break 'outer; }
+                continue 'outer;
+            }
             // ---- BURST ARM ---- (gate computed at the loop top; needs dc arms too)
             if burst_ok && dc_bucket.is_some() {
                 if burst_state.is_none() {
@@ -725,18 +887,27 @@ impl HybridModel {
                 let mut ctr = e.htod_i32(&[pos0 as i32])?;
                 e.set_i32_one(&mut ctr, pos0 as i32)?;
                 let mut scr0 = self.verify_stream_scratch(e, kr + 1)?;
-                let (vs, _vhs) = self.gemma4_verify_t_am_stream(e, &batch_d, kr + 1, &ctr,
-                                                                pos0 + kr + 3, &mut cache,
-                                                                &mut scr0)?;
+                let (vs, vhs) = self.gemma4_verify_t_am_stream(e, &batch_d, kr + 1, &ctr,
+                                                               pos0 + kr + 3, &mut cache,
+                                                               &mut scr0)?;
                 let ss = kvsum(e, &cache)?;
-                Some((e.dtoh_u32(&vs)?, ss))
+                Some((e.dtoh_u32(&vs)?, ss, e.dtoh(&vhs)?))
             } else { None };
             let (vam_d, vh) = if self.is_gemma4_e4b() {
                 self.gemma4_e4b_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
             } else {
                 self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
             };
-            if let Some((vs, ss)) = vam_s {
+            if let Some((vs, ss, vhs)) = vam_s {
+                let vhe = e.dtoh(&vh)?;
+                for r in 0..kr + 1 {
+                    let md = vhs[r * n_embd..(r + 1) * n_embd].iter()
+                        .zip(&vhe[r * n_embd..(r + 1) * n_embd])
+                        .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    if md > 1e-3 {
+                        eprintln!("[vcheck-vh] round={rounds} row={r} maxdiff={md:.3e}");
+                    }
+                }
                 let se = kvsum(e, &cache)?;
                 for (il, (a, b)) in ss.iter().zip(&se).enumerate() {
                     if a != b {
@@ -766,7 +937,9 @@ impl HybridModel {
             }
             if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
                 let l0 = cache.kv.iter().flatten().next().map(|kv| kv.len).unwrap_or(0);
-                eprintln!("[round {rounds}] pos0={pos0} post_pos={} kv0_len={l0} last={last} dtoks={dtoks:?} vam={vam:?} m={m}",
+                let hh = e.dtoh(&h)?;
+                let hn: f32 = hh.iter().map(|x| x * x).sum::<f32>().sqrt();
+                eprintln!("[round {rounds}] pos0={pos0} post_pos={} kv0_len={l0} last={last} dtoks={dtoks:?} vam={vam:?} m={m} |h_in|={hn:.3}",
                           cache.pos);
             }
             accepted += m;

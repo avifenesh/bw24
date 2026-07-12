@@ -3426,8 +3426,13 @@ impl HybridModel {
             // for every row.
             // NO .max(512): fa_decode_dc gates its hd512 dpl16-vs-scalar pick on bucket_max
             // (mirroring eager's fa512 floor) — forcing 512 here flipped the arm to dpl16
-            // while eager ran scalar (il=5 KV drift, the burst's 4/128).
-            let bucket = (hint + t + 2).next_power_of_two();
+            // while eager ran scalar (il=5 KV drift, the burst's 4/128). SAME LAW capped
+            // from above (2026-07-13): a regime-pinned hint near the floor (round-graph
+            // captures use f512-1) pow2-rounds PAST it — clamp under the floor, or the arm
+            // re-flips to dpl16 (the round-graph 4/64). The scalar unified self-splits, so
+            // any bucket >= the live length is exact.
+            let bucket = (hint + t + 2).next_power_of_two()
+                .min(crate::fa512_min_tkv().saturating_sub(1));
             let qv = e.view(&q, t * nh * hd);
             for i in 0..t {
                 let q_row = qv.slice(i * nh * hd..(i + 1) * nh * hd);

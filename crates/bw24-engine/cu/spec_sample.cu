@@ -543,6 +543,21 @@ extern "C" __global__ void i32_copy_add(const int* __restrict__ src, int* __rest
                                         int delta) {
     if (threadIdx.x == 0) dst[0] = src[0] + delta;
 }
+
+// ROUND-GRAPH adaptive draft depth, device form: next round's accept-walk depth follows the
+// host adaptive policy (k_next = n_acc + 1, clamped to [floor, cap]) but lives in brk[0] so a
+// captured round replays with zero host writes. POLICY-IDENTICAL to the host `kc` update: the
+// walk depth caps acceptance exactly like drafting fewer tokens (the extra drafted tokens can
+// never be accepted past brk[0]).
+extern "C" __global__ void spec_adapt_k(const unsigned int* __restrict__ acc,
+                                        unsigned int* __restrict__ brk,
+                                        int floor_, int cap) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int k = (int)acc[0] + 1;
+    if (k < floor_) k = floor_;
+    if (k > cap) k = cap;
+    brk[0] = (unsigned int)k;
+}
 // u32[1] copy (g_tok <- pending bonus).
 extern "C" __global__ void u32_copy(const unsigned int* __restrict__ src,
                                     unsigned int* __restrict__ dst) {
