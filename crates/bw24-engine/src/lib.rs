@@ -16,6 +16,7 @@ pub mod decode;
 pub mod spec;
 pub mod gemma_spec;
 pub mod round_stream;
+pub mod graph_update;
 pub mod eagle;
 pub mod sampler;
 
@@ -198,7 +199,7 @@ pub(crate) fn rms_block() -> u32 {
         .unwrap_or_else(|| RMS_BLOCK_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
-fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
+pub(crate) fn fa_split_keys(t_kv: usize, n_head_kv: usize) -> usize {
     static S: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     if let Some(forced) = *S.get_or_init(|| {
         std::env::var("BW24_FA_SPLIT").ok().and_then(|v| v.parse().ok())
@@ -5845,16 +5846,40 @@ impl Engine {
     /// and the capture is kept alive in the returned keeper — hold it as long as the graph
     /// replays (transients returning to the pool get reused by unrelated work and corrupt
     /// replays; the draft-graph root cause). Model-generic, next capture reuses it.
-    pub fn capture_graph_retained<F>(&self, step: F)
+    pub fn capture_graph_retained<F>(&self, mut step: F)
         -> Result<(cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>), Box<dyn std::error::Error>>
         where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
     {
+        use cudarc::driver::sys::{CUstreamCaptureMode, CUgraphInstantiate_flags};
+        // KEEP scope = WARMUPS ONLY (2026-07-13): keep_if_capturing retains via
+        // CudaSlice::clone, which is a device ALLOC + D2D COPY on the stream — clones made
+        // while the capture region is open become dead copy NODES replayed every launch
+        // (E4B: 1440 copies = 0.74ms/token, the whole graph-vs-eager regression). The
+        // warmup runs allocate the same transient sequence at the same pool addresses, so
+        // retaining the warmup clones preserves the draft-graph fix without polluting the
+        // captured graph.
         self.capture_keep.lock().unwrap().clear();
-        self.capture_keep_on.store(true, std::sync::atomic::Ordering::Relaxed);
-        let res = self.capture_graph(step);
+        let was_tracking = self.gpu.ctx.is_event_tracking();
+        if was_tracking { unsafe { self.gpu.ctx.disable_event_tracking(); } }
+        let mut run = || -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>> {
+            self.capture_keep_on.store(true, std::sync::atomic::Ordering::Relaxed);
+            let w = (|| { step(self)?; step(self) })();
+            self.capture_keep_on.store(false, std::sync::atomic::Ordering::Relaxed);
+            w?;
+            self.gpu.stream.synchronize()?;
+            self.gpu.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
+            let r = step(self);
+            let g = self.gpu.stream.end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+            r?;
+            let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
+            graph.upload()?;
+            Ok(graph)
+        };
+        let result = run();
         self.capture_keep_on.store(false, std::sync::atomic::Ordering::Relaxed);
+        if was_tracking { unsafe { self.gpu.ctx.enable_event_tracking(); } }
         let keeper = std::mem::take(&mut *self.capture_keep.lock().unwrap());
-        Ok((res?, keeper))
+        Ok((result?, keeper))
     }
 
     pub fn capture_graph<F>(&self, mut step: F) -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>>

@@ -51,6 +51,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // BW24_E4B_GRAPH_GATE=N: E4B graph-door stream gate — generate() door OFF then ON on
+    // fresh caches; streams must be identical (the warmup-side-effect + exec-update oracle).
+    if let Ok(nn) = std::env::var("BW24_E4B_GRAPH_GATE") {
+        let n: usize = nn.parse().unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        unsafe { std::env::set_var("BW24_E4B_GRAPH", "0"); }
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let a = model.generate(&e, &toks, n)?;
+        e.stream().synchronize()?;
+        let dt_a = t0.elapsed().as_secs_f64();
+        unsafe { std::env::set_var("BW24_E4B_GRAPH", "1"); }
+        let t1 = std::time::Instant::now();
+        let b = model.generate(&e, &toks, n)?;
+        e.stream().synchronize()?;
+        let dt_b = t1.elapsed().as_secs_f64();
+        let same = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        println!("E4B-GRAPH-GATE: eager-dc {:.2} tok/s | graph {:.2} tok/s | stream {}/{} {}",
+                 a.len() as f64 / dt_a, b.len() as f64 / dt_b, same, a.len().min(b.len()),
+                 if same == a.len().min(b.len()) { "IDENTICAL" } else { "MISMATCH" });
+        if same < a.len().min(b.len()) {
+            println!("dc   : {:?}", &a[..a.len().min(same + 6)]);
+            println!("graph: {:?}", &b[..b.len().min(same + 6)]);
+        }
+        return Ok(());
+    }
     // BW24_DC_GATE=N: device-counter decode gate — the dc chain's N-token greedy stream must
     // be IDENTICAL to the eager decode_step chain; prints both throughputs.
     if let Ok(nn) = std::env::var("BW24_DC_GATE") {

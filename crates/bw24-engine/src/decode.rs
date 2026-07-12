@@ -858,37 +858,23 @@ impl HybridModel {
             }
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
-            // E4B GRAPH SERVING (BW24_E4B_GRAPH=1, PARKED — measured FLAT 173.5 vs 173.3
-            // in a validity-gated window, 2026-07-12: the dc-eager loop already hides launch
-            // gaps by enqueue-ahead, the 26B graph-serving lesson repeated; the remaining E4B
-            // gap is glue kernel EXECUTION time, not gaps). Stream-identical 64/64 — kept as
-            // the door for a future fewer-kernels regime.
+            // E4B GRAPH-EXEC-UPDATE SERVING: one capture at bucket=win, per-token fa
+            // geometry retune, replay. The 2026-07-12 park ("flat 173.5, stream 64/64") did
+            // NOT reproduce — the capture warmups are real self-feeding steps and the old
+            // door dropped their 2 tokens (E4B-GRAPH-GATE 3/64). Snapshot/rollback (the 26B
+            // graph-loop pattern) fixes the stream; the exec-update kills the bucket-split
+            // tax (42 fa launches at 64 splits vs eager's ~ceil(t_kv/8)).
+            // DEFAULT: budget-gated ON (2026-07-13 valid-window A/B: steady-state replay
+            // beats eager but the one-time capture ~30ms crosses over near 200 tokens —
+            // 128tok −1.3%, 400tok +0.9%). BW24_E4B_GRAPH=1 forces, =0 kills.
             let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
-            if e4b && cache.pos + max_new + 2 < win
-                && std::env::var("BW24_E4B_GRAPH").as_deref() == Ok("1") {
-                let mut graph: Option<(usize, cudarc::driver::CudaGraph,
-                                       Vec<Box<dyn std::any::Any + Send>>)> = None;
-                for _ in 0..max_new {
-                    out.push(e.dtoh_u32(&token_d)?[0]);
-                    // ONE capture for the whole under-window generation: fa_decode_dc is
-                    // bit-correct for any len <= bucket (empty splits exit), so the rung is
-                    // the window itself — the pow2 laddering forced 5 recaptures per 128
-                    // tokens and the capture cost ate the replay gain (the llama profile
-                    // shows THEIR eager token at 7.7ms vs 4.6 graphed: graphs are the win).
-                    let rung = win;
-                    if graph.as_ref().map(|g| g.0) != Some(rung) {
-                        let (g, keep) = e.capture_graph_retained(|e| {
-                            self.gemma4_e4b_decode_step_dcg(e, &mut token_d, &mut pos_d,
-                                                            embd_gpu, qt, rb, &mut cache,
-                                                            n_vocab, rung)
-                        })?;
-                        graph = Some((rung, g, keep));
-                        // capture DOESN'T execute: run the step for real once via replay.
-                    }
-                    graph.as_ref().unwrap().1.launch()?;
-                    cache.pos += 1;
-                    for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
-                }
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => max_new >= 256,
+            };
+            if e4b && cache.pos + max_new + 2 < win && e4b_graph {
+                self.gemma4_e4b_graph_exec_loop(
+                    e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,
+                    max_new, usize::MAX, |tok| { out.push(tok); None })?;
                 return Ok(out);
             }
             for _ in 0..max_new {
@@ -909,6 +895,106 @@ impl HybridModel {
             last_logits = self.decode_step(e, next, &mut cache)?;
         }
         Ok(out)
+    }
+
+    /// E4B whole-token GRAPH-EXEC-UPDATE serving loop (shared by `generate` and
+    /// `generate_with`): capture ONE self-feeding dcg step at bucket=`win`, then per token
+    /// retune the fa nodes' split geometry to the live eager counts
+    /// (`graph_update::fa_apply`) before replaying the instantiated exec.
+    ///
+    /// The capture's two warmup runs are REAL executions (self-feeding: they consume two
+    /// tokens and advance KV/counters) — snapshot/rollback around the capture (the 26B
+    /// graph-loop pattern) restores device+host state, or the stream drops those tokens
+    /// (E4B-GRAPH-GATE 3/64 break, 2026-07-12). `emit` sees each token BEFORE its
+    /// successor's replay; returning `Some(reason)` stops the loop. Caller owns the
+    /// under-window gate (`cache.pos + budget + 2 < win`).
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_e4b_graph_exec_loop(
+        &self, e: &Engine, cache: &mut Cache, token_d: &mut CudaSlice<u32>,
+        pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>, qt: i32, rb: usize,
+        n_vocab: usize, win: usize, budget: usize, ctx_cap: usize,
+        mut emit: impl FnMut(u32) -> Option<StopReason>,
+    ) -> Result<StopReason, Box<dyn std::error::Error>> {
+        // BISECT ARM (BW24_E4B_DCG_EAGER=1): run the dcg step EAGERLY per token at the
+        // exact live bucket — no capture/replay/exec-update. Separates "the dc-bucket path
+        // diverges from dc-eager numerically" from "the replay/update mechanism is wrong".
+        if let Ok(m) = std::env::var("BW24_E4B_DCG_EAGER") {
+            // =1: exact live bucket per token; =2: the capture's fixed win bucket.
+            let mut reason = StopReason::MaxNew;
+            for _ in 0..budget {
+                let tok = e.dtoh_u32_one(token_d)?;
+                if let Some(r) = emit(tok) { reason = r; break; }
+                if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+                let b = if m == "2" { win } else { cache.pos + 1 };
+                self.gemma4_e4b_decode_step_dcg(e, token_d, pos_d, embd_gpu, qt, rb,
+                                                cache, n_vocab, b)?;
+                cache.pos += 1;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+            }
+            return Ok(reason);
+        }
+        // snapshot device+host state (the 2 capture-warmup runs must leave no residue).
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(token_d)?;
+        let (graph, keeper) = e.capture_graph_retained(|e| {
+            self.gemma4_e4b_decode_step_dcg(e, token_d, pos_d, embd_gpu, qt, rb,
+                                            cache, n_vocab, win)
+        })?;
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(token_d, tok_save)?;
+        let mut plan = crate::graph_update::fa_plan(&graph)?;
+        if std::env::var("BW24_GRAPH_NODES_DUMP").as_deref() == Ok("1") {
+            let nodes = crate::graph_update::kernel_nodes(&graph)?;
+            let mut counts: std::collections::BTreeMap<String, (usize, (u32, u32, u32))> =
+                std::collections::BTreeMap::new();
+            for n in &nodes {
+                counts.entry(n.name.clone())
+                    .or_insert((0, (n.params.gridDimX, n.params.gridDimY, n.params.gridDimZ)))
+                    .0 += 1;
+            }
+            eprintln!("[graph-nodes] {} kernel nodes, {} fa update units (bucket={win})",
+                      nodes.len(), plan.len());
+            for (name, (c, grid)) in &counts {
+                eprintln!("[graph-nodes]   {c:4}x {name} grid={grid:?}");
+            }
+        }
+        let mut reason = StopReason::MaxNew;
+        let timing = std::env::var("BW24_E4B_GRAPH_TIMING").as_deref() == Ok("1");
+        let (mut t_dtoh, mut t_apply, mut t_launch) =
+            (std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO);
+        for _ in 0..budget {
+            let t0 = std::time::Instant::now();
+            let tok = e.dtoh_u32_one(token_d)?;
+            let t1 = std::time::Instant::now();
+            if let Some(r) = emit(tok) { reason = r; break; }
+            if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+            // live t_kv AFTER this replay's in-graph append = pos + 1.
+            crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
+                                          crate::fa_split_keys)?;
+            let t2 = std::time::Instant::now();
+            graph.launch()?;
+            if timing {
+                let t3 = std::time::Instant::now();
+                t_dtoh += t1 - t0; t_apply += t2 - t1; t_launch += t3 - t2;
+            }
+            cache.pos += 1;
+            for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+        }
+        if timing {
+            eprintln!("[e4b-graph timing] dtoh(sync-wait) {:?} apply {:?} launch {:?}",
+                      t_dtoh, t_apply, t_launch);
+        }
+        drop(keeper);   // capture-retained transients must outlive every replay
+        Ok(reason)
     }
 
     /// The reusable serving generation API (BASE-3). Primes the prompt, then samples up to
@@ -974,6 +1060,25 @@ impl HybridModel {
             let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[first])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            // E4B GRAPH-EXEC-UPDATE serving door (under-window regime) — mirror of the
+            // `generate` door incl the budget-gated default; run-gen/serving measure here.
+            let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => budget >= 256,
+            };
+            if e4b && cache.pos + budget + 2 < win && e4b_graph {
+                let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
+                let reason = self.gemma4_e4b_graph_exec_loop(
+                    e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,
+                    budget, ctx_cap, |tok| {
+                        sampler_cell.accept(tok);
+                        out_cell.push(tok);
+                        if params.eos.contains(&tok) { return Some(StopReason::Eos); }
+                        if !on_token(tok) { return Some(StopReason::Callback); }
+                        None
+                    })?;
+                return Ok(GenOutput { tokens: out, stop_reason: reason });
+            }
             let mut next = first;
             for _ in 0..budget {
                 sampler.accept(next);
