@@ -46,25 +46,34 @@ def validate(
     if pruned != plan_pruned:
         raise ValueError("manifest and embedded plan prune masks differ")
 
-    expected_rows = expected_tokens * len(layers)
-    rows = 0
+    expected_route_rows = expected_tokens * len(layers)
+    trace_rows = 0
+    route_rows = 0
     selected = 0
+    tokens_by_layer = {layer: 0 for layer in layers}
+    cycle_tokens: int | None = None
     selected_pruned: list[dict[str, int]] = []
     with trace_path.open() as handle:
         for line_no, line in enumerate(handle, 1):
             if not line.strip():
                 continue
-            if rows >= expected_rows:
-                raise ValueError(f"{trace_path}:{line_no}: extra route row")
-            expected_layer = layers[rows % len(layers)]
+            expected_layer = layers[trace_rows % len(layers)]
             fields = line.split(maxsplit=2)
             if len(fields) != 3:
                 raise ValueError(f"{trace_path}:{line_no}: malformed route row")
             layer, row_tokens = int(fields[0]), int(fields[1])
-            if layer != expected_layer or row_tokens != 1:
+            if layer != expected_layer or row_tokens <= 0:
                 raise ValueError(
                     f"{trace_path}:{line_no}: layer/tokens={layer}/{row_tokens}, "
-                    f"expected {expected_layer}/1"
+                    f"expected layer {expected_layer} with a positive token count"
+                )
+            layer_index = trace_rows % len(layers)
+            if layer_index == 0:
+                cycle_tokens = row_tokens
+            elif row_tokens != cycle_tokens:
+                raise ValueError(
+                    f"{trace_path}:{line_no}: token count {row_tokens} differs from "
+                    f"{cycle_tokens} within one request cycle"
                 )
             pairs = []
             for raw in fields[2].split(","):
@@ -73,30 +82,52 @@ def validate(
                 if not math.isfinite(weight) or weight < 0:
                     raise ValueError(f"{trace_path}:{line_no}: invalid route weight")
                 pairs.append((expert, weight))
-            if len(pairs) != top_k or len({expert for expert, _ in pairs}) != top_k:
-                raise ValueError(f"{trace_path}:{line_no}: expected {top_k} distinct experts")
-            for expert, _ in pairs:
-                if expert < 0 or expert >= expert_count:
+            if len(pairs) != row_tokens * top_k:
+                raise ValueError(
+                    f"{trace_path}:{line_no}: route pairs={len(pairs)}, "
+                    f"expected {row_tokens * top_k}"
+                )
+            for token_index in range(row_tokens):
+                token_pairs = pairs[token_index * top_k:(token_index + 1) * top_k]
+                if len({expert for expert, _ in token_pairs}) != top_k:
                     raise ValueError(
-                        f"{trace_path}:{line_no}: expert {expert} outside 0..{expert_count - 1}"
+                        f"{trace_path}:{line_no}: token {token_index} does not have "
+                        f"{top_k} distinct experts"
                     )
-                if expert in pruned.get(layer, set()):
-                    selected_pruned.append({
-                        "line": line_no,
-                        "layer": layer,
-                        "expert": expert,
-                    })
-                selected += 1
-            rows += 1
-    if rows != expected_rows:
-        raise ValueError(f"route rows={rows}, expected {expected_rows}")
+                for expert, _ in token_pairs:
+                    if expert < 0 or expert >= expert_count:
+                        raise ValueError(
+                            f"{trace_path}:{line_no}: expert {expert} outside "
+                            f"0..{expert_count - 1}"
+                        )
+                    if expert in pruned.get(layer, set()):
+                        selected_pruned.append({
+                            "line": line_no,
+                            "token": token_index,
+                            "layer": layer,
+                            "expert": expert,
+                        })
+                    selected += 1
+            tokens_by_layer[layer] += row_tokens
+            route_rows += row_tokens
+            trace_rows += 1
+    if trace_rows % len(layers):
+        raise ValueError(f"trace rows={trace_rows} do not end on a complete layer cycle")
+    if any(tokens != expected_tokens for tokens in tokens_by_layer.values()):
+        raise ValueError(
+            f"per-layer token coverage differs from expected {expected_tokens}: "
+            f"{tokens_by_layer}"
+        )
+    if route_rows != expected_route_rows:
+        raise ValueError(f"route rows={route_rows}, expected {expected_route_rows}")
     return {
         "format": OUTPUT_FORMAT,
         "passed": not selected_pruned,
         "expected_tokens": expected_tokens,
         "layers": layers,
         "top_k": top_k,
-        "route_rows": rows,
+        "trace_rows": trace_rows,
+        "route_rows": route_rows,
         "selected_experts": selected,
         "selected_pruned_experts": selected_pruned,
         "evidence": {
@@ -133,14 +164,23 @@ def self_test() -> None:
             "pruned_experts": plan["pruned_experts"],
         }))
         trace = root / "routes.trace"
-        trace.write_text("1 1 0:0.6,1:0.4\n2 1 0:0.7,2:0.3\n")
-        result = validate(manifest, trace, 1, [1, 2], 2)
-        assert result["passed"] and result["route_rows"] == 2
-        trace.write_text("1 1 0:0.6,2:0.4\n2 1 0:0.7,2:0.3\n")
-        assert not validate(manifest, trace, 1, [1, 2], 2)["passed"]
-        trace.write_text("1 1 0:0.6,4:0.4\n2 1 0:0.7,2:0.3\n")
+        trace.write_text(
+            "1 2 0:0.6,1:0.4,1:0.7,3:0.3\n"
+            "2 2 0:0.7,2:0.3,1:0.8,2:0.2\n"
+        )
+        result = validate(manifest, trace, 2, [1, 2], 2)
+        assert result["passed"] and result["trace_rows"] == 2 and result["route_rows"] == 4
+        trace.write_text(
+            "1 2 0:0.6,2:0.4,1:0.7,3:0.3\n"
+            "2 2 0:0.7,2:0.3,1:0.8,2:0.2\n"
+        )
+        assert not validate(manifest, trace, 2, [1, 2], 2)["passed"]
+        trace.write_text(
+            "1 2 0:0.6,4:0.4,1:0.7,3:0.3\n"
+            "2 2 0:0.7,2:0.3,1:0.8,2:0.2\n"
+        )
         try:
-            validate(manifest, trace, 1, [1, 2], 2)
+            validate(manifest, trace, 2, [1, 2], 2)
         except ValueError as exc:
             assert "outside 0..3" in str(exc)
         else:
