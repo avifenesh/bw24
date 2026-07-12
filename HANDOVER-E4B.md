@@ -1,3 +1,26 @@
+# E4B — GRAPH-UPDATE ARC SPEC (2026-07-13, THE ranked lever; API surface VERIFIED in our
+# pinned cudarc 0.19.8 sys module)
+
+APIs present (cudarc::driver::sys): cuGraphGetNodes, cuGraphNodeGetType,
+cuGraphKernelNodeGetParams_v2, cuGraphExecKernelNodeSetParams, cuGraphInstantiateWithFlags;
+CUDA_KERNEL_NODE_PARAMS carries gridDimX/Y/Z + kernelParams. DESIGN (llama's mechanism):
+1. Capture ONE E4B token at a reference bucket (existing gemma4_e4b_decode_step_dcg body).
+2. cuGraphGetNodes on the captured graph -> filter kernel nodes; IDENTIFY the fa_decode_dc
+   nodes (match CUfunction handle against func("fa_decode_vec_q_v4_dc")/scalar unified —
+   or simpler: match by gridDim pattern (nkv, n_splits, 1)).
+3. Instantiate once. Each token: recompute exact n_splits from the host len mirror,
+   cuGraphExecKernelNodeSetParams with the new gridDim on JUST the fa nodes (grid-only
+   updates are cheap, no re-instantiation), then launch the exec.
+4. Numerics: grid-exact per token == the eager dispatch => stream-identity gate should
+   hold bit-for-bit (same kernels, same shapes). Gates: stream 64/64 + argmax + chat.
+5. Expected: our eager wall 5.30ms with ~0.35ms gaps + per-launch CPU cost -> graphed
+   exact-shape replay targets ~4.9ms (~198) BEFORE other work; combine with remaining
+   fold list for the 217 bar. If grid-update alone insufficient, extend updates to the
+   append/norm nodes (their params are stable — only fa grids vary).
+PROBES CLOSED NEGATIVE (do not retry): launch_bounds forcing (spills), fixed-bucket graph
+replay (oversized grids -6..-11%), one-block PLE mega-fusion (single-SM weight pull, 126
+vs 189 — kernel deleted, jsonl 2026-07-13).
+
 # E4B — TRACING VERDICT (2026-07-13, supersedes the concurrency hypothesis below)
 
 MEASURED: DRAM plateaus equal (52 vs 55%) but warps-in-flight 34% (ours) vs 72% (llama).
