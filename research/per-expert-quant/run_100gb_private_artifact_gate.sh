@@ -9,7 +9,9 @@ PY=${PY:-python3}
 CAPTURE_TOOL=${CAPTURE_TOOL:?}
 HEALTH_TOOL=${HEALTH_TOOL:?}
 ROUTE_VALIDATOR=${ROUTE_VALIDATOR:?}
-ARMS=(prune100_unhealed prune100_router_repair prune100_joint_heal)
+ARMS_CSV=${ARMS_CSV:-prune100_unhealed,prune100_router_repair,prune100_joint_heal}
+IFS=, read -r -a ARMS <<<"$ARMS_CSV"
+(( ${#ARMS[@]} >= 1 && ${#ARMS[@]} <= 8 )) || { echo "ARMS_CSV must contain 1-8 arms" >&2; exit 2; }
 
 mkdir -p "$OUT_ROOT"
 exec 9>"$OUT_ROOT/gate.lock"
@@ -56,7 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for lane in {0..2}; do
+for lane in "${!ARMS[@]}"; do
   arm=${ARMS[$lane]}
   artifact="$ART_ROOT/$arm"
   port=$((8070 + lane))
@@ -64,7 +66,8 @@ for lane in {0..2}; do
   trace="$OUT_ROOT/$arm.routes.trace"
   log="$OUT_ROOT/$arm.server.log"
   [[ -f "$artifact/manifest.json" && ! -e "$trace" ]]
-  taskset -c "$start-$end" numactl --membind=0 env -u BW24_API_KEY -u BW24_FULL_PREC \
+  numa=0; (( lane >= 4 )) && numa=1
+  taskset -c "$start-$end" numactl --membind="$numa" env -u BW24_API_KEY -u BW24_FULL_PREC \
     CUDA_VISIBLE_DEVICES="$lane" \
     BW24_COMPAT=openai BW24_SERVE_SPEC=0 BW24_KV_REUSE=0 BW24_CTX=1032 \
     BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
@@ -77,7 +80,7 @@ for lane in {0..2}; do
   server_pids+=("$!")
 done
 
-for lane in {0..2}; do
+for lane in "${!ARMS[@]}"; do
   arm=${ARMS[$lane]}; port=$((8070 + lane)); pid=${server_pids[$lane]}
   health="$OUT_ROOT/$arm.health.json"
   for _ in {1..900}; do
