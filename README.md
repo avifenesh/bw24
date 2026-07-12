@@ -91,8 +91,8 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 |---|---|---|---|
 | 31B dense plain, short | 40.3 | 40.25 | 1.00x (campaign live) |
 | 31B dense plain, 1.7k | 36.9 | 38.3 | 0.96x |
-| 31B MTP spec, short (K=7) | 122.4 | 112.1 | **1.09x** |
-| 31B MTP spec, 1.7k (K=6) | 74.6 | 85.7 | 0.87x |
+| 31B MTP spec, short (K=7 + FR trim) | 126.0 | 112.1 | **1.12x** |
+| 31B MTP spec, 1.7k (K=6 + FR trim) | 76.0 | 85.7 | 0.89x |
 | E4B | first light: 154.8 eager | — | perf lanes in flight |
 
 The 31B spec jump (0.79x → 1.09x, 2026-07-12) came from a serving-mode config, not a new
@@ -100,8 +100,11 @@ kernel: the FP8 (e4m3) windowed KV cache — a win for plain decode at depth —
 GUT the MTP drafter's acceptance (its single sliding-window attention reads that cache, and
 e4m3 noise flips its argmaxes: acceptance 0.758 → 1.000 on short chat once the windowed
 layers went back to q8_0/q5_1). Spec serving now defaults the windowed cache to q8_0/q5_1
-automatically (`BW24_DRAFT` set ⇒ fp8-windows off; plain serving keeps fp8). Same-window
-interleaved pairs, N=2 each side.
+automatically (`BW24_DRAFT` set ⇒ fp8-windows off; plain serving keeps fp8). The same clean
+cache also flipped the FR-Spec drafter-head trim positive on the 31B (its earlier acceptance
+loss WAS the fp8 noise pushing drafter argmaxes off the 32k set): own-generation ranks now
+ride at identical acceptance for a pure head-read win (+2-4%). Same-window interleaved
+pairs, N=2 each side.
 
 ## Known gaps
 
