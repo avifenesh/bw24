@@ -1839,18 +1839,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let queued = cache.prefetch(next_id, &next, &keep, &e)?;
         let hidden_while_pending = cache.resident(next_id).is_none();
         let DispatchSlot::Resident(next_slot) = cache.dispatch(next_id, &next, &e)?;
-        let next_got = e.dtoh_u8(cache.slot(next_slot))?;
+        // slots carry a +8 tail pad (wide-load expert dots, b6f0ffe) — compare payload only.
+        let next_got = e.dtoh_u8(cache.slot(next_slot))?[..block_len].to_vec();
         let visible_after_wait = cache.resident(next_id) == Some(next_slot);
         let _ = cache.dispatch(next_id, &next, &e)?;
         let keep_slot = cache.resident(keep[0]);
         let keep_got = match keep_slot {
-            Some(slot) => e.dtoh_u8(cache.slot(slot))?,
+            Some(slot) => e.dtoh_u8(cache.slot(slot))?[..block_len].to_vec(),
             None => Vec::new(),
         };
         let counters_ok = cache.hits == 1 && cache.misses == 1
             && cache.staged_bytes == 9 * block_len as u64;
         let ok = queued && hidden_while_pending && visible_after_wait
             && next_got == next && keep_got == sources[0] && counters_ok;
+        if !ok {
+            eprintln!("[prefetch-check] queued={queued} hidden={hidden_while_pending} \
+                       visible={visible_after_wait} bytes_ok={} keep_ok={} counters: hits={} \
+                       misses={} staged={} (want 1/1/{})",
+                      next_got == next, keep_got == sources[0], cache.hits, cache.misses,
+                      cache.staged_bytes, 9 * block_len);
+        }
         println!("moe async-prefetch ordering + protected victim: {}",
                  if ok { "OK" } else { fails += 1; "FAIL" });
         unsafe {

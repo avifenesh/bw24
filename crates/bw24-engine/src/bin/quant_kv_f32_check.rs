@@ -62,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 kv_dim,
                 k_tok_bytes,
                 v_tok_bytes,
+                false,
             )?;
         }
         let k_view = engine.view_u8(&k_cache, t_kv * k_tok_bytes);
@@ -100,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             true,
             k_tok_bytes,
             v_tok_bytes,
+            false,
         )?;
         let inline = engine.dtoh(&inline)?;
         let inline_rel = rel_diff(&reference, &inline);
@@ -119,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             true,
             k_tok_bytes,
             v_tok_bytes,
+            false,
         )?;
         let workspace = engine.dtoh(&workspace)?;
         let workspace_rel = rel_diff(&reference, &workspace);
