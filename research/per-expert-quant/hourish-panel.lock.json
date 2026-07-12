@@ -1,0 +1,697 @@
+{
+  "calibration_indices": {
+    "humaneval_instruct": [
+      0,
+      1
+    ]
+  },
+  "code_execution": "network-disabled sandbox required for scoring",
+  "dataset_revisions": {
+    "hendrycks_math500": {
+      "repo": "HuggingFaceH4/MATH-500",
+      "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
+    },
+    "humaneval_instruct": {
+      "repo": "openai/openai_humaneval",
+      "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+    },
+    "mmlu_pro_history": {
+      "repo": "TIGER-Lab/MMLU-Pro",
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+    },
+    "mmlu_pro_other": {
+      "repo": "TIGER-Lab/MMLU-Pro",
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+    }
+  },
+  "format": "bw24-hourish-eval-panel-v1",
+  "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+  "max_gen_toks": {
+    "hendrycks_math500": 256,
+    "humaneval_instruct": 512,
+    "mmlu_pro_history": 256,
+    "mmlu_pro_other": 256
+  },
+  "num_concurrent": 1,
+  "purpose": "directional screen; not a final capability claim",
+  "samples": {
+    "hendrycks_math500": [
+      18,
+      34,
+      46,
+      56,
+      97,
+      115,
+      126,
+      143,
+      144,
+      152,
+      172,
+      173,
+      175,
+      176,
+      229,
+      269,
+      298,
+      299,
+      301,
+      362,
+      368,
+      406,
+      408,
+      415,
+      438,
+      443,
+      444,
+      452,
+      456,
+      464,
+      471,
+      481
+    ],
+    "humaneval_instruct": [
+      27,
+      32,
+      53,
+      54,
+      68,
+      73,
+      85,
+      96,
+      115,
+      116,
+      119,
+      127,
+      135,
+      142
+    ],
+    "mmlu_pro_history": [
+      16,
+      173,
+      177,
+      245,
+      320
+    ],
+    "mmlu_pro_other": [
+      69,
+      93,
+      673,
+      705,
+      736
+    ]
+  },
+  "seed": "bw24-hourish-panel-v1-20260711",
+  "selected_documents": {
+    "hendrycks_math500": [
+      {
+        "document_sha256": "a646122b11a02194b0765502deda54c34f9767e4e1b5d204728e4fb4e3412f7c",
+        "id": "test/geometry/434.json",
+        "index": 18,
+        "prompt_sha256": "90c9045ebc44d34e114584f631c748ba8b6b53ee91d32b15e7de5a0f09357772",
+        "stratum": {
+          "level": 1,
+          "subject": "Geometry"
+        },
+        "target_sha256": "5defc92d11f38e34facc727521e1d9b596052c3a5e3ba1375fab31609f1edc3a"
+      },
+      {
+        "document_sha256": "4a0477e6874d5aa67c4106abeb8e2955b650b3ff47ed0bdd444fe8da7b7d9d7a",
+        "id": "test/counting_and_probability/119.json",
+        "index": 34,
+        "prompt_sha256": "c1338385c7492326a068618cb733ca099dddba0aeb4c996d277045b09432ae8c",
+        "stratum": {
+          "level": 4,
+          "subject": "Counting & Probability"
+        },
+        "target_sha256": "a4cd25850aa27d7b1194c742cf7ecc428a8741bc6cab2bc5ea68d37f5ffb48f8"
+      },
+      {
+        "document_sha256": "2c8e5b1ab4d41897ce3677c380c534bbda23dae9c96619dacb64d735981965f4",
+        "id": "test/precalculus/285.json",
+        "index": 46,
+        "prompt_sha256": "4e66337e45d414168523eb8928ef5f232ed964a33e380be5c7be291e9906cdd2",
+        "stratum": {
+          "level": 2,
+          "subject": "Precalculus"
+        },
+        "target_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+      },
+      {
+        "document_sha256": "8c39a332767582cf24355f340eb65b8047a188dad4134df4495be977f6f390aa",
+        "id": "test/algebra/769.json",
+        "index": 56,
+        "prompt_sha256": "c6f29c311da7053d8662ab92d5bbedda19476607ebfce5686fd81f5491457032",
+        "stratum": {
+          "level": 3,
+          "subject": "Algebra"
+        },
+        "target_sha256": "f326bd84707ed76597becb832280595d1a5aaceb0905dc40e3553ebb861bde80"
+      },
+      {
+        "document_sha256": "d6f5947177a390ba2fa09c5ad44a10078b04c08ae0a83dfd85b8ef047df09057",
+        "id": "test/prealgebra/105.json",
+        "index": 97,
+        "prompt_sha256": "2dbe7a24961b419aba80499d817579f967d49eff8ce3ceab456fe47ee534bc16",
+        "stratum": {
+          "level": 1,
+          "subject": "Prealgebra"
+        },
+        "target_sha256": "20ac353f4ab4596321cf754577c508fa33b2bb77f604351edc0a42d574b411b4"
+      },
+      {
+        "document_sha256": "5e089a6fdfea7020103425341811bc25fe50ae514f7d0c7411d6ac207292e592",
+        "id": "test/counting_and_probability/1060.json",
+        "index": 115,
+        "prompt_sha256": "48eb4cf3aa22c92fa9116799bb92f122b797ff4b38c39be4665a292398def038",
+        "stratum": {
+          "level": 2,
+          "subject": "Counting & Probability"
+        },
+        "target_sha256": "64f1a7b18e47d9423c79d6cdfa50a0f3e81000036af8a4219af72bb8ea80fb0c"
+      },
+      {
+        "document_sha256": "5926fa4ac7438b17fd5acd1dbc5823e3dfd5a5efb9dfbbe2b46ff1a4ef176b95",
+        "id": "test/intermediate_algebra/1063.json",
+        "index": 126,
+        "prompt_sha256": "1caf692cef3e454f8aeb435bbd73f34076c6fca530dfbd6eb306b65649fb67a3",
+        "stratum": {
+          "level": 4,
+          "subject": "Intermediate Algebra"
+        },
+        "target_sha256": "0bccf8da392cffe553cd2bd138618951c86b25e749c63d16336e6cb9d40b91de"
+      },
+      {
+        "document_sha256": "c0e2cdd8330e8a397b1857df21e5f3befdf835949bdc34e217a94fb7bac1cafb",
+        "id": "test/precalculus/477.json",
+        "index": 143,
+        "prompt_sha256": "4c63e62dce5a5a8537e373f1ba2aa54f2f0ff452dafff5da8e2ee06a36bb2882",
+        "stratum": {
+          "level": 3,
+          "subject": "Precalculus"
+        },
+        "target_sha256": "53b39ef7a5550398c1ae34e57858a55ef2e45d6f530d30cf9618a7e49391324d"
+      },
+      {
+        "document_sha256": "dd674bf71d774dfe6f361b7dcf3d22ddcca5f69bd4efbb563c1d1e31f4354d6a",
+        "id": "test/precalculus/43.json",
+        "index": 144,
+        "prompt_sha256": "3e05a20613f57806aec5c5addd561fe06b5132ed67dc20128b6a29130ad5c2c7",
+        "stratum": {
+          "level": 1,
+          "subject": "Precalculus"
+        },
+        "target_sha256": "3cd7f6b043ccfba06971fec46d535fcf0d3413efc7486d0990cf3a57adc55eb3"
+      },
+      {
+        "document_sha256": "570baa47f606b973e0718f54037a4460c0ba49c670cf415ebb35da9c263a3c6e",
+        "id": "test/geometry/172.json",
+        "index": 152,
+        "prompt_sha256": "9c4602bc54f782afea8e6ec7026fd39411eefaa92ded3d04c6c0ed94a642a313",
+        "stratum": {
+          "level": 5,
+          "subject": "Geometry"
+        },
+        "target_sha256": "ade1a1c2a61af0f279a4978dfddcdb6acd33f5a8b61e62c5fd881e8a88a387bc"
+      },
+      {
+        "document_sha256": "a3df0bfc9e49bd7b00f8793f914d45a6e4a9c5c34d1903be5c52fc5495e23411",
+        "id": "test/algebra/841.json",
+        "index": 172,
+        "prompt_sha256": "6fc20d73eaa7e740b68fd80daffcb8c7aa2ebab229fefc51d9251be9203f2893",
+        "stratum": {
+          "level": 1,
+          "subject": "Algebra"
+        },
+        "target_sha256": "30dd0b27194598d33febe5b5e4e7068d0da2dbf71ae37f968ea77dca2b4a8a69"
+      },
+      {
+        "document_sha256": "0eb2de9a68c44b69f71bc9cd7abd59d2392cac8940dcfc4f6c48abd8499f4215",
+        "id": "test/algebra/686.json",
+        "index": 173,
+        "prompt_sha256": "c6f35d5d21e7a8b39cc4e50d52453e690fdfabfddd750e7ceb0fbe09992f3362",
+        "stratum": {
+          "level": 5,
+          "subject": "Algebra"
+        },
+        "target_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+      },
+      {
+        "document_sha256": "98985e88a450a21d79b53ea66a8ade983027c46f6b75bf1a55711fd35b23fe7c",
+        "id": "test/intermediate_algebra/991.json",
+        "index": 175,
+        "prompt_sha256": "d905582432e3c13f8f5d9beba846d4a608f52b54a5b0fe508e5e2b77701726f0",
+        "stratum": {
+          "level": 2,
+          "subject": "Intermediate Algebra"
+        },
+        "target_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+      },
+      {
+        "document_sha256": "442f92738497a9c744342e4381956207fbf64f434383f019d60ac7ee7bcf3aab",
+        "id": "test/number_theory/598.json",
+        "index": 176,
+        "prompt_sha256": "79048a8483100141f8f3306c7592484923bbfd0a20a814c670da66131c8b29ff",
+        "stratum": {
+          "level": 3,
+          "subject": "Number Theory"
+        },
+        "target_sha256": "81fae0ab4fab9ba290bca7f3d5e5e34a01e3aad9e97dfd54ce6c5ba84300a36c"
+      },
+      {
+        "document_sha256": "08926d1889194ecf0f100707c4f7dced762314f42db99d3d20d258eb4a1d86bd",
+        "id": "test/prealgebra/2057.json",
+        "index": 229,
+        "prompt_sha256": "13eb39f570fa4bfff70c4d125d051dc94b45c22b1470ca132d1e7fa277ea2d37",
+        "stratum": {
+          "level": 4,
+          "subject": "Prealgebra"
+        },
+        "target_sha256": "c05204d076c56077c0cd2d1debe7ed7147d7f36e28e64ff2f22e21db5cf7aab6"
+      },
+      {
+        "document_sha256": "1163ca823d19acdf647bbfc8021ccc680ca75e3aa05176ab1cbe0669ed0ddea0",
+        "id": "test/counting_and_probability/913.json",
+        "index": 269,
+        "prompt_sha256": "f3bb484da48514de8470d8286e6c3fc7c3c0712885143cf73348eb3726ba8bd9",
+        "stratum": {
+          "level": 3,
+          "subject": "Counting & Probability"
+        },
+        "target_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+      },
+      {
+        "document_sha256": "d41d52e87912092d0930d63e40abf1b0768261eaf8d5af9c37a4e68cc4fa981d",
+        "id": "test/precalculus/881.json",
+        "index": 298,
+        "prompt_sha256": "248a41f3e6f3cf36458402707cf0f014cdc3bbf779833eeb7c6662660615d9f5",
+        "stratum": {
+          "level": 4,
+          "subject": "Precalculus"
+        },
+        "target_sha256": "8493cea7615dd35f9bc7f7af0deb19e84ef61a280e104e0a7f89bc0d12df955b"
+      },
+      {
+        "document_sha256": "3e0f5e828b2cab609b215f7f37598a55c3d19667ae4fa04e29d5952f0ced189a",
+        "id": "test/geometry/1097.json",
+        "index": 299,
+        "prompt_sha256": "5c4da03a5b0df82a3d04bc9ab2a516eb0fb5acccebfc7fb8f21d0d9a1d50bbef",
+        "stratum": {
+          "level": 4,
+          "subject": "Geometry"
+        },
+        "target_sha256": "506b63d9bd8dda24f43959945504e2269792f9f7cada9caf977fa7b99355a6fe"
+      },
+      {
+        "document_sha256": "013e96625b54f94bd0b007340fa70acd23fc218427e473fcfe3231e7641030cb",
+        "id": "test/prealgebra/1044.json",
+        "index": 301,
+        "prompt_sha256": "ed45d66829101a561ddad3378b1bfc149f1f04484e40ef0b0f540f94142d6315",
+        "stratum": {
+          "level": 5,
+          "subject": "Prealgebra"
+        },
+        "target_sha256": "40239afc0cc67b1b67eef63c6687ff43c2f7c04174bb632431ce9a273b71066e"
+      },
+      {
+        "document_sha256": "17ef62baa7272293118ebc024ef4db730e91ff2902143d45cf8e0c3abcc79435",
+        "id": "test/counting_and_probability/14.json",
+        "index": 362,
+        "prompt_sha256": "caa33aeea9656441c55d8a124f14b40c3ecb1e8c4dec264a17844623ca21606f",
+        "stratum": {
+          "level": 1,
+          "subject": "Counting & Probability"
+        },
+        "target_sha256": "140362ce3cd5218550e688dee57892ccee47e7480198cad31845aa882f1854e4"
+      },
+      {
+        "document_sha256": "14ce3dec59848e92d2a9a3828e7f6d5b9c5bd35b54bff2d49b226310697964d9",
+        "id": "test/geometry/106.json",
+        "index": 368,
+        "prompt_sha256": "79e67099971241d8782d32054788775a153346069f5eecb30dd5fa3144a882fb",
+        "stratum": {
+          "level": 2,
+          "subject": "Geometry"
+        },
+        "target_sha256": "227e4918add1d7964e1745439f5cf44f3e3aba15de6f570942d418510b022b9d"
+      },
+      {
+        "document_sha256": "57f2c81a5764651d7d1b28178189fcb64a4fb9679f0899e4bad0e12cc1b10554",
+        "id": "test/number_theory/132.json",
+        "index": 406,
+        "prompt_sha256": "7f488a9c2e5c8582f24232d89d673a61ee6fa9005eddaec7a16e73de94224ae2",
+        "stratum": {
+          "level": 1,
+          "subject": "Number Theory"
+        },
+        "target_sha256": "98089e6d36f78e9766c9ea34d5acb3611f3a92cd81c5eb102095d924ffc7d08b"
+      },
+      {
+        "document_sha256": "7dd4cb7f2579bcbe68388c8bdc2271b4153650b891dd8643cfeaab2d2eb6ea98",
+        "id": "test/precalculus/398.json",
+        "index": 408,
+        "prompt_sha256": "fd703e3ff7f6187a8bdc01e4f46698b66ae72aa7f58f9984126d8d1fdee28c6b",
+        "stratum": {
+          "level": 5,
+          "subject": "Precalculus"
+        },
+        "target_sha256": "e9dccc59a3543b6dc120c562771484754d75fe614f9bbcf64ebb1716ff058392"
+      },
+      {
+        "document_sha256": "3b9d38adb06e9a337fbc33a3c8037c9a74588ef687ee19213ce6b51ea8ed80b8",
+        "id": "test/number_theory/769.json",
+        "index": 415,
+        "prompt_sha256": "04ff7e758c9159847e4ac73bb7326e43d38891f985252603a1fa488878702fe2",
+        "stratum": {
+          "level": 5,
+          "subject": "Number Theory"
+        },
+        "target_sha256": "986b79d4b69dffb1d19836f47b27073d95bf55201b3385aceb7e0687a21d8667"
+      },
+      {
+        "document_sha256": "d82219ed77edf95fb2e12830c1153a757137750ce2cc994d77f503a2e90d04d5",
+        "id": "test/number_theory/255.json",
+        "index": 438,
+        "prompt_sha256": "be152a7a5a5ffd8101f06e5c60c4c2faee99f3664ad295006c92ec36ddb123c9",
+        "stratum": {
+          "level": 2,
+          "subject": "Number Theory"
+        },
+        "target_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+      },
+      {
+        "document_sha256": "640373c9c620d2684f077f27aeec4cfb5926ffdc450a97ad821d9fbbc9a7ee86",
+        "id": "test/algebra/668.json",
+        "index": 443,
+        "prompt_sha256": "bc5b0495516189df0b237647fedeba25041b60e53233ba7f37f857b800296885",
+        "stratum": {
+          "level": 4,
+          "subject": "Algebra"
+        },
+        "target_sha256": "2eecac45827ede372449b7bd78a82139db639d810ebce98caef91e5d1a2fe422"
+      },
+      {
+        "document_sha256": "ddd2cc8d182bac5e225c4c93b86c5adec5f9d98f52c1d2bf939f6b65020ae599",
+        "id": "test/counting_and_probability/731.json",
+        "index": 444,
+        "prompt_sha256": "f21fccc42347c973075eb7111b2878940cbd15ff5e4db877d84675f93a1b6a1c",
+        "stratum": {
+          "level": 5,
+          "subject": "Counting & Probability"
+        },
+        "target_sha256": "f7562d99caec4644c272deaec315812c1dcd4ff71714fff6fadf1cafa1400ba5"
+      },
+      {
+        "document_sha256": "4257526adc70f90580f1c2e8153f9cd0c14e255046e073036429e53e31605e7d",
+        "id": "test/algebra/1814.json",
+        "index": 452,
+        "prompt_sha256": "99c197f3fd7fd46b2ff66f56ef1beb270d01317382158617a87f5966f8e3a51f",
+        "stratum": {
+          "level": 2,
+          "subject": "Algebra"
+        },
+        "target_sha256": "b06f8b0dba42b3126ea00abf9bf6ca500ce95dea627608149109c8c1f355e85a"
+      },
+      {
+        "document_sha256": "a442c99991ecba8a2896cf9d819b4d9d1de07aa4e08546ae778b91f27a9c9140",
+        "id": "test/intermediate_algebra/1102.json",
+        "index": 456,
+        "prompt_sha256": "7827aac355e9f5acf43f0e7f25ed49b144468ed98c22714cffac402eafa90f30",
+        "stratum": {
+          "level": 1,
+          "subject": "Intermediate Algebra"
+        },
+        "target_sha256": "1fd10539f38d1b7d4b448c6ac678de76e2b60d5c1eefe789d01127fdbd2df441"
+      },
+      {
+        "document_sha256": "76bbddc18af7d5027c2270a65daba3027ba6d447d20a527d2f11e3dc08658791",
+        "id": "test/intermediate_algebra/834.json",
+        "index": 464,
+        "prompt_sha256": "f9d8c0b5aa696abe9252dfea6246b9def611f1aaa3d43e7c96fa69edea23722b",
+        "stratum": {
+          "level": 3,
+          "subject": "Intermediate Algebra"
+        },
+        "target_sha256": "986b79d4b69dffb1d19836f47b27073d95bf55201b3385aceb7e0687a21d8667"
+      },
+      {
+        "document_sha256": "193c4c9adfc2df87ee6a81f914a6563aa007705266d7d4c4219d5d2f3d3f4b41",
+        "id": "test/prealgebra/846.json",
+        "index": 471,
+        "prompt_sha256": "1c9b71652c22ce04148aba4f5a24a58f985e7d06b7a3749bee05ac924e5a0697",
+        "stratum": {
+          "level": 3,
+          "subject": "Prealgebra"
+        },
+        "target_sha256": "aa1973b691760aaca9de516669eed4b0ad122479abf1d4822c88ab59bd0d0acb"
+      },
+      {
+        "document_sha256": "b6e09a9228e7e5a998d0753402fa124fb5c193ffaee60a0c43c1f84fa8209699",
+        "id": "test/intermediate_algebra/1467.json",
+        "index": 481,
+        "prompt_sha256": "9a6938948b9f5911dd9705c8da26c736404e52dddab4165e46a3fd9ece96b73e",
+        "stratum": {
+          "level": 5,
+          "subject": "Intermediate Algebra"
+        },
+        "target_sha256": "474fcf98e15e2694b38767eabbc60ef2e597763a5b62a9a98f53c5378332ab96"
+      }
+    ],
+    "humaneval_instruct": [
+      {
+        "document_sha256": "7ce9c6b2dbb728f107b894e5cfa6ecb3a74b6b54daf8ebfc3eba91f5f3714930",
+        "id": "HumanEval/27",
+        "index": 27,
+        "prompt_sha256": "31024afa05f14c5f28986c7d106e343d242ba5da305ae43b73edbc8e21bcc789",
+        "stratum": null,
+        "target_sha256": "6b72bd486d2a28de7ad44cc641ba93745c50be47a42dd6bf1cb110a6e7d81b97"
+      },
+      {
+        "document_sha256": "b9495082aa66c0d5b00bb10a9aff9d2941a9fb3a9add0bddbe990e514eeeeee9",
+        "id": "HumanEval/32",
+        "index": 32,
+        "prompt_sha256": "e35b1d7a19fe57e41ceae9d782f40a503b5094e2b9bc9e10369da6d73e424b9a",
+        "stratum": null,
+        "target_sha256": "d19b6b09bea563951969b4444ebcf13da610c7b085c2517d01f9d82e53e89fd4"
+      },
+      {
+        "document_sha256": "d90f8141e072764e14272a117bcd028d8f43ac8f81af0eb1220a750151eb3e2a",
+        "id": "HumanEval/53",
+        "index": 53,
+        "prompt_sha256": "5e40f417cd18764bac02377da8c09bdc6bb97ba9563199142bcb77ae11469b69",
+        "stratum": null,
+        "target_sha256": "e08c51651f0424df891957a4980ec86b9e888add752f79c899479cbde8a147c6"
+      },
+      {
+        "document_sha256": "1ec4170ebb55eba931ecffd2514583556ca00e904a84e4f8d62efe054d6e49a6",
+        "id": "HumanEval/54",
+        "index": 54,
+        "prompt_sha256": "ef249e2c920020dfe16867ee5652470c34e995c1c67727c053d17a5a4d546346",
+        "stratum": null,
+        "target_sha256": "34724c8700f462c3fb83778755cc7f8b8c66b739711f37f76945741d5c453e53"
+      },
+      {
+        "document_sha256": "0859312e08bcc033ffda9dfa3ef0f688edd474d333d61af0966424a40b2c0c7f",
+        "id": "HumanEval/68",
+        "index": 68,
+        "prompt_sha256": "a72d5c08a6f5fe611b75ff41affe5bc0aa021f34bc4228c908605be190c17397",
+        "stratum": null,
+        "target_sha256": "f1e40f59c42a5d53c259855aacc6760ff7ec2bce2f549027732db613613928a1"
+      },
+      {
+        "document_sha256": "c9af02a1cc2f7d253350edaed8fb9d73955d08cf994a814449b897fc86704f66",
+        "id": "HumanEval/73",
+        "index": 73,
+        "prompt_sha256": "245dbf87499a3d50f4507d0ddc7ec60bd1f04e4859071e12e0712aba00497a08",
+        "stratum": null,
+        "target_sha256": "2a636453407987e4f050279c43bc585c4b7a5eabc4e60744db9eeee560f3b1df"
+      },
+      {
+        "document_sha256": "ee773872c4756faee9d437b93d1a580bbf478f156b8075931762404d50defafb",
+        "id": "HumanEval/85",
+        "index": 85,
+        "prompt_sha256": "0a6054e7d8969add187e39aa35b4bb43520865f7f92c2893a192c1703980b2cc",
+        "stratum": null,
+        "target_sha256": "8cd0e91cf11176099ab6cd84d13648253f5652ab4c6a6497f5cb9f0a0334125f"
+      },
+      {
+        "document_sha256": "a7c27ead86353a3740da919f4af0637c8f92407c2b8bb518617a363db60e0326",
+        "id": "HumanEval/96",
+        "index": 96,
+        "prompt_sha256": "c30d8b85b41039836b1552af249031ebef25c9d2d7efb8b69cbb757b45096b01",
+        "stratum": null,
+        "target_sha256": "bf8bc166ec429c3a6f70924dacbf58838f5532d7df387e346a3f8c1c8de8273c"
+      },
+      {
+        "document_sha256": "a3947b74578cd53bd491606fa3dc1375e3cd1ad40b0e05d753cf348a7d69cbf3",
+        "id": "HumanEval/115",
+        "index": 115,
+        "prompt_sha256": "07198a0e97b9eee3fdc5328444c0d5e56a6637a291b2545b67eec2c3923bbae1",
+        "stratum": null,
+        "target_sha256": "e517493cd224714d085d771e03a1649833625a2d17607c2eba3576c96562554e"
+      },
+      {
+        "document_sha256": "b16d2daab0997421aa1eb24ca70c44d892175a7634942fbaa3a9c5fc619a04ce",
+        "id": "HumanEval/116",
+        "index": 116,
+        "prompt_sha256": "a70df8af8c08926e02bceefdde7566bcd17a96aa9340f4d3d92cba6d7d7d2966",
+        "stratum": null,
+        "target_sha256": "cc5280311484638b7d9a26395130fcb824c2ceb53376e027d68664764a4ca5d1"
+      },
+      {
+        "document_sha256": "a0d434650bce44a204e23534023925c529d2eafa6f4431ce903edd87aaf71716",
+        "id": "HumanEval/119",
+        "index": 119,
+        "prompt_sha256": "ef7a9926effa96bc2c85a168578a2ab834c7d98e8c92cce9a4435758179cd9ba",
+        "stratum": null,
+        "target_sha256": "0c5d828dad0417927fe20bb8f65f5ba8908fb6669de52613716cf1205cbb2ab8"
+      },
+      {
+        "document_sha256": "7283829b22a2c9be74c623596b7ff5fd74baa0e9c3ddf228fde9c3912d9ad121",
+        "id": "HumanEval/127",
+        "index": 127,
+        "prompt_sha256": "3c81838fac0784498d7fa49b6869ff176c2fc42a29e7134aea344981814a7ab1",
+        "stratum": null,
+        "target_sha256": "96299eba074cf4850135cb9db24431b920fc9007a305582ae538d789af4b14d7"
+      },
+      {
+        "document_sha256": "955c5b0d8b06351b3410f615c5fb0585941ab686896d7f35b5c913b96ddd4e02",
+        "id": "HumanEval/135",
+        "index": 135,
+        "prompt_sha256": "f501dc155402e6ff455c08be6e0ee8440c598c9f5960f2340e1227e7d2af5537",
+        "stratum": null,
+        "target_sha256": "a79216ace610aaa3c8ac2e2095cb10aa461bb76c7a87eedc66a827f737e364c2"
+      },
+      {
+        "document_sha256": "42b19607cbc8beae7570b247bf0b6472de063a4e24359c6b0ec070d7986223d5",
+        "id": "HumanEval/142",
+        "index": 142,
+        "prompt_sha256": "edcd640c719fc983daa316be985ff157bbb494e06d029899506fdf31a7a26b41",
+        "stratum": null,
+        "target_sha256": "384ccca660dca8cfa3f0b268d5db246f2ec5fa76afaed151c588a56b6089542d"
+      }
+    ],
+    "mmlu_pro_history": [
+      {
+        "document_sha256": "fe73ef6246346af5f5451fd9ebe7089be99b16da7df1ff88b830ca2636b0083c",
+        "id": 4685,
+        "index": 16,
+        "prompt_sha256": "409ceb7be121863b3b717174ed48b936b8220ec5a3a28684c0e4afd62c236b0e",
+        "stratum": {
+          "source": "ori_mmlu-high_school_us_history"
+        },
+        "target_sha256": "798640599597df7a8daa32b1132f07850a68b5e71bd295650399a38074f52804"
+      },
+      {
+        "document_sha256": "849e37c91da2445a1f6b6a0ac875d1e5fc25a3a086016907dfab5232e31495fc",
+        "id": 4849,
+        "index": 173,
+        "prompt_sha256": "3450e30ed8cb3b236da44cfc1821998caa30a56d7a2c378e25bd5f6973daa1fe",
+        "stratum": {
+          "source": "ori_mmlu-high_school_us_history"
+        },
+        "target_sha256": "798640599597df7a8daa32b1132f07850a68b5e71bd295650399a38074f52804"
+      },
+      {
+        "document_sha256": "7ed15c6d53823057c8c35ddacd3f983b31c177d94d20e8a2091cce390bdc47e8",
+        "id": 4853,
+        "index": 177,
+        "prompt_sha256": "14de43b8bf8f940c9312e8561cbd00f6bddf1de670e2f9d86df7f779e5ebf337",
+        "stratum": {
+          "source": "ori_mmlu-high_school_european_history"
+        },
+        "target_sha256": "5129ad1abe9eea738b3b1f08aebc5d18f807ef9a825378f467154ad3da50a538"
+      },
+      {
+        "document_sha256": "6b9a40fd0d04a8daff5c758c14a0106858a7b3e1a1fa6363a77b5e816777532f",
+        "id": 4921,
+        "index": 245,
+        "prompt_sha256": "9e348cec6575c974d074d3e60ee03c4a7eeccf05289bb155e129e6386a0dd8af",
+        "stratum": {
+          "source": "ori_mmlu-high_school_world_history"
+        },
+        "target_sha256": "8f097023401b3d58704c1f3abea8ec2eba57c387f09d10125cd66076afd13b1e"
+      },
+      {
+        "document_sha256": "7ffaafbaef18e81ed13f5ae8b3932b7248fcf96c07121b451bbf92c45e8eb951",
+        "id": 4996,
+        "index": 320,
+        "prompt_sha256": "eeea71e8ef1b9e395905ca808b9ba15a740d470620d44f945e7fd6fdf8d3102e",
+        "stratum": {
+          "source": "ori_mmlu-prehistory"
+        },
+        "target_sha256": "955cca1ceba45052d85984d3a2565f4ce25b7488602c60a165598bf80b26e472"
+      }
+    ],
+    "mmlu_pro_other": [
+      {
+        "document_sha256": "56f54c8fdd4baf8d5a71711957db8124e7d01a28d7048d2badda5a7a78fe0129",
+        "id": 5129,
+        "index": 69,
+        "prompt_sha256": "89f04cdc4139a4db34f8c1b2fd14613a35580a28296bf548b50cb1f7feee36c0",
+        "stratum": {
+          "source": "ori_mmlu-high_school_geography"
+        },
+        "target_sha256": "955cca1ceba45052d85984d3a2565f4ce25b7488602c60a165598bf80b26e472"
+      },
+      {
+        "document_sha256": "2686960fee0d938414d69bc9481b9e05a81f2368d4db7bce7923c7f410c9af68",
+        "id": 5153,
+        "index": 93,
+        "prompt_sha256": "53f429e2c7cfc472591e62b1c9271f8f6b76a0c3aa176574e4350a19475ecb0b",
+        "stratum": {
+          "source": "ori_mmlu-sociology"
+        },
+        "target_sha256": "aa61870c76b8f6f57889888fbf24c006487753f3139494f7790353cf5a998492"
+      },
+      {
+        "document_sha256": "6c836ea2bd4bf698317192a45e09be3ed0bbffb0b5536e767e49e83375bf015f",
+        "id": 5746,
+        "index": 673,
+        "prompt_sha256": "2bef0bf08f5d234ca067eb911353c554d9bd53eb72820ecd15c1c3001fe4fd28",
+        "stratum": {
+          "source": "ori_mmlu-human_sexuality"
+        },
+        "target_sha256": "955cca1ceba45052d85984d3a2565f4ce25b7488602c60a165598bf80b26e472"
+      },
+      {
+        "document_sha256": "a2ba1c275c9c98fe5cf10caea439a59b4da982ab8b27eaffea0ab2f85bce75ed",
+        "id": 5778,
+        "index": 705,
+        "prompt_sha256": "ae92bfd7a3d87f8e75ebdffd9eea5b6b3e5593a3034d4d3e1031b4b6caeb43ed",
+        "stratum": {
+          "source": "ori_mmlu-professional_accounting"
+        },
+        "target_sha256": "8f097023401b3d58704c1f3abea8ec2eba57c387f09d10125cd66076afd13b1e"
+      },
+      {
+        "document_sha256": "05cb47e36fd1ff5cc700c4cc752e1cbf07eaa838fae9e71ebab7e917349cbafe",
+        "id": 5811,
+        "index": 736,
+        "prompt_sha256": "db0824b7baae5fd1f55fe8c27cae0f91e761ab3483e73548d654ba996e1f0c80",
+        "stratum": {
+          "source": "ori_mmlu-global_facts"
+        },
+        "target_sha256": "7499c53b80350db62e05439f0f86a5c1b9eae4c23d649cc6e0822c990d866384"
+      }
+    ]
+  },
+  "target_minutes": {
+    "history": 10,
+    "math": 15,
+    "other": 10,
+    "programming": 30
+  },
+  "task_counts": {
+    "hendrycks_math500": 32,
+    "humaneval_instruct": 14,
+    "mmlu_pro_history": 5,
+    "mmlu_pro_other": 5
+  },
+  "task_document_counts": {
+    "hendrycks_math500": 500,
+    "humaneval_instruct": 164,
+    "mmlu_pro_history": 381,
+    "mmlu_pro_other": 924
+  },
+  "temperature": 0.0
+}

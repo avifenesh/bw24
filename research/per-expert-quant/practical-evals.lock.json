@@ -1,0 +1,289 @@
+{
+  "format": "bw24-practical-evals-v1",
+  "generated_utc": "2026-07-11T05:56:41Z",
+  "protocol": {
+    "purpose": "directional practical-task comparison after public capability promotion",
+    "same_agent_scaffold": true,
+    "same_tool_and_turn_budget": true,
+    "deterministic_generation": true,
+    "mtp_or_speculation": false,
+    "container_isolation_required": true,
+    "initial_trials_per_task": 1,
+    "full_suite_only_after_directional_promotion": true,
+    "agent_scaffold": {
+      "harbor_version": "0.18.0",
+      "agent": "terminus-2",
+      "model_name_template": "openai/{arm}",
+      "api_base": "http://127.0.0.1:8080/v1",
+      "temperature": 0,
+      "parser_name": "json",
+      "max_turns": 20,
+      "proactive_summarization_threshold": 1024,
+      "store_all_messages": true,
+      "max_input_tokens": 8192,
+      "max_output_tokens": 512,
+      "llm_call_max_tokens": 512,
+      "enable_summarize": true,
+      "record_terminal_session": true,
+      "n_concurrent_trials": 1,
+      "n_attempts": 1,
+      "max_retries": 0
+    }
+  },
+  "swe_bench_verified": {
+    "dataset": "princeton-nlp/SWE-bench_Verified",
+    "dataset_revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+    "dataset_rows": 500,
+    "parquet_path": "data/test-00000-of-00001.parquet",
+    "parquet_sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd",
+    "harness_repository": "https://github.com/SWE-bench/SWE-bench.git",
+    "harness_commit": "f7bbbb2ccdf479001d6467c9e34af59e44a840f9",
+    "harbor_dataset": "swe-bench/swe-bench-verified",
+    "harbor_dataset_revision": 2,
+    "harbor_dataset_digest": "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
+    "harbor_dataset_tasks": 500,
+    "selection_method": "one fixed task per repository; assigned difficulty stratum; lowest md5(instance_id) within repository and stratum",
+    "tasks": [
+      {
+        "repo": "astropy/astropy",
+        "instance_id": "astropy__astropy-14369",
+        "harbor_task": "swe-bench/astropy__astropy-14369",
+        "harbor_digest": "sha256:be9e7e6e8df3da78f766e1372cbb122b49d546d3942ed5156af4db525d49633a",
+        "base_commit": "fa4e8d1cd279acf9b24560813c8652494ccd5922",
+        "difficulty": "1-4 hours"
+      },
+      {
+        "repo": "django/django",
+        "instance_id": "django__django-13033",
+        "harbor_task": "swe-bench/django__django-13033",
+        "harbor_digest": "sha256:244b30541a8accabc62bbf7116f434ae5064dfb20129adb2c28e6db88086ea0f",
+        "base_commit": "a59de6e89e8dc1f3e71c9a5a5bbceb373ea5247e",
+        "difficulty": "15 min - 1 hour"
+      },
+      {
+        "repo": "matplotlib/matplotlib",
+        "instance_id": "matplotlib__matplotlib-24570",
+        "harbor_task": "swe-bench/matplotlib__matplotlib-24570",
+        "harbor_digest": "sha256:c68ad152da881a683bf8113a448785c0d0922fafc142fd9ff423af586974afb6",
+        "base_commit": "8f0003ae902952372824c9917975fb372c026a42",
+        "difficulty": "<15 min fix"
+      },
+      {
+        "repo": "mwaskom/seaborn",
+        "instance_id": "mwaskom__seaborn-3069",
+        "harbor_task": "swe-bench/mwaskom__seaborn-3069",
+        "harbor_digest": "sha256:866e82c22b999b2758decdd49bd0fe903aaed14efeee77ffcdd1fdfbedf6c7c4",
+        "base_commit": "54cab15bdacfaa05a88fbc5502a5b322d99f148e",
+        "difficulty": "15 min - 1 hour"
+      },
+      {
+        "repo": "pallets/flask",
+        "instance_id": "pallets__flask-5014",
+        "harbor_task": "swe-bench/pallets__flask-5014",
+        "harbor_digest": "sha256:ec1cbb94086b650e100135585abf431332c601fd9a2fde86ad63aca305940c3c",
+        "base_commit": "7ee9ceb71e868944a46e1ff00b506772a53a4f1d",
+        "difficulty": "<15 min fix"
+      },
+      {
+        "repo": "psf/requests",
+        "instance_id": "psf__requests-1766",
+        "harbor_task": "swe-bench/psf__requests-1766",
+        "harbor_digest": "sha256:250108c3eddd015064b7aaf2d991e6c31aa2c71366c98cb84b73d3ea68c5a54a",
+        "base_commit": "847735553aeda6e6633f2b32e14ba14ba86887a4",
+        "difficulty": "<15 min fix"
+      },
+      {
+        "repo": "pydata/xarray",
+        "instance_id": "pydata__xarray-6992",
+        "harbor_task": "swe-bench/pydata__xarray-6992",
+        "harbor_digest": "sha256:000126b5cebc23b5737627b404b66c2cd33ac76fd3192ca24d2c2b7d541ea870",
+        "base_commit": "45c0a114e2b7b27b83c9618bc05b36afac82183c",
+        "difficulty": ">4 hours"
+      },
+      {
+        "repo": "pylint-dev/pylint",
+        "instance_id": "pylint-dev__pylint-8898",
+        "harbor_task": "swe-bench/pylint-dev__pylint-8898",
+        "harbor_digest": "sha256:a866bcb5fb09675cecf6a8dc7511553a6849cdb4924a9e82ea9b4363b2e103a7",
+        "base_commit": "1f8c4d9eb185c16a2c1d881c054f015e1c2eb334",
+        "difficulty": "1-4 hours"
+      },
+      {
+        "repo": "pytest-dev/pytest",
+        "instance_id": "pytest-dev__pytest-7571",
+        "harbor_task": "swe-bench/pytest-dev__pytest-7571",
+        "harbor_digest": "sha256:1dd44d359e2e319a75b1e174df2902dbfc2da01262fca57b9acdf26377e12226",
+        "base_commit": "422685d0bdc110547535036c1ff398b5e1c44145",
+        "difficulty": "15 min - 1 hour"
+      },
+      {
+        "repo": "scikit-learn/scikit-learn",
+        "instance_id": "scikit-learn__scikit-learn-13496",
+        "harbor_task": "swe-bench/scikit-learn__scikit-learn-13496",
+        "harbor_digest": "sha256:c7bae7264c9a44aaf83a110f7434bde6acdad76262c6ec2880395c4d2a83a338",
+        "base_commit": "3aefc834dce72e850bff48689bea3c7dff5f3fad",
+        "difficulty": "<15 min fix"
+      },
+      {
+        "repo": "sphinx-doc/sphinx",
+        "instance_id": "sphinx-doc__sphinx-9229",
+        "harbor_task": "swe-bench/sphinx-doc__sphinx-9229",
+        "harbor_digest": "sha256:9bcf2c35baf9719c6702ccee57bf3d93ab460900be65c00fa0671f3ba50b0879",
+        "base_commit": "876fa81e0a038cda466925b85ccf6c5452e0f685",
+        "difficulty": "1-4 hours"
+      },
+      {
+        "repo": "sympy/sympy",
+        "instance_id": "sympy__sympy-22456",
+        "harbor_task": "swe-bench/sympy__sympy-22456",
+        "harbor_digest": "sha256:14d24def074e43b6b7c9491608aa12e879ee558cf116195d0d2ae8dbafa93df5",
+        "base_commit": "a3475b3f9ac662cd425157dd3bdb93ad7111c090",
+        "difficulty": "15 min - 1 hour"
+      }
+    ]
+  },
+  "terminal_bench_2": {
+    "dataset": "terminal-bench/terminal-bench-2",
+    "dataset_revision": 1,
+    "dataset_digest": "sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b",
+    "dataset_tasks": 89,
+    "harbor_version": "0.18.0",
+    "harbor_repository": "https://github.com/harbor-framework/harbor.git",
+    "harbor_tag_commit": "0a01ad600e218de22a5587bd525ed07cb34bd056",
+    "selection_method": "fixed category-diverse CPU-only subset with two hard tasks and bounded agent timeouts",
+    "tasks": [
+      {
+        "name": "terminal-bench/adaptive-rejection-sampler",
+        "digest": "sha256:a3cc947ba81ea6be1e7255c7b398a30f8017e280d586c2e09eccfaf67a18d35d",
+        "difficulty": "medium",
+        "category": "scientific-computing",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/adaptive-rejection-sampler:20251031"
+      },
+      {
+        "name": "terminal-bench/cancel-async-tasks",
+        "digest": "sha256:7c230a29f27c49c2fff88f4721165f4241e456bd87a94cd525be05ae98c6cbbb",
+        "difficulty": "hard",
+        "category": "software-engineering",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/cancel-async-tasks:20251031"
+      },
+      {
+        "name": "terminal-bench/compile-compcert",
+        "digest": "sha256:59b8bdc7ad56243291afbc14cc1947d996db745a488ac018be4936643a47a999",
+        "difficulty": "medium",
+        "category": "system-administration",
+        "agent_timeout_sec": 2400,
+        "cpus": 2,
+        "memory_mb": 4096,
+        "gpus": 0,
+        "docker_image": "alexgshaw/compile-compcert:20251031"
+      },
+      {
+        "name": "terminal-bench/constraints-scheduling",
+        "digest": "sha256:757c2b9672df2db1ca879878e6c13dcad20222381694a29920eb452276a69d90",
+        "difficulty": "medium",
+        "category": "personal-assistant",
+        "agent_timeout_sec": 1200,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/constraints-scheduling:20251031"
+      },
+      {
+        "name": "terminal-bench/db-wal-recovery",
+        "digest": "sha256:33f5d72ac836c8642d8160f4628352ca0cdf5d17838aae9c3b0db9bc78335825",
+        "difficulty": "medium",
+        "category": "file-operations",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/db-wal-recovery:20251031"
+      },
+      {
+        "name": "terminal-bench/extract-elf",
+        "digest": "sha256:fe7aa4e037884f0b5d1dd9ea81df2b96b6c31d7d5f9184f1ef2de273614b5ecf",
+        "difficulty": "medium",
+        "category": "file-operations",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/extract-elf:20251031"
+      },
+      {
+        "name": "terminal-bench/fix-code-vulnerability",
+        "digest": "sha256:e73a9bc59e041584ecaf1884f01e2b055d824c2f30ada540917e1ce5c4493408",
+        "difficulty": "hard",
+        "category": "security",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/fix-code-vulnerability:20251031"
+      },
+      {
+        "name": "terminal-bench/kv-store-grpc",
+        "digest": "sha256:83c7ad30412cc43d9d5f3c590a9154b53a1ed37e8a802bffc45dc64f51a2b427",
+        "difficulty": "medium",
+        "category": "software-engineering",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/kv-store-grpc:20251031"
+      },
+      {
+        "name": "terminal-bench/largest-eigenval",
+        "digest": "sha256:89ed1e066ddb3e9fb78eae0c7d9b2fcf263af0962bd93b0ee07833248ecd0450",
+        "difficulty": "medium",
+        "category": "mathematics",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/largest-eigenval:20251031"
+      },
+      {
+        "name": "terminal-bench/pytorch-model-recovery",
+        "digest": "sha256:3164b409d3d9706c2b9a78966f6a16775229f289f076559c1a60102db820ed95",
+        "difficulty": "medium",
+        "category": "model-training",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/pytorch-model-recovery:20251031"
+      },
+      {
+        "name": "terminal-bench/query-optimize",
+        "digest": "sha256:a4802d5a0182e4a648bdab02c37f611dd100aeae6772cffa05b5d9e7072250b3",
+        "difficulty": "medium",
+        "category": "data-science",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/query-optimize:20251031"
+      },
+      {
+        "name": "terminal-bench/regex-log",
+        "digest": "sha256:72f5f52d6b523a00380cb088fcf0ba83a2e2f7b478fdad6515598ab43584e337",
+        "difficulty": "medium",
+        "category": "data-processing",
+        "agent_timeout_sec": 900,
+        "cpus": 1,
+        "memory_mb": 2048,
+        "gpus": 0,
+        "docker_image": "alexgshaw/regex-log:20251031"
+      }
+    ]
+  }
+}

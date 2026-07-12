@@ -1,5 +1,67 @@
 # bw24 — project instructions
 
+## Branch isolation
+
+Feature and research work MUST happen on a dedicated branch/worktree, never directly on `main`.
+Preserve unrelated dirty work and stage only the intended lane.
+
+## Hy3 spilling and quantization research
+
+This lane owns two separate deliverables: (1) spill-path improvements for large expert banks, and
+(2) a controlled five-arm quantization study. Do not trade correctness in one track for a result in
+the other, and report spill performance separately from model-quality comparisons.
+
+- `HostExps.layouts == None` is the uniform-layout fast-path contract. `Some(layouts)` makes each
+  expert's `qtype`, `row_bytes`, `len`, and `offset` authoritative; use `expert_layout()` and
+  `max_expert_bytes()` rather than projection-wide fields.
+- Mixed layers run through metadata-aware staged, SLRU-cache, or grouped dispatch. Resident slab,
+  pointer-table, pairs, dev, and grouped-decode fused kernels remain uniform-only until they group
+  pointers by layout; never send mixed metadata through those kernels.
+- A v2 tier plan MUST assign every retained expert projection to Q2_K, Q3_K, or NVFP4. Missing
+  assignments are errors; never silently retain a BF16 expert. Q2_K remains on the generic staged
+  f32-dequant kernel until the target-rig correctness and performance gates justify a fast path.
+- A plan's pruned expert ids keep their original router positions. `active_experts()` masks them
+  before top-k and their weights must be absent. Never dispatch, cache, or fabricate bytes for a
+  masked id, and never let a fallback uniform slab bypass split expert overrides.
+- The public Hy3 REAP50 checkpoint renumbers retained experts and publishes no original-id list.
+  Recover the frozen mask only through `tools/recover_hy3_reap_mask.py`: require one-to-one router
+  row matches, the locked nearest-match margin, and exact correction-bias confirmation. Scored
+  artifacts always quantize the pinned BF16 source; never re-quantize the public MLX experts.
+- The five scored arms are fixed in `research/per-expert-quant/arms.lock.json`: `plain_quant`
+  (full bank, uniform NVFP4), `plain_reap_quant` (REAP50 mask, uniform NVFP4),
+  `plain_reap_mix_quant` (REAP50 mask, 48 least-used Q2_K plus 48 NVFP4), and `mix_quant`
+  (full bank, hottest 25% NVFP4, middle 50% Q3_K, coldest 25% Q2_K, zero-count pruned), plus
+  `mix_quant_prune25` (per layer: 48 NVFP4, 48 Q3_K, 48 Q2_K, and 48 pruned).
+- BF16 Hy3 is source material only, never an evaluation arm. All five arms must share the same
+  source revision, non-expert tensor encodings, REAP mask where applicable, prompt template,
+  runtime commit, and evaluation settings.
+- Rank per layer from non-public calibration traces and freeze trace/plan hashes before viewing
+  public eval scores. Uniform plans must not consume calibration traces.
+- Public eval runs require `ARTIFACT` and must retain its manifest/hash. Public benchmark data
+  must never select experts, thresholds, tier fractions, or pruning decisions.
+- Model loading, spill correctness, research measurements, artifact generation, and public evals
+  run on the provisioned G7e research machine. Do not merge or tag this lane until its remote raw logs
+  and five-arm eval report exist.
+- The local RTX 5090 rig remains bw24's deployment and final performance target. Treat G7e results
+  as research evidence, not a default-flip decision; re-run correctness, memory, and throughput gates
+  on the 5090 before shipping any runtime default.
+- GGUF remains bw24's primary runtime and delivery format. Hy3 safetensors are a pinned source for
+  this quantization study, and per-expert repack directories are experimental artifacts, not a
+  format pivot. Put spill/cache improvements in shared paths and preserve GGUF gates and behavior.
+- Optimize expert serving as one storage-to-compute pipeline: mmap fallback, explicit positioned
+  reads, local-NVMe access, bounded pinned host buffers, residency caching, asynchronous
+  prefetch/overlap, PCIe transfer, and GPU kernels. Compare `O_DIRECT`, io_uring, and mapped-host
+  access only against the measured worker baseline, and keep H2D/cache publication on the CUDA
+  owner thread. Measure the stages together so a faster kernel cannot hide a data-movement
+  regression.
+- Keep durable model/artifact copies under `/data`, but stage byte-identical scored artifacts onto
+  the G7e local NVMe (`/scratch`) for calibration, public evals, and spill benchmarks. Record the
+  staged manifest hash; do not report persistent-EBS 4 KiB fault throughput as bw24 spill speed.
+
+Why: a projection-wide dtype silently decodes some experts with the wrong block layout; routing a
+pruned id dereferences nonexistent weights; and a G7e-only performance win may not transfer to the
+5090's smaller HBM and different storage/PCIe balance.
+
 ## Perf board: README must stay current, every push
 
 The tuning campaign lands new numbers several times a day (`research/tune-data/rig5090.jsonl` is
@@ -35,6 +97,14 @@ Same three gates as CONTRIBUTING.md: `kernel-check`, the `run-gen` argmax gate, 
 K=1..8 self-consistency. A kernel change without before/after numbers measured per
 `research/benchmarks.md` isn't done.
 
+## Additional accelerator backends
+
+Blackwell remains bw24's primary optimized target. When research or deployment needs another
+accelerator, prefer an explicitly gated bw24 backend over changing the model or quantization
+artifact. Secondary backends must preserve the model bytes, default off at build time, document
+disabled target-specific kernels, and pass a same-prompt golden-output gate before producing
+scored evidence. They do not change the naked sm_120a build or its performance defaults.
+
 ## Evidence discipline (measurement lanes)
 
 - Raw sweep output is part of the deliverable: commit the per-run JSONL/log next to the summary
@@ -60,9 +130,9 @@ are filtered as research-log noise — pick the prefix accordingly.
 ## CI is compile-only; the exactness battery is the real gate
 
 GitHub runners have no GPU. `.github/workflows/ci.yml` catches build breaks (nvcc compiles fine
-GPU-less). Before any merge or tag, the battery runs on the rig: `kernel-check` ALL GREEN,
-`run-gen` argmax MATCH on affected models, `run-spec` K=1..8 self-consistency PASS. Never tag on
-a commit whose battery didn't run here.
+GPU-less). Before any merge or tag, the battery runs on the designated target GPU rig:
+`kernel-check` ALL GREEN, `run-gen` argmax MATCH on affected models, `run-spec` K=1..8
+self-consistency PASS. Never tag a commit without the target-rig battery.
 
 ## Flags doctrine
 

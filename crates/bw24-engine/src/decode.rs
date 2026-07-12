@@ -55,6 +55,15 @@ pub struct GenOutput {
     pub stop_reason: StopReason,
 }
 
+/// Diagnostic-only snapshots of Hy3 layer 0 in the eager T=1 serving path.
+/// Each buffer is one residual-width device row captured before the next stage can reuse it.
+pub struct Hy3Layer0Stages {
+    pub attention_output: CudaSlice<f32>,
+    pub after_attention: CudaSlice<f32>,
+    pub mlp_output: CudaSlice<f32>,
+    pub residual: CudaSlice<f32>,
+}
+
 impl HybridModel {
     /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
     pub fn decode_step(&self, e: &Engine, token: u32, cache: &mut Cache) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -295,6 +304,31 @@ impl HybridModel {
     /// overwrites it — cheap (one clone_dtod of [n_embd] per aux layer). T=1 decode regime.
     pub fn decode_step_aux(&self, e: &Engine, token: u32, cache: &mut Cache, aux_layers: &[usize])
                            -> Result<(Vec<f32>, Vec<CudaSlice<f32>>), Box<dyn std::error::Error>> {
+        let (logits, aux, _) = self.decode_step_aux_inner(e, token, cache, aux_layers, false)?;
+        Ok((logits, aux))
+    }
+
+    /// Diagnostic-only Hy3 layer-0 trace through the real eager T=1 serving path. Besides the
+    /// final block residual, this captures the attention output before its residual add, the
+    /// after-attention residual, and the dense-MLP output before the final residual add.
+    pub fn decode_step_hy3_layer0_stages(
+        &self, e: &Engine, token: u32, cache: &mut Cache,
+    ) -> Result<(Vec<f32>, Hy3Layer0Stages), Box<dyn std::error::Error>> {
+        if self.cfg.hy3.is_none() {
+            return Err("decode_step_hy3_layer0_stages requires a Hy3 model".into());
+        }
+        if !matches!(self.layers.first().map(|layer| &layer.ffn),
+                     Some(crate::hybrid::Ffn::Dense { .. })) {
+            return Err("Hy3 diagnostic expected layer 0 to use a dense MLP".into());
+        }
+        let (logits, _, stages) = self.decode_step_aux_inner(e, token, cache, &[], true)?;
+        Ok((logits, stages.ok_or("Hy3 layer-0 stages were not captured")?))
+    }
+
+    fn decode_step_aux_inner(&self, e: &Engine, token: u32, cache: &mut Cache,
+                             aux_layers: &[usize], capture_hy3_layer0: bool)
+                             -> Result<(Vec<f32>, Vec<CudaSlice<f32>>, Option<Hy3Layer0Stages>),
+                                       Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -303,6 +337,7 @@ impl HybridModel {
 
         let mut x = e.htod(&self.embd.gather(n_embd, &[token]))?;
         let mut aux: Vec<CudaSlice<f32>> = Vec::with_capacity(aux_layers.len());
+        let mut hy3_layer0 = None;
 
         for (il, layer) in self.layers.iter().enumerate() {
             // attn-input NORM-FUSION (eager); shared with decode_step_h.
@@ -313,6 +348,14 @@ impl HybridModel {
             let (x1, ffn_out) = self.residual_norm_ffn(e, layer, &x, &mixed, n_embd, il, eps)?;
             let mut x2 = e.uninit(n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, n_embd)?;
+            if capture_hy3_layer0 && il == 0 {
+                hy3_layer0 = Some(Hy3Layer0Stages {
+                    attention_output: e.clone_dtod(&mixed)?,
+                    after_attention: e.clone_dtod(&x1)?,
+                    mlp_output: e.clone_dtod(&ffn_out)?,
+                    residual: e.clone_dtod(&x2)?,
+                });
+            }
             // EAGLE3 N1: capture this block's residual output if it is an aux layer.
             if aux_layers.contains(&il) { aux.push(e.clone_dtod(&x2)?); }
             x = x2;
@@ -324,7 +367,7 @@ impl HybridModel {
         let logits = e.matmul(&self.output, &hn, 1)?;
         let host = e.dtoh(&logits)?;
         cache.pos += 1;
-        Ok((host, aux))
+        Ok((host, aux, hy3_layer0))
     }
 
     /// Like `decode_step`, but ALSO returns the trunk's hidden state `x` taken BEFORE the final

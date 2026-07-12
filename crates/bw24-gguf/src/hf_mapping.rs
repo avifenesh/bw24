@@ -57,7 +57,10 @@ pub fn ggml_to_hf(ggml: &str, arch: &Arch) -> Option<String> {
     if arch.is_hy3() {
         let hy3_suffix: Option<&str> = match suffix {
             "ffn_gate_inp.weight" => Some("mlp.router.gate.weight"),
-            "exp_probs_b.bias" => Some("mlp.router.expert_bias"),
+            // Current tencent/Hy3 checkpoints store the selection-only correction beside the
+            // router module. Preview checkpoints used `mlp.router.expert_bias`; the safetensors
+            // source keeps that older spelling as a lookup fallback.
+            "exp_probs_b.bias" => Some("mlp.expert_bias"),
             "ffn_gate_shexp.weight" => Some("mlp.shared_mlp.gate_proj.weight"),
             "ffn_up_shexp.weight" => Some("mlp.shared_mlp.up_proj.weight"),
             "ffn_down_shexp.weight" => Some("mlp.shared_mlp.down_proj.weight"),
@@ -370,7 +373,11 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
     // 2. qwen35 norm +1: every `*norm.weight` EXCEPT linear_attn (ssm_norm). The dense map below
     //    renames them; for hybrid we must additionally add +1 (qwen.py:302-303). Catch the dense
     //    norm names here so they take the Transform arm.
-    if cfg.arch.is_hybrid() {
+    // `is_hybrid()` also includes the dense-attention MoE architectures that reuse HybridModel
+    // (MiniMax-M3 and Hy3). The MTP/SSM maps and +1 norm convention here are Qwen3.5-specific.
+    // MiniMax applies its independently configured Gemma-norm fold in the next arm; Hy3 uses the
+    // checkpoint norm weights verbatim.
+    if matches!(cfg.arch, Arch::Qwen35 | Arch::Qwen35Moe) {
         // MTP/NextN block FIRST: blk.{n_trunk}.* maps into the HF `mtp.*` namespace (NVIDIA 27B /
         // qwen3.6 text ckpts), NOT model.layers.{n_trunk}.* (which does not exist — HF
         // num_hidden_layers excludes the MTP block). Must precede the SSM/dense arms.
@@ -550,7 +557,7 @@ mod tests {
         );
         assert_eq!(
             ggml_to_hf("blk.1.exp_probs_b.bias", &a).unwrap(),
-            "model.layers.1.mlp.router.expert_bias"
+            "model.layers.1.mlp.expert_bias"
         );
         assert_eq!(
             ggml_to_hf("blk.1.ffn_gate_shexp.weight", &a).unwrap(),
@@ -576,6 +583,43 @@ mod tests {
             ggml_to_hf("blk.1.ffn_down_exps.weight", &a).unwrap(),
             "model.layers.1.mlp.switch_mlp.down_proj.weight"
         );
+    }
+
+    fn mapping_config(model_type: &str) -> ModelConfig {
+        let json = format!(r#"{{
+            "model_type":"{model_type}",
+            "num_hidden_layers":2,
+            "hidden_size":256,
+            "num_attention_heads":8,
+            "num_key_value_heads":2,
+            "intermediate_size":512,
+            "vocab_size":1024,
+            "max_position_embeddings":2048
+        }}"#);
+        ModelConfig::from_hf(&crate::config::HfConfig::parse(&json))
+    }
+
+    #[test]
+    fn norm_transform_is_arch_specific() {
+        let qwen35 = mapping_config("qwen3_5");
+        match resolve_ggml("blk.0.attn_norm.weight", &qwen35) {
+            Some(HfTarget::Transform { kind: TransformKind::NormPlusOne, .. }) => {}
+            _ => panic!("Qwen3.5 attn norm lost its required +1 transform"),
+        }
+
+        let hy3 = mapping_config("hy_v3");
+        for ggml in [
+            "blk.0.attn_norm.weight",
+            "blk.0.ffn_norm.weight",
+            "blk.0.attn_q_norm.weight",
+            "blk.0.attn_k_norm.weight",
+            "output_norm.weight",
+        ] {
+            match resolve_ggml(ggml, &hy3) {
+                Some(HfTarget::Plain(_)) => {}
+                _ => panic!("Hy3 norm {ggml} must use the raw checkpoint weight"),
+            }
+        }
     }
 
     /// The V-head reorder permutation: HF grouped [0,1, 2,3, ...] -> ggml tiled [0,2,...,1,3,...].

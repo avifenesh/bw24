@@ -1,0 +1,179 @@
+{
+  "format": "bw24-public-eval-suite-v1",
+  "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+  "generated_utc": "2026-07-10T00:00:00Z",
+  "eval_documents": {
+    "gpqa_diamond_cot_zeroshot": 198,
+    "hendrycks_math500": 500,
+    "mmlu_pro_history": 381,
+    "mmlu_pro_other": 924,
+    "mmlu_pro_economics": 844,
+    "mmlu_pro_law": 1101,
+    "mmlu_pro_psychology": 798
+  },
+  "suites": {
+    "candidate": [
+      "gpqa_diamond_cot_zeroshot",
+      "hendrycks_math500",
+      "mmlu_pro_history",
+      "mmlu_pro_other",
+      "mmlu_pro_economics",
+      "mmlu_pro_law",
+      "mmlu_pro_psychology"
+    ],
+    "core": [
+      "ifeval",
+      "gsm8k_cot",
+      "bbh_cot_fewshot",
+      "drop"
+    ],
+    "code": [
+      "humaneval_instruct",
+      "mbpp_instruct"
+    ]
+  },
+  "datasets": {
+    "openai/gsm8k": {
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "task_files": ["lm_eval/tasks/gsm8k/gsm8k-cot.yaml"]
+    },
+    "google/IFEval": {
+      "revision": "966cd89545d6b6acfd7638bc708b98261ca58e84",
+      "task_files": ["lm_eval/tasks/ifeval/ifeval.yaml"]
+    },
+    "SaylorTwift/bbh": {
+      "revision": "b5306be6f827cfafbb545ff5a51f96916029b0fd",
+      "task_files": ["lm_eval/tasks/bbh/cot_fewshot/_cot_fewshot_template_yaml"]
+    },
+    "EleutherAI/drop": {
+      "revision": "619386fc7ffe6dace3cc6d3483c69b164ebf6bf3",
+      "task_files": ["lm_eval/tasks/drop/default.yaml"]
+    },
+    "openai/openai_humaneval": {
+      "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544",
+      "task_files": ["lm_eval/tasks/humaneval/humaneval.yaml"]
+    },
+    "google-research-datasets/mbpp": {
+      "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+      "task_files": ["lm_eval/tasks/mbpp/mbpp_instruct.yaml"]
+    },
+    "Idavidrein/gpqa": {
+      "revision": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
+      "task_files": ["lm_eval/tasks/gpqa/cot_zeroshot/_gpqa_cot_zeroshot_yaml"]
+    },
+    "HuggingFaceH4/MATH-500": {
+      "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be",
+      "task_files": ["lm_eval/tasks/hendrycks_math/hendrycks_math500.yaml"]
+    },
+    "TIGER-Lab/MMLU-Pro": {
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "task_files": ["lm_eval/tasks/mmlu_pro/_default_template_yaml"]
+    }
+  },
+  "primary_metrics": [
+    {
+      "label": "GPQA Diamond zero-shot CoT",
+      "result_task": "gpqa_diamond_cot_zeroshot",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "strict-match",
+      "sample_glob": "samples_gpqa_diamond_cot_zeroshot_*.jsonl"
+    },
+    {
+      "label": "MATH-500 exact match",
+      "result_task": "hendrycks_math500",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "none",
+      "sample_glob": "samples_hendrycks_math500_*.jsonl"
+    },
+    {
+      "label": "MMLU-Pro history",
+      "result_task": "mmlu_pro_history",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "custom-extract",
+      "sample_glob": "samples_mmlu_pro_history_*.jsonl"
+    },
+    {
+      "label": "MMLU-Pro other knowledge",
+      "result_task": "mmlu_pro_other",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "custom-extract",
+      "sample_glob": "samples_mmlu_pro_other_*.jsonl"
+    },
+    {
+      "label": "MMLU-Pro economics",
+      "result_task": "mmlu_pro_economics",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "custom-extract",
+      "sample_glob": "samples_mmlu_pro_economics_*.jsonl"
+    },
+    {
+      "label": "MMLU-Pro law",
+      "result_task": "mmlu_pro_law",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "custom-extract",
+      "sample_glob": "samples_mmlu_pro_law_*.jsonl"
+    },
+    {
+      "label": "MMLU-Pro psychology",
+      "result_task": "mmlu_pro_psychology",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "custom-extract",
+      "sample_glob": "samples_mmlu_pro_psychology_*.jsonl"
+    },
+    {
+      "label": "IFEval strict prompt accuracy",
+      "result_task": "ifeval",
+      "result_section": "results",
+      "metric": "prompt_level_strict_acc",
+      "filter": "none",
+      "sample_glob": "samples_ifeval_*.jsonl"
+    },
+    {
+      "label": "GSM8K CoT exact match",
+      "result_task": "gsm8k_cot",
+      "result_section": "results",
+      "metric": "exact_match",
+      "filter": "strict-match",
+      "sample_glob": "samples_gsm8k_cot_*.jsonl"
+    },
+    {
+      "label": "BBH CoT few-shot exact match",
+      "result_task": "bbh_cot_fewshot",
+      "result_section": "groups",
+      "metric": "exact_match",
+      "filter": "get-answer",
+      "sample_glob": "samples_bbh_cot_fewshot_*.jsonl"
+    },
+    {
+      "label": "DROP F1",
+      "result_task": "drop",
+      "result_section": "results",
+      "metric": "f1",
+      "filter": "none",
+      "sample_glob": "samples_drop_*.jsonl"
+    },
+    {
+      "label": "HumanEval pass at 1",
+      "result_task": "humaneval_instruct",
+      "result_section": "results",
+      "metric": "pass@1",
+      "filter": "create_test",
+      "sample_glob": "samples_humaneval_instruct_*.jsonl"
+    },
+    {
+      "label": "MBPP pass at 1",
+      "result_task": "mbpp_instruct",
+      "result_section": "results",
+      "metric": "pass_at_1",
+      "filter": "extract_code",
+      "sample_glob": "samples_mbpp_instruct_*.jsonl"
+    }
+  ]
+}

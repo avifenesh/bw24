@@ -15,6 +15,7 @@
 //! so the second produces tokens before the first finishes (not serialized end-to-end).
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
@@ -54,9 +55,11 @@ pub struct Request {
     pub prompt_ids: Vec<u32>,   // already tokenized? no — worker tokenizes (it owns the Tokenizer)
     pub prompt_text: String,
     pub chat: bool,
+    pub chat_messages: Vec<(String, String)>,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
+    pub trace_id: Option<String>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -132,8 +135,9 @@ struct Session {
     generated: Vec<u32>,
     params: GenParams,
     stop_strings: Vec<String>,
+    trace_id: Option<String>,
     /// detokenized text already emitted (to compute incremental deltas + stop-string matching).
-    emitted_text: String,
+    emitted_bytes: usize,
     budget: usize,        // max tokens we may still generate
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     t0: Instant,
@@ -161,17 +165,32 @@ pub fn run(
     let mut order: Vec<String> = Vec::new();
     for (name, path) in &models {
         eprintln!("[worker] loading model {name:?} <- {path}");
-        // DIRECTORY path = safetensors HF checkpoint (same dispatch as run_spec); file = GGUF.
+        // DIRECTORY path = safetensors HF checkpoint or a manifest-backed bw24 repack/overlay;
+        // file = GGUF. Repack tokenizers live in the manifest's source_dir.
         let (model, tok) = if std::path::Path::new(path).is_dir() {
-            let st = match bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(path)) {
-                Ok(s) => s,
-                Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
-            };
-            let model = match HybridModel::load_from_source(&engine, &st) {
+            let dir = std::path::Path::new(path);
+            let (src, tok_dir): (Box<dyn bw24_gguf::source::TensorSource>, std::path::PathBuf) =
+                if dir.join("manifest.json").exists() {
+                    let repack = match bw24_gguf::source::Hy3RepackSource::open(dir) {
+                        Ok(source) => source,
+                        Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+                    };
+                    let tok_dir = repack.source_dir()
+                        .filter(|source| source.join("tokenizer.json").exists())
+                        .unwrap_or(dir).to_path_buf();
+                    (Box::new(repack), tok_dir)
+                } else {
+                    let st = match bw24_gguf::source::SafetensorsSource::open(dir) {
+                        Ok(source) => source,
+                        Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
+                    };
+                    (Box::new(st), dir.to_path_buf())
+                };
+            let model = match HybridModel::load_from_source(&engine, src.as_ref()) {
                 Ok(m) => m,
                 Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
             };
-            let tok = match Tokenizer::from_hf_dir(std::path::Path::new(path)) {
+            let tok = match Tokenizer::from_hf_dir(&tok_dir) {
                 Ok(t) => t,
                 Err(err) => { let _ = ready_tx.send(Err(format!("tokenizer {name}: {err}"))); return; }
             };
@@ -225,7 +244,8 @@ pub fn run(
         }
 
         // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
-        while active.len() < MAX_ACTIVE {
+        let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
+        while active.len() < max_active {
             let Some(req) = queue.pop_front() else { break };
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
                 Ok(s) => active.push(s),
@@ -272,6 +292,24 @@ pub fn run(
                 }
             }
         }
+        if !finished.is_empty() && std::env::var("BW24_SPILL_STATS").as_deref() == Ok("1") {
+            if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
+                engine.moe_pread_stats() {
+                eprintln!("[spill-pread] snapshot reads={reads} bytes={bytes} errors={errors} \
+                           short_reads={short} fallbacks={fallbacks} buffer_waits={waits} \
+                           ring_full={ring_full}");
+            }
+            if let Some((hits, misses, staged_bytes, slots)) = engine.moe_cache_stats() {
+                let accesses = hits.saturating_add(misses);
+                let hit_rate = if accesses == 0 {
+                    0.0
+                } else {
+                    100.0 * hits as f64 / accesses as f64
+                };
+                eprintln!("[moe-cache] snapshot hits={hits} misses={misses} \
+                           hit_rate={hit_rate:.3} staged_bytes={staged_bytes} slots={slots}");
+            }
+        }
     }
 }
 
@@ -309,6 +347,12 @@ fn admit(
     // tokenize the text, optionally wrapping in the chat template.
     let prompt: Vec<u32> = if !req.prompt_ids.is_empty() {
         req.prompt_ids.clone()
+    } else if !req.chat_messages.is_empty() {
+        let messages: Vec<_> = req.chat_messages.iter()
+            .map(|(role, content)| (role.as_str(), content.as_str()))
+            .collect();
+        let rendered = lm.tok.apply_chat_template(&messages, true);
+        lm.tok.encode(&rendered, true)
     } else if req.chat {
         let rendered = lm.tok.apply_chat_template(&[("user", req.prompt_text.as_str())], true);
         lm.tok.encode(&rendered, true)
@@ -341,7 +385,8 @@ fn admit(
     // (bins) pins 3-turn continuation-prime output == fresh-greedy oracle on both models, and the
     // continuation path the reuse pool takes (prime_cache with cache.pos>0 / decode_step) is
     // exactly what it validates. BW24_KV_REUSE=0 disables.
-    let reuse_on = std::env::var("BW24_KV_REUSE").map(|v| v != "0").unwrap_or(true);
+    let reuse_on = !confidence_trace_enabled()
+        && std::env::var("BW24_KV_REUSE").map(|v| v != "0").unwrap_or(true);
     if let (true, Some(pool)) = (reuse_on, reuse.get_mut(&req.model)) {
         if let Some(idx) = pool.iter().rposition(|e|
             e.fed.len() >= REUSE_MIN_PREFIX && e.cap >= ctx_cap
@@ -372,7 +417,8 @@ fn admit(
     // session owns its own caches; folding the reuse pool into SpecSession is a follow-up) +
     // BW24_SERVE_SPEC!=0. The whole prompt goes to the spec session as turn 1's suffix; the
     // legacy prefill/decode path is bypassed entirely in step_session.
-    let serve_spec = std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
+    let serve_spec = !confidence_trace_enabled()
+        && std::env::var("BW24_SERVE_SPEC").map(|v| v != "0").unwrap_or(true);
     let mut spec_resumed = 0usize;
     let mut text_suffix: Option<Vec<u32>> = None;
     // Sampled-spec serve: temperature + filters + penalties ALL ride the rejection-sampling
@@ -471,11 +517,51 @@ fn admit(
         generated: Vec::new(),
         params,
         stop_strings: req.stop_strings,
-        emitted_text: String::new(),
+        trace_id: req.trace_id,
+        emitted_bytes: 0,
         budget,
         tx: req.tx,
         t0: Instant::now(),
     })
+}
+
+/// Return only the newly completed UTF-8 text. Tokenizer byte-fallback sequences may span token
+/// boundaries; retain an incomplete suffix until a later token completes it instead of emitting a
+/// permanent replacement character. Truly invalid bytes are consumed as U+FFFD so they cannot
+/// stall every later delta.
+fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
+    if *emitted_bytes > decoded.len() {
+        return String::new();
+    }
+    let mut cursor = *emitted_bytes;
+    let mut delta = String::new();
+    while cursor < decoded.len() {
+        match std::str::from_utf8(&decoded[cursor..]) {
+            Ok(text) => {
+                delta.push_str(text);
+                cursor = decoded.len();
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid != 0 {
+                    // SAFETY: `valid_up_to` is the exact valid UTF-8 prefix certified by Rust.
+                    delta.push_str(unsafe {
+                        std::str::from_utf8_unchecked(&decoded[cursor..cursor + valid])
+                    });
+                    cursor += valid;
+                }
+                match err.error_len() {
+                    None => break,
+                    Some(invalid) => {
+                        delta.push('\u{fffd}');
+                        cursor += invalid;
+                    }
+                }
+            }
+        }
+    }
+    *emitted_bytes = cursor;
+    delta
 }
 
 /// One scheduler tick for one session. Returns Ok(true) if still running, Ok(false) if retired.
@@ -540,11 +626,9 @@ fn step_session(
             if s.params.eos.contains(&tok) { stop = Some(StopReason::Eos); break; }
         }
         // stream the burst's incremental text in ONE event (per-token events are per-tick anyway).
-        let full = lm.tok.decode(&s.generated);
-        let delta = if full.len() >= s.emitted_text.len() && full.starts_with(&s.emitted_text) {
-            full[s.emitted_text.len()..].to_string()
-        } else { String::new() };
-        s.emitted_text = full.clone();
+        let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+        let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+        let full = String::from_utf8_lossy(&decoded);
         if !delta.is_empty() {
             let _ = s.tx.send(Event::Token { id: *burst.last().unwrap_or(&0), text: delta });
         }
@@ -569,7 +653,7 @@ fn step_session(
     if !s.prefill_done {
         const PREFILL_TICK_T: usize = 1024;
         let q = s.prefill_queue.len();
-        if q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
+        if !confidence_trace_enabled() && q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2) {
             // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
             let mut take = q.min(PREFILL_TICK_T);
             if q - take > 0 && q - take < bw24_engine::hybrid_forward::PRIME_MIN_T { take = q; }
@@ -579,6 +663,9 @@ fn step_session(
             for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         } else if let Some(tok) = s.prefill_queue.pop_front() {
             s.last_logits = lm.model.decode_step(engine, tok, s.cache.as_mut().unwrap())?;
+            if let Some(&target) = s.prefill_queue.front() {
+                write_confidence_trace(s, tok, target, &s.last_logits)?;
+            }
             s.fed.push(tok);
             s.sampler.accept(tok);
         }
@@ -605,14 +692,9 @@ fn step_session(
     }
 
     // Detokenize the full generated tail, compute the incremental text delta vs what we've emitted.
-    let full = lm.tok.decode(&s.generated);
-    let delta = if full.len() >= s.emitted_text.len() && full.starts_with(&s.emitted_text) {
-        full[s.emitted_text.len()..].to_string()
-    } else {
-        // detok is not strictly prefix-stable across multibyte boundaries; fall back to last-piece.
-        lm.tok.decode(&[next])
-    };
-    s.emitted_text = full.clone();
+    let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+    let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+    let full = String::from_utf8_lossy(&decoded);
     let _ = s.tx.send(Event::Token { id: next, text: delta });
 
     // stop-string match on the detokenized tail.
@@ -631,6 +713,77 @@ fn step_session(
     s.last_logits = lm.model.decode_step(engine, next, s.cache.as_mut().unwrap())?;
     s.fed.push(next);
     Ok(true)
+}
+
+fn confidence_trace_enabled() -> bool {
+    std::env::var("BW24_CONFIDENCE_TRACE").is_ok()
+}
+
+#[derive(Debug)]
+struct ConfidenceSummary {
+    reference_logprob: f64,
+    top1_token: u32,
+    top1_correct: bool,
+    top1_top2_margin: f32,
+    entropy: f64,
+}
+
+fn summarize_confidence(logits: &[f32], target: u32) -> Result<ConfidenceSummary, String> {
+    let target = target as usize;
+    if logits.is_empty() || target >= logits.len() {
+        return Err(format!("target token {target} outside {} logits", logits.len()));
+    }
+    let mut top1 = (0usize, f32::NEG_INFINITY);
+    let mut top2 = f32::NEG_INFINITY;
+    for (index, &logit) in logits.iter().enumerate() {
+        if logit > top1.1 {
+            top2 = top1.1;
+            top1 = (index, logit);
+        } else if logit > top2 {
+            top2 = logit;
+        }
+    }
+    let max_logit = top1.1 as f64;
+    let mut sum_exp = 0.0f64;
+    let mut weighted_logit = 0.0f64;
+    for &logit in logits {
+        let exp = ((logit as f64) - max_logit).exp();
+        sum_exp += exp;
+        weighted_logit += exp * logit as f64;
+    }
+    let logsumexp = max_logit + sum_exp.ln();
+    Ok(ConfidenceSummary {
+        reference_logprob: logits[target] as f64 - logsumexp,
+        top1_token: top1.0 as u32,
+        top1_correct: top1.0 == target,
+        top1_top2_margin: top1.1 - top2,
+        entropy: logsumexp - weighted_logit / sum_exp,
+    })
+}
+
+fn write_confidence_trace(
+    session: &Session,
+    input_token: u32,
+    target_token: u32,
+    logits: &[f32],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(path) = std::env::var("BW24_CONFIDENCE_TRACE") else { return Ok(()) };
+    let summary = summarize_confidence(logits, target_token).map_err(std::io::Error::other)?;
+    let record = serde_json::json!({
+        "format": "bw24-token-confidence-v1",
+        "trace_id": session.trace_id,
+        "input_position": session.fed.len(),
+        "input_token": input_token,
+        "target_token": target_token,
+        "reference_logprob": summary.reference_logprob,
+        "top1_token": summary.top1_token,
+        "top1_correct": summary.top1_correct,
+        "top1_top2_margin": summary.top1_top2_margin,
+        "entropy": summary.entropy,
+    });
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{record}")?;
+    Ok(())
 }
 
 fn finish(s: &Session, reason: StopReason) {
@@ -656,5 +809,38 @@ pub fn spawn(models: Vec<(String, String)>) -> Result<(Sender<Cmd>, Arc<Vec<Stri
         Ok(Ok(names)) => Ok((cmd_tx, Arc::new(names))),
         Ok(Err(err)) => Err(err),
         Err(_) => Err("worker died during init".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{summarize_confidence, utf8_delta};
+
+    #[test]
+    fn streaming_utf8_waits_for_a_complete_multibyte_sequence() {
+        let mut emitted = 0;
+        assert_eq!(utf8_delta(b"caf\xc3", &mut emitted), "caf");
+        assert_eq!(emitted, 3);
+        assert_eq!(utf8_delta(b"caf\xc3\xa9\n", &mut emitted), "é\n");
+        assert_eq!(emitted, 6);
+    }
+
+    #[test]
+    fn streaming_utf8_consumes_truly_invalid_bytes_once() {
+        let mut emitted = 0;
+        assert_eq!(utf8_delta(b"a\xffb", &mut emitted), "a\u{fffd}b");
+        assert_eq!(emitted, 3);
+        assert_eq!(utf8_delta(b"a\xffbc", &mut emitted), "c");
+    }
+
+    #[test]
+    fn confidence_summary_tracks_reference_and_margin() {
+        let summary = summarize_confidence(&[0.0, 2.0, 1.0], 1).unwrap();
+        assert_eq!(summary.top1_token, 1);
+        assert!(summary.top1_correct);
+        assert!((summary.top1_top2_margin - 1.0).abs() < 1e-6);
+        let expected = 2.0f64 - (0.0f64.exp() + 2.0f64.exp() + 1.0f64.exp()).ln();
+        assert!((summary.reference_logprob - expected).abs() < 1e-12);
+        assert!(summary.entropy > 0.0);
     }
 }

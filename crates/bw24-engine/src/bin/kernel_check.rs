@@ -424,6 +424,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // --- Q2_K Stage-A GPU path vs the CPU dequant oracle on deterministic synthetic blocks. ---
+    // Q2_K intentionally has no dp4a fast path yet, but mixed expert artifacts rely on this
+    // generic staged path. Keep this model-independent so every target-rig gate exercises it.
+    {
+        use bw24_gguf::{GgmlType, dequant};
+        use bw24_runtime::cpu_linear;
+        let (in_f, out_f, m, row_bytes) = (256usize, 7usize, 3usize, 84usize);
+        let mut raw = vec![0u8; out_f * row_bytes];
+        for row in 0..out_f {
+            let base = row * row_bytes;
+            for group in 0..16 {
+                let scale = 1 + ((row * 3 + group * 5) % 15) as u8;
+                let min = 1 + ((row * 7 + group * 2) % 15) as u8;
+                raw[base + group] = scale | (min << 4);
+            }
+            for byte in 0..64 {
+                raw[base + 16 + byte] = ((row * 41 + byte * 17 + 13) & 0xff) as u8;
+            }
+            raw[base + 80..base + 82].copy_from_slice(&0x2c00u16.to_le_bytes()); // f16 0.0625
+            raw[base + 82..base + 84].copy_from_slice(&0x2800u16.to_le_bytes()); // f16 0.03125
+        }
+        let weights = dequant::dequantize(GgmlType::Q2_K, &raw, in_f * out_f);
+        let x: Vec<f32> = (0..m * in_f).map(|i| pr(i + 79) * 0.1).collect();
+        let cpu = cpu_linear(&x, &weights, m, in_f, out_f);
+        let wd = e.htod_bytes(&raw)?;
+        let xd = e.htod(&x)?;
+        let gpu = e.dtoh(&e.qmatvec(
+            &wd, &xd, m, in_f, out_f, bw24_engine::QT_Q2_K, row_bytes,
+        )?)?;
+        let scale = cpu.iter().map(|value| value.abs()).fold(0.0, f32::max).max(1e-3);
+        let rel = maxdiff(&cpu, &gpu) / scale;
+        println!("qmatvec Q2_K synthetic Stage-A: rel={rel:.2e} {}",
+                 if rel < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- qmatvec (resident-quant GEMM) vs cpu_linear(dequant(W)) on real GGUF weights ---
     if let Some(path) = gguf_arg.clone() {
         use bw24_gguf::{GgufFile, GgmlType, dequant};
@@ -669,6 +704,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
+            if cfg!(bw24_portable_cuda) {
+                println!("portable CUDA: native FP4 and static-MMQ model-backed checks — SKIP");
+            } else {
             // Stage-C FP4 (mxf4nvf4 block-scale tensor-core) vs the f32 dequant oracle on NVFP4.
             // FP4 is LOSSY (e2m1 activations + e2m1 weights; scale side is lossless ue4m3) — NOT
             // bit-equivalent. Compare to cpu_linear(dequant(W)) and expect rel ~1e-2..6e-2.
@@ -834,6 +872,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+            }
             }
             // --- Phase-1 CUTLASS FP4 GEMM: REPACK CORRECTNESS gate. ---
             // The de-interleave (GGUF -> plain packed e2m1) + SFB swizzle is the ONLY place a silent
@@ -1776,6 +1815,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         } else {
             println!("D.2 cache bit-identity: 35B GGUF absent — SKIP");
+        }
+    }
+
+    // --- EDGE-1 §C.2/C.3: copy-stream prefetch publication + store-before-reuse ordering. Fill an
+    // 8-slot cache without synchronizing, asynchronously replace one victim, then dispatch/read it.
+    // The read must see the new bytes, while the explicitly protected current block stays resident.
+    {
+        use bw24_engine::moe_cache::{BlockId, DispatchSlot, MoeSlotCache, PROJ_GATE};
+        let old_slots = std::env::var_os("BW24_MOE_SLOTS");
+        // SAFETY: kernel-check is a single-threaded process and no other code reads this variable
+        // while the scoped synthetic cache is being constructed.
+        unsafe { std::env::set_var("BW24_MOE_SLOTS", "8"); }
+        let block_len = 4096usize;
+        let mut cache = MoeSlotCache::new(&e, block_len)?;
+        let sources: Vec<Vec<u8>> = (0..8).map(|i| vec![0xA0 + i as u8; block_len]).collect();
+        for (i, src) in sources.iter().enumerate() {
+            cache.force_admit(BlockId::new(7, PROJ_GATE, i as u16), src, &e)?;
+        }
+        let keep = [BlockId::new(7, PROJ_GATE, 0)];
+        let next_id = BlockId::new(7, PROJ_GATE, 8);
+        let next = vec![0xF8; block_len];
+        let queued = cache.prefetch(next_id, &next, &keep, &e)?;
+        let hidden_while_pending = cache.resident(next_id).is_none();
+        let DispatchSlot::Resident(next_slot) = cache.dispatch(next_id, &next, &e)?;
+        // slots carry a +8 tail pad (wide-load expert dots, b6f0ffe) — compare payload only.
+        let next_got = e.dtoh_u8(cache.slot(next_slot))?[..block_len].to_vec();
+        let visible_after_wait = cache.resident(next_id) == Some(next_slot);
+        let _ = cache.dispatch(next_id, &next, &e)?;
+        let keep_slot = cache.resident(keep[0]);
+        let keep_got = match keep_slot {
+            Some(slot) => e.dtoh_u8(cache.slot(slot))?[..block_len].to_vec(),
+            None => Vec::new(),
+        };
+        let counters_ok = cache.hits == 1 && cache.misses == 1
+            && cache.staged_bytes == 9 * block_len as u64;
+        let ok = queued && hidden_while_pending && visible_after_wait
+            && next_got == next && keep_got == sources[0] && counters_ok;
+        if !ok {
+            eprintln!("[prefetch-check] queued={queued} hidden={hidden_while_pending} \
+                       visible={visible_after_wait} bytes_ok={} keep_ok={} counters: hits={} \
+                       misses={} staged={} (want 1/1/{})",
+                      next_got == next, keep_got == sources[0], cache.hits, cache.misses,
+                      cache.staged_bytes, 9 * block_len);
+        }
+        println!("moe async-prefetch ordering + protected victim: {}",
+                 if ok { "OK" } else { fails += 1; "FAIL" });
+        unsafe {
+            match old_slots {
+                Some(v) => std::env::set_var("BW24_MOE_SLOTS", v),
+                None => std::env::remove_var("BW24_MOE_SLOTS"),
+            }
         }
     }
 

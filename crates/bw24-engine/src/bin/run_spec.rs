@@ -28,18 +28,33 @@ fn first_divergence(a: &[u32], b: &[u32]) -> Option<usize> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("usage: run-spec <model.gguf|hf_dir> [tok ids...]");
     let e = Engine::new(0)?;
-    // DIRECTORY path = safetensors HF checkpoint (NVIDIA 27B model-trained MTP head); file = GGUF.
+    // DIRECTORY path = safetensors HF checkpoint or manifest-backed bw24 repack/overlay; file = GGUF.
     let is_dir = std::path::Path::new(&path).is_dir();
     let g: Option<GgufFile> = if is_dir { None } else { Some(GgufFile::open(&path)?) };
-    let model = match &g {
-        Some(g) => HybridModel::load(&e, g)?,
-        None => {
-            let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
-            HybridModel::load_from_source(&e, &st)?
+    let mut source: Option<Box<dyn bw24_gguf::source::TensorSource>> = None;
+    let mut tok_dir = std::path::PathBuf::from(&path);
+    if is_dir {
+        let dir = std::path::Path::new(&path);
+        if dir.join("manifest.json").exists() {
+            let repack = bw24_gguf::source::Hy3RepackSource::open(dir)?;
+            tok_dir = repack.source_dir()
+                .filter(|source| source.join("tokenizer.json").exists())
+                .unwrap_or(dir).to_path_buf();
+            source = Some(Box::new(repack));
+        } else {
+            source = Some(Box::new(bw24_gguf::source::SafetensorsSource::open(dir)?));
         }
+    }
+    let model = match (&g, &source) {
+        (Some(g), _) => HybridModel::load(&e, g)?,
+        (None, Some(source)) => HybridModel::load_from_source(&e, source.as_ref())?,
+        _ => unreachable!(),
     };
     println!("loaded {} ({} layers, nextn={})",
-             g.as_ref().and_then(|g| g.arch()).unwrap_or("safetensors"),
+             g.as_ref().and_then(|g| g.arch()).unwrap_or(
+                 if std::path::Path::new(&path).join("manifest.json").exists() {
+                     "bw24-repack"
+                 } else { "safetensors" }),
              model.cfg.n_layer, model.cfg.nextn_predict_layers);
     if model.mtp.is_none() {
         eprintln!("ERROR: model has no MTP/NextN head (nextn_predict_layers={}, no blk.N.nextn.eh_proj). \
@@ -55,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .or_else(|_| std::env::var("BW24_PROMPT")) {
         let tok = match &g {
             Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
-            None => bw24_tokenizer::Tokenizer::from_hf_dir(std::path::Path::new(&path))
+            None => bw24_tokenizer::Tokenizer::from_hf_dir(&tok_dir)
                 .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
         };
         // BW24_CHAT=1 wraps the prompt in the model's chat template (single user turn +

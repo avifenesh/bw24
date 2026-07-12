@@ -1227,6 +1227,7 @@ extern "C" __global__ void __launch_bounds__(256, 2) qmatvec_gemm_nvfp4_rp(
 //            L%4==3 supplies row L/4+8.
 //   SFB(4X): 4 ue4m3 bytes = K16 blocks 0..3. Lane L%4==1 supplies col L/4.
 // ===================================================================== //
+#if !defined(BW24_PORTABLE_CUDA)
 __device__ __forceinline__ void mma_mxf4_m16n8k64(
         float (&d)[4], const unsigned (&a)[4], const unsigned (&b)[2],
         unsigned sa, unsigned sb) {
@@ -1542,3 +1543,4 @@ extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4_fp4(
         int in_f, int out_f, int T, long row_bytes) {
     qmatvec_gemm_mxf4_kernel(W, aq4, ad4, y, in_f, out_f, T, row_bytes);
 }
+#endif

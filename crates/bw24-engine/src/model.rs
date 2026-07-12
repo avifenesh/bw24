@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use cudarc::driver::CudaSlice;
 use bw24_gguf::{GgufFile, GgmlType, dequant};
 use bw24_gguf::config::ModelConfig;
-use bw24_gguf::source::{TensorSource, GgufSource};
-use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_Q4_0, QT_F32, QT_BF16};
+use bw24_gguf::source::{DiskExtent, TensorSource, GgufSource};
+use crate::{Engine, QT_Q8_0, QT_Q2_K, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_Q4_0, QT_F32, QT_BF16};
 
 /// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
 /// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
@@ -572,9 +572,9 @@ impl Model {
         let mut mx = 0usize;
         for l in &self.layers {
             if let Ffn::Moe(m) = &l.ffn {
-                mx = mx.max(m.gate_exps.expert_stride)
-                       .max(m.up_exps.expert_stride)
-                       .max(m.down_exps.expert_stride);
+                mx = mx.max(m.gate_exps.max_expert_bytes())
+                       .max(m.up_exps.max_expert_bytes())
+                       .max(m.down_exps.max_expert_bytes());
             }
         }
         mx
@@ -613,7 +613,11 @@ pub enum HostBuf {
     Paged(Vec<u8>),
     /// Pinned host memory. We keep the `PinnedHostSlice` alive (it owns the allocation; Drop frees it)
     /// AND cache its raw base pointer + len so the hot-path `as_bytes()` needs no per-call event sync.
-    Pinned { slice: cudarc::driver::PinnedHostSlice<u8>, base: *const u8, len: usize },
+    Pinned {
+        slice: std::sync::Arc<cudarc::driver::PinnedHostSlice<u8>>,
+        base: *const u8,
+        len: usize,
+    },
     /// Alias into a shared pinned slab (ST pinned tier): `owner` keeps the slab alive; `base`/`len`
     /// select this expert's window. Same DMA class as `Pinned`.
     PinnedAlias { owner: std::sync::Arc<HostBuf>, base: *const u8, len: usize },
@@ -622,12 +626,20 @@ pub enum HostBuf {
     /// this slice page-faults → NVMe read → DMA (the demand-fault disk path). `off`/`len` select this
     /// expert's contiguous block within the shared file mmap. Bit-identical to `Paged`/`Pinned` —
     /// those copied FROM exactly these on-disk bytes, so the GEMM result is unchanged.
-    Mmap { map: std::sync::Arc<memmap2::Mmap>, off: usize, len: usize },
+    Mmap {
+        map: std::sync::Arc<memmap2::Mmap>,
+        /// The same opened inode backing `map`. It must outlive the loader source so future explicit
+        /// positioned reads cannot accidentally reopen a replaced path.
+        file: std::sync::Arc<std::fs::File>,
+        /// Absolute byte offset within both the whole-file mmap and `file`.
+        off: usize,
+        len: usize,
+    },
 }
 // SAFETY: `base` is a stable pinned-host pointer owned by `slice`; the buffer is written once at load
 // then only READ for H2D. HostExps is shared `&` across the (single per-Engine) forward, so Send/Sync
-// mirror the underlying PinnedHostSlice (which is already Send+Sync). The `Mmap` arm holds an
-// `Arc<Mmap>` (Mmap is Send+Sync) plus plain usize fields, so it does not weaken these bounds.
+// mirror the underlying PinnedHostSlice (which is already Send+Sync). The `Mmap` arm holds
+// `Arc<Mmap>` + `Arc<File>` (both Send+Sync) plus plain usize fields, so it does not weaken bounds.
 unsafe impl Send for HostBuf {}
 unsafe impl Sync for HostBuf {}
 impl HostBuf {
@@ -641,7 +653,7 @@ impl HostBuf {
             HostBuf::Pinned { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
             HostBuf::PinnedAlias { base, len, .. } => unsafe { std::slice::from_raw_parts(*base, *len) },
             // Slicing the mmap is the same `&[u8]` the kernel DMAs; the read page-faults the NVMe.
-            HostBuf::Mmap { map, off, len } => &map[*off..*off + *len],
+            HostBuf::Mmap { map, off, len, .. } => &map[*off..*off + *len],
         }
     }
     #[inline]
@@ -653,6 +665,85 @@ impl HostBuf {
             HostBuf::Mmap { len, .. } => *len,
         }
     }
+
+    /// Best-effort OS read-ahead for a future mmap-backed expert range. This does not touch or
+    /// copy the bytes, so the zero-copy ownership contract is unchanged. Non-mmap buffers are
+    /// already resident and need no advice. Kept fallible-at-the-OS but non-fatal at the call site:
+    /// an unsupported/pressured kernel simply leaves the normal demand-fault path in place.
+    #[inline]
+    pub fn advise_willneed(&self, rel_off: usize, len: usize) -> bool {
+        let HostBuf::Mmap { map, off, len: extent, .. } = self else {
+            return false;
+        };
+        if len == 0 || rel_off > *extent || len > *extent - rel_off {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            map.advise_range(memmap2::Advice::WillNeed, *off + rel_off, len).is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (map, off);
+            false
+        }
+    }
+
+    #[inline]
+    fn expert_source(&self, rel_off: usize, len: usize) -> ExpertSource<'_> {
+        debug_assert!(rel_off <= self.len() && len <= self.len() - rel_off);
+        match self {
+            HostBuf::Mmap { map, file, off, .. } => {
+                let offset = *off + rel_off;
+                ExpertSource::Disk {
+                    file,
+                    offset: offset as u64,
+                    len,
+                    fallback: &map[offset..offset + len],
+                    keepalive: ExpertKeepalive::Mmap(map.clone()),
+                }
+            }
+            HostBuf::Pinned { slice, .. } => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                keepalive: Some(ExpertKeepalive::Pinned(slice.clone())),
+            },
+            HostBuf::PinnedAlias { owner, .. } => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                keepalive: Some(ExpertKeepalive::Buffer(owner.clone())),
+            },
+            HostBuf::Paged(_) => ExpertSource::Memory {
+                bytes: &self.as_bytes()[rel_off..rel_off + len],
+                // CUDA stages pageable input before returning from the async-copy API. Only true
+                // pinned and mmap-backed sources need an explicit lifetime owner in the cache.
+                keepalive: None,
+            },
+        }
+    }
+}
+
+/// Clonable ownership retained by asynchronous cache transfers. The payload is intentionally never
+/// read: keeping it alive is the contract.
+#[allow(dead_code)]
+pub(crate) enum ExpertKeepalive {
+    Pinned(std::sync::Arc<cudarc::driver::PinnedHostSlice<u8>>),
+    Buffer(std::sync::Arc<HostBuf>),
+    Mmap(std::sync::Arc<memmap2::Mmap>),
+}
+
+/// Source-aware view of one expert block. The mmap fallback remains the byte oracle; retaining the
+/// opened file enables a later explicit-read backend without changing tensor layout or numerics.
+pub(crate) enum ExpertSource<'a> {
+    Memory {
+        bytes: &'a [u8],
+        keepalive: Option<ExpertKeepalive>,
+    },
+    Disk {
+        file: &'a std::sync::Arc<std::fs::File>,
+        offset: u64,
+        len: usize,
+        fallback: &'a [u8],
+        keepalive: ExpertKeepalive,
+    },
 }
 
 /// One layer's stacked 256-expert tensor, raw GGUF quant bytes held HOST-RESIDENT.
@@ -666,6 +757,58 @@ impl HostBuf {
 /// THE 3D FIX: GpuTensor::load computes `row_bytes = raw.len()/ne[1]`, which for a stacked 3D
 /// tensor ignores the 256-expert axis and is 256x too large (gate_exps -> 430080 instead of 1680).
 /// load() here uses `row_bytes = raw.len() / (out_f * n_expert)` (= 1680 gate/up, 544 down).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpertLayout {
+    pub offset: usize,
+    pub len: usize,
+    pub qtype: i32,
+    pub row_bytes: usize,
+}
+
+fn staged_expert_qtype(ty: GgmlType) -> Option<i32> {
+    Some(match ty {
+        GgmlType::Q8_0 => QT_Q8_0,
+        GgmlType::Q2_K => QT_Q2_K,
+        GgmlType::Q4_K => QT_Q4_K,
+        GgmlType::Q6_K => QT_Q6_K,
+        GgmlType::Q5_K => QT_Q5_K,
+        GgmlType::Q3_K => QT_Q3_K,
+        GgmlType::IQ4_XS => QT_IQ4_XS,
+        GgmlType::IQ3_S => QT_IQ3_S,
+        GgmlType::NVFP4 => QT_NVFP4,
+        GgmlType::F32 => QT_F32,
+        GgmlType::BF16 => QT_BF16,
+        _ => return None,
+    })
+}
+
+fn staged_expert_row_bytes(ty: GgmlType, in_f: usize) -> Option<usize> {
+    staged_expert_qtype(ty)?;
+    let (block, type_size) = ty.block_and_type_size();
+    assert_eq!(in_f as u64 % block, 0,
+        "expert row width {in_f} is not divisible by {ty:?} block {block}");
+    Some((in_f as u64 / block * type_size) as usize)
+}
+
+fn find_expert_disk_strict(
+    src: &dyn TensorSource,
+    name: &str,
+) -> Result<Option<DiskExtent>, Box<dyn std::error::Error>> {
+    if let Some(extent) = src.find_expert_disk(name) {
+        return Ok(Some(extent));
+    }
+    if src.find_expert_mmap(name).is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "expert tensor {name} exposes legacy find_expert_mmap without find_expert_disk; \
+                 disk-backed expert loading requires a retained Arc<File>"
+            ),
+        ).into());
+    }
+    Ok(None)
+}
+
 pub struct HostExps {
     pub bytes: HostBuf,        // raw GGUF block bytes (host); per-token DMA src for the 8 routed exps
     /// SPILLING-PLAN §1.1: per-expert backing tier. `None` => the layer fits in one `bytes` store and
@@ -679,6 +822,10 @@ pub struct HostExps {
     pub n_expert: usize,       // ne[2] = 256
     pub row_bytes: usize,      // raw.len()/(out_f*n_expert)  -> 1680 (gate/up) / 544 (down)
     pub expert_stride: usize,  // raw.len()/n_expert          -> 860160 (gate/up) / 1114112 (down)
+    /// Per-expert encoding metadata when experts in this projection do not share one dtype/layout.
+    /// `None` preserves the existing uniform slab contract and every resident/fused fast path.
+    /// `Some` routes through the per-expert staged/cache path, using each entry's qtype/row size.
+    pub layouts: Option<Vec<ExpertLayout>>,
     /// Per-expert post-matmul macro-scale (ModelOpt NVFP4 `weight_scale_2`, one scalar per expert
     /// tensor). `None` => all 1.0 (GGUF experts; block scales carry everything). The MoE forward
     /// folds gate/up macros into the activation epilogue (gs/us) and the down macro into the
@@ -733,10 +880,10 @@ impl HostExps {
             { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&buf); }
             let base = pn.as_ptr()? as *const u8;
             let len = buf.len();
-            HostBuf::Pinned { slice: pn, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(pn), base, len }
         } else { HostBuf::Paged(buf) };
         Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
-                      expert_stride, macros: None })
+                      expert_stride, layouts: None, macros: None })
     }
 
     pub fn load_stacked_from_source(e: &Engine, src: &dyn TensorSource, name: &str)
@@ -751,8 +898,10 @@ impl HostExps {
         // page cache carry the hot expert mass (RAM tier) and demand-faults the overflow from NVMe,
         // exactly like the proven M3 `.bw24-repack` path (model.rs NVFP4 disk arm). Bit-identity:
         // `expert_bytes(e)` slices the same on-disk bytes the copy would have staged. The SLRU VRAM
-        // cache stacks on top unchanged. MADV_RANDOM is applied by the source at open.
-        if let Some((map, off, len)) = src.find_expert_mmap(name) {
+        // cache stacks on top unchanged. The configured whole-map advice is applied at source open.
+        if let Some(DiskExtent { map, file, offset, len }) = find_expert_disk_strict(src, name)? {
+            let off = usize::try_from(offset)
+                .map_err(|_| format!("{name} disk offset {offset} does not fit usize"))?;
             let qtype = match t.ggml_type {
                 GgmlType::Q8_0 => QT_Q8_0,
                 GgmlType::Q4_K => QT_Q4_K,
@@ -774,8 +923,9 @@ impl HostExps {
                 "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}");
             assert_eq!(len, n_expert * expert_stride, "{name} mmap len != n_expert*stride");
             return Ok(HostExps {
-                bytes: HostBuf::Mmap { map, off, len },
-                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None,
+                bytes: HostBuf::Mmap { map, file, off, len },
+                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride,
+                layouts: None, macros: None,
             });
         }
         let raw: &[u8] = &t.bytes;
@@ -811,11 +961,12 @@ impl HostExps {
             { let dst = p.as_mut_slice()?; dst.copy_from_slice(raw); }
             let base = p.as_ptr()? as *const u8;   // syncs once here at load; stable afterward
             let len = raw.len();
-            HostBuf::Pinned { slice: p, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
         } else {
             HostBuf::Paged(raw.to_vec())
         };
-        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None })
+        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, layouts: None, macros: None })
     }
 
     /// SPILLING-PLAN §1.1, §2 step 4: load a stacked 3D expert tensor with a PER-EXPERT tier split.
@@ -866,7 +1017,7 @@ impl HostExps {
         Ok(HostExps {
             bytes: HostBuf::Paged(Vec::new()),  // unused when `tiers` is Some
             tiers: Some(tiers),
-            qtype, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None,
+            qtype, in_f, out_f, n_expert, row_bytes, expert_stride, layouts: None, macros: None,
         })
     }
 
@@ -897,6 +1048,38 @@ impl HostExps {
             "ffn_down_exps.weight" => "down",
             other => panic!("not a *_exps suffix: {other}"),
         };
+
+        // A mixed-precision safetensors/repack source exposes experts as separate 2D tensors.
+        // Detect a dtype/layout change before the uniform gather paths normalize the whole layer
+        // to one encoding. Uniform checkpoints take the unchanged optimized path below.
+        let mut signatures = Vec::with_capacity(n_expert);
+        let active = src.active_experts(il);
+        for ex in 0..n_expert {
+            if active.is_some_and(|mask| !mask[ex]) {
+                signatures.push((i32::MIN, 0));
+                continue;
+            }
+            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+            if let Some(nv) = src.find_nvfp4_native(&name) {
+                signatures.push((QT_NVFP4, nv.in_f / 64 * 36));
+            } else {
+                let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                let in_f = v.ne[0] as usize;
+                signatures.push(match staged_expert_row_bytes(v.ggml_type, in_f) {
+                    Some(row_bytes) => (staged_expert_qtype(v.ggml_type).unwrap(), row_bytes),
+                    None => (QT_F32, in_f * 4),
+                });
+            }
+        }
+        let mixed_layout = signatures.windows(2).any(|pair| pair[0] != pair[1]);
+        if src.preserve_expert_encodings() && !mixed_layout {
+            if let Some(uniform) = Self::load_uniform_mmap_from_source(src, il, proj, n_expert)? {
+                return Ok(uniform);
+            }
+        }
+        if src.preserve_expert_encodings() || mixed_layout {
+            return Self::load_mixed_from_source(src, il, proj, n_expert);
+        }
 
         // PATH B (NVFP4-NATIVE GATHER, 2026-07-05): when the source exposes the experts as packed
         // ModelOpt/Reza NVFP4 (find_nvfp4_native), keep them QUANTIZED — repack each expert's
@@ -952,15 +1135,12 @@ impl HostExps {
                         f.flush()?;
                     }
                     read_macros(&mut macros);
-                    let file = std::fs::File::open(cp)?;
-                    let map = unsafe { memmap2::Mmap::map(&file)? };
+                    let file = std::sync::Arc::new(std::fs::File::open(cp)?);
+                    let map = unsafe { memmap2::Mmap::map(file.as_ref())? };
                     assert_eq!(map.len(), total, "repack cache {cp:?} size mismatch");
-                    // MADV_RANDOM: expert access is routing-driven random; kill readahead waste.
-                    #[cfg(target_os = "linux")]
-                    unsafe {
-                        unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
-                        let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
-                    }
+                    // Default random preserves the original policy; normal lets Linux readahead
+                    // within each multi-megabyte expert on the spill-bound path.
+                    let _ = bw24_gguf::source::apply_expert_mmap_advice(&map);
                     let map = std::sync::Arc::new(map);
                     // ST PINNED TIER (2026-07-07, the M3 1.5-tok/s lever): mmap-only backing makes
                     // every SLRU miss a page-cache (or NVMe) synchronous read into the H2D copy.
@@ -993,7 +1173,9 @@ impl HostExps {
                             { let dst = pn.as_mut_slice()?; dst.copy_from_slice(&map[..slab_len]); }
                             let base = pn.as_ptr()? as *const u8;
                             *rem -= slab_len;
-                            let slab = std::sync::Arc::new(HostBuf::Pinned { slice: pn, base, len: slab_len });
+                            let slab = std::sync::Arc::new(HostBuf::Pinned {
+                                slice: std::sync::Arc::new(pn), base, len: slab_len,
+                            });
                             let mut tiers: Vec<HostBuf> = Vec::with_capacity(n_expert);
                             for ex in 0..n_expert {
                                 let off = ex * expert_stride;
@@ -1001,7 +1183,9 @@ impl HostExps {
                                     tiers.push(HostBuf::PinnedAlias { owner: slab.clone(),
                                         base: unsafe { base.add(off) }, len: expert_stride });
                                 } else {
-                                    tiers.push(HostBuf::Mmap { map: map.clone(), off, len: expert_stride });
+                                    tiers.push(HostBuf::Mmap {
+                                        map: map.clone(), file: file.clone(), off, len: expert_stride,
+                                    });
                                 }
                             }
                             Some(tiers)
@@ -1010,13 +1194,13 @@ impl HostExps {
                     if let Some(tiers) = tiers {
                         let all_one = macros.iter().all(|&m| m == 1.0);
                         return Ok(HostExps {
-                            bytes: HostBuf::Mmap { map, off: 0, len: total },
+                            bytes: HostBuf::Mmap { map, file, off: 0, len: total },
                             tiers: Some(tiers), qtype: QT_NVFP4, in_f, out_f, n_expert,
-                            row_bytes, expert_stride,
+                            row_bytes, expert_stride, layouts: None,
                             macros: if all_one { None } else { Some(macros) },
                         });
                     }
-                    HostBuf::Mmap { map, off: 0, len: total }
+                    HostBuf::Mmap { map, file, off: 0, len: total }
                 } else {
                     let mut buf: Vec<u8> = Vec::with_capacity(total);
                     for ex in 0..n_expert {
@@ -1037,13 +1221,13 @@ impl HostExps {
                         { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
                         let base = p.as_ptr()? as *const u8;
                         let len = buf.len();
-                        HostBuf::Pinned { slice: p, base, len }
+                        HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
                     } else { HostBuf::Paged(buf) }
                 };
                 let all_one = macros.iter().all(|&m| m == 1.0);
                 return Ok(HostExps {
                     bytes, tiers: None, qtype: QT_NVFP4, in_f, out_f, n_expert,
-                    row_bytes, expert_stride,
+                    row_bytes, expert_stride, layouts: None,
                     macros: if all_one { None } else { Some(macros) },
                 });
             }
@@ -1085,11 +1269,171 @@ impl HostExps {
             { let dst = p.as_mut_slice()?; dst.copy_from_slice(&buf); }
             let base = p.as_ptr()? as *const u8;
             let len = buf.len();
-            HostBuf::Pinned { slice: p, base, len }
+            HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len }
         } else {
             HostBuf::Paged(buf)
         };
-        Ok(HostExps { bytes, tiers: None, qtype: QT_F32, in_f, out_f, n_expert, row_bytes, expert_stride, macros: None })
+        Ok(HostExps { bytes, tiers: None, qtype: QT_F32, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, layouts: None, macros: None })
+    }
+
+    /// Coalesce a uniform v2 overlay back into the existing stacked-slab contract without copying.
+    /// The artifact stores one record per original expert for coverage validation, but a full-bank
+    /// uniform arm writes those records contiguously into one file. Keeping `layouts=None` preserves
+    /// the uniform fused kernels while `HostBuf::Mmap` keeps the >RAM artifact zero-copy.
+    fn load_uniform_mmap_from_source(src: &dyn TensorSource, il: u32, proj: &str, n_expert: usize)
+                                     -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        if src.active_experts(il).is_some_and(|mask| mask.iter().any(|&active| !active)) {
+            return Ok(None);
+        }
+        let mut first_map = None;
+        let mut first_file = None;
+        let mut base_offset = 0u64;
+        let mut expert_stride = 0usize;
+        let mut in_f = 0usize;
+        let mut out_f = 0usize;
+        let mut qtype = 0i32;
+        let mut row_bytes = 0usize;
+        let mut macros = vec![1.0f32; n_expert];
+        for ex in 0..n_expert {
+            let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+            let name = format!("{stem}.weight");
+            let Some(DiskExtent { map, file, offset, len }) = find_expert_disk_strict(src, &name)? else {
+                return Ok(None);
+            };
+            let Some(v) = src.find(&name) else { return Ok(None) };
+            if v.ne.len() != 2 { return Ok(None); }
+            let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+            let Some(cur_row_bytes) = staged_expert_row_bytes(v.ggml_type, cur_in) else {
+                return Ok(None);
+            };
+            let cur_qtype = staged_expert_qtype(v.ggml_type).unwrap();
+            if ex == 0 {
+                base_offset = offset;
+                expert_stride = len;
+                in_f = cur_in;
+                out_f = cur_out;
+                qtype = cur_qtype;
+                row_bytes = cur_row_bytes;
+                first_map = Some(map);
+                first_file = Some(file);
+            } else if !std::sync::Arc::ptr_eq(first_map.as_ref().unwrap(), &map)
+                || !std::sync::Arc::ptr_eq(first_file.as_ref().unwrap(), &file)
+                || offset != base_offset + (ex * expert_stride) as u64
+                || len != expert_stride
+                || (cur_in, cur_out, cur_qtype, cur_row_bytes) != (in_f, out_f, qtype, row_bytes) {
+                return Ok(None);
+            }
+            if let Some(scale) = src.find(&format!("{stem}.scale")) {
+                macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
+            }
+        }
+        assert_eq!(expert_stride, out_f * row_bytes);
+        let total = n_expert * expert_stride;
+        let off = usize::try_from(base_offset)
+            .map_err(|_| format!("uniform expert disk offset {base_offset} does not fit usize"))?;
+        let all_one = macros.iter().all(|&scale| scale == 1.0);
+        Ok(Some(HostExps {
+            bytes: HostBuf::Mmap {
+                map: first_map.unwrap(), file: first_file.unwrap(), off, len: total,
+            },
+            tiers: None,
+            qtype,
+            in_f,
+            out_f,
+            n_expert,
+            row_bytes,
+            expert_stride,
+            layouts: None,
+            macros: if all_one { None } else { Some(macros) },
+        }))
+    }
+
+    fn load_mixed_from_source(src: &dyn TensorSource, il: u32, proj: &str, n_expert: usize)
+                              -> Result<Self, Box<dyn std::error::Error>> {
+        let mut tiers = Vec::with_capacity(n_expert);
+        let mut layouts = Vec::with_capacity(n_expert);
+        let mut macros = vec![1.0f32; n_expert];
+        let mut in_f = 0usize;
+        let mut out_f = 0usize;
+        let active = src.active_experts(il);
+        let mut first_active = None;
+
+        for ex in 0..n_expert {
+            if active.is_some_and(|mask| !mask[ex]) {
+                layouts.push(ExpertLayout { offset: 0, len: 0, qtype: QT_F32, row_bytes: 0 });
+                tiers.push(HostBuf::Paged(Vec::new()));
+                continue;
+            }
+            let name = format!("blk.{il}.ffn_{proj}_exps.{ex}.weight");
+            let stem = format!("blk.{il}.ffn_{proj}_exps.{ex}");
+            if let Some(scale) = src.find(&format!("{stem}.scale")) {
+                macros[ex] = f32::from_le_bytes(scale.bytes[..4].try_into().unwrap());
+            }
+            let (host, byte_len, qtype, row_bytes, cur_in, cur_out) =
+                if let Some(DiskExtent { map, file, offset, len }) = find_expert_disk_strict(src, &name)? {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                    assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
+                    let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+                    let row_bytes = staged_expert_row_bytes(v.ggml_type, cur_in)
+                        .ok_or_else(|| format!("mmap expert {name} has unsupported qtype {:?}", v.ggml_type))?;
+                    let off = usize::try_from(offset)
+                        .map_err(|_| format!("expert {name} disk offset {offset} does not fit usize"))?;
+                    (HostBuf::Mmap { map, file, off, len }, len,
+                     staged_expert_qtype(v.ggml_type).unwrap(), row_bytes, cur_in, cur_out)
+                } else if let Some(nv) = src.find_nvfp4_native(&name) {
+                    let bytes = bw24_gguf::nvfp4_repack::repack_modelopt_to_gguf(
+                        nv.wbytes, nv.wscale, nv.out_f, nv.in_f);
+                    let row_bytes = nv.in_f / 64 * 36;
+                    let byte_len = bytes.len();
+                    (HostBuf::Paged(bytes), byte_len, QT_NVFP4, row_bytes, nv.in_f, nv.out_f)
+                } else {
+                    let v = src.find(&name).unwrap_or_else(|| panic!("missing expert tensor {name}"));
+                    assert_eq!(v.ne.len(), 2, "expert {name} is not 2D (ne={:?})", v.ne);
+                    let (cur_in, cur_out) = (v.ne[0] as usize, v.ne[1] as usize);
+                    if let Some(row_bytes) = staged_expert_row_bytes(v.ggml_type, cur_in) {
+                        let bytes = v.bytes.into_owned();
+                        let byte_len = bytes.len();
+                        (HostBuf::Paged(bytes), byte_len, staged_expert_qtype(v.ggml_type).unwrap(),
+                         row_bytes, cur_in, cur_out)
+                    } else {
+                        let f32v = dequant::dequantize(v.ggml_type, &v.bytes, cur_in * cur_out);
+                        let mut bytes = Vec::with_capacity(f32v.len() * 4);
+                        for f in f32v { bytes.extend_from_slice(&f.to_le_bytes()); }
+                        let byte_len = bytes.len();
+                        (HostBuf::Paged(bytes), byte_len, QT_F32, cur_in * 4, cur_in, cur_out)
+                    }
+                };
+
+            if first_active.is_none() {
+                in_f = cur_in;
+                out_f = cur_out;
+                first_active = Some(ex);
+            } else {
+                assert_eq!((cur_in, cur_out), (in_f, out_f),
+                    "expert {ex} dims ({cur_in},{cur_out}) != first active expert ({in_f},{out_f})");
+            }
+            assert_eq!(byte_len, cur_out * row_bytes,
+                "expert {name} bytes {byte_len} != out_f*row_bytes {}", cur_out * row_bytes);
+            layouts.push(ExpertLayout { offset: 0, len: byte_len, qtype, row_bytes });
+            tiers.push(host);
+        }
+
+        let first = layouts[*first_active.as_ref().expect("expert mask pruned every expert")];
+        let expert_stride = layouts.iter().map(|layout| layout.len).max().unwrap_or(0);
+        let all_one = macros.iter().all(|&scale| scale == 1.0);
+        Ok(HostExps {
+            bytes: HostBuf::Paged(Vec::new()),
+            tiers: Some(tiers),
+            qtype: first.qtype,
+            in_f,
+            out_f,
+            n_expert,
+            row_bytes: first.row_bytes,
+            expert_stride,
+            layouts: Some(layouts),
+            macros: if all_one { None } else { Some(macros) },
+        })
     }
 
     /// Host byte slice for expert `e` (the H2D DMA source). Contiguous block, offset honored.
@@ -1100,21 +1444,190 @@ impl HostExps {
         self.macros.as_ref().map(|m| m[e]).unwrap_or(1.0)
     }
 
+    #[inline]
+    pub fn is_uniform_layout(&self) -> bool {
+        self.layouts.is_none()
+    }
+
+    #[inline]
+    pub fn expert_layout(&self, e: usize) -> ExpertLayout {
+        debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
+        self.layouts.as_ref().map(|layouts| layouts[e]).unwrap_or(ExpertLayout {
+            offset: e * self.expert_stride,
+            len: self.expert_stride,
+            qtype: self.qtype,
+            row_bytes: self.row_bytes,
+        })
+    }
+
+    #[inline]
+    pub fn max_expert_bytes(&self) -> usize {
+        self.layouts.as_ref()
+            .and_then(|layouts| layouts.iter().map(|layout| layout.len).max())
+            .unwrap_or(self.expert_stride)
+    }
+
     /// backing store (unchanged in-RAM path). Each `tiers[e]` is exactly one expert's stride.
     #[inline]
     pub fn expert_bytes(&self, e: usize) -> &[u8] {
-        debug_assert!(e < self.n_expert, "expert index {e} >= n_expert {}", self.n_expert);
+        let layout = self.expert_layout(e);
         match &self.tiers {
-            Some(tiers) => tiers[e].as_bytes(),
-            None => &self.bytes.as_bytes()[e * self.expert_stride..(e + 1) * self.expert_stride],
+            Some(tiers) => {
+                debug_assert_eq!(tiers[e].len(), layout.len);
+                tiers[e].as_bytes()
+            }
+            None => &self.bytes.as_bytes()[layout.offset..layout.offset + layout.len],
+        }
+    }
+
+    /// Source-aware twin of `expert_bytes`. Per-expert tiers already point at one exact block, while
+    /// a uniform slab needs the expert layout offset added to its base. Keeping those cases separate
+    /// prevents expert `e` from being offset twice when a tier vector is present.
+    #[inline]
+    pub(crate) fn expert_source(&self, e: usize) -> ExpertSource<'_> {
+        let layout = self.expert_layout(e);
+        match &self.tiers {
+            Some(tiers) => tiers[e].expert_source(0, layout.len),
+            None => self.bytes.expert_source(layout.offset, layout.len),
+        }
+    }
+
+    /// Hint that expert `e` will be staged soon. Uniform slabs advise only this expert's window;
+    /// mixed/pruned layouts advise the selected per-expert mmap. Returns false for resident or
+    /// empty buffers and on unsupported kernels; callers always retain the demand-fault fallback.
+    #[inline]
+    pub fn prefetch_expert_pages(&self, e: usize) -> bool {
+        let layout = self.expert_layout(e);
+        match &self.tiers {
+            Some(tiers) => tiers[e].advise_willneed(0, layout.len),
+            None => self.bytes.advise_willneed(layout.offset, layout.len),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{repack_nvfp4_split, unpack_nvfp4_split};
+    use super::{ExpertKeepalive, ExpertSource, HostBuf, HostExps, QT_BF16, QT_Q2_K, QT_Q4_K, QT_NVFP4,
+                repack_nvfp4_split, unpack_nvfp4_split};
+    use std::borrow::Cow;
+    use bw24_gguf::{GgmlType, config::ModelConfig};
     use bw24_gguf::nvfp4_repack::{repack_modelopt_to_gguf, repack_modelopt_to_split};
+    use bw24_gguf::source::{DiskExtent, TensorSource, TensorView};
+
+    struct MixedExpertSource {
+        bf16: Vec<u8>,
+        q4k: Vec<u8>,
+    }
+
+    impl TensorSource for MixedExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps mixed-loader test") }
+
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let (bytes, ggml_type) = if name == "blk.0.ffn_gate_exps.0.weight" {
+                (&self.bf16, GgmlType::BF16)
+            } else if name == "blk.0.ffn_gate_exps.1.weight" {
+                (&self.q4k, GgmlType::Q4_K)
+            } else {
+                return None;
+            };
+            Some(TensorView {
+                bytes: Cow::Borrowed(bytes),
+                ggml_type,
+                ne: vec![256, 2],
+            })
+        }
+    }
+
+    struct PrunedExpertSource {
+        q2k: Vec<u8>,
+        nvfp4: Vec<u8>,
+        active: Vec<bool>,
+    }
+
+    struct MmapExpertSource {
+        file: std::sync::Arc<std::fs::File>,
+        map: std::sync::Arc<memmap2::Mmap>,
+        base_offset: usize,
+        expert_len: usize,
+    }
+
+    struct LegacyMmapExpertSource {
+        map: std::sync::Arc<memmap2::Mmap>,
+        expert_len: usize,
+    }
+
+    impl TensorSource for MmapExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps mmap-loader test") }
+        fn preserve_expert_encodings(&self) -> bool { true }
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            let off = self.base_offset + ex * self.expert_len;
+            Some(TensorView {
+                bytes: Cow::Borrowed(&self.map[off..off + self.expert_len]),
+                ggml_type: GgmlType::Q2_K,
+                ne: vec![256, 2],
+            })
+        }
+        fn find_expert_disk(&self, name: &str) -> Option<DiskExtent> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            Some(DiskExtent {
+                map: self.map.clone(),
+                file: self.file.clone(),
+                offset: (self.base_offset + ex * self.expert_len) as u64,
+                len: self.expert_len,
+            })
+        }
+    }
+
+    impl TensorSource for LegacyMmapExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by legacy mmap guard test") }
+        fn preserve_expert_encodings(&self) -> bool { true }
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            let off = ex * self.expert_len;
+            Some(TensorView {
+                bytes: Cow::Borrowed(&self.map[off..off + self.expert_len]),
+                ggml_type: GgmlType::Q2_K,
+                ne: vec![256, 2],
+            })
+        }
+        fn find_expert_mmap(&self, name: &str)
+                            -> Option<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
+            let ex = match name {
+                "blk.0.ffn_gate_exps.0.weight" => 0,
+                "blk.0.ffn_gate_exps.1.weight" => 1,
+                _ => return None,
+            };
+            Some((self.map.clone(), ex * self.expert_len, self.expert_len))
+        }
+    }
+
+    impl TensorSource for PrunedExpertSource {
+        fn config(&self) -> ModelConfig { panic!("unused by HostExps pruned-loader test") }
+        fn active_experts(&self, layer: u32) -> Option<&[bool]> {
+            (layer == 0).then_some(self.active.as_slice())
+        }
+        fn find(&self, name: &str) -> Option<TensorView<'_>> {
+            let (bytes, ggml_type) = match name {
+                "blk.0.ffn_gate_exps.0.weight" => (&self.q2k, GgmlType::Q2_K),
+                "blk.0.ffn_gate_exps.2.weight" => (&self.nvfp4, GgmlType::NVFP4),
+                _ => return None,
+            };
+            Some(TensorView { bytes: Cow::Borrowed(bytes), ggml_type, ne: vec![256, 2] })
+        }
+    }
 
     /// A1 direct-import gate (engine side): the fused modelopt->split repack must be byte-for-byte
     /// the composition of the two passes it replaces (modelopt->GGUF blocks, then the A6
@@ -1133,5 +1646,185 @@ mod tests {
             assert_eq!(unpack_nvfp4_split(&direct, out_f), gguf,
                        "split roundtrip broken at out_f={out_f} in_f={in_f}");
         }
+    }
+
+    #[test]
+    fn mixed_expert_loader_keeps_each_encoding_and_extent() {
+        let source = MixedExpertSource {
+            bf16: vec![0x5a; 256 * 2 * 2],
+            q4k: vec![0xa5; 2 * 144],
+        };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 2).unwrap();
+        assert!(!exps.is_uniform_layout());
+        assert_eq!(exps.max_expert_bytes(), 1024);
+        assert_eq!(exps.expert_layout(0).qtype, QT_BF16);
+        assert_eq!(exps.expert_layout(0).row_bytes, 512);
+        assert_eq!(exps.expert_layout(0).len, 1024);
+        assert_eq!(exps.expert_layout(1).qtype, QT_Q4_K);
+        assert_eq!(exps.expert_layout(1).row_bytes, 144);
+        assert_eq!(exps.expert_layout(1).len, 288);
+        assert_eq!(exps.expert_bytes(0), source.bf16);
+        assert_eq!(exps.expert_bytes(1), source.q4k);
+        match exps.expert_source(1) {
+            ExpertSource::Memory { bytes, .. } => assert_eq!(bytes, source.q4k),
+            ExpertSource::Disk { .. } => panic!("paged expert unexpectedly became disk-backed"),
+        }
+    }
+
+    #[test]
+    fn mixed_expert_loader_omits_masked_expert_bytes() {
+        let source = PrunedExpertSource {
+            q2k: vec![0x22; 2 * 84],
+            nvfp4: vec![0x44; 2 * 4 * 36],
+            active: vec![true, false, true],
+        };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 3).unwrap();
+        assert_eq!(exps.expert_layout(0).qtype, QT_Q2_K);
+        assert_eq!(exps.expert_layout(0).row_bytes, 84);
+        assert_eq!(exps.expert_layout(1).len, 0);
+        assert_eq!(exps.expert_bytes(1), &[]);
+        assert_eq!(exps.expert_layout(2).qtype, QT_NVFP4);
+        assert_eq!(exps.expert_layout(2).row_bytes, 4 * 36);
+    }
+
+    #[test]
+    fn mixed_expert_loader_keeps_mmap_backing_zero_copy() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-mixed-mmap-{}", std::process::id()
+        ));
+        let base_offset = 3usize;
+        let expert_len = 2 * 84;
+        let mut bytes = vec![0xE1; base_offset];
+        bytes.extend(vec![0x31; expert_len]);
+        bytes.extend(vec![0x72; expert_len]);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::sync::Arc::new(std::fs::File::open(&path).unwrap());
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(file.as_ref()).unwrap() });
+        let source = MmapExpertSource { file: file.clone(), map, base_offset, expert_len };
+        let exps = HostExps::load_mixed_from_source(&source, 0, "gate", 2).unwrap();
+        assert!(matches!(exps.tiers.as_ref().unwrap()[0], HostBuf::Mmap { .. }));
+        assert!(matches!(exps.tiers.as_ref().unwrap()[1], HostBuf::Mmap { .. }));
+        assert_eq!(exps.expert_bytes(0), &bytes[base_offset..base_offset + expert_len]);
+        assert_eq!(exps.expert_bytes(1), &bytes[base_offset + expert_len..]);
+        match exps.expert_source(1) {
+            ExpertSource::Disk { file: got_file, offset, len, fallback, keepalive } => {
+                assert!(std::sync::Arc::ptr_eq(got_file, &file));
+                assert_eq!(offset, (base_offset + expert_len) as u64);
+                assert_eq!(len, expert_len);
+                assert_eq!(fallback, &bytes[base_offset + expert_len..]);
+                match keepalive {
+                    ExpertKeepalive::Mmap(owner) => {
+                        assert!(std::sync::Arc::ptr_eq(&owner, &source.map));
+                    }
+                    _ => panic!("mmap expert did not retain its mmap owner"),
+                }
+            }
+            ExpertSource::Memory { .. } => panic!("mixed mmap tier lost its disk extent"),
+        }
+        #[cfg(unix)]
+        assert!(exps.prefetch_expert_pages(1));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn tiered_expert_source_does_not_double_apply_layout_offset() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-tiered-source-offset-{}", std::process::id()
+        ));
+        let base_offset = 7usize;
+        let expert_len = 2 * 84;
+        let mut bytes = vec![0xE3; base_offset];
+        bytes.extend(vec![0x41; expert_len]);
+        bytes.extend(vec![0x82; expert_len]);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::sync::Arc::new(std::fs::File::open(&path).unwrap());
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(file.as_ref()).unwrap() });
+        let exps = HostExps {
+            bytes: HostBuf::Paged(Vec::new()),
+            tiers: Some(vec![
+                HostBuf::Mmap {
+                    map: map.clone(), file: file.clone(), off: base_offset, len: expert_len,
+                },
+                HostBuf::Mmap {
+                    map, file: file.clone(), off: base_offset + expert_len, len: expert_len,
+                },
+            ]),
+            qtype: QT_Q2_K,
+            in_f: 256,
+            out_f: 2,
+            n_expert: 2,
+            row_bytes: 84,
+            expert_stride: expert_len,
+            layouts: None,
+            macros: None,
+        };
+
+        // `expert_layout(1).offset == expert_len`, but tier 1 already starts at expert 1.
+        assert_eq!(exps.expert_layout(1).offset, expert_len);
+        match exps.expert_source(1) {
+            ExpertSource::Disk { offset, len, fallback, .. } => {
+                assert_eq!(offset, (base_offset + expert_len) as u64);
+                assert_eq!(len, expert_len);
+                assert_eq!(fallback, &bytes[base_offset + expert_len..]);
+            }
+            ExpertSource::Memory { .. } => panic!("tiered mmap expert lost its disk extent"),
+        }
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn legacy_mmap_source_requires_retained_file_extent() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-legacy-mmap-source-{}", std::process::id()
+        ));
+        let expert_len = 2 * 84;
+        std::fs::write(&path, vec![0x64; 2 * expert_len]).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&file).unwrap() });
+        let source = LegacyMmapExpertSource { map, expert_len };
+
+        let err = match HostExps::load_uniform_mmap_from_source(&source, 0, "gate", 2) {
+            Ok(_) => panic!("legacy mmap-only source silently fell back instead of failing"),
+            Err(err) => err,
+        };
+        let message = err.to_string();
+        assert!(message.contains("legacy find_expert_mmap without find_expert_disk"), "{message}");
+        assert!(message.contains("retained Arc<File>"), "{message}");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn uniform_expert_loader_coalesces_contiguous_mmap() {
+        let path = std::env::temp_dir().join(format!(
+            "bw24-uniform-mmap-{}", std::process::id()
+        ));
+        let base_offset = 5usize;
+        let expert_len = 2 * 84;
+        let mut bytes = vec![0xE2; base_offset];
+        bytes.extend(vec![0x19; expert_len]);
+        bytes.extend(vec![0x91; expert_len]);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::sync::Arc::new(std::fs::File::open(&path).unwrap());
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(file.as_ref()).unwrap() });
+        let source = MmapExpertSource { file: file.clone(), map, base_offset, expert_len };
+        let exps = HostExps::load_uniform_mmap_from_source(&source, 0, "gate", 2)
+            .unwrap().expect("contiguous mmap should coalesce");
+        assert!(exps.is_uniform_layout());
+        assert!(matches!(&exps.bytes, HostBuf::Mmap { .. }));
+        assert_eq!(exps.expert_stride, expert_len);
+        assert_eq!(exps.expert_bytes(0), &bytes[base_offset..base_offset + expert_len]);
+        assert_eq!(exps.expert_bytes(1), &bytes[base_offset + expert_len..]);
+        match exps.expert_source(1) {
+            ExpertSource::Disk { file: got_file, offset, len, fallback, .. } => {
+                assert!(std::sync::Arc::ptr_eq(got_file, &file));
+                assert_eq!(offset, (base_offset + expert_len) as u64);
+                assert_eq!(len, expert_len);
+                assert_eq!(fallback, &bytes[base_offset + expert_len..]);
+            }
+            ExpertSource::Memory { .. } => panic!("uniform mmap slab lost its disk extent"),
+        }
+        #[cfg(unix)]
+        assert!(exps.prefetch_expert_pages(1));
+        std::fs::remove_file(path).ok();
     }
 }

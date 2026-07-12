@@ -87,6 +87,8 @@ HANDOVER.md sections from that date.
 | `BW24_MOE_PINNED` | pinned when MOE_CACHE on | force pinned host expert slabs |
 | `BW24_SPILL_DISK` | off | set = enable the NVMe disk tier for MoE experts (M3-class models that exceed host RAM) |
 | `BW24_SPILL_PINNED_FRAC` | 0.60 | fraction of MemAvailable the spill tier may pin |
+| `BW24_SPILL_IO` | `mmap` | expert storage backend: `mmap` (default and fallback), `pread` (blocking positioned-read oracle), or `worker` (bounded CPU positioned-read prefetch into CUDA-pinned buffers; caller-thread H2D/cache publication). Invalid values and backend/read failures degrade to mmap |
+| `BW24_SPILL_PREAD_DEPTH` | 2 | pinned-buffer count and worker-thread count for `worker` (`1..=64`; also sizes the blocking `pread` pool). The 2026-07-10 G7e A/B used depth 8; re-gate on the local RTX 5090 before changing its setting |
 | `BW24_ST_PINNED` | off | `1` pins the safetensors expert store — ONLY for fits-in-RAM checkpoints (pinning 26GB evicted the page cache: 30x regression, 2026-07-07) |
 | `BW24_ST_REPACK_DISK` | on | `0` forces in-RAM gather instead of the `.bw24-repack` disk cache (safetensors stream-repack loader) |
 | `BW24_KQ_NVFP4` | 0 | load-time k-quant→NVFP4 re-encode: `1` = Q4_K, `2` = +Q5_K. +3.9% 9B plain but ~2x quant error and an acceptance tax — bpw equality ≠ quality-class equality (2026-07-08). Speed-mode opt-in only |
@@ -98,7 +100,7 @@ HANDOVER.md sections from that date.
 | flag | default | what it does |
 |---|---|---|
 | `BW24_NVCC` | `nvcc` on PATH | nvcc binary override |
-| `BW24_CUDA_ARCH` | 120a | target arch (the sm_89 lane built with `89`; lane closed) |
+| `BW24_CUDA_ARCH` | `120a` | build target. `89` builds the secondary correctness-first L40S eval lane: native-FP4 prefill is compiled off, tiled GDN uses its generic low-shared-memory fallback, and prompt attention dequants KV once into the generic f32 SDPA path. Portable int8/qmatvec and quantized decode kernels remain available. The default Blackwell build is unchanged |
 | `BW24_CUTLASS` | off | set = compile the CUTLASS sm120 NVFP4 GEMM (`cutlass_smoke`, `BW24_FP4_CUTLASS` door) |
 | `BW24_CUTLASS_ROOT` | flashinfer venv tree | CUTLASS header tree location |
 | `BW24_MMQ_X_Q45K` | 64 | k-quant MMQ X-tile (compile-time sweep seam) |
@@ -121,6 +123,10 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FAST=0` | Stage-A f32-dequant matvec class — THE correctness oracle | default-on 2026-07-08 (env-law retirement) |
 | `BW24_MMVQ=0` | dp4a matvec class (m=1 AND batched verify switch together — dispatch-parity law) | default-on 2026-07-08; parity fix 2026-07-07 |
 | `BW24_MOE_CACHE=0` | stage-every-token expert dispatch (no SLRU) | default-on 2026-07-08 |
+| `BW24_MOE_PREFETCH=1` | pipeline the next routed expert's cache misses on the copy stream | experimental; target-rig gate required |
+| `BW24_MOE_PAGE_PREFETCH=1` | issue rolling `MADV_WILLNEED` for mmap-backed GGUF/repack ranges | experimental; cold-cache G7e + RTX 5090 A/B required |
+| `BW24_MOE_PAGE_PREFETCH_WINDOW` | future experts kept in the rolling page-prefetch window (default `1`; `0` disables) | only read when `BW24_MOE_PAGE_PREFETCH=1`; tune to storage latency/page-cache budget |
+| `BW24_MOE_MMAP_ADVICE` | whole-map expert advice: `random` (default) or `normal` | `normal` restores ordinary Linux readahead; invalid values warn and fall back to `random` |
 | `BW24_NO_FA_VEC` (set) | scalar `fa_decode_f32` bit-reference (eager + rows + graph in lockstep) | vec default-on 2026-06-28 |
 | `BW24_FA_V2=0` | per-key online-softmax FA twins (v2 = tile-batched, own numeric config) | default-on 2026-07-08, the depth-slope fix |
 | `BW24_FA_ROWS_OFF=1` | per-row verify FA loop instead of the fused rows kernel | rows landed 2026-07-03 (+13.8% 9B p2) |
@@ -175,6 +181,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | flag | what it does |
 |---|---|
 | `BW24_MOE_STATS=1` | per-layer expert-cache hit/miss/staged-bytes prints (forces the stats-visible dispatch path) |
+| `BW24_SPILL_STATS=1` | print cumulative positioned-read snapshots when server requests finish: reads, logical bytes, errors, short reads, mmap fallbacks, buffer waits, and worker ring-full events. Snapshots are totals, not per-request deltas; do not sum them |
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
 | `BW24_DRAFT_GRAPH_CHECK=1` | re-run the gemma draft chain eagerly after each graph replay and diff the drafted slots (non-destructive replay-vs-eager bisect) |

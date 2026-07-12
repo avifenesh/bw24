@@ -115,10 +115,12 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
         let exp_probs_b = src.find(&p("exp_probs_b.bias")).map(|v| {
             bw24_gguf::dequant::dequantize(v.ggml_type, &v.bytes, n_expert)
         });
+        let active_experts = src.active_experts(il).map(<[bool]>::to_vec);
         Ffn::Moe(MoeWeights {
             gate_inp:       load_t(e, src, &p("ffn_gate_inp.weight"))?,
             gate_inp_shexp: load_opt(e, src, &p("ffn_gate_inp_shexp.weight"))?,
             exp_probs_b,
+            active_experts,
             gate_exps, up_exps, down_exps,
             gate_shexp: load_opt(e, src, &p("ffn_gate_shexp.weight"))?,
             up_shexp:   load_opt(e, src, &p("ffn_up_shexp.weight"))?,
@@ -139,6 +141,11 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
 /// fits => every subsequent layer uploads too (uniform). BW24_MOE_RESIDENT=0 forces the SLRU path.
 fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps, down: &HostExps)
                   -> Result<Option<crate::hybrid::DevExps>, Box<dyn std::error::Error>> {
+    // The resident pointer-table kernels take one qtype/row stride per projection. Mixed-expert
+    // layers stay on the metadata-aware staged/SLRU paths until those kernels group by layout.
+    if !gate.is_uniform_layout() || !up.is_uniform_layout() || !down.is_uniform_layout() {
+        return Ok(None);
+    }
     use std::sync::OnceLock;
     static DECISION: OnceLock<bool> = OnceLock::new();
     let per_layer = gate.bytes.as_bytes().len() + up.bytes.as_bytes().len() + down.bytes.as_bytes().len();
@@ -242,6 +249,9 @@ pub struct MoeWeights {
     /// for expert SELECTION only; the routing weights use the un-biased scores. Kept host-side —
     /// routing's top-k is a host loop and this is n_expert floats.
     pub exp_probs_b: Option<Vec<f32>>,
+    /// Original-width router mask for physically pruned expert overlays. Inactive ids never enter
+    /// top-k, so their absent weight files cannot be dispatched.
+    pub active_experts: Option<Vec<bool>>,
     pub gate_exps: HostExps,        // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub up_exps: HostExps,          // [n_embd, n_ff_exp, n_expert]   (HOST)
     pub down_exps: HostExps,        // [n_ff_exp, n_embd, n_expert] TRANSPOSED (HOST)
@@ -255,6 +265,15 @@ pub struct MoeWeights {
     /// None => the SLRU host-expert machinery (the spill regime, where it WINS vs llama's
     /// CPU-offload degradation). Decided at load in `load_ffn` (BW24_MOE_RESIDENT=0 forces off).
     pub dev_exps: Option<DevExps>,
+}
+
+impl MoeWeights {
+    #[inline]
+    pub fn has_uniform_expert_layout(&self) -> bool {
+        self.gate_exps.is_uniform_layout()
+            && self.up_exps.is_uniform_layout()
+            && self.down_exps.is_uniform_layout()
+    }
 }
 
 /// Device-resident expert slabs for one layer (gate/up/down) + the prebuilt [3, n_expert]
@@ -537,7 +556,7 @@ impl HybridModel {
         let mut spill: Option<crate::spill::SpillCtx> =
             if cfg.moe.is_some() && crate::spill::disk_tier_enabled() && gguf.is_some() {
                 let budget = crate::spill::MemBudget::probe(e)?;
-                let ctx = crate::spill::SpillCtx::open(gguf.unwrap().path(), &budget)?;
+                let ctx = crate::spill::SpillCtx::open(gguf.unwrap(), &budget)?;
                 eprintln!("[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
                           budget.free_vram >> 20, budget.free_pinnable_ram >> 20);
                 Some(ctx)

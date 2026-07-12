@@ -21,6 +21,62 @@ fn gdec_enabled() -> bool {
     *E.get_or_init(|| std::env::var("BW24_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// Deterministic in-token expert prefetch. `BW24_MOE_PREFETCH=1` overlaps memory-source H2D on the
+/// copy stream; selecting the opt-in worker spill backend enables the same known-next hook for disk.
+fn moe_prefetch_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var("BW24_MOE_PREFETCH").as_deref() == Ok("1")
+        || crate::spill_pread::worker_enabled())
+}
+
+/// Best-effort OS page-cache prefetch distance for mmap-backed expert ranges. Independent of the
+/// H2D copy-stream experiment so storage->RAM and RAM->HBM overlap can be measured separately.
+/// The opt-in default stays one expert to preserve the original experiment; spill rigs can widen
+/// it with `BW24_MOE_PAGE_PREFETCH_WINDOW` to cover NVMe latency.
+fn moe_page_prefetch_window() -> usize {
+    static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *W.get_or_init(|| page_prefetch_window_from_values(
+        std::env::var("BW24_MOE_PAGE_PREFETCH").as_deref() == Ok("1"),
+        std::env::var("BW24_MOE_PAGE_PREFETCH_WINDOW").ok().as_deref(),
+    ))
+}
+
+fn page_prefetch_window_from_values(enabled: bool, raw_window: Option<&str>) -> usize {
+    if !enabled {
+        return 0;
+    }
+    raw_window
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1)
+}
+
+/// Return only the newly exposed positions in a rolling lookahead window. Position zero seeds the
+/// full window; each later position adds one expert at the far edge. Thus widening the window does
+/// not repeatedly issue `MADV_WILLNEED` for the same range.
+fn page_prefetch_positions(
+    position: usize,
+    len: usize,
+    window: usize,
+) -> std::ops::Range<usize> {
+    if window == 0 || position >= len {
+        return len..len;
+    }
+    let (start, count) = if position == 0 {
+        (1, window)
+    } else {
+        (position.saturating_add(window), 1)
+    };
+    let start = start.min(len);
+    start..start.saturating_add(count).min(len)
+}
+
+/// Grouped worker-I/O schedule: prime the first active expert before the loop, then queue exactly
+/// one known-next expert at each iteration. Returning positions keeps expert ordering authoritative.
+fn grouped_worker_prefetch_position(order_len: usize, current: Option<usize>) -> Option<usize> {
+    let position = current.map_or(0, |position| position.saturating_add(1));
+    (position < order_len).then_some(position)
+}
+
 /// LAUNCH-STRUCTURE STAGE 3 gate (BW24_MOE_DEV, default ON; `=0` restores host routing). The
 /// zero-DtoH device-dispatch path for fully-resident layers: router top-k output stays on device,
 /// expert weight pointers come from the per-layer device table. Requires the fused router (the
@@ -682,6 +738,12 @@ impl HybridModel {
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if Engine::moe_cache_enabled() && crate::spill_pread::worker_enabled() {
+            e.with_moe_cache(max_block, |cache, _| {
+                cache.begin_worker_scope();
+                Ok(())
+            })?;
+        }
         // A2: Expert-grouped dispatch for prefill (T>1). BW24_MOE_GROUPED=1 routes here.
         if t > 1 && std::env::var("BW24_MOE_GROUPED").is_ok() {
             let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
@@ -719,6 +781,27 @@ impl HybridModel {
         Self::moe_ffn_sequential_zq8(e, m, z, None, t, cfg, il, max_block)
     }
 
+    /// Append the host-visible router selection for one layer/forward when calibration tracing is
+    /// enabled. Both sequential and expert-grouped prefill must call this after routing so the
+    /// trace is independent of the dispatch optimization selected for the forward.
+    fn trace_moe_routes(il: u16, t: usize, sel_all: &[u32], weights: &[f32])
+                        -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        if let Ok(path) = std::env::var("BW24_MOE_TRACE") {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+            let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
+            writeln!(f, "{} {} {}", il, t, ids.join(","))?;
+        }
+        if let Ok(path) = std::env::var("BW24_MOE_WEIGHT_TRACE") {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+            let pairs: Vec<String> = sel_all.iter().zip(weights)
+                .map(|(expert, weight)| format!("{expert}:{weight:.9}"))
+                .collect();
+            writeln!(f, "{} {} {}", il, t, pairs.join(","))?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn moe_ffn_sequential_zq8(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize,
@@ -739,7 +822,8 @@ impl HybridModel {
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
         let use_cache = Engine::moe_cache_enabled();
-        let moe_q8 = moe_q8_enabled()
+        let uniform_experts = m.has_uniform_expert_layout();
+        let moe_q8 = uniform_experts && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype);
 
@@ -814,13 +898,19 @@ impl HybridModel {
         // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = cfg.m3.is_none() && cfg.hy3.is_none();
+        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
+        // Observation modes must route through the host-visible selection below. Otherwise a fully
+        // resident layer returns through device dispatch before its trace/stats row is recorded,
+        // silently biasing calibration toward only non-resident layers on large-VRAM machines.
+        let observe_routes = std::env::var("BW24_MOE_STATS").is_ok()
+            || std::env::var("BW24_MOE_TRACE").is_ok()
+            || std::env::var("BW24_MOE_WEIGHT_TRACE").is_ok();
         if dev_ok && t < PRIME_MIN_T && m.dev_exps.is_some() && n_used <= 8 && moe_dev_enabled()
-            && std::env::var("BW24_MOE_STATS").is_err() {
+            && !observe_routes {
             return Self::moe_ffn_dev(e, m, z, zq8, &logits, t, cfg, il, max_block);
         }
         if dev_ok && use_cache && n_used <= 8 && moe_dev_enabled()
-            && std::env::var("BW24_MOE_STATS").is_err() {
+            && !observe_routes {
             let row_ok = e.with_moe_cache(max_block, |c, eng| {
                 if moe_prewarm_enabled() { c.prewarm_layer(il, m, eng)?; }
                 Ok(c.layer_dev_row(il, n_expert, eng)?.is_some())
@@ -833,21 +923,16 @@ impl HybridModel {
         // Per-token (sel[8], w[8]) — sigmoid host oracle (M3/Hy3), else fused-router/softmax.
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(sig))?
+                                m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
         } else {
-            Self::moe_route(e, &logits, t, n_expert, n_used)?
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                None, None, m.active_experts.as_deref())?
         };
 
         // BW24_MOE_TRACE=<path>: append one line per (layer, step) with the selected expert ids —
         // offline analysis derives the decode working set + step-to-step reuse (the go/no-go
         // measurement for resident-expert tiering; see rig5090.jsonl 2026-07-07 pinned-tier row).
-        if let Ok(path) = std::env::var("BW24_MOE_TRACE") {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let ids: Vec<String> = sel_all.iter().map(|s| s.to_string()).collect();
-                let _ = writeln!(f, "{} {} {}", il, t, ids.join(","));
-            }
-        }
+        Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
 
         // BW24_MOE_STATS: per-layer routing stats for the A2 (expert-grouped prefill) baseline —
         // per-token expert-id entropy, active-expert coverage, tokens-per-expert group sizes.
@@ -871,32 +956,27 @@ impl HybridModel {
         // and lazily zero ONLY the row of a token that falls through to the sequential axpy loop.
         // BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
         // zeroed-then-accumulated exactly as before (fallback).
-        let gdec_may_fire = use_cache && n_used <= 8 && gdec_enabled();
+        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled();
         let mut moe_out = if gdec_may_fire { e.uninit(t * n_embd)? } else { e.zeros(t * n_embd)? };
 
         // GPU scratch: one slot per proj, big enough for ONE expert (default stage-every-token path).
         // STAGE 2: LAZY — allocated only if the no-cache staging path actually runs (under
         // BW24_MOE_CACHE they were 3 dead ~1MB alloc_zeros + memset + free per layer per token,
         // measured ~123 memsets/token of the decode wall).
-        let g_len = m.gate_exps.expert_stride;  // 860160
-        let u_len = m.up_exps.expert_stride;    // 860160
-        let d_len = m.down_exps.expert_stride;  // 1114112
+        let g_len = m.gate_exps.max_expert_bytes();  // 860160 for the uniform 35B gate
+        let u_len = m.up_exps.max_expert_bytes();    // 860160 for the uniform 35B up
+        let d_len = m.down_exps.max_expert_bytes();  // 1114112 for the uniform 35B down
         let mut scratch_g: Option<CudaSlice<u8>> = None;
         let mut scratch_u: Option<CudaSlice<u8>> = None;
         let mut scratch_d: Option<CudaSlice<u8>> = None;
         // `max_block` (the GLOBAL max expert stride across all layers) is passed in — the cache slots
         // are FIXED-ADDRESS and must fit any layer's block (UD/dynamic GGUFs vary quant per layer).
 
-        // EDGE-1 §C.2/C.3 (async H2D prefetch) — TODO, deliberately NOT wired into the hot loop.
-        // The infrastructure is in place and validated: `HostExps` bytes are pinned under
-        // BW24_MOE_CACHE (§C.1, true-DMA H2D, argmax-1178 confirmed), and `Engine` exposes a copy
-        // stream + `stage_expert_async`/`compute_wait` (event-synced). What is left is the in-token
-        // pipeline-by-one: while `qmatvec_view` for sel[j] runs on compute, prefetch the MISS blocks
-        // of sel[j+1..] on the copy stream into double-buffered staging slots, then `compute_wait`
-        // the event before each dependent GEMM. It is deferred because (a) the SLRU cache already
-        // serves ~91% of blocks with ZERO H2D so prefetch only helps the ~9% miss tail, and (b) a
-        // mis-ordered copy-stream event would silently corrupt the bit-identity gate. Shipping A+B
-        // validated (per the build directive) rather than risk the argmax-1178 gate on the C tail.
+        // EDGE-1 §C.2/C.3: the optional pipeline queues the next selected expert's MISS blocks on
+        // the copy stream before launching the current expert's compute. Pending slots stay invisible
+        // to cache hits until dispatch inserts the completion-event wait; current gate/up/down ids are
+        // protected from eviction. This changes scheduling only, never the GGUF bytes or GEMM path.
+        let page_window = moe_page_prefetch_window();
 
         // 2. PER TOKEN: routed-expert loop. The ONE dispatch change vs Stage-1: a resident slot
         //    (cache HIT, no H2D) OR a staged slot (MISS) feeds the SAME unchanged qmatvec_view.
@@ -946,6 +1026,18 @@ impl HybridModel {
 
             for (j, &ex) in sel.iter().enumerate() {
                 let ex = ex as usize;
+                for next in page_prefetch_positions(j, sel.len(), page_window) {
+                    Self::moe_prefetch_host_expert(sel[next] as usize, m);
+                }
+                if use_cache && moe_prefetch_enabled() && j + 1 < sel.len() {
+                    let keep = [
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_GATE, ex as u16),
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_UP, ex as u16),
+                        crate::moe_cache::BlockId::new(il, crate::moe_cache::PROJ_DOWN, ex as u16),
+                    ];
+                    let next = sel[j + 1] as usize;
+                    Self::moe_prefetch_expert(e, il, next, m, max_block, &keep)?;
+                }
                 if use_cache && moe_q8 {
                     // dp4a EXPERT PATH (BW24_MOE_Q8): quantize z-row once per token (hoisted
                     // below via zq/zd lazies), int-dot the three projections. Same dispatch/
@@ -990,13 +1082,16 @@ impl HybridModel {
                     }
                     let (sg, su, sd) = (scratch_g.as_mut().unwrap(), scratch_u.as_mut().unwrap(),
                                         scratch_d.as_mut().unwrap());
+                    let gl = m.gate_exps.expert_layout(ex);
+                    let ul = m.up_exps.expert_layout(ex);
+                    let dl = m.down_exps.expert_layout(ex);
                     e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
-                    let gate = e.qmatvec_view(sg, 0..g_len, &zt, 1,
-                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
+                    let gate = e.qmatvec_view(sg, 0..gl.len, &zt, 1,
+                        m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
 
                     e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
-                    let up = e.qmatvec_view(su, 0..u_len, &zt, 1,
-                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                    let up = e.qmatvec_view(su, 0..ul.len, &zt, 1,
+                        m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
 
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
                     Self::ffn_act_scaled(e, cfg, &gate, &up,
@@ -1004,8 +1099,8 @@ impl HybridModel {
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
-                    let y = e.qmatvec_view(sd, 0..d_len, &actv, 1,
-                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?;
+                    let y = e.qmatvec_view(sd, 0..dl.len, &actv, 1,
+                        m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?;
 
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                     e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
@@ -1074,8 +1169,8 @@ impl HybridModel {
         let mut bytes = 0u64;
         for l in self.layers.iter() {
             if let Ffn::Moe(m) = &l.ffn {
-                bytes += n_used * (m.gate_exps.expert_stride + m.up_exps.expert_stride
-                                   + m.down_exps.expert_stride) as u64;
+                bytes += n_used * (m.gate_exps.max_expert_bytes() + m.up_exps.max_expert_bytes()
+                                   + m.down_exps.max_expert_bytes()) as u64;
             }
         }
         bytes
@@ -1089,9 +1184,9 @@ impl HybridModel {
         let mut mx = 0usize;
         let mut scan = |ffn: &Ffn| {
             if let Ffn::Moe(m) = ffn {
-                mx = mx.max(m.gate_exps.expert_stride)
-                       .max(m.up_exps.expert_stride)
-                       .max(m.down_exps.expert_stride);
+                mx = mx.max(m.gate_exps.max_expert_bytes())
+                       .max(m.up_exps.max_expert_bytes())
+                       .max(m.down_exps.max_expert_bytes());
             }
         };
         for l in self.layers.iter() { scan(&l.ffn); }
@@ -1128,7 +1223,7 @@ impl HybridModel {
     /// indexes HostExps.bytes on the CPU to choose the DMA source (§A.2 output staging).
     fn moe_route(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
-        Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None)
+        Self::moe_route_cfg(e, logits, t, n_expert, n_used, None, None, None)
     }
 
     /// DeepSeek-V3-class sigmoid routing (MiniMax-M3, Hy3), host oracle. Reference:
@@ -1139,7 +1234,7 @@ impl HybridModel {
     /// `sig` = (scaling_factor, route_norm) from `cfg.sigmoid_router()`; softmax archs pass
     /// None -> the qwen35moe/OLMoE path below.
     fn moe_route_cfg(e: &Engine, logits: &CudaSlice<f32>, t: usize, n_expert: usize, n_used: usize,
-                     bias: Option<&[f32]>, sig: Option<(f32, bool)>)
+                     bias: Option<&[f32]>, sig: Option<(f32, bool)>, active: Option<&[bool]>)
                  -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
         if let Some((sf, route_norm)) = sig {
             // sigmoid routing. Host path only for now (fused-router kernel is softmax-top-k).
@@ -1154,7 +1249,8 @@ impl HybridModel {
                     Some(b) => scores.iter().zip(b).map(|(s, bb)| s + bb).collect(),
                     None => scores.clone(),
                 };
-                let mut idx: Vec<usize> = (0..n_expert).collect();
+                let mut idx: Vec<usize> = (0..n_expert)
+                    .filter(|&i| active.is_none_or(|mask| mask[i])).collect();
                 idx.sort_by(|&a, &b| selsc[b].total_cmp(&selsc[a]).then(a.cmp(&b)));
                 let sl = &idx[..n_used];
                 let mut wv: Vec<f32> = sl.iter().map(|&i| scores[i]).collect();
@@ -1174,7 +1270,7 @@ impl HybridModel {
         // LAUNCH-STRUCTURE STAGE 1 (2026-07-05): fused router DEFAULT ON (BW24_FUSED_ROUTER=0
         // rollback) via the single-sync pinned readback — softmax arch only; the M3 sigmoid arm
         // above returns before this (host path until a sigmoid fused-router kernel exists).
-        if !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
+        if active.is_none() && !matches!(std::env::var("BW24_FUSED_ROUTER").as_deref(), Ok("0")) {
             return e.moe_router_topk_host(logits, t, n_expert, n_used);
         }
         // Host oracle (the §D bit-identity reference).
@@ -1184,13 +1280,19 @@ impl HybridModel {
         for tok in 0..t {
             let row = &lg[tok * n_expert..(tok + 1) * n_expert];
             // softmax over ALL n_expert (stable: subtract max)
-            let maxl = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let maxl = row.iter().enumerate()
+                .filter(|(i, _)| active.is_none_or(|mask| mask[*i]))
+                .map(|(_, &x)| x).fold(f32::NEG_INFINITY, f32::max);
             let mut probs = vec![0f32; n_expert];
             let mut den = 0f32;
-            for i in 0..n_expert { let x = (row[i] - maxl).exp(); probs[i] = x; den += x; }
+            for i in 0..n_expert {
+                if active.is_some_and(|mask| !mask[i]) { continue; }
+                let x = (row[i] - maxl).exp(); probs[i] = x; den += x;
+            }
             for p in probs.iter_mut() { *p /= den; }
             // stable DESC sort: prob DESC, ascending-index tiebreak.
-            let mut idx: Vec<usize> = (0..n_expert).collect();
+            let mut idx: Vec<usize> = (0..n_expert)
+                .filter(|&i| active.is_none_or(|mask| mask[i])).collect();
             idx.sort_by(|&a, &b| probs[b].total_cmp(&probs[a]).then(a.cmp(&b)));
             let sl = &idx[..n_used];
             let mut wv: Vec<f32> = sl.iter().map(|&i| probs[i]).collect();
@@ -1760,14 +1862,15 @@ impl HybridModel {
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
-        let len = exps.expert_stride;
+        let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
-        let host_bytes = exps.expert_bytes(ex);
+        let source = exps.expert_source(ex);
         e.with_moe_cache(max_block, |c, eng| {
-            let slot = c.dispatch(id, host_bytes, eng)?;
+            let slot = c.dispatch_source(id, source, eng)?;
             let DispatchSlot::Resident(sl) = slot;
             let buf = c.slot(sl);
-            eng.qmatvec_expert_q8(buf, 0..len, aq, ad, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
+            eng.qmatvec_expert_q8(buf, 0..layout.len, aq, ad, 1, exps.in_f, exps.out_f,
+                                  layout.qtype, layout.row_bytes)
         })
     }
 
@@ -1776,18 +1879,59 @@ impl HybridModel {
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::moe_cache::{BlockId, DispatchSlot, PROJ_GATE, PROJ_UP};
         let exps = match proj { PROJ_GATE => &m.gate_exps, PROJ_UP => &m.up_exps, _ => &m.down_exps };
-        let len = exps.expert_stride;
+        let layout = exps.expert_layout(ex);
         let id = BlockId::new(il, proj, ex as u16);
-        let host_bytes = exps.expert_bytes(ex);
+        let source = exps.expert_source(ex);
         // dispatch under the lock (lookup/admit/memcpy-issue), then resolve the slot and GEMM.
         e.with_moe_cache(max_block, |c, eng| {
-            let slot = c.dispatch(id, host_bytes, eng)?;
+            let slot = c.dispatch_source(id, source, eng)?;
             // resolve the device buffer for this slot; the GEMM is enqueued on the compute stream
             // (the same stream the memcpy was issued on, so ordering holds without extra sync).
             let DispatchSlot::Resident(sl) = slot;
             let buf = c.slot(sl);
-            eng.qmatvec_view(buf, 0..len, x, 1, exps.in_f, exps.out_f, exps.qtype, exps.row_bytes)
+            eng.qmatvec_view(buf, 0..layout.len, x, 1, exps.in_f, exps.out_f,
+                             layout.qtype, layout.row_bytes)
         })
+    }
+
+    fn moe_prefetch_expert(e: &Engine, il: u16, ex: usize, m: &MoeWeights, max_block: usize,
+                           keep: &[crate::moe_cache::BlockId])
+                           -> Result<(), Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+        e.with_moe_cache(max_block, |c, eng| {
+            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+                                 (PROJ_DOWN, &m.down_exps)] {
+                let id = BlockId::new(il, proj, ex as u16);
+                let _ = c.prefetch_source(id, exps.expert_source(ex), keep, eng)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Worker-mode disk lookahead for grouped prefill. Memory sources are deliberately skipped so
+    /// selecting `worker` changes only storage scheduling here; all CUDA work stays in dispatch.
+    fn moe_prefetch_disk_expert(e: &Engine, il: u16, ex: usize, m: &MoeWeights,
+                                max_block: usize, keep: &[crate::moe_cache::BlockId])
+                                -> Result<(), Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+        e.with_moe_cache(max_block, |c, eng| {
+            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+                                 (PROJ_DOWN, &m.down_exps)] {
+                let source = exps.expert_source(ex);
+                if let crate::model::ExpertSource::Disk { .. } = &source {
+                    let id = BlockId::new(il, proj, ex as u16);
+                    let _ = c.prefetch_source(id, source, keep, eng)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    #[inline]
+    fn moe_prefetch_host_expert(ex: usize, m: &MoeWeights) {
+        let _ = m.gate_exps.prefetch_expert_pages(ex);
+        let _ = m.up_exps.prefetch_expert_pages(ex);
+        let _ = m.down_exps.prefetch_expert_pages(ex);
     }
 }
 
@@ -1823,10 +1967,12 @@ impl HybridModel {
         let logits = e.matmul(&m.gate_inp, z, t)?;
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
-                                m.exp_probs_b.as_deref(), Some(sig))?
+                                m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
         } else {
-            Self::moe_route(e, &logits, t, n_expert, n_used)?
+            Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
+                                None, None, m.active_experts.as_deref())?
         };
+        Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
         // For each expert e, we need: which tokens use it, their positions in z, their top-k
@@ -1856,9 +2002,9 @@ impl HybridModel {
         let mut wbuf = e.zeros(t * n_used)?;  // [T, n_used] weight buffer for FMA reduce
 
         // Expert weight dimensions (used in both cache and staging paths).
-        let g_len = m.gate_exps.expert_stride;
-        let u_len = m.up_exps.expert_stride;
-        let d_len = m.down_exps.expert_stride;
+        let g_len = m.gate_exps.max_expert_bytes();
+        let u_len = m.up_exps.max_expert_bytes();
+        let d_len = m.down_exps.max_expert_bytes();
         let use_cache = Engine::moe_cache_enabled();
         let max_block = _max_block;
 
@@ -1884,10 +2030,34 @@ impl HybridModel {
         order.sort_by(|&a, &b| groups[b].tok_indices.len()
             .cmp(&groups[a].tok_indices.len()).then(a.cmp(&b)));
         let mut m_dist: Vec<usize> = Vec::new();  // for stats
-        for ex in order {
+        let page_window = moe_page_prefetch_window();
+        let worker_disk_prefetch = use_cache && crate::spill_pread::worker_enabled();
+        if worker_disk_prefetch {
+            if let Some(first) = grouped_worker_prefetch_position(order.len(), None) {
+                Self::moe_prefetch_disk_expert(e, il, order[first], m, max_block, &[])?;
+            }
+        }
+        for (order_pos, &ex) in order.iter().enumerate() {
+            for next in page_prefetch_positions(order_pos, order.len(), page_window) {
+                Self::moe_prefetch_host_expert(order[next], m);
+            }
+            if worker_disk_prefetch {
+                if let Some(next) = grouped_worker_prefetch_position(order.len(), Some(order_pos)) {
+                    use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+                    let keep = [
+                        BlockId::new(il, PROJ_GATE, ex as u16),
+                        BlockId::new(il, PROJ_UP, ex as u16),
+                        BlockId::new(il, PROJ_DOWN, ex as u16),
+                    ];
+                    Self::moe_prefetch_disk_expert(e, il, order[next], m, max_block, &keep)?;
+                }
+            }
             let grp = &groups[ex];
             let m_e = grp.tok_indices.len();
             m_dist.push(m_e);
+            let gl = m.gate_exps.expert_layout(ex);
+            let ul = m.up_exps.expert_layout(ex);
+            let dl = m.down_exps.expert_layout(ex);
 
             // Upload index/weight arrays to device. The down-proj per-expert macro-scale
             // (ModelOpt weight_scale_2) folds into the scatter weights — post-matmul linear,
@@ -1911,17 +2081,17 @@ impl HybridModel {
                 // CACHE PATH: dispatch through MOE cache, get device-resident buffer, GEMM at m=m_e.
                 let gate = e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_GATE, ex as u16);
-                    let slot = c.dispatch(id, m.gate_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.gate_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..g_len, &gv, m_e,
-                        m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..gl.len, &gv, m_e,
+                        m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)
                 })?;
                 let up = e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_UP, ex as u16);
-                    let slot = c.dispatch(id, m.up_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.up_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..u_len, &gv, m_e,
-                        m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
+                        m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
                 })?;
                 // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
@@ -1930,10 +2100,10 @@ impl HybridModel {
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
-                    let slot = c.dispatch(id, m.down_exps.expert_bytes(ex), eng)?;
+                    let slot = c.dispatch_source(id, m.down_exps.expert_source(ex), eng)?;
                     let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..d_len, &actv, m_e,
-                        m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)
+                    eng.qmatvec_view(buf, 0..dl.len, &actv, m_e,
+                        m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)
                 })?
             } else {
                 // STAGING PATH: H2D the expert blocks into scratch buffers, then GEMM.
@@ -1943,17 +2113,17 @@ impl HybridModel {
                 e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
                 e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
                 e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
-                let gate = e.qmatvec_view(sg, 0..g_len, &gv, m_e,
-                    m.gate_exps.in_f, m.gate_exps.out_f, m.gate_exps.qtype, m.gate_exps.row_bytes)?;
-                let up = e.qmatvec_view(su, 0..u_len, &gv, m_e,
-                    m.up_exps.in_f, m.up_exps.out_f, m.up_exps.qtype, m.up_exps.row_bytes)?;
+                let gate = e.qmatvec_view(sg, 0..gl.len, &gv, m_e,
+                    m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
+                let up = e.qmatvec_view(su, 0..ul.len, &gv, m_e,
+                    m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
                 // SiLU-MUL activation (per-expert macro-scales folded).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
                 Self::ffn_act_scaled(e, cfg, &gate, &up,
                     m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
-                e.qmatvec_view(sd, 0..d_len, &actv, m_e,
-                    m.down_exps.in_f, m.down_exps.out_f, m.down_exps.qtype, m.down_exps.row_bytes)?
+                e.qmatvec_view(sd, 0..dl.len, &actv, m_e,
+                    m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?
             };
 
             // SCATTER into slot buffer: each row goes to slot_buf[tok, slot, :].
@@ -3381,7 +3551,6 @@ impl HybridModel {
     }
 }
 
-
 // ===================================================================================== //
 //  gemma-4 E4B (per-layer embeddings + KV-sharing) — FIRST-LIGHT forward.               //
 //  Dedicated simple path (Stage-B matmuls, per-row causal attention over the quantized  //
@@ -3749,5 +3918,47 @@ impl HybridModel {
         } else {
             Ok(lh)
         }
+    }
+}
+
+#[cfg(test)]
+mod page_prefetch_tests {
+    use super::{grouped_worker_prefetch_position, page_prefetch_positions,
+                page_prefetch_window_from_values};
+
+    #[test]
+    fn page_prefetch_window_keeps_existing_opt_in_default() {
+        assert_eq!(page_prefetch_window_from_values(false, None), 0);
+        assert_eq!(page_prefetch_window_from_values(false, Some("8")), 0);
+        assert_eq!(page_prefetch_window_from_values(true, None), 1);
+        assert_eq!(page_prefetch_window_from_values(true, Some("bad")), 1);
+        assert_eq!(page_prefetch_window_from_values(true, Some("0")), 0);
+        assert_eq!(page_prefetch_window_from_values(true, Some("8")), 8);
+    }
+
+    #[test]
+    fn rolling_page_prefetch_advises_each_future_expert_once() {
+        let advised: Vec<_> = (0..7)
+            .flat_map(|position| page_prefetch_positions(position, 7, 3))
+            .collect();
+        assert_eq!(advised, vec![1, 2, 3, 4, 5, 6]);
+
+        let one_ahead: Vec<_> = (0..4)
+            .flat_map(|position| page_prefetch_positions(position, 4, 1))
+            .collect();
+        assert_eq!(one_ahead, vec![1, 2, 3]);
+        assert!(page_prefetch_positions(0, 4, 0).is_empty());
+    }
+
+    #[test]
+    fn grouped_worker_prefetch_primes_first_then_each_known_next_once() {
+        assert_eq!(grouped_worker_prefetch_position(0, None), None);
+        let positions: Vec<_> = std::iter::once(grouped_worker_prefetch_position(4, None).unwrap())
+            .chain((0..4).filter_map(|position| {
+                grouped_worker_prefetch_position(4, Some(position))
+            }))
+            .collect();
+        assert_eq!(positions, vec![0, 1, 2, 3]);
+        assert_eq!(grouped_worker_prefetch_position(1, Some(0)), None);
     }
 }

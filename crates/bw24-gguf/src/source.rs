@@ -8,11 +8,66 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use memmap2::Mmap;
 use crate::config::{Arch, JsonObj, ModelConfig};
 use crate::safetensors::StModel;
 use crate::{GgufFile, GgmlType};
+
+/// Whole-map access advice for expert slab files. `Random` preserves the original spill behavior;
+/// `Normal` lets Linux use its ordinary mmap readahead for each multi-megabyte expert access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpertMmapAdvice {
+    Random,
+    Normal,
+}
+
+/// Pure parser kept separate from the cached environment lookup so invalid/default behavior is
+/// unit-testable without mutating process-global environment state.
+pub fn parse_expert_mmap_advice(value: Option<&str>) -> Result<ExpertMmapAdvice, &'static str> {
+    match value.unwrap_or("random") {
+        "random" => Ok(ExpertMmapAdvice::Random),
+        "normal" => Ok(ExpertMmapAdvice::Normal),
+        _ => Err("expected random or normal"),
+    }
+}
+
+pub fn expert_mmap_advice() -> ExpertMmapAdvice {
+    static MODE: std::sync::OnceLock<ExpertMmapAdvice> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| {
+        let raw = std::env::var("BW24_MOE_MMAP_ADVICE").ok();
+        match parse_expert_mmap_advice(raw.as_deref()) {
+            Ok(mode) => mode,
+            Err(reason) => {
+                eprintln!(
+                    "[spill] invalid BW24_MOE_MMAP_ADVICE={:?} ({reason}); using random",
+                    raw.as_deref().unwrap_or("")
+                );
+                ExpertMmapAdvice::Random
+            }
+        }
+    })
+}
+
+/// Apply the selected policy to one expert mmap. `MADV_NORMAL` explicitly clears a prior
+/// `MADV_RANDOM` VMA policy, so this is safe for maps reused across loader paths.
+pub fn apply_expert_mmap_advice(map: &Mmap) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let advice = match expert_mmap_advice() {
+            ExpertMmapAdvice::Random => memmap2::Advice::Random,
+            ExpertMmapAdvice::Normal => memmap2::Advice::Normal,
+        };
+        map.advise(advice)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = map;
+        Ok(())
+    }
+}
 
 /// A view of one tensor's data, source-agnostic.
 ///
@@ -51,6 +106,17 @@ pub struct Fp8Native<'a> {
     pub in_f: usize,
 }
 
+/// One immutable expert extent backed by an opened file and its whole-file mmap. Retaining both
+/// handles lets the engine choose explicit positioned I/O later while keeping the mmap bytes as the
+/// permanent correctness fallback. `offset` is absolute within both the file and the whole mapping.
+#[derive(Clone)]
+pub struct DiskExtent {
+    pub map: Arc<Mmap>,
+    pub file: Arc<File>,
+    pub offset: u64,
+    pub len: usize,
+}
+
 /// A weight source the engine can load from. GGUF and safetensors both implement it.
 pub trait TensorSource {
     /// The model configuration (from GGUF metadata or config.json).
@@ -77,14 +143,27 @@ pub trait TensorSource {
     /// The checkpoint directory, if this source is a safetensors HF dir (None for GGUF). Used by
     /// the ST expert disk-tier to place its repack cache next to the shards.
     fn st_dir(&self) -> Option<&std::path::Path> { None }
-    /// Zero-copy mmap window for a STACKED 3D expert tensor (the disk-spill tier's byte source):
-    /// `(shared file mmap, byte offset of expert 0, total expert bytes)`. `Some` only when the
-    /// source's on-disk layout IS already the engine's expert layout (expert-axis-slowest,
-    /// contiguous strides) — the Hy3 Q4_K repack dir. The engine then backs `HostExps` with
-    /// `HostBuf::Mmap` directly (page cache = the RAM tier, faults = the NVMe tier) instead of
-    /// copying an 80 GB expert set into RAM/pinned. None everywhere else (GGUF spill has its own
-    /// file-mmap path; safetensors gathers/repacks).
-    fn find_expert_mmap(&self, _ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> { None }
+    /// Whether per-expert tensor encodings exposed by this source are an intentional artifact
+    /// contract and must be retained even when every expert happens to use the same encoding.
+    /// Sparse overlays use this so an all-Q4_K control does not get normalized back to F32.
+    fn preserve_expert_encodings(&self) -> bool { false }
+    /// Optional per-layer routed-expert mask. A false entry is physically absent from a pruned
+    /// overlay and must be excluded before top-k routing. Keeping the original router width makes
+    /// usage-driven pruning possible without rewriting router tensors or expert ids.
+    fn active_experts(&self, _layer: u32) -> Option<&[bool]> { None }
+    /// Zero-copy mmap window for an expert tensor (the disk-spill tier's byte source):
+    /// `(shared file mmap, tensor byte offset, tensor bytes)`. This covers both stacked 3D expert
+    /// slabs and v2 per-expert overlay entries. The engine then backs `HostExps` with
+    /// `HostBuf::Mmap` directly (page cache = RAM tier, faults = NVMe tier) instead of copying a
+    /// potentially >RAM expert set. None for sources that require gathering or repacking.
+    fn find_expert_disk(&self, _ggml_name: &str) -> Option<DiskExtent> { None }
+    /// Compatibility view for callers that only need mmap access. New disk-aware consumers should
+    /// use `find_expert_disk` so the opened file remains available after the source is dropped.
+    fn find_expert_mmap(&self, ggml_name: &str) -> Option<(Arc<Mmap>, usize, usize)> {
+        let extent = self.find_expert_disk(ggml_name)?;
+        let offset = usize::try_from(extent.offset).ok()?;
+        Some((extent.map, offset, extent.len))
+    }
 }
 
 /// GGUF-backed source (the existing path). Zero behavior change vs. direct GgufFile use.
@@ -108,26 +187,83 @@ impl<'g> TensorSource for GgufSource<'g> {
 #[derive(Debug, Clone)]
 struct RepackTensor {
     file: PathBuf,
+    offset: usize,
     ggml_type: GgmlType,
     ne: Vec<u64>,
     bytes: usize,
     expert_stride: Option<usize>,
 }
 
-/// Manifest-backed source for bw24 Hy3 Q4_K repack directories.
+struct RepackFile {
+    // Only expert files retain an fd. Dense-only manifest files keep their mmap but do not consume
+    // the process fd budget because positioned I/O is never requested for them.
+    file: Option<Arc<File>>,
+    map: Arc<Mmap>,
+}
+
+enum RepackFallback {
+    Safetensors(SafetensorsSource),
+    Repack(Box<Hy3RepackSource>),
+}
+
+impl RepackFallback {
+    fn config(&self) -> ModelConfig {
+        match self {
+            Self::Safetensors(source) => source.config(),
+            Self::Repack(source) => source.config(),
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<TensorView<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find(name),
+            Self::Repack(source) => source.find(name),
+        }
+    }
+
+    fn find_nvfp4_native(&self, name: &str) -> Option<Nvfp4Native<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find_nvfp4_native(name),
+            Self::Repack(source) => source.find_nvfp4_native(name),
+        }
+    }
+
+    fn find_fp8_native(&self, name: &str) -> Option<Fp8Native<'_>> {
+        match self {
+            Self::Safetensors(source) => source.find_fp8_native(name),
+            Self::Repack(source) => source.find_fp8_native(name),
+        }
+    }
+
+    fn st_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Safetensors(source) => source.st_dir(),
+            Self::Repack(source) => source.st_dir(),
+        }
+    }
+}
+
+/// Manifest-backed source for bw24 repack directories and sparse per-expert overlays.
 ///
 /// The transcoder writes one file per tensor (including stacked expert slabs) plus a manifest with
 /// ggml-style names. This source presents those bytes directly to the existing loaders without a
-/// single-file GGUF wrapper. Files are mmap'd lazily by the OS; opening the 80G repack maps address
-/// space but does not fault tensor pages into RAM.
+/// single-file GGUF wrapper. Expert overlays may fall back to either an HF checkpoint or another
+/// manifest-backed repack; the latter lets a multi-tier expert artifact reuse the established Hy3
+/// dense/router repack without copying it. Files are mmap'd lazily by the OS; opening the 80G
+/// repack maps address space but does not fault tensor pages into RAM. The public type retains its
+/// historical Hy3 name for compatibility with existing callers.
 pub struct Hy3RepackSource {
     cfg: ModelConfig,
     dir: PathBuf,
     source_dir: Option<PathBuf>,
     tensors: BTreeMap<String, RepackTensor>,
-    // Arc so stacked expert slabs can be handed to the engine's HostBuf::Mmap tier zero-copy
-    // (find_expert_mmap) while `find` keeps borrowing the same mapping.
-    files: BTreeMap<PathBuf, std::sync::Arc<Mmap>>,
+    // Retain both handles so stacked expert slabs can be handed to the engine's disk-aware mmap tier
+    // while `find` keeps borrowing the same mapping.
+    files: BTreeMap<PathBuf, RepackFile>,
+    // Expert overlays store only overridden tensors. Everything else resolves from either the
+    // original HF checkpoint (v1) or a complete manifest repack (v2).
+    fallback: Option<RepackFallback>,
+    active_experts: BTreeMap<u32, Vec<bool>>,
 }
 
 impl Hy3RepackSource {
@@ -150,6 +286,7 @@ impl Hy3RepackSource {
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing bytes")))? as usize;
             tensors.insert(name.to_string(), RepackTensor {
                 file: PathBuf::from(file),
+                offset: obj.u64("offset").unwrap_or(0) as usize,
                 ggml_type: manifest_qtype(&qtype)
                     .ok_or_else(|| invalid_data(format!("manifest tensor {name} unsupported qtype {qtype}")))?,
                 ne,
@@ -158,45 +295,105 @@ impl Hy3RepackSource {
             });
         }
 
-        let source_dir = top.string("source_dir").map(PathBuf::from);
-        let cfg_path = source_dir.clone()
-            .map(|p| p.join("config.json"))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| dir.join("config.json"));
-        let mut cfg = ModelConfig::from_config_json(&cfg_path)?;
+        let source_dir = top.string("source_dir").map(PathBuf::from).map(|path| {
+            if path.is_absolute() { path } else { dir.join(path) }
+        });
+        let format = top.string("format");
+        let is_overlay = matches!(
+            format.as_deref(),
+            Some("bw24-expert-overlay-v1" | "bw24-expert-overlay-v2")
+        );
+        let fallback = if is_overlay {
+            let source = source_dir.as_deref().ok_or_else(|| {
+                invalid_data("expert overlay manifest missing source_dir")
+            })?;
+            if source.join("manifest.json").exists() {
+                Some(RepackFallback::Repack(Box::new(Hy3RepackSource::open(source)?)))
+            } else {
+                Some(RepackFallback::Safetensors(SafetensorsSource::open(source)?))
+            }
+        } else {
+            None
+        };
+        let mut cfg = if let Some(source) = &fallback {
+            source.config()
+        } else {
+            let cfg_path = source_dir.clone()
+                .map(|p| p.join("config.json"))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| dir.join("config.json"));
+            ModelConfig::from_config_json(&cfg_path)?
+        };
         apply_stripped_mtp_override(&mut cfg, &tensors);
+        let mut active_experts = BTreeMap::new();
+        if let Some(pruned) = top.object("pruned_experts") {
+            let moe = cfg.moe.as_ref().ok_or_else(|| {
+                invalid_data("pruned_experts is present but the model config has no MoE")
+            })?;
+            let n_expert = moe.expert_count as usize;
+            let n_used = moe.expert_used_count as usize;
+            for (layer, raw) in pruned.fields() {
+                let layer: u32 = layer.parse().map_err(|_| {
+                    invalid_data(format!("invalid pruned_experts layer key {layer:?}"))
+                })?;
+                let wrapper = JsonObj::parse(&format!("{{\"v\":{raw}}}"));
+                let ids = wrapper.u64_array("v").ok_or_else(|| {
+                    invalid_data(format!("pruned_experts.{layer} must be an integer array"))
+                })?;
+                let mut mask = vec![true; n_expert];
+                for id in ids {
+                    let id = id as usize;
+                    if id >= n_expert {
+                        return Err(invalid_data(format!(
+                            "pruned_experts.{layer} contains {id}, expert_count={n_expert}"
+                        )));
+                    }
+                    mask[id] = false;
+                }
+                if mask.iter().filter(|&&active| active).count() < n_used {
+                    return Err(invalid_data(format!(
+                        "pruned_experts.{layer} leaves fewer than top-k {n_used} experts"
+                    )));
+                }
+                active_experts.insert(layer, mask);
+            }
+        }
 
+        let expert_files: BTreeSet<PathBuf> = tensors.iter()
+            .filter(|(name, _)| name.contains("_exps."))
+            .map(|(_, tensor)| tensor.file.clone())
+            .collect();
         let mut files = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for t in tensors.values() {
             if !seen.insert(t.file.clone()) { continue; }
             let p = dir.join(&t.file);
-            let f = std::fs::File::open(&p)?;
-            let map = unsafe { Mmap::map(&f)? };
-            // Expert slab files back the disk-spill tier (routing-driven random access):
-            // MADV_RANDOM kills readahead waste, same as the GGUF/M3 spill mmaps.
-            #[cfg(target_os = "linux")]
-            if t.expert_stride.is_some() {
-                unsafe {
-                    unsafe extern "C" { fn madvise(a: *mut core::ffi::c_void, l: usize, ad: i32) -> i32; }
-                    let _ = madvise(map.as_ptr() as *mut core::ffi::c_void, map.len(), 1);
-                }
+            let file = Arc::new(File::open(&p)?);
+            let map = unsafe { Mmap::map(file.as_ref())? };
+            let retain_file = t.expert_stride.is_some() || expert_files.contains(&t.file);
+            // Expert slabs use the configured whole-map policy. Default random is the historical
+            // behavior; normal restores Linux readahead for multi-megabyte expert reads.
+            if retain_file {
+                let _ = apply_expert_mmap_advice(&map);
             }
-            files.insert(t.file.clone(), std::sync::Arc::new(map));
+            files.insert(t.file.clone(), RepackFile {
+                file: retain_file.then_some(file),
+                map: Arc::new(map),
+            });
         }
         for (name, t) in &tensors {
             let len = files.get(&t.file)
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} file not mapped")))?
-                .len();
-            if len < t.bytes {
+                .map.len();
+            if len < t.offset + t.bytes {
                 return Err(invalid_data(format!(
-                    "manifest tensor {name} declares {} bytes but {:?} has {len}",
-                    t.bytes, t.file
+                    "manifest tensor {name} declares offset {} + {} bytes but {:?} has {len}",
+                    t.offset, t.bytes, t.file
                 )));
             }
         }
 
-        Ok(Self { cfg, dir, source_dir, tensors, files })
+        Ok(Self { cfg, dir, source_dir, tensors, files, fallback, active_experts })
     }
 
     pub fn dir(&self) -> &Path {
@@ -206,7 +403,11 @@ impl Hy3RepackSource {
     /// The original HF checkpoint dir recorded by the transcoder (tokenizer files live there —
     /// the repack dir carries only weights + manifest).
     pub fn source_dir(&self) -> Option<&Path> {
-        self.source_dir.as_deref()
+        match self.fallback.as_ref() {
+            Some(RepackFallback::Safetensors(source)) => source.st_dir(),
+            Some(RepackFallback::Repack(source)) => source.source_dir(),
+            None => self.source_dir.as_deref(),
+        }
     }
 
     pub fn tensor_count(&self) -> usize {
@@ -224,37 +425,75 @@ impl TensorSource for Hy3RepackSource {
     }
 
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
-        let t = self.tensors.get(ggml_name)?;
-        let map = self.files.get(&t.file)?;
-        let raw = &map[..t.bytes];
-        if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
-            let n: u64 = t.ne.iter().product();
-            let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
-            let mut bytes = Vec::with_capacity(vals.len() * 4);
-            for f in vals {
-                bytes.extend_from_slice(&f.to_le_bytes());
+        if let Some(t) = self.tensors.get(ggml_name) {
+            let file = self.files.get(&t.file)?;
+            let raw = &file.map[t.offset..t.offset + t.bytes];
+            if t.ggml_type == GgmlType::BF16 && t.ne.len() == 1 {
+                let n: u64 = t.ne.iter().product();
+                let vals = crate::dequant::dequantize(t.ggml_type, raw, n as usize);
+                let mut bytes = Vec::with_capacity(vals.len() * 4);
+                for f in vals {
+                    bytes.extend_from_slice(&f.to_le_bytes());
+                }
+                return Some(TensorView {
+                    bytes: Cow::Owned(bytes),
+                    ggml_type: GgmlType::F32,
+                    ne: t.ne.clone(),
+                });
             }
             return Some(TensorView {
-                bytes: Cow::Owned(bytes),
-                ggml_type: GgmlType::F32,
+                bytes: Cow::Borrowed(raw),
+                ggml_type: t.ggml_type,
                 ne: t.ne.clone(),
             });
         }
-        Some(TensorView {
-            bytes: Cow::Borrowed(raw),
-            ggml_type: t.ggml_type,
-            ne: t.ne.clone(),
-        })
+        // A v2 overlay stores mixed experts separately while its fallback may contain the old
+        // uniform stacked slab. Do not let that slab bypass the per-expert override loader.
+        if ggml_name.contains("_exps.weight") {
+            let prefix = format!("{}.", ggml_name.strip_suffix(".weight")?);
+            if self.tensors.range(prefix.clone()..).next()
+                .is_some_and(|(name, _)| name.starts_with(&prefix))
+            {
+                return None;
+            }
+        }
+        self.fallback.as_ref()?.find(ggml_name)
     }
 
-    /// Stacked expert slabs live one-per-file with expert 0 at byte 0 (the transcoder's layout);
-    /// hand the engine the shared mmap so `HostExps` can be mmap-backed with ZERO copy — the
-    /// spill-tier contract for the 80 GB Hy3 expert set (page cache = RAM tier, faults = NVMe).
-    fn find_expert_mmap(&self, ggml_name: &str) -> Option<(std::sync::Arc<Mmap>, usize, usize)> {
+    fn find_nvfp4_native(&self, ggml_name: &str) -> Option<Nvfp4Native<'_>> {
+        if self.tensors.contains_key(ggml_name) { return None; }
+        self.fallback.as_ref()?.find_nvfp4_native(ggml_name)
+    }
+
+    fn find_fp8_native(&self, ggml_name: &str) -> Option<Fp8Native<'_>> {
+        if self.tensors.contains_key(ggml_name) { return None; }
+        self.fallback.as_ref()?.find_fp8_native(ggml_name)
+    }
+
+    fn st_dir(&self) -> Option<&Path> {
+        self.fallback.as_ref().and_then(RepackFallback::st_dir)
+    }
+
+    fn preserve_expert_encodings(&self) -> bool {
+        self.fallback.is_some()
+    }
+
+    fn active_experts(&self, layer: u32) -> Option<&[bool]> {
+        self.active_experts.get(&layer).map(Vec::as_slice)
+    }
+
+    /// Hand stacked expert slabs and v2 per-expert overlay entries to the engine as shared mmap
+    /// windows. Both layouts are already kernel-ready; copying them into Vec would make the 161 GB
+    /// full-bank control impossible on a 124 GB host.
+    fn find_expert_disk(&self, ggml_name: &str) -> Option<DiskExtent> {
         let t = self.tensors.get(ggml_name)?;
-        t.expert_stride?;
-        let map = self.files.get(&t.file)?;
-        Some((map.clone(), 0, t.bytes))
+        let file = self.files.get(&t.file)?;
+        Some(DiskExtent {
+            map: file.map.clone(),
+            file: file.file.as_ref()?.clone(),
+            offset: t.offset as u64,
+            len: t.bytes,
+        })
     }
 }
 
@@ -264,6 +503,7 @@ fn manifest_qtype(s: &str) -> Option<GgmlType> {
         "F16" => GgmlType::F16,
         "BF16" => GgmlType::BF16,
         "Q8_0" => GgmlType::Q8_0,
+        "Q2_K" => GgmlType::Q2_K,
         "Q4_K" => GgmlType::Q4_K,
         "Q5_K" => GgmlType::Q5_K,
         "Q6_K" => GgmlType::Q6_K,
@@ -599,7 +839,16 @@ impl TensorSource for SafetensorsSource {
         match resolve_ggml(ggml_name, &self.cfg)? {
             // Zero-copy: a plain rename (dense path + most SSM matrices), borrow the mmap directly.
             // NVFP4 modelopt weights take the repack arm (owned GGUF block bytes); else borrow.
-            HfTarget::Plain(hf) => {
+            HfTarget::Plain(mut hf) => {
+                // Hy3 changed the correction-bias key between the preview and current releases.
+                // Prefer the current mapper spelling, but keep old repacks/checkpoints loadable.
+                if self.cfg.arch.is_hy3() && ggml_name.ends_with(".exp_probs_b.bias")
+                    && self.lookup(&hf).is_none() {
+                    let legacy = hf.replace(".mlp.expert_bias", ".mlp.router.expert_bias");
+                    if self.lookup(&legacy).is_some() {
+                        hf = legacy;
+                    }
+                }
                 // NVFP4 (modelopt OR Reza) -> repack to bw24 internal GGUF block_nvfp4 bytes (NO kernel
                 // change). `nvfp4_quant` returns the packed bytes directly (in Reza the packed tensor
                 // is `<hf>.nvfp4_packed`, not `<hf>` itself), so no second lookup.
@@ -747,6 +996,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expert_mmap_advice_parser_preserves_random_default() {
+        assert_eq!(parse_expert_mmap_advice(None), Ok(ExpertMmapAdvice::Random));
+        assert_eq!(parse_expert_mmap_advice(Some("random")), Ok(ExpertMmapAdvice::Random));
+        assert_eq!(parse_expert_mmap_advice(Some("normal")), Ok(ExpertMmapAdvice::Normal));
+        assert!(parse_expert_mmap_advice(Some("sequential")).is_err());
+        assert!(parse_expert_mmap_advice(Some("")).is_err());
+    }
+
+    #[test]
     fn safetensors_source_find_maps_names() {
         // Build a tiny HF-named safetensors file + config.json, open via SafetensorsSource,
         // and assert ggml-name lookups resolve through the mapper with reversed shape.
@@ -780,6 +1038,158 @@ mod tests {
         assert!(src.find("blk.0.ssm_a").is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hy3_expert_bias_resolves_current_and_preview_keys() {
+        for (tag, hf_name) in [
+            ("current", "model.layers.1.mlp.expert_bias"),
+            ("preview", "model.layers.1.mlp.router.expert_bias"),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "bw24_hy3_bias_{tag}_{}", std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let header = format!(
+                r#"{{"{hf_name}":{{"dtype":"F32","shape":[3],"data_offsets":[0,12]}}}}"#
+            );
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
+            buf.extend_from_slice(header.as_bytes());
+            for value in [0.25f32, -0.5, 0.75] {
+                buf.extend_from_slice(&value.to_le_bytes());
+            }
+            std::fs::write(dir.join("model.safetensors"), buf).unwrap();
+            std::fs::write(
+                dir.join("config.json"),
+                r#"{"model_type":"hy_v3","num_hidden_layers":2,"hidden_size":4,"num_attention_heads":1,"num_key_value_heads":1,"head_dim":4,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128,"num_experts":3,"num_experts_per_tok":1,"moe_intermediate_size":4,"first_k_dense_replace":1,"moe_router_use_sigmoid":true,"moe_router_enable_expert_bias":true}"#,
+            ).unwrap();
+
+            let src = SafetensorsSource::open(&dir).unwrap();
+            let bias = src.find("blk.1.exp_probs_b.bias")
+                .unwrap_or_else(|| panic!("Hy3 {tag} expert-bias key did not resolve"));
+            assert_eq!(bias.ggml_type, GgmlType::F32);
+            assert_eq!(bias.ne, vec![3]);
+            assert_eq!(bias.bytes.len(), 12);
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn expert_overlay_overrides_selected_tensor_and_falls_back_to_hf() {
+        let root = std::env::temp_dir().join(format!("bw24_overlay_test_{}", std::process::id()));
+        let base = root.join("base");
+        let overlay = root.join("overlay");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(overlay.join("experts")).unwrap();
+
+        let json = r#"{"model.layers.0.self_attn.q_proj.weight":{"dtype":"F32","shape":[4,2],"data_offsets":[0,32]}}"#;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        buf.extend_from_slice(json.as_bytes());
+        for v in 0..8u32 { buf.extend_from_slice(&(v as f32).to_le_bytes()); }
+        std::fs::write(base.join("model.safetensors"), &buf).unwrap();
+        let cfg_json = r#"{"model_type":"qwen3","num_hidden_layers":1,"hidden_size":4,"num_attention_heads":2,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128}"#;
+        std::fs::write(base.join("config.json"), cfg_json).unwrap();
+
+        let q4k = vec![0xa5u8; 144];
+        std::fs::write(overlay.join("experts/e0.q4k"), &q4k).unwrap();
+        let manifest = format!(r#"{{
+            "format":"bw24-expert-overlay-v1",
+            "source_dir":"{}",
+            "tensors":{{
+                "blk.0.ffn_gate_exps.0.weight":{{
+                    "file":"experts/e0.q4k","qtype":"Q4_K","ne":[256,1],"bytes":144
+                }}
+            }}
+        }}"#, base.display());
+        std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
+
+        let src = Hy3RepackSource::open(&overlay).unwrap();
+        assert!(src.preserve_expert_encodings());
+        let selected = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(selected.ggml_type, GgmlType::Q4_K);
+        assert_eq!(&*selected.bytes, &q4k);
+        let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(&map[off..off + len], &q4k);
+        let fallback = src.find("blk.0.attn_q.weight").unwrap();
+        assert_eq!(fallback.ggml_type, GgmlType::F32);
+        assert_eq!(fallback.ne, vec![2, 4]);
+        assert_eq!(src.st_dir(), Some(base.as_path()));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn v2_overlay_supports_repack_fallback_offsets_and_prune_mask() {
+        let root = std::env::temp_dir().join(format!("bw24_overlay_v2_test_{}", std::process::id()));
+        let base = root.join("base");
+        let overlay = root.join("overlay");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(overlay.join("experts")).unwrap();
+        let cfg = r#"{"model_type":"qwen3_moe","num_hidden_layers":1,"hidden_size":4,"num_attention_heads":2,"num_key_value_heads":1,"intermediate_size":8,"vocab_size":10,"max_position_embeddings":128,"num_experts":3,"num_experts_per_tok":2,"moe_intermediate_size":4}"#;
+        std::fs::write(base.join("config.json"), cfg).unwrap();
+        std::fs::write(base.join("dense.bin"), [9u8, 8, 7, 1, 2, 3, 4, 6]).unwrap();
+        std::fs::write(base.join("manifest.json"), r#"{
+            "format":"bw24-test-repack-v1","source_dir":".",
+            "tensors":{"blk.0.attn_norm.weight":{
+                "file":"dense.bin","offset":3,"qtype":"F32","ne":[1],"bytes":4
+            }}
+        }"#).unwrap();
+
+        let mut expert_blob = vec![0x55u8, 0x66];
+        expert_blob.extend(vec![0x22u8; 84]);
+        expert_blob.extend(vec![0x33u8; 34]);
+        std::fs::write(overlay.join("experts/mixed.bin"), expert_blob).unwrap();
+        let manifest = format!(r#"{{
+            "format":"bw24-expert-overlay-v2","source_dir":"{}",
+            "pruned_experts":{{"0":[1]}},
+            "tensors":{{"blk.0.ffn_gate_exps.0.weight":{{
+                "file":"experts/mixed.bin","offset":2,"qtype":"Q2_K","ne":[256,1],"bytes":84
+            }},"blk.0.ffn_gate_exps.2.weight":{{
+                "file":"experts/mixed.bin","offset":86,"qtype":"Q8_0","ne":[32,1],"bytes":34
+            }}}}
+        }}"#, base.display());
+        std::fs::write(overlay.join("manifest.json"), manifest).unwrap();
+
+        let src = Hy3RepackSource::open(&overlay).unwrap();
+        assert_eq!(src.config().moe.as_ref().unwrap().expert_count, 3);
+        assert_eq!(src.active_experts(0), Some(&[true, false, true][..]));
+        let expert = src.find("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!(expert.ggml_type, GgmlType::Q2_K);
+        assert_eq!(&*expert.bytes, &[0x22u8; 84]);
+        let q8 = src.find("blk.0.ffn_gate_exps.2.weight").unwrap();
+        assert_eq!(q8.ggml_type, GgmlType::Q8_0);
+        assert_eq!(&*q8.bytes, &[0x33u8; 34]);
+        let (map, off, len) = src.find_expert_mmap("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!((off, len), (2, 84));
+        assert_eq!(&map[off..off + len], &[0x22u8; 84]);
+        let disk = src.find_expert_disk("blk.0.ffn_gate_exps.0.weight").unwrap();
+        assert_eq!((disk.offset, disk.len), (2, 84));
+        assert!(std::sync::Arc::ptr_eq(&disk.map, &map));
+        let dense = src.find("blk.0.attn_norm.weight").unwrap();
+        assert_eq!(&*dense.bytes, &[1, 2, 3, 4]);
+
+        // The opened inode is part of the extent, not borrowed from the loader source.
+        drop(src);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            let expert_path = overlay.join("experts/mixed.bin");
+            std::fs::remove_file(&expert_path).unwrap();
+            let mut replacement = vec![0x99u8, 0x98];
+            replacement.extend(vec![0x77u8; 118]);
+            std::fs::write(&expert_path, &replacement).unwrap();
+
+            let mut direct = vec![0u8; disk.len];
+            assert_eq!(disk.file.read_at(&mut direct, disk.offset).unwrap(), disk.len);
+            assert_eq!(direct, vec![0x22u8; 84]);
+            assert_eq!(&std::fs::read(&expert_path).unwrap()[2..86], &[0x77u8; 84]);
+        }
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

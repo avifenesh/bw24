@@ -155,6 +155,7 @@ impl Engine {
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
+        if cfg!(bw24_portable_cuda) { return false; }
         let mmq_opt_in = std::env::var("BW24_MMQ").is_ok();
         match w {
             // A6 split-plane repacked NVFP4: ONLY the W4A8 loader has an rp arm (pure address

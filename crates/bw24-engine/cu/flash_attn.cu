@@ -1210,6 +1210,31 @@ extern "C" __global__ void fa_dequant_kv_ws_bf16(
     }
 }
 
+// Correctness fallback: dequantize the resident KV cache to f32 once so it can be consumed by
+// sdpa_naive_f32. Unlike fa_dequant_kv_ws_bf16, this keeps the exact dequantized values instead of
+// rounding them to the bf16 values expected by the tensor-core prefill kernels.
+extern "C" __global__ void fa_dequant_kv_ws_f32(
+        const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ Kw, float* __restrict__ Vw,
+        int kv_dim_k, int kv_dim_v, int t_kv,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const long nk = (long)t_kv * kv_dim_k;
+    const long nv = (long)t_kv * kv_dim_v;
+    const long total = nk + nv;
+    for (long idx = (long)blockIdx.x * blockDim.x + threadIdx.x; idx < total;
+         idx += (long)gridDim.x * blockDim.x) {
+        if (idx < nk) {
+            const long t = idx / kv_dim_k; const int e = (int)(idx % kv_dim_k);
+            Kw[idx] = DQ_K_ELEM(K, t, k_tok_bytes, e);
+        } else {
+            const long j = idx - nk;
+            const long t = j / kv_dim_v; const int e = (int)(j % kv_dim_v);
+            Vw[j] = DQ_V_ELEM(V, t, v_tok_bytes, e);
+        }
+    }
+}
+
 // ===================================================================== //
 //  KERNEL 1b-qw : fa_prefill_qw  (bf16-workspace prefill twin)          //
 //  VERBATIM copy of fa_prefill_q except the stage-to-smem loop reads    //
@@ -5834,7 +5859,3 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16_i2(
         partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
     }
 }
-
-
-
-
