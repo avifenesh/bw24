@@ -3135,16 +3135,6 @@ impl Engine {
         Ok((out_q, out_d))
     }
 
-    /// BW24_MMVQ_WAVES: cap the m=1 mmvq/fused grid at waves*SMs and let the kernels'
-    /// grid-stride loops balance the tail wave (0 = uncapped flat launch, today's default).
-    pub(crate) fn mmvq_grid_cap(&self, total: u32) -> u32 {
-        static W: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        let waves = *W.get_or_init(|| std::env::var("BW24_MMVQ_WAVES").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(0));
-        if waves == 0 { return total; }
-        total.min(waves * fa_sm_count() as u32)
-    }
-
     /// wave-4b: OUT-dim concat of three Q4_0 tensors (same in_features; rows are independent
     /// blocks, so the concat is a D2D byte concat of the GGUF-layout planes). Returns None
     /// off-class (non-Q4_0, mismatched widths, or any tensor already rp-swapped in place).
@@ -3935,7 +3925,7 @@ impl Engine {
         let rp = rp0;
         let rpb: u32 = 4;
         let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
-        let grid = self.mmvq_grid_cap(nb(o0) + nb(o1) + nb(o2));
+        let grid = nb(o0) + nb(o1) + nb(o2);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let mut y2 = self.alloc_uninit::<f32>(o2)?;
@@ -3980,7 +3970,7 @@ impl Engine {
         let rp = rp0;
         let rpb: u32 = 4;
         let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
-        let grid = self.mmvq_grid_cap(nb(o0) + nb(o1));
+        let grid = nb(o0) + nb(o1);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused2_rp" } else { "qmatvec_q4_0_mmvq_fused2" });
@@ -4275,12 +4265,8 @@ impl Engine {
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         // each block still has ROWS_PER_BLOCK warps; with mr rows/warp it covers ROWS_PER_BLOCK*mr rows.
         let rows_per_block = ROWS_PER_BLOCK * mr;
-        let full_grid = (out_f as u32 + rows_per_block - 1) / rows_per_block;
-        // waves cap: ONLY the Q4_0 rp mr2 kernel carries the grid-stride loop.
-        let gx = if m == 1 && qtype == QT_Q4_0 && rp { self.mmvq_grid_cap(full_grid) }
-                 else { full_grid };
         let cfg = LaunchConfig {
-            grid_dim: (gx, m as u32, 1),
+            grid_dim: ((out_f as u32 + rows_per_block - 1) / rows_per_block, m as u32, 1),
             block_dim: (32, ROWS_PER_BLOCK, 1),   // warp-per-row (x mr rows each)
             shared_mem_bytes: 0,                  // warp-only reduce at m=1
         };

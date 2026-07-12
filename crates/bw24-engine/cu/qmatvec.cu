@@ -6486,14 +6486,8 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_mr2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
-    // GRID-STRIDE (2026-07-13 waves lane): the host may cap gridDim.x below the block count
-    // (BW24_MMVQ_WAVES) — the loop balances the tail wave across all SMs. Per-row math and
-    // row->warp assignment order unchanged (rows independent) — bit-identical outputs.
-    int nblocks = (out_f + BW24_MMVQ_ROWS * 2 - 1) / (BW24_MMVQ_ROWS * 2);
-    for (int vb = blockIdx.x; vb < nblocks; vb += gridDim.x) {
-        q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
-                          (vb * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, blockIdx.y);
-    }
+    q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                      (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, blockIdx.y);
 }
 extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_rp(
         const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
