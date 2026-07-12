@@ -135,7 +135,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_PRIME_APPEND_LOOP=1` | per-row KV append instead of the batched `_rows` kernel | measured equal 2026-07-03 |
 | `BW24_PRIME_DEQW=0` | inline-dequant prefill FA (no bf16 dequant-once workspace) | deqw default 2026-07-05 (32k prime 1.60x) |
 | `BW24_GEMMA_GKV=0` | gemma GLOBAL (hd512) layers back to q8_0/q5_1 KV (default = e4m3 via the kf8vf8 module) | fp8-globals default-on 2026-07-11 — the depth-plain lever (dequant-latency-bound, ncu) |
-| `BW24_GEMMA_WKV=0` | gemma WINDOWED (hd256) layers back to q8_0/q5_1 KV (default = e4m3) | fp8-windowed default-on 2026-07-12 (validity-gated A/B: 1.7k +4, 4.9k above the 1.1x bar); requires the format-aware v4 arms |
+| `BW24_GEMMA_WKV` | gemma WINDOWED (hd256) layers: e4m3 vs q8_0/q5_1 KV. DEFAULT IS SERVING-KEYED (2026-07-12): `BW24_DRAFT` set (spec serving) → q8/q5_1, else → e4m3. Explicit `=0`/`=1` always wins | fp8-windows win depth-plain (+3%, 2026-07-12 A/B) but GUT the MTP drafter's acceptance (31B short .758→1.000 on q8/q5 = spec 88→122.7, ABOVE llama-mtp 112; 26B depth .57→.89) — the drafter's single swa attention is fragile to e4m3 KV noise. Globals (`GKV`) cost no acceptance |
 | `BW24_GEMMA_ROWS_W=0` | per-token loop instead of the parity-law rows/rows_w twins (gemma decode+verify) | rows twins = the parity-law foundation, 2026-07-10/11 |
 | `BW24_GEMMA_DRAFT_DC=0` | gemma drafter attention back to the host-len kvmod arm (default = device-len fa_decode_dc/rows_w arms riding the main layers' len_d) | burst-arc step (a/b), 2026-07-12 — required by the draft graphs + burst |
 | `BW24_FA_SPW2=0` | disable the warp-1 staging helper on the windowed v4 kernel (gqa==1) | +0.4-0.7 marginal keep 2026-07-11 |

@@ -161,7 +161,9 @@ DOORS CLOSED ON MEASUREMENT: grid-stride fused (-2.7%, locality), rpb sweep (fla
 doesn't starve DRAM; 92.9% = this rig's controller ceiling), graph replay (-1.2%), dense
 FFN q8 folds (flat — 759 sub-8us launches/token fully hidden at 96.7% GPU busy), 26B->31B
 trim-rank transfer (accept 0.765->0.603).
-PLAIN STANDING: short 1.00x | 1.7k ~0.965x. Remaining plain levers are ATTENTION-class
+31B STANDING (2026-07-12 end): plain short 1.00x | 1.7k ~0.965x | SPEC SHORT 122.4 vs
+llama-mtp 112.1 = 1.09x ABOVE (the WKV unlock — fp8-windowed KV gutted drafter acceptance;
+serving-keyed default landed, v0.24.0) | spec 1.7k 74.6 vs 85.7 = 0.87x (open cell). Remaining plain levers are ATTENTION-class
 and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
 90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
 e2e). The plain bar likely needs a new mechanism class, not tuning.
