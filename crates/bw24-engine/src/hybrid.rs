@@ -365,6 +365,20 @@ pub struct MtpHead {
     /// token id of trimmed row `draft_idx`. `None` for a full-vocab head (identity map). Host-side:
     /// the draft argmax already lands on host as one u32, so the map is a single Vec index.
     pub d2t: Option<Vec<u32>>,
+    /// DISTILLED-STUDENT geometry (None = the natural NextN block at trunk shape). A distilled
+    /// draft (StudentSV) runs the same block structure at a narrower inner width with fewer
+    /// heads, then up-projects back to n_embd (`out_up`) — the chain carrier and the head input
+    /// stay at n_embd, so the trunk/verify interface is unchanged. Selected by the presence of
+    /// `blk.N.nextn.out_up.weight` in a BW24_MTP_DRAFT file.
+    pub geom: Option<DraftGeom>,
+}
+
+/// Draft-head geometry override for a distilled (narrower) student block.
+pub struct DraftGeom {
+    pub d_inner: usize,     // block inner width (eh_proj out / attn / ffn), e.g. 2048
+    pub n_head: usize,      // draft attention heads (head_dim = main head_dim)
+    pub n_head_kv: usize,
+    pub out_up: GpuTensor,  // [d_inner -> n_embd]: carrier + head input up-projection
 }
 
 impl MtpHead {
@@ -378,17 +392,23 @@ impl MtpHead {
                       -> Result<Self, Box<dyn std::error::Error>> {
         let src = GgufSource(g);
         let dcfg = src.config();
-        // The head forward runs with the MAIN model's cfg (eps/rope/head geometry) — the draft
-        // block must be the same shape or the forward is garbage.
-        assert_eq!(dcfg.n_embd, main_cfg.n_embd, "draft n_embd != model n_embd");
-        assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
-        assert_eq!(dcfg.n_head_kv, main_cfg.n_head_kv, "draft n_head_kv != model n_head_kv");
-        assert_eq!(dcfg.head_dim_k, main_cfg.head_dim_k, "draft head_dim != model head_dim");
-        assert!(dcfg.nextn_predict_layers > 0, "draft GGUF has no nextn_predict_layers");
-
         // NextN block index INSIDE THE DRAFT FILE (its block_count includes the trunk numbering).
+        assert!(dcfg.nextn_predict_layers > 0, "draft GGUF has no nextn_predict_layers");
         let n = dcfg.n_layer - dcfg.nextn_predict_layers;
         let p = |s: &str| format!("blk.{n}.{s}");
+
+        // Distilled student (narrow block + out_up) vs natural NextN clone. The interface dims
+        // (n_embd in/out, head_dim for the shared rope kernel) must match the main model; a
+        // student may shrink the inner width and head counts.
+        let student = src.has(&p("nextn.out_up.weight"));
+        assert_eq!(dcfg.n_embd, main_cfg.n_embd, "draft n_embd != model n_embd");
+        assert_eq!(dcfg.head_dim_k, main_cfg.head_dim_k, "draft head_dim != model head_dim");
+        if !student {
+            // The head forward runs with the MAIN model's cfg — the draft block must be the
+            // same shape or the forward is garbage.
+            assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
+            assert_eq!(dcfg.n_head_kv, main_cfg.n_head_kv, "draft n_head_kv != model n_head_kv");
+        }
 
         // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
         // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
@@ -416,14 +436,31 @@ impl MtpHead {
             assert!(map.iter().all(|&t| (t as u64) < n_vocab),
                     "d2t contains token id >= model n_vocab {n_vocab}");
         }
-        eprintln!("[mtp-draft] external draft head: blk.{n}, head_vocab={}{}",
+        let eh_proj = load_t(e, &src, &p("nextn.eh_proj.weight"))?;
+        let geom = if student {
+            let out_up = load_t(e, &src, &p("nextn.out_up.weight"))?;
+            assert_eq!(out_up.out_features(), main_cfg.n_embd as usize,
+                       "out_up out dim != n_embd");
+            Some(DraftGeom {
+                d_inner: eh_proj.out_features(),
+                n_head: dcfg.n_head as usize,
+                n_head_kv: dcfg.n_head_kv as usize,
+                out_up,
+            })
+        } else { None };
+        eprintln!("[mtp-draft] external draft head: blk.{n}, head_vocab={}{}{}",
                   head.out_features(),
-                  if d2t.is_some() { " (trimmed, d2t map)" } else { " (full)" });
+                  if d2t.is_some() { " (trimmed, d2t map)" } else { " (full)" },
+                  match &geom {
+                      Some(g) => format!(" (student d_inner={} heads={}/{})",
+                                         g.d_inner, g.n_head, g.n_head_kv),
+                      None => String::new(),
+                  });
 
         Ok(MtpHead {
             enorm:  load_t(e, &src, &p("nextn.enorm.weight"))?,
             hnorm:  load_t(e, &src, &p("nextn.hnorm.weight"))?,
-            eh_proj: load_t(e, &src, &p("nextn.eh_proj.weight"))?,
+            eh_proj,
             attn_norm: load_t(e, &src, &p("attn_norm.weight"))?,
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
@@ -433,6 +470,7 @@ impl MtpHead {
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
             d2t,
+            geom,
         })
     }
 }
@@ -606,6 +644,7 @@ impl HybridModel {
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
                     d2t: None,
+                    geom: None,
                 }),
                 false => None,  // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }

@@ -164,9 +164,11 @@ pub(crate) struct MtpScratch {
     cap: usize,
 }
 impl MtpScratch {
-    fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize)
+    fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize,
+           geom: Option<&crate::hybrid::DraftGeom>)
            -> Result<Self, Box<dyn std::error::Error>> {
-        let n_head_kv = cfg.n_head_kv as usize;
+        // student draft heads carry fewer KV heads (head_dim unchanged) -> smaller scratch rows.
+        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
         let head_dim_k = cfg.head_dim_k as usize;
         let head_dim_v = cfg.head_dim_v as usize;
         assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
@@ -242,6 +244,9 @@ impl HybridModel {
                             -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
+        // Distilled-student geometry: the block runs at the INNER width `di` (eh_proj out /
+        // attn / ffn); the n_embd interface (embed, norms in, carrier out, head in) is unchanged.
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let eps = cfg.rms_eps;
         let pos_d = e.htod_i32(&[mtp_pos as i32])?;
 
@@ -264,8 +269,8 @@ impl HybridModel {
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, 1)?;
 
         // op 5: a_norm = RMSNorm(inpSA, attn_norm)
-        let mut a_norm = e.zeros(n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
+        let mut a_norm = e.zeros(di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, 1, eps)?;
 
         // op 6: attention on the scratch KV. SAME dc launcher as the graph path (bucket_max =
         // scratch.cap, length from the device len_d) so eager drafts match graph drafts
@@ -273,7 +278,8 @@ impl HybridModel {
         // advances only the device counter).
         let attn_out = match &mtp.mixer {
             Mixer::Full(fa) => {
-                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch)?;
+                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch,
+                                                mtp.geom.as_ref())?;
                 scratch.kv.len += 1;
                 out
             }
@@ -281,19 +287,19 @@ impl HybridModel {
         };
 
         // op 7: x1 = inpSA + attn_out
-        let mut x1 = e.zeros(n_embd)?;
-        e.add(&inp_sa, &attn_out, &mut x1, n_embd)?;
+        let mut x1 = e.zeros(di)?;
+        e.add(&inp_sa, &attn_out, &mut x1, di)?;
 
         // op 8: z = RMSNorm(x1, post_attn_norm)  (pre-FFN norm)
-        let mut z = e.zeros(n_embd)?;
-        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+        let mut z = e.zeros(di)?;
+        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, di, 1, eps)?;
 
         // op 9: FFN (Dense or MoE) — same as the trunk decode FFN
         let ffn_out = match &mtp.ffn {
             crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                    let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                    let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
                     (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
@@ -307,9 +313,16 @@ impl HybridModel {
             crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, u16::MAX)?,
         };
 
-        // op 10: h_nextn = x1 + ffn_out
-        let mut h_nextn = e.zeros(n_embd)?;
-        e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
+        // op 10: h_nextn = x1 + ffn_out (at di)
+        let mut h_inner = e.zeros(di)?;
+        e.add(&x1, &ffn_out, &mut h_inner, di)?;
+
+        // op 10.5 (student): up-project the inner hidden back to n_embd — training semantics:
+        // the chain carrier AND the head input are out_up(h_inner) (pre-final-norm).
+        let h_nextn = match mtp.geom.as_ref() {
+            Some(g) => e.matmul(&g.out_up, &h_inner, 1)?,
+            None => h_inner,
+        };
 
         // op 11: final = RMSNorm(h_nextn, shared_head_norm OR output_norm)
         let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
@@ -334,15 +347,16 @@ impl HybridModel {
     /// launcher with the SAME bucket_max -> identical dispatch -> bit-identical draft tokens (the
     /// graph-vs-eager parity gate). Host len is NOT advanced here (graph contract); callers mirror.
     fn mtp_full_attn_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch)
+                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch,
+                        geom: Option<&crate::hybrid::DraftGeom>)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
+        let n_head = geom.map(|g| g.n_head).unwrap_or(cfg.n_head as usize);
+        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
-        let n_embd = cfg.n_embd as usize;
+        let n_embd = geom.map(|g| g.d_inner).unwrap_or(cfg.n_embd as usize);
         let bucket_max = scratch.cap;   // < 96 guaranteed by the graph_draft eligibility gate
 
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
@@ -439,14 +453,16 @@ impl HybridModel {
                              &h_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
         }
 
-        // ops 4/5: eh_proj + attn_norm, T-wide.
+        // ops 4/5: eh_proj + attn_norm, T-wide (at the student inner width when geom is set).
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, t)?;
-        let mut a_norm = e.zeros(t * n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, t, eps)?;
+        let mut a_norm = e.zeros(t * di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, t, eps)?;
 
         // op 6 (K/V half): wk/wv + k_norm + rope + per-row quantized append. No wq/attention —
         // the fill only has to leave correct K/V rows behind for later chains to attend over.
-        let n_head_kv = cfg.n_head_kv as usize;
+        let n_head_kv = mtp.geom.as_ref().map(|g| g.n_head_kv)
+            .unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let mut k = e.matmul(&fa.wk, &a_norm, t)?;
         let v = e.matmul(&fa.wv, &a_norm, t)?;
@@ -501,6 +517,8 @@ impl HybridModel {
                             -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
+        // student inner width (see mtp_head_forward_dev) — interface dims stay n_embd.
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let eps = cfg.rms_eps;
         let e_emb = e.embed_gather_device(embd_gpu, tok_d, n_embd, embd_qt, embd_rb)?;
         let mut e_norm = e.zeros(n_embd)?;
@@ -511,21 +529,22 @@ impl HybridModel {
         e.copy_into(&mut concat, 0, &e_norm, n_embd)?;
         e.copy_into(&mut concat, n_embd, &h_norm, n_embd)?;
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, 1)?;
-        let mut a_norm = e.zeros(n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
+        let mut a_norm = e.zeros(di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, 1, eps)?;
         let attn_out = match &mtp.mixer {
-            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch)?,
+            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch,
+                                                     mtp.geom.as_ref())?,
             Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
         };
-        let mut x1 = e.zeros(n_embd)?;
-        e.add(&inp_sa, &attn_out, &mut x1, n_embd)?;
-        let mut z = e.zeros(n_embd)?;
-        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+        let mut x1 = e.zeros(di)?;
+        e.add(&inp_sa, &attn_out, &mut x1, di)?;
+        let mut z = e.zeros(di)?;
+        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, di, 1, eps)?;
         let ffn_out = match &mtp.ffn {
             crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                    let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                    let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
                     (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
@@ -543,8 +562,13 @@ impl HybridModel {
             }
             crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense (or resident-MoE) MTP FFN".into()),
         };
-        let mut h_nextn = e.zeros(n_embd)?;
-        e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
+        let mut h_inner = e.zeros(di)?;
+        e.add(&x1, &ffn_out, &mut h_inner, di)?;
+        // student: up-project back to n_embd (carrier + head input; see mtp_head_forward_dev).
+        let h_nextn = match mtp.geom.as_ref() {
+            Some(g) => e.matmul(&g.out_up, &h_inner, 1)?,
+            None => h_inner,
+        };
         // BW24_SPEC_HPOST needs final_h even head-less (it IS the next seed under that convention).
         let final_h = if with_head || spec_hpost() {
             let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
@@ -1297,7 +1321,7 @@ impl HybridModel {
                        -> Result<SpecSession, Box<dyn std::error::Error>> {
         Ok(SpecSession {
             cache: Cache::new(e, &self.cfg, max_ctx)?,
-            scratch: MtpScratch::new(e, &self.cfg, max_ctx)?,
+            scratch: MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?,
             committed: Vec::new(),
             last_h: None,
             next_pred: None,
@@ -1391,7 +1415,7 @@ impl HybridModel {
                 None => {
                     own_cache = Cache::new(e, &self.cfg, max_ctx)?;
                     // Persistent scratch = max_ctx rows (~2KB/token quantized).
-                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx)?;
+                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
                     (&mut own_cache, &mut own_scratch, None)
                 }
             };
@@ -2518,7 +2542,7 @@ impl HybridModel {
         let t_total = tokens.len();
         assert!(t_total >= 8, "corpus too short ({t_total} tokens)");
         let mut cache = Cache::new(e, &self.cfg, t_total + k + 8)?;
-        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8)?;
+        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
         let embd_gpu = self.embd_gpu.get_or_init(|| {
             e.upload_u8(&self.embd.raw).expect("embed table upload")
         });
