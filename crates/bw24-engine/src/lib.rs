@@ -3127,6 +3127,37 @@ impl Engine {
         Ok((out_q, out_d))
     }
 
+    /// wave-3 fold: rms_norm_qkv + rope_neox2 in ONE launch (n_dims == head_dim; ff nullable).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_qkv_rope(&self, q0: &CudaSlice<f32>, k0: &CudaSlice<f32>, v0: &CudaSlice<f32>,
+                             wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
+                             q: &mut CudaSlice<f32>, k: &mut CudaSlice<f32>, v: &mut CudaSlice<f32>,
+                             head_dim: usize, rq: usize, rk: usize,
+                             pos: &CudaSlice<i32>, nh_q: usize, nh_k: usize,
+                             base: f32, freq_scale: f32, ff: Option<&CudaSlice<f32>>, eps: f32)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_qkv_rope_f32");
+        let rows = rq + rk + rk;   // q rows + k rows + v rows (rk == rv)
+        let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let theta_scale = base.powf(-2.0 / head_dim as f32);
+        let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match ff {
+            Some(t) => { b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
+                          .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                          .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                          .arg(&theta_scale).arg(&freq_scale).arg(t).arg(&eps);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
+                       .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                       .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                       .arg(&theta_scale).arg(&freq_scale).arg(&null).arg(&eps);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        Ok(())
+    }
+
     /// wave-2 fold: a + b with the sum emitted q8_1 alongside f32.
     pub fn add_q8_1(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, res: &mut CudaSlice<f32>,
                     ncols: usize, nrows: usize)

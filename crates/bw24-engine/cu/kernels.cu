@@ -684,6 +684,54 @@ extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
+// ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
+// rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
+// (rope_neox math verbatim on the normed row; barrier between store and rope read). ----
+extern "C" __global__ void rms_norm_qkv_rope_f32(
+        const float* __restrict__ q, const float* __restrict__ k, const float* __restrict__ v,
+        const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
+        float* __restrict__ dq, float* __restrict__ dk, float* __restrict__ dv,
+        int ncols, int rq, int rk,
+        const int* __restrict__ pos, int nh_q, int nh_k,
+        float theta_scale, float freq_scale, const float* __restrict__ ff,
+        float eps) {
+    int row = blockIdx.x;
+    const float* xr; const float* w; float* dr;
+    int seg; int seg_r;
+    if (row < rq)           { seg = 0; seg_r = row;           xr = q + (size_t)row * ncols;   w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { seg = 1; seg_r = row - rq;      xr = k + (size_t)seg_r * ncols; w = wk; dr = dk + (size_t)seg_r * ncols; }
+    else                    { seg = 2; seg_r = row - rq - rk; xr = v + (size_t)seg_r * ncols; w = wv; dr = dv + (size_t)seg_r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+    if (seg == 2) return;                   // V: norm only, never roped
+    __syncthreads();                        // normed row visible before the rope read
+    // rope_neox on the normed row (n_dims == ncols == head_dim here; math verbatim).
+    int half = ncols / 2;
+    int j = tid;
+    if (j >= half) return;
+    int tok = (seg == 0) ? seg_r / nh_q : seg_r / nh_k;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = dr[j];
+    float x1 = dr[j + half];
+    dr[j]        = x0 * c - x1 * sn;
+    dr[j + half] = x0 * sn + x1 * c;
+}
+
 // ---- gemma4: two rms_norms of two DIFFERENT inputs, same width, one launch
 // (post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0)). grid.x = 2*nrows; per-row verbatim. ----
 extern "C" __global__ void rms_norm2x_f32(const float* __restrict__ a, const float* __restrict__ b,
