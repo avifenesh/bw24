@@ -91,9 +91,9 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 |---|---|---|---|
 | 31B dense plain, short | 40.3 | 40.25 | 1.00x (campaign live) |
 | 31B dense plain, 1.7k | 36.9 | 38.3 | 0.96x |
-| 31B MTP spec, short (K=7 + FR trim) | 126.0 | 112.1 | **1.12x** |
+| 31B MTP spec, short (K=7 + FR trim) | 129.3 | 112.1 | **1.15x** |
 | 31B MTP spec, 1.7k (K=6 + FR trim) | 76.0 | 85.7 | 0.89x |
-| E4B | first light: 154.8 eager | — | perf lanes in flight |
+| E4B plain, short | 182.5 | 208 | 0.88x (glue-fusion lane live) |
 
 The 31B spec jump (0.79x → 1.09x, 2026-07-12) came from a serving-mode config, not a new
 kernel: the FP8 (e4m3) windowed KV cache — a win for plain decode at depth — turns out to

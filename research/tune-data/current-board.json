@@ -101,7 +101,7 @@
   },
   {
    "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
-   "bw24": 126.0,
+   "bw24": 129.3,
    "llama": 112.1,
    "spec": true
   }
