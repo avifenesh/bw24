@@ -144,12 +144,12 @@ cleanup_all() {
 }
 trap cleanup_all EXIT INT TERM
 
-run_arm() (
-  local arm=$1 gpu=$2 cpus=$3
+run_panel() (
+  local arm=$1 panel=$2 gpu=$3 cpus=$4
   local artifact ns arm_log server_log
   artifact=$(artifact_for "$arm")
   ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
-  arm_log="$LOG_ROOT/$RUN_ID-$arm"
+  arm_log="$LOG_ROOT/$RUN_ID-$arm-$panel"
   server_log="$arm_log/server.log"
   mkdir -p "$arm_log"
   sudo ip netns del "$ns" 2>/dev/null || true
@@ -196,25 +196,28 @@ run_arm() (
   done
   [[ -f "$arm_log/health.json" ]] || die "$arm practical server health timeout"
 
-  for panel in swe terminal; do
-    sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
-      HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
-      TRANSFORMERS_OFFLINE=1 ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
-      SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
-      LOCK="$PRACTICAL_LOCK" OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
-      BASE_URL=http://127.0.0.1:8080/v1 BW24_SPILL_IO=worker \
-      BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
-      "$HERE/run_practical_evals.sh" | tee "$arm_log/$panel.log"
-  done
+  sudo ip netns exec "$ns" sudo -u "$USER_NAME" taskset -c "$cpus" env \
+    HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
+    SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
+    LOCK="$PRACTICAL_LOCK" OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
+    BASE_URL=http://127.0.0.1:8080/v1 BW24_SPILL_IO=worker \
+    BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
+    "$HERE/run_practical_evals.sh" | tee "$arm_log/$panel.log"
   date -u +%FT%TZ > "$arm_log/complete"
 )
 
-CPU_LANES=(0-23 24-47 48-71 72-95)
-for index in "${!ARMS[@]}"; do
-  ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$index"
-  NAMESPACES+=("$ns")
-  run_arm "${ARMS[$index]}" "$index" "${CPU_LANES[$index]}" &
-  WORKER_PIDS+=("$!")
+gpu=0
+for arm in "${ARMS[@]}"; do
+  for panel in swe terminal; do
+    cpu_start=$((gpu * 12))
+    cpu_end=$((cpu_start + 11))
+    ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
+    NAMESPACES+=("$ns")
+    run_panel "$arm" "$panel" "$gpu" "$cpu_start-$cpu_end" &
+    WORKER_PIDS+=("$!")
+    gpu=$((gpu + 1))
+  done
 done
 
 failed=0
