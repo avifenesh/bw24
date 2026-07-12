@@ -26,8 +26,8 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$GATE_LOCK" && -f "$PRACTICAL_LOCK" ]] || die "missing frozen lock"
 [[ -f "$PRACTICAL_SELECTOR" ]] || die "missing practical promotion selector"
 if [[ -n "$CONFIRMATION_LOCK" ]]; then
-  [[ -f "$CONFIRMATION_LOCK" && -f "$FRONTIER" ]] \
-    || die "surprise confirmation requires its lock and strict frontier"
+  [[ -f "$CONFIRMATION_LOCK" && -n "$FRONTIER" ]] \
+    || die "surprise confirmation requires its lock and strict-frontier path"
 fi
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 command -v sudo >/dev/null || die "sudo is required for isolated loopback namespaces"
@@ -40,6 +40,9 @@ exec >>"$LOG_ROOT/transition.log" 2>&1
 echo "$(date -u +%FT%TZ) promoted practical transition started"
 
 while [[ ! -f "$PROMOTION_READY" || ! -f "$PROMOTION" ]]; do sleep "$WAIT_INTERVAL_S"; done
+if [[ -n "$CONFIRMATION_LOCK" ]]; then
+  [[ -f "$FRONTIER" ]] || die "strict surprise-confirmation frontier is missing"
+fi
 
 mapfile -t ARMS < <(python3 - "$PROMOTION" "$CONFIRMATION_LOCK" <<'PY'
 import json, sys
