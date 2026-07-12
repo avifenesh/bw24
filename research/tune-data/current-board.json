@@ -1,5 +1,5 @@
 {
- "updated": "2026-07-10",
+ "updated": "2026-07-12",
  "rig": "RTX 5090 Laptop",
  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss",
  "plain_decode": {
@@ -97,6 +97,12 @@
    "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
    "bw24": 399.3,
    "llama": 258.7,
+   "spec": true
+  },
+  {
+   "model": "Gemma-4 31B dense (K=7 MTP)",
+   "bw24": 122.4,
+   "llama": 112.1,
    "spec": true
   }
  ]

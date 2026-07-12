@@ -6,6 +6,12 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::config::ModelConfig;
 use crate::Engine;
 use crate::cache::Cache;
+
+/// Device scratch for the burst verify stream (see `verify_stream_scratch`).
+pub(crate) struct VerifyStreamScratch {
+    pub pos_d: CudaSlice<i32>,
+    pub row_ctrs: Vec<CudaSlice<i32>>,
+}
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
 
 /// STAGE-2 GROUPED DECODE gate (BW24_MOE_GDEC, default ON; `=0` restores the sequential
@@ -3018,26 +3024,36 @@ impl HybridModel {
         Ok((e.dtoh(&ld)?, hn))
     }
 
+    /// Persistent device scratch for the BURST verify stream (one per generation): rope pos
+    /// rows [cap] + per-row t_kv counters (device-filled from the round counter, zero H2D).
+    pub(crate) fn verify_stream_scratch(&self, e: &Engine, cap: usize)
+                                        -> Result<VerifyStreamScratch, Box<dyn std::error::Error>> {
+        Ok(VerifyStreamScratch {
+            pos_d: e.htod_i32(&vec![0i32; cap])?,
+            row_ctrs: (0..cap).map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?,
+        })
+    }
+
     /// BURST verify trunk (device-slot twin): tokens from a device buffer, rope positions
     /// iota'd from `ctr`, appends/attention at the layers' len_d counters (verify_attn_stream),
     /// NO host cache.pos/len advance. Returns (per-row device argmaxes [t], post-norm hidden
     /// stack [t, n_embd]) — the burst's accept/seed inputs, zero host readbacks.
+    /// `scr` = PERSISTENT per-gen scratch (pos rows + per-row t_kv counters): the first cut
+    /// htod_i32-allocated these per call — 9 pageable H2D copies per round, each a stream
+    /// sync, exactly the turnaround the burst exists to remove.
     pub(crate) fn gemma4_verify_t_am_stream(&self, e: &Engine, tok_d: &CudaSlice<u32>, t: usize,
                                             ctr: &CudaSlice<i32>, hint: usize,
-                                            cache: &mut Cache)
+                                            cache: &mut Cache,
+                                            scr: &mut VerifyStreamScratch)
                                             -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
-        let mut pos_d = e.htod_i32(&vec![0i32; t])?;
-        e.i32_iota_from(ctr, &mut pos_d, t)?;
-        // per-row t_kv counters (base + i + 1) for the global layers' under-crossover
-        // per-row fa_decode_dc mirror (the eager fallback's t_kv = avail, device-read).
-        let mut row_ctrs: Vec<CudaSlice<i32>> = Vec::with_capacity(t);
+        assert!(t <= scr.row_ctrs.len() && t <= 64);
+        e.i32_iota_from(ctr, &mut scr.pos_d, t)?;
         for i in 0..t {
-            let mut sl = e.htod_i32(&[0])?;
-            e.i32_copy_add(ctr, &mut sl, (i + 1) as i32)?;
-            row_ctrs.push(sl);
+            e.i32_copy_add(ctr, &mut scr.row_ctrs[i], (i + 1) as i32)?;
         }
+        let (pos_d, row_ctrs) = (&scr.pos_d, &scr.row_ctrs);
         let embd_gpu = self.embd_gpu.get_or_init(|| {
             e.upload_u8(&self.embd.raw).expect("embed table upload")
         });
@@ -3052,8 +3068,8 @@ impl HybridModel {
                 None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, t, eps)?,
             };
             let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
-            let o = self.gemma4_verify_attn_stream(e, fa, il, &hq, &hdq, &pos_d, t, cache,
-                                                    hint, &row_ctrs)?;
+            let o = self.gemma4_verify_attn_stream(e, fa, il, &hq, &hdq, pos_d, t, cache,
+                                                    hint, row_ctrs)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             let next_norm = if il + 1 < n_layers {
