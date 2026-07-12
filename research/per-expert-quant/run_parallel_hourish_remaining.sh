@@ -6,6 +6,7 @@ HERE="$ROOT/research/per-expert-quant"
 PANEL_LOCK=${PANEL_LOCK:-$HERE/expanded-capability-panel.lock.json}
 OUT_ROOT=${OUT_ROOT:-$HERE/results-hourish}
 CACHE_DIR=${CACHE_DIR:-$HERE/.cache}
+HF_HOME_DIR=${HF_HOME_DIR:-${HF_HOME:-$HOME/.cache/huggingface}}
 GPU_IDS=${GPU_IDS:-0,1,2,3,4,5,6,7}
 PORT_BASE=${PORT_BASE:-8080}
 SPILL_DEPTH=${BW24_SPILL_PREAD_DEPTH:-8}
@@ -22,8 +23,9 @@ die() { echo "error: $*" >&2; exit 2; }
 
 [[ "$ARM" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid ARM"
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid RUN_ID"
-[[ -f "$ARTIFACT/manifest.json" && -x "$SERVER_BIN" && -f "$PANEL_LOCK" ]] \
-  || die "missing artifact, server, or panel lock"
+[[ -f "$ARTIFACT/manifest.json" && -x "$SERVER_BIN" && -f "$PANEL_LOCK" \
+  && -d "$HF_HOME_DIR/hub" && -d "$HF_HOME_DIR/datasets" ]] \
+  || die "missing artifact, server, panel lock, or Hugging Face cache"
 [[ "$PORT_BASE" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid PORT_BASE"
 [[ "$SPILL_DEPTH" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || die "invalid spill depth"
 [[ "$HEALTH_TIMEOUT_S" =~ ^[1-9][0-9]*$ && "$SHARD_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] \
@@ -141,7 +143,9 @@ run_shard() (
   suite=candidate
   unsafe=0
   if [[ "$task" == humaneval_instruct ]]; then suite=code; unsafe=1; fi
-  env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ARM="$ARM" MODEL="$ARM" ARTIFACT="$ARTIFACT" \
+  env HF_HOME="$HF_HOME_DIR" HF_HUB_CACHE="$HF_HOME_DIR/hub" \
+    HF_DATASETS_CACHE="$HF_HOME_DIR/datasets" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    ARM="$ARM" MODEL="$ARM" ARTIFACT="$ARTIFACT" \
     SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" RUNTIME_KIND=bw24 \
     BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 \
     BW24_SERVE_SPEC=0 BASE_URL="http://127.0.0.1:$port/v1/completions" \
