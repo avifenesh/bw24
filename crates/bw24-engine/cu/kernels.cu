@@ -282,6 +282,111 @@ extern "C" __global__ void rms_pre_add_rms_norm_f32(
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = rr[i] * scale * w[i];
 }
 
+// ---- E4B glue fusion wave 2: the two tail-entry programs with the ffn-norm output zsh
+// ALSO emitted q8_1 (fused2 gate/up consume only the quantized pair at t=1; the f32 zsh
+// stays written for the off-class fallbacks). Epilogue = quantize_q8_1's program verbatim. ----
+extern "C" __global__ void rms_pre_add_rms_norm_q8z_f32(
+        const float* __restrict__ a, const float* __restrict__ wa,
+        const float* __restrict__ b,
+        const float* __restrict__ w, float* __restrict__ res,
+        float* __restrict__ dst,
+        signed char* __restrict__ out_q, float* __restrict__ out_d,
+        int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    __shared__ float s[32];
+    float suma = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; suma += v * v; }
+    for (int o = 16; o > 0; o >>= 1) suma += __shfl_down_sync(0xffffffff, suma, o);
+    if ((tid & 31) == 0) s[tid >> 5] = suma;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float ascale = rsqrtf(s[0] / ncols + eps);
+    __syncthreads();
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float v = (ar[i] * ascale) * wa[i] + br[i];
+        rr[i] = v;
+        sum += v * v;
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    int lane = tid & 31;
+    const float4* x4 = (const float4*)rr;
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        float4 xv = x4[i4];
+        float4 wv = w4[i4];
+        float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                               (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+        d4[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
+// ---- E4B glue fusion wave 2: a + b with the sum ALSO emitted q8_1 (resid feeds inp_gate
+// through matmul_pre; f32 resid stays written for the later residual add). ----
+extern "C" __global__ void add_q8_1_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                        float* __restrict__ res,
+                                        signed char* __restrict__ out_q, float* __restrict__ out_d,
+                                        int ncols) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    int lane = tid & 31;
+    int nblk = ncols / 32;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        const float4 a4 = ((const float4*)ar)[i4];
+        const float4 b4 = ((const float4*)br)[i4];
+        float4 v = make_float4(a4.x + b4.x, a4.y + b4.y, a4.z + b4.z, a4.w + b4.w);
+        ((float4*)rr)[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
 // ---- RMSNorm with FUSED q8_1 quantize epilogue (decode glue-fusion lever). ----
 // Computes z = rms_norm(x)*w THEN emits z directly as q8_1 (out_q int8 + out_d f32 per-32 scale),
 // so the standalone `quantize_q8_1` launch + the f32 `z` HBM round-trip are removed. The normed

@@ -2596,7 +2596,16 @@ impl HybridModel {
             else { panic!("gemma4 dense layer without Dense ffn") };
             let mut attn_out = e.uninit(t * n_embd)?;
             let mut zsh = e.uninit(t * n_embd)?;
+            // wave-2: with the pre-norm fold active the entry ALSO emits zsh q8_1 — the
+            // t=1 fused2 gate/up consume the pair with no standalone quantize launch.
+            let mut zpair: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
             match pre_norm {
+                Some(wa) if t == 1 => {
+                    zpair = Some(e.rms_pre_add_rms_norm_q8z(cur, wa, x,
+                                                            bits.ffn_norm.float_data(),
+                                                            &mut attn_out, &mut zsh,
+                                                            n_embd, t, eps)?);
+                }
                 Some(wa) => e.rms_pre_add_rms_norm(cur, wa, x, bits.ffn_norm.float_data(),
                                                    &mut attn_out, &mut zsh, n_embd, t, eps)?,
                 None => e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out,
@@ -2604,7 +2613,10 @@ impl HybridModel {
             }
             let n_ff = ffn_gate.out_features();
             let (gate, up) = if t == 1 {
-                let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
+                let (zq, zd) = match zpair {
+                    Some(p) => p,
+                    None => e.quantize_q8_1(&zsh, 1, n_embd)?,
+                };
                 match e.matmul_q4_fused2(ffn_gate, ffn_up, &zq, &zd)? {
                     Some(p) => p,
                     None => (e.matmul_pre(ffn_gate, &zq, &zd, &zsh, 1)?,
@@ -3826,11 +3838,17 @@ impl HybridModel {
             let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
                 e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()))?;
             let mut resid = e.uninit(t * n_embd)?;
-            e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
             // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
-            let g = e.matmul(&e4b.inp_gate, &resid, t)?;
+            // wave-2: the residual add emits q8_1 alongside — inp_gate rides matmul_pre.
+            let g = if t == 1 && e.uses_q8_1_fast(&e4b.inp_gate) {
+                let (rq, rd) = e.add_q8_1(&sn, &attn_out, &mut resid, n_embd, t)?;
+                e.matmul_pre(&e4b.inp_gate, &rq, &rd, &resid, t)?
+            } else {
+                e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
+                e.matmul(&e4b.inp_gate, &resid, t)?
+            };
             // t == 1: this layer's PLE row is a CONTIGUOUS slice of inp_pl — no gather copy
             // (the q8-emitting GELU takes a view; t > 1 keeps the strided gather + f32 path).
             let mut act = e.uninit(t * n_epl)?;
