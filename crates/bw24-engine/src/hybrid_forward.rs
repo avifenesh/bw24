@@ -3795,6 +3795,14 @@ impl HybridModel {
             // (t_kv = len_d[0], the cache.rs contract). KV-shared layers read the target's
             // counter (advanced when the target ran earlier in the stack).
             assert!(t == 1);
+            // hd512 globals: eager (kvmod) picks the SCALAR unified below the fa512 floor,
+            // and under the window every live t_kv sits below it — cap the capture bucket
+            // under the floor so fa_decode_dc bakes the same scalar symbol, or the graph
+            // rides the dpl16 twin and its numeric class diverges from the dc-eager stream
+            // (E4B-GRAPH-GATE 2/64, 2026-07-12).
+            let bucket = if hd == 512 && win <= crate::fa512_min_tkv() {
+                bucket.min(crate::fa512_min_tkv().saturating_sub(1))
+            } else { bucket };
             let k_view = e.view_u8(&kvl.k, kvl.k.len());
             let v_view = e.view_u8(&kvl.v, kvl.v.len());
             e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
