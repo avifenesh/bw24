@@ -65,6 +65,7 @@ docker run --rm \
   --pids-limit 32 \
   --memory 1g \
   --cpus 1 \
+  --cpu-shares 2 \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --mount "type=bind,src=$RUN_DIR,dst=/inputs,readonly" \
   "$image" \
@@ -114,6 +115,7 @@ receipt = {
         "pids_limit": 32,
         "memory_bytes": 1024 * 1024 * 1024,
         "cpus": 1,
+        "cpu_shares": 2,
     },
 }
 path = pathlib.Path(os.environ["RECEIPT"])

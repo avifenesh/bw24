@@ -50,10 +50,11 @@ shard_complete() {
   local task=$1
   local dir="$OUT_ROOT/$ARM/$RUN_ID/shards/$task"
   [[ -d "$dir" ]] || return 1
-  python3 - "$dir" "$task" "$PANEL_SHA256" <<'PY'
+  python3 - "$dir" "$task" "$PANEL_SHA256" "$BASE_URL" <<'PY'
 import json, pathlib, sys
 
-run_dir, task, panel_sha = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+run_dir = pathlib.Path(sys.argv[1])
+task, panel_sha, base_url = sys.argv[2:]
 metadata_path = run_dir / "run-metadata.json"
 if not metadata_path.is_file():
     raise SystemExit(1)
@@ -64,6 +65,7 @@ if not (
     and metadata.get("tee_exit_code") == 0
     and metadata.get("tasks") == [task]
     and metadata.get("panel_lock_sha256") == panel_sha
+    and metadata.get("base_url") == base_url
     and metadata.get("samples")
     and list(metadata["samples"]) == [task]
     and list(run_dir.glob("**/results_*.json"))

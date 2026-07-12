@@ -34,6 +34,7 @@ PREDICT_ONLY=${PREDICT_ONLY:-0}
 PANEL_LOCK=${PANEL_LOCK:-}
 HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$LOCK")
 HARNESS_DIR="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}"
+HARNESS_LOCK="$CACHE_DIR/.lm-eval-${HARNESS_COMMIT:0:12}.lock"
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 
 [[ -e "$ARTIFACT" ]] || { echo "ARTIFACT does not exist: $ARTIFACT" >&2; exit 2; }
@@ -161,7 +162,6 @@ TIMEOUT_BIN=${TIMEOUT_BIN:-$(command -v timeout || command -v gtimeout || true)}
   echo "GNU timeout is required (install coreutils on macOS)" >&2
   exit 2
 }
-
 if [[ -e "$RUN_DIR" ]]; then
   if find "$RUN_DIR" -name 'results_*.json' -type f -print -quit 2>/dev/null | grep -q .; then
     echo "refusing to rerun completed output directory: $RUN_DIR" >&2
@@ -203,16 +203,49 @@ if ! mkdir "$RUN_DIR"; then
   exit 3
 fi
 mv "$HEALTH_TMP" "$RUN_DIR/health.json"
+HARNESS_LOCK_FD=
+if FLOCK_BIN=$(command -v flock 2>/dev/null); then
+  exec {HARNESS_LOCK_FD}>"$HARNESS_LOCK"
+  "$FLOCK_BIN" --exclusive --timeout 3600 "$HARNESS_LOCK_FD" || {
+    echo "timed out waiting for pinned lm-eval setup lock" >&2
+    exit 2
+  }
+else
+  echo "warning: flock is unavailable; lm-eval setup is single-run only" >&2
+fi
+HARNESS_REMOTE=https://github.com/EleutherAI/lm-evaluation-harness.git
 if [[ ! -d "$HARNESS_DIR/.git" ]]; then
   git init --quiet "$HARNESS_DIR"
-  git -C "$HARNESS_DIR" remote add origin https://github.com/EleutherAI/lm-evaluation-harness.git
+fi
+if current_remote=$(git -C "$HARNESS_DIR" remote get-url origin 2>/dev/null); then
+  [[ "$current_remote" == "$HARNESS_REMOTE" ]] || {
+    echo "lm-eval origin differs from the pinned remote: $current_remote" >&2
+    exit 2
+  }
+else
+  git -C "$HARNESS_DIR" remote add origin "$HARNESS_REMOTE"
+fi
+current_commit=$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || true)
+if [[ "$current_commit" != "$HARNESS_COMMIT" ]]; then
   git -C "$HARNESS_DIR" fetch --quiet --depth=1 origin "$HARNESS_COMMIT"
   git -C "$HARNESS_DIR" checkout --quiet --detach FETCH_HEAD
 fi
 python3 "$HERE/prepare_harness.py" "$HARNESS_DIR" --lock "$LOCK"
 HARNESS_PYTHON="$HARNESS_DIR/.venv/bin/python"
 HARNESS_CLI="$HARNESS_DIR/.venv/bin/lm_eval"
-if [[ ! -x "$HARNESS_CLI" ]]; then
+if [[ ! -x "$HARNESS_PYTHON" || ! -x "$HARNESS_CLI" ]] \
+  || ! "$HARNESS_PYTHON" - "$HARNESS_DIR" <<'PY'
+import pathlib
+import sys
+
+import lm_eval
+
+root = pathlib.Path(sys.argv[1]).resolve()
+module = pathlib.Path(lm_eval.__file__).resolve()
+if root not in module.parents:
+    raise SystemExit(f"lm_eval imported from {module}, expected under {root}")
+PY
+then
   UV_BIN=${UV_BIN:-$(command -v uv || true)}
   if [[ -z "$UV_BIN" && -x "${HOME:-}/.local/bin/uv" ]]; then
     UV_BIN="${HOME}/.local/bin/uv"
@@ -221,11 +254,28 @@ if [[ ! -x "$HARNESS_CLI" ]]; then
     echo "uv is required to create the pinned lm-eval environment (set UV_BIN or install ~/.local/bin/uv)" >&2
     exit 2
   }
-  "$UV_BIN" venv --python 3.12 "$HARNESS_DIR/.venv"
+  if [[ ! -x "$HARNESS_PYTHON" ]]; then
+    "$UV_BIN" venv --clear --python 3.12 "$HARNESS_DIR/.venv"
+  fi
   # `uv sync --extra api` resolves every optional extra in lm-eval's universal lock; the pinned
   # checkout currently has mutually exclusive acpbench/vllm lark constraints. Install only the
   # backend and task dependency set this suite actually uses.
   "$UV_BIN" pip install --python "$HARNESS_PYTHON" -e "$HARNESS_DIR[api,ifeval]"
+fi
+"$HARNESS_PYTHON" - "$HARNESS_DIR" <<'PY'
+import pathlib
+import sys
+
+import lm_eval
+
+root = pathlib.Path(sys.argv[1]).resolve()
+module = pathlib.Path(lm_eval.__file__).resolve()
+if root not in module.parents:
+    raise SystemExit(f"lm_eval imported from {module}, expected under {root}")
+PY
+if [[ -n "$HARNESS_LOCK_FD" ]]; then
+  "$FLOCK_BIN" --unlock "$HARNESS_LOCK_FD"
+  exec {HARNESS_LOCK_FD}>&-
 fi
 
 cp "$LOCK" "$RUN_DIR/suite.lock.json"

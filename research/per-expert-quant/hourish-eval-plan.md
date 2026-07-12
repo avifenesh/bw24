@@ -135,18 +135,26 @@ Then validate the rebuilt lock before comparing it byte-for-byte with the commit
       research/per-expert-quant/expanded-capability-panel.lock.json
 
 Run each arm through the existing restartable launcher by selecting the new frozen lock; no prior
-hourish result directory is edited or reused:
+hourish result directory is edited or reused. Parallel arms may use distinct loopback ports through
+`ADDR`, but one arm must keep the same port for all of its shards:
 
     PANEL_LOCK=research/per-expert-quant/expanded-capability-panel.lock.json \
-      ARM=... ARTIFACT=... RUN_ID=... SERVER_BIN=... \
+      ADDR=127.0.0.1:8081 ARM=... ARTIFACT=... RUN_ID=... SERVER_BIN=... \
       research/per-expert-quant/run_hourish_one_arm.sh
 
 The launcher, code scorer, math scorer, and summarizer derive task counts and panel SHA from that
-validated lock. Expanded scorer receipts bind the count and SHA explicitly. The summarizer accepts
-the new server binary only when every arm and shard has the same hash; pass `--server-sha256` to
-pin that hash explicitly. It also recomputes document, task-rendered prompt, target, and lm-eval
-runtime fingerprints from every logged sample before scoring. The legacy hourish lock, its fixed
-server requirement, and its existing receipts remain valid.
+validated lock. On Linux, harness checkout, preparation, and environment setup take one cache-wide
+`flock`; revision injection is atomic and becomes a read-only no-op once prepared, so parallel
+launchers can share the pinned evaluator. The supported macOS/MLX path remains single-run when
+`flock` is unavailable. Container scorers take one host-wide lock and run with the minimum
+Docker CPU share plus a one-CPU quota. The model server is stopped before an arm waits for that
+lock, freeing its GPU for queued work. Expanded scorer receipts bind the count and SHA explicitly. The
+summarizer accepts the new server binary only when every arm and shard has the same hash; pass
+`--server-sha256` to pin that hash explicitly. It records and validates each loopback endpoint but
+does not treat the port as model identity across parallel arms. It also recomputes document,
+task-rendered prompt, target, and lm-eval runtime fingerprints from every logged sample before
+scoring. The legacy hourish lock, its fixed endpoint and server requirements, and its existing
+receipts remain valid.
 
     python3 research/per-expert-quant/summarize_hourish_results.py \
       --out-root /data/results/per-expert-quant/expanded-v1 \

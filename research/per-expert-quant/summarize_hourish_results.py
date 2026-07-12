@@ -9,6 +9,7 @@ import json
 import math
 import pathlib
 import random
+import re
 import tempfile
 from typing import Any
 
@@ -40,6 +41,10 @@ MATH_SCORE_VERSIONS = {
     "sympy": "1.14.0",
 }
 MMLU_CHOICES = "ABCDEFGHIJ"
+LEGACY_BASE_URL = "http://127.0.0.1:8080/v1/completions"
+LOOPBACK_BASE_URL_RE = re.compile(
+    r"^http://127\.0\.0\.1:([1-9][0-9]{0,4})/v1/completions$"
+)
 MMLU_PREFIXES = {
     "mmlu_pro_history": (
         8465,
@@ -263,6 +268,7 @@ def successful_receipt(
         and SHA256_RE.fullmatch(str(receipt.get("server_binary_sha256"))) is None
     ):
         raise ValueError(f"{arm}/{task}: invalid server binary SHA")
+    validate_base_url(receipt.get("base_url"), panel["format"], f"{arm}/{task}")
     elapsed = finite_number(receipt.get("elapsed_seconds"), f"{arm}/{task} elapsed")
     if elapsed <= 0:
         raise ValueError(f"{arm}/{task}: elapsed time must be positive")
@@ -274,12 +280,34 @@ def successful_receipt(
     return receipt
 
 
+def validate_base_url(value: Any, panel_format: str, context: str) -> str:
+    if panel_format == "bw24-hourish-eval-panel-v1":
+        if value != LEGACY_BASE_URL:
+            raise ValueError(f"{context}: base URL differs from legacy panel")
+        return str(value)
+    match = LOOPBACK_BASE_URL_RE.fullmatch(str(value))
+    if match is None or int(match.group(1)) > 65535:
+        raise ValueError(f"{context}: invalid loopback completion base URL")
+    return str(value)
+
+
+def comparison_config(config: dict[str, Any], panel_format: str) -> dict[str, Any]:
+    comparable = dict(config)
+    if panel_format == "bw24-expanded-capability-panel-v1":
+        comparable.pop("base_url", None)
+    return comparable
+
+
 def validate_result_config(
-    result: dict[str, Any], arm: str, task: str, panel: dict[str, Any]
+    result: dict[str, Any],
+    arm: str,
+    task: str,
+    panel: dict[str, Any],
+    base_url: str,
 ) -> None:
     expected_model_args = {
         "model": arm,
-        "base_url": "http://127.0.0.1:8080/v1/completions",
+        "base_url": base_url,
         "num_concurrent": 1,
         "max_retries": 3,
         "tokenized_requests": False,
@@ -407,6 +435,10 @@ def load_code_task(
         or receipt.get("sandbox", {}).get("pids_limit") != 32
         or receipt.get("sandbox", {}).get("memory_bytes") != 768 * 1024 * 1024
         or receipt.get("sandbox", {}).get("cpus") != 1
+        or (
+            panel["format"] != "bw24-hourish-eval-panel-v1"
+            and receipt.get("sandbox", {}).get("cpu_shares") != 2
+        )
         or score.get("limits")
         != {
             "cpu_seconds": 5,
@@ -515,6 +547,10 @@ def load_math_task(
         or receipt.get("sandbox", {}).get("pids_limit") != 32
         or receipt.get("sandbox", {}).get("memory_bytes") != 1024 * 1024 * 1024
         or receipt.get("sandbox", {}).get("cpus") != 1
+        or (
+            panel["format"] != "bw24-hourish-eval-panel-v1"
+            and receipt.get("sandbox", {}).get("cpu_shares") != 2
+        )
         or not isinstance(receipt.get("tool_sha256"), str)
         or not receipt["tool_sha256"]
         or not isinstance(receipt.get("image_id"), str)
@@ -664,7 +700,7 @@ def load_arm(
             sorted(shard_dir.rglob("results_*.json")), f"{arm}/{task} result"
         )
         result = json.loads(result_path.read_text())
-        validate_result_config(result, arm, task, panel)
+        validate_result_config(result, arm, task, panel, receipt["base_url"])
         task_hashes[task] = result["task_hashes"][task]
         result_by_task[task] = result
         evidence.extend(
@@ -758,7 +794,11 @@ def build_report(
     for arm, data in loaded.items():
         if data["suite_lock_sha256"] != suite_lock_sha:
             raise ValueError(f"{arm}: copied suite lock differs from analysis lock")
-        if data["shared_config"] != reference["shared_config"]:
+        comparable_config = comparison_config(data["shared_config"], panel["format"])
+        reference_config = comparison_config(
+            reference["shared_config"], panel["format"]
+        )
+        if comparable_config != reference_config:
             raise ValueError(f"{arm}: run configuration differs from baseline")
         if data["task_hashes"] != reference["task_hashes"]:
             raise ValueError(f"{arm}: task definitions differ from baseline")
@@ -835,6 +875,54 @@ def self_test() -> None:
     assert exact_sign_p(3, 0) == 0.25
     assert resolve_server_sha("bw24-hourish-eval-panel-v1", None) == SERVER_SHA256
     assert resolve_server_sha("bw24-expanded-capability-panel-v1", None) is None
+    assert (
+        validate_base_url(
+            LEGACY_BASE_URL, "bw24-hourish-eval-panel-v1", "fixture"
+        )
+        == LEGACY_BASE_URL
+    )
+    assert (
+        validate_base_url(
+            "http://127.0.0.1:8087/v1/completions",
+            "bw24-expanded-capability-panel-v1",
+            "fixture",
+        )
+        == "http://127.0.0.1:8087/v1/completions"
+    )
+    port_8080 = {"base_url": LEGACY_BASE_URL, "server_binary_sha256": "a" * 64}
+    port_8087 = {
+        "base_url": "http://127.0.0.1:8087/v1/completions",
+        "server_binary_sha256": "a" * 64,
+    }
+    assert comparison_config(
+        port_8080, "bw24-expanded-capability-panel-v1"
+    ) == comparison_config(port_8087, "bw24-expanded-capability-panel-v1")
+    assert comparison_config(
+        port_8080, "bw24-hourish-eval-panel-v1"
+    ) != comparison_config(port_8087, "bw24-hourish-eval-panel-v1")
+    try:
+        validate_base_url(
+            "http://127.0.0.1:8087/v1/completions",
+            "bw24-hourish-eval-panel-v1",
+            "fixture",
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("legacy panel accepted a non-default port")
+    for invalid_url in (
+        "http://localhost:8081/v1/completions",
+        "http://127.0.0.1:0/v1/completions",
+        "http://127.0.0.1:65536/v1/completions",
+    ):
+        try:
+            validate_base_url(
+                invalid_url, "bw24-expanded-capability-panel-v1", "fixture"
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid expanded base URL: {invalid_url}")
     try:
         resolve_server_sha("bw24-hourish-eval-panel-v1", "0" * 64)
     except ValueError:

@@ -17,6 +17,9 @@ BASE_URL="http://$ADDR/v1/completions"
 SERVER_ROOT=${BASE_URL%/v1/completions}
 HEALTH_TIMEOUT_S=${HEALTH_TIMEOUT_S:-900}
 HOURISH_SHARD_TIMEOUT_S=${HOURISH_SHARD_TIMEOUT_S:-43200}
+HOURISH_SCORER_LOCK=${HOURISH_SCORER_LOCK:-/tmp/bw24-hourish-scorer.lock}
+HOURISH_SCORER_LOCK_TIMEOUT_S=${HOURISH_SCORER_LOCK_TIMEOUT_S:-43200}
+HOURISH_SCORER_RUN_TIMEOUT_S=${HOURISH_SCORER_RUN_TIMEOUT_S:-7200}
 PAGE_PREFETCH_WINDOW=${PAGE_PREFETCH_WINDOW:-8}
 BW24_SPILL_PREAD_DEPTH=${BW24_SPILL_PREAD_DEPTH:-8}
 
@@ -32,7 +35,32 @@ die() {
 [[ -f "$PANEL_LOCK" ]] || die "missing panel lock"
 [[ "$HEALTH_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid health timeout"
 [[ "$HOURISH_SHARD_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid shard timeout"
+[[ "$HOURISH_SCORER_LOCK_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] \
+  || die "invalid scorer lock timeout"
+[[ "$HOURISH_SCORER_RUN_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] \
+  || die "invalid scorer run timeout"
 [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || die "invalid spill depth"
+command -v flock >/dev/null || die "flock is required to serialize result scorers"
+TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
+[[ -n "$TIMEOUT_BIN" && -x "$TIMEOUT_BIN" ]] || die "GNU timeout is required"
+
+python3 "$HERE/validate_capability_panel.py" "$PANEL_LOCK" \
+  --suite-lock "$HERE/suite.lock.json" >/dev/null
+PANEL_FORMAT=$(python3 -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["format"])' "$PANEL_LOCK")
+case "$PANEL_FORMAT" in
+  bw24-hourish-eval-panel-v1)
+    [[ "$ADDR" == 127.0.0.1:8080 ]] \
+      || die "the legacy panel requires ADDR=127.0.0.1:8080"
+    ;;
+  bw24-expanded-capability-panel-v1)
+    if [[ ! "$ADDR" =~ ^127[.]0[.]0[.]1:([1-9][0-9]{0,4})$ ]] \
+      || (( 10#${BASH_REMATCH[1]:-0} > 65535 )); then
+      die "the expanded panel requires a valid 127.0.0.1 TCP port"
+    fi
+    ;;
+  *) die "unsupported panel format: $PANEL_FORMAT" ;;
+esac
 
 CONTROL_DIR="$OUT_ROOT/_control/$RUN_ID/$ARM"
 [[ ! -e "$CONTROL_DIR/complete" ]] || die "$ARM is already complete"
@@ -152,18 +180,27 @@ ARM="$ARM" MODEL="$ARM" ARTIFACT="$ARTIFACT" RUN_ID="$RUN_ID" \
   HOURISH_SHARD_TIMEOUT_S="$HOURISH_SHARD_TIMEOUT_S" \
   "$HERE/run_hourish_arm.sh"
 
-RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
-if [[ ! -e "$RUN_DIR/code-score.json" && ! -e "$RUN_DIR/code-score.receipt.json" ]]; then
-  PANEL_LOCK="$PANEL_LOCK" "$HERE/score_hourish_code_container.sh" "$RUN_DIR"
-fi
-[[ -f "$RUN_DIR/code-score.json" && -f "$RUN_DIR/code-score.receipt.json" ]] \
-  || die "code score evidence is incomplete"
-if [[ ! -e "$RUN_DIR/math-score.json" && ! -e "$RUN_DIR/math-score.receipt.json" ]]; then
-  PANEL_LOCK="$PANEL_LOCK" "$HERE/score_hourish_math_container.sh" "$RUN_DIR"
-fi
-[[ -f "$RUN_DIR/math-score.json" && -f "$RUN_DIR/math-score.receipt.json" ]] \
-  || die "math score evidence is incomplete"
-
 stop_server
+RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID"
+mkdir -p "$(dirname "$HOURISH_SCORER_LOCK")"
+(
+  flock --exclusive --timeout "$HOURISH_SCORER_LOCK_TIMEOUT_S" 9 \
+    || die "timed out waiting for result scorer lock"
+  if [[ ! -e "$RUN_DIR/code-score.json" && ! -e "$RUN_DIR/code-score.receipt.json" ]]; then
+    PANEL_LOCK="$PANEL_LOCK" "$TIMEOUT_BIN" --signal=TERM --kill-after=60s \
+      "${HOURISH_SCORER_RUN_TIMEOUT_S}s" \
+      "$HERE/score_hourish_code_container.sh" "$RUN_DIR"
+  fi
+  [[ -f "$RUN_DIR/code-score.json" && -f "$RUN_DIR/code-score.receipt.json" ]] \
+    || die "code score evidence is incomplete"
+  if [[ ! -e "$RUN_DIR/math-score.json" && ! -e "$RUN_DIR/math-score.receipt.json" ]]; then
+    PANEL_LOCK="$PANEL_LOCK" "$TIMEOUT_BIN" --signal=TERM --kill-after=60s \
+      "${HOURISH_SCORER_RUN_TIMEOUT_S}s" \
+      "$HERE/score_hourish_math_container.sh" "$RUN_DIR"
+  fi
+  [[ -f "$RUN_DIR/math-score.json" && -f "$RUN_DIR/math-score.receipt.json" ]] \
+    || die "math score evidence is incomplete"
+) 9>"$HOURISH_SCORER_LOCK"
+
 date -u +%FT%TZ > "$CONTROL_DIR/complete"
 echo "hourish arm complete: $ARM/$RUN_ID"
