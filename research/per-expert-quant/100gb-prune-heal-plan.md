@@ -61,13 +61,12 @@ disjoint GPU shards and require `tools/merge_expert_score_shards.py` to prove ex
 | `prune100_router_repair` | router matrix and F32 selection bias | Measure cheap routing realignment against the frozen teacher MoE output. |
 | `prune100_joint_heal` | router and surviving experts | Primary recovery arm; repair expert functions and routing together. |
 
-Use precomputed teacher targets from the private corpus. The joint arm starts with layerwise
-functional repair of each pruned MoE block, followed by a short global distillation pass. Monitor
-expert load, dead survivors, routing entropy, maximum per-expert load, and output divergence. Use a
-The router repair minimizes survivor-model output reconstruction against frozen private teacher MoE
-targets, with a source-router anchor. The F32 selection bias receives bounded load-feedback toward
-the original survivor traffic; do not force uniform routing. Joint healing adds rank-8 LoRA updates
-to each surviving gate/up/down expert and merges them before final quantization.
+Use precomputed teacher targets from the private corpus. Heal every pruned MoE block independently
+against its frozen layer teacher target, and preserve per-layer train/holdout reconstruction metrics
+in the receipts. The router repair minimizes survivor-model output reconstruction with a
+source-router anchor. The F32 selection bias receives bounded load-feedback toward the original
+survivor traffic; do not force uniform routing. Joint healing adds rank-8 LoRA updates to each
+surviving gate/up/down expert and merges them before final quantization.
 
 The final GGUF-oriented expert overlay must embed the healed router matrix and selection bias as
 explicit F32 tensor overrides (`ffn_gate_inp.weight` and `exp_probs_b.bias`). Falling through to the
