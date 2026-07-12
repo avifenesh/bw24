@@ -16,6 +16,7 @@ SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-s
 HARBOR_BIN=${HARBOR_BIN:-/data/bin/harbor-0.18.0-0a01ad6/harbor}
 HARBOR_HOME=${HARBOR_HOME:-/data/cache/harbor-home}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
+VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 
@@ -30,6 +31,12 @@ if [[ -n "$CONFIRMATION_LOCK" ]]; then
     || die "surprise confirmation requires its lock and strict-frontier path"
 fi
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
+python3 - "$VRAM_FRAC" <<'PY'
+import sys
+value = float(sys.argv[1])
+if not 0.5 <= value < 0.9:
+    raise SystemExit("VRAM_FRAC must be in [0.5, 0.9)")
+PY
 
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
@@ -85,7 +92,7 @@ RUN_ID="practical-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 [[ ! -e "$RUN_CONFIG" ]] || die "run config already exists"
 export RUN_ID PROMOTION GATE_LOCK PRACTICAL_LOCK SERVER_BIN HARBOR_BIN \
-  CONFIRMATION_LOCK FRONTIER
+  CONFIRMATION_LOCK FRONTIER VRAM_FRAC
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -99,6 +106,7 @@ payload = {
     "arms": arms,
     "panels": ["swe", "terminal"],
     "protocol": "parallel unique localhost ports; one GPU and concurrency one per panel",
+    "vram_fraction": float(os.environ["VRAM_FRAC"]),
     "directional_promotion": {"path": os.environ["PROMOTION"], "sha256": sha(os.environ["PROMOTION"])},
     "gate_lock": {"path": os.environ["GATE_LOCK"], "sha256": sha(os.environ["GATE_LOCK"])},
     "practical_lock": {"path": os.environ["PRACTICAL_LOCK"], "sha256": sha(os.environ["PRACTICAL_LOCK"])},
@@ -176,7 +184,7 @@ run_panel() (
     BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
     BW24_MOE_PREWARM=1 BW24_MOE_PREFETCH=1 BW24_MOE_PAGE_PREFETCH=1 \
     BW24_MOE_PAGE_PREFETCH_WINDOW=8 BW24_MOE_MMAP_ADVICE=normal \
-    BW24_MOE_RESIDENT=1 BW24_MOE_VRAM_FRAC=0.85 BW24_SPILL_IO=worker \
+    BW24_MOE_RESIDENT=1 BW24_MOE_VRAM_FRAC="$VRAM_FRAC" BW24_SPILL_IO=worker \
     BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 \
     BW24_MODELS="$arm=$artifact" BW24_ADDR="127.0.0.1:$port" \
     taskset -c "$cpus" "$SERVER_BIN" >"$server_log" 2>&1 &
