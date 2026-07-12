@@ -101,6 +101,28 @@ for arm in "${arms[@]}"; do
   "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" \
     --receipt-dir "$HEAL_ROOT/$arm/receipts" --overlay-dir "$HEAL_ROOT/$arm/overlay" \
     --layers 1-79 --lock "$HEAL_ROOT/$arm/overlay.lock.json" | tee "$LOG_ROOT/merge-$arm.log"
+  "$PY" - "$HEAL_ROOT/$arm/receipts" "$LOG_ROOT/heal-quality-$arm.json" <<'PY'
+import json,math,pathlib,sys
+receipts=[]
+for layer in range(1,80):
+    p=pathlib.Path(sys.argv[1])/f"layer-{layer:03}.receipt.json"
+    d=json.loads(p.read_text()); assert d["training"]["quantization_aware"] is True
+    for section in ("before","after_pre_requantization","after"):
+        assert all(math.isfinite(float(v)) for v in d[section].values())
+    assert int(d["after"]["dead_active_experts"]) == 0
+    receipts.append(d)
+before=sum(float(d["before"]["normalized_mse"]) for d in receipts)/len(receipts)
+pre=sum(float(d["after_pre_requantization"]["normalized_mse"]) for d in receipts)/len(receipts)
+after=sum(float(d["after"]["normalized_mse"]) for d in receipts)/len(receipts)
+improved=sum(float(d["after"]["normalized_mse"]) < float(d["before"]["normalized_mse"]) for d in receipts)
+result={"format":"bw24-smart100-post-requant-heal-gate-v1","layers":len(receipts),
+        "mean_before_normalized_mse":before,"mean_after_pre_requantization_normalized_mse":pre,
+        "mean_after_requantization_normalized_mse":after,"improved_after_requantization_layers":improved,
+        "passed":after < before and improved >= 40,"public_eval_data_used":False}
+pathlib.Path(sys.argv[2]).write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
+print(json.dumps(result,sort_keys=True))
+assert result["passed"], result
+PY
   "$PY" "$ROOT/tools/export_hy3_router_overrides.py" \
     --overlay-dir "$HEAL_ROOT/$arm/overlay" --layers 1-79 \
     --blob "$HEAL_ROOT/$arm/router-overrides.f32" \
@@ -138,7 +160,7 @@ for arm in "${arms[@]}"; do
   cmp "$LOG_ROOT/$arm.data.sha256" "$LOG_ROOT/$arm.scratch.sha256"
 done
 
-sha256sum "$PLAN_ROOT"/*.json "$HEAL_ROOT"/*/overlay.lock.json \
+sha256sum "$PLAN_ROOT"/*.json "$HEAL_ROOT"/*/overlay.lock.json "$LOG_ROOT"/heal-quality-*.json \
   "$HEAL_ROOT"/*/router-overrides.json "$ARTIFACT_ROOT"/*/manifest.json \
   >"$LOG_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
