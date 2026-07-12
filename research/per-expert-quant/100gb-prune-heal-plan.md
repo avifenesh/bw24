@@ -82,6 +82,11 @@ Before public directional evaluation, every arm must pass:
 4. Short and long prompt health gates with no MTP, speculative decoding, or KV reuse.
 5. Private held-out teacher divergence and routing-collapse report.
 
+The pre-evaluation quality thresholds are frozen in
+`100gb-heal-quality-gates.lock.json`. Both healed arms must retain at least half of their original
+routing entropy, keep dead survivors and maximum expert load below the locked safety ceilings, and
+the joint arm must improve mean held-out normalized MSE with at least half of layers improving.
+
 Promote joint healing only if it beats the unhealed control directionally without a domain collapse.
 Router-only is an ablation and is not promoted merely because it is cheaper. Only promoted Pareto
 leaders proceed to practical SWE/Terminal triage and trusted full suites.
