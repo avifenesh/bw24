@@ -1,10 +1,23 @@
-// Compile engine .cu kernels to a sm_120a fatbin (same pattern as bw24-probe).
+// Compile engine .cu kernels to the selected CUDA fatbin (same pattern as bw24-probe).
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let nvcc = std::env::var("BW24_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
+    println!("cargo:rerun-if-env-changed=BW24_CUDA_ARCH");
+    println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
+    println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
+    let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
+    assert!(matches!(cuda_arch.as_str(), "120a" | "89"),
+            "BW24_CUDA_ARCH must be 120a (default) or 89 (portable eval)");
+    let portable = cuda_arch == "89";
+    assert!(!(portable && std::env::var_os("BW24_CUTLASS").is_some()),
+            "BW24_CUTLASS is sm_120a-only and cannot be enabled for BW24_CUDA_ARCH=89");
+    let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
+    if portable {
+        println!("cargo:rustc-cfg=bw24_portable_cuda");
+    }
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
                        ("cu/qmatvec.cu", "BW24_QMATVEC_FATBIN"), ("cu/flash_attn.cu", "BW24_FLASH_FATBIN"),
@@ -13,13 +26,13 @@ fn main() {
         println!("cargo:rerun-if-changed={src}");
         let stem = src.split('/').last().unwrap().trim_end_matches(".cu");
         let fatbin = out.join(format!("{stem}.fatbin"));
+        let mut args = vec!["-gencode", &gencode, "-O3", "--fatbin"];
+        if portable {
+            args.push("-DBW24_PORTABLE_CUDA=1");
+        }
+        args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
-            .args([
-                "-gencode", "arch=compute_120a,code=sm_120a",
-                "-O3", "--fatbin",
-                "-o", fatbin.to_str().unwrap(),
-                src,
-            ])
+            .args(args)
             .status()
             .expect("spawn nvcc");
         assert!(status.success(), "nvcc fatbin build failed for {src}");
@@ -33,14 +46,18 @@ fn main() {
     for (suffix, kfmt, vfmt) in [("VQ4", 0, 1), ("VF8", 0, 2), ("KF8", 1, 0),
                                  ("KF8VQ4", 1, 1), ("KF8VF8", 1, 2)] {
         let fatbin = out.join(format!("flash_attn_{}.fatbin", suffix.to_lowercase()));
+        let mut args = vec![
+            "-gencode".to_string(), gencode.clone(), "-O3".to_string(), "--fatbin".to_string(),
+        ];
+        if portable {
+            args.push("-DBW24_PORTABLE_CUDA=1".to_string());
+        }
+        args.extend([
+            format!("-DBW24_KV_KFMT={kfmt}"), format!("-DBW24_KV_VFMT={vfmt}"),
+            "-o".to_string(), fatbin.to_string_lossy().into_owned(), "cu/flash_attn.cu".to_string(),
+        ]);
         let status = Command::new(&nvcc)
-            .args([
-                "-gencode", "arch=compute_120a,code=sm_120a",
-                "-O3", "--fatbin",
-                &format!("-DBW24_KV_KFMT={kfmt}"), &format!("-DBW24_KV_VFMT={vfmt}"),
-                "-o", fatbin.to_str().unwrap(),
-                "cu/flash_attn.cu",
-            ])
+            .args(args)
             .status()
             .expect("spawn nvcc (flash_attn kv-format variant)");
         assert!(status.success(), "nvcc fatbin build failed for flash_attn kv variant {suffix}");
@@ -130,7 +147,6 @@ fn main() {
     if std::env::var("BW24_CUTLASS").is_ok() {
         let cutlass_src = "cu/cutlass_fp4_sm120.cu";
         println!("cargo:rerun-if-changed={cutlass_src}");
-        println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
         // CUTLASS 4.x header tree (on-box, probe-verified). TODO Phase 1: vendor a pinned tree into the
         // repo for reproducibility rather than pointing at the venv install.
         let cutlass_root = std::env::var("BW24_CUTLASS_ROOT").unwrap_or_else(|_|
