@@ -173,7 +173,9 @@ class LayerStudent(nn.Module):
     @torch.no_grad()
     def merged_source_tensors(self, layer: int) -> dict[str, torch.Tensor]:
         result = {
-            router_name(layer): self.router.to(torch.bfloat16).cpu().contiguous(),
+            # Router top-k is discontinuous around near ties. Preserve the trained FP32 values;
+            # export_hy3_router_overrides.py embeds these bytes as an F32 runtime override.
+            router_name(layer): self.router.float().cpu().contiguous(),
             bias_name(layer): self.correction_bias.cpu().contiguous(),
         }
         if self.mode != "joint":
@@ -504,6 +506,9 @@ def self_test() -> None:
         assert result["output"]["tensor_count"] == 5
         assert result["active_experts"] == [0]
         assert math.isfinite(result["after"]["normalized_mse"])
+        with safe_open(str(args.out_shard), framework="pt", device="cpu") as handle:
+            assert handle.get_tensor(router_name(1)).dtype == torch.float32
+            assert handle.get_tensor(bias_name(1)).dtype == torch.float32
 
 
 def parse_args() -> argparse.Namespace:
