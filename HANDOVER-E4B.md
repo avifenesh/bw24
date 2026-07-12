@@ -1,25 +1,31 @@
-# E4B — GRAPH-UPDATE ARC SPEC (2026-07-13, THE ranked lever; API surface VERIFIED in our
-# pinned cudarc 0.19.8 sys module)
+# E4B — GRAPH-EXEC-UPDATE ARC: DONE, VERDICT IN (2026-07-13)
 
-APIs present (cudarc::driver::sys): cuGraphGetNodes, cuGraphNodeGetType,
-cuGraphKernelNodeGetParams_v2, cuGraphExecKernelNodeSetParams, cuGraphInstantiateWithFlags;
-CUDA_KERNEL_NODE_PARAMS carries gridDimX/Y/Z + kernelParams. DESIGN (llama's mechanism):
-1. Capture ONE E4B token at a reference bucket (existing gemma4_e4b_decode_step_dcg body).
-2. cuGraphGetNodes on the captured graph -> filter kernel nodes; IDENTIFY the fa_decode_dc
-   nodes (match CUfunction handle against func("fa_decode_vec_q_v4_dc")/scalar unified —
-   or simpler: match by gridDim pattern (nkv, n_splits, 1)).
-3. Instantiate once. Each token: recompute exact n_splits from the host len mirror,
-   cuGraphExecKernelNodeSetParams with the new gridDim on JUST the fa nodes (grid-only
-   updates are cheap, no re-instantiation), then launch the exec.
-4. Numerics: grid-exact per token == the eager dispatch => stream-identity gate should
-   hold bit-for-bit (same kernels, same shapes). Gates: stream 64/64 + argmax + chat.
-5. Expected: our eager wall 5.30ms with ~0.35ms gaps + per-launch CPU cost -> graphed
-   exact-shape replay targets ~4.9ms (~198) BEFORE other work; combine with remaining
-   fold list for the 217 bar. If grid-update alone insufficient, extend updates to the
-   append/norm nodes (their params are stable — only fa grids vary).
+BUILT (branch lane/graph-exec-update): graph_update.rs — shared, model-agnostic kernel-node
+enumeration + per-token launch-geometry retune (cuGraphExecKernelNodeSetParams_v2 on grid.y
++ n_splits arg + the partO-paired combine's n_splits). E4B door rides it in generate +
+generate_with via gemma4_e4b_graph_exec_loop (ONE capture at bucket=win, snapshot/rollback
+around the capture warmups — the parked door DROPPED the 2 warmup tokens, stream was 3/64
+not the recorded 64/64).
+
+LANDMINES (all fixed, all gated): hd512 globals must capture UNDER the fa512 floor (else
+dpl16_dc vs eager scalar = numeric-class drift); the combine merge count must track the
+main exactly (in-graph memset means skipped split slots hold m=0.0, not NEG_INF empties);
+main->combine pairing must be positional (partO pointers are reused pool transients).
+CAPTURE-KEEP TAX (shared fix, lib.rs): retention clones inside the capture region became
+1,440 dead D2D copy nodes/token (0.74ms) — keep scope is now warmups-only.
+
+VERDICT (valid window, known cell 197.3): stream 400/400 IDENTICAL; argmax + chat green;
+NGEN=128 -1.3%, NGEN=400 +0.9% -> steady-state replay beats eager, capture (~30ms)
+crosses over ~200 tokens. DEFAULT: door ON at max_new >= 256 under window (BW24_E4B_GRAPH
+forces 1/0). The est +10-15% did NOT materialize: eager enqueue-ahead already hides the
+gaps; llama's 216.9-vs-188 edge is glue EXECUTION (dependency-chain latency), not gaps.
+NEXT LEVERS: glue critical-path reduction, E4B spec bring-up (drafters on disk), then the
+26B/31B applications of graph_update if their regimes ever need per-token geometry.
+
 PROBES CLOSED NEGATIVE (do not retry): launch_bounds forcing (spills), fixed-bucket graph
 replay (oversized grids -6..-11%), one-block PLE mega-fusion (single-SM weight pull, 126
-vs 189 — kernel deleted, jsonl 2026-07-13).
+vs 189 — kernel deleted, jsonl 2026-07-13), whole-token graph replay for launch-gap
+recovery on 26B/31B/E4B-short (eager enqueue-ahead hides gaps; jsonl 2026-07-12/13).
 
 # E4B — TRACING VERDICT (2026-07-13, supersedes the concurrency hypothesis below)
 

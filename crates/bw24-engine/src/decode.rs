@@ -858,15 +858,20 @@ impl HybridModel {
             }
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
-            // E4B GRAPH-EXEC-UPDATE SERVING (BW24_E4B_GRAPH=1): one capture at bucket=win,
-            // per-token fa geometry retune, replay. The 2026-07-12 park ("flat 173.5, stream
-            // 64/64") did NOT reproduce — the capture warmups are real self-feeding steps and
-            // the old door dropped their 2 tokens (E4B-GRAPH-GATE 3/64). Snapshot/rollback
-            // (the 26B graph-loop pattern) fixes the stream; the exec-update kills the
-            // bucket-split tax (42 fa launches at 64 splits vs eager's ~ceil(t_kv/8)).
+            // E4B GRAPH-EXEC-UPDATE SERVING: one capture at bucket=win, per-token fa
+            // geometry retune, replay. The 2026-07-12 park ("flat 173.5, stream 64/64") did
+            // NOT reproduce — the capture warmups are real self-feeding steps and the old
+            // door dropped their 2 tokens (E4B-GRAPH-GATE 3/64). Snapshot/rollback (the 26B
+            // graph-loop pattern) fixes the stream; the exec-update kills the bucket-split
+            // tax (42 fa launches at 64 splits vs eager's ~ceil(t_kv/8)).
+            // DEFAULT: budget-gated ON (2026-07-13 valid-window A/B: steady-state replay
+            // beats eager but the one-time capture ~30ms crosses over near 200 tokens —
+            // 128tok −1.3%, 400tok +0.9%). BW24_E4B_GRAPH=1 forces, =0 kills.
             let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
-            if e4b && cache.pos + max_new + 2 < win
-                && std::env::var("BW24_E4B_GRAPH").as_deref() == Ok("1") {
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => max_new >= 256,
+            };
+            if e4b && cache.pos + max_new + 2 < win && e4b_graph {
                 self.gemma4_e4b_graph_exec_loop(
                     e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,
                     max_new, usize::MAX, |tok| { out.push(tok); None })?;
@@ -1055,11 +1060,13 @@ impl HybridModel {
             let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[first])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
-            // E4B GRAPH-EXEC-UPDATE serving door (BW24_E4B_GRAPH=1, under-window regime) —
-            // mirror of the `generate` door; run-gen/serving measure through here.
+            // E4B GRAPH-EXEC-UPDATE serving door (under-window regime) — mirror of the
+            // `generate` door incl the budget-gated default; run-gen/serving measure here.
             let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
-            if e4b && cache.pos + budget + 2 < win
-                && std::env::var("BW24_E4B_GRAPH").as_deref() == Ok("1") {
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => budget >= 256,
+            };
+            if e4b && cache.pos + budget + 2 < win && e4b_graph {
                 let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
                 let reason = self.gemma4_e4b_graph_exec_loop(
                     e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,

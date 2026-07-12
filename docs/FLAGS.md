@@ -144,6 +144,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_GEMMA_WKV` | gemma WINDOWED (hd256) layers: e4m3 vs q8_0/q5_1 KV. DEFAULT IS SERVING-KEYED (2026-07-12): `BW24_DRAFT` set (spec serving) → q8/q5_1, else → e4m3. Explicit `=0`/`=1` always wins | fp8-windows win depth-plain (+3%, 2026-07-12 A/B) but GUT the MTP drafter's acceptance (31B short .758→1.000 on q8/q5 = spec 88→122.7, ABOVE llama-mtp 112; 26B depth .57→.89) — the drafter's single swa attention is fragile to e4m3 KV noise. Globals (`GKV`) cost no acceptance |
 | `BW24_GEMMA_ROWS_W=0` | per-token loop instead of the parity-law rows/rows_w twins (gemma decode+verify) | rows twins = the parity-law foundation, 2026-07-10/11 |
 | `BW24_GEMMA_DRAFT_DC=0` | gemma drafter attention back to the host-len kvmod arm (default = device-len fa_decode_dc/rows_w arms riding the main layers' len_d) | burst-arc step (a/b), 2026-07-12 — required by the draft graphs + burst |
+| `BW24_E4B_GRAPH` | E4B whole-token graph-exec-update serving (`graph_update.rs`: ONE captured step, per-token fa geometry retuned to the live eager split counts). DEFAULT IS BUDGET-KEYED (2026-07-13): ON at `max_new >= 256` under the window, else eager-dc. `=1` forces, `=0` kills | steady-state replay beats eager but the ~30ms capture crosses over ~200 tokens (128tok −1.3%, 400tok +0.9%, valid-window interleaved); stream 400/400 IDENTICAL vs dc-eager |
 | `BW24_FA_SPW2=0` | disable the warp-1 staging helper on the windowed v4 kernel (gqa==1) | +0.4-0.7 marginal keep 2026-07-11 |
 | `BW24_FA_V4=0` | pre-v4 FA decode lanes (v4 = key-per-lane score phase; format-aware e4m3 arms 2026-07-12) | default-on 2026-07-10 after the 3-model battery |
 | `BW24_FA_I2=0` | single-key walk in the gemma global rows kernel (i2 = 2-key interleave) | i2 default-on 2026-07-11 (depth +3.5%; i4 was negative — register pressure) |
@@ -185,6 +186,10 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
 | `BW24_DRAFT_GRAPH_CHECK=1` | re-run the gemma draft chain eagerly after each graph replay and diff the drafted slots (non-destructive replay-vs-eager bisect) |
+| `BW24_E4B_GRAPH_GATE=N` (gemma-gate) | E4B graph-door stream gate: `generate()` door OFF then ON on fresh caches, streams must be identical (the warmup-side-effect + exec-update oracle) |
+| `BW24_E4B_DCG_EAGER` | E4B door bisect arm: run the dcg step eagerly per token instead of capture/replay — `1` = exact live bucket, `2` = the capture's win bucket (separates bucket-path numerics from the replay mechanism) |
+| `BW24_E4B_GRAPH_TIMING=1` | per-phase host timing of the E4B graph loop (dtoh-wait / fa_apply / launch sums) |
+| `BW24_GRAPH_NODES_DUMP=1` | dump the captured E4B graph's kernel-node inventory (symbol + grid + count) + fa update-unit count at capture |
 | `BW24_BURST_VCHECK=1` | run the gemma verify-STREAM on each eager round's batch before the eager verify and diff argmaxes + per-layer KV byte sums (the burst verify's in-place gate harness) |
 | `BW24_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |
