@@ -36,6 +36,12 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing trusted-full summarizer"
 [[ -f "$HERE/suite.lock.json" ]] || die "missing frozen suite lock"
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
+python3 - "$VRAM_FRAC" <<'PY'
+import sys
+value = float(sys.argv[1])
+if not 0.5 <= value < 0.9:
+    raise SystemExit("VRAM_FRAC must be in [0.5, 0.9)")
+PY
 [[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid eval timeout"
 [[ "$TASK_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "invalid task attempt count"
 command -v sudo >/dev/null || die "sudo is required for isolated loopback namespaces"
@@ -91,7 +97,7 @@ RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 ARM_COUNT=${#ARMS[@]}
 BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
-export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES
+export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -109,6 +115,7 @@ payload = {
         "mmlu_pro_other", "mmlu_pro_economics", "mmlu_pro_law", "mmlu_pro_psychology",
     ],
     "documents_per_arm": 4746,
+    "vram_fraction": float(os.environ["VRAM_FRAC"]),
     "protocol": "all eight GPUs; task-family shards balanced across isolated per-arm server lanes; concurrency one per lane",
     "lane_allocation": {
         arm: int(os.environ["BASE_LANES"]) + (index < int(os.environ["EXTRA_LANES"]))

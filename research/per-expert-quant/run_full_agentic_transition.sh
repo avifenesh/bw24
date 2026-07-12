@@ -14,6 +14,7 @@ FULL_RUNNER=${FULL_RUNNER:-$HERE/run_full_practical_evals.sh}
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_full_practical_results.py}
 FULL_TASK_LOCK=${FULL_TASK_LOCK:-$HERE/full-practical-tasks.lock.json}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
+VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 
@@ -24,6 +25,12 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing full practical summarizer"
 [[ -f "$HERE/practical-evals.lock.json" ]] || die "missing practical lock"
 [[ -f "$FULL_TASK_LOCK" ]] || die "missing full practical task lock"
+python3 - "$VRAM_FRAC" <<'PY'
+import sys
+value = float(sys.argv[1])
+if not 0.5 <= value < 0.9:
+    raise SystemExit("VRAM_FRAC must be in [0.5, 0.9)")
+PY
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
 flock -n 9 || exit 0
@@ -68,7 +75,7 @@ for arm in "${ARMS[@]}"; do [[ -f "$(artifact_for "$arm")/manifest.json" ]] || d
 
 RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
-export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK
+export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -77,6 +84,7 @@ payload = {
     "format": "bw24-full-agentic-run-v1", "run_id": os.environ["RUN_ID"],
     "arms": sys.argv[2:], "baseline": "plain_quant",
     "suites": {"swe": 500, "terminal": 89},
+    "vram_fraction": float(os.environ["VRAM_FRAC"]),
     "trusted_full_report": {"path": os.environ["TRUSTED_REPORT"], "sha256": sha(os.environ["TRUSTED_REPORT"])},
     "practical_lock": {"path": str(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json"),
                        "sha256": sha(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json")},
@@ -134,7 +142,7 @@ run_lane() (
     BW24_CTX=8192 BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
     BW24_MOE_PREWARM=1 BW24_MOE_PREFETCH=1 BW24_MOE_PAGE_PREFETCH=1 \
     BW24_MOE_PAGE_PREFETCH_WINDOW=8 BW24_MOE_MMAP_ADVICE=normal BW24_MOE_RESIDENT=1 \
-    BW24_MOE_VRAM_FRAC=0.85 BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" \
+    BW24_MOE_VRAM_FRAC="$VRAM_FRAC" BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" \
     BW24_SPILL_STATS=1 BW24_MODELS="$arm=$artifact" BW24_ADDR="127.0.0.1:$port" \
     taskset -c "$cpus" "$SERVER_BIN" >"$server_log" 2>&1 &
   server_pid=$!
