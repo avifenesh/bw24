@@ -82,45 +82,66 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         "NVFP4": (64, 36),
     }
     allowed_qtypes = set(qtype_geometry)
+    projections = ("gate", "up", "down")
     expected_experts = {
         (layer, expert)
         for layer in layers
         for expert in range(n_expert)
         if expert not in pruned.get(layer, set())
     }
-    assigned_qtypes: dict[tuple[int, int], str] = {}
+    expected_projections = {
+        (layer, expert, projection)
+        for layer, expert in expected_experts
+        for projection in projections
+    }
+    assigned_qtypes: dict[tuple[int, int, str], str] = {}
     for assignment_index, assignment in enumerate(plan.get("assignments", [])):
         layer = int(assignment["layer"])
         qtype = assignment["qtype"]
         experts = [int(expert) for expert in assignment["experts"]]
+        assignment_projections = assignment.get("projections", list(projections))
         if layer not in layer_set:
             raise ValueError(f"assignment {assignment_index}: layer {layer} is outside the model")
         if qtype not in allowed_qtypes:
             raise ValueError(f"assignment {assignment_index}: forbidden expert qtype {qtype}")
         if len(experts) != len(set(experts)):
             raise ValueError(f"assignment {assignment_index}: duplicate expert id")
+        if (
+            not assignment_projections
+            or len(assignment_projections) != len(set(assignment_projections))
+            or any(projection not in projections for projection in assignment_projections)
+        ):
+            raise ValueError(
+                f"assignment {assignment_index}: projections must be distinct and drawn from "
+                f"{projections}"
+            )
         for expert in experts:
-            key = (layer, expert)
             if expert < 0 or expert >= n_expert:
                 raise ValueError(
                     f"assignment {assignment_index}: expert {expert} outside 0..{n_expert - 1}"
                 )
             if expert in pruned.get(layer, set()):
                 raise ValueError(f"assignment {assignment_index}: pruned expert {layer}:{expert}")
-            if key in assigned_qtypes:
-                raise ValueError(f"overlapping assignments for expert {layer}:{expert}")
-            assigned_qtypes[key] = qtype
-    assigned_experts = set(assigned_qtypes)
-    if assigned_experts != expected_experts:
+            for projection in assignment_projections:
+                key = (layer, expert, projection)
+                if key in assigned_qtypes:
+                    raise ValueError(
+                        f"overlapping assignments for expert projection "
+                        f"{layer}:{expert}:{projection}"
+                    )
+                assigned_qtypes[key] = qtype
+    assigned_projections = set(assigned_qtypes)
+    if assigned_projections != expected_projections:
         raise ValueError(
-            f"expert assignment mismatch: missing={len(expected_experts - assigned_experts)} "
-            f"extra={len(assigned_experts - expected_experts)}"
+            f"expert projection assignment mismatch: "
+            f"missing={len(expected_projections - assigned_projections)} "
+            f"extra={len(assigned_projections - expected_projections)}"
         )
 
     expected_qtypes = {
-        f"blk.{layer}.ffn_{proj}_exps.{expert}.weight": assigned_qtypes[(layer, expert)]
+        f"blk.{layer}.ffn_{proj}_exps.{expert}.weight": assigned_qtypes[(layer, expert, proj)]
         for layer, expert in expected_experts
-        for proj in ("gate", "up", "down")
+        for proj in projections
     }
     tensors = manifest.get("tensors", {})
     if set(tensors) != set(expected_qtypes):
@@ -201,7 +222,10 @@ def self_test() -> None:
             "format": "bw24-expert-tier-plan-v2",
             "model": {"expert_count": 2, "moe_layers": [1]},
             "pruned_experts": {"1": [1]},
-            "assignments": [{"layer": 1, "experts": [0], "qtype": "Q8_0"}],
+            "assignments": [
+                {"layer": 1, "experts": [0], "projections": [proj], "qtype": "Q8_0"}
+                for proj in ("gate", "up", "down")
+            ],
             "calibration": {"public_eval_data_used_for_selection": False},
         }
         manifest = {
@@ -212,6 +236,20 @@ def self_test() -> None:
         (root / "manifest.json").write_text(json.dumps(manifest))
         summary = validate(root, False)
         assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 102
+
+        plan["assignments"].append(
+            {"layer": 1, "experts": [0], "projections": ["gate"], "qtype": "Q8_0"}
+        )
+        manifest["plan_canonical_sha256"] = canonical_json_sha256(plan)
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        try:
+            validate(root, False)
+        except ValueError as exc:
+            assert "overlapping assignments for expert projection 1:0:gate" in str(exc)
+        else:
+            raise AssertionError("overlapping projection assignment was accepted")
+        plan["assignments"].pop()
+        manifest["plan_canonical_sha256"] = canonical_json_sha256(plan)
 
         plan["assignments"][0]["qtype"] = "Q3_K"
         (root / "manifest.json").write_text(json.dumps(manifest))
