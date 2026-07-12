@@ -32,6 +32,9 @@ def validate(
     plan = manifest.get("plan", {})
     if plan.get("format") != "bw24-expert-tier-plan-v2":
         raise ValueError("artifact has no embedded expert tier plan")
+    expert_count = int(plan.get("model", {}).get("expert_count", 0))
+    if expert_count <= 0:
+        raise ValueError("artifact plan has no positive expert count")
     pruned = {
         int(layer): {int(expert) for expert in experts}
         for layer, experts in manifest.get("pruned_experts", {}).items()
@@ -73,6 +76,10 @@ def validate(
             if len(pairs) != top_k or len({expert for expert, _ in pairs}) != top_k:
                 raise ValueError(f"{trace_path}:{line_no}: expected {top_k} distinct experts")
             for expert, _ in pairs:
+                if expert < 0 or expert >= expert_count:
+                    raise ValueError(
+                        f"{trace_path}:{line_no}: expert {expert} outside 0..{expert_count - 1}"
+                    )
                 if expert in pruned.get(layer, set()):
                     selected_pruned.append({
                         "line": line_no,
@@ -116,6 +123,7 @@ def self_test() -> None:
         root = pathlib.Path(tmp)
         plan = {
             "format": "bw24-expert-tier-plan-v2",
+            "model": {"expert_count": 4},
             "pruned_experts": {"1": [2], "2": [3]},
         }
         manifest = root / "manifest.json"
@@ -130,6 +138,13 @@ def self_test() -> None:
         assert result["passed"] and result["route_rows"] == 2
         trace.write_text("1 1 0:0.6,2:0.4\n2 1 0:0.7,2:0.3\n")
         assert not validate(manifest, trace, 1, [1, 2], 2)["passed"]
+        trace.write_text("1 1 0:0.6,4:0.4\n2 1 0:0.7,2:0.3\n")
+        try:
+            validate(manifest, trace, 1, [1, 2], 2)
+        except ValueError as exc:
+            assert "outside 0..3" in str(exc)
+        else:
+            raise AssertionError("out-of-range routed expert was accepted")
 
 
 def main() -> None:
