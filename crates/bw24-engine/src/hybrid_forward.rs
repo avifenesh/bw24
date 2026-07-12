@@ -3856,6 +3856,9 @@ impl HybridModel {
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
             // wave-2: the residual add emits q8_1 alongside — inp_gate rides matmul_pre.
+            // (PLE one-block mega-fusion PROBED NEGATIVE 2026-07-13: argmax-correct but
+            // 126 vs 189 tok/s — one SM pulling 0.74MB of weights loses to the multi-block
+            // launch chain it replaced; jsonl row. Kernel deleted per doctrine.)
             let g = if t == 1 && e.uses_q8_1_fast(&e4b.inp_gate) {
                 let (rq, rd) = e.add_q8_1(&sn, &attn_out, &mut resid, n_embd, t)?;
                 e.matmul_pre(&e4b.inp_gate, &rq, &rd, &resid, t)?
@@ -3863,8 +3866,6 @@ impl HybridModel {
                 e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
                 e.matmul(&e4b.inp_gate, &resid, t)?
             };
-            // t == 1: this layer's PLE row is a CONTIGUOUS slice of inp_pl — no gather copy
-            // (the q8-emitting GELU takes a view; t > 1 keeps the strided gather + f32 path).
             let mut act = e.uninit(t * n_epl)?;
             let y = if t == 1 && e.uses_q8_1_fast(&e4b.proj) {
                 let ipv = e.view(&inp_pl, n_epl * n_layer);
