@@ -3704,10 +3704,11 @@ impl HybridModel {
             q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
-            // fused q/k/v norms (the 26B kernel; R7: V = ones-rms, never roped).
-            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
-            e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+            // wave-3 fold: q/k/v norms + q/k rope in ONE launch (rope math verbatim on the
+            // normed rows; V ones-rms, never roped).
+            e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
+                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
             let kvl = cache.kv[il].as_mut().unwrap();
             // class flag must match the cache dims (the g-threading sweep hardcoded `false`
             // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
