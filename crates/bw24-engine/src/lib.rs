@@ -3107,6 +3107,42 @@ impl Engine {
         Ok(())
     }
 
+    /// wave-2 fold: rms(a,wa) + add + ffn-norm with zsh EMITTED q8_1 (fused2 consumes it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_pre_add_rms_norm_q8z(&self, a: &CudaSlice<f32>, wa: &CudaSlice<f32>,
+                                    b: &CudaSlice<f32>, w: &CudaSlice<f32>,
+                                    res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>,
+                                    ncols: usize, nrows: usize, eps: f32)
+                                    -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert!(ncols % 128 == 0);
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("rms_pre_add_rms_norm_q8z_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e) = (ncols as i32, eps);
+        let mut b2 = self.gpu.stream.launch_builder(&f);
+        b2.arg(a).arg(wa).arg(b).arg(w).arg(&mut *res).arg(&mut *dst)
+          .arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e);
+        unsafe { b2.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
+    /// wave-2 fold: a + b with the sum emitted q8_1 alongside f32.
+    pub fn add_q8_1(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, res: &mut CudaSlice<f32>,
+                    ncols: usize, nrows: usize)
+                    -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert!(ncols % 128 == 0);
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("add_q8_1_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let nc = ncols as i32;
+        let mut b2 = self.gpu.stream.launch_builder(&f);
+        b2.arg(a).arg(b).arg(&mut *res).arg(&mut out_q).arg(&mut out_d).arg(&nc);
+        unsafe { b2.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
     /// L2 norm per row (head_dim), no weight.
     pub fn l2_norm(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                    eps: f32) -> Result<(), Box<dyn std::error::Error>> {
