@@ -8,6 +8,8 @@ PROMOTION_READY=${PROMOTION_READY:-/data/logs/100gb-promotion-5f02c37/complete}
 GATE_LOCK=${GATE_LOCK:-$HERE/100gb-promotion-gates.lock.json}
 PRACTICAL_LOCK=${PRACTICAL_LOCK:-$HERE/practical-evals.lock.json}
 PRACTICAL_SELECTOR=${PRACTICAL_SELECTOR:-$HERE/select_practical_promotions.py}
+CONFIRMATION_LOCK=${CONFIRMATION_LOCK:-}
+FRONTIER=${FRONTIER:-}
 OUT_ROOT=${OUT_ROOT:-/data/results/per-expert-quant/practical-v1}
 LOG_ROOT=${LOG_ROOT:-/data/logs/practical-v1}
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
@@ -23,6 +25,10 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -x "$HARBOR_BIN" ]] || die "missing pinned Harbor"
 [[ -f "$GATE_LOCK" && -f "$PRACTICAL_LOCK" ]] || die "missing frozen lock"
 [[ -f "$PRACTICAL_SELECTOR" ]] || die "missing practical promotion selector"
+if [[ -n "$CONFIRMATION_LOCK" ]]; then
+  [[ -f "$CONFIRMATION_LOCK" && -f "$FRONTIER" ]] \
+    || die "surprise confirmation requires its lock and strict frontier"
+fi
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 command -v sudo >/dev/null || die "sudo is required for isolated loopback namespaces"
 command -v ip >/dev/null || die "iproute2 is required for isolated loopback namespaces"
@@ -35,7 +41,7 @@ echo "$(date -u +%FT%TZ) promoted practical transition started"
 
 while [[ ! -f "$PROMOTION_READY" || ! -f "$PROMOTION" ]]; do sleep "$WAIT_INTERVAL_S"; done
 
-mapfile -t ARMS < <(python3 - "$PROMOTION" <<'PY'
+mapfile -t ARMS < <(python3 - "$PROMOTION" "$CONFIRMATION_LOCK" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 if d.get("format") != "bw24-100gb-directional-promotion-v1":
@@ -43,6 +49,13 @@ if d.get("format") != "bw24-100gb-directional-promotion-v1":
 arms = d.get("practical_arms")
 if not isinstance(arms, list) or not 2 <= len(arms) <= 3 or len(set(arms)) != len(arms):
     raise SystemExit("expected two or three unique practical arms")
+if sys.argv[2]:
+    confirmation = json.load(open(sys.argv[2]))
+    if confirmation.get("format") != "bw24-surprise-practical-confirmation-v1":
+        raise SystemExit("wrong surprise-confirmation lock format")
+    arms = list(dict.fromkeys(arms + confirmation.get("candidate_arms", [])))
+if len(arms) > 4:
+    raise SystemExit("at most four practical arms are supported")
 for arm in arms:
     if not isinstance(arm, str) or not arm.replace("_", "").replace("-", "").isalnum():
         raise SystemExit(f"invalid arm: {arm!r}")
@@ -68,7 +81,8 @@ done
 RUN_ID="practical-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 [[ ! -e "$RUN_CONFIG" ]] || die "run config already exists"
-export RUN_ID PROMOTION GATE_LOCK PRACTICAL_LOCK SERVER_BIN HARBOR_BIN
+export RUN_ID PROMOTION GATE_LOCK PRACTICAL_LOCK SERVER_BIN HARBOR_BIN \
+  CONFIRMATION_LOCK FRONTIER
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -89,6 +103,15 @@ payload = {
     "harbor": {"path": os.environ["HARBOR_BIN"], "sha256": sha(os.environ["HARBOR_BIN"])},
     "artifacts": {},
 }
+if os.environ.get("CONFIRMATION_LOCK"):
+    payload["surprise_confirmation"] = {
+        "path": os.environ["CONFIRMATION_LOCK"],
+        "sha256": sha(os.environ["CONFIRMATION_LOCK"]),
+        "frontier": {
+            "path": os.environ["FRONTIER"],
+            "sha256": sha(os.environ["FRONTIER"]),
+        },
+    }
 for arm in arms:
     root = pathlib.Path("/scratch/bw24-artifacts-100gb-5f02c37" if arm.startswith("prune100_") else "/scratch/bw24-artifacts") / (arm.replace("_", "-") if arm in ("plain_quant",) else arm)
     if arm == "plain_quant": root = pathlib.Path("/scratch/bw24-artifacts/plain-quant")
@@ -183,7 +206,7 @@ run_arm() (
   date -u +%FT%TZ > "$arm_log/complete"
 )
 
-CPU_LANES=(0-15 16-31 32-47)
+CPU_LANES=(0-23 24-47 48-71 72-95)
 for index in "${!ARMS[@]}"; do
   ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$index"
   NAMESPACES+=("$ns")
@@ -211,11 +234,19 @@ for baseline in "${ARMS[@]:0:2}"; do
   done
 done
 
+selector_args=()
+evidence_paths=()
+if [[ -n "$CONFIRMATION_LOCK" ]]; then
+  selector_args+=(--confirmation-lock "$CONFIRMATION_LOCK" --frontier "$FRONTIER")
+  evidence_paths+=("$CONFIRMATION_LOCK" "$FRONTIER")
+fi
 python3 "$PRACTICAL_SELECTOR" \
   --promotion "$PROMOTION" --gate-lock "$GATE_LOCK" \
   --comparison-root "$COMPARE_ROOT" \
+  "${selector_args[@]}" \
   --output "$OUT_ROOT/practical-promotion-$RUN_ID.json"
 sha256sum "$RUN_CONFIG" "$PROMOTION" "$GATE_LOCK" "$PRACTICAL_LOCK" \
+  "${evidence_paths[@]}" \
   "$OUT_ROOT/practical-promotion-$RUN_ID.json" > "$LOG_ROOT/$RUN_ID-evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
 trap - EXIT INT TERM
