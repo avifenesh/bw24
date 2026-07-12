@@ -1,3 +1,15 @@
+# E4B — TRACING VERDICT (2026-07-13, supersedes the concurrency hypothesis below)
+
+MEASURED: DRAM plateaus equal (52 vs 55%) but warps-in-flight 34% (ours) vs 72% (llama).
+llama's kernels are NOT faster per-op; their mechanism = CUDA graphs with (likely)
+cudaGraphExecUpdate per token: zero launch gaps AND exact grid shapes. Our fixed-bucket
+graph replay measured -6..-11% (oversized fa grids per token); our eager enqueue-ahead
+beats it. launch_bounds forcing = register spills = negative both models (reverted).
+ARCS RANKED: (1) cudaGraphExecUpdate wrapper (cudarc lacks it - FFI to the driver API,
+update kernel params in the instantiated exec each token, keep exact grids): the actual
+llama mechanism, est +10-15%. (2) PLE mega-fusion one-block kernel (inp_gate 3.99us at
+93GB/s + proj + gelu + quantizes -> one launch): +4% est. (3) wo-combine q8 fold: +1%.
+
 # E4B — THE CONCURRENCY HYPOTHESIS (2026-07-12 night, THE lead for the 0.87x -> 1x gap)
 
 nsys on llama's E4B decode: their kernels are SLOWER than ours per-op (big-FFN 43.5us vs
