@@ -1,0 +1,52 @@
+// mmq_iq_experts.cu — IQ3_S / IQ4_XS expert-segmented int8-MMA MMQ for 35B MoE prefill (sm_120a).
+//
+// The int8 m16n8k16.s8 tensor-core analog of moe_pairs_matvec_q8_dec (qmatvec.cu). Same CSR
+// expert->token grouping (ex_ids/ex_off/ex_pairs/pair_tok) and same device weight-slab pointer
+// table (table[proj*n_expert + ex]) as the dp4a _dec kernel, but the per-expert matvec runs as a
+// 128x128-tile int8 MMA GEMM over the expert's token group instead of warp-per-row dp4a. Weight
+// FP4/IQ nibbles are decoded to int8 AT TILE-LOAD (natural k-order) + a per-32 float scale; the
+// activation is q8_1 (block_q8_1_mmq D4, the SAME quant class as the dp4a path). The MMA dot +
+// write-back are byte-for-byte the vendored nvfp4_w4a8 machinery (mma.cuh tile<>/ldmatrix/mma).
+//
+// DECOUPLED like mmq_nvfp4_w4a8.cu (no ggml headers). C-ABI: bw24_mmq_iq_experts.
+//
+// FP-ORDER: MMA is a different reduction than dp4a -> logits SHIFT (like the W4A8 path). Gated on
+// run-gen argmax MATCH + run-spec self-consistency + numerical closeness (maxdiff < ~1e-1),
+// NOT byte-identity. Standalone proof (iq4xs_mma_test.cu): IQ4_XS maxdiff ~1.5e-3 vs dp4a.
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cstdint>
+#include <cstdlib>
+
+#define WARP_SIZE 32
+#define GGML_PAD(x,n) (((x)+(n)-1)/(n)*(n))
+#define QK_K 256
+#define QK8_1 32
+#define QI8_1 8
+#define MATRIX_ROW_PADDING 512
+#define MMQ_TILE_NE_K 32
+#define MMQ_ITER_K 256
+#define MMQ_MMA_TILE_X_K (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2 + 4)   // 84
+#define MMQ_TILE_Y_K (MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI8_1)          // 36
+#define MMQ_WARP_SIZE 32
+#define MMQ_NWARPS 8
+#define MMQ_Y 128
+#ifndef MMQ_X
+#define MMQ_X 128
+#endif
+#define CUDA_QUANTIZE_BLOCK_SIZE_MMQ 128
+
+// qtype tags (match qmatvec.cu QType).
+#define QT_IQ4_XS 5
+#define QT_IQ3_S  6
+#define QT_Q4_0   12
+
+__device__ __forceinline__ float half_to_float(uint16_t h){ return __half2float(*reinterpret_cast<const __half*>(&h)); }
+__constant__ signed char kvalues_iq4nl_d[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+
+// IQ3_S grid: 512 u32 (from qmatvec.cu, verbatim ggml-common.h:1042).
+__device__ __constant__ unsigned int iq3s_grid_const[512] = {
+    0x01010101, 0x01010103, 0x01010105, 0x0101010b, 0x0101010f, 0x01010301, 0x01010303, 0x01010305,
+    0x01010309, 0x0101030d, 0x01010501, 0x01010503, 0x0101050b, 0x01010707, 0x01010901, 0x01010905,
+    0x01010

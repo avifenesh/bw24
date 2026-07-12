@@ -1,0 +1,41 @@
+//! FFI to the MMQ prefill GEMMs (cu/mmq_fp4.cu + cu/mmq_q45k.cu) — vendored floor kernels.
+//!
+//! NVFP4: the 5150-pp512 kernel from llama.cpp, ggml-decoupled into a static lib with a C-ABI host
+//! launcher. The launcher quantizes the f32 activation to block_fp4_mmq internally (llama's 2-level
+//! FP8-e8m0/UE4M3 scale = the accurate W4A8-via-FP8 path that fixes bw24's W4A4 maxdiff 1.46), then
+//! launches the native mxf4nvf4 block-scale tensor-core mma.
+//!
+//! Q4_K/Q5_K: llama's k-quant int8-MMA MMQ (dequant to int8 at tile-load, q8_1 DS4 activation with
+//! the (d, sum) pair that feeds the k-quant min-offset term, shared m16n8k32 s8 mma inner loop).
+//! Replaces the hand-rolled qmatvec_gemm k-quant GEMMs that dominate prefill (32% + 28% busy).
+//!
+//! All dispatched behind BW24_MMQ=1. Always built (no external deps) — unlike cutlass_ffi which is
+//! BW24_CUTLASS-gated.
+
+use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
+use crate::Engine;
+
+unsafe extern "C" {
+    /// Bytes needed for the block_fp4_mmq activation scratch for (in_f, n_tokens).
+    pub fn bw24_mmq_nvfp4_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Run the NVFP4 W4A4 MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
+    ///   W_nvfp4_blocks : raw bw24 NVFP4 weight rows (block_nvfp4 36B blocks, in_f/64 per row).
+    ///   act_f32        : f32 activation [n_tokens, in_f] (contiguous).
+    ///   y              : f32 output [n_tokens, out_f].
+    ///   act_scratch    : pre-alloc'd quant buffer >= bw24_mmq_nvfp4_act_bytes(in_f, n_tokens).
+    /// Returns 0 on success, else (1000 + cudaError).
+    pub fn bw24_mmq_nvfp4(
+        w_nvfp4_blocks: *const core::ffi::c_void,
+        act_f32: *const f32,
+        y: *mut f32,
+        in_f: i32, out_f: i32, n_tokens: i32,
+        act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        out_scale: f32,
+    ) -> i32;
+    /// Bytes needed for the block_q8_1_mmq activation scratch for the NVFP4 W4A8 path.
+    pub fn bw24_mmq_nvfp4_w4a8_act_bytes(in_f: i32, n_tokens: i32) -> usize;
+    /// Run the NVFP4 W4A8 MMQ prefill GEMM (STAGE 2 accuracy-safe rung). Same fast MMQ tile as
+    /// bw24_mmq_nvfp4 (W4A4) but the non-Blackwell int8 pair: weight FP4 LUT-dequantized to int8 at
+    /// tile-load, activation stays q8_1 int8 (D4, the same quant class as the default int8 GEMM).
+    /// `rp`: 0 =

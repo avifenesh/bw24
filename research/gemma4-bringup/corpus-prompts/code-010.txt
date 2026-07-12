@@ -1,0 +1,42 @@
+//! M3 external-reference checks (bring-up): dump OUR embed row + layer-0 input norm for a token,
+//! for comparison against the HF safetensors bytes read directly in Python.
+use bw24_engine::Engine;
+use bw24_engine::hybrid::HybridModel;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: m3ref <hf_dir> <tok>");
+    let tok: u32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(20768);
+    let e = Engine::new(0)?;
+    let st = bw24_gguf::source::SafetensorsSource::open(std::path::Path::new(&path))?;
+    let model = HybridModel::load_from_source(&e, &st)?;
+    let x = model.embed(&e, &[tok])?;
+    let h = e.dtoh(&x)?;
+    println!("our embed[{tok}][:8]: {:?}", &h[..8]);
+    let norm: f32 = h.iter().map(|v| v * v).sum::<f32>().sqrt();
+    println!("norm: {norm}");
+    // norm-weight fold check: our loaded blk.5.attn_norm should be HF value + 1 (gemma fold)
+    let nw = model.layers[5].attn_norm.float_data();
+    let nh = e.dtoh(nw)?;
+    println!("our blk.5.attn_norm[:3]: {:?} (HF raw was ~[-0.365, -0.393, -0.404]; +1 fold -> ~[0.635, 0.607, 0.596])", &nh[..3]);
+    let qn = match &model.layers[5].mixer {
+        bw24_engine::hybrid::Mixer::Full(fa) => e.dtoh(fa.q_norm.float_data())?,
+        _ => vec![],
+    };
+    if !qn.is_empty() {
+        println!("our blk.5.q_norm[:3]: {:?} (HF raw ~[0.332, 0.305, 0.301]; +1 -> ~[1.332, 1.305, 1.301])", &qn[..3]);
+    }
+    // REAL-TENSOR decode-vs-verify matmul pair check at L0 (MMVQ bisect): run wq through
+    // matmul_decode_exact at m=1 (decode class) and m=2 (verify class), compare col 0 bitwise.
+    if let bw24_engine::hybrid::Mixer::Full(fa) = &model.layers[0].mixer {
+        let in_f = fa.wq.in_features();
+        let out_f = fa.wq.out_features();
+        let x1: Vec<f32> = (0..in_f).map(|i| (((i * 40503) % 1000) as f32) / 500.0 - 1.0).collect();
+        let mut x2 = x1.clone();
+        x2.extend((0..in_f).map(|i| (((i * 2654435761usize) % 1000) as f32) / 500.0 - 1.0));
+        let x1d = e.htod(&x1)?;
+        let x2d = e.htod(&x2)?;
+        let y1 = e.matmul_decode_exact(&fa.wq, &x1d, 1)?;
+        let y2 = e.matmul_decode_exact(&fa.wq, &x2d, 2)?;
+        let h1 = e.dtoh(&y1)?;
+        let h2 = e.dtoh(&y2)?;
+        let bad = h1.iter().zip(&h2[..out_f]).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        let md = h1.iter().zip(&h2[..o

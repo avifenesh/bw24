@@ -1,0 +1,47 @@
+//! Verify m-scaling probe (35B spec-gap triage, lane/close35 2026-07-08): times the spec
+//! VERIFY forward (`decode_step_t_h_emb_dev` — the exact hot-loop kernel chain: resident-embed
+//! gather, device logits, no host logits dtoh) at m = 1,2,3,4,6 from a FIXED primed depth,
+//! rolling the cache back between calls so every timed call sees the identical state.
+//! Prints us/call median + p10/p90 per m, the m=1-normalized cost curve, and the eager
+//! decode_step reference. Read the curve against llama-bench `-d <depth> -p 1,2,3,4,6 -n 0`
+//! (their verify batch = llama_decode of m tokens at depth — same dispatch as their MTP verify).
+//!
+//! MEASUREMENT-ONLY: no kernel/dispatch change; pure Instant+sync timing around existing calls.
+//!
+//! usage: verify-mscale <model.gguf> [depth=512] [reps=40] [m-list="1,2,3,4,6"]
+//! env: fast-path core is default-on; nothing to set (MoE cache included).
+
+use bw24_engine::Engine;
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::forward::argmax;
+use bw24_gguf::GgufFile;
+
+fn pct(sorted: &[f64], p: f64) -> f64 {
+    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[i]
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: verify-mscale <model> [depth] [reps] [ms]");
+    let depth: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(512);
+    let reps: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(40);
+    let ms: Vec<usize> = std::env::args().nth(4)
+        .unwrap_or_else(|| "1,2,3,4,6".to_string())
+        .split(',').filter_map(|s| s.parse().ok()).collect();
+    let max_m = ms.iter().copied().max().unwrap_or(6);
+
+    let e = Engine::new(0)?;
+    let g = GgufFile::open(&path)?;
+    let model = HybridModel::load(&e, &g)?;
+    let n_embd = model.cfg.n_embd as usize;
+
+    // Same synthetic prompt family as decode-bench (comparable depth state).
+    let prompt: Vec<u32> = (0..depth).map(|i| (100 + (i * 7) % 900) as u32).collect();
+    let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, depth + max_m + 32)?;
+    let t_prime = std::time::Instant::now();
+    let mut last_logits: Vec<f32> = if depth >= bw24_engine::hybrid_forward::PRIME_MIN_T {
+        let (l, _h, _hiddens) = model.prime_cache(&e, &prompt, &mut cache)?;
+        l
+    } else {
+        let mut l = Vec::new();
+        for &t in &

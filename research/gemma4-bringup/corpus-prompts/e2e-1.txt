@@ -1,0 +1,95 @@
+Here is a Rust HTTP server source file:
+
+```rust
+//! bw24-server (BASE-4): a minimal OpenAI-ish HTTP server that serves 2-4 concurrent agents across
+//! DIFFERENT models on one endpoint via a single GPU worker thread + step-interleave scheduler.
+//!
+//! Architecture (see worker.rs): axum runs on a tokio runtime; ONE dedicated std::thread owns the
+//! Engine + every loaded HybridModel (CUDA context is thread-affine). Handlers submit `Cmd`s over a
+//! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
+//!
+//! Endpoints:
+//!   GET  /health                 -> {"status":"ok","models":[...]}
+//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
+//!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
+//!                                     seed?,stop?,chat?,stream?}. stream=true => SSE token-by-token;
+//!                                     else a single JSON {text,tokens,stop_reason}.
+//!
+//! CONFIG: BW24_MODELS="name=/path.gguf,name2=/path2.gguf" (comma-separated name=path pairs).
+//! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. BW24_ADDR sets the bind addr.
+
+mod worker;
+
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use bw24_engine::decode::GenParams;
+use bw24_engine::sampler::SamplerConfig;
+use worker::{Cmd, Event, Request};
+
+#[derive(Clone)]
+struct AppState {
+    cmd_tx: Sender<Cmd>,
+    models: Arc<Vec<String>>,
+}
+
+/// POST /v1/completions request body.
+#[derive(Deserialize)]
+struct CompletionReq {
+    model: String,
+    #[serde(default)]
+    prompt: String,
+    /// raw token-id prompt (the exact-token validation-gate path; bypasses the tokenizer).
+    #[serde(default)]
+    prompt_ids: Vec<u32>,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: usize,
+    #[serde(default)]
+    temperature: f32,
+    #[serde(default = "one")]
+    top_p: f32,
+    #[serde(default)]
+    top_k: usize,
+    #[serde(default)]
+    min_p: f32,
+    #[serde(default)]
+    seed: u64,
+    #[serde(default)]
+    stop: Vec<String>,
+    /// wrap the prompt in the model's chat template (single user turn).
+    #[serde(default)]
+    chat: bool,
+    /// stream tokens via SSE; else return one JSON when done.
+    #[serde(default)]
+    stream: bool,
+    /// optional hard context cap.
+    #[serde(default)]
+    max_ctx: Option<usize>,
+}
+fn default_max_tokens() -> usize { 128 }
+fn one() -> f32 { 1.0 }
+
+#[derive(Serialize)]
+struct CompletionResp {
+    model: String,
+    text: String,
+    tokens: Vec<u32>,
+    stop_reason: String,
+    n_tokens: usize,
+    elapsed_s: f64,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let models = parse_models_config();
+    eprintln!("[server] starting; models config = 

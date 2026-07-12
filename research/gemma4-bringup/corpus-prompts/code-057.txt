@@ -1,0 +1,43 @@
+//! HF (transformers) tensor-name -> ggml tensor-name mapping.
+//!
+//! The bw24 engine ONLY ever asks for ggml-style names (e.g. `blk.3.attn_q.weight`,
+//! hardcoded in model.rs / hybrid.rs). The safetensors source resolves on demand by
+//! translating a requested **ggml name** into the **HF name** to look up in the file.
+//!
+//! Direction is ggml -> HF (one lookup per requested tensor; no full-table build needed).
+//!
+//! Coverage:
+//!   * dense transformer (Qwen3 / Llama / OLMoE-attention style) — `ggml_to_hf`, zero-copy.
+//!   * MoE stacked experts — per-expert ggml name `blk.{il}.ffn_{proj}_exps.{e}.weight` ->
+//!     `model.layers.{il}.mlp.experts.{e}.{proj}_proj.weight` (gathered by HostExps::load_from_source).
+//!   * hybrid (qwen35) linear-attn SSM tensors — `resolve_ggml`, with the value transforms
+//!     (`-exp(A_log)`, norm `+1`, conv1d squeeze, V-reorder) materialized as owned buffers.
+//!
+//! The SSM name map + transforms are cited against llama.cpp's converter (conversion/qwen.py,
+//! gguf-py/gguf/tensor_mapping.py) — see `resolve_ggml` and `TransformKind`.
+
+use crate::config::{Arch, ModelConfig};
+
+/// Translate a requested ggml tensor name into the HF safetensors name (DENSE tensors only —
+/// a plain rename with no value transform). Returns `None` if the ggml name has no known HF
+/// equivalent for this arch (e.g. SSM tensors, which go through `resolve_ggml`).
+pub fn ggml_to_hf(ggml: &str, arch: &Arch) -> Option<String> {
+    // Top-level tensors (arch-independent across Llama/Qwen dense).
+    match ggml {
+        "token_embd.weight" => return Some("model.embed_tokens.weight".into()),
+        "output_norm.weight" => return Some("model.norm.weight".into()),
+        "output.weight" => return Some("lm_head.weight".into()),
+        _ => {}
+    }
+
+    // Per-layer: "blk.{il}.{suffix}".
+    let rest = ggml.strip_prefix("blk.")?;
+    let (il, suffix) = rest.split_once('.')?;
+
+    // MiniMax-M3 MoE-side names live under `block_sparse_moe.` (Mixtral-style), with DeepSeek-V3
+    // routing extras (e_score_correction_bias) and `shared_experts.{p}_proj` (plural, no gate_inp).
+    // Dense FFN layers (moe_layer_freq==0) keep the standard `mlp.{p}_proj` names below.
+    if arch.is_minimax() {
+        let m3_suffix: Option<&str> = match suffix {
+            "ffn_gate_inp.weight" => Some("block_sparse_moe.gate.weight"),
+            // llama.cpp ggml name fo

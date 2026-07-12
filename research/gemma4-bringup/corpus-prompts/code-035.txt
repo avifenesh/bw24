@@ -1,0 +1,49 @@
+//! FAVENDOR lane micro-bench (2026-07-08): fa_decode at the REAL 35B full-attn shape
+//! (n_head=16, n_head_kv=2, head_dim=256, q8_0 K / q5_1 V) on synthetic KV, per-depth.
+//! Deep synthetic cache (t_kv_max=12288) for the depth-law matrix.
+//!
+//! Sweep configs via env, ONE config per process (fa_decode reads the flags per call but
+//! SMEM_TKV/SPLIT are process OnceLocks):
+//!   BW24_FA_V2={0,1}  BW24_FA_SMEM_TKV=...  BW24_FA_SPLIT=...
+//! Prints per-t_kv: us/call, implied unique-KV GB/s, and an FNV-1a output hash.
+//! NOTE: the hash is expected to DIFFER between BW24_FA_V2=0 and =1 (v2 is its own numeric
+//! config — tile-level softmax regrouping); it must be IDENTICAL across runs of the SAME config.
+use bw24_engine::Engine;
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes { h ^= b as u64; h = h.wrapping_mul(0x100000001b3); }
+    h
+}
+
+// deterministic LCG so every process builds the IDENTICAL synthetic cache
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> u32 { self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (self.0 >> 33) as u32 }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let e = Engine::new(0)?;
+    // Default: 35B full-attn geometry (Qwen3.6-35B-A3B gguf metadata).
+    // BW24_FA_SHAPE=9b selects the 9B geometry (nh16/nkv4/hd256, gqa=4 — gguf metadata);
+    // BW24_FA_SHAPE=nh,nkv,hd sets it explicitly (FA v3 lane: v3 must not regress the 9B shape).
+    let (n_head, n_head_kv, head_dim) = match std::env::var("BW24_FA_SHAPE").as_deref() {
+        Ok("9b") => (16usize, 4usize, 256usize),
+        Ok(s) if s.contains(',') => {
+            let p: Vec<usize> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+            assert_eq!(p.len(), 3, "BW24_FA_SHAPE=nh,nkv,hd");
+            (p[0], p[1], p[2])
+        }
+        _ => (16usize, 2usize, 256usize),
+    };
+    let kv_dim = n_head_kv * head_dim;              // 512
+    let nblk = kv_dim / 32;                         // 16 blocks/token
+    let k_tok_bytes = nblk * 34;                    // q8_0
+    let v_tok_bytes = nblk * 24;                    // q5_1
+    let t_kv_max = 12288usize;
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+    // f32 -> f16 (normal range only — enough for the fixed scale constants below)
+    fn f16le(f: f32) -> [u8; 2] {
+        let b = f.to_bits();
+        let sign =

@@ -1,0 +1,59 @@
+//! bw24 engine: Stage-1 correctness-first forward-pass kernels + ops, on sm_120 via cudarc.
+
+use std::sync::{Arc, Mutex};
+use cudarc::driver::{CudaContext, CudaStream, CudaModule, CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
+use cudarc::nvrtc::Ptx;
+
+pub use bw24_gguf;
+pub use bw24_runtime;
+
+pub mod model;
+pub mod forward;
+pub mod hybrid;
+pub mod hybrid_forward;
+pub mod cache;
+pub mod decode;
+pub mod spec;
+pub mod gemma_spec;
+pub mod round_stream;
+pub mod eagle;
+pub mod sampler;
+
+/// In-house MoE router GEMV on the spec-verify small-t path (DEFAULT ON since 2026-07-10:
+/// battery green on 35B p2/p3 K=1..8, acceptance bit-identical, +2-4% spec e2e — replaces
+/// ~240 per-column cuBLAS gemv launches/round). BW24_ROUTER_KERNEL=0 is the rollback seam.
+pub fn router_kernel_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var("BW24_ROUTER_KERNEL").as_deref() != Ok("0");
+        if !on { eprintln!("[bw24] router kernel OFF (rollback: per-column cuBLAS gemv)"); }
+        on
+    })
+}
+pub mod moe_cache;
+pub mod spill;
+#[cfg(bw24_cutlass)]
+pub mod cutlass_ffi;
+pub mod mmq_ffi;
+pub mod fp8_ffi;
+
+const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
+const HYBRID_FATBIN_PATH: &str = env!("BW24_HYBRID_FATBIN");
+const QMATVEC_FATBIN_PATH: &str = env!("BW24_QMATVEC_FATBIN");
+const FLASH_FATBIN_PATH: &str = env!("BW24_FLASH_FATBIN");
+const GEMM_FATBIN_PATH: &str = env!("BW24_GEMM_FATBIN");
+const ROUTER_FATBIN_PATH: &str = env!("BW24_ROUTER_FATBIN");
+/// spec_sample.cu: sampled-spec primitives (Philox Gumbel-max / softmax gather / residual sampler).
+const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
+
+/// TUNE SEAM (tools/sweep): a RUNTIME `BW24_GEMM_FATBIN=<path>` overrides the baked-in
+/// qmatvec_gemm.cu fatbin path (build.rs bakes the same name at COMPILE time via
+/// cargo:rustc-env — that constant is the default). Lets the sweep harness swap in a
+/// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
+/// compile-time default (zero behavior change).
+fn gemm_fatbin_path() -> String {
+    std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
+}
+
+// ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
+// `BW24_KV_K` = q8_0 (default, 34 B/32elem) | fp8 (raw e4m3, 32 B — the -6% K

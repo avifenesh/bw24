@@ -1,0 +1,50 @@
+//! Incremental decode (T=1) with the dual cache + greedy generation loop. Serves end-to-end.
+//! Reuses the validated kernels; threads KV (full-attn) and conv/SSM state (linear-attn) across steps.
+
+use cudarc::driver::CudaSlice;
+use std::collections::HashMap;
+use crate::Engine;
+use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer};
+use crate::cache::{Cache, RecurLayer};
+use crate::forward::argmax;
+
+/// Persistent CUDA-graph decode state (CUDA-GRAPH-PLAN Phase 3). Holds the device-resident counters
+/// the captured graph reads/writes (`token_d` = current/next token id, `pos_d` = rope position) — both
+/// at FIXED addresses baked into every captured graph — plus the per-`t_kv`-bucket graph cache. The
+/// bucket key is the eager `(fa_vec, n_splits)` pair (see `Engine::fa_bucket_key`): every t_kv that
+/// maps to the same key reproduces eager's split geometry, so one captured graph replays bit-identically
+/// for the whole bucket. A new key triggers a re-capture (n_splits changes ~every 64 tokens).
+pub struct GraphDecodeState {
+    pub token_d: CudaSlice<u32>,        // [1] resident next-token id (argmax writes, embed reads)
+    pub pos_d: CudaSlice<i32>,          // [1] resident rope position counter
+    pub graphs: HashMap<(bool, usize), cudarc::driver::CudaGraph>,
+    pub bucket_max: HashMap<(bool, usize), usize>,  // bucket key -> bucket_max fed to the capture
+    pub captures: usize,                // count of (re)captures, for reporting
+}
+
+impl GraphDecodeState {
+    pub fn new(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(GraphDecodeState {
+            token_d: e.stream().clone_htod(&[0u32])?,
+            pos_d: e.htod_i32(&[0])?,
+            graphs: HashMap::new(),
+            bucket_max: HashMap::new(),
+            captures: 0,
+        })
+    }
+}
+
+/// Generation parameters for the reusable serving API (`generate_with`).
+#[derive(Clone, Debug)]
+pub struct GenParams {
+    pub max_new: usize,            // hard cap on generated tokens
+    pub max_ctx: Option<usize>,    // context-length guard; None => prompt+max_new+8
+    pub eos: Vec<u32>,             // stop on any of these token ids (eos/eog + specials)
+}
+impl Default for GenParams {
+    fn default() -> Self { GenParams { max_new: 128, max_ctx: None, eos: Vec::new() } }
+}
+
+/// Why generation stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReas

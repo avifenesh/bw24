@@ -1,0 +1,61 @@
+//! gemma4 MTP spec-decode: the "gemma4-assistant" drafter (4-layer, Q-only attention over the
+//! MAIN model's KV cache — no draft KV, no trims) + the greedy draft/verify loop.
+//!
+//! Wiring verified from llama gemma4-assistant.cpp + llama-model.cpp:2162 (HANDOVER "GEMMA4 MTP
+//! DRAFTER — VERIFIED WIRING"): per draft token, x = MAIN tok_embd(token) * sqrt(2816);
+//! xh = concat(x, h[2816]) -> pre_proj [5632->1024]; 4 gemma-style blocks whose attention
+//! projects Q ONLY and attends the main cache (SWA layers 0..2 -> main layer n-2 = 28 windowed;
+//! global layer 3 -> main layer n-1 = 29 full); dense GELU_PAR ffn; final output_norm ->
+//! TIED 1024-dim head (no softcap); h_next = post_proj [1024->2816].
+
+use cudarc::driver::CudaSlice;
+use crate::Engine;
+use crate::hybrid::HybridModel;
+use crate::cache::Cache;
+use crate::model::GpuTensor;
+use bw24_gguf::GgufFile;
+use bw24_gguf::source::{GgufSource, TensorSource};
+
+pub struct GemmaDraftLayer {
+    pub attn_norm: GpuTensor,
+    pub wq: GpuTensor,
+    pub wo: GpuTensor,
+    pub q_norm: GpuTensor,
+    pub post_attn_norm: GpuTensor,
+    pub ffn_norm: GpuTensor,
+    pub ffn_gate: GpuTensor,
+    pub ffn_up: GpuTensor,
+    pub ffn_down: GpuTensor,
+    pub ffn_post_norm: GpuTensor,
+    pub out_scale: f32,
+    pub swa: bool,
+    pub hd: usize,
+    pub nh: usize,
+}
+
+pub struct GemmaDraft {
+    pub layers: Vec<GemmaDraftLayer>,
+    pub pre_proj: GpuTensor,   // [5632 -> 1024]
+    pub post_proj: GpuTensor,  // [1024 -> 2816]
+    pub output_norm: GpuTensor,
+    pub head: GpuTensor,       // tied drafter token_embd [1024, n_vocab] (or FR-trimmed rows)
+    /// FR-Spec trim map: draft-row index -> target token id (None = full head, identity).
+    pub d2t: Option<Vec<u32>>,
+    /// Device copy of `d2t` — the async round translates each drafted trim-idx in place
+    /// (u32_map_k) before it seeds the next draft step or meets the verify argmax.
+    pub d2t_dev: Option<CudaSlice<u32>>,
+    pub rope_freqs: CudaSlice<f32>,
+    pub ones: CudaSlice<f32>,  // weightless-norm weight (max hd 512)
+    pub n_embd: usize,         // 1024
+    pub n_backbone: usize,     // 2816
+    pub rope_base_global: f32,
+    pub rope_base_swa: f32,
+    pub sliding_window: usize,
+}
+
+fn load_t(e: &Engine, src: &dyn TensorSource, name: &str)
+          -> Result<GpuTensor, Box<dyn std::error::Error>> {
+    GpuTensor::load_from_source(e, src, name)
+}
+
+imp

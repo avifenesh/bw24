@@ -1,0 +1,45 @@
+//! Minimal chat-template renderer for the Qwen3.5 / ChatML format.
+//!
+//! The model's GGUF `tokenizer.chat_template` is a large jinja template covering
+//! tools, vision, and multi-step reasoning. We do NOT ship a jinja engine; instead
+//! we reproduce the text-only system/user/assistant path of that template exactly,
+//! which is the path bw24's text-in/text-out CLI uses. The reproduced behavior
+//! (verified against the dumped template):
+//!
+//!   - a leading `system` turn renders `<|im_start|>system\n{content}<|im_end|>\n`
+//!   - `user`      -> `<|im_start|>user\n{content}<|im_end|>\n`
+//!   - `assistant` -> `<|im_start|>assistant\n{content}<|im_end|>\n`
+//!   - with `add_generation_prompt`, Qwen3.5 appends `<|im_start|>assistant\n<think>\n`
+//!     (its default, since `enable_thinking` is undefined => the else-branch fires).
+//!
+//! `content` is trimmed (the template applies `|trim`). If the GGUF has no template
+//! we fall back to plain ChatML (no `<think>` tail).
+
+/// Render messages into the prompt string.
+///
+/// `template` is the raw GGUF chat_template (used only to decide qwen3.5-vs-plain
+/// chatml behavior — we detect the `<think>` generation tail by substring). When
+/// `None`, plain ChatML is produced.
+pub fn apply_chat_template_str(
+    template: Option<&str>,
+    messages: &[(&str, &str)],
+    add_generation_prompt: bool,
+) -> String {
+    // Tencent Hy3 (`hy_v3`): a completely different special-token dialect (no ChatML).
+    // Detected by its `hy_User` token literal; rendered by the dedicated arm below.
+    if template.is_some_and(|t| t.contains("hy_User")) {
+        return apply_hy3_template(messages, add_generation_prompt);
+    }
+    // gemma4: `<|turn>role\n{content}<turn|>\n` dialect; generation prompt appends
+    // `<|turn>model\n` + the CLOSED thought channel (`<|channel>thought\n<channel|>` — the
+    // template's enable_thinking-false default). bos comes from encode(add_special) — the
+    // template's `{{ bos_token }}` is NOT re-emitted here (double-BOS trap).
+    if template.is_some_and(|t| t.contains("<|turn>")) {
+        return apply_gemma4_template(messages, add_generation_prompt);
+    }
+    // qwen3.5 template emits a `<think>\n` tail on the generation prompt by default.
+    let qwen_think = template
+        .map(|t| t.contains("<think>") && t.contains("add_generation_prompt"))
+        .unwrap_or(false);
+
+    let mut out =

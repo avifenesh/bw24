@@ -1,0 +1,35 @@
+//! CUTLASS sm_120a NVFP4 GEMM FFI (Phase 0).
+//!
+//! Bridges cudarc (driver API) to the CUTLASS host adapter (runtime API). They share device state via
+//! the CUDA **primary context** — cudarc retains it (cuDevicePrimaryCtxRetain), so runtime-API calls
+//! inside CUTLASS bind to the same context and pointers are interchangeable. Verified by the Phase-0
+//! smoke test (`bin/cutlass_smoke.rs`): a real GEMM launches, cudaGetLastError()==0, result correct.
+//!
+//! All of this is compiled only under `cfg(bw24_cutlass)` (set by build.rs when BW24_CUTLASS is on),
+//! so the default build links no CUTLASS and is unaffected.
+
+#![cfg(bw24_cutlass)]
+
+use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
+
+/// Resident scratch for the CUTLASS NVFP4 prefill GEMM, allocated ONCE and grown to the largest
+/// prefill GEMM shape seen, then reused for every call (no per-call cudaMalloc / alpha htod).
+///
+/// The per-call path used to allocate 6 buffers + an htod of a single f32 EVERY matmul (~200/prefill):
+/// a_packed [m,k/2], sfa_linear [m,k/16], sfa_sw [sfa_size], workspace [ws_bytes], y [m,n], alpha [1].
+/// All six are now resident here. Each buffer is sized for the MAX shape encountered and the GEMM /
+/// quant kernels touch only the leading `m*..` / `n*..` prefix (row-major, contiguous from offset 0,
+/// bounded by the m,n,k passed to the FFI), so passing the full resident buffer is bit-identical to a
+/// freshly-allocated exact-size buffer. `y` and `a_packed`/`sfa*` are fully overwritten each call.
+///
+/// SINGLE-STREAM SAFETY: bw24 runs ONE GPU worker thread / one compute stream (`Engine::gpu.stream`);
+/// the HTTP server serializes all GPU work on that worker, so no two CUTLASS GEMMs touch this scratch
+/// concurrently. The `Mutex<Option<>>` on the Engine guards only the lazy build/grow (matches moe_cache);
+/// the GEMM itself runs on `gpu.stream` under that lock for the call's duration (one worker => no contention).
+pub struct CutlassScratch {
+    pub workspace: CudaSlice<u8>,   // >= max over shapes of cutlass_fp4_workspace_size(m,n,k)
+    pub a_packed: CudaSlice<u8>,    // >= max m*k/2
+    pub sfa_linear: CudaSlice<u8>,  // >= max m*k/16
+    pub sfa_sw: CudaSlice<u8>,      // >= max cutlass_sfa_size(m,k)
+    pub y: CudaSlice<f32>,          // >= max m*n
+    pub alpha: CudaSlice<f32>,      // resident [1], written in-place via memcpy_htod each cal

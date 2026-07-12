@@ -1,0 +1,67 @@
+//! Unicode helpers ported 1:1 from llama.cpp `src/unicode.cpp` / `src/unicode.h`.
+//!
+//! Only the pieces the GPT-2/qwen35 BPE path needs are ported:
+//!   - codepoint flags (`\p{L}`, `\p{N}`, `\p{M}`, `\s`) via the generated range table
+//!   - `unicode_tolower` (binary search over the lowercase map)
+//!   - the GPT-2 byte<->unicode map (`bytes_to_unicode`)
+//!   - the hand-written `unicode_regex_split_custom_qwen35` pre-tokenizer state machine
+//!
+//! Keeping the classification table identical to llama.cpp is what makes the
+//! pre-tokenizer split — and therefore the final token ids — integer-exact.
+
+use crate::unicode_data::{UNICODE_MAP_LOWERCASE, UNICODE_RANGES_FLAGS, UNICODE_SET_WHITESPACE};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+const MAX_CODEPOINTS: usize = 0x110000;
+
+// flag bits (llama.cpp `unicode_cpt_flags` enum). A few are unused by the qwen35
+// split but kept for completeness / documentation of the table layout.
+#[allow(dead_code)]
+mod flag {
+    pub const UNDEFINED: u16 = 0x0001;
+    pub const NUMBER: u16 = 0x0002; // \p{N}
+    pub const LETTER: u16 = 0x0004; // \p{L}
+    pub const SEPARATOR: u16 = 0x0008; // \p{Z}
+    pub const ACCENT_MARK: u16 = 0x0010; // \p{M}
+    pub const PUNCTUATION: u16 = 0x0020; // \p{P}
+    pub const SYMBOL: u16 = 0x0040; // \p{S}
+    pub const CONTROL: u16 = 0x0080; // \p{C}
+    pub const WHITESPACE: u16 = 0x0100; // \s
+}
+pub use flag::{
+    ACCENT_MARK as FLAG_ACCENT_MARK, LETTER as FLAG_LETTER, NUMBER as FLAG_NUMBER,
+    UNDEFINED as FLAG_UNDEFINED, WHITESPACE as FLAG_WHITESPACE,
+};
+
+/// Codepoint classification flags, mirroring `unicode_cpt_flags`.
+/// We only carry the bits the qwen35 pre-tokenizer reads.
+#[derive(Clone, Copy, Default)]
+pub struct CptFlags(pub u16);
+
+impl CptFlags {
+    #[inline]
+    pub fn is_number(self) -> bool {
+        self.0 & FLAG_NUMBER != 0
+    }
+    #[inline]
+    pub fn is_letter(self) -> bool {
+        self.0 & FLAG_LETTER != 0
+    }
+    #[inline]
+    pub fn is_accent_mark(self) -> bool {
+        self.0 & FLAG_ACCENT_MARK != 0
+    }
+    #[inline]
+    pub fn is_whitespace(self) -> bool {
+        self.0 & FLAG_WHITESPACE != 0
+    }
+    /// matches `unicode_cpt_flags::as_uint()` for the bits we keep — used by the
+    /// qwen35 split to test "any defined category at all".
+    #[inline]
+    pub fn as_uint(self) -> u16 {
+        self.0
+    }
+}
+
+/// Build the full codepoi

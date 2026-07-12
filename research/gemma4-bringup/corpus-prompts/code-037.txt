@@ -1,0 +1,51 @@
+//! sample-check: host-reference gate for the sampled-spec primitives (spec_sample.cu, piece A).
+//! Checks (all must PASS):
+//!   1. gumbel temp=0  == pure copy (greedy-limit continuity)
+//!   2. gumbel determinism: same (seed, pos) -> identical perturbed vector; different pos -> differs
+//!   3. softmax_gather vs CPU softmax (rel < 1e-4 at temp 0.7/1.0; exact indicator at temp 0)
+//!   4. residual sampler: determinism, temp->0 argmax fallback, and empirical distribution vs the
+//!      CPU residual probabilities on a small vocab (10k draws, max abs freq error < 0.02)
+use bw24_engine::Engine;
+
+fn cpu_softmax(x: &[f32], t: f32) -> Vec<f64> {
+    let m = x.iter().cloned().fold(f32::MIN, f32::max) as f64;
+    let e: Vec<f64> = x.iter().map(|&v| ((v as f64 - m) / t as f64).exp()).collect();
+    let s: f64 = e.iter().sum();
+    e.iter().map(|v| v / s).collect()
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let e = Engine::new(0)?;
+    let mut fails = 0;
+    let n = 4096usize;
+    let x: Vec<f32> = (0..n).map(|i| ((i * 2654435761usize) % 1000) as f32 / 137.0 - 3.0).collect();
+    let xd = e.htod(&x)?;
+
+    // --- 1. temp=0 copy ---
+    let mut yd = e.zeros(n)?;
+    e.gumbel_perturb(&xd, &mut yd, n, 42, 7, 0.0)?;
+    let y = e.dtoh(&yd)?;
+    let ok = y == x;
+    println!("gumbel temp=0 == copy: {}", if ok { "OK" } else { fails += 1; "FAIL" });
+
+    // --- 2. determinism ---
+    let mut y1 = e.zeros(n)?; let mut y2 = e.zeros(n)?; let mut y3 = e.zeros(n)?;
+    e.gumbel_perturb(&xd, &mut y1, n, 42, 7, 0.8)?;
+    e.gumbel_perturb(&xd, &mut y2, n, 42, 7, 0.8)?;
+    e.gumbel_perturb(&xd, &mut y3, n, 42, 8, 0.8)?;
+    let (v1, v2, v3) = (e.dtoh(&y1)?, e.dtoh(&y2)?, e.dtoh(&y3)?);
+    let ok = v1 == v2 && v1 != v3;
+    println!("gumbel determinism (same pos ==, diff pos !=): {}", if ok { "OK" } else { fails += 1; "FAIL" });
+
+    // --- 3. softmax_gather vs CPU ---
+    for &t in &[0.7f32, 1.0] {
+        let ids: Vec<u32> = vec![3, 999, 4095];
+        let rows: Vec<i32> = vec![0, 0, 0];
+        let idsd = e.htod_u32_v(&ids)?; let rowsd = e.htod_i32(&rows)?;
+        let mut outd = e.zeros(3)?;
+        e.softmax_gather(&xd, n, &idsd, &rowsd, &mut outd, n, 3, t)?;
+        let out = e.dtoh(&outd)?;
+        let sm = cpu_softmax(&x, t);
+        let mut maxrel = 0f64;
+        for (k, &id) in ids.iter().enumerate() {
+            let r = ((out[k] as f64 - sm[id as us

@@ -1,0 +1,47 @@
+//! FP8-ACT PREFILL (BW24_PP_FP8=1): cuBLASLt FP8-E4M3 TN GEMM for the F8-E4M3-origin projections.
+//!
+//! Probe verdict 2026-07-08 (probe/fp8_lt_prefill.cu, JSONL row in research/tune-data): cuBLASLt
+//! FP8 GEMM runs 620-795 TF at the 27B prefill shapes vs 47-72 TF for the qmatvec_gemm_q8_0 class
+//! those weights ride today (46.5% of pp GPU time) — projected ~1.85x pp from the F8-native
+//! layers alone. The weight side is EXACT: the checkpoint's raw e4m3 bytes + per-tensor f32
+//! weight_scale are stashed at load next to the Q8_0 re-encode (`GpuTensor::Quant { fp8 }`,
+//! following the `cutlass` optional-operand precedent). The only new rounding vs today is the
+//! ACTIVATION: f32 -> e4m3 with ONE per-batch scalar scale (amax/448) instead of q8_1's per-32
+//! int8 — finer mantissa lost, coarser scale granularity; the run-gen argmax gate arbitrates.
+//!
+//! Dispatch: `matmul`/`matmul_pre` m>=16 arms ONLY (prefill). Decode (m<16) keeps the Q8_0
+//! dp4a/MMVQ chain bit-for-bit — the spec-exactness law is untouched, and the m=K+1 verify tier
+//! (m<=9) never reaches this path.
+//!
+//! All device work (amax reduce, scale finalize, e4m3 quantize, cublasLtMatmul) runs on the one
+//! `gpu.stream` inside a single C-ABI call (cu/fp8_prefill.cu) — no host sync anywhere: the act
+//! scale is folded with weight_scale into a device scalar fed to the GEMM's B_SCALE_POINTER
+//! (per-token OUTER_VEC B-scales are NOT supported on sm_120 — probed; scalar scales verified
+//! exact there).
+
+use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
+
+unsafe extern "C" {
+    /// One FP8 prefill GEMM: quantize act f32->e4m3 (per-batch scalar) + cublasLtMatmul TN.
+    /// Returns 0 on success (see cu/fp8_prefill.cu for the error-code bands).
+    fn bw24_fp8_pp_gemm(
+        w_e4m3: *const core::ffi::c_void,
+        x_f32: *const f32,
+        xq_e4m3: *mut core::ffi::c_void,
+        scales: *mut f32,
+        y_f32: *mut f32,
+        m: i32,
+        n: i32,
+        k: i32,
+        w_scale: f32,
+        ws: *mut core::ffi::c_void,
+        ws_bytes: usize,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+}
+
+/// `BW24_PP_FP8=1` gate (default OFF), read once. Gates BOTH the loader stash (model.rs) and the
+/// prefill dispatch — unset means zero VRAM / zero dispatch change.
+pub fn pp_fp8_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    

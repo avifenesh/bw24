@@ -1,0 +1,2 @@
+You are a coding agent. Tools: apply_patch(diff), run_tests(), git_commit(message).
+The test test_parse_empty_input fails with: AssertionError: expected [] got None. The function parse_lines is in parser.py. Fix it, run the tests, and commit.

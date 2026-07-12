@@ -1,0 +1,52 @@
+//! bw24 inference runtime. Correctness-first: every GPU op is validated against a
+//! CPU reference before any sm_120 fast-path replaces it.
+
+use std::sync::Arc;
+use cudarc::driver::{CudaContext, CudaStream};
+use cudarc::cublaslt::{CudaBlasLT, Matmul, MatmulConfig};
+
+pub use bw24_gguf;
+
+/// CPU reference matmul for a linear layer y = x @ W^T.
+/// Conventions (ggml/GGUF): a weight tensor with ne=[in, out] is stored row-major as
+/// `out` rows of `in` contiguous elements — i.e. W[o*in + i]. A linear layer computes
+/// y[o] = sum_i x[i] * W[o*in + i], for each of `out` outputs. Batched over `m` tokens:
+///   x: [m, in] row-major (x[t*in + i]); w: [out, in] row-major (w[o*in + i]); y: [m, out].
+pub fn cpu_linear(x: &[f32], w: &[f32], m: usize, in_f: usize, out_f: usize) -> Vec<f32> {
+    assert_eq!(x.len(), m * in_f);
+    assert_eq!(w.len(), out_f * in_f);
+    let mut y = vec![0f32; m * out_f];
+    for t in 0..m {
+        for o in 0..out_f {
+            let mut acc = 0f32;
+            let xr = &x[t * in_f..t * in_f + in_f];
+            let wr = &w[o * in_f..o * in_f + in_f];
+            for i in 0..in_f {
+                acc += xr[i] * wr[i];
+            }
+            y[t * out_f + o] = acc;
+        }
+    }
+    y
+}
+
+/// GPU runtime handle: a context + stream + cuBLASLt.
+pub struct Gpu {
+    pub ctx: Arc<CudaContext>,
+    pub stream: Arc<CudaStream>,
+    pub blas: CudaBlasLT,
+}
+
+impl Gpu {
+    pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let ctx = CudaContext::new(ordinal)?;
+        // A NON-BLOCKING created stream (NOT the legacy NULL/default stream): the NULL stream cannot be
+        // CUDA-graph captured (cuStreamBeginCapture -> CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). All
+        // engine kernels launch on this stream, so making it capturable enables the decode CUDA-graph
+        // capture/replay path (CUDA-GRAPH-PLAN Phase 3). Behaviorally identical for the existing single-
+        // stream paths (just a real stream id instead of NULL).
+        let stream = ctx.new_stream()?;
+        // DETERMINISM FIX (decode bit-stability): the default stream-ordered async memory pool
+        // (cuMemAllocAsync/cuMemFreeAsync, used by cudarc's `alloc`/`alloc_zeros`) reuses freed
+        // blocks OPPORTUNISTICALLY — it hands a freed block to the next alloc as soon as the HOST
+        // observes the GPU has passed the free, WITHOUT 

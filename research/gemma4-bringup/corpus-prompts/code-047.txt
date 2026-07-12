@@ -1,0 +1,48 @@
+// W4A8-FP8 prefill MMQ tile — R-B route (research/prefill-mxf8f6f4-design.md).
+// Twin of mmq_nvfp4_w4a8.cu with three substitutions:
+//   1. Weight tile: NVFP4 per-16 scales FOLD into values at load — byte = cvt_e4m3(kvalue[nib] * s16)
+//      (weights stay 4-bit resident in VRAM; 8-bit e4m3 containers exist only in smem).
+//   2. Activations: e4m3 bytes + f32 amax/448 scale per 32 (d4 layout kept from q8_1_mmq).
+//   3. MMA: mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 (plain kind, no
+//      scale regs, f32 accumulator) — 381 TF class vs the int8 path's ~219 (probe/mixed_f8f4_probe).
+// Epilogue: sum_f32 * d_act only (weight scale folded into values).
+// Seam: BW24_MMQ_F8F4=1 (default OFF until the full battery is green in-config).
+//
+// STATUS: piece 1 of the arc — activation quantize kernel + MMA primitive + ABI size helpers.
+// The tile mainloop (load_tiles fold + vec_dot + writeback + pipeline) lands next.
+#include <cstdint>
+#include <cuda_runtime.h>
+#include <cuda_fp8.h>
+
+#define WARP_SIZE 32
+#define GGML_PAD(x, n) (((x) + (n) - 1) / (n) * (n))
+#define QK8_1 32
+#define MATRIX_ROW_PADDING 512
+
+// Activation block: 4x f32 scale (per 32) + 128 e4m3 bytes — byte-compatible footprint with
+// block_q8_1_mmq so the y-tile smem math of the w4a8 kernel carries over unchanged.
+struct block_e4m3_mmq {
+    float   d4[4];
+    uint8_t qs[4 * QK8_1];
+};
+static_assert(sizeof(block_e4m3_mmq) == 144, "y-tile stride contract");
+
+// f32x2 -> packed e4m3x2 (Blackwell cvt; round-to-nearest, saturate to +-448).
+static __device__ __forceinline__ uint16_t cvt_e4m3x2(float lo, float hi) {
+    uint16_t r;
+    asm("{\n\t.reg .b16 t;\n\tcvt.rn.satfinite.e4m3x2.f32 t, %2, %1;\n\tmov.b16 %0, t;\n}"
+        : "=h"(r) : "f"(lo), "f"(hi));
+    return r;
+}
+
+// Plain-kind f8f6f4 MMA, e4m3 x e4m3, f32 accumulate (CUTLASS SM120_16x8x32_TN form).
+// A = 16x32 weights (e4m3 containers), B = 32x8 activations, D/C = f32 16x8.
+static __device__ __forceinline__ void mma_f8f4_16x8x32(
+        float * __restrict__ d, const uint32_t * __restrict__ a, const uint32_t * __restrict__ b) {
+    asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+        "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+// Activation quantize

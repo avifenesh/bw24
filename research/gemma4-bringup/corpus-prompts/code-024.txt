@@ -1,0 +1,42 @@
+//! q5issue lane micro-bench: qmatvec_q5_K_mmvq{,_mr2} reference vs the issue-reduced `_il`
+//! twins (BW24_Q5K_ISSUE, default ON) on SYNTHETIC q5_K weights at the real shapes:
+//!   - 27B lm_head: in_f=5120 out_f=248320 (874MB row-major stream, DRAM-cold every launch)
+//!   - trunk-class shapes rotated over copies so each launch reads L2-cold bytes.
+//! Per shape: bit-exactness of il vs reference at the shipped mr policy (must be 0 mismatches),
+//! then N-rep wall time + implied weight GB/s. Toggled in-process via BW24_Q5K_ISSUE (the
+//! dispatch reads env per call — house style). The old forced-mr sweep went with BW24_MMVQ_MR.
+use bw24_engine::Engine;
+use std::time::Instant;
+
+fn synth_q5k(out_f: usize, in_f: usize) -> Vec<u8> {
+    let sb_per_row = in_f / 256;
+    let row_bytes = sb_per_row * 176;
+    let mut w = vec![0u8; out_f * row_bytes];
+    // LCG byte fill; overwrite d/dmin with fixed small valid f16s so acc stays finite.
+    let mut s: u32 = 0x9E3779B9;
+    for b in w.iter_mut() {
+        s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+        *b = (s >> 24) as u8;
+    }
+    for blk in w.chunks_exact_mut(176) {
+        blk[0] = 0x00; blk[1] = 0x14; // d    = f16 0x1400 = 2^-10
+        blk[2] = 0x00; blk[3] = 0x10; // dmin = f16 0x1000 = 2^-11
+    }
+    w
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let e = Engine::new(0)?;
+    const QT: i32 = bw24_engine::QT_Q5_K;
+    // dispatch requires BW24_MMVQ; single-threaded here, set_var is fine.
+    unsafe { std::env::set_var("BW24_MMVQ", "1"); }
+    let iters: usize = std::env::var("Q5B_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
+    // REAL q5_K shapes: 27B lm_head output.weight [5120,248320] (874MB -> DRAM-cold every
+    // launch); 9B trunk attn_gate/attn_output-class [4096,4096] x21/tok + attn_qkv [4096,8192]
+    // x7/tok (small -> rotate copies for L2-cold launches); FR-Spec trimmed draft head
+    // [5120,32768] (the reason mr2 is the q5_K default — must not regress under the flag).
+    for (in_f, out_f, copies, label) in [(5120usize, 248320usize, 1usize, "27B lm_head"),
+                                         (4096, 4096, 16, "9B trunk 4096x4096"),
+                                         (4096, 8192, 8, "9B trunk qkv 4096x8192"),
+                                         (4096, 1024, 64, "9B trunk k/v 4096x1024"),
+                                         (5120,

@@ -1,0 +1,56 @@
+You are a coding agent working in a Rust repository. File tree:
+
+crates/bw24-engine/src/lib.rs
+crates/bw24-engine/src/spec.rs
+crates/bw24-engine/src/decode.rs
+crates/bw24-engine/src/cache.rs
+crates/bw24-server/src/worker.rs
+
+You ran the test suite and got this failure:
+
+[worker] Engine ready (BW24_FAST=true)
+[worker] kv-reuse: 1842 of 1897 prompt tokens resumed (model qwen)
+thread 'worker' panicked at crates/bw24-server/src/worker.rs:301: detok prefix mismatch
+note: run with RUST_BACKTRACE=1
+
+Here is cache.rs in full:
+
+```rust
+//! Dual cache for the hybrid arch (PHASE1-HYBRID.md §3), GPU-RESIDENT (Stage-2):
+//! - Growing KV cache for full-attention layers (kept on GPU, appended in place).
+//! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
+//! No host round-trips per step. Single sequence.
+
+use cudarc::driver::CudaSlice;
+use bw24_gguf::config::{ModelConfig, LayerKind};
+use crate::Engine;
+
+/// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
+/// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
+/// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
+/// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
+pub struct KvLayer {
+    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
+    pub len: usize,
+    /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
+    /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
+    /// len == t_kv for fa_decode_dc. Kept in lock-step with the host `len`. i32[1].
+    pub len_d: CudaSlice<i32>,
+}
+
+/// Per-linear-attn-layer fixed recurrent state.
+/// conv_state and ssm_state are BOTH kept RESIDENT on GPU — the conv ring assemble + roll runs
+/// on-device (conv_assemble_and_roll), so there is no per-step dtoh/htod for either.
+pub struct RecurLayer {
+    pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
+    pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
+    /// PERSISTENT second SSM-state buffer for the gdn-scan double buffer (DECODE DETERMINISM FIX).
+    /// gdn_scan needs DISTINCT in/out state buffers. The old eager path allocated a fresh
+    /// `state_scratch` via `e.uninit` every step and swapped its pointer into `ssm_state`; that
+    /// per-step alloc/free churned the stream-ordered async pool, and the freed prior `ssm_state`
+    /// block was recycled by the next step's scratch while a kerne

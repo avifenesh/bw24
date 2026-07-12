@@ -1,0 +1,2 @@
+System: you can call {"function": "http_request", "args": {"method": "...", "url": "...", "body": "..."}}.
+User: check whether https://api.example.com/health returns 200 and if not, POST an alert to https://hooks.example.com/notify with the status code.

@@ -1,0 +1,49 @@
+//! gguf-inspect: dump GGUF header, key metadata, and tensor summary.
+//! Validates the parser against real models + extracts model hyperparams.
+
+use bw24_gguf::{GgufFile, MetaValue};
+use std::collections::BTreeMap;
+
+fn main() {
+    let path = std::env::args().nth(1).expect("usage: gguf-inspect <model.gguf> [--all|--block N]");
+    let mode = std::env::args().nth(2).unwrap_or_default();
+    let g = GgufFile::open(&path).expect("open gguf");
+
+    if mode == "--all" {
+        println!("== ALL metadata ({}) ==", g.metadata.len());
+        for (k, v) in &g.metadata { println!("  {k} = {}", fmt_short(v)); }
+        // distinct tensor name patterns (strip blk.N. -> blk.*.)
+        let mut pats: BTreeMap<String, (u64, String)> = BTreeMap::new();
+        for t in &g.tensors {
+            let pat = regex_blk(&t.name);
+            pats.entry(pat).or_insert((0, format!("{:?} ne={:?}", t.ggml_type, t.ne))).0 += 1;
+        }
+        println!("\n== distinct tensor patterns ({}) ==", pats.len());
+        for (p, (c, ex)) in &pats { println!("  {p:40} x{c:<4} e.g. {ex}"); }
+        return;
+    }
+    if mode == "--config" {
+        let c = bw24_gguf::config::ModelConfig::from_gguf(&g);
+        println!("{c:#?}");
+        // layer classification summary
+        let full = c.n_full_attn_layers();
+        println!("\nlayers: {} total ({} full-attn, {} linear-attn), +{} MTP",
+            c.n_layer, full, c.n_layer - full, c.nextn_predict_layers);
+        let kinds: Vec<_> = (0..c.n_layer.min(12))
+            .map(|il| format!("{}:{:?}", il, c.layer_kind(il))).collect();
+        println!("first 12: {}", kinds.join(" "));
+        return;
+    }
+    if mode == "--dequant" {
+        let tname = std::env::args().nth(3).expect("usage: --dequant <tensor_name>");
+        let t = g.find(&tname).unwrap_or_else(|| panic!("tensor {tname} not found"));
+        let n = t.n_elements() as usize;
+        let raw = g.tensor_data(t);
+        let v = bw24_gguf::dequant::dequantize(t.ggml_type, raw, n);
+        let (mut mn, mut mx, mut sum, mut sumsq, mut nan) = (f32::INFINITY, f32::NEG_INFINITY, 0f64, 0f64, 0usize);
+        for &x in &v {
+            if x.is_nan() || x.is_infinite() { nan += 1; continue; }
+            mn = mn.min(x); mx = mx.max(x); sum += x as f64; sumsq += (x as f64) * (x as f64);
+        }
+        let mean = sum / n as f64;
+        let std = (sumsq / n as f64 - mean * mean).max(0
