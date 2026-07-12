@@ -52,12 +52,12 @@ if sys.argv[2] == "swe":
     suite = lock["swe_bench_verified"]
     print(f"{suite['harbor_dataset']}@{suite['harbor_dataset_digest']}")
     for task in suite["tasks"]:
-        print(task["instance_id"])
+        print(task["harbor_task"])
 else:
     suite = lock["terminal_bench_2"]
     print(f"{suite['dataset']}@{suite['dataset_digest']}")
     for task in suite["tasks"]:
-        print(task["name"].split("/", 1)[1])
+        print(task["name"])
 PY
 )
 (( ${#selection[@]} == 13 )) || die "lock did not resolve one dataset plus 12 tasks"

@@ -126,8 +126,7 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     require(isinstance(datasets, list) and len(datasets) == 1, f"expected one Harbor dataset: {run_dir}")
     task_names = datasets[0].get("task_names")
     require(isinstance(task_names, list) and len(task_names) == len(expected), f"wrong task count in Harbor config: {run_dir}")
-    expected_short = [name.split("/", 1)[1] for name in expected]
-    require(task_names == expected_short, f"Harbor task order differs from lock: {run_dir}")
+    require(task_names == list(expected), f"Harbor task order differs from lock: {run_dir}")
     suite = lock["swe_bench_verified"] if panel == "swe" else lock["terminal_bench_2"]
     expected_dataset_name = suite["harbor_dataset"] if panel == "swe" else suite["dataset"]
     expected_dataset_ref = suite["harbor_dataset_digest"] if panel == "swe" else suite["dataset_digest"]
@@ -311,7 +310,9 @@ def self_test() -> None:
                                    "input_cost_per_token": 0, "output_cost_per_token": 0},
                     "llm_call_kwargs": {"max_tokens": 2},
                 }}],
-                "datasets": [{"name": "terminal", "ref": "digest", "task_names": ["a", "b"]}],
+                "datasets": [{"name": "terminal", "ref": "digest", "task_names": [
+                    "terminal-bench/a", "terminal-bench/b"
+                ]}],
             }
             (run / "resolved-harbor-config.json").write_text(json.dumps(config))
             (job / "result.json").write_text(json.dumps({

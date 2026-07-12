@@ -77,7 +77,7 @@ print(json.dumps(selected, sort_keys=True, separators=(",", ":")))
 for row in selected:
     if not row["name"].startswith(prefix):
         raise SystemExit("task prefix differs")
-    print(row["name"].split("/", 1)[1])
+    print(row["name"])
 PY
 )
 (( ${#suite[@]} >= 6 )) || die "full suite did not resolve"

@@ -24,9 +24,6 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing full practical summarizer"
 [[ -f "$HERE/practical-evals.lock.json" ]] || die "missing practical lock"
 [[ -f "$FULL_TASK_LOCK" ]] || die "missing full practical task lock"
-command -v sudo >/dev/null || die "sudo is required"
-command -v ip >/dev/null || die "iproute2 is required"
-
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
 flock -n 9 || exit 0
@@ -92,62 +89,58 @@ PY
 sha256sum "$RUN_CONFIG" > "$RUN_CONFIG.sha256"
 printf '%s\n' "$RUN_ID" > "$OUT_ROOT/_active-run-id"
 
-USER_NAME=$(id -un)
 USER_PATH=$PATH
-declare -a WORKER_PIDS=() NAMESPACES=()
+declare -a WORKER_PIDS=()
 
 cleanup_all() {
   status=$?
   trap - EXIT INT TERM
   for pid in "${WORKER_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
-  for ns in "${NAMESPACES[@]:-}"; do
-    mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-    ((${#pids[@]} == 0)) || sudo kill "${pids[@]}" 2>/dev/null || true
-    sudo ip netns del "$ns" 2>/dev/null || true
-  done
   exit "$status"
 }
 trap cleanup_all EXIT INT TERM
 
 run_lane() (
-  local arm=$1 gpu=$2 cpus=$3 lane=$4 lane_count=$5 artifact ns arm_log server_log
+  local arm=$1 gpu=$2 cpus=$3 lane=$4 lane_count=$5 artifact arm_log server_log server_pid port
   artifact=$(artifact_for "$arm")
-  ns="bw24-agentic-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
+  port=$((8080 + gpu))
+  server_pid=""
   arm_log="$LOG_ROOT/$RUN_ID-$arm-lane$lane"
   server_log="$arm_log/server.log"
   mkdir -p "$arm_log"
-  sudo ip netns del "$ns" 2>/dev/null || true
-  sudo ip netns add "$ns"
-  sudo ip -n "$ns" link set lo up
-  echo "$ns" > "$arm_log/netns"
+  echo "$port" > "$arm_log/port"
+  if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/health" \
+    >/dev/null 2>&1; then
+    die "a server is already answering on full-agentic port $port"
+  fi
 
-  stop_namespace() {
-    mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-    if ((${#pids[@]})); then
-      sudo kill "${pids[@]}" 2>/dev/null || true
+  stop_server() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+      kill "$server_pid" 2>/dev/null || true
       for _ in {1..100}; do
-        mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-        ((${#pids[@]} == 0)) && break
+        kill -0 "$server_pid" 2>/dev/null || break
         sleep 0.1
       done
-      ((${#pids[@]} == 0)) || sudo kill -KILL "${pids[@]}" 2>/dev/null || true
+      kill -KILL "$server_pid" 2>/dev/null || true
     fi
-    sudo ip netns del "$ns" 2>/dev/null || true
+    [[ -z "$server_pid" ]] || wait "$server_pid" 2>/dev/null || true
   }
-  trap stop_namespace EXIT INT TERM
+  trap stop_server EXIT INT TERM
 
-  sudo ip netns exec "$ns" sudo -u "$USER_NAME" env PATH="$USER_PATH" \
+  env PATH="$USER_PATH" \
     CUDA_VISIBLE_DEVICES="$gpu" BW24_COMPAT=openai BW24_SERVE_SPEC=0 BW24_KV_REUSE=0 \
     BW24_CTX=8192 BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
     BW24_MOE_PREWARM=1 BW24_MOE_PREFETCH=1 BW24_MOE_PAGE_PREFETCH=1 \
     BW24_MOE_PAGE_PREFETCH_WINDOW=8 BW24_MOE_MMAP_ADVICE=normal BW24_MOE_RESIDENT=1 \
     BW24_MOE_VRAM_FRAC=0.85 BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" \
-    BW24_SPILL_STATS=1 BW24_MODELS="$arm=$artifact" BW24_ADDR=127.0.0.1:8080 \
+    BW24_SPILL_STATS=1 BW24_MODELS="$arm=$artifact" BW24_ADDR="127.0.0.1:$port" \
     taskset -c "$cpus" "$SERVER_BIN" >"$server_log" 2>&1 &
+  server_pid=$!
+  echo "$server_pid" > "$arm_log/server.pid"
 
   local deadline=$((SECONDS + SERVER_HEALTH_TIMEOUT_S))
   while ((SECONDS < deadline)); do
-    if sudo ip netns exec "$ns" curl -fsS --max-time 5 http://127.0.0.1:8080/health \
+    if curl -fsS --max-time 5 "http://127.0.0.1:$port/health" \
       >"$arm_log/health.json.tmp" 2>/dev/null \
       && python3 "$HERE/validate_server_health.py" "$arm_log/health.json.tmp" "$arm" --exact
     then mv "$arm_log/health.json.tmp" "$arm_log/health.json"; break; fi
@@ -167,14 +160,14 @@ if not selected:
 print(json.dumps(selected, separators=(",", ":")))
 PY
 )
-    sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
+    env \
       HOME="$HARBOR_HOME" PATH="$USER_PATH" ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
       BW24_ROOT="$ROOT" \
       SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
       LOCK="$HERE/practical-evals.lock.json" FULL_TASK_LOCK="$FULL_TASK_LOCK" \
       TASKS_JSON="$tasks_json" SHARD_ID="lane$lane-of-$lane_count" \
       OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
-      BASE_URL=http://127.0.0.1:8080/v1 BW24_SPILL_IO=worker \
+      BASE_URL="http://127.0.0.1:$port/v1" BW24_SPILL_IO=worker \
       BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
       "$FULL_RUNNER" | tee "$arm_log/$panel.log"
   done
@@ -185,7 +178,6 @@ LANES_PER_ARM=4
 gpu=0
 for arm in "${ARMS[@]}"; do
   for ((lane=0; lane<LANES_PER_ARM; lane++)); do
-    NAMESPACES+=("bw24-agentic-${RUN_ID//[^A-Za-z0-9]/-}-$gpu")
     cpu_start=$((gpu * 12))
     cpu_end=$((cpu_start + 11))
     run_lane "$arm" "$gpu" "$cpu_start-$cpu_end" "$lane" "$LANES_PER_ARM" &

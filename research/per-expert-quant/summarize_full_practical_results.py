@@ -92,8 +92,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         require(receipt.get("dataset_name") == name and receipt.get("dataset_digest") == digest, f"dataset differs: {shard}")
         datasets = config.get("datasets")
         require(isinstance(datasets, list) and len(datasets) == 1 and datasets[0].get("name") == name and (datasets[0].get("version") == digest or datasets[0].get("ref") == digest), f"Harbor dataset differs: {shard}")
-        expected_short = [task.split("/", 1)[1] for task in selected]
-        require(datasets[0].get("task_names") == expected_short, f"Harbor selected tasks differ: {shard}")
+        require(datasets[0].get("task_names") == list(selected), f"Harbor selected tasks differ: {shard}")
         require(config.get("n_concurrent_trials") == 1, f"Harbor concurrency differs: {shard}")
         arm = receipt.get("arm")
         agents = config.get("agents")
