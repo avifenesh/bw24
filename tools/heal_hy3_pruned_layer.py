@@ -415,10 +415,27 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
             history.append(record)
             print(json.dumps(record, sort_keys=True), flush=True)
     model.eval()
-    after = evaluate(model, hidden, teacher, holdout, args.eval_batch_tokens, device)
+    after_pre_requantization = evaluate(
+        model, hidden, teacher, holdout, args.eval_batch_tokens, device
+    )
 
     args.out_shard.parent.mkdir(parents=True, exist_ok=True)
     tensors = model.merged_source_tensors(args.layer)
+    if quant_assignments is not None:
+        # The artifact builder quantizes these merged tensors again.  Measure that exact terminal
+        # state rather than reporting the optimistic full-precision adapter output.
+        for local, expert in enumerate(active_ids):
+            for projection, destination in (
+                ("gate", model.gate_base), ("up", model.up_base), ("down", model.down_base),
+            ):
+                name = tensor_name(args.layer, expert, projection)
+                destination[local].copy_(
+                    quantized_base(tensors[name], quant_assignments[(args.layer, expert, projection)]).to(device)
+                )
+        model.mode = "router"
+        after = evaluate(model, hidden, teacher, holdout, args.eval_batch_tokens, device)
+    else:
+        after = after_pre_requantization
     save_file(tensors, args.out_shard)
     receipt = {
         "format": CHECKPOINT_FORMAT,
@@ -451,6 +468,7 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
             ),
         },
         "before": before,
+        "after_pre_requantization": after_pre_requantization,
         "after": after,
         "history": history,
         "output": {
