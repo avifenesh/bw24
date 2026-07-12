@@ -19,8 +19,15 @@ NGEN=128 -1.3%, NGEN=400 +0.9% -> steady-state replay beats eager, capture (~30m
 crosses over ~200 tokens. DEFAULT: door ON at max_new >= 256 under window (BW24_E4B_GRAPH
 forces 1/0). The est +10-15% did NOT materialize: eager enqueue-ahead already hides the
 gaps; llama's 216.9-vs-188 edge is glue EXECUTION (dependency-chain latency), not gaps.
-NEXT LEVERS: glue critical-path reduction, E4B spec bring-up (drafters on disk), then the
-26B/31B applications of graph_update if their regimes ever need per-token geometry.
+NEXT LEVERS: glue critical-path reduction, then the 26B/31B applications of graph_update
+if their regimes ever need per-token geometry. E4B SPEC: WIRED 2026-07-13 (lane/e4b-spec —
+shared GemmaDraft loader + round loop; gemma4_draft_kv_target rule; e4b batched verify;
+short-prompt prime = tokenwise, the PRIME-FA class-skew fix). Gates: agreement 64/64 id +
+128/128 chat all K, VERIFY-GATE bit-exact both KV classes. First light: chat K=2 236.2 vs
+plain 187.7 = 1.26x self, 1.089x vs llama-plain-216.9 (llama cannot run the assistant on
+this rig — fattn abort; surgered artifact gemma-4-E4B-it-assistant-llama.Q8_0.gguf). Own-gen
+FR ranks banked (e4b-owngen-ranks-32768.txt, accept holds at trim). PENDING valid window:
+trim A/B + K/serving freeze + board rows.
 
 PROBES CLOSED NEGATIVE (do not retry): launch_bounds forcing (spills), fixed-bucket graph
 replay (oversized grids -6..-11%), one-block PLE mega-fusion (single-SM weight pull, 126
