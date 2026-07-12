@@ -249,37 +249,46 @@ extern "C" __global__ void rms_pre_add_rms_norm_f32(
     const float* br = b + (size_t)row * ncols;
     float* rr = res + (size_t)row * ncols;
     float* dr = dst + (size_t)row * ncols;
-    __shared__ float s[32];
-    float suma = 0.0f;
-    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; suma += v * v; }
-    for (int o = 16; o > 0; o >>= 1) suma += __shfl_down_sync(0xffffffff, suma, o);
-    if ((tid & 31) == 0) s[tid >> 5] = suma;
+    __shared__ float s[128];
+    // SINGLE-PHASE (parity with the q8z twin — verify t>1 and decode t=1 must share the
+    // reduction algebra bit-for-bit; the 31B depth-spec 45/128 was this mismatch).
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
     __syncthreads();
     if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
     }
     __syncthreads();
     float ascale = rsqrtf(s[0] / ncols + eps);
-    __syncthreads();
-    float sum = 0.0f;
+    float sumv2 = ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3];
+    float scale = rsqrtf(sumv2 / ncols + eps);
     for (int i = tid; i < ncols; i += blockDim.x) {
         float v = (ar[i] * ascale) * wa[i] + br[i];
         rr[i] = v;
-        sum += v * v;
+        dr[i] = v * scale * w[i];
     }
-    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
-    if ((tid & 31) == 0) s[tid >> 5] = sum;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
-    }
-    __syncthreads();
-    float scale = rsqrtf(s[0] / ncols + eps);
-    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = rr[i] * scale * w[i];
 }
 
 // ---- E4B glue fusion wave 2: the two tail-entry programs with the ffn-norm output zsh
