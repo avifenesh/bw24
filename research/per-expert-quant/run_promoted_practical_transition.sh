@@ -30,8 +30,6 @@ if [[ -n "$CONFIRMATION_LOCK" ]]; then
     || die "surprise confirmation requires its lock and strict-frontier path"
 fi
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
-command -v sudo >/dev/null || die "sudo is required for isolated loopback namespaces"
-command -v ip >/dev/null || die "iproute2 is required for isolated loopback namespaces"
 
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
@@ -98,7 +96,7 @@ payload = {
     "run_id": os.environ["RUN_ID"],
     "arms": arms,
     "panels": ["swe", "terminal"],
-    "protocol": "parallel isolated loopback namespaces; one GPU and concurrency one per arm",
+    "protocol": "parallel unique localhost ports; one GPU and concurrency one per panel",
     "directional_promotion": {"path": os.environ["PROMOTION"], "sha256": sha(os.environ["PROMOTION"])},
     "gate_lock": {"path": os.environ["GATE_LOCK"], "sha256": sha(os.environ["GATE_LOCK"])},
     "practical_lock": {"path": os.environ["PRACTICAL_LOCK"], "sha256": sha(os.environ["PRACTICAL_LOCK"])},
@@ -126,53 +124,46 @@ PY
 sha256sum "$RUN_CONFIG" > "$RUN_CONFIG.sha256"
 printf '%s\n' "$RUN_ID" > "$OUT_ROOT/_active-run-id"
 
-USER_NAME=$(id -un)
 USER_PATH=$PATH
 declare -a WORKER_PIDS=()
-declare -a NAMESPACES=()
 
 cleanup_all() {
   status=$?
   trap - EXIT INT TERM
   for pid in "${WORKER_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
-  for ns in "${NAMESPACES[@]:-}"; do
-    mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-    ((${#pids[@]} == 0)) || sudo kill "${pids[@]}" 2>/dev/null || true
-    sudo ip netns del "$ns" 2>/dev/null || true
-  done
   exit "$status"
 }
 trap cleanup_all EXIT INT TERM
 
 run_panel() (
   local arm=$1 panel=$2 gpu=$3 cpus=$4
-  local artifact ns arm_log server_log
+  local artifact arm_log server_log server_pid port
+  server_pid=""
   artifact=$(artifact_for "$arm")
-  ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
+  port=$((8080 + gpu))
   arm_log="$LOG_ROOT/$RUN_ID-$arm-$panel"
   server_log="$arm_log/server.log"
   mkdir -p "$arm_log"
-  sudo ip netns del "$ns" 2>/dev/null || true
-  sudo ip netns add "$ns"
-  sudo ip -n "$ns" link set lo up
-  echo "$ns" > "$arm_log/netns"
+  echo "$port" > "$arm_log/port"
+  if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/health" \
+    >/dev/null 2>&1; then
+    die "a server is already answering on practical port $port"
+  fi
 
-  stop_namespace() {
-    mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-    if ((${#pids[@]})); then
-      sudo kill "${pids[@]}" 2>/dev/null || true
+  stop_server() {
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+      kill "$server_pid" 2>/dev/null || true
       for _ in {1..100}; do
-        mapfile -t pids < <(sudo ip netns pids "$ns" 2>/dev/null || true)
-        ((${#pids[@]} == 0)) && break
+        kill -0 "$server_pid" 2>/dev/null || break
         sleep 0.1
       done
-      ((${#pids[@]} == 0)) || sudo kill -KILL "${pids[@]}" 2>/dev/null || true
+      kill -KILL "$server_pid" 2>/dev/null || true
     fi
-    sudo ip netns del "$ns" 2>/dev/null || true
+    [[ -z "$server_pid" ]] || wait "$server_pid" 2>/dev/null || true
   }
-  trap stop_namespace EXIT INT TERM
+  trap stop_server EXIT INT TERM
 
-  sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
+  env \
     PATH="$USER_PATH" CUDA_VISIBLE_DEVICES="$gpu" \
     BW24_COMPAT=openai BW24_SERVE_SPEC=0 BW24_KV_REUSE=0 BW24_CTX=8192 \
     BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
@@ -180,12 +171,14 @@ run_panel() (
     BW24_MOE_PAGE_PREFETCH_WINDOW=8 BW24_MOE_MMAP_ADVICE=normal \
     BW24_MOE_RESIDENT=1 BW24_MOE_VRAM_FRAC=0.85 BW24_SPILL_IO=worker \
     BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 \
-    BW24_MODELS="$arm=$artifact" BW24_ADDR=127.0.0.1:8080 \
+    BW24_MODELS="$arm=$artifact" BW24_ADDR="127.0.0.1:$port" \
     taskset -c "$cpus" "$SERVER_BIN" >"$server_log" 2>&1 &
+  server_pid=$!
+  echo "$server_pid" > "$arm_log/server.pid"
 
   local deadline=$((SECONDS + SERVER_HEALTH_TIMEOUT_S))
   while ((SECONDS < deadline)); do
-    if sudo ip netns exec "$ns" curl -fsS --max-time 5 http://127.0.0.1:8080/health \
+    if curl -fsS --max-time 5 "http://127.0.0.1:$port/health" \
       >"$arm_log/health.json.tmp" 2>/dev/null \
       && python3 "$HERE/validate_server_health.py" "$arm_log/health.json.tmp" "$arm" --exact
     then
@@ -196,12 +189,12 @@ run_panel() (
   done
   [[ -f "$arm_log/health.json" ]] || die "$arm practical server health timeout"
 
-  sudo ip netns exec "$ns" sudo -u "$USER_NAME" taskset -c "$cpus" env \
+  taskset -c "$cpus" env \
     HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
     SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
     LOCK="$PRACTICAL_LOCK" OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
-    BASE_URL=http://127.0.0.1:8080/v1 BW24_SPILL_IO=worker \
+    BASE_URL="http://127.0.0.1:$port/v1" BW24_SPILL_IO=worker \
     BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
     "$HERE/run_practical_evals.sh" | tee "$arm_log/$panel.log"
   date -u +%FT%TZ > "$arm_log/complete"
@@ -212,8 +205,6 @@ for arm in "${ARMS[@]}"; do
   for panel in swe terminal; do
     cpu_start=$((gpu * 12))
     cpu_end=$((cpu_start + 11))
-    ns="bw24-practical-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
-    NAMESPACES+=("$ns")
     run_panel "$arm" "$panel" "$gpu" "$cpu_start-$cpu_end" &
     WORKER_PIDS+=("$!")
     gpu=$((gpu + 1))
