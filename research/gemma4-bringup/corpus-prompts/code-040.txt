@@ -1,0 +1,31 @@
+// mmq_q8_0.cu — Q8_0 int8-MMA MMQ prefill GEMM (vendored floor, ggml-decoupled, sm_75+ portable).
+//
+// Lever 2 (lane/ppmmq): the 35B dense projections (attn_qkv/q/k/v/output, ssm_out, shexp gate/up/
+// down) are all Q8_0 and ride bw24's hand-rolled tiling GEMM `qmatvec_gemm_q8_0` — measured 27% of
+// the 35B prefill busy-% and ~4x slower in aggregate than llama's mul_mat_q<Q8_0>. This file
+// vendors that kernel. Source: /home/avifenesh/projects/llama.cpp/ggml/src/ggml-cuda/
+//   - quantize.cu  : quantize_mmq_q8_1<D4> (activation f32 -> block_q8_1_mmq, symmetric FLOAT scale
+//                    d per 32 values, NO sum term — Q8_0 is symmetric like NVFP4)
+//   - mmq.cuh      : load_tiles_q8_0 (TURING_MMA branch: int8 quants copied verbatim to the x-tile,
+//                    per-32 block scale d -> x_df float), vec_dot_q8_0_q8_1_mma<D4> (int8 m16n8k32
+//                    mma, epilogue C*dA*dB — no min-offset term), mmq_write_back_mma,
+//                    mul_mat_q_process_tile, mul_mat_q (conventional xy-tiling, fixup=false)
+//   - mma.cuh      : tile<>, load_ldmatrix, load_generic, mma.sync.m16n8k32.row.col.s32.s8.s8.s32
+//
+// DECOUPLING: no ggml headers, same treatment as mmq_q45k.cu / mmq_nvfp4_w4a8.cu. Self-contained;
+// all functions static/internal so the duplicated tile machinery can't collide with the sibling
+// vendor TUs.
+//
+// KEY DIFFS vs the k-quant file (mmq_q45k.cu):
+//   - qk = QK8_0 = 32 (NOT 256): a q8_0 block is 32 values, so blocks_per_iter = ITER_K/qk = 8
+//     (the k-quant file has 1 superblock/iter). The x-tile packs 8 int8 blocks (256 values).
+//   - Weight is ALREADY int8: load_tiles copies qs bytes verbatim (no FP4/nibble dequant) and
+//     folds the per-32 block scale into x_df as a plain float.
+//   - Activation is D4 (float scale, NO sum term) not DS4 -> epilogue is C*dA*dB, no -dmin*m*sum.
+//   - m16n8k32 int8 mma (same as k-quant), sm_75+ portable (goes to the sm_89 L40S branch clean).
+//
+// EXACTNESS: Q8_0 weight qs ARE the int8 quants (d = fp16 block scale). Activation is quantized to
+// q8_1 D4 (int8 + f32 block scale) exactly as bw24's default int8 GEMM already does. s32 accumulate
+// is EXACT; only the final f32 (d_w * d_act * s32) reduction ORDER differs from qmatvec_gemm_q8_0's
+// tiling reduction -> NOT bit-identical, gated as its own numeric config behind BW24_PP_Q8MMQ=1
+// with the full exactness battery (sam

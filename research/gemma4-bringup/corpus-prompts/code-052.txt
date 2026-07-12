@@ -1,0 +1,41 @@
+// mmq_q45k.cu — Q4_K/Q5_K W4A8 int8-MMA MMQ prefill GEMM (vendored floor, ggml-decoupled).
+//
+// Same vendor-the-floor move as mmq_fp4.cu, for the two hand-rolled k-quant GEMMs that
+// dominate the prefill busy-% (q4_K 32% + q5_K 28%). Source: /data/projects/llama.cpp/ggml/src/ggml-cuda/
+//   - quantize.cu  : quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_DS4> (activation f32 -> block_q8_1_mmq,
+//                    (d, sum) half2 per 32 values — Q4_K/Q5_K carry a min-offset so the sum term is live)
+//   - mmq.cuh      : load_tiles_q4_K / load_tiles_q5_K (TURING_MMA branch: dequant to int8 at tile-load,
+//                    scales+mins folded to per-sub-block half2 (d*sc, -dmin*m)), unpack_scales_q45_K,
+//                    vec_dot_q8_1_q8_1_mma (the SHARED int8 MMA inner loop for both k-quants),
+//                    mmq_write_back_mma, mul_mat_q_process_tile, mul_mat_q (conventional xy-tiling)
+//   - mma.cuh      : tile<>, load_ldmatrix, load_generic, mma.sync.m16n8k32.row.col.s32.s8.s8.s32
+//
+// DECOUPLING: no ggml headers, same treatment as the NVFP4 vendor file. Self-contained on purpose —
+// duplicating ~120 lines of tile machinery keeps this translation unit independent of the proven
+// NVFP4 kernel (all functions static/internal, no link collisions).
+//
+// KEY DIFFS vs the NVFP4 file (do not "unify" blindly):
+//   - MMQ_ITER_K = 256 (not 512): one 256-value k-quant superblock per iteration, two 128-value
+//     block_q8_1_mmq y-chunks per iteration.
+//   - Activation is q8_1 int8 with DS4 (d, sum) scales, NOT block_fp4_mmq.
+//   - MMA is plain int8 m16n8k32 with float (d*sc)*(d_act)*acc + (-dmin*m)*(sum_act) epilogue,
+//     NOT the mxf4nvf4 block-scale op. -> No Blackwell-only asm: this file is sm_75+ portable and
+//     goes to the sm_89 L40S branch unchanged.
+//
+// C-ABI launchers: bw24_mmq_q4_K / bw24_mmq_q5_K (+ shared bw24_mmq_q45k_act_bytes). Compiled to a
+// static lib like the NVFP4 vendor file, called from Rust via FFI, dispatched behind BW24_MMQ=1.
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cstdint>
+#include <cstdlib>
+
+// ======================= ggml constants/macros (vendored) =======================
+#define WARP_SIZE 32
+#define GGML_PAD(x, n) (((x) + (n) - 1) / (n) * (n))
+
+// quant-format constants (ggml-common.h)
+#define QK_K 256
+#define K_SCALE_SIZE 12
+#define QK8_1 32
+#define QI8_1 8                  // QK8_1 / (4 * QR8_1), 

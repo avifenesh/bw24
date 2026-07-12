@@ -1,0 +1,42 @@
+// Sampled speculative decoding — device sampling primitives (piece A of the arc;
+// research/sampled-spec-impl-map.md). All randomness is Philox4x32-10 counter-based:
+// (seed, stream_pos) -> deterministic values, independent of launch geometry, CUDA-graph-replay
+// safe (the counter is data, not state). temp -> 0 continuity: gumbel noise is scaled by temp,
+// so at temp=0 the perturbed argmax IS the plain argmax (greedy limit, gate (1)).
+//
+// Kernels:
+//   1. gumbel_perturb_f32   : y[i] = x[i]/T + T_gumbel * G_i  (G from Philox; caller then runs the
+//                             existing validated 2-pass argmax on y — Gumbel-max sampling).
+//   2. softmax_gather_f32   : one block per row: max + sumexp + prob gather of ONE token id
+//                             (the p_j / q_j acceptance inputs), temp-applied.
+//   3. residual_sample_f32  : sample from norm(max(0, softmax(p)-softmax(q))) with one uniform —
+//                             two passes over vocab in one block (sum, then inverse-CDF walk).
+//                             q_logits == nullptr -> plain sample from softmax(p) (bonus token).
+#include <cstdint>
+
+// ---------------- Philox4x32-10 (Salmon et al. 2011), 32-bit counter-based ----------------
+static __device__ __forceinline__ void philox_round(uint32_t& c0, uint32_t& c1, uint32_t& c2,
+                                                    uint32_t& c3, uint32_t k0, uint32_t k1) {
+    const uint32_t M0 = 0xD2511F53u, M1 = 0xCD9E8D57u;
+    uint32_t h0 = __umulhi(M0, c0), l0 = M0 * c0;
+    uint32_t h1 = __umulhi(M1, c2), l1 = M1 * c2;
+    uint32_t n0 = h1 ^ c1 ^ k0, n1 = l1, n2 = h0 ^ c3 ^ k1, n3 = l0;
+    c0 = n0; c1 = n1; c2 = n2; c3 = n3;
+}
+static __device__ __forceinline__ uint4 philox4(uint32_t seed_lo, uint32_t seed_hi,
+                                                uint32_t ctr_lo, uint32_t ctr_hi) {
+    uint32_t c0 = ctr_lo, c1 = ctr_hi, c2 = 0u, c3 = 0u, k0 = seed_lo, k1 = seed_hi;
+#pragma unroll
+    for (int r = 0; r < 10; ++r) {
+        philox_round(c0, c1, c2, c3, k0, k1);
+        k0 += 0x9E3779B9u; k1 += 0xBB67AE85u;
+    }
+    return make_uint4(c0, c1, c2, c3);
+}
+// u32 -> (0,1] uniform (never 0 -> log is finite).
+static __device__ __forceinline__ float u01(uint32_t v) {
+    return ((float) v + 1.0f) * (1.0f / 4294967296.0f);
+}
+
+// ---------------- 1. Gumbel perturbation ----------------
+// stream_pos identifies the sampling EVENT 

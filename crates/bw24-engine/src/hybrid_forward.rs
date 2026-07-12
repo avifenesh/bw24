@@ -6,6 +6,12 @@ use cudarc::driver::CudaSlice;
 use bw24_gguf::config::ModelConfig;
 use crate::Engine;
 use crate::cache::Cache;
+
+/// Device scratch for the burst verify stream (see `verify_stream_scratch`).
+pub(crate) struct VerifyStreamScratch {
+    pub pos_d: CudaSlice<i32>,
+    pub row_ctrs: Vec<CudaSlice<i32>>,
+}
 use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MoeWeights};
 
 /// STAGE-2 GROUPED DECODE gate (BW24_MOE_GDEC, default ON; `=0` restores the sequential
@@ -422,7 +428,8 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert!(kvl.len + t <= cache.max_ctx, "prime_cache: KV overflow");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       crate::Engine::kv_fp8_on())?;
             kvl.len += t;
             let new_len = kvl.len as i32;
             e.set_i32_one(&mut kvl.len_d, new_len)?;
@@ -463,10 +470,12 @@ impl HybridModel {
             let deqw = std::env::var("BW24_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
             if deqw {
                 e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                     t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     crate::Engine::kv_fp8_on())?;
             } else {
                 e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                  t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                  crate::Engine::kv_fp8_on())?;
             }
         }
 
@@ -2222,7 +2231,7 @@ impl HybridModel {
             let kvl = cache.kv[il].as_mut().unwrap();
             assert_eq!(kvl.len, 0, "gemma4 prime is fresh-prompt only (v0)");
             e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
             kvl.len += t;
         }
         let mut attn = e.zeros(t * nh * hd)?;
@@ -2262,6 +2271,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // router stays the two-launch pair: THREE fuse variants measured worse (serial-dot
+        // -50%, 1024-thread warp-parallel -12% on topk sync overhead — jsonl 2026-07-11);
+        // the pair's 12us is kernel time, not launch gaps.
         let logits = if crate::router_kernel_on() {
             e.router_gemv(m.gate_inp.float_data(), router_in, n_embd, n_expert, t)?
         } else {
@@ -2820,7 +2832,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         kvl.len += 1;
         // R6 decode: SWA layers attend only the last `sliding_window` keys — a token-aligned
         // VIEW OFFSET into the quantized cache (keys carry absolute rope; the mask is purely
@@ -2836,7 +2848,8 @@ impl HybridModel {
             let base = kvl.len as i32;
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false)?;
+                             kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false,
+                             false)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
@@ -2855,8 +2868,8 @@ impl HybridModel {
                                      (off_tok + t_kv) * kvl.k_tok_bytes);
         let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                      (off_tok + t_kv) * kvl.v_tok_bytes);
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
-                    kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                    kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
 
@@ -2961,7 +2974,7 @@ impl HybridModel {
         e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
         match cap_bucket_max {
@@ -2979,7 +2992,7 @@ impl HybridModel {
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
                     e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
                                      scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false)?;
+                                     Some((&kvl.len_d, -1)), false, false)?;
                 } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
@@ -2994,8 +3007,8 @@ impl HybridModel {
                                                  (off_tok + t_kv) * kvl.k_tok_bytes);
                     let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
                                                  (off_tok + t_kv) * kvl.v_tok_bytes);
-                    e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
-                                kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                                kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
                 }
             }
             Some((b_swa, b_glob)) => {
@@ -3011,7 +3024,7 @@ impl HybridModel {
                 if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
                     e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, b_glob - 1,
                                      1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false)?;
+                                     Some((&kvl.len_d, -1)), false, false)?;
                 } else if swa && b_swa > win && hd == 256 && rows_on {
                     e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                        &kvl.len_d, -1, 1, scale, win,
@@ -3019,7 +3032,8 @@ impl HybridModel {
                 } else {
                     let b = if swa { b_swa } else { b_glob };
                     e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
-                                   scale, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                   scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                   swa && crate::Engine::wkv_on())?;
                 }
             }
         }
@@ -3034,6 +3048,9 @@ impl HybridModel {
                                  cache: &mut Cache, max_new: usize, eos: &[u32],
                                  mut on_token: impl FnMut(u32) -> bool)
                                  -> Result<(Vec<u32>, crate::decode::StopReason), Box<dyn std::error::Error>> {
+        if self.is_gemma4_e4b() {
+            return Err("E4B graph serving is unwired (HANDOVER-E4B.md) — dc-eager is the serving arm".into());
+        }
         use crate::decode::StopReason;
         let n_vocab = self.output.out_features();
         let n_embd = self.cfg.n_embd as usize;
@@ -3073,13 +3090,14 @@ impl HybridModel {
             //    are power-of-2 RUNGS (one capture per doubling; grid sized for the rung end).
             let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
             let f512 = crate::fa512_min_tkv();
-            let key_s = if t_kv > win { (true, usize::MAX) } else { e.fa_bucket_key(t_kv, hd_s, nkv_s) };
+            let key_s = if t_kv > win { (true, usize::MAX) }
+                        else { e.fa_bucket_key(t_kv, hd_s, nkv_s, crate::Engine::wkv_on()) };
             let (key_g, rung_end) = if t_kv >= f512 {
                 // strict upper bound: the rung must ROLL at exact powers (t_kv==1024 starts
                 // the [1024,2048) bucket) — sizing covers every replayed T_kv < end.
                 let end = (t_kv + 1).next_power_of_two().max(f512 * 2);
                 ((true, end), end)
-            } else { (e.fa_bucket_key(t_kv, hd_g, nkv_g), t_kv) };
+            } else { (e.fa_bucket_key(t_kv, hd_g, nkv_g, false), t_kv) };
             let key = (key_s, key_g, t_kv >= f512, t_kv > win);
             if !graphs.contains_key(&key) {
                 let bucket_max = (t_kv, rung_end);
@@ -3176,6 +3194,72 @@ impl HybridModel {
         Ok((e.dtoh(&ld)?, hn))
     }
 
+    /// Persistent device scratch for the BURST verify stream (one per generation): rope pos
+    /// rows [cap] + per-row t_kv counters (device-filled from the round counter, zero H2D).
+    pub(crate) fn verify_stream_scratch(&self, e: &Engine, cap: usize)
+                                        -> Result<VerifyStreamScratch, Box<dyn std::error::Error>> {
+        Ok(VerifyStreamScratch {
+            pos_d: e.htod_i32(&vec![0i32; cap])?,
+            row_ctrs: (0..cap).map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?,
+        })
+    }
+
+    /// BURST verify trunk (device-slot twin): tokens from a device buffer, rope positions
+    /// iota'd from `ctr`, appends/attention at the layers' len_d counters (verify_attn_stream),
+    /// NO host cache.pos/len advance. Returns (per-row device argmaxes [t], post-norm hidden
+    /// stack [t, n_embd]) — the burst's accept/seed inputs, zero host readbacks.
+    /// `scr` = PERSISTENT per-gen scratch (pos rows + per-row t_kv counters): the first cut
+    /// htod_i32-allocated these per call — 9 pageable H2D copies per round, each a stream
+    /// sync, exactly the turnaround the burst exists to remove.
+    pub(crate) fn gemma4_verify_t_am_stream(&self, e: &Engine, tok_d: &CudaSlice<u32>, t: usize,
+                                            ctr: &CudaSlice<i32>, hint: usize,
+                                            cache: &mut Cache,
+                                            scr: &mut VerifyStreamScratch)
+                                            -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        assert!(t <= scr.row_ctrs.len() && t <= 64);
+        e.i32_iota_from(ctr, &mut scr.pos_d, t)?;
+        for i in 0..t {
+            e.i32_copy_add(ctr, &mut scr.row_ctrs[i], (i + 1) as i32)?;
+        }
+        let (pos_d, row_ctrs) = (&scr.pos_d, &scr.row_ctrs);
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+        let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
+        let n_layers = self.layers.len();
+        for (il, layer) in self.layers.iter().enumerate() {
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, t, eps)?,
+            };
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_verify_attn_stream(e, fa, il, &hq, &hdq, pos_d, t, cache,
+                                                    hint, row_ctrs)?;
+            let mut cur = e.uninit(t * n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+            let next_norm = if il + 1 < n_layers {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
+            x = xn;
+            h_carry = hn;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let ld = e.matmul(&self.output, &hn, t)?;
+        let n_vocab = self.output.out_features();
+        let mut vam = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut vam, i)?;
+        }
+        Ok((vam, hn))
+    }
+
     /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
     /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
     fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
@@ -3224,6 +3308,93 @@ impl HybridModel {
 
     /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
     /// row causally over [win_off_i .. base+i] via the SAME fa_decode dispatch as T=1 decode.
+    /// BURST verify attention (device-slot twin of `gemma4_verify_attn`): the append lands
+    /// at the layer's len_d counter (rows_dc), attention bases ride the counter (rows /
+    /// rows_w with base_dev), and NO host len is read or bumped — `hint` is a host UPPER
+    /// bound on base_len used only for split sizing and arm gating (the burst loop passes
+    /// pos0 + burst slack). Host len mirrors re-sync at the burst drain.
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_verify_attn_stream(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                                 hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                                 pos_d: &CudaSlice<i32>, t: usize,
+                                 cache: &mut Cache, hint: usize,
+                                 row_ctrs: &[CudaSlice<i32>])
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let h0 = e.zeros(0)?;
+        let h = &h0;
+        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        let mut q = e.uninit(t * nh * hd)?;
+        let mut k = e.uninit(t * nkv * hd)?;
+        let mut v = e.uninit(t * nkv * hd)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        let kvl = cache.kv[il].as_mut().unwrap();
+        // append at the DEVICE slot; the counter advances by t on-device.
+        e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
+                                      kvl.kv_dim_k, kvl.kv_dim_v,
+                                      kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                      (!swa && crate::Engine::gkv_on())
+                                          || (swa && crate::Engine::wkv_on()))?;
+        // len_d is NOT advanced here: the burst's device rollback (spec_rollback_stream) is
+        // the sole len writer after this round's attention (base stays = old len, plus = 0).
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let mut attn = e.uninit(t * nh * hd)?;
+        let k_view = e.view_u8(&kvl.k, kvl.k.len());
+        let v_view = e.view_u8(&kvl.v, kvl.v.len());
+        // arm gating on the host HINT (upper bound; burst entry guards hint >= the vec floor
+        // and a stable window regime — the same rung/regime keys as the draft graph).
+        if swa && hint + 1 >= win {
+            // fully-windowed rows: per-row window geometry from the counter (plus = 0: len_d
+            // still holds the pre-append len; row r's T_kv = ctr + r + 1).
+            e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                               &kvl.len_d, 0, t, scale, win,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        } else if hd == 512 && hint + t < crate::fa512_min_tkv() {
+            // globals UNDER the fa512 crossover: eager runs the per-row fa_decode_kvmod
+            // fallback there (parity with t=1 decode) — mirror it with per-row fa_decode_dc
+            // (bit-correct for any t_kv <= bucket; the drafter dc arc proved the pairing).
+            // Burst entry gates the horizon onto one side of the crossover, so hint decides
+            // for every row.
+            // NO .max(512): fa_decode_dc gates its hd512 dpl16-vs-scalar pick on bucket_max
+            // (mirroring eager's fa512 floor) — forcing 512 here flipped the arm to dpl16
+            // while eager ran scalar (il=5 KV drift, the burst's 4/128).
+            let bucket = (hint + t + 2).next_power_of_two();
+            let qv = e.view(&q, t * nh * hd);
+            for i in 0..t {
+                let q_row = qv.slice(i * nh * hd..(i + 1) * nh * hd);
+                let mut q_one = e.uninit(nh * hd)?;
+                e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
+                let mut a_one = e.uninit(nh * hd)?;
+                e.fa_decode_dc(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv,
+                               &row_ctrs[i], bucket, scale,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
+            }
+        } else if hd == 512 {
+            // globals past the crossover: dpl16 dc twin via the shared rows wrapper (hint
+            // sizes splits — upper bound; splits beyond the device len exit in-kernel).
+            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, hint, t, scale,
+                             kvl.k_tok_bytes, kvl.v_tok_bytes,
+                             Some((&kvl.len_d, 0)), false, false)?;
+        } else {
+            // hd256 under-window: v4 device-len rows twin.
+            e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                &kvl.len_d, hint + t, t, scale,
+                                kvl.k_tok_bytes, kvl.v_tok_bytes, 0,
+                                swa && crate::Engine::wkv_on())?;
+        }
+        Ok(e.matmul(&fa.wo, &attn, t)?)
+    }
+
     fn gemma4_verify_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
                           hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
                           pos_d: &CudaSlice<i32>, t: usize,
@@ -3252,7 +3423,7 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
-                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, !swa && crate::Engine::gkv_on())?;
+                                   kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         kvl.len += t;
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
@@ -3265,13 +3436,23 @@ impl HybridModel {
         if rows_ok && (!swa || base_len + t <= win) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
-            let bd = if hd == 512 {
+            if hd == 512 {
                 // device-len twin: sync the counter to the verify base (async arg-store).
                 e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
-                Some((&kvl.len_d, 0))
-            } else { None };
-            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes, bd, false)?;
+                e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t,
+                                 scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 Some((&kvl.len_d, 0)), false,
+                                 swa && crate::Engine::wkv_on())?;
+            } else {
+                // hd256: the SAME v4_dc symbol the burst verify launches (PARITY LAW — the
+                // host-base rows_v4 twin compiles apart from v4_dc and the two-symbol split
+                // drifted the burst's persisted KV at il=8; one symbol, counter arg-stored).
+                e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
+                e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                    &kvl.len_d, base_len + t, t, scale,
+                                    kvl.k_tok_bytes, kvl.v_tok_bytes, 0,
+                                    swa && crate::Engine::wkv_on())?;
+            }
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, ABSOLUTE-index
@@ -3319,10 +3500,10 @@ impl HybridModel {
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                 Some((&kvl.len_d, 0)), false)?;
+                                 Some((&kvl.len_d, 0)), false, false)?;
             } else {
-                e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                            kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;
             }
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
@@ -3409,6 +3590,14 @@ impl HybridModel {
     /// (llama gemma4.cpp build_inp_per_layer + project_per_layer_inputs, exact order).
     fn gemma4_e4b_inp_pl(&self, e: &Engine, tokens: &[u32], x_scaled: &CudaSlice<f32>, t: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let tok_d = e.stream().clone_htod(&tokens.to_vec())?;
+        self.gemma4_e4b_inp_pl_dev(e, &tok_d, x_scaled, t)
+    }
+
+    /// Device-token prologue core (dc arm shares it: token ids never touch the host).
+    fn gemma4_e4b_inp_pl_dev(&self, e: &Engine, tok_d: &CudaSlice<u32>,
+                             x_scaled: &CudaSlice<f32>, t: usize)
+                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let aux = self.gemma4_aux.as_ref().unwrap();
         let m = aux.e4b.as_ref().unwrap();
         let n_embd = self.cfg.n_embd as usize;
@@ -3417,8 +3606,7 @@ impl HybridModel {
         let tbl = m.tok_tbl_gpu.get_or_init(|| {
             e.upload_u8(&m.tok_embd_bytes).expect("e4b per-layer token table upload")
         });
-        let tok_d = e.stream().clone_htod(&tokens.iter().map(|&x| x).collect::<Vec<u32>>())?;
-        let mut a = e.embed_gather_device_td(tbl, &tok_d, t, width, m.tok_embd_qt,
+        let mut a = e.embed_gather_device_td(tbl, tok_d, t, width, m.tok_embd_qt,
                                              m.tok_embd_row_bytes)?;
         e.scale_inplace(&mut a, (m.n_epl as f32).sqrt(), t * width)?;
         let mut p = e.matmul(&m.model_proj, x_scaled, t)?;
@@ -3436,46 +3624,68 @@ impl HybridModel {
     /// and append t rows; KV-shared layers are Q-only over the target layer's cache (which
     /// already holds this forward's rows — the target runs earlier in the stack).
     #[allow(clippy::too_many_arguments)]
-    fn gemma4_e4b_attn(&self, e: &Engine, il: usize, h: &CudaSlice<f32>,
-                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
+    fn gemma4_e4b_attn(&self, e: &Engine, il: usize,
+                       hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
+                       dc_bucket: Option<usize>)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_e4b_geom(il);
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
         let Mixer::Full(fa) = &self.layers[il].mixer else { unreachable!() };
-        let n_embd = self.cfg.n_embd as usize;
-        let _ = n_embd;
+        // pre-quantized layer input (E4B fusion port, 2026-07-12): ONE norm+quant feeds
+        // wq/wk/wv via matmul_pre — the first-light path quantized the same h three times
+        // (the profile's 342 quantize_q8_1/token; glue = 26% of the 6.1ms token).
+        let h0 = e.zeros(0)?;
+        let h = &h0;
 
-        let mut q = {
-            let q0 = e.matmul(&fa.wq, h, t)?;
-            let mut q = e.uninit(t * nh * hd)?;
-            // q_norm (per-head rms) — the qkv fused norm needs k/v operands; single-tensor
-            // norm here (rms over hd rows).
-            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
-            q
-        };
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("e4b global rope needs rope_freqs.weight"))
         };
         let share = self.gemma4_e4b_kv_target(il);
+        // Own-KV arms keep the f32 (k, v) alive for the prime fa arm below.
+        let mut kv_f32: Option<(CudaSlice<f32>, CudaSlice<f32>)> = None;
+        let mut q;
         if let Some(_tgt) = share {
+            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+            q = e.uninit(t * nh * hd)?;
+            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
             // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
             let mut kdummy = e.uninit(t * hd)?;
             e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
         } else {
-            let k0 = e.matmul(&fa.wk, h, t)?;
-            let v0 = e.matmul(&fa.wv, h, t)?;   // E4B: real v everywhere kv exists (K != V)
+            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+            let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+            let v0 = e.matmul_pre(&fa.wv, hq, hdq, h, t)?;   // E4B: real v (K != V)
+            q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
-            e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
-            // R7: V = weightless rms (ones), never roped.
-            e.rms_norm(&v0, &aux.ones, &mut v, hd, nkv * t, eps)?;
+            // fused q/k/v norms (the 26B kernel; R7: V = ones-rms, never roped).
+            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
             e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
             let kvl = cache.kv[il].as_mut().unwrap();
-            e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                       kvl.v_tok_bytes, false)?;
-            kvl.len += t;
+            // class flag must match the cache dims (the g-threading sweep hardcoded `false`
+            // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
+            // degenerate tok-0 stream, 2026-07-12).
+            let cls = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+            if dc_bucket.is_some() {
+                // DC arm (graph serving): append at the len_d slot, advance the counter
+                // in-stream — replay-correct, no host len in the launch args. Host mirrors
+                // are NOT touched here (the replay loop owns them; a bump at capture-record
+                // time would double-count the capture iteration).
+                e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
+                                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                              kvl.v_tok_bytes, cls)?;
+                debug_assert!(t == 1);
+                e.inc_seqlen(&mut kvl.len_d)?;
+            } else {
+                e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
+                                           kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                           kvl.v_tok_bytes, cls)?;
+                kvl.len += t;
+            }
+            kv_f32 = Some((k, v));
         }
         // attention: per-row causal fa over the (own or target) quantized cache. The cache
         // already contains this forward's rows in both arms; row i attends [.., base+i].
@@ -3484,6 +3694,34 @@ impl HybridModel {
         let base_len = kvl.len - t;   // pre-append length (target appended this forward too)
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         let mut attn = e.uninit(t * nh * hd)?;
+        // PRIME FA ARM (perf lane 3): fresh-prompt own-KV hd256 layers under the window run
+        // ONE f32 fa_prefill (full causal attention is exact there — the 26B prime pattern)
+        // instead of t per-row quantized-cache launches. Globals (hd512, no FA stamp) and
+        // KV-shared layers (no f32 k/v of their own) keep the per-row loop. Same numeric
+        // class split as the 26B prime (f32 prefill vs quantized decode); the run-gen argmax
+        // + chat gates arbitrate. BW24_NOFA=1 forces the per-row loop.
+        if let Some((kf, vf)) = &kv_f32 {
+            if t > 1 && hd == 256 && base_len == 0 && t <= win
+                && std::env::var("BW24_NOFA").is_err() {
+                e.fa_prefill(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                return Ok(e.matmul(&fa.wo, &attn, t)?);
+            }
+        }
+        if let Some(bucket) = dc_bucket {
+            // DC arm (t == 1, under-window regime — the generate gate enforces it): ONE
+            // fa_decode_dc over the live counter. len_d already advanced past this token
+            // (t_kv = len_d[0], the cache.rs contract). KV-shared layers read the target's
+            // counter (advanced when the target ran earlier in the stack).
+            assert!(t == 1);
+            let k_view = e.view_u8(&kvl.k, kvl.k.len());
+            let v_view = e.view_u8(&kvl.v, kvl.v.len());
+            e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                           &kvl.len_d, bucket, scale,
+                           kvl.k_tok_bytes, kvl.v_tok_bytes,
+                           (!swa && crate::Engine::gkv_on())
+                               || (swa && crate::Engine::wkv_on()))?;
+            return Ok(e.matmul(&fa.wo, &attn, t)?);
+        }
         for i in 0..t {
             let avail = base_len + i + 1;
             let (off_tok, t_kv) = if swa && avail > win { (avail - win, win) } else { (0, avail) };
@@ -3496,8 +3734,13 @@ impl HybridModel {
             let mut q_one = e.uninit(nh * hd)?;
             e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
             let mut a_one = e.uninit(nh * hd)?;
-            e.fa_decode(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            // read class MUST match the append class (globals are e4m3 under gkv): the
+            // swa-only flag decoded global-layer e4m3 bytes as q8_0/q5_1 — attention over
+            // garbage on EVERY E4B global layer, the cross-mode maxdiff-30 root (2026-07-12).
+            e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
+                        kvl.k_tok_bytes, kvl.v_tok_bytes,
+                        (!swa && crate::Engine::gkv_on())
+                            || (swa && crate::Engine::wkv_on()))?;
             e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
         }
         Ok(e.matmul(&fa.wo, &attn, t)?)
@@ -3510,22 +3753,42 @@ impl HybridModel {
     fn gemma4_e4b_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
-        let eps = self.cfg.rms_eps;
         let t = tokens.len();
-        let n_layer = self.layers.len();
         let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)
+    }
+
+    /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
+    /// here is device-driven, so the dc arm shares it verbatim (stream identity with the
+    /// eager chain by construction: SAME functions, not twins).
+    fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
+                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
+                             dc_bucket: Option<usize>)
+                             -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let n_layer = self.layers.len();
+        let mut x = x_in;
         let aux_e4b = self.gemma4_aux.as_ref().unwrap().e4b.as_ref().unwrap();
         let n_epl = aux_e4b.n_epl;
 
+        // cross-layer fusion (2026-07-12 port of the 26B/31B trunk structure): each layer's
+        // closing add_scale also EMITS the next layer's attn-normed input pre-quantized
+        // q8_1 (add_scale_rms_norm_q8_1); the LAST layer emits through output_norm so the
+        // head rides matmul_pre too. First layer's pair comes from a standalone fused
+        // norm+quant.
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         for il in 0..n_layer {
             let layer = &self.layers[il];
-            let mut h = e.uninit(t * n_embd)?;
-            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
-            let o = self.gemma4_e4b_attn(e, il, &h, &pos_d, t, cache)?;
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
+            };
+            let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache, dc_bucket)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
@@ -3543,17 +3806,73 @@ impl HybridModel {
             let y = e.matmul(&e4b.proj, &act, t)?;
             let mut yn = e.uninit(t * n_embd)?;
             e.rms_norm(&y, e4b.post_norm.float_data(), &mut yn, n_embd, t, eps)?;
-            // (resid + tail) * layer_output_scale — llama order (add, then scalar mul).
+            // (resid + tail) * layer_output_scale — llama order — FUSED with the next
+            // layer's attn norm + quantize (last layer: with output_norm for the head).
+            let next_norm = if il + 1 < n_layer {
+                self.layers[il + 1].attn_norm.float_data()
+            } else {
+                self.output_norm.float_data()
+            };
             let mut xn = e.uninit(t * n_embd)?;
-            e.add_scale(&yn, &resid, bits.layer_scale, &mut xn, t * n_embd)?;
+            let pair = e.add_scale_rms_norm_q8_1(&yn, &resid, bits.layer_scale, next_norm,
+                                                 &mut xn, n_embd, t, eps)?;
+            h_carry = Some(pair);
             x = xn;
         }
-        let mut hn = e.uninit(t * n_embd)?;
-        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let mut ld = e.matmul(&self.output, &hn, t)?;
+        // the head consumes the last layer's fused (output_norm) emit.
+        let (oq, odq) = h_carry.take().unwrap();
+        let h0 = e.zeros(0)?;
+        let mut ld = e.matmul_pre(&self.output, &oq, &odq, &h0, t)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, t * self.output.out_features())?;
         Ok((ld, x))
+    }
+
+    /// E4B GRAPH-CAPTURABLE dc step: same trunk as the dc step but token_d is updated IN
+    /// PLACE (self-feeding replay) and every launch arg is a device counter — pos from
+    /// pos_d (inc'd in-stream), KV slots from len_d (advanced in-stream), attention from
+    /// fa_decode_dc at `bucket`. Host mirrors (cache.pos / kvl.len) advance in the caller's
+    /// replay loop. UNDER-WINDOW regime only (the caller gates pos + budget < window).
+    pub fn gemma4_e4b_decode_step_dcg(&self, e: &Engine, token_d: &mut CudaSlice<u32>,
+                                      pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                      embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                      n_vocab: usize, bucket: usize)
+                                      -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket))?;
+        e.argmax_token_device_into(&ld, token_d, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        Ok(())
+    }
+
+    /// E4B DEVICE-COUNTER decode step (the dc serving arm): token id rides `token_d`, the
+    /// greedy argmax lands in the returned device buffer — 4B/token host traffic. The layer
+    /// stack is gemma4_e4b_trunk_core, i.e. the SAME functions the eager chain runs (stream
+    /// identity by construction, not by twin-kernel parity). Host KV mirrors advance like the
+    /// 26B dc-eager arm (window views are host math); len_d stays synced by the caller's
+    /// entry sync + the appends here don't read it. Graph capture is NOT wired (no
+    /// cap_bucket_max) — the E4B graph arc comes after the perf gates.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_e4b_decode_step_dc(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                     pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                     embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                     n_vocab: usize)
+                                     -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None)?;
+        let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
+        e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        cache.pos += 1;
+        let _ = eps;
+        Ok(tok_out)
     }
 
     /// E4B eager T=1 decode step (decode_step_h contract): returns (softcapped logits host,

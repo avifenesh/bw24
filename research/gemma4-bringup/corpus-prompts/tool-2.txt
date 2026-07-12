@@ -1,0 +1,4 @@
+Available functions:
+[{"name": "query_database", "description": "Run a SQL query", "parameters": {"sql": {"type": "string"}}}, {"name": "send_email", "description": "Send an email", "parameters": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}}]
+
+User request: pull the top 10 customers by revenue this quarter and email the list to sales@example.com with a short summary.

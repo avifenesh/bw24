@@ -1,0 +1,30 @@
+// mmq_nvfp4_w4a8.cu — NVFP4 W4A8 int8-MMA MMQ prefill GEMM (vendored floor, ggml-decoupled, sm_120a).
+//
+// STAGE 2 "accuracy-safe rung": the SAME fast MMQ tile as the W4A4 kernel (cu/mmq_fp4.cu), but the
+// NON-Blackwell NVFP4 MMQ pair — weight FP4 is LUT-dequantized to int8 at tile-load (bit-exact, the
+// weight side is never the accuracy problem) and the activation stays q8_1 int8 (the SAME quant the
+// default int8 W4A8 GEMM uses, which passes ALL exactness gates). This keeps bw24's int8-W4A8
+// accuracy class while running on the MMQ tensor-core tile. Source: llama.cpp ggml/src/ggml-cuda/
+//   - quantize.cu  : quantize_mmq_q8_1<MMQ_Q8_1_DS_LAYOUT_D4> (activation f32 -> block_q8_1_mmq,
+//                    symmetric float scale d per 32, NO sum term — NVFP4 is symmetric, uses D4 not DS4)
+//   - mmq.cuh      : load_tiles_nvfp4 (non-BLACKWELL arm, mmq.cuh:1069): FP4->int8 via
+//                    get_int_from_table_16(src_qs, kvalues_mxfp4) into x_qs + per-16 UE4M3 float scale
+//                    into x_df; vec_dot_q8_0_16_q8_1_mma (mmq.cuh:1495 TURING arm): int8 m16n8k16 mma
+//                    pairs, per-4-col x scale * per-32 y scale; mmq_write_back_mma; mul_mat_q xy-tiling
+//   - mma.cuh      : tile<>, load_ldmatrix, load_generic, mma.sync.m16n8k16.row.col.s32.s8.s8.s32
+//
+// DECOUPLING: no ggml headers, same treatment as mmq_fp4.cu / mmq_q45k.cu. Self-contained TU (all
+// functions static/internal, no link collisions with the W4A4 nvfp4 kernel).
+//
+// KEY DIFFS vs the W4A4 file (mmq_fp4.cu) — this is the SAME weight format, DIFFERENT math:
+//   - tile size MMQ_MMA_TILE_X_K_NVFP4 (84) not MMQ_MMA_TILE_X_K_FP4 (76): x_qs holds the FP4->int8
+//     dequant (2*MMQ_TILE_NE_K ints) + x_df holds MMQ_TILE_NE_K/2 UE4M3-decoded FLOAT scales.
+//   - MMQ_ITER_K = 256 (not 512): 4 NVFP4 blocks per iteration, two 128-value q8_1 y-chunks.
+//   - Activation is q8_1 int8 D4 (float scale, symmetric), NOT block_fp4_mmq (2-level FP8 W4A4).
+//   - MMA is plain int8 m16n8k16 with float epilogue, NOT the mxf4nvf4 block-scale op. -> no
+//     Blackwell-only asm; the W4A8 accuracy class = bw24's default GEMM math.
+//
+// C-ABI launcher: bw24_mmq_nvfp4_w4a8 (+ shared bw24_mmq_nvfp4_w4a8_act_bytes). Compiled to the same
+// libbw24_mmq.a static lib, called from Rust via FFI, dispatched behind BW24_MMQ_W4A8=1.
+//
+// BW24_PP_PIPE=1 (DEFAULT since 2026-07-09): cp.async multi-

@@ -1,0 +1,42 @@
+// EDGE-1 §A: fused MoE router. Replaces the host dtoh + softmax-256 + stable DESC top-8 sort +
+// renorm in hybrid_forward.rs (~281-298). One CTA per token row, blockDim = n_expert (256) =
+// one thread per expert. Reproduces the Stage-1 host numerics EXACTLY so the selected experts +
+// renormalized weights are bit-identical (the argmax-1178 gate depends on this).
+//
+// Host path (the oracle this matches):
+//   maxl = max over 256 logits
+//   probs[i] = exp(logit[i] - maxl);  den = sum;  probs[i] /= den          (softmax over 256)
+//   sort idx DESC by (probs[b].total_cmp(probs[a]).then(a.cmp(b)))         (prob DESC, idx ASC)
+//   sel = idx[..8]
+//   w[j] = probs[sel[j]];  ws = sum(w);  ws = max(ws, 6.103515625e-5);  w[j] /= ws
+//
+// Tie handling: iterative argmax over n_used rounds. Each round picks the expert with the
+// largest prob; ties broken by SMALLEST index (matches the host `.then(a.cmp(b))`). The chosen
+// expert is masked to -INF for the next round. This reproduces the stable DESC sort's top-k.
+#include <cuda_runtime.h>
+#include <math.h>
+#include <float.h>
+
+// Block reduce to find argmax of `val` with smallest-index tiebreak. Each thread brings (val, idx).
+// Returns the winning (val, idx) to ALL threads via shared memory.
+// We encode the comparison as: a beats b iff (a.val > b.val) || (a.val == b.val && a.idx < b.idx).
+extern "C" __global__ void moe_router_topk_f32(
+    const float* __restrict__ logits,   // [t, n_expert]
+    int*   __restrict__ sel_idx,         // [t, n_used]  (out)
+    float* __restrict__ sel_w,           // [t, n_used]  (out)
+    int n_expert,                        // 256
+    int n_used)                          // 8
+{
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;         // one thread per expert, tid in [0, n_expert)
+    const float* lg = logits + (size_t)row * n_expert;
+
+    // shared scratch: per-warp partials for reductions + the running prob array.
+    extern __shared__ float smem[];      // unused (we use static below)
+    (void)smem;
+    __shared__ float s_val[32];          // per-warp reduce scratch (max 32 warps = 1024 threads)
+    __shared__ int   s_idx[32];
+    __shared__ float s_max;              // block max logit
+    __shared__ float s_den;              // softmax denominator
+    __shared__ float s_pick_val;         // winning prob this round
+    __shared__ int   s_pick_idx;         // win

@@ -1,0 +1,59 @@
+//! Minimal safetensors reader, mmap-based. Parallel to the GGUF reader.
+//!
+//! On-disk layout (little-endian):
+//!   header_len: u64 (8 bytes) | header_len bytes of UTF-8 JSON | raw tensor byte buffer
+//!
+//! Header JSON: { tensor_name: { "dtype": str, "shape": [usize], "data_offsets": [begin, end] }, ... }
+//! plus an optional free-form "__metadata__" object. `data_offsets` are byte ranges INTO the
+//! post-header buffer (which begins at byte `8 + header_len`), row-major.
+//!
+//! Multi-shard: a `model.safetensors.index.json` maps each tensor name to its shard file:
+//!   { "metadata": {...}, "weight_map": { tensor_name -> "model-0000X-of-0000N.safetensors" } }
+//!
+//! NOTE: this module hand-parses the small header JSON (no serde dependency in bw24-gguf).
+//! The grammar we accept is exactly what `safetensors` emits: objects, arrays, strings, integers.
+
+use std::collections::HashMap;
+use std::path::Path;
+use memmap2::Mmap;
+
+use crate::GgmlType;
+
+const N_LEN: usize = 8; // size_of::<u64>()
+const MAX_HEADER: usize = 100_000_000; // DoS guard (matches safetensors crate)
+
+/// safetensors dtype string -> bw24 GgmlType. FP8 is deferred (explicit panic, never silent).
+/// Shape note handled by the caller: safetensors shape is row-major outer..inner, bw24 `ne` is
+/// inner-fastest, so the caller reverses the shape.
+pub fn st_dtype_to_ggml(s: &str) -> GgmlType {
+    use GgmlType::*;
+    match s {
+        "F32" => F32,
+        "F16" => F16,
+        "BF16" => BF16,
+        "F64" => F64,
+        "I8" => I8,
+        "I16" => I16,
+        "I32" => I32,
+        "I64" => I64,
+        // FP8 deferred in v1 — explicit failure, NOT silent garbage.
+        "F8_E4M3" | "F8_E5M2" | "F8_E8M0" => {
+            panic!("FP8 ({s}) safetensors not yet supported; use the GGUF twin or an F16/BF16 checkpoint")
+        }
+        // U8 / BOOL have no GgmlType equivalent and never appear as model weights here.
+        other => panic!("unsupported safetensors dtype {other}"),
+    }
+}
+
+/// One tensor's header entry.
+#[derive(Debug, Clone)]
+pub struct StInfo {
+    pub dtype: String,
+    pub shape: Vec<u64>,         // row-major, outer..inner (as stored)
+    pub data_offsets: [usize; 2], // [begin, end) into the post-header buffer
+}
+
+impl StInfo {
+    /// bw24 `ne` (inner-fastest) is the reverse of the safetensors shape.
+    pub fn ne(&self) -> Vec<u64> {
+        self.shape.iter().rev().cloned

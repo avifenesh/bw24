@@ -1,0 +1,41 @@
+// fp8_prefill.cu — BW24_PP_FP8 prefill GEMM: cuBLASLt FP8-E4M3 TN + per-batch activation quantize.
+//
+// Provenance: probe/fp8_lt_prefill.cu + probe/fp8_lt_scale_probe.cu (2026-07-08 probe verdict GO:
+// 620-795 TF at the 27B prefill shapes vs 47-72 TF for the qmatvec_gemm_q8_0 class those F8-origin
+// weights ride today = 8.7-14.2x). This TU is the ENGINE version of that verified call:
+//   y[m,n] = act[m,k] @ W[n,k]^T,  W = raw checkpoint e4m3 bytes (EXACT weight side, no re-quant),
+//   act    = f32 -> e4m3 with ONE per-batch scalar scale (amax/448; e4m3 max normal = 448).
+// SCALE LAW (probed, sm_120 cuBLASLt 13.2): per-token OUTER_VEC_32F B-scale NOT supported ->
+// per-batch scalar only; scalar A/B f32 scale pointers ARE supported and verified exact
+// (y == raw*sa*sb). The activation dequant scale and the per-tensor weight_scale are FOLDED into
+// one device scalar fed to CUBLASLT_MATMUL_DESC_B_SCALE_POINTER (the act operand is B).
+//
+// Host C-ABI (called from fp8_ffi.rs): one call = amax reduce + scale finalize + quantize +
+// cublasLtMatmul, all on the caller's stream. Matmul descriptors + heuristic algo are cached per
+// (m,n,k) under a mutex; the lock also covers the matmul enqueue (the cached desc is mutated per
+// call to refresh the scale pointer — cublasLtMatmul consumes the desc synchronously on the host,
+// so post-return mutation is safe). bw24 runs ONE GPU worker, so contention is nil.
+
+#include <cublasLt.h>
+#include <cuda_fp8.h>
+#include <cuda_runtime.h>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <tuple>
+
+// ---- device kernels -------------------------------------------------------------------------
+
+// Per-batch amax over the whole activation [m*k]. Grid-stride block-reduce, then one atomicMax
+// per block on the float-as-int monotonic trick (all values >= 0 after fabsf; non-negative IEEE
+// floats order identically as ints). s[0] must be memset to 0 before launch.
+extern "C" __global__ void bw24_fp8_amax_kernel(const float* __restrict__ x, size_t n, float* s) {
+    float local = 0.f;
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n;
+         i += (size_t)gridDim.x * blockDim.x)
+        local = fmaxf(local, fabsf(x[i]));
+    __shared__ float sm[256];
+    sm[threadIdx.x] = local;
+    __syncthreads();
+    for (int w = blockDim.x / 2; w > 0; w >>= 1) {
+        if (threadIdx.x < w) sm[threadIdx.x] 

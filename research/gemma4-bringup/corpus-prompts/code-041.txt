@@ -1,0 +1,35 @@
+//! Dense transformer model: loads GGUF weights to GPU (Stage-1: dequant→f32), runs the
+//! shared full-attention + SwiGLU forward graph. Arch-agnostic via ModelConfig; this path is
+//! exactly the dense-transformer graph (qwen3) and the full-attention layers of hybrids.
+
+use std::collections::HashMap;
+use cudarc::driver::CudaSlice;
+use bw24_gguf::{GgufFile, GgmlType, dequant};
+use bw24_gguf::config::ModelConfig;
+use bw24_gguf::source::{TensorSource, GgufSource};
+use crate::{Engine, QT_Q8_0, QT_Q4_K, QT_Q6_K, QT_Q5_K, QT_Q3_K, QT_IQ4_XS, QT_IQ3_S, QT_NVFP4, QT_Q4_0, QT_F32, QT_BF16};
+
+/// A weight tensor resident on GPU. Quantized weights stay in GGUF block bytes (`Quant`);
+/// small non-quant tensors (norms, sometimes embed/lm_head) are kept dequantized as f32 (`Float`).
+/// This keeps VRAM ~= on-disk quant size (fixes the f32-on-load OOM).
+pub enum GpuTensor {
+    Quant {
+        bytes: CudaSlice<u8>, qtype: i32, row_bytes: usize, ne: Vec<u64>, scale: f32,
+        /// SPLIT-PLANE walk-order repack (A6, 2026-07-04): NVFP4 matmul weights are repacked at
+        /// load into [quant plane out_f x in_f/64 x 32B][scale plane out_f x in_f/64 x 4B] — same
+        /// bytes, same total size, but a lane's per-group weight read becomes ONE 16B-aligned
+        /// LDG.128 + a dense 4B scale word instead of 5 scattered 4B LDGs at 36B stride (the "18B
+        /// straggle"). Every consumer kernel has an `_rp` twin (bit-identical: pure byte
+        /// permutation, same dot order). `rp=false` = original GGUF block layout (all other
+        /// dtypes, MoE-staged expert bytes, BW24_RP=0 escape).
+        rp: bool,
+        /// CUTLASS NVFP4 prefill operand (repacked B + swizzled SFB), built ALONGSIDE `bytes` at load
+        /// when BW24_FP4_CUTLASS is set. `bytes` stays raw GGUF so decode (MMVQ/dp4a) is untouched;
+        /// prefill (m>=128) reads this. Only ever Some for NVFP4 weights under cfg(bw24_cutlass).
+        #[cfg(bw24_cutlass)]
+        cutlass: Option<CutlassWeight>,
+        /// FP8-ACT PREFILL operand (BW24_PP_FP8=1, probe verdict 2026-07-08): the checkpoint's RAW
+        /// e4m3 bytes + per-tensor f32 weight_scale, stashed ALONGSIDE the Q8_0 re-encode for the
+        /// F8-E4M3-origin 2D projections (~1 B/w extra on those layers). `bytes` stays Q8_0 so
+        /// decode (dp4a/MMVQ) is untouched; only the m>=16 prefill dispatch (cuBLASLt FP8 TN,
+        //

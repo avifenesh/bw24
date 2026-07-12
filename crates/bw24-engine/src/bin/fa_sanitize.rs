@@ -63,11 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for tok in 0..tkv {
             let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
             let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
-            e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+            e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
         }
         let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
         let mut od=e.zeros(hd*nh*t)?;
-        e.fa_prefill_view(&qd,&kview,&vview,&mut od,hd,nh,nhkv,t,tkv,scale,true,k_tok_bytes,v_tok_bytes)?;
+        e.fa_prefill_view(&qd,&kview,&vview,&mut od,hd,nh,nhkv,t,tkv,scale,true,k_tok_bytes,v_tok_bytes, false)?;
         let g=e.dtoh(&od)?; let d=maxdiff(&cpu,&g);
         let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
         // quant twin: looser (q8_0 K / q5_1 V) — gate at q5_1 noise floor

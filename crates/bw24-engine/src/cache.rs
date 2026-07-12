@@ -92,12 +92,17 @@ impl Cache {
             let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
                 Some(g) => {
                     let hd = if g.swa_pattern[il as usize] { g.key_length_swa } else { g.key_length_global } as usize;
-                    // E4B ships a SCALAR head_count_kv (per-layer vec empty): both kinds land
-                    // on 512 total (swa 2x256, global 1x512 — verified against tensor shapes
-                    // at load). 26B/31B keep the per-layer vec.
+                    // E4B ships a SCALAR head_count_kv (per-layer vec empty; scalar = 2 in
+                    // the gguf, landing in cfg.n_head_kv): kv_dim = hd * 2 for BOTH kinds —
+                    // swa 2x256 = 512, global 2x512 = 1024. The old fallback used
+                    // key_length_global (512) for both, which HALVED the global layers' K/V
+                    // (the attn writes wk.out_features = 1024 rows): every E4B global layer
+                    // stored/attended half its K/V and the batched append read row strides
+                    // wrong — THE cross-mode maxdiff-30 root (2026-07-12 bisect, il=5 slot-1
+                    // byte forensics). 26B/31B keep the per-layer vec.
                     let d = match g.head_count_kv.get(il as usize) {
                         Some(n) => hd * *n as usize,
-                        None => g.key_length_global as usize,
+                        None => hd * n_head_kv,
                     };
                     (d, d)
                 }
@@ -117,14 +122,22 @@ impl Cache {
             // both planes — the dequant-latency arc); windowed layers keep the default pair.
             let g4_global_fp8 = crate::Engine::gkv_on()
                 && cfg.gemma4.as_ref().is_some_and(|g| !g.swa_pattern[il as usize]);
-            let (kbb_l, vbb_l) = if g4_global_fp8 { (32, 32) } else { (kbb, vbb) };
+            let g4_windowed_fp8 = crate::Engine::wkv_on()
+                && cfg.gemma4.as_ref().is_some_and(|g| g.swa_pattern[il as usize]);
+            // QWEN FP8-KV (BW24_KV_FP8, bring-up): non-gemma full-attn layers, uniform class.
+            let qwen_fp8 = crate::Engine::kv_fp8_on() && cfg.gemma4.is_none();
+            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 || qwen_fp8 { (32, 32) }
+                                 else { (kbb, vbb) };
             let k_tok_bytes = (kv_dim_k / 32) * kbb_l;
             let v_tok_bytes = (kv_dim_v / 32) * vbb_l;
             match cfg.layer_kind(il) {
                 LayerKind::FullAttention => {
                     kv.push(Some(KvLayer {
-                        k: e.alloc_u8(max_ctx * k_tok_bytes)?,
-                        v: e.alloc_u8(max_ctx * v_tok_bytes)?,
+                        // +8B tail pad: the v4 stage's aligned funnelshift window reads up to
+                        // 4B past the final block (PR #3's finding, adopted pad-style — the
+                        // expert-dot precedent; zero hot-loop branches, values discarded).
+                        k: e.alloc_u8(max_ctx * k_tok_bytes + 8)?,
+                        v: e.alloc_u8(max_ctx * v_tok_bytes + 8)?,
                         kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
                         len_d: e.htod_i32(&[0])?,
                     }));

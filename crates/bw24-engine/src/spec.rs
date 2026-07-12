@@ -164,16 +164,22 @@ pub(crate) struct MtpScratch {
     cap: usize,
 }
 impl MtpScratch {
-    fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize)
+    fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize,
+           geom: Option<&crate::hybrid::DraftGeom>)
            -> Result<Self, Box<dyn std::error::Error>> {
-        let n_head_kv = cfg.n_head_kv as usize;
+        // student draft heads carry fewer KV heads (head_dim unchanged) -> smaller scratch rows.
+        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
         let head_dim_k = cfg.head_dim_k as usize;
         let head_dim_v = cfg.head_dim_v as usize;
         assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
                 "KVQUANT requires head_dim%32==0 (MTP scratch)");
         let kv_dim_k = head_dim_k * n_head_kv;
         let kv_dim_v = head_dim_v * n_head_kv;
-        let (kbb, vbb) = crate::kv_blk_bytes();   // env-selected KV formats (default 34/24)
+        // env-selected KV formats (default 34/24). The fp8-KV arm (BW24_KV_FP8) deliberately
+        // does NOT reach the draft scratch: fp8 drafts drifted acceptance 69-88% -> 46%
+        // (2026-07-12 A/B); the scratch is tiny, so it keeps baseline q8_0/q5_1 numerics
+        // while the TRUNK cache carries the fp8 depth win. Scratch append/fa pass g=false.
+        let (kbb, vbb) = crate::kv_blk_bytes();
         let k_tok_bytes = (kv_dim_k / 32) * kbb;
         let v_tok_bytes = (kv_dim_v / 32) * vbb;
         Ok(MtpScratch { kv: KvLayer {
@@ -238,6 +244,9 @@ impl HybridModel {
                             -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
+        // Distilled-student geometry: the block runs at the INNER width `di` (eh_proj out /
+        // attn / ffn); the n_embd interface (embed, norms in, carrier out, head in) is unchanged.
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let eps = cfg.rms_eps;
         let pos_d = e.htod_i32(&[mtp_pos as i32])?;
 
@@ -260,8 +269,8 @@ impl HybridModel {
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, 1)?;
 
         // op 5: a_norm = RMSNorm(inpSA, attn_norm)
-        let mut a_norm = e.zeros(n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
+        let mut a_norm = e.zeros(di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, 1, eps)?;
 
         // op 6: attention on the scratch KV. SAME dc launcher as the graph path (bucket_max =
         // scratch.cap, length from the device len_d) so eager drafts match graph drafts
@@ -269,7 +278,8 @@ impl HybridModel {
         // advances only the device counter).
         let attn_out = match &mtp.mixer {
             Mixer::Full(fa) => {
-                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch)?;
+                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch,
+                                                mtp.geom.as_ref())?;
                 scratch.kv.len += 1;
                 out
             }
@@ -277,19 +287,19 @@ impl HybridModel {
         };
 
         // op 7: x1 = inpSA + attn_out
-        let mut x1 = e.zeros(n_embd)?;
-        e.add(&inp_sa, &attn_out, &mut x1, n_embd)?;
+        let mut x1 = e.zeros(di)?;
+        e.add(&inp_sa, &attn_out, &mut x1, di)?;
 
         // op 8: z = RMSNorm(x1, post_attn_norm)  (pre-FFN norm)
-        let mut z = e.zeros(n_embd)?;
-        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+        let mut z = e.zeros(di)?;
+        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, di, 1, eps)?;
 
         // op 9: FFN (Dense or MoE) — same as the trunk decode FFN
         let ffn_out = match &mtp.ffn {
             crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                    let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                    let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
                     (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
@@ -303,9 +313,16 @@ impl HybridModel {
             crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, 1, u16::MAX)?,
         };
 
-        // op 10: h_nextn = x1 + ffn_out
-        let mut h_nextn = e.zeros(n_embd)?;
-        e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
+        // op 10: h_nextn = x1 + ffn_out (at di)
+        let mut h_inner = e.zeros(di)?;
+        e.add(&x1, &ffn_out, &mut h_inner, di)?;
+
+        // op 10.5 (student): up-project the inner hidden back to n_embd — training semantics:
+        // the chain carrier AND the head input are out_up(h_inner) (pre-final-norm).
+        let h_nextn = match mtp.geom.as_ref() {
+            Some(g) => e.matmul(&g.out_up, &h_inner, 1)?,
+            None => h_inner,
+        };
 
         // op 11: final = RMSNorm(h_nextn, shared_head_norm OR output_norm)
         let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
@@ -330,15 +347,16 @@ impl HybridModel {
     /// launcher with the SAME bucket_max -> identical dispatch -> bit-identical draft tokens (the
     /// graph-vs-eager parity gate). Host len is NOT advanced here (graph contract); callers mirror.
     fn mtp_full_attn_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch)
+                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch,
+                        geom: Option<&crate::hybrid::DraftGeom>)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
+        let n_head = geom.map(|g| g.n_head).unwrap_or(cfg.n_head as usize);
+        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
-        let n_embd = cfg.n_embd as usize;
+        let n_embd = geom.map(|g| g.d_inner).unwrap_or(cfg.n_embd as usize);
         let bucket_max = scratch.cap;   // < 96 guaranteed by the graph_draft eligibility gate
 
         let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
@@ -369,7 +387,8 @@ impl HybridModel {
         let kv = &mut scratch.kv;
         // append at the DEVICE slot (kv.len_d == old len), then advance the counter in-graph.
         e.append_kv_quantized_dc(&k, &v, &mut kv.k, &mut kv.v, &kv.len_d,
-                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
+                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
+                                 false)?;
         e.inc_seqlen(&mut kv.len_d)?;
         // full-buffer views (any in-round t_kv stays in range on replay); the kernel bounds the
         // key range from the device counter.
@@ -378,7 +397,7 @@ impl HybridModel {
         let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
         let mut attn = e.zeros(n_head * head_dim)?;
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kv.len_d, bucket_max, scale, ktb, vtb)?;
+                       &kv.len_d, bucket_max, scale, ktb, vtb, false)?;
 
         let attn_g = match &gate {
             Some(gate) => {
@@ -434,14 +453,16 @@ impl HybridModel {
                              &h_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
         }
 
-        // ops 4/5: eh_proj + attn_norm, T-wide.
+        // ops 4/5: eh_proj + attn_norm, T-wide (at the student inner width when geom is set).
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, t)?;
-        let mut a_norm = e.zeros(t * n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, t, eps)?;
+        let mut a_norm = e.zeros(t * di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, t, eps)?;
 
         // op 6 (K/V half): wk/wv + k_norm + rope + per-row quantized append. No wq/attention —
         // the fill only has to leave correct K/V rows behind for later chains to attend over.
-        let n_head_kv = cfg.n_head_kv as usize;
+        let n_head_kv = mtp.geom.as_ref().map(|g| g.n_head_kv)
+            .unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let mut k = e.matmul(&fa.wk, &a_norm, t)?;
         let v = e.matmul(&fa.wv, &a_norm, t)?;
@@ -456,7 +477,8 @@ impl HybridModel {
             let k_row = k.slice(i * kv.kv_dim_k..(i + 1) * kv.kv_dim_k);
             let v_row = v.slice(i * kv.kv_dim_v..(i + 1) * kv.kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kv.k, &mut kv.v, kv.len + i,
-                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes)?;
+                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
+                                       false)?;
         }
         kv.len += t;
         e.set_i32_one(&mut kv.len_d, kv.len as i32)?;
@@ -495,6 +517,8 @@ impl HybridModel {
                             -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
+        // student inner width (see mtp_head_forward_dev) — interface dims stay n_embd.
+        let di = mtp.geom.as_ref().map(|g| g.d_inner).unwrap_or(n_embd);
         let eps = cfg.rms_eps;
         let e_emb = e.embed_gather_device(embd_gpu, tok_d, n_embd, embd_qt, embd_rb)?;
         let mut e_norm = e.zeros(n_embd)?;
@@ -505,21 +529,22 @@ impl HybridModel {
         e.copy_into(&mut concat, 0, &e_norm, n_embd)?;
         e.copy_into(&mut concat, n_embd, &h_norm, n_embd)?;
         let inp_sa = e.matmul(&mtp.eh_proj, &concat, 1)?;
-        let mut a_norm = e.zeros(n_embd)?;
-        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, n_embd, 1, eps)?;
+        let mut a_norm = e.zeros(di)?;
+        e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, 1, eps)?;
         let attn_out = match &mtp.mixer {
-            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch)?,
+            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch,
+                                                     mtp.geom.as_ref())?,
             Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
         };
-        let mut x1 = e.zeros(n_embd)?;
-        e.add(&inp_sa, &attn_out, &mut x1, n_embd)?;
-        let mut z = e.zeros(n_embd)?;
-        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, n_embd, 1, eps)?;
+        let mut x1 = e.zeros(di)?;
+        e.add(&inp_sa, &attn_out, &mut x1, di)?;
+        let mut z = e.zeros(di)?;
+        e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, di, 1, eps)?;
         let ffn_out = match &mtp.ffn {
             crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
-                    let (zq, zd) = e.quantize_q8_1(&z, 1, n_embd)?;
+                    let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
                     (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
@@ -537,8 +562,13 @@ impl HybridModel {
             }
             crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense (or resident-MoE) MTP FFN".into()),
         };
-        let mut h_nextn = e.zeros(n_embd)?;
-        e.add(&x1, &ffn_out, &mut h_nextn, n_embd)?;
+        let mut h_inner = e.zeros(di)?;
+        e.add(&x1, &ffn_out, &mut h_inner, di)?;
+        // student: up-project back to n_embd (carrier + head input; see mtp_head_forward_dev).
+        let h_nextn = match mtp.geom.as_ref() {
+            Some(g) => e.matmul(&g.out_up, &h_inner, 1)?,
+            None => h_inner,
+        };
         // BW24_SPEC_HPOST needs final_h even head-less (it IS the next seed under that convention).
         let final_h = if with_head || spec_hpost() {
             let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
@@ -1174,13 +1204,15 @@ impl HybridModel {
             // math on a (block, token) grid, documented byte-identical); host len is a stale
             // LOWER BOUND under pre-issue (drain reconciles it).
             e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, ctr, t,
-                                          kv_dim_k, kv_dim_v, ktb, vtb)?;
+                                          kv_dim_k, kv_dim_v, ktb, vtb,
+                                          crate::Engine::kv_fp8_on())?;
         } else {
         for i in 0..t {
             let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
             let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len + i,
-                                       kv_dim_k, kv_dim_v, ktb, vtb)?;
+                                       kv_dim_k, kv_dim_v, ktb, vtb,
+                                       crate::Engine::kv_fp8_on())?;
         }
         kvl.len += t;
         }
@@ -1219,18 +1251,19 @@ impl HybridModel {
             let k_view = e.view_u8(&kvl.k, (upper.min(cache.max_ctx)) * ktb);
             let v_view = e.view_u8(&kvl.v, (upper.min(cache.max_ctx)) * vtb);
             e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb)?;
+                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb, 0, false)?;
         } else if spec_lean() && t == 1 {
             let t_kv = base_len + 1;
             let k_view = e.view_u8(&kvl.k, t_kv * ktb);
             let v_view = e.view_u8(&kvl.v, t_kv * vtb);
-            e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                        t_kv, scale, ktb, vtb)?;
+            e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                              t_kv, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
         } else if e.fa_rows_eligible(base_len, head_dim) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                             base_len, t, scale, ktb, vtb, None, false)?;
+                             base_len, t, scale, ktb, vtb, None, false,
+                             crate::Engine::kv_fp8_on())?;
         } else {
             for r in 0..t {
                 let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
@@ -1241,7 +1274,8 @@ impl HybridModel {
                 let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
                 e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
                 let mut attn_row = vbuf(e, n_head * head_dim)?;   // fully written by fa_decode
-                e.fa_decode(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim, n_head, n_head_kv, t_kv_r, scale, ktb, vtb)?;
+                e.fa_decode_kvmod(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim,
+                                  n_head, n_head_kv, t_kv_r, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
                 e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
             }
         }
@@ -1287,7 +1321,7 @@ impl HybridModel {
                        -> Result<SpecSession, Box<dyn std::error::Error>> {
         Ok(SpecSession {
             cache: Cache::new(e, &self.cfg, max_ctx)?,
-            scratch: MtpScratch::new(e, &self.cfg, max_ctx)?,
+            scratch: MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?,
             committed: Vec::new(),
             last_h: None,
             next_pred: None,
@@ -1381,7 +1415,7 @@ impl HybridModel {
                 None => {
                     own_cache = Cache::new(e, &self.cfg, max_ctx)?;
                     // Persistent scratch = max_ctx rows (~2KB/token quantized).
-                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx)?;
+                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
                     (&mut own_cache, &mut own_scratch, None)
                 }
             };
@@ -1747,24 +1781,14 @@ impl HybridModel {
                       crate::spec::spec_stream(), draft_graph.is_some(), stream_graph.is_some());
         }
         let t_v_s = k + 1;
-        let mut vtok_d = e.alloc_u32_zeroed(t_v_s)?;
-        let mut brk_d = e.alloc_u32_zeroed(2)?;
-        let mut pend_d = e.alloc_u32_zeroed(1)?;
-        let last_pred_d = e.alloc_u32_zeroed(1)?;
-        let mut pos_ctr = e.htod_i32(&[0])?;
-        let mut pos_start_d = e.htod_i32(&[0])?;
-        let m_rounds = crate::spec::spec_stream_m();
-        let ring_cap = m_rounds * (k + 1) + 1;
-        let mut ring_d = e.alloc_u32_zeroed(ring_cap)?;
-        let mut stream_acc = e.alloc_u32_zeroed(2)?;
+        // ROUND-STREAM buffers + ptr tables now live in the model-generic round_stream
+        // module (extracted 2026-07-12; the gemma burst reuses them).
+        let sb = crate::round_stream::StreamBufs::new(e, k, crate::spec::spec_stream_m())?;
+        let crate::round_stream::StreamBufs {
+            mut vtok_d, mut brk_d, mut pend_d, last_pred_d, mut pos_ctr, mut pos_start_d,
+            mut ring_d, acc_d: mut stream_acc, m_rounds, k: _ } = sb;
         let stream_ptrs: Option<CudaSlice<u64>> = if stream_active {
-            use cudarc::driver::DevicePtr;
-            let mut ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
-                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
-                None => 0u64,
-            }).collect();
-            { let (p, _g) = pos_ctr.device_ptr(e.stream()); ptrs.push(p as u64); }
-            Some(e.htod_u64(&ptrs)?)
+            Some(crate::round_stream::kv_len_ptr_table(e, cache, Some(&pos_ctr))?)
         } else { None };
 
         let mut round = 0usize;
@@ -1777,12 +1801,7 @@ impl HybridModel {
         // ROUND-STREAM stage (b) 3a: device table of per-layer kvl.len_d pointers (stable — the
         // cache never reallocates len_d; see cache.rs "stable pointer" note). 0 = no KV layer.
         let kv_len_ptrs: Option<CudaSlice<u64>> = if spec_devacc() && !spec_replay {
-            use cudarc::driver::DevicePtr;
-            let ptrs: Vec<u64> = (0..self.layers.len()).map(|il| match cache.kv[il].as_ref() {
-                Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
-                None => 0u64,
-            }).collect();
-            Some(e.htod_u64(&ptrs)?)
+            Some(crate::round_stream::kv_len_ptr_table(e, cache, None)?)
         } else { None };
         // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
         // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as
@@ -2523,7 +2542,7 @@ impl HybridModel {
         let t_total = tokens.len();
         assert!(t_total >= 8, "corpus too short ({t_total} tokens)");
         let mut cache = Cache::new(e, &self.cfg, t_total + k + 8)?;
-        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8)?;
+        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
         let embd_gpu = self.embd_gpu.get_or_init(|| {
             e.upload_u8(&self.embd.raw).expect("embed table upload")
         });

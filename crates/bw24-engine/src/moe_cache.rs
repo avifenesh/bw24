@@ -227,7 +227,9 @@ impl MoeSlotCache {
         let mut occupant = Vec::with_capacity(n);
         let mut free_list = Vec::with_capacity(n);
         for s in 0..n {
-            slots.push(e.alloc_u8(max_block_bytes)?);
+            // +8 tail pad: the wide-load expert dots' aligned window reads up to 6B past
+            // the final q4_0 block (values discarded; must be mapped).
+            slots.push(e.alloc_u8(max_block_bytes + 8)?);
             occupant.push(None);
             free_list.push(n - 1 - s); // push reversed so pop() yields 0,1,2,... (deterministic fill)
         }

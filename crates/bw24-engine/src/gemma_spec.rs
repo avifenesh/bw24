@@ -41,6 +41,9 @@ pub struct GemmaDraft {
     pub head: GpuTensor,       // tied drafter token_embd [1024, n_vocab] (or FR-trimmed rows)
     /// FR-Spec trim map: draft-row index -> target token id (None = full head, identity).
     pub d2t: Option<Vec<u32>>,
+    /// Device copy of `d2t` — the async round translates each drafted trim-idx in place
+    /// (u32_map_k) before it seeds the next draft step or meets the verify argmax.
+    pub d2t_dev: Option<CudaSlice<u32>>,
     pub rope_freqs: CudaSlice<f32>,
     pub ones: CudaSlice<f32>,  // weightless-norm weight (max hd 512)
     pub n_embd: usize,         // 1024
@@ -120,11 +123,19 @@ impl GemmaDraft {
             let n_vocab = t.ne[1] as usize;
             match std::env::var("BW24_GEMMA_DRAFT_RANKS").ok() {
                 Some(path) => {
-                    assert_eq!(t.ggml_type, bw24_gguf::GgmlType::Q4_0, "drafter head trim expects Q4_0");
+                    // row gather is layout-agnostic given the per-row byte stride: Q4_0 (26B
+                    // drafter) and Q8_0 (31B drafter) both ship 32-elem blocks row-major.
+                    // (qtype, elems/block, bytes/block) — the gather is stride-agnostic.
+                    let (qtype, blk_e, blk_b) = match t.ggml_type {
+                        bw24_gguf::GgmlType::Q4_0 => (crate::QT_Q4_0, 32, 18),
+                        bw24_gguf::GgmlType::Q8_0 => (crate::QT_Q8_0, 32, 34),
+                        bw24_gguf::GgmlType::Q6_K => (crate::QT_Q6_K, 256, 210),
+                        other => panic!("drafter head trim: unsupported head type {other:?}"),
+                    };
                     let ids: Vec<u32> = std::fs::read_to_string(&path)?
                         .lines().filter_map(|l| l.trim().parse().ok())
                         .filter(|&id| (id as usize) < n_vocab).collect();
-                    let row_bytes = in_f / 32 * 18;
+                    let row_bytes = in_f / blk_e * blk_b;
                     let mut gathered = Vec::with_capacity(ids.len() * row_bytes);
                     for &id in &ids {
                         let off = id as usize * row_bytes;
@@ -135,7 +146,7 @@ impl GemmaDraft {
                               ids.len(), ids.len() * row_bytes / 1_000_000,
                               n_vocab * row_bytes / 1_000_000);
                     (GpuTensor::Quant {
-                        bytes, qtype: crate::QT_Q4_0, row_bytes,
+                        bytes, qtype, row_bytes,
                         ne: vec![in_f as u64, ids.len() as u64], scale: 1.0, rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
@@ -159,6 +170,7 @@ impl GemmaDraft {
                 }
             }
         }
+        let d2t_dev = match &d2t { Some(m) => Some(e.stream().clone_htod(&m[..])?), None => None };
         Ok(GemmaDraft {
             layers,
             pre_proj,
@@ -166,6 +178,7 @@ impl GemmaDraft {
             output_norm: load_t(e, &src, "output_norm.weight")?,
             head,
             d2t,
+            d2t_dev,
             rope_freqs,
             ones: e.htod(&[1.0f32; 512])?,
             n_embd,
@@ -192,7 +205,8 @@ impl HybridModel {
     /// buffer) — zero host traffic.
     fn gemma4_draft_trunk_dev(&self, e: &Engine, d: &GemmaDraft,
                               tok_v: &cudarc::driver::CudaView<u32>,
-                              h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                              h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &Cache,
+                              dc_bucket: Option<usize>)
                               -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let nb = d.n_backbone;
         let embd_gpu = self.embd_gpu.get_or_init(|| {
@@ -201,7 +215,7 @@ impl HybridModel {
         let (qt, rb) = self.embd.qt_and_row_bytes(nb);
         let mut xs = e.embed_gather_device_tv(embd_gpu, tok_v, 1, nb, qt, rb)?;
         e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
-        self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache)
+        self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos_d, cache, dc_bucket)
     }
 
     /// Drafter trunk: returns (post-output_norm hidden [1024], h_next [2816]).
@@ -211,17 +225,21 @@ impl HybridModel {
         let nb = d.n_backbone;
         let mut xs = e.htod(&self.embd.gather(nb, &[token]))?;
         e.scale_inplace(&mut xs, (nb as f32).sqrt(), nb)?;
-        return self.gemma4_draft_trunk_from_x(e, d, &xs, h, pos, cache);
+        let pos_d = e.htod_i32(&[pos as i32])?;
+        return self.gemma4_draft_trunk_from_x(e, d, &xs, h, &pos_d, cache, None);
     }
 
     /// Trunk body from the pre-scaled main-embed row.
     fn gemma4_draft_trunk_from_x(&self, e: &Engine, d: &GemmaDraft, xs: &CudaSlice<f32>,
-                                 h: &CudaSlice<f32>, pos: usize, cache: &Cache)
+                                 h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, cache: &Cache,
+                                 dc_bucket: Option<usize>)
                                  -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        // pos rides a DEVICE slot (burst-arc step a, 2026-07-12): the round fills persistent
+        // slots via set_i32_one (kernel-arg stores — no per-step htod/alloc) and the chain
+        // becomes graph-capturable (an in-graph i32_copy_add can feed the slots later).
         let eps = self.cfg.rms_eps;
         let nb = d.n_backbone;
         let ne = d.n_embd;
-        let pos_d = e.htod_i32(&[pos as i32])?;
         let n_main = self.layers.len();
 
         // xh = concat(x, h) [5632]
@@ -246,20 +264,41 @@ impl HybridModel {
             let mut q = e.uninit(nhh * hd)?;
             e.rms_norm(&q0, dl.q_norm.float_data(), &mut q, hd, nhh, eps)?;
             if dl.swa {
-                e.rope_neox(&mut q, &pos_d, hd, hd, nhh, 1, base, 1.0)?;
+                e.rope_neox(&mut q, pos_d, hd, hd, nhh, 1, base, 1.0)?;
             } else {
-                e.rope_neox_ff(&mut q, &pos_d, hd, hd, nhh, 1, base, 1.0, &d.rope_freqs)?;
+                e.rope_neox_ff(&mut q, pos_d, hd, hd, nhh, 1, base, 1.0, &d.rope_freqs)?;
             }
             let avail = kvl.len;
             let win = d.sliding_window;
-            let (off_tok, t_kv) = if dl.swa && avail > win { (avail - win, win) } else { (0, avail) };
-            let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
-                                         (off_tok + t_kv) * kvl.k_tok_bytes);
-            let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
-                                         (off_tok + t_kv) * kvl.v_tok_bytes);
             let mut attn = e.uninit(nhh * hd)?;
-            e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
-                        kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+            // drafter attends the MAIN cache — its format follows the main layer's class
+            // (windowed L28 = wkv arm, global L29 = gkv arm; gkv routing is hd-keyed inside).
+            // DEVICE-LEN arms (burst arc): the length rides the main layer's len_d counter
+            // so the chain is replay-correct across rounds. dc_bucket = the RUNG the round
+            // derived (power-of-2, shared by eager and captured replays — same n_splits,
+            // same combine order; the main graph arc's bucket lesson). None = host-len arm.
+            if let Some(bucket) = dc_bucket {
+                let k_view = e.view_u8(&kvl.k, kvl.k.len());
+                let v_view = e.view_u8(&kvl.v, kvl.v.len());
+                if dl.swa && avail > win {
+                    e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv,
+                                       &kvl.len_d, -1, 1, 1.0, win,
+                                       kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv,
+                                   &kvl.len_d, bucket, 1.0,
+                                   kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                   dl.swa && crate::Engine::wkv_on())?;
+                }
+            } else {
+                let (off_tok, t_kv) = if dl.swa && avail > win { (avail - win, win) } else { (0, avail) };
+                let k_view = e.view_u8_range(&kvl.k, off_tok * kvl.k_tok_bytes,
+                                             (off_tok + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off_tok * kvl.v_tok_bytes,
+                                             (off_tok + t_kv) * kvl.v_tok_bytes);
+                e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nhh, nkv, t_kv, 1.0,
+                            kvl.k_tok_bytes, kvl.v_tok_bytes, dl.swa && crate::Engine::wkv_on())?;
+            }
             let o = e.matmul(&dl.wo, &attn, 1)?;
 
             let mut post = e.uninit(ne)?;
@@ -357,6 +396,11 @@ impl HybridModel {
         // NEGATIVE — the pageable-copy sync; this is the retry with the sync removed.)
         let mut batch_d = e.stream().alloc_zeros::<u32>(k + 1)?;
         let mut packed = e.stream().alloc_zeros::<u32>(2 * k + 1)?;
+        // confidence-adaptive depth (BW24_SPEC_PMIN, default 0 = off): per-draft probs.
+        let pmin: f32 = std::env::var("BW24_SPEC_PMIN").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mut p_d = e.stream().alloc_zeros::<f32>(k.max(1))?;
+
         // ADAPTIVE DRAFT LENGTH (default ON 2026-07-10; BW24_SPEC_ADAPT=0 reverts): llama's
         // draft-mtp reaches 0.64-0.70 acceptance on the SAME drafter (ours fixed-K: 0.52) by
         // drafting fewer tokens when unconfident (p-min gate). Zero-sync host proxy: next
@@ -365,33 +409,305 @@ impl HybridModel {
         // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
         // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
         let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
-        // cap ceiling 7 (owner: plain to >=1.1x first — spec parked). The b16 verify tier
-        // (t=9..16 weight-read-once kernels) is BUILT but ungated: first cap>=8 sweeps hung/
-        // crashed silently — debug when the spec lane resumes. BW24_SPEC>7 clamps here.
-        let k_cap = k.min(7);
-        let mut kc = k;
+        // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
+        // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
+        // ran UNCLAMPED (`kc = k` — verify t=K+1 entered the b16 tier while it was gated)
+        // and the b16 dispatch requested _r2 twins that were never compiled (mcols==16 now
+        // forces the base variant). Stream gates arbitrate any raised cap.
+        let cap_max: usize = std::env::var("BW24_SPEC_CAPMAX").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(7);
+        let k_cap = k.min(cap_max).max(1);
+        // DRAFT-CHAIN GRAPHS (burst-arc step c, BW24_GEMMA_DRAFT_GRAPH=1): the whole k-step
+        // draft chain replays as ONE captured graph — pos slots fill in-graph from pos_base,
+        // the seed hidden rides the persistent g_seed buffer, KV lengths ride len_d (step b).
+        // Keyed on (kr, rung, over_win): a new depth/rung/window regime captures lazily.
+        let graph_on = std::env::var("BW24_GEMMA_DRAFT_GRAPH").as_deref() == Ok("1");
+        let mut draft_graphs: std::collections::HashMap<(usize, usize, bool),
+            (cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>)> = Default::default();
+        let mut g_seed = e.zeros(n_embd)?;
+        let mut pos_base = e.htod_i32(&[0])?;
+        // seed len_d before round 1 (prime went through the host-len path).
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        // persistent per-step rope-pos slots (device; filled by set_i32_one kernel-arg stores).
+        let mut pos_slots: Vec<CudaSlice<i32>> = (0..k_cap.max(1))
+            .map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?;
+        // clamp round 1 too (the leak above).
+        let mut kc = k_cap;
+        // BURST (BW24_GEMMA_SPEC_BURST=M, default off): pre-issue M full rounds — draft-graph
+        // replay + verify-stream + device accept/seed/rollback/ring-commit — with ONE host
+        // sync per M rounds (the ring drain). The draft(N+1)-overlapping-verify(N) window this
+        // opens is the burst arc's whole prize (~14% of a round; launch tax alone is hidden
+        // at 96.7% busy). Requires the draft graphs (step c) and a regime-stable horizon.
+        let burst_m: usize = std::env::var("BW24_GEMMA_SPEC_BURST").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut burst_state: Option<(crate::round_stream::StreamBufs, CudaSlice<f32>,
+                                     CudaSlice<u64>,
+                                     crate::hybrid_forward::VerifyStreamScratch)> = None;
+        let win_main = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+        let g4_shared = self.cfg.gemma4.as_ref().map(|g| g.shared_kv_layers).unwrap_or(0);
         'outer: while out.len() < max_new {
-            let kr = if adapt { kc } else { k_cap };
+            // burst gate first (see the BURST ARM below): a burst round drafts at FULL depth
+            // (kr = k_cap — the captured chain replays a fixed K; adaptation is host logic).
+            let horizon = burst_m * (k_cap + 1);
+            let burst_ok = burst_m >= 1 && pmin == 0.0 && g4_shared == 0
+                && (cache.pos + horizon + k_cap + 4 < win_main || cache.pos > win_main)
+                // fa512 crossover: the whole horizon on one side (the stream verify's global
+                // arm picks per-row-dc vs rows by hint; straddling rounds stay eager).
+                && (cache.pos + horizon + k_cap + 4 < crate::fa512_min_tkv()
+                    || cache.pos + 1 >= crate::fa512_min_tkv())
+                && e.fa_rows_eligible(cache.pos, 256)
+                && cache.pos + horizon + k_cap + 2 <= cache.max_ctx
+                && out.len() + horizon <= max_new;
+            let kr = if burst_ok { k_cap } else if adapt { kc } else { k_cap };
+            // power-of-2 rung bucket for the dc arms (shared by eager and captured replays);
+            // BW24_GEMMA_DRAFT_DC=0 reverts to the host-len kvmod arm.
+            let dc_bucket: Option<usize> = {
+                static DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                if *DC.get_or_init(|| std::env::var("BW24_GEMMA_DRAFT_DC").as_deref() != Ok("0")) {
+                    let ml = cache.kv.iter().flatten().map(|kv| kv.len).max().unwrap_or(1);
+                    // burst rounds size the rung for the WHOLE horizon: the captured chain
+                    // replays M rounds between host looks, so the grid must cover the last
+                    // round's len too (a per-round rung undersizes past its pow2 boundary).
+                    let slack = if burst_ok { horizon } else { 0 };
+                    Some((ml + slack + k_cap + 2).next_power_of_two().max(512))
+                } else { None }
+            };
             e.u32_set_k(&mut batch_d, last, 0)?;
-            let mut hc = e.clone_dtod(&h)?;
-            for j in 0..kr {
-                let tv = batch_d.slice(j..j + 1);
-                let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, cache.pos + j, &cache)?;
-                let ld = e.matmul(&d.head, &hn, 1)?;
-                e.argmax_token_device_col(&ld, 0, d.head.out_features(), &mut batch_d, j + 1)?;
-                hc = h_next;
+            e.copy_into(&mut g_seed, 0, &h, n_embd)?;
+            // the draft chain, step j: reads g_seed via the hc chain, pos from pos_slots[j]
+            // (eager: host-filled; graph: filled in-graph from pos_base).
+            let run_chain = |e: &Engine, batch_d: &mut CudaSlice<u32>,
+                             p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
+                             pos_slots: &Vec<CudaSlice<i32>>|
+                             -> Result<(), Box<dyn std::error::Error>> {
+                // uninit+copy (NOT clone_dtod): clone_dtod's internal alloc bypasses the
+                // capture-retain hooks — its address got pool-reused between replays and the
+                // replayed chain read a corrupted seed (accept 0.52 vs 0.76).
+                let mut hc = e.uninit(n_embd)?;
+                e.copy_into(&mut hc, 0, g_seed, n_embd)?;
+                for j in 0..kr {
+                    let tv = batch_d.slice(j..j + 1);
+                    let (hn, h_next) = self.gemma4_draft_trunk_dev(e, d, &tv, &hc, &pos_slots[j],
+                                                                   &cache, dc_bucket)?;
+                    let ld = e.matmul(&d.head, &hn, 1)?;
+                    e.argmax_token_device_col(&ld, 0, d.head.out_features(), batch_d, j + 1)?;
+                    // confidence-adaptive depth (BW24_SPEC_PMIN): TRIM-space prob before d2t.
+                    if pmin > 0.0 {
+                        e.prob_of_token_device_col(&ld, batch_d, j + 1, p_d, j,
+                                                   d.head.out_features())?;
+                    }
+                    // FR-trimmed head: translate the trim-space argmax to the vocab id.
+                    if let Some(map) = &d.d2t_dev {
+                        e.u32_map_k(batch_d, map, j + 1)?;
+                    }
+                    hc = h_next;
+                }
+                Ok(())
+            };
+            let over_win = {
+                let win = d.sliding_window;
+                d.layers.iter().any(|dl| dl.swa
+                    && cache.kv[self.layers.len() - 2].as_ref().is_some_and(|kv| kv.len > win))
+            };
+            // ---- BURST ARM ---- (gate computed at the loop top; needs dc arms too)
+            if burst_ok && dc_bucket.is_some() {
+                if burst_state.is_none() {
+                    let bufs = crate::round_stream::StreamBufs::new(e, k_cap, burst_m)?;
+                    let fill_dummy = e.zeros(n_embd)?;   // spec_seed_gather j>=1 always: unread
+                    let ptrs = crate::round_stream::kv_len_ptr_table(e, &cache,
+                                                                     Some(&bufs.pos_ctr))?;
+                    let scr = self.verify_stream_scratch(e, k_cap + 1)?;
+                    burst_state = Some((bufs, fill_dummy, ptrs, scr));
+                }
+                // the loop-top dc_bucket already carries the horizon slack on burst rounds,
+                // so the key below matches the rung the captured chain actually launches with.
+                let key = (k_cap, dc_bucket.unwrap(), over_win);
+                if std::env::var("BW24_GEMMA_BURST_GRAPH").as_deref() == Ok("1")
+                    && !draft_graphs.contains_key(&key) {
+                    let g = e.capture_graph_retained(|e| {
+                        run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                    })?;
+                    draft_graphs.insert(key, g);
+                }
+                // entry: `last` is the not-yet-emitted pending token (the ring only ever
+                // carries accepted drafts + bonuses; the entry pend is emitted host-side).
+                out.push(last);
+                if eos.contains(&last) { break 'outer; }
+                if out.len() >= max_new { break 'outer; }
+                let (bufs, fill_dummy, ptrs, scr) = burst_state.as_mut().unwrap();
+                let n_rows = cache.kv.len() + 1;   // + the pos counter row
+                e.set_i32_one(&mut bufs.pos_ctr, cache.pos as i32)?;
+                e.u32_set_k(&mut bufs.ring_d, 0, 0)?;
+                e.u32_set_k(&mut bufs.pend_d, last, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, k_cap as u32, 0)?;   // k_used = K (no p-min cut)
+                e.u32_set_k(&mut bufs.brk_d, 1, 1)?;              // base = 1 (pend always set)
+                e.copy_into(&mut g_seed, 0, &h, n_embd)?;
+                let pos0 = cache.pos;
+                for r in 0..burst_m {
+                    // every op below is ENQUEUED; nothing reads back until the drain.
+                    e.i32_copy_add(&bufs.pos_ctr, &mut bufs.pos_start_d, 0)?;
+                    e.u32_copy(&bufs.pend_d, &mut batch_d)?;      // batch_d[0] <- pend
+                    for (j, slot) in pos_slots.iter_mut().take(k_cap).enumerate() {
+                        e.i32_copy_add(&bufs.pos_ctr, slot, j as i32)?;
+                    }
+                    // the chain enqueues ZERO-SYNC with device pos slots — the captured-graph
+                    // replay is measured EXPENSIVE (26B eager 379 -> 253 with replay), so the
+                    // burst runs the chain eagerly by default; BW24_GEMMA_BURST_GRAPH=1 keeps
+                    // the replay door for A/B.
+                    if std::env::var("BW24_GEMMA_BURST_GRAPH").as_deref() == Ok("1") {
+                        draft_graphs.get(&key).unwrap().0.launch()?;
+                    } else {
+                        // run_chain's body inlined: the closure holds &cache for the loop's
+                        // lifetime and collides with the verify's &mut cache borrow.
+                        let mut hc = e.uninit(n_embd)?;
+                        e.copy_into(&mut hc, 0, &g_seed, n_embd)?;
+                        for j in 0..k_cap {
+                            let tv = batch_d.slice(j..j + 1);
+                            let (hn, h_next) = self.gemma4_draft_trunk_dev(
+                                e, d, &tv, &hc, &pos_slots[j], &cache, dc_bucket)?;
+                            let ld = e.matmul(&d.head, &hn, 1)?;
+                            e.argmax_token_device_col(&ld, 0, d.head.out_features(),
+                                                      &mut batch_d, j + 1)?;
+                            if let Some(map) = &d.d2t_dev {
+                                e.u32_map_k(&mut batch_d, map, j + 1)?;
+                            }
+                            hc = h_next;
+                        }
+                    }
+                    // host UPPER bound on this round's base (full-accept growth): sizes the
+                    // stream verify's splits + window-arm gate; device len is the true bound.
+                    let hint = pos0 + (r + 1) * (k_cap + 1) + 2;
+                    let (vam_d, vh) = self.gemma4_verify_t_am_stream(
+                        e, &batch_d, k_cap + 1, &bufs.pos_ctr, hint, &mut cache, scr)?;
+                    e.spec_accept_greedy_dc(&vam_d, &batch_d, &bufs.last_pred_d,
+                                            &bufs.brk_d, &mut bufs.acc_d)?;
+                    e.spec_seed_gather(&vh, fill_dummy, &bufs.acc_d, &mut g_seed, 1, n_embd)?;
+                    e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
+                    e.spec_ring_commit(&batch_d, &bufs.acc_d, &bufs.brk_d,
+                                       &mut bufs.ring_d, &mut bufs.pend_d)?;
+                }
+                // drain: THE one sync per M rounds. Ring = [acc..., bonus] per round; the
+                // final element is the next pending token (eager pushes it next round).
+                let toks = bufs.drain_ring(e)?;
+                let posh = e.dtoh_i32(&bufs.pos_ctr)?[0] as usize;
+                drafted += burst_m * k_cap;
+                rounds += burst_m;
+                accepted += toks.len().saturating_sub(burst_m);   // each round adds n_acc + 1
+                let mut ended = false;
+                for &tk in &toks[..toks.len() - 1] {
+                    out.push(tk);
+                    if eos.contains(&tk) || out.len() >= max_new { ended = true; break; }
+                }
+                last = *toks.last().unwrap();
+                // host mirrors re-sync (device counters are already correct from rollback).
+                cache.pos = posh;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len = posh; }
+                // next seed hidden = g_seed (the final round's device gather).
+                let mut hrow = e.uninit(n_embd)?;
+                e.copy_into(&mut hrow, 0, &g_seed, n_embd)?;
+                h = hrow;
+                kc = k_cap;
+                if ended { break 'outer; }
+                continue 'outer;
+            }
+            if graph_on && dc_bucket.is_some() {
+                let key = (kr, dc_bucket.unwrap(), over_win);
+                if !draft_graphs.contains_key(&key) {
+                    // chain-only capture; pos slots are graph INPUTS (filled eagerly before
+                    // each launch, like g_seed — the in-graph copy_add fills replayed one
+                    // round stale, see jsonl).
+                    let g = e.capture_graph_retained(|e| {
+                        run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                    })?;
+                    draft_graphs.insert(key, g);
+                }
+                for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
+                    e.set_i32_one(slot, (cache.pos + j) as i32)?;
+                }
+                draft_graphs.get(&key).unwrap().0.launch()?;
+                // BW24_DRAFT_GRAPH_CHECK=1: re-run the chain eagerly from the same state and
+                // diff the drafted slots (replay-vs-eager divergence bisect).
+                if std::env::var("BW24_DRAFT_GRAPH_CHECK").as_deref() == Ok("1") {
+                    // NON-DESTRUCTIVE: compare, then restore the graph's tokens so the round
+                    // proceeds exactly as it would without the check.
+                    let gtoks = e.dtoh_u32(&batch_d)?;
+                    for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
+                        e.set_i32_one(slot, (cache.pos + j) as i32)?;
+                    }
+                    run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
+                    let etoks = e.dtoh_u32(&batch_d)?;
+                    if gtoks[..=kr] != etoks[..=kr] {
+                        eprintln!("[draft-graph] DIVERGE round={rounds} graph={:?} eager={:?}",
+                                  &gtoks[..=kr], &etoks[..=kr]);
+                    }
+                    for (j, &t) in gtoks.iter().enumerate().take(kr + 1) {
+                        e.u32_set_k(&mut batch_d, t, j)?;
+                    }
+                }
+            } else {
+                for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
+                    e.set_i32_one(slot, (cache.pos + j) as i32)?;
+                }
+                run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
             }
             drafted += kr;
             rounds += 1;
             let pos0 = cache.pos;
+            // BW24_BURST_VCHECK=1: run the STREAM verify first on the same batch/state and
+            // diff its argmaxes against the eager verify (bisect harness — the stream append
+            // writes the same rows the eager append then overwrites, so state is untouched).
+            let vcheck = std::env::var("BW24_BURST_VCHECK").as_deref() == Ok("1");
+            let kvsum = |e: &Engine, cache: &Cache| -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
+                let mut out = Vec::new();
+                for kvl in cache.kv.iter().flatten() {
+                    let kb = e.dtoh_u8(&kvl.k)?;
+                    let vb = e.dtoh_u8(&kvl.v)?;
+                    let lo = pos0 * kvl.k_tok_bytes;
+                    let hi = (pos0 + kr + 1) * kvl.k_tok_bytes;
+                    let lov = pos0 * kvl.v_tok_bytes;
+                    let hiv = (pos0 + kr + 1) * kvl.v_tok_bytes;
+                    out.push((kb[lo..hi].iter().map(|&b| b as u64).sum(),
+                              vb[lov..hiv].iter().map(|&b| b as u64).sum()));
+                }
+                Ok(out)
+            };
+            let vam_s = if vcheck {
+                let mut ctr = e.htod_i32(&[pos0 as i32])?;
+                e.set_i32_one(&mut ctr, pos0 as i32)?;
+                let mut scr0 = self.verify_stream_scratch(e, kr + 1)?;
+                let (vs, _vhs) = self.gemma4_verify_t_am_stream(e, &batch_d, kr + 1, &ctr,
+                                                                pos0 + kr + 3, &mut cache,
+                                                                &mut scr0)?;
+                let ss = kvsum(e, &cache)?;
+                Some((e.dtoh_u32(&vs)?, ss))
+            } else { None };
             let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?;
+            if let Some((vs, ss)) = vam_s {
+                let se = kvsum(e, &cache)?;
+                for (il, (a, b)) in ss.iter().zip(&se).enumerate() {
+                    if a != b {
+                        eprintln!("[vcheck-kv] round={rounds} il={il} stream={a:?} eager={b:?}");
+                    }
+                }
+                let ve = e.dtoh_u32(&vam_d)?;
+                if vs[..kr + 1] != ve[..kr + 1] {
+                    eprintln!("[vcheck] DIVERGE round={rounds} pos0={pos0} stream={:?} eager={:?}",
+                              &vs[..kr + 1], &ve[..kr + 1]);
+                } else {
+                    eprintln!("[vcheck] match round={rounds} pos0={pos0}");
+                }
+            }
             e.u32_pack2(&batch_d, 1, kr, &vam_d, kr + 1, &mut packed)?;
             let host = e.dtoh_u32(&packed)?;           // the round's ONE sync
             let k = kr;
             let dtoks: Vec<u32> = host[..k].to_vec();
             let vam: Vec<u32> = host[k..2 * k + 1].to_vec();
             // longest accepted prefix: d_i accepted iff d_i == argmax(verify[i-1])
-            debug_assert!(d.d2t.is_none(), "async round requires an untrimmed draft head");
+            // (trimmed heads: batch_d slots were d2t-translated in the draft loop, so dtoks
+            // are full-vocab ids here — the 2026-07-10 async rewrite silently dropped this
+            // and the trim probes read accept=0.000 through it.)
             let mut m = 0usize;
             while m < k {
                 if dtoks[m] == vam[m] { m += 1; } else { break; }
@@ -412,6 +728,10 @@ impl HybridModel {
             let keep = m + 1;
             for kvl in cache.kv.iter_mut().flatten() {
                 kvl.len -= (k + 1) - keep;
+                // keep len_d in lockstep: the drafter's device-len attention arms read it
+                // (the gemma round appends via the HOST-len path, which doesn't maintain
+                // the counter — stale len_d gutted acceptance to 0.059 on the dc probe).
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             cache.pos -= (k + 1) - keep;
             // h for the next round = main hidden at the LAST KEPT position (verify row m).
@@ -425,6 +745,15 @@ impl HybridModel {
                 let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
                     .and_then(|v| v.parse().ok()).unwrap_or(1);
                 kc = (m + 1).clamp(floor.min(k_cap), k_cap);
+                // confidence cut (BW24_SPEC_PMIN > 0): next round drafts no deeper than one
+                // past the first low-confidence draft of THIS round (llama's p-min class,
+                // one round late — the zero-sync enqueue stays intact). One extra tiny dtoh.
+                if pmin > 0.0 {
+                    let ph = e.dtoh(&p_d)?;
+                    if let Some(fl) = ph[..kr].iter().position(|&p| p < pmin) {
+                        kc = kc.min((fl + 1).max(floor.min(k_cap)));
+                    }
+                }
             }
         }
         eprintln!("[gemma-spec] rounds={rounds} drafted={drafted} accepted={accepted}                    accept-rate={:.3} tok/round={:.2}",

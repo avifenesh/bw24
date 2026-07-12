@@ -185,14 +185,15 @@ fn build_dev_exps(e: &Engine, cfg: &ModelConfig, gate: &HostExps, up: &HostExps,
                 il[dst + rbg..dst + rbg + rbu].copy_from_slice(&ub[su..su + rbu]);
             }
         }
-        let ild = e.htod_bytes(&il)?;
+        let ild = e.htod_bytes_padded(&il, 8)?;
         // `up` slot points into the same buffer via ptr math; keep a tiny placeholder alloc so
         // the struct shape is unchanged (the table below carries the real pointers).
         (ild, e.htod_bytes(&[0u8; 16])?)
     } else {
-        (e.htod_bytes(gate.bytes.as_bytes())?, e.htod_bytes(up.bytes.as_bytes())?)
+        (e.htod_bytes_padded(gate.bytes.as_bytes(), 8)?,
+         e.htod_bytes_padded(up.bytes.as_bytes(), 8)?)
     };
-    let d = e.htod_bytes(down.bytes.as_bytes())?;
+    let d = e.htod_bytes_padded(down.bytes.as_bytes(), 8)?;
     let mut host = vec![0u64; 3 * n_expert];
     let (pg, pu, pd) = {
         let (pg, _e0) = g.device_ptr(e.stream());
@@ -383,6 +384,20 @@ pub struct MtpHead {
     /// token id of trimmed row `draft_idx`. `None` for a full-vocab head (identity map). Host-side:
     /// the draft argmax already lands on host as one u32, so the map is a single Vec index.
     pub d2t: Option<Vec<u32>>,
+    /// DISTILLED-STUDENT geometry (None = the natural NextN block at trunk shape). A distilled
+    /// draft (StudentSV) runs the same block structure at a narrower inner width with fewer
+    /// heads, then up-projects back to n_embd (`out_up`) — the chain carrier and the head input
+    /// stay at n_embd, so the trunk/verify interface is unchanged. Selected by the presence of
+    /// `blk.N.nextn.out_up.weight` in a BW24_MTP_DRAFT file.
+    pub geom: Option<DraftGeom>,
+}
+
+/// Draft-head geometry override for a distilled (narrower) student block.
+pub struct DraftGeom {
+    pub d_inner: usize,     // block inner width (eh_proj out / attn / ffn), e.g. 2048
+    pub n_head: usize,      // draft attention heads (head_dim = main head_dim)
+    pub n_head_kv: usize,
+    pub out_up: GpuTensor,  // [d_inner -> n_embd]: carrier + head input up-projection
 }
 
 impl MtpHead {
@@ -396,17 +411,23 @@ impl MtpHead {
                       -> Result<Self, Box<dyn std::error::Error>> {
         let src = GgufSource(g);
         let dcfg = src.config();
-        // The head forward runs with the MAIN model's cfg (eps/rope/head geometry) — the draft
-        // block must be the same shape or the forward is garbage.
-        assert_eq!(dcfg.n_embd, main_cfg.n_embd, "draft n_embd != model n_embd");
-        assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
-        assert_eq!(dcfg.n_head_kv, main_cfg.n_head_kv, "draft n_head_kv != model n_head_kv");
-        assert_eq!(dcfg.head_dim_k, main_cfg.head_dim_k, "draft head_dim != model head_dim");
-        assert!(dcfg.nextn_predict_layers > 0, "draft GGUF has no nextn_predict_layers");
-
         // NextN block index INSIDE THE DRAFT FILE (its block_count includes the trunk numbering).
+        assert!(dcfg.nextn_predict_layers > 0, "draft GGUF has no nextn_predict_layers");
         let n = dcfg.n_layer - dcfg.nextn_predict_layers;
         let p = |s: &str| format!("blk.{n}.{s}");
+
+        // Distilled student (narrow block + out_up) vs natural NextN clone. The interface dims
+        // (n_embd in/out, head_dim for the shared rope kernel) must match the main model; a
+        // student may shrink the inner width and head counts.
+        let student = src.has(&p("nextn.out_up.weight"));
+        assert_eq!(dcfg.n_embd, main_cfg.n_embd, "draft n_embd != model n_embd");
+        assert_eq!(dcfg.head_dim_k, main_cfg.head_dim_k, "draft head_dim != model head_dim");
+        if !student {
+            // The head forward runs with the MAIN model's cfg — the draft block must be the
+            // same shape or the forward is garbage.
+            assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
+            assert_eq!(dcfg.n_head_kv, main_cfg.n_head_kv, "draft n_head_kv != model n_head_kv");
+        }
 
         // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
         // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
@@ -434,14 +455,41 @@ impl MtpHead {
             assert!(map.iter().all(|&t| (t as u64) < n_vocab),
                     "d2t contains token id >= model n_vocab {n_vocab}");
         }
-        eprintln!("[mtp-draft] external draft head: blk.{n}, head_vocab={}{}",
+        let eh_proj = load_t(e, &src, &p("nextn.eh_proj.weight"))?;
+        // defensive load gates (review feedback): a malformed student gguf fails HERE with a
+        // named assert, not later as garbage drafts. eh_proj consumes concat(e_norm, h_norm).
+        assert_eq!(eh_proj.in_features(), 2 * main_cfg.n_embd as usize,
+                   "eh_proj in dim != 2*n_embd");
+        let geom = if student {
+            let out_up = load_t(e, &src, &p("nextn.out_up.weight"))?;
+            let d_inner = eh_proj.out_features();
+            assert_eq!(out_up.out_features(), main_cfg.n_embd as usize,
+                       "out_up out dim != n_embd");
+            assert_eq!(out_up.in_features(), d_inner,
+                       "out_up in dim != eh_proj out dim (d_inner)");
+            assert!(dcfg.n_head >= 1 && dcfg.n_head_kv >= 1
+                        && dcfg.n_head % dcfg.n_head_kv == 0,
+                    "student head counts malformed ({}/{})", dcfg.n_head, dcfg.n_head_kv);
+            Some(DraftGeom {
+                d_inner,
+                n_head: dcfg.n_head as usize,
+                n_head_kv: dcfg.n_head_kv as usize,
+                out_up,
+            })
+        } else { None };
+        eprintln!("[mtp-draft] external draft head: blk.{n}, head_vocab={}{}{}",
                   head.out_features(),
-                  if d2t.is_some() { " (trimmed, d2t map)" } else { " (full)" });
+                  if d2t.is_some() { " (trimmed, d2t map)" } else { " (full)" },
+                  match &geom {
+                      Some(g) => format!(" (student d_inner={} heads={}/{})",
+                                         g.d_inner, g.n_head, g.n_head_kv),
+                      None => String::new(),
+                  });
 
         Ok(MtpHead {
             enorm:  load_t(e, &src, &p("nextn.enorm.weight"))?,
             hnorm:  load_t(e, &src, &p("nextn.hnorm.weight"))?,
-            eh_proj: load_t(e, &src, &p("nextn.eh_proj.weight"))?,
+            eh_proj,
             attn_norm: load_t(e, &src, &p("attn_norm.weight"))?,
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
@@ -451,6 +499,7 @@ impl MtpHead {
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
             d2t,
+            geom,
         })
     }
 }
@@ -624,6 +673,7 @@ impl HybridModel {
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
                     shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
                     d2t: None,
+                    geom: None,
                 }),
                 false => None,  // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }
@@ -702,6 +752,13 @@ impl HybridModel {
         if cfg.gemma4.is_some() {
             // gemma4 fa-vec crossover default (measured sweep 2026-07-10; env overrides).
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
+            // windowed split per gemma variant (2026-07-12 sweeps): MoE 26B = 32 (grid-limited
+            // t=1 under the raw-e4m3 sV ceiling), dense 31B = 64 (37.13 vs 36.87 at 1.7k, N=2).
+            crate::FA_SPW_DEFAULT.store(if cfg.moe.is_some() { 32 } else { 64 },
+                                        std::sync::atomic::Ordering::Relaxed);
+            // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
+            crate::FA_SP512_DEFAULT.store(if cfg.moe.is_some() { 16 } else { 32 },
+                                          std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
@@ -756,10 +813,30 @@ impl HybridModel {
         if cfg.gemma4.is_some() && crate::Engine::q4rp_enabled() {
             let mut nmir = 0usize;
             for layer in layers.iter_mut() {
-                let mirror_layer = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_some());
-                if !mirror_layer { continue; }
+                // 26B MoE-class trunk (moe_bits) OR the E4B dense trunk (e4b bits). E4B mirror
+                // arithmetic: attn ~7.5MB/layer (shared layers skip wk/wv via build's no-op on
+                // duplicate mirrors is NOT automatic — they alias the target's tensors as
+                // separate GpuTensors, so their mirrors double ~1.5MB/shared-layer; acceptable)
+                // + dense ffn 3 x 2560x10240 Q4_0 ~44MB + inp_gate/proj ~0.75MB => ~2.2GB for
+                // the 5.2GB model; 24GB card holds model+mirror+KV with >14GB headroom.
+                // Dense 31B stays unmirrored (15GB mirror does not fit) — its arm is the
+                // layout-swap follow-up.
+                let is_moe26 = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_some());
+                let is_e4b = layer.gemma4.as_ref().is_some_and(|g| g.e4b.is_some());
+                if !(is_moe26 || is_e4b) { continue; }
                 if let Mixer::Full(fa) = &mut layer.mixer {
                     for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                        e.build_q4_rp4(w)?; nmir += 1;
+                    }
+                }
+                if is_e4b {
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                        for w in [ffn_gate, ffn_up, ffn_down] {
+                            e.build_q4_rp4(w)?; nmir += 1;
+                        }
+                    }
+                    let e4 = layer.gemma4.as_mut().unwrap().e4b.as_mut().unwrap();
+                    for w in [&mut e4.inp_gate, &mut e4.proj] {
                         e.build_q4_rp4(w)?; nmir += 1;
                     }
                 }
@@ -770,6 +847,31 @@ impl HybridModel {
                 }
             }
             if nmir > 0 { eprintln!("[q4rp] split-plane decode mirrors built: {nmir} trunk tensors"); }
+            // DENSE gemma (31B / E4B trunks): the trunk is too big to MIRROR on 24GB, so the
+            // split layout replaces the GGUF bytes IN PLACE (zero steady-state VRAM; the 31B
+            // profile put 76% of decode on the non-rp q4_0 matvecs). Every consumer routes
+            // off the tensor's rp flag: mmvq/batched `_rp` twins + qmatvec_gemm_q4_0_rp
+            // prefill. The Stage-A f32 oracle reads GGUF layout, so the swap is gated on the
+            // fast path being active (BW24_FAST=0 keeps GGUF bytes end to end — exact oracle).
+            let fast_on = std::env::var("BW24_FAST").as_deref() != Ok("0");
+            if fast_on {
+                let mut nswap = 0usize;
+                for layer in layers.iter_mut() {
+                    let dense_gemma = layer.gemma4.as_ref().is_some_and(|g| g.moe_bits.is_none());
+                    if !dense_gemma { continue; }
+                    if let Mixer::Full(fa) = &mut layer.mixer {
+                        for w in [&mut fa.wq, &mut fa.wk, &mut fa.wv, &mut fa.wo] {
+                            if e.build_q4_rp_swap(w)? { nswap += 1; }
+                        }
+                    }
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
+                        for w in [ffn_gate, ffn_up, ffn_down] {
+                            if e.build_q4_rp_swap(w)? { nswap += 1; }
+                        }
+                    }
+                }
+                if nswap > 0 { eprintln!("[q4rp] split-plane IN-PLACE swap: {nswap} dense trunk tensors"); }
+            }
         }
         let model = HybridModel { cfg, embd, output_norm, output, layers, mtp,
                                   embd_gpu: std::sync::OnceLock::new(), gemma4_aux };

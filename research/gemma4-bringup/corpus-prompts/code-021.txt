@@ -1,0 +1,49 @@
+//! Dense forward pass (Stage-1, all f32, prefill of T tokens, batch=1).
+//! Matches llama.cpp qwen3 graph: embed → per layer {RMSNorm, QKV, QK-norm, RoPE, SDPA, O,
+//! residual, RMSNorm, SwiGLU, residual} → output_norm → lm_head.
+//!
+//! Activation layout: x is [n_embd, T] but we store it row-major-per-token as [T, n_embd]
+//! (token t at offset t*n_embd) so cuBLASLt linear (m=T tokens, in=n_embd) works directly.
+
+use crate::Engine;
+use crate::model::Model;
+
+impl Model {
+    /// Run prefill over `tokens`, return logits [T, n_vocab] (host f32). positions = 0..T.
+    pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let t = tokens.len();
+        let eps = cfg.rms_eps;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        // positions 0..T
+        let pos: Vec<i32> = (0..t as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+
+        // x: [T, n_embd] (token-major)
+        let mut x = self.embed_tokens(e, tokens)?;
+        // Fixed MoE cache-slot size (0 for a non-MoE dense model). Computed once for the whole run.
+        let max_block = self.max_moe_block();
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            // --- attention block ---
+            let mut h = e.zeros(t * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+
+            // QKV projections: q[T, n_head*head_dim], k/v[T, n_head_kv*head_dim]
+            let q_out = layer.wq.out_features();   // n_head*head_dim
+            let k_out = layer.wk.out_features();
+            let v_out = layer.wv.out_features();
+            let mut q = e.matmul(&layer.wq, &h, t)?;
+            let mut k = e.matmul(&layer.wk, &h, t)?;
+            let v = e.matmul(&layer.wv, &h, t)?;
+
+            // QK-norm: RMSNorm over head_dim, per (token, head). Layout [head_dim, n_head, T]
+            // == row-major rows of length head_dim. q currently [T, n_head*head_dim] which is
+            // exactly n_head*T rows of head_dim if we treat each head slice as a row. The memory
+            // for token t is [head0(head_dim) head1(head_dim) ...]; so rows of head_dim are
+            // contiguous and 

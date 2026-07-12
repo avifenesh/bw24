@@ -1,0 +1,42 @@
+//! CUDA-GRAPH-PLAN Phase 3 gate: the CAPTURE/REPLAY decode path (`generate_graph`) must produce a
+//! BIT-IDENTICAL greedy token stream to the eager `decode_step` over N steps, across >= 2 t_kv
+//! buckets (prime P, then generate N crossing the n_splits=ceil(t_kv/64) split boundaries). Any token
+//! mismatch = FAIL.
+//!
+//! `generate_graph` primes the prompt eagerly (device-counter `decode_step_dc`), then replays a
+//! captured CUDA graph per gen step. The graph is captured once per t_kv bucket (key = eager
+//! (fa_vec, n_splits)); the captured fa_decode_dc reads the ACTUAL t_kv from a device counter and
+//! sizes n_splits from the bucket so replay reproduces eager's split geometry bit-for-bit. The KV
+//! write slot + rope pos + token id are all device-resident; only a [1] u32 token is read back per
+//! step. NO host sync inside the captured region.
+//!
+//! usage: graph-decode-gate <model> [P] [N] [bench]   (fast-path core is default-on)
+use bw24_engine::Engine;
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::decode::GraphDecodeState;
+use bw24_engine::forward::argmax;
+use bw24_gguf::GgufFile;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args().nth(1).expect("usage: graph-decode-gate <model> [P] [N] [bench]");
+    let p: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(64);
+    let n: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(256);
+    let e = Engine::new(0)?;
+    let g = GgufFile::open(&path)?;
+    let m = HybridModel::load(&e, &g)?;
+
+    let prompt: Vec<u32> = (0..p).map(|i| (100 + (i * 7) % 900) as u32).collect();
+
+    // ---- EAGER reference: prime + generate N greedy tokens via decode_step ----
+    let mut cache_e = bw24_engine::cache::Cache::new(&e, &m.cfg, p + n + 8)?;
+    let mut ll = Vec::new();
+    for &t in &prompt { ll = m.decode_step(&e, t, &mut cache_e)?; }
+    let mut eager_in = argmax(&ll) as u32;
+    let mut eager_tokens = Vec::with_capacity(n);
+    let mut buckets_seen: Vec<(bool, usize)> = Vec::new();
+    let head_dim = m.cfg.head_dim_k as usize;
+    for _ in 0..n {
+        let t_kv = cache_e.kv.iter().filter_map(|k| k.as_ref()).map(|k| k.len + 1).next().unwrap_or(0);
+        let key = e.fa_bucket_key(t_kv, head_dim, m.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
+        if !buckets_seen.contains(&key) { buckets_seen.push(key); }
+        ll

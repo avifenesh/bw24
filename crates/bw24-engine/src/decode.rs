@@ -603,7 +603,7 @@ impl HybridModel {
         for _ in 0..max_new {
             // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
             let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize);
+            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
             if !gs.graphs.contains_key(&key) {
                 // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
                 let bucket_max = t_kv;
@@ -754,7 +754,8 @@ impl HybridModel {
         let kvl = cache.kv[il].as_mut().unwrap();
         // (1) append at the device write slot kvl.len_d (== old len).
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 crate::Engine::kv_fp8_on())?;
         // (2) advance the device counter: kvl.len_d now holds new len == t_kv.
         e.inc_seqlen(&mut kvl.len_d)?;
         // n_splits sizing + K/V view extent:
@@ -785,7 +786,7 @@ impl HybridModel {
         }
         // (3) fa_decode reads t_kv from kvl.len_d; bucket_max yields the eager n_splits -> bit-identical.
         e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kvl.len_d, bucket_max, scale, ktb, vtb)?;
+                       &kvl.len_d, bucket_max, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
 
         let attn_g = match &gate {
             Some(gate) => {
@@ -829,10 +830,13 @@ impl HybridModel {
         crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
                                  std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(max_new);
-        // E4B: dc/graph serving arms UNWIRED (HANDOVER-E4B.md) — the eager loop below routes
-        // through gemma4_e4b_decode_step_h.
-        if self.cfg.gemma4.is_some() && !self.is_gemma4_e4b() {
+        if self.cfg.gemma4.is_some() {
+            // Graph serving probed FLAT vs this dc loop (2026-07-12, 1.7k N=2: 174.6/174.2 vs
+            // 174.5/174.3) — the GRAPH-GATE's +2.5% is over the plain-eager loop, and the dc
+            // arc already banked that; the gate (IDENTICAL at every ctx since the wkv
+            // capture-arm fix) stays as the correctness harness.
             // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
+            // E4B rides its own dc step (same trunk fns as its eager chain).
             let n_vocab = self.output.out_features();
             let embd_gpu = self.embd_gpu.get_or_init(|| {
                 e.upload_u8(&self.embd.raw).expect("embed table upload")
@@ -841,12 +845,46 @@ impl HybridModel {
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
+            let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            // E4B GRAPH SERVING (default ON under the window; BW24_E4B_GRAPH=0 reverts to
+            // dc-eager): the 42-layer stack fires ~800 tiny launches/token — launch-gap
+            // bound (nsys 2026-07-12) — so one whole-token graph replay is the lever.
+            // v1 gate mirrors the 26B graph arc: whole generation under the sliding window.
+            let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+            if e4b && cache.pos + max_new + 2 < win
+                && std::env::var("BW24_E4B_GRAPH").as_deref() != Ok("0") {
+                let mut graph: Option<(usize, cudarc::driver::CudaGraph,
+                                       Vec<Box<dyn std::any::Any + Send>>)> = None;
+                for _ in 0..max_new {
+                    out.push(e.dtoh_u32(&token_d)?[0]);
+                    let need = cache.pos + 2;
+                    let rung = need.next_power_of_two().max(64);
+                    if graph.as_ref().map(|g| g.0) != Some(rung) {
+                        let (g, keep) = e.capture_graph_retained(|e| {
+                            self.gemma4_e4b_decode_step_dcg(e, &mut token_d, &mut pos_d,
+                                                            embd_gpu, qt, rb, &mut cache,
+                                                            n_vocab, rung)
+                        })?;
+                        graph = Some((rung, g, keep));
+                        // capture DOESN'T execute: run the step for real once via replay.
+                    }
+                    graph.as_ref().unwrap().1.launch()?;
+                    cache.pos += 1;
+                    for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+                }
+                return Ok(out);
+            }
             for _ in 0..max_new {
                 out.push(e.dtoh_u32(&token_d)?[0]);
-                token_d = self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
-                                                     &mut cache, n_vocab, None)?;
+                token_d = if e4b {
+                    self.gemma4_e4b_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                                   &mut cache, n_vocab)?
+                } else {
+                    self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                               &mut cache, n_vocab, None)?
+                };
             }
             return Ok(out);
         }
@@ -907,7 +945,7 @@ impl HybridModel {
         // gemma4 DEVICE-COUNTER greedy serving loop (the dc arc): token/pos/kv-lens live in
         // device counters, argmax on device — host sees 4B/token. Stream-identical to the
         // eager chain (DC-GATE). Penalties/temp fall through to the host-logits loop.
-        if self.cfg.gemma4.is_some() && !self.is_gemma4_e4b()
+        if self.cfg.gemma4.is_some()
             && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
             let n_vocab = self.output.out_features();
             let embd_gpu = self.embd_gpu.get_or_init(|| {
@@ -918,6 +956,7 @@ impl HybridModel {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             let first = crate::forward::argmax(&last_logits) as u32;
+            let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[first])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
             let mut next = first;
@@ -927,8 +966,13 @@ impl HybridModel {
                 if params.eos.contains(&next) { reason = StopReason::Eos; break; }
                 if !on_token(next) { reason = StopReason::Callback; break; }
                 if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
-                token_d = self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
-                                                     &mut cache, n_vocab, None)?;
+                token_d = if e4b {
+                    self.gemma4_e4b_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                                   &mut cache, n_vocab)?
+                } else {
+                    self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                               &mut cache, n_vocab, None)?
+                };
                 next = e.dtoh_u32(&token_d)?[0];
             }
             return Ok(GenOutput { tokens: out, stop_reason: reason });
@@ -1024,7 +1068,8 @@ impl HybridModel {
         // q5_1 V, on-device append-quantize kernel; no host round-trip). KVQUANT-PLAN §C/E2.
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
-                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                              crate::Engine::kv_fp8_on())?;
         kvl.len += 1;
         let t_kv = kvl.len;
 
@@ -1037,7 +1082,8 @@ impl HybridModel {
             return Err("BW24_NOFA (naive f32 SDPA) is incompatible with the quantized KV cache; \
                         unset BW24_NOFA to use fa_decode".into());
         }
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv, scale, ktb, vtb)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, t_kv,
+                          scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
         let _ = pos;
 
         // output gate: attn * sigmoid(gate), then o-proj

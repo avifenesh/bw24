@@ -81,13 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok * kv_dim..(tok + 1) * kv_dim);
                 let v_row = vd.slice(tok * kv_dim..(tok + 1) * kv_dim);
                 e.append_kv_quantized_view(&k_row, &v_row, &mut kc, &mut vc, tok,
-                                           kv_dim, kv_dim, k_tok_bytes, v_tok_bytes)?;
+                                           kv_dim, kv_dim, k_tok_bytes, v_tok_bytes, false)?;
             }
             let kview = e.view_u8(&kc, tkv * k_tok_bytes);
             let vview = e.view_u8(&vc, tkv * v_tok_bytes);
             let mut o_q = e.zeros(hd * nh * t)?;
             e.fa_prefill_view(&qd, &kview, &vview, &mut o_q, hd, nh, nhkv, t, tkv, scale,
-                              true, k_tok_bytes, v_tok_bytes)?;
+                              true, k_tok_bytes, v_tok_bytes, false)?;
             let oq = e.dtoh(&o_q)?;
             let rel = rel_diff(&oref, &oq);
             println!("[{label}] fa_prefill_q    T={t}: rel={rel:.2e} {}",
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe { std::env::set_var("BW24_PRIME_DEQW_DB", db); }
                 let mut o_ws = e.zeros(hd * nh * t)?;
                 e.fa_prefill_view_ws(&qd, &kview, &vview, &mut o_ws, hd, nh, nhkv, t, tkv,
-                                     scale, true, k_tok_bytes, v_tok_bytes)?;
+                                     scale, true, k_tok_bytes, v_tok_bytes, false)?;
                 let ows = e.dtoh(&o_ws)?;
                 let bitdiff = oq.iter().zip(&ows)
                     .filter(|(x, y)| x.to_bits() != y.to_bits()).count();

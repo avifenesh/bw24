@@ -1,0 +1,47 @@
+//! The single GPU worker thread + step-interleave scheduler (BASE-4, BW24-BUILD-MAP §4e).
+//!
+//! WHY a dedicated thread: the CUDA context is THREAD-AFFINE. `Engine` (and every `CudaStream` /
+//! `CudaSlice` it owns) must only ever be touched from the one thread that created the context.
+//! So we spawn ONE OS thread, build `Engine::new(0)` on it, load every `HybridModel` on it, and
+//! never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run on a
+//! separate tokio runtime and submit work over an `mpsc` channel; each request carries a `tokio`
+//! mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one request.
+//!
+//! SCHEDULER LOOP: the worker holds a `Vec<Session>` of active generations. Each iteration it
+//! round-robin steps EVERY active session by exactly ONE `decode_step` (one token of prefill OR
+//! one decode token), samples, checks stop, streams the token text back on that session's channel,
+//! and retires finished sessions. Queued admits fill empty slots up to `MAX_ACTIVE`. This is the
+//! interleave: a long generation and a freshly-admitted one make forward progress in the same loop,
+//! so the second produces tokens before the first finishes (not serialized end-to-end).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
+
+use bw24_engine::Engine;
+use bw24_engine::cache::Cache;
+use bw24_engine::decode::{GenParams, StopReason};
+use bw24_engine::hybrid::HybridModel;
+use bw24_engine::sampler::{Sampler, SamplerConfig};
+use bw24_gguf::GgufFile;
+use bw24_tokenizer::Tokenizer;
+
+/// Max concurrently-active sessions the scheduler interleaves. Admits beyond this queue (FIFO).
+pub const MAX_ACTIVE: usize = 4;
+
+/// A model loaded resident on the worker thread: weights + its own tokenizer + config snapshot.
+struct LoadedModel {
+    model: HybridModel,
+    tok: Tokenizer,
+    eos_id: u32,
+}
+
+/// What the worker streams back to one request, over its per-request tokio mpsc channel.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// One decoded token: the raw id + the incremental text delta (detokenized tail minus prefix).
+    Token { id: u32, text: String },
+    /// Terminal event: why we stopped + final token count + timing.
+    Done { stop_reason: String, n_tokens: usize, elapsed_s: f64 },
+    /// The request could not start (bad mo

@@ -4432,10 +4432,54 @@ __device__ __forceinline__ float expert_dot_iq4xs_g_v(const unsigned char* wrow,
     sumi = dp4a(v3.x, aLo[3], sumi); sumi = dp4a(v3.y, aHi[3], sumi);
     return d_sb * (float)(scale * sumi) * d8;
 }
-// qtype wrapper: IQ4_XS takes the wide-load body; every other qtype = expert_dot_g verbatim.
+// ---- Q4_0 WIDE-LOAD group dot (gemma A4B lane 2026-07-12) ----
+// WHY: expert_dot_q4_0_g issues 1 U16 + 16 byte-class loads per 18B block (the q4_0 stride
+// is 2 mod 4 — nothing aligns); the gemma MoE pair reads DRAM 50% / SM 40% with the load
+// chain as the critical path (same disease the trunk q4rp split-plane cured). This body
+// reads the SAME 18 bytes as 6 aligned LDG.32 + funnelshift extraction (REVISION 4b recipe,
+// SASS-proven on fa_v4_stage_k): same bytes -> same lo/hi ints -> same dp4a order ->
+// bit-identical result.
+// OVERREAD: the aligned 24B window reads up to 6B past the block — within a row/slab that is
+// the next block's bytes; the LAST block of an expert slab needs the 8B tail pad at the moe
+// alloc site (see moe slab alloc).
+__device__ __forceinline__ float expert_dot_q4_0_g_v(const unsigned char* wrow, int g,
+                                                     const signed char* aqb, float d8) {
+    const unsigned char* b = wrow + (long)g * 18;
+    const unsigned sh8 = ((unsigned)(size_t)b & 3u) * 8u;
+    const uint32_t* ap = (const uint32_t*)((size_t)b & ~(size_t)3);
+    uint32_t w0 = ap[0], w1 = ap[1], w2 = ap[2], w3 = ap[3], w4 = ap[4], w5 = ap[5];
+    uint32_t s0 = __funnelshift_r(w0, w1, sh8);   // bytes b[0..3]
+    uint32_t s1 = __funnelshift_r(w1, w2, sh8);   // b[4..7]
+    uint32_t s2 = __funnelshift_r(w2, w3, sh8);   // b[8..11]
+    uint32_t s3 = __funnelshift_r(w3, w4, sh8);   // b[12..15]
+    uint32_t s4 = __funnelshift_r(w4, w5, sh8);   // b[16..19] (2B past the block)
+    float d4 = half_to_float((unsigned short)(s0 & 0xffffu));
+    // qs word k = bytes b[2+4k .. 5+4k] — one more 16-bit funnel over the byte stream.
+    uint32_t q0 = __funnelshift_r(s0, s1, 16), q1 = __funnelshift_r(s1, s2, 16);
+    uint32_t q2 = __funnelshift_r(s2, s3, 16), q3 = __funnelshift_r(s3, s4, 16);
+    const uint32_t qw[4] = { q0, q1, q2, q3 };
+    const int* aq4 = (const int*)aqb;
+    int sumi = 0, sums = 0;
+    #pragma unroll
+    for (int k = 0; k < 4; k++) {
+        int lo = (int)(qw[k] & 0x0F0F0F0Fu);
+        int hi = (int)((qw[k] >> 4) & 0x0F0F0F0Fu);
+        int a_lo = aq4[k];
+        int a_hi = aq4[4 + k];
+        sumi = dp4a(lo, a_lo, sumi);
+        sumi = dp4a(hi, a_hi, sumi);
+        sums = dp4a(0x01010101, a_lo, sums);
+        sums = dp4a(0x01010101, a_hi, sums);
+    }
+    return d4 * (float)(sumi - 8 * sums) * d8;
+}
+
+// qtype wrapper: IQ4_XS and Q4_0 take the wide-load bodies; every other qtype = expert_dot_g
+// verbatim.
 __device__ __forceinline__ float expert_dot_g_v(int qtype, const unsigned char* wrow, int g,
                                                 const signed char* aqb, float d8) {
     if (qtype == QT_IQ4_XS) return expert_dot_iq4xs_g_v(wrow, g, aqb, d8);
+    if (qtype == QT_Q4_0)   return expert_dot_q4_0_g_v(wrow, g, aqb, d8);
     return expert_dot_g(qtype, wrow, g, aqb, d8);
 }
 
@@ -5013,8 +5057,8 @@ extern "C" __global__ void moe_gate_up_gelu8_dev_q8(
     for (int g = lane; g < nsb; g += 32) {
         const signed char* aqb = aq + (size_t)g * 32;
         float d8 = ad[g];
-        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
-        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+        accg += expert_dot_g_v(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, urow, g, aqb, d8);
     }
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
@@ -5223,7 +5267,7 @@ __device__ __forceinline__ float2 down_h2_dot(
     const signed char* arow = aq2 + (size_t)j * in_f;
     const float* adrow = ad2 + (size_t)j * nsb;
     // one group per lane (nsb==16): identical expert_dot_g call to the base kernel's lane l16.
-    float acc = expert_dot_g(qt, wrow, l16, arow + (size_t)l16 * 32, adrow[l16]);
+    float acc = expert_dot_g_v(qt, wrow, l16, arow + (size_t)l16 * 32, adrow[l16]);
     // row A (o0): lanes 0..15 partials, upper half 0 — the base tree layout verbatim.
     float accA = (half == 0) ? acc : 0.0f;
     float a0 = warp_reduce_sum(accA);
@@ -5619,8 +5663,8 @@ extern "C" __global__ void moe_gate_up_gelu8_dev_q8_rows(
     for (int g = lane; g < nsb; g += 32) {
         const signed char* aqb = aqt + (size_t)g * 32;
         float d8 = adt[g];
-        accg += expert_dot_g(qt_g, grow, g, aqb, d8);
-        accu += expert_dot_g(qt_u, urow, g, aqb, d8);
+        accg += expert_dot_g_v(qt_g, grow, g, aqb, d8);
+        accu += expert_dot_g_v(qt_u, urow, g, aqb, d8);
     }
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
@@ -5653,7 +5697,7 @@ extern "C" __global__ void moe_down8_fma_dev_q8_rows_g(
         const float* adrow = ad2 + ((size_t)tok * n_used + j) * nsb;
         float acc = 0.0f;
         for (int g = lane; g < nsb; g += 32)
-            acc += expert_dot_g(qt, wrow, g, arow + (size_t)g * 32, adrow[g]);
+            acc += expert_dot_g_v(qt, wrow, g, arow + (size_t)g * 32, adrow[g]);
         acc = warp_reduce_sum(acc);
         if (lane == 0) chain = __fmaf_rn(wt[j], acc, chain);
     }
@@ -6450,16 +6494,24 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1,
         int in_f, int out0, int out1, long rb0, long rb1) {
+    // GRID-STRIDE (2026-07-12, 31B wave-quantization fix): the flat launch ran 5.46 waves/SM
+    // — the 0.46 tail wave idled ~54% of the card for ~8% of the duration (ncu, DRAM capped
+    // at 92.9%). Striding distributes the tail one iteration wide across every SM. Per-row
+    // math and each warp's row assignment order are untouched — bit-identical outputs.
+    const int rpb = (int)blockDim.y;   // host BW24_FUSED_RPB knob (tail-wave granularity)
     int pairs0 = (out0 + 1) / 2;
-    int nb0 = (pairs0 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int b = blockIdx.x;
-    if (b < nb0) {
-        q4_0_mmvq_row2_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
-                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
-    } else {
-        b -= nb0;
-        q4_0_mmvq_row2_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
-                          (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    int nb0 = (pairs0 + rpb - 1) / rpb;
+    int nb1 = ((out1 + 1) / 2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1; vb += gridDim.x) {
+        int b = vb;
+        if (b < nb0) {
+            q4_0_mmvq_row2_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                              (b * rpb + (int)threadIdx.y) * 2, 0);
+        } else {
+            b -= nb0;
+            q4_0_mmvq_row2_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                              (b * rpb + (int)threadIdx.y) * 2, 0);
+        }
     }
 }
 extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_rp(
@@ -6468,15 +6520,19 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
         int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
-    int nb0 = ((out0 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int nb1 = ((out1 + 1) / 2 + BW24_MMVQ_ROWS - 1) / BW24_MMVQ_ROWS;
-    int b = blockIdx.x;
-    const unsigned char* W; float* y; int out_f; long rb;
-    if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
-    else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
-    else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
-    q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, 1, rb,
-                      (b * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2, 0);
+    const int rpb = (int)blockDim.y;   // host BW24_FUSED_RPB knob
+    int nb0 = ((out0 + 1) / 2 + rpb - 1) / rpb;
+    int nb1 = ((out1 + 1) / 2 + rpb - 1) / rpb;
+    int nb2 = ((out2 + 1) / 2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1 + nb2; vb += gridDim.x) {
+        int b = vb;
+        const unsigned char* W; float* y; int out_f; long rb;
+        if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+        else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+        else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+        q4_0_mmvq_row2_rp(W, aq, ad, y, in_f, out_f, 1, rb,
+                          (b * rpb + (int)threadIdx.y) * 2, 0);
+    }
 }
 // batched (weight-read-once, m<=MCOLS) twin — body mirrors q4_0_mmvq_batched.
 template<int MCOLS>

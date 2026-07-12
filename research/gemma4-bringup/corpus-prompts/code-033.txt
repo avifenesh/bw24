@@ -1,0 +1,42 @@
+//! SPILLING-PLAN: full tiered spilling (VRAM ↔ pinned-host ↔ mmap-disk).
+//!
+//! Today bw24 has the VRAM↔pinned-host leg (the `MoeSlotCache` GPU slot cache + the pinned
+//! `HostExps` host store). This module adds the **third tier**: a `HostBuf::Mmap` arm (model.rs)
+//! so cold experts are demand-faulted from the GGUF file on disk instead of held in RAM, plus the
+//! runtime memory probe (`MemBudget`) that decides — per expert, at load — which tier each block
+//! lives in. Never hardcode: VRAM is queried via `cuMemGetInfo`, host RAM via `/proc/meminfo`.
+//!
+//! THE GATE (SPILLING-PLAN §8): spilling is a memory-PLACEMENT change, never a numerics change. A
+//! `Mmap` expert and a `Pinned` expert feed `qmatvec_view` byte-for-byte identical GGUF bytes — the
+//! `Pinned`/`Paged` stores copied FROM exactly those on-disk bytes — so argmax is unchanged.
+//!
+//! The disk tier is gated behind `BW24_SPILL_DISK`. Unset (default) = the current all-host
+//! behavior, byte-identical: `HostExps::tiers` stays `None` and every expert slices the single
+//! pinned/paged backing store. The daily models (9B/27B) fit 24 GB and NEVER trigger spill.
+
+use std::sync::Arc;
+use memmap2::Mmap;
+use crate::Engine;
+use crate::model::HostBuf;
+
+/// Runtime free-memory budget (SPILLING-PLAN §2). Both numbers are QUERIED at load, never
+/// hardcoded — free host RAM "varies with other LLM servers", so the split between pinned (Tier 1)
+/// and disk (Tier 2) must be decided against the live machine state.
+#[derive(Clone, Copy, Debug)]
+pub struct MemBudget {
+    /// Free VRAM in bytes, from `cuMemGetInfo` (authoritative; accounts for other GPU processes).
+    pub free_vram: usize,
+    /// Bytes of host RAM safe to pin: `/proc/meminfo MemAvailable` × `pinned_frac` (default 0.60).
+    /// Capped so `cudaHostAlloc` can neither OOM nor evict the page cache the Tier-2 mmap depends on.
+    pub free_pinnable_ram: usize,
+}
+
+impl MemBudget {
+    pub fn probe(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
+        let (free_vram, _total) = e.ctx().mem_get_info()?;     // same call moe_cache.rs:77 uses
+        let avail = read_meminfo_kb("MemAvailable")? * 1024;   // MemAvailable (NOT MemFree)
+        let frac = std::env::var("BW24_SPILL_PINNED_FRAC")
+            .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.60);
+        Ok(MemBudget {
+            free_vram,
+            free_pinnable_ram: (

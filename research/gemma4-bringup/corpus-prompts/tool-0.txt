@@ -1,0 +1,6 @@
+You have access to these tools:
+{"name": "get_weather", "parameters": {"city": {"type": "string"}}}
+{"name": "search_files", "parameters": {"pattern": {"type": "string"}, "path": {"type": "string"}}}
+
+User: what is the weather in Tel Aviv and find any files mentioning rain in /data/logs?
+Assistant:

@@ -1,0 +1,42 @@
+// mmq_fp4.cu — NVFP4 W4A4 block-scale MMQ prefill GEMM (vendored floor, ggml-decoupled, sm_120a).
+//
+// This is the 5150-pp512 kernel from llama.cpp brought into bw24 wholesale (the user's "copy the
+// working fast kernel, tune the edges" mandate). Source: /data/projects/llama.cpp/ggml/src/ggml-cuda/
+//   - quantize.cu  : quantize_mmq_nvfp4 (activation f32 -> block_fp4_mmq, 2-level FP8-e8m0/UE4M3 scale)
+//   - mmq.cuh      : block_q8_1_mmq / block_fp4_mmq, load_tiles_nvfp4_nvfp4, vec_dot_fp4_fp4_mma,
+//                    mmq_write_back_mma, mul_mat_q_process_tile, mul_mat_q (conventional xy-tiling)
+//   - mma.cuh      : tile<>, load_ldmatrix, load_generic, mma_block_scaled_fp4 (mxf4nvf4 block-scale mma)
+//   - common.cuh   : ggml_cuda_ue4m3_to_fp32 / fp32_to_ue4m3 / float_to_fp4_e2m1, kvalues_mxfp4
+//
+// DECOUPLING: no ggml headers. ggml_tensor/backend/pool/info stripped -> raw device pointers + the
+// hardcoded sm_120 constants (warp_size=32, nwarps=8, mmq_y=128, BLACKWELL_MMA_AVAILABLE). We use the
+// CONVENTIONAL xy-tiling launch (one tile/CTA, fixup=false) so there is NO stream-K and NO fixup buffer
+// (the stream-K path only helps when ntiles << SMs; prefill GEMM has many tiles -> xy-tiling is fine).
+//
+// WEIGHT FORMAT (verified vs cu/cutlass_fp4_sm120.cu deinterleave): bw24's stored NVFP4 weight bytes
+// are EXACTLY llama's block_nvfp4 = per row, in_f/64 blocks of 36 bytes = [4 UE4M3 scale bytes | 32
+// e2m1 qs bytes], qs packed so element w of sub-block s lives in qs[s*8 + (w&7)] lo/hi at w<8/w>=8.
+// That is the SAME packing quantize_mmq_nvfp4 emits for activations -> load_tiles_nvfp4_nvfp4 reads
+// the raw weight bytes directly (pure u32 copy, no repack).
+//
+// C-ABI launcher: bw24_mmq_nvfp4(W_nvfp4, act_f32, y, in_f, out_f, n_tokens, stream). Internally
+// quantizes act_f32 -> block_fp4_mmq, then launches mul_mat_q NVFP4. Compiled to a static lib (same as
+// cutlass_fp4_sm120.cu), called from Rust via FFI.
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <cuda_fp8.h>
+#include <cstdint>
+#include <cfloat>
+#include <cmath>
+
+// ======================= ggml constants/macros (vendored, sm_120) =======================
+#define BLACKWELL_MMA_AVAILABLE
+#define TURING_MMA_AVAILABLE
+#define WARP_SIZE 32
+#define NO_DEVICE_CODE __trap()
+#define GGML_UNUSED(x) (void)(x)
+#define GGML_PAD(x, n) (((x) + (n) - 1) / (n) * (n))
+
+// q

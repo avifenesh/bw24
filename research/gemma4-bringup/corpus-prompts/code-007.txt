@@ -1,0 +1,50 @@
+//! EDGE-1 §B: SLRU GPU expert-residency cache (MOE-SLRU-PLAN §B).
+//!
+//! Stage-1 `moe_ffn` re-stages EVERY routed expert EVERY token over PCIe into one scratch slot.
+//! The same ~15-20% of experts recur (the "hot expert" mass), so an SLRU residency cache makes
+//! the steady-state re-stage count -> ~0. The cache holds N fixed-address GPU slots (never
+//! re-allocated, never fragmented), a `BlockId -> slot` residency table, an SLRU eviction policy
+//! (probation + protected segments; the second-miss "ghost" admission filter was measured a net
+//! loss in both regimes and removed 2026-07-08 — first-miss admit is the policy) so a one-off cold
+//! expert can never evict a genuinely hot one.
+//!
+//! THE bit-identity property (MOE-SLRU-PLAN §B.3): a cache HIT and a MISS feed `qmatvec_view` the
+//! *same* GGUF block bytes — the only difference is whether the `memcpy_htod` ran. So the cache-hit
+//! weight path is byte-for-byte identical to stage-every-token; the §D.2 gate pins this.
+//!
+//! Gated behind `BW24_MOE_CACHE` (default off => current stage-every-token behavior).
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use cudarc::driver::CudaSlice;
+use crate::Engine;
+
+/// Which projection of an expert (gate/up/down are three distinct GGUF blocks per expert).
+pub const PROJ_GATE: u8 = 0;
+pub const PROJ_UP: u8 = 1;
+pub const PROJ_DOWN: u8 = 2;
+
+/// Residency key: expert `ex` of layer `layer` projection `proj` is a distinct block.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BlockId {
+    pub layer: u16,
+    pub proj: u8,
+    pub ex: u16,
+}
+impl BlockId {
+    #[inline]
+    pub fn new(layer: u16, proj: u8, ex: u16) -> Self { BlockId { layer, proj, ex } }
+}
+
+/// Where a dispatched block landed (always a retained resident slot since the first-miss-admit
+/// policy, 2026-07-08 — the transient staging tier went with the ghost filter).
+#[derive(Clone, Copy, Debug)]
+pub enum DispatchSlot {
+    Resident(usize),
+}
+
+/// SLRU GPU expert-residency cache. N fixed slots, each sized to the largest block so any block
+/// fits any slot (fixed-address, never re-allocated). One global instance shared across all layers.
+pub struct MoeSlotCache {
+    slots: Vec<CudaSlice<u8>>,        // N fixed GPU buffers, each `max_block_bytes`
+    occupant: Vec<Option<BlockId>>,   // slots[s] currently holds occupant[s]  (the residency bitmask)
+    table: HashMap<BlockId, usize

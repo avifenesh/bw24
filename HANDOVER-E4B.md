@@ -1,4 +1,52 @@
-# E4B — FIRST LIGHT PASSED (2026-07-11)
+# E4B STATUS 2026-07-12 (correctness UNBLOCKED + fusion port)
+
+- ROOT-CAUSE FIX (commit 71fb028): global layers stored HALF their K/V — the cache kv-dim
+  fallback ignored the SCALAR head_count_kv=2 (globals are 2x512=1024, not 512). Every
+  cross-mode symptom (maxdiff 20-30, chat-prompt argmax flips, "noise amplification from
+  layer ~6") was this. Gates now ALL GREEN: id maxdiff 0.67 MATCH, t=2 0.82 MATCH, chat
+  water-cycle 2.09 MATCH + coherent. 26B/31B clean.
+- FUSION PORT (commit c403a21): 26B/31B trunk structure (rms_norm_q8_1 carried pair ->
+  matmul_pre wq/wk/wv, fused rms_norm_qkv, add_scale_rms_norm_q8_1 closing emit, head on
+  matmul_pre). 164.2 -> 170.3, then 173.5 with the kv fix.
+- STANDING: short plain 173.5 vs llama 208 = 0.83x. Remaining gap ~35 tok/s: profile said
+  glue was 26% pre-port; remaining levers = per-row attention loop (fa rows arms for E4B),
+  dc/graph serving arc, prime fa (wired, NOFA seam), head Q6_K at byte floor (leave).
+- NOTE: correct-model output DIFFERS from the pre-fix stream (the old model was broken);
+  any earlier E4B "baseline" numbers/streams predate correctness.
+
+# E4B — FIRST LIGHT PASSED (2026-07-11) + PERF LANES WIRED (compile-clean, GPU-ungated)
+
+## Perf lanes (this branch — GPU gates NOT yet run, main lane owns them)
+1. DC ARM: `gemma4_e4b_decode_step_dc` — device token/pos/argmax, 4B/token host. The layer
+   stack is `gemma4_e4b_trunk_core`, the SAME functions the eager chain runs (embed gather +
+   per-layer-table gather moved to device-token cores: `gemma4_e4b_inp_pl_dev`) — stream
+   identity with eager is by construction, not twin-kernel parity. Host KV mirrors advance
+   dc-eager style; window views host math. Routed in decode.rs `generate` + `generate_with`
+   greedy loops (the E4B exclusion gates dropped). Graph capture NOT wired —
+   `gemma4_generate_graph` errors loudly on E4B.
+2. Q4RP MIRRORS: hybrid.rs hook widened to e4b layers — attn wq/wk/wv/wo + dense ffn
+   gate/up/down + inp_gate/proj (~2.2GB mirror for the 5.2GB model; build_q4_rp4 no-ops on
+   non-Q4_0 like the F16 model_proj). KV-shared layers' aliased wk/wv mirror twice
+   (~1.5MB/layer waste — dedupe with the weight-alias TODO).
+3. PRIME FA: fresh-prompt own-KV hd256 layers with t <= window(512) ride ONE f32 fa_prefill
+   (26B prime pattern) instead of t per-row quantized launches; globals + KV-shared layers
+   keep the per-row loop. BW24_NOFA=1 reverts. NOTE: changes prime numerics class (f32 fa vs
+   quantized per-row) — same split the 26B ships; argmax/chat gates arbitrate.
+
+## GPU gate sequence for the main lane (in order)
+E4B=/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf
+1. `BW24_NGEN=8 run-gen $E4B 2 818 5279 529 7001 563` — argmax MATCH (expect " Paris"; note
+   prime numerics changed with lane 3, prefill logits shift within the f32-vs-quant class).
+2. Chat coherence: water-cycle prompt n=48 — structured coherent answer.
+3. DC-GATE equivalent: generate() now rides the dc loop — compare a 64-token greedy stream
+   against BW24_PRIME_TOKENWISE-style eager decode_step chain (or temporarily force the
+   eager loop) for stream identity; the dc arm uses the same trunk fns so any mismatch is a
+   routing bug, not numerics.
+4. Perf: run-gen tok/s (was 154.8 eager pre-mirrors) — expect the q4rp mirror + dc-argmax
+   gain; then prime speed on a ~500-token prompt (fa arm).
+5. If green: BW24_Q4RP=0 A/B for the mirror contribution, then jsonl + board rows.
+
+
 
 Loads + coherent chat + id-prompt argmax MATCH (" Paris"). 154.8 tok/s eager (unoptimized).
 Cross-mode (prefill-vs-decode) logit maxdiff runs 20-30 — 5-10x the 26B's — noise-amplification

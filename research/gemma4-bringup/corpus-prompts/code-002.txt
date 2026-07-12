@@ -1,0 +1,38 @@
+//! CPU validation gate for the HF-NVFP4 -> bw24 GGUF NVFP4 repack (NO GPU). Handles BOTH on-disk
+//! encodings: modelopt compressed-tensors (`.weight`/`.weight_scale`/`.weight_scale_2`) AND the Reza
+//! "custom_nvfp4_e2m1_e4m3_scales" format (`.weight.nvfp4_packed`/`.weight.nvfp4_scale_e4m3`). Both
+//! encode the SAME e2m1 weights + per-16 FP8(e4m3) scales, so the repack/dequant byte math is shared.
+//!
+//! For each picked quantized Linear it cross-checks the two CPU dequants element-for-element:
+//!   HF ref:        e2m1_code * raw_ue4m3(per16_scale[e/16])          (the HF-native arithmetic)
+//!   bw24 internal: dequant the repacked GGUF block_nvfp4 row          (what the kernel decodes)
+//! The two must agree to rel < 1e-3 (they are, in fact, bit-identical arithmetic — the doubled-code
+//! / halved-scale conventions cancel). Also reports load timing for the full repack of a big tensor.
+//!
+//! Usage: nvfp4-validate <hf_dir> [tensor_stem...]   (defaults to the 27B modelopt model on this box;
+//! the stems default per detected format). The packed tensor's safetensors file is auto-located.
+
+use std::time::Instant;
+use bw24_gguf::nvfp4_repack::{dequant_gguf_row, dequant_modelopt_row, repack_modelopt_to_gguf};
+use bw24_gguf::safetensors::StModel;
+
+/// Resolve the (packed_bytes, scale_bytes, out_f, in_f) for a Linear `stem` under EITHER format.
+/// modelopt: `<stem>.weight`(U8) + `<stem>.weight_scale`(F8_E4M3). Reza: `<stem>.weight.nvfp4_packed`
+/// + `<stem>.weight.nvfp4_scale_e4m3`. Returns None if neither set of siblings is present.
+fn resolve<'a>(m: &'a StModel, stem: &str) -> Option<(&'a [u8], &'a [u8], usize, usize, &'static str)> {
+    // modelopt
+    if let Some((winfo, wbytes)) = m.raw(&format!("{stem}.weight")) {
+        if winfo.dtype == "U8" {
+            if let Some((_si, sbytes)) = m.raw(&format!("{stem}.weight_scale")) {
+                let out_f = winfo.shape[0] as usize;
+                let in_f = (winfo.shape[1] as usize) * 2;
+                return Some((wbytes, sbytes, out_f, in_f, "modelopt"));
+            }
+        }
+    }
+    // Reza custom
+    if let Some((winfo, wbytes)) = m.raw(&format!("{stem}.weight.nvfp4_packed")) {
+        let (_si, sbytes) = m.raw(&format!("{stem}.weight.nvfp4_scale_e4m3"))?;
+        let out_f = winfo.shape[0] as usize;
+        let in_f = (winfo.shape[1] as usize) * 2;
+        return Some((wbytes, sbytes, out_f, i

@@ -1438,7 +1438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3);
@@ -1505,7 +1505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             // reference: the per-row loop exactly as full_attn_verify's fallback runs it
             let mut o_loop = e.zeros(hd*nh*t)?;
@@ -1524,7 +1524,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
             let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
             let mut o_rows = e.zeros(hd*nh*t)?;
-            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false)?;
+            e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false)?;
             let a = e.dtoh(&o_loop)?; let b = e.dtoh(&o_rows)?;
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_decode_rows vs per-row loop base={base_len} T={t}: bitdiff={bitdiff} {}",
@@ -1549,7 +1549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let kview=e.view_u8(&kc, tkv_max*k_tok_bytes);
                 let vview=e.view_u8(&vc, tkv_max*v_tok_bytes);
                 let mut o_rows3 = e.zeros(hd*nh*t)?;
-                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false)?;
+                e.fa_decode_rows(&qd,&kview,&vview,&mut o_rows3,hd,nh,nhkv,base_len,t,scale,k_tok_bytes,v_tok_bytes,None,false, false)?;
                 unsafe { std::env::remove_var("BW24_FA_V3"); }
                 let a3 = e.dtoh(&o_loop3)?; let b3 = e.dtoh(&o_rows3)?;
                 let bd3 = a3.iter().zip(&b3).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
@@ -1574,15 +1574,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let k_row = kd.slice(tok*kv_dim_k..(tok+1)*kv_dim_k);
                 let v_row = vd.slice(tok*kv_dim_v..(tok+1)*kv_dim_v);
                 e.append_kv_quantized_view(&k_row,&v_row,&mut kc,&mut vc,tok,
-                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes)?;
+                                           kv_dim_k,kv_dim_v,k_tok_bytes,v_tok_bytes, false)?;
             }
             let kview=e.view_u8(&kc, tkv*k_tok_bytes); let vview=e.view_u8(&vc, tkv*v_tok_bytes);
             let mut o_inl = e.zeros(hd*nh*t)?;
             e.fa_prefill_view(&qd,&kview,&vview,&mut o_inl,hd,nh,nhkv,t,tkv,scale,true,
-                              k_tok_bytes,v_tok_bytes)?;
+                              k_tok_bytes,v_tok_bytes, false)?;
             let mut o_ws = e.zeros(hd*nh*t)?;
             e.fa_prefill_view_ws(&qd,&kview,&vview,&mut o_ws,hd,nh,nhkv,t,tkv,scale,true,
-                                 k_tok_bytes,v_tok_bytes)?;
+                                 k_tok_bytes,v_tok_bytes, false)?;
             let a = e.dtoh(&o_inl)?; let b = e.dtoh(&o_ws)?;
             let bitdiff = a.iter().zip(&b).filter(|(x,y)| x.to_bits() != y.to_bits()).count();
             println!("fa_prefill_view_ws vs inline-dequant T={t} Tkv={tkv}: bitdiff={bitdiff} {}",
@@ -1612,7 +1612,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for j in 0..32 { vin[32 + j] = j as f32 * step; }
         let kd = e.htod(&kin)?; let vd = e.htod(&vin)?;
         let mut kc = e.alloc_u8(k_tok_bytes)?; let mut vc = e.alloc_u8(v_tok_bytes)?;
-        e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+        e.append_kv_quantized(&kd, &vd, &mut kc, &mut vc, 0, kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         let kbytes = e.dtoh_u8(&kc)?; let vbytes = e.dtoh_u8(&vc)?;
         let f16_to_f32 = |b: &[u8]| -> f32 { fp16_to_f32(u16::from_le_bytes([b[0], b[1]])) };
         // CPU e4m3 decode (raw-fp8 arms): sign / 4-bit exp (bias 7) / 3-bit mantissa, subnormals.
@@ -1705,12 +1705,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let k_row = kd.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
             let v_row = vd.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
             e.append_kv_quantized_view(&k_row, &v_row, &mut kc_ref, &mut vc_ref, t0 + i,
-                                       kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                       kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         }
         // (b) batched-rows kernel, one launch.
         let mut kc_b = e.alloc_u8(cap * k_tok_bytes)?; let mut vc_b = e.alloc_u8(cap * v_tok_bytes)?;
         e.append_kv_quantized_rows(&kd, &vd, &mut kc_b, &mut vc_b, t0, t,
-                                   kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                   kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, false)?;
         let (kr, kb) = (e.dtoh_u8(&kc_ref)?, e.dtoh_u8(&kc_b)?);
         let (vr, vb) = (e.dtoh_u8(&vc_ref)?, e.dtoh_u8(&vc_b)?);
         // compare only the written slots [t0, t0+t) — the rest is uninitialized alloc garbage.

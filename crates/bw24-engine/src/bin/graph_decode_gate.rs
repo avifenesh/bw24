@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let head_dim = m.cfg.head_dim_k as usize;
     for _ in 0..n {
         let t_kv = cache_e.kv.iter().filter_map(|k| k.as_ref()).map(|k| k.len + 1).next().unwrap_or(0);
-        let key = e.fa_bucket_key(t_kv, head_dim, m.cfg.n_head_kv as usize);
+        let key = e.fa_bucket_key(t_kv, head_dim, m.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
         if !buckets_seen.contains(&key) { buckets_seen.push(key); }
         ll = m.decode_step(&e, eager_in, &mut cache_e)?;
         let nx = argmax(&ll) as u32;

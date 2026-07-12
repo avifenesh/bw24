@@ -108,6 +108,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // BW24_GEN_CORPUS=<prompt dir> + BW24_GEN_OUT=<ids.txt> (+BW24_SPEC/BW24_DRAFT/BW24_NGEN):
+    // FR-rank corpus generator — load once, run the SPEC loop over every prompt *.txt in the
+    // dir (greedy => identical to plain), append each generation's token ids (one line,
+    // space-separated) to the out file. The 31B trim needs the model's OWN output ranking
+    // (mixed-corpus ranks read accept .737 vs .758 full-head, jsonl 2026-07-12).
+    if let (Ok(pdir), Ok(outp)) = (std::env::var("BW24_GEN_CORPUS"), std::env::var("BW24_GEN_OUT")) {
+        let k: usize = std::env::var("BW24_SPEC").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+        let dpath = std::env::var("BW24_DRAFT").expect("BW24_GEN_CORPUS needs BW24_DRAFT");
+        let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(512);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let dg = bw24_gguf::GgufFile::open(&dpath)?;
+        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let tok = bw24_tokenizer::Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e}"))?;
+        let eos = tok.eog_ids();
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&pdir)?
+            .flatten().map(|d| d.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("txt")).collect();
+        files.sort();
+        // resume: one output line per prompt — skip prompts already generated.
+        let done = std::fs::read_to_string(&outp).map(|t| t.lines().count()).unwrap_or(0);
+        if done > 0 { eprintln!("[corpus] resuming past {done} prompts"); }
+        let files: Vec<_> = files.into_iter().skip(done).collect();
+        let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&outp)?;
+        use std::io::Write;
+        let t0 = std::time::Instant::now();
+        let mut total = 0usize;
+        for (i, f) in files.iter().enumerate() {
+            let text = std::fs::read_to_string(f)?;
+            let mut ids = tok.encode(&text, true);
+            ids.truncate(768);
+            let toks_g = model.generate_spec_gemma(&e, &draft, &ids, n_new, k, &eos)?;
+            total += toks_g.len();
+            let line: Vec<String> = toks_g.iter().map(|t| t.to_string()).collect();
+            writeln!(out, "{}", line.join(" "))?;
+            eprintln!("[corpus] {}/{} {} +{} toks (total {}, {:.0} tok/s)",
+                      i + 1, files.len(), f.file_name().unwrap().to_string_lossy(),
+                      toks_g.len(), total, total as f64 / t0.elapsed().as_secs_f64());
+        }
+        println!("corpus done: {} prompts, {} tokens -> {}", files.len(), total, outp);
+        return Ok(());
+    }
     // BW24_SPEC=K + BW24_DRAFT=<drafter.gguf>: MTP spec loop — prime, draft K, verify, accept.
     // Compares the spec token stream against plain greedy (self-consistency) + times both.
     if let (Ok(kk), Ok(dpath)) = (std::env::var("BW24_SPEC"), std::env::var("BW24_DRAFT")) {

@@ -101,6 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for v in &d2t {
         out.write_all(&v.to_le_bytes())?;
     }
-    eprintln!("[frspec-rank] wrote {} ({} ids)", args[2], d2t.len());
+    // txt sidecar (one id per line, rank order) — the gemma drafter trim
+    // (BW24_GEMMA_DRAFT_RANKS) consumes this form directly.
+    let txt = format!("{}.txt", args[2]);
+    let mut tf = std::fs::File::create(&txt)?;
+    for v in &d2t { writeln!(tf, "{v}")?; }
+    eprintln!("[frspec-rank] wrote {} ({} ids) + {txt}", args[2], d2t.len());
     Ok(())
 }

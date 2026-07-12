@@ -15,6 +15,7 @@ pub mod cache;
 pub mod decode;
 pub mod spec;
 pub mod gemma_spec;
+pub mod round_stream;
 pub mod eagle;
 pub mod sampler;
 
@@ -174,6 +175,15 @@ pub fn fa512_min_tkv() -> usize {
 /// vec-always fastest: 119.9 (96) / 130.0 (48) / 133.2 (1) tok/s tg128-regime, 2026-07-10.
 pub static FA_VEC_MIN_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(FA_VEC_MIN_TKV);
+/// Per-model windowed-split default (BW24_FA_SPW overrides): gemma MoE (26B, nkv=8) measured
+/// 32 (grid-limited t=1 under the raw-e4m3 sV ceiling, 2026-07-12); dense gemma (31B)
+/// measured 64 (37.13/37.12 vs 36.87/36.86 at 1.7k, N=2 — different attention geometry).
+pub static FA_SPW_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(32);
+/// Per-model hd512 (gemma globals) split default (BW24_FA_SP512 overrides): 26B measured 16
+/// (2026-07-11 N=2), dense 31B measured 32 (36.86/36.93 vs 36.73/36.73 at 1.7k, 2026-07-12).
+pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(16);
 /// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
 /// split changes with blockDim -> different FP order -> battery-arbitrated per model).
 /// qwen keeps the shipped 256; gemma4 adopts 1024 (single-row 2816-col norms are one-block
@@ -306,6 +316,13 @@ pub struct Engine {
     /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
     /// memcpy-issue (µs), NOT the GEMM, so streams still overlap. `None` => cache disabled.
     moe_cache: Mutex<Option<crate::moe_cache::MoeSlotCache>>,
+    /// CAPTURE-RETAIN mode (graph arc, 2026-07-12): while a graph capture (and its allocator
+    /// warmups) runs, every Engine allocation is ALSO kept alive here — a captured graph's
+    /// transient buffers must never return to the pool, or later allocations (e.g. the spec
+    /// verify between replays) reuse their addresses and the replay reads/writes live memory
+    /// (the draft-graph corruption root cause). Fast-path cost when off: one relaxed atomic.
+    capture_keep_on: std::sync::atomic::AtomicBool,
+    capture_keep: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
     /// EDGE-1 §C.2: dedicated H2D copy stream for async prefetch (event-synced to the compute stream).
     pub copy_stream: Arc<CudaStream>,
     /// Resident CUTLASS NVFP4 prefill scratch (workspace + a_packed + sfa_linear + sfa_sw + y + alpha),
@@ -397,7 +414,10 @@ fn fa_v4_at(t_kv: usize) -> bool {
     fa_v4_on() && t_kv < mx
 }
 fn fa_v3_active(head_dim: usize) -> bool {
+    // v3's dp4a-K walk reads raw q8_0 K bytes — no e4m3 arm; the fp8-KV arm (BW24_KV_FP8)
+    // must fall back like any non-default KV format (the rows_dc stream path asserts on it).
     fa_v3_on() && head_dim % 128 == 0 && kv_cache_formats() == ("q8_0", "q5_1")
+        && !Engine::kv_fp8_on()
 }
 
 /// A raw pinned (page-locked, CACHEABLE — flags=0, not write-combined) host allocation for
@@ -478,6 +498,8 @@ impl Engine {
         }
         Ok(Self { gpu, module, hybrid, qmatvec, flash, flash_g: std::sync::OnceLock::new(), gemm, router, sample,
                   moe_cache: Mutex::new(None), copy_stream,
+                  capture_keep_on: std::sync::atomic::AtomicBool::new(false),
+                  capture_keep: Mutex::new(Vec::new()),
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
@@ -493,6 +515,33 @@ impl Engine {
     pub fn gkv_on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("BW24_GEMMA_GKV").map(|v| v != "0").unwrap_or(true))
+    }
+
+    /// FP8-WINDOWED switch (BW24_GEMMA_WKV — measured 2026-07-12 in a validity-gated
+    /// window: 1.7k 174.1-174.4 vs 168.6-169.4 default (+3%), 4.9k 158.7-160.4; vs llama
+    /// same-window 159.5-160.2 / 140.6 = 1.09x / 1.13x): gemma windowed (hd256 SWA)
+    /// layers hold e4m3 KV and ride the format-aware v4 lane from the kf8vf8 module.
+    /// SERVING-MODE DEFAULT (2026-07-12, the 31B spec unlock): fp8-windowed KV GUTS the
+    /// MTP drafter's acceptance — its single swa attention reads the windowed cache and
+    /// e4m3 noise flips its argmaxes (31B short accept .758 -> 1.000 with q8/q5, spec 88
+    /// -> 122.7 vs llama-mtp 112; depth .59 -> .78; 26B depth .57 -> .89). So the default
+    /// keys on serving intent: SPEC serving (BW24_DRAFT set) -> OFF, plain -> ON (its
+    /// depth-plain +3% stands). Explicit BW24_GEMMA_WKV always wins. GKV (globals) stays
+    /// ON for both — no acceptance cost measured.
+    pub fn wkv_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_GEMMA_WKV").map(|v| v != "0")
+            .unwrap_or_else(|_| std::env::var("BW24_DRAFT").is_err()))
+    }
+
+    /// QWEN FP8-KV switch (BW24_KV_FP8, default OFF — bring-up arc, HANDOVER "QWEN FP8-KV"):
+    /// non-gemma full-attn layers hold e4m3 K/V via the kf8vf8 module. The 2026-07-09
+    /// BW24_KV_K=fp8 block (acceptance 74->20.5%) predates the format-aware arms and the
+    /// v4-rows parity fix — this arm re-litigates it through the gemma recipe; the spec
+    /// K=1..8 + acceptance A/B battery arbitrates any default flip.
+    pub fn kv_fp8_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_KV_FP8").as_deref() == Ok("1"))
     }
 
     /// fa kernel routed by head_dim: hd512 (gemma globals) resolves from the kf8vf8 module
@@ -747,9 +796,10 @@ impl Engine {
                                        kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
                                        t0_dev: &CudaSlice<i32>, t: usize,
                                        kv_dim_k: usize, kv_dim_v: usize,
-                                       k_tok_bytes: usize, v_tok_bytes: usize)
+                                       k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                        -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1_rows_dc");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_rows_dc") }
+                else { self.func("append_quantize_kv_q8_0_q5_1_rows_dc") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
@@ -1016,6 +1066,19 @@ impl Engine {
         Ok(self.gpu.stream.clone_htod(v)?)
     }
 
+    /// `htod_bytes` with a mapped (uninit) tail pad: the wide-load expert dots read up to 6B
+    /// past the final q4_0 block through their aligned window — the bytes never reach a
+    /// result (funnelshift discards them) but must be mapped memory.
+    pub fn htod_bytes_padded(&self, v: &[u8], pad: usize)
+                             -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let mut d = self.alloc_u8_uninit(v.len() + pad)?;
+        {
+            let mut view = d.slice_mut(0..v.len());
+            self.gpu.stream.memcpy_htod(v, &mut view)?;
+        }
+        Ok(d)
+    }
+
     /// Device-to-device copy of `src` into `dst[off..off+len]` (f32). For in-place KV append.
     pub fn copy_into(&self, dst: &mut CudaSlice<f32>, off: usize, src: &CudaSlice<f32>, len: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
@@ -1094,7 +1157,7 @@ impl Engine {
                 let k_row = k_rows.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
                 let v_row = v_rows.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
                 self.append_kv_quantized_view(&k_row, &v_row, kc, vc, t0 + i,
-                                              kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes)?;
+                                              kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, g)?;
             }
             return Ok(());
         }
@@ -1127,9 +1190,10 @@ impl Engine {
                                     v_row: &cudarc::driver::CudaView<f32>,
                                     kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>, t: usize,
                                     kv_dim_k: usize, kv_dim_v: usize,
-                                    k_tok_bytes: usize, v_tok_bytes: usize)
+                                    k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                     -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("append_quantize_kv_q8_0_q5_1");
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1") }
+                else { self.func("append_quantize_kv_q8_0_q5_1") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
         let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (ti, kdk, kdv) = (t as i32, kv_dim_k as i32, kv_dim_v as i32);
@@ -1174,14 +1238,18 @@ impl Engine {
 
     /// Allocate a reusable u8 GPU scratch buffer (for staged expert weights).
     pub fn alloc_u8(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<u8>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<u8>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Uninitialized u8 scratch — skips alloc_zeros' memset. ONLY for staging buffers whose read
     /// range is fully overwritten by a stage_expert H2D before any kernel reads it (LAUNCH-STRUCTURE
     /// STAGE 2: the per-layer MoE scratch trio was 3 dead ~1MB memsets per layer per decode token).
     pub fn alloc_u8_uninit(&self, n: usize) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        Ok(unsafe { self.gpu.stream.alloc::<u8>(n)? })
+        let s = unsafe { self.gpu.stream.alloc::<u8>(n)? };
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Zero a SUB-RANGE of an f32 buffer (CudaViewMut) — the row-sized memset the moe_out
@@ -1722,6 +1790,27 @@ impl Engine {
         Ok(())
     }
 
+    /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
+    /// GGUF bytes (zero extra steady-state VRAM — the transient peak is one tensor's size).
+    /// The tensor's `rp` flag then routes every consumer (mmvq/batched `_rp` twins, the
+    /// `qmatvec_gemm_q4_0_rp` prefill kernel). Callers gate on the fast path being active —
+    /// the Stage-A f32 oracle (`BW24_FAST=0`) reads GGUF layout and must never see a swap.
+    pub fn build_q4_rp_swap(&self, t: &mut crate::model::GpuTensor)
+                            -> Result<bool, Box<dyn std::error::Error>> {
+        self.build_q4_rp4(t)?;
+        self.gpu.stream.synchronize()?;   // build kernel reads the GGUF bytes — drain BEFORE dropping them
+        use crate::model::GpuTensor;
+        let GpuTensor::Quant { bytes, rp4, rp, .. } = t else { return Ok(false) };
+        match rp4.take() {
+            Some(split) => {
+                *bytes = split;   // the GGUF-layout buffer drops here
+                *rp = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// BW24_Q4RP seam (default ON): the Q4_0 split-plane decode mirror at model load.
     pub fn q4rp_enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1752,6 +1841,40 @@ impl Engine {
         let ii = idx as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(dst).arg(&v).arg(&ii);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// counter += v (device-slot append advance; the +1 twin is `inc_seqlen`).
+    pub fn i32_add_k(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_add_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(d).arg(&v);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// pos rows from a device counter: dst[i] = ctr[0] + i (verify-stream rope positions).
+    pub fn i32_iota_from(&self, ctr: &CudaSlice<i32>, dst: &mut CudaSlice<i32>, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_iota_from");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(ctr).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// In-place trim-id translate: buf[idx] = map[buf[idx]] (FR-Spec d2t, async single-slot).
+    pub fn u32_map_k(&self, buf: &mut CudaSlice<u32>, map: &CudaSlice<u32>, idx: usize)
+                     -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("u32_map_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let ii = idx as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(buf).arg(map).arg(&ii);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -2385,7 +2508,9 @@ impl Engine {
         Ok(v)
     }
     pub fn zeros(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<f32>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<f32>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// GPU-resident greedy argmax (CUDA-GRAPH-PLAN Phase 1): logits[n_vocab] -> token id in a
@@ -2419,6 +2544,32 @@ impl Engine {
     /// Like `prob_of_token_device` but writes into a PERSISTENT `p_out` buffer (stable pointer).
     /// Required for CUDA-graph capture of the draft chain: the captured prob kernels must write
     /// where the host reads the p-min confidence between replays. Same kernels, same math.
+    /// Slot-addressed twin of `prob_of_token_device_into`: token read from `tok_all[tok_idx]`
+    /// (a view at the slot), probability written to `p_out[p_idx]` — same two kernels, the
+    /// pointers just land mid-buffer. Zero-sync (gemma confidence-adaptive draft depth).
+    pub fn prob_of_token_device_col(&self, logits: &CudaSlice<f32>,
+                                    tok_all: &CudaSlice<u32>, tok_idx: usize,
+                                    p_out: &mut CudaSlice<f32>, p_idx: usize, n_vocab: usize)
+                                    -> Result<(), Box<dyn std::error::Error>> {
+        let tok_v = tok_all.slice(tok_idx..tok_idx + 1);
+        let mut p_v = p_out.slice_mut(p_idx..p_idx + 1);
+        let nb = ARGMAX_NB;
+        let mut part = self.alloc_uninit::<f32>(nb)?;
+        let f1 = self.func("prob_of_token_partial_f32");
+        let cfg1 = LaunchConfig { grid_dim: (nb as u32, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nv = n_vocab as i32;
+        let mut b1 = self.gpu.stream.launch_builder(&f1);
+        b1.arg(logits).arg(&tok_v).arg(&mut part).arg(&nv);
+        unsafe { b1.launch(cfg1)?; }
+        let f2 = self.func("prob_of_token_final_f32");
+        let cfg2 = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let nbi = nb as i32;
+        let mut b2 = self.gpu.stream.launch_builder(&f2);
+        b2.arg(&part).arg(&mut p_v).arg(&nbi);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     pub fn prob_of_token_device_into(&self, logits: &CudaSlice<f32>, tok: &CudaSlice<u32>,
                                      p_out: &mut CudaSlice<f32>, n_vocab: usize)
                                      -> Result<(), Box<dyn std::error::Error>> {
@@ -2522,7 +2673,9 @@ impl Engine {
     }
     /// Allocate a zeroed device u32 buffer (persistent spec-loop prediction slots).
     pub fn alloc_u32_zeroed(&self, n: usize) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.alloc_zeros::<u32>(n)?)
+        let s = self.gpu.stream.alloc_zeros::<u32>(n)?;
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
     /// embed_gather into a PERSISTENT `x_out` buffer (stable pointer) for CUDA-graph capture (the
     /// embed output starts the per-step kernel chain and must be at a fixed address across replays).
@@ -2655,9 +2808,18 @@ impl Engine {
     /// capture. Use ONLY for buffers a kernel FULLY overwrites (every element written, no `+=`).
     /// SAFETY: caller guarantees the producing kernel writes every element before any read.
     #[inline]
-    fn alloc_uninit<T: cudarc::driver::DeviceRepr>(&self, n: usize)
+    /// Keep an allocation alive for the current capture (no-op when retain mode is off).
+    fn keep_if_capturing<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, s: &CudaSlice<T>) {
+        if self.capture_keep_on.load(std::sync::atomic::Ordering::Relaxed) {
+            self.capture_keep.lock().unwrap().push(Box::new(s.clone()));
+        }
+    }
+
+    fn alloc_uninit<T: cudarc::driver::DeviceRepr + Send + 'static>(&self, n: usize)
             -> Result<CudaSlice<T>, Box<dyn std::error::Error>> {
-        Ok(unsafe { self.gpu.stream.alloc::<T>(n)? })
+        let s = unsafe { self.gpu.stream.alloc::<T>(n)? };
+        self.keep_if_capturing(&s);
+        Ok(s)
     }
 
     /// Public f32 uninitialized scratch (see `alloc_uninit`). For decode/forward scratch a kernel
@@ -3549,23 +3711,29 @@ impl Engine {
         if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
             return Ok(None);
         }
-        let (b0, b1, b2, rp) = match (w0, w1, w2) {
-            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. },
-             GpuTensor::Quant { bytes: b2, rp4: r2, .. }) => match (r0, r1, r2) {
-                // Q4_0 split-plane mirrors: all three or none (mixed -> raw layout).
-                (Some(m0), Some(m1), Some(m2)) => (m0, m1, m2, true),
-                _ => (b0, b1, b2, false),
-            },
-            _ => unreachable!(),
-        };
-        const RPB: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+        // Effective (bytes, rp) per tensor: mirror (rp4) OR the in-place swap (rp flag,
+        // bytes already split). Mixed layouts cannot share one fused launch -> fall back to
+        // the separate matvecs (each routes its own rp).
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1), (b2, rp2)) = (eff(w0), eff(w1), eff(w2));
+        if rp0 != rp1 || rp1 != rp2 { return Ok(None); }
+        let rp = rp0;
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
         let grid = nb(o0) + nb(o1) + nb(o2);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let mut y2 = self.alloc_uninit::<f32>(o2)?;
         let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused3_rp" } else { "qmatvec_q4_0_mmvq_fused3" });
-        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
@@ -3590,21 +3758,26 @@ impl Engine {
         };
         let (Some((rb0, o0)), Some((rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(None) };
         if w0.in_features() != w1.in_features() { return Ok(None); }
-        let (b0, b1, rp) = match (w0, w1) {
-            (GpuTensor::Quant { bytes: b0, rp4: r0, .. }, GpuTensor::Quant { bytes: b1, rp4: r1, .. }) =>
-                match (r0, r1) {
-                    (Some(m0), Some(m1)) => (m0, m1, true),
-                    _ => (b0, b1, false),
+        // Effective (bytes, rp) per tensor (mirror or in-place swap); mixed -> separate matvecs.
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
                 },
-            _ => unreachable!(),
-        };
-        const RPB: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(RPB);
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1)) = (eff(w0), eff(w1));
+        if rp0 != rp1 { return Ok(None); }
+        let rp = rp0;
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
         let grid = nb(o0) + nb(o1);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused2_rp" } else { "qmatvec_q4_0_mmvq_fused2" });
-        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, RPB, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
@@ -4193,6 +4366,10 @@ impl Engine {
         let variant = self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp);
         let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
+        // b16 tier (t=9..16 verify): only base/_rp b16 kernels are compiled — the b2..b8
+        // per-shape perf variants (r2/pf/...) do not apply at this width. rp is a LAYOUT,
+        // not a perf variant: it must survive (base kernel on split-plane bytes = NaN).
+        let variant = if mcols == 16 { if rp { "rp" } else { "base" } } else { variant };
         let (name, rows_per_block): (std::borrow::Cow<'static, str>, u32) = match variant {
             "base" => (base_name.into(), ROWS_PER_BLOCK),
             "pf" => (format!("{base_name}_pf").into(), ROWS_PER_BLOCK),
@@ -4331,7 +4508,7 @@ impl Engine {
         };
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
-            QT_Q4_0 => "qmatvec_gemm_q4_0",
+            QT_Q4_0 => if rp { "qmatvec_gemm_q4_0_rp" } else { "qmatvec_gemm_q4_0" },
             QT_Q5_K => "qmatvec_gemm_q5_K",
             QT_Q6_K => "qmatvec_gemm_q6_K",
             QT_NVFP4 => if rp { "qmatvec_gemm_nvfp4_rp" } else { "qmatvec_gemm_nvfp4" },
@@ -4654,7 +4831,7 @@ impl Engine {
                            v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                            head_dim: usize, n_head: usize, n_head_kv: usize,
                            t: usize, t_kv: usize, scale: f32, causal: bool,
-                           k_tok_bytes: usize, v_tok_bytes: usize)
+                           k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                            -> Result<(), Box<dyn std::error::Error>> {
         if cfg!(bw24_portable_cuda) {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
@@ -4662,7 +4839,10 @@ impl Engine {
                                                   k_tok_bytes, v_tok_bytes);
         }
         const BLOCK_Q: usize = 64; const BK: usize = 32;
-        let f = self.func(&format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?));
+        // g = e4m3 cache: the kernel parses via DQ_K_ELEM/DQ_V_ELEM (format macros) — the
+        // kf8vf8-module stamp reads fp8 with the identical MMA/softmax/PV body.
+        let name = format!("fa_prefill_q{}", fa_hd_suffix(head_dim)?);
+        let f = if g { self.func_g(&name) } else { self.func(&name) };
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
                    + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -4694,7 +4874,7 @@ impl Engine {
                               v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                               head_dim: usize, n_head: usize, n_head_kv: usize,
                               t: usize, t_kv: usize, scale: f32, causal: bool,
-                              k_tok_bytes: usize, v_tok_bytes: usize)
+                              k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                               -> Result<(), Box<dyn std::error::Error>> {
         if cfg!(bw24_portable_cuda) {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
@@ -4720,7 +4900,8 @@ impl Engine {
         let (kw, vw) = guard.as_mut().unwrap();
         // pass 1: dequant K+V once into the bf16 workspace (grid-stride, 1 thread/elem)
         {
-            let f = self.func("fa_dequant_kv_ws_bf16");
+            // only THIS pass parses KV bytes — pass 2 reads the bf16 workspace (format-free).
+            let f = if g { self.func_g("fa_dequant_kv_ws_bf16") } else { self.func("fa_dequant_kv_ws_bf16") };
             let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
             let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
             let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
@@ -4772,6 +4953,59 @@ impl Engine {
                      head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
                      k_tok_bytes: usize, v_tok_bytes: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
+        self.fa_decode_kvmod(q, k, v, o, head_dim, n_head, n_head_kv, t_kv, scale,
+                             k_tok_bytes, v_tok_bytes, false)
+    }
+
+    /// `fa_decode` with an explicit fp8-module flag (`g`): gemma windowed layers under
+    /// BW24_GEMMA_WKV read an e4m3 cache — every kernel must come from the kf8vf8 module
+    /// and the v4 lane (q8_0-hardcoded staging) is excluded.
+    #[allow(clippy::too_many_arguments)]
+    /// UNIFIED scalar decode launch (fa_decode_f32, nullable-ctr): ONE symbol for host-len
+    /// (kvmod eager) and device-len (graph/stream) callers — the textually-identical f32_dc
+    /// twin compiled apart and its ULP drift flipped 31B verify argmaxes (2026-07-12).
+    #[allow(clippy::too_many_arguments)]
+    fn fa_decode_scalar_unified(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                                v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                                head_dim: usize, n_head: usize, n_head_kv: usize,
+                                t_kv_host: usize, t_kv_dev: Option<&CudaSlice<i32>>,
+                                scale: f32, n_splits: usize, split_keys: usize,
+                                k_tok_bytes: usize, v_tok_bytes: usize, g: bool,
+                                part_o: &mut CudaSlice<f32>, part_m: &mut CudaSlice<f32>,
+                                part_l: &mut CudaSlice<f32>)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = if g { self.func_g("fa_decode_f32") } else { self.fa_func("fa_decode_f32", head_dim) };
+        let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 };
+        let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
+        let (ktb, vtb, tkvi, ski) = (k_tok_bytes as i64, v_tok_bytes as i64, t_kv_host as i32,
+                                     split_keys as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match t_kv_dev {
+            Some(d) => { b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(d).arg(&scale).arg(&nsp)
+                          .arg(&ski).arg(&ktb).arg(&vtb);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                       .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&null).arg(&scale).arg(&nsp)
+                       .arg(&ski).arg(&ktb).arg(&vtb);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
+    pub fn fa_decode_kvmod(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                     v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                     head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
+                     k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
+                     -> Result<(), Box<dyn std::error::Error>> {
         // PERF-4: the warp-per-token vec path replaces the scalar element-per-thread fa_decode_f32 —
         // warp-per-token fa_decode_vec_q (grid=(n_head_kv,n_splits), block=(32,gqa_ratio)).
         // The block dequants each KV tile ONCE into smem (bf16) and broadcasts to all gqa Q-head
@@ -4789,7 +5023,14 @@ impl Engine {
         // @2048) — the KV-byte-broadcast (4x fewer HBM reads/group) compounds as attention grows.
         // BW24_NO_FA_VEC forces the scalar bit-reference. Below FA_VEC_MIN_TKV the scalar path's
         // 4x-more-blocks (grid.x=n_head=32 vs n_head_kv=8) hides latency better, so keep scalar there.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
+        // g + no-v4: the g-module REGISTER twin mis-decodes the gemma windowed shape
+        // (root-cause open, jsonl) — only reachable by forcing v4 off (BW24_FA_V4_MAX);
+        // fall to the exact scalar there instead of the broken register arm.
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && t_kv >= fa_vec_min_tkv();
+        // hd256 under g: v4-or-scalar. hd128/other under g ride the REGISTER g-lane (the
+        // dq_K_lane/dq_V_lane macros are format-aware; v3 is format-gated off, v2/smem
+        // arms are excluded under g). Mirrored in kvmod / fa_decode_dc / fa_geom_eager.
+        if g && head_dim == 256 && !fa_v4_at(t_kv) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
@@ -4835,12 +5076,15 @@ impl Engine {
             if fa_v4_at(t_kv) && head_dim == 256 {
                 // FA v4 lane (2026-07-10): key-per-lane score phase, zero shuffles per key.
                 // NEW NUMERIC CONFIG (chunk-serial per-key dot) — battery-arbitrated.
-                let fv = self.func(match fa_v4_mode() {
+                // g (fp8-windowed): the v4 staging is format-aware (2026-07-12) — kf8vf8 module.
+                let v4name = match fa_v4_mode() {
                     "noB3" => "fa_decode_vec_q_v4_noB3",     // phase probe (WRONG OUTPUT)
                     "stage" => "fa_decode_vec_q_v4_stage",   // phase probe (WRONG OUTPUT)
                     _ => "fa_decode_vec_q_v4",
-                });
-                let shmem = (11520 + 32 * head_dim * 2) as u32;   // fa_v4_smem + sV
+                };
+                let fv = if g { self.func_g(v4name) } else { self.func(v4name) };
+                // fa_v4_smem + sV (g: raw e4m3 sV tile = 1B/elem — half the smem, 3->5 blocks/SM)
+                let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
                 (fv,
@@ -4849,7 +5093,7 @@ impl Engine {
             } else if fa_v3_active(head_dim) {
                 // FA v3 lane: dp4a-K hybrid (register-quantized Q, raw q8_0 K, staged-V kept).
                 // smem = sV only (half of v2's).
-                let fv = self.func("fa_decode_vec_q_v3");
+                let fv = if g { self.func_g("fa_decode_vec_q_v3") } else { self.func("fa_decode_vec_q_v3") };
                 let shmem = (32 * head_dim * 2) as u32;      // sV bf16 [FA_DEC_TILE=32][hd]
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -4858,13 +5102,17 @@ impl Engine {
                 // FAVENDOR lane: llama fattn-vec tile-batched softmax + wide-load staging on
                 // OUR smem KV broadcast. Replaces BOTH per-key twins when on; same grid/block/
                 // partials; same 32KB sK+sV tile as the smem twin.
-                let fv = self.func("fa_decode_vec_q_v2");
+                let fv = if g { self.func_g("fa_decode_vec_q_v2") } else { self.func("fa_decode_vec_q_v2") };
                 let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
-            } else if smem_tkv > 0 && t_kv >= smem_tkv {
-                let fv = self.func("fa_decode_vec_q_smem");
+            } else if smem_tkv > 0 && t_kv >= smem_tkv && !g
+                && !(head_dim == 512 && Self::gkv_on()) {
+                // (fp8 exclusions: the smem twin's V-stage is q5_1-hardcoded — neither the wkv
+                // windowed layers (g) nor the gkv globals (hd512) may be forced onto it via
+                // BW24_FA_SMEM_TKV; they fall through to the format-clean register/scalar arms.)
+                let fv = if g { self.func_g("fa_decode_vec_q_smem") } else { self.func("fa_decode_vec_q_smem") };
                 let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
                 use cudarc::driver::sys::CUfunction_attribute_enum as A;
                 fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
@@ -4874,21 +5122,25 @@ impl Engine {
             } else {
                 // REGISTER-DEQUANT kernel (2026-07-03): per-warp direct q8_0/q5_1 register
                 // dequant, zero dynamic shared memory.
-                let fv = self.func("fa_decode_vec_q");
+                let fv = if g { self.func_g("fa_decode_vec_q") } else { self.func("fa_decode_vec_q") };
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
             }
         } else {
-            (self.fa_func("fa_decode_f32", head_dim),
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            // UNIFIED scalar (nullable-ctr symbol shared with graph/stream callers). The
+            // split ladder value rides along so ns_eff reproduces THIS n_splits in-kernel.
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 t_kv, None, scale, n_splits,
+                                                 if fa_vec { sp } else { 256 },
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 part_o, part_m, part_l);
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let (fc, cfg2) = (self.fa_func("fa_decode_combine_f32", head_dim),
+        let (fc, cfg2) = (if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) },
             LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
@@ -4928,7 +5180,11 @@ impl Engine {
                           base_dev: Option<(&CudaSlice<i32>, i32)>,
                           // K and V planes hold the same values (gemma globals, wv:=wk): pick
                           // the _kv twin — V plane never read, value rides the q8_0 key dq.
-                          kv_shared: bool)
+                          kv_shared: bool,
+                          // this layer's cache is e4m3 (gemma windowed under wkv): resolve the
+                          // hd256 rows kernel from the kf8vf8 module. PER-CALL — a global env
+                          // check here hijacked qwen/kernel-check hd256 rows (8 FAILs, 230ebbe).
+                          g: bool)
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
@@ -4942,8 +5198,8 @@ impl Engine {
             // default 16 (2026-07-11 depth sweep, N=2: plain 155.4->156.5, depth spec
             // 236.9->250.4; 12/24/32 all worse). hd512 exists only on gemma globals.
             let v = *SP512.get_or_init(|| std::env::var("BW24_FA_SP512").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(16));
-            if v >= 8 { sp = v; }
+                .and_then(|x| x.parse().ok()).unwrap_or(0));
+            sp = if v >= 8 { v } else { FA_SP512_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) };
         }
         let n_splits_max = (t_kv_max + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
@@ -4981,10 +5237,21 @@ impl Engine {
                     else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
-        let f = if head_dim == 512 { self.fa_func(fname, head_dim) } else { self.func(fname) };
+        let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
+                else if g {
+                    // FP8-WINDOWED: hd256 rows over an e4m3 cache — kf8vf8 module, SAME symbol
+                    // choice as decode's kvmod dispatch (parity law: excluding v4 here paired
+                    // g-module rows against decode's g-module v4 — different programs, short-VG
+                    // maxdiff 2.0 / spec stream 0/128, 2026-07-12). rows_v4 is format-aware
+                    // since fda9790; only the smem twin stays excluded (V-stage q5_1-only).
+                    // hd128 (qwen fp8-KV) lands on the base/register rows via fname — the
+                    // dq macros are format-aware.
+                    self.func_g(if smem_rows { "fa_decode_vec_q_rows" } else { fname })
+                }
+                else { self.func(fname) };
         let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
             // v4: fa_v4_smem (11.5KB) + sV; v3 stages sV only; v2/smem twins stage sK+sV.
-            let sh = (if v4 { 11520 + 32 * head_dim * 2 }
+            let sh = (if v4 { 11520 + 32 * head_dim * if g { 1 } else { 2 } }
                       else if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
@@ -5041,17 +5308,19 @@ impl Engine {
         // advancing on-device. dc paths pass kvl.len_d with plus=-1; verify/eager sync the
         // counter with one async set_i32_one first. Partials/splits size from `window` (host).
         debug_assert!(head_dim == 256);
-        let mut sp = fa_split_keys(window, n_head_kv);
-        // windowed split (BW24_FA_SPW, default 64 — the honest 2026-07-11 N=2 sweep: plain
-        // 156.6->159.3, depth spec 251.2->253.4; 48 trades +3 plain for -10 spec; 16
-        // collapses spec on v4_w staging x rows. The later 48 flip was tuned on the retired
-        // kv-twin config and is VOID. Same parity-law freedom as BW24_FA_SP512.
-        {
+        // windowed split (BW24_FA_SPW, default 32 — re-swept 2026-07-12 under the raw-e4m3 sV
+        // occupancy ceiling (4 blocks/SM): t=1 decode is GRID-limited (win/sp splits x nkv
+        // blocks), so smaller splits fill the ceiling — 1.7k 174.4/174.0 vs 48's 170.7/170.3,
+        // 4.9k 159.8 vs 157.4 (N=2 interleaved, stable window). Spec serving prefers 64
+        // (verify t=K+1 fills the grid via grid.z=t; depth K=7 281.3 vs 249.3 at 32) — set
+        // BW24_FA_SPW=64 there, same config law as BW24_GEMMA_GKV=0. MUST be one value for
+        // ALL widths: a t-keyed probe broke decode-vs-verify combine order (stream 9/128).
+        let sp = {
             static SPW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let v = *SPW.get_or_init(|| std::env::var("BW24_FA_SPW").ok()
-                .and_then(|x| x.parse().ok()).unwrap_or(64));
-            if v >= 8 { sp = v; }
-        }
+                .and_then(|x| x.parse().ok()).unwrap_or(0));
+            if v >= 8 { v } else { FA_SPW_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) }
+        };
         let n_splits_max = (window + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
         let (nspm, spk, wini) = (n_splits_max as i32, sp as i32, window as i32);
@@ -5077,11 +5346,35 @@ impl Engine {
         // every t (parity structural). BW24_FA_MR=0 reverts to the per-row v4_w grid.
         let mr = gqa == 1 && t <= 8 && fa_v4_at(window)
             && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
+
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
-        if mr {
-            let f = self.func("fa_decode_vec_q_rows_v4_w_mr");
+        // FP8-WINDOWED (wkv): the v4 family is format-aware (2026-07-12 KFMT/VFMT staging
+        // arms) — wkv rides the SAME lane logic, resolved from the kf8vf8 module. One symbol
+        // per (lane, format-module) keeps parity structural; the old register-i2 detour
+        // (-33%) is retired.
+        let wg = Self::wkv_on();
+        // STAGING-PARALLEL v4 (BW24_FA_SPW2, default ON at gqa==1): warp 1 = staging helper
+        // (v4 is 61% staging); score phases identical to v4_w. Same symbol all t.
+        let sp2 = gqa == 1 && fa_v4_at(window)
+            && std::env::var("BW24_FA_SPW2").as_deref() != Ok("0");
+        if sp2 {
+            let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_sp") }
+                    else { self.func("fa_decode_vec_q_rows_v4_w_sp") };
+            let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+                block_dim: (32, 2, 1), shared_mem_bytes: sh };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
+             .arg(&ktb).arg(&vtb).arg(&wini);
+            unsafe { b.launch(cfg)?; }
+        } else if mr {
+            let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_mr") }
+                    else { self.func("fa_decode_vec_q_rows_v4_w_mr") };
             // fa_v4_smem_mr (fixed 39-slot k tile) + sV for (32 + t - 1) staged keys
-            let sh = (2048 + 256 + 39 * 256 + 39 * 32 + (32 + t - 1) * head_dim * 2) as u32;
+            let sh = (2048 + 256 + 39 * 256 + 39 * 32
+                      + (32 + t - 1) * head_dim * if wg { 1 } else { 2 }) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let nr = t as i32;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, 1),
@@ -5092,13 +5385,16 @@ impl Engine {
              .arg(&ktb).arg(&vtb).arg(&wini).arg(&nr);
             unsafe { b.launch(cfg)?; }
         } else {
+        let pick = |name: &str| if wg { self.func_g(name) } else { self.func(name) };
         let (f, sh) = if fa_v4_at(window) {
-            let f = self.func("fa_decode_vec_q_rows_v4_w");
-            (f, (11520 + 32 * head_dim * 2) as u32)
+            let f = pick("fa_decode_vec_q_rows_v4_w");
+            (f, (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32)
         } else if smem_tkv > 0 && window >= smem_tkv {
-            (self.func("fa_decode_vec_q_rows_smem_w"), (2 * 32 * head_dim * 2) as u32)
+            // NOTE: the smem twin's V-stage is still q5_1-hardcoded — unreachable under wkv
+            // at the gemma window (v4 covers it); revisit if the smem floor ever drops.
+            (pick("fa_decode_vec_q_rows_smem_w"), (2 * 32 * head_dim * 2) as u32)
         } else {
-            (self.func("fa_decode_vec_q_rows_reg_w"), 0u32)
+            (pick("fa_decode_vec_q_rows_reg_w"), 0u32)
         };
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
@@ -5109,7 +5405,8 @@ impl Engine {
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
         }
-        let (fc, cfg2) = (self.func("fa_decode_combine_rows_w"),
+        let (fc, cfg2) = (if wg { self.func_g("fa_decode_combine_rows_w") }
+                          else { self.func("fa_decode_combine_rows_w") },
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
@@ -5119,18 +5416,53 @@ impl Engine {
         Ok(())
     }
 
-    /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. v3-only
-    /// (stream mode gates on fa_v3_active); `t_kv_upper` sizes splits/partials — the same
-    /// one-sp-for-all-rows approximation class the host rows path already uses (battery-
-    /// arbitrated); actual per-row bounds derive in-kernel from the counter.
+    /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. Two lanes:
+    /// v3 (qwen stream, fa_v3_active) and v4 (gemma hd256 burst — rows_v4_dc, g-module aware);
+    /// `t_kv_upper` sizes splits/partials — the same one-sp-for-all-rows approximation class
+    /// the host rows path already uses (battery-arbitrated); actual per-row bounds derive
+    /// in-kernel from the counter (+ base_plus, v4 lane only — v3's kernel has no plus arg).
     #[allow(clippy::too_many_arguments)]
     pub fn fa_decode_rows_dc(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
                              v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                              head_dim: usize, n_head: usize, n_head_kv: usize,
                              base_dev: &CudaSlice<i32>, t_kv_upper: usize, t: usize, scale: f32,
-                             k_tok_bytes: usize, v_tok_bytes: usize)
+                             k_tok_bytes: usize, v_tok_bytes: usize, base_plus: i32, g: bool)
                              -> Result<(), Box<dyn std::error::Error>> {
-        assert!(fa_v3_active(head_dim), "stream fa rows requires the v3 lane");
+        let v4 = head_dim == 256 && fa_v4_at(t_kv_upper);
+        assert!(v4 || fa_v3_active(head_dim), "stream fa rows requires the v3 or v4 lane");
+        assert!(v4 || base_plus == 0, "v3_dc kernel takes no plus arg");
+        if v4 {
+            let sp = fa_split_keys(t_kv_upper, n_head_kv);
+            let n_splits_max = (t_kv_upper + sp - 1) / sp;
+            let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+            let (nspm, spk) = (n_splits_max as i32, sp as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let (mut part_o, mut part_m, mut part_l) =
+                (self.zeros(t * n_head * n_splits_max * head_dim)?,
+                 self.zeros(t * n_head * n_splits_max)?,
+                 self.zeros(t * n_head * n_splits_max)?);
+            let f = if g { self.func_g("fa_decode_vec_q_rows_v4_dc") }
+                    else { self.func("fa_decode_vec_q_rows_v4_dc") };
+            let sh = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+                block_dim: (32, gqa, 1), shared_mem_bytes: sh };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale)
+             .arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+            let fc = self.func("fa_decode_combine_rows_dc");
+            let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+              .arg(base_dev).arg(&base_plus).arg(&nspm).arg(&spk);
+            unsafe { b2.launch(cfg2)?; }
+            return Ok(());
+        }
         let sp = fa_split_keys(t_kv_upper, n_head_kv);
         let n_splits_max = (t_kv_upper + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
@@ -5177,13 +5509,17 @@ impl Engine {
                         v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                         head_dim: usize, n_head: usize, n_head_kv: usize,
                         t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
-                        k_tok_bytes: usize, v_tok_bytes: usize)
+                        k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                         -> Result<(), Box<dyn std::error::Error>> {
         // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
         // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
         // bit-identity gate breaks. BW24_NO_FA_VEC forces scalar on BOTH paths in lockstep.
-        let fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
+        // `g` = this layer's cache is e4m3 (gemma windowed under wkv) — every pick below must
+        // mirror fa_decode_kvmod's g-routing or the graph diverges from eager (short/mid 1/96,
+        // 2026-07-12).
+        let mut fa_vec = std::env::var("BW24_NO_FA_VEC").is_err() && bucket_max >= fa_vec_min_tkv();
+        if g && head_dim == 256 && !fa_v4_at(bucket_max) { fa_vec = false; }   // mirror kvmod/geom
         let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
         let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
@@ -5203,15 +5539,18 @@ impl Engine {
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else if fa_vec && head_dim == 512 {
-            // under the 512 floor eager runs scalar — mirror it (same geometry as the scalar arm).
-            (self.fa_func("fa_decode_f32_dc", head_dim),
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            // under the 512 floor eager runs scalar — the SAME unified symbol, ctr non-null;
+            // ns_eff in-kernel reproduces eager's ceil(t_kv/sp) partition for the LIVE len.
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 0, Some(t_kv_dev), scale, n_splits, sp,
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 &mut part_o, &mut part_m, &mut part_l);
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
-            // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick.
+            // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
+            // incl the g-module route + raw-e4m3 sV sizing.
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v4_dc");
-            let shmem = (11520 + 32 * head_dim * 2) as u32;
+            let fv = if g { self.func_g("fa_decode_vec_q_v4_dc") } else { self.func("fa_decode_vec_q_v4_dc") };
+            let shmem = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             fv.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             (fv, LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5220,7 +5559,7 @@ impl Engine {
             // FA v3 lane _dc twin: the captured graph must run the SAME walk body as eager
             // under BW24_FA_V3=1 (eager, rows-verify and graph switch together).
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v3_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_v3_dc") } else { self.func("fa_decode_vec_q_v3_dc") };
             let shmem = (32 * head_dim * 2) as u32;       // sV bf16 [FA_DEC_TILE=32][hd]
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5230,7 +5569,7 @@ impl Engine {
             // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
             // a numeric config; eager, rows-verify and graph all switch together).
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let fv = self.func("fa_decode_vec_q_v2_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_v2_dc") } else { self.func("fa_decode_vec_q_v2_dc") };
             let shmem = (2 * 32 * head_dim * 2) as u32;   // sK+sV bf16 [FA_DEC_TILE=32][hd]
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
@@ -5238,20 +5577,22 @@ impl Engine {
         } else if fa_vec {
             let gqa = (n_head / n_head_kv).max(1) as u32;
             // REGISTER-DEQUANT twin: zero dynamic smem (see fa_decode above).
-            let fv = self.func("fa_decode_vec_q_dc");
+            let fv = if g { self.func_g("fa_decode_vec_q_dc") } else { self.func("fa_decode_vec_q_dc") };
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else {
-            (self.func("fa_decode_f32_dc"),
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 0, Some(t_kv_dev), scale, n_splits,
+                                                 if fa_vec { sp } else { 256 },
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 &mut part_o, &mut part_m, &mut part_l);
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = self.fa_func("fa_decode_combine_f32", head_dim);
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
@@ -5264,7 +5605,7 @@ impl Engine {
     /// bucket on the same `(kernel, n_splits)` pair and pass a `bucket_max` that reproduces eager's
     /// n_splits bit-for-bit. (Per = ceil(t_kv/n_splits) is then recomputed from the DEVICE t_kv inside
     /// the kernel and matches eager when n_splits matches — the bit-identity contract.)
-    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
+    pub fn fa_geom_eager(&self, t_kv: usize, head_dim: usize, n_head_kv: usize, g: bool) -> (bool, usize) {
         // MUST mirror `fa_decode` / `fa_decode_dc` (default-ON 2026-06-28). This is the bucket-key
         // source: if it disagrees with the actual kernel pick, the graph captures the wrong path and
         // replay diverges from eager. All three sites read BW24_NO_FA_VEC in lockstep.
@@ -5275,7 +5616,13 @@ impl Engine {
         // (mid-ctx graph mismatch at pos 19 + partials OOB at longer runs). Mirror the real
         // fa_decode dispatch: vec512 above the fa512 floor, vec256 as before.
         let vec512 = fa_ok && head_dim == 512 && t_kv >= fa512_min_tkv();
-        let fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
+        let mut fa_vec = vec512 || (fa_ok && head_dim <= 256 && head_dim % 32 == 0);
+        // g (fp8-windowed): mirror kvmod's clamp — only the v4 lane parses e4m3 in the vec
+        // family; everything else falls to the g-module scalar.
+        // hd256 under g: v4-or-scalar. hd128/other under g ride the REGISTER g-lane (the
+        // dq_K_lane/dq_V_lane macros are format-aware; v3 is format-gated off, v2/smem
+        // arms are excluded under g). Mirrored in kvmod / fa_decode_dc / fa_geom_eager.
+        if g && head_dim == 256 && !fa_v4_at(t_kv) { fa_vec = false; }
         let sp = fa_split_keys(t_kv, n_head_kv);
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         (fa_vec, n_splits)
@@ -5286,8 +5633,8 @@ impl Engine {
     /// launcher derives both from `bucket_max` via the same formulas, we just hand it `t_kv` itself:
     /// the n_splits is then identical, and the per-split boundaries (computed from the DEVICE t_kv in
     /// the kernel) match eager exactly. The bucket KEY (for the graph HashMap) is `(fa_vec, n_splits)`.
-    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize, n_head_kv: usize) -> (bool, usize) {
-        self.fa_geom_eager(t_kv, head_dim, n_head_kv)
+    pub fn fa_bucket_key(&self, t_kv: usize, head_dim: usize, n_head_kv: usize, g: bool) -> (bool, usize) {
+        self.fa_geom_eager(t_kv, head_dim, n_head_kv, g)
     }
 
     /// CUDA-graph capture wrapper (CUDA-GRAPH-PLAN §3.2, llama.cpp warmup pattern). Runs `step`
@@ -5297,6 +5644,22 @@ impl Engine {
     /// must enqueue ONLY device work on `e.stream()` (no dtoh / no synchronize / no host branch on
     /// device data) — every per-step varying scalar must come from a device counter. Returns the
     /// instantiated graph; `CudaGraph::launch()` replays the whole step in one dispatch.
+    /// `capture_graph` with CAPTURE-RETAIN: every Engine allocation made during the warmups
+    /// and the capture is kept alive in the returned keeper — hold it as long as the graph
+    /// replays (transients returning to the pool get reused by unrelated work and corrupt
+    /// replays; the draft-graph root cause). Model-generic, next capture reuses it.
+    pub fn capture_graph_retained<F>(&self, step: F)
+        -> Result<(cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>), Box<dyn std::error::Error>>
+        where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
+    {
+        self.capture_keep.lock().unwrap().clear();
+        self.capture_keep_on.store(true, std::sync::atomic::Ordering::Relaxed);
+        let res = self.capture_graph(step);
+        self.capture_keep_on.store(false, std::sync::atomic::Ordering::Relaxed);
+        let keeper = std::mem::take(&mut *self.capture_keep.lock().unwrap());
+        Ok((res?, keeper))
+    }
+
     pub fn capture_graph<F>(&self, mut step: F) -> Result<cudarc::driver::CudaGraph, Box<dyn std::error::Error>>
         where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
     {

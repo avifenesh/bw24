@@ -242,6 +242,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let maxdiff = prefill.iter().zip(&dec_logits).map(|(a,b)| (a-b).abs()).fold(0.0, f32::max);
     println!("prefill argmax={am_p}  decode argmax={am_d}  logit maxdiff={maxdiff:.3e}  {}",
              if am_p == am_d { "MATCH" } else { "MISMATCH" });
+    if am_p != am_d {
+        // near-tie vs real-gap diagnosis before the panic: both sides' view of both ids.
+        eprintln!("[gate] prefill: l[{am_p}]={:.4} l[{am_d}]={:.4} | decode: l[{am_p}]={:.4} l[{am_d}]={:.4}",
+                  prefill[am_p], prefill[am_d], dec_logits[am_p], dec_logits[am_d]);
+    }
     assert_eq!(am_p, am_d, "decode-step diverges from prefill — cache threading bug");
 
     // --- time PREFILL tok/s (batched forward over the whole prompt) for the pp comparison vs

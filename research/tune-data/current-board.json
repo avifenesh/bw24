@@ -1,7 +1,7 @@
 {
- "updated": "2026-07-10",
+ "updated": "2026-07-12",
  "rig": "RTX 5090 Laptop",
- "protocol": "N=2 medians, engines interleaved per model in the same hour-regime, idle-gated cold starts, no flags (tuned paths are defaults); rebaseline2 campaign + 35B spec refresh 2026-07-10 (router GEMV + CSR gate_up dedup; H-runs, N=2, 1590MHz/58-65C, idle GPU, llama = marked 07-09 floor), FA-v4 refresh 2026-07-10 (J-runs N=2; 35B p1 -0.5% = the v4 shallow-ctx cost, honest); 27B p1/p2 re-paired 2026-07-10 (I-runs: same-session interleaved N=2, idle GPU; p3 sampled pair unchanged), raw logs in research/tune-data/rebaseline-logs/",
+ "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss",
  "plain_decode": {
   "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
   "rows": [
@@ -86,5 +86,24 @@
     "llama": 160.9
    }
   ]
- }
+ },
+ "extra_card_rows": [
+  {
+   "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
+   "bw24": 198.3,
+   "llama": 180.0
+  },
+  {
+   "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
+   "bw24": 399.3,
+   "llama": 258.7,
+   "spec": true
+  },
+  {
+   "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
+   "bw24": 126.0,
+   "llama": 112.1,
+   "spec": true
+  }
+ ]
 }

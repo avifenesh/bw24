@@ -103,16 +103,191 @@ the bottleneck is the 18-byte q4_0 stride forcing narrow LSU loads. REAL lever =
 weight REPACK to an aligned layout (d/qs split arrays or 20B-padded stride) + a b4-repack
 twin (the qmatvec `rp` infra exists); est short 222 -> ~250 if b4 reaches gate_up's eff.
 llama's K=3 round = 10.1ms vs our 11.7 at equal accept — this one class is the whole gap.
-## 26B STATUS (2026-07-11 night): PLAIN BAR PASSED ON EVERY CELL
-short 1.07x | 1.7k 1.03-1.05x | 4.9k 1.09-1.11x (interleaved same-window pairings; fp8-globals
-= the decisive lever, lead widens with depth). CONFIG LAW: plain serving = BW24_GEMMA_GKV
-default ON; spec serving = GKV=0 (drafter acceptance 0.915-vs-0.869 / 0.626-vs-0.582 — real
-drift, attributed). SPEC = the open front per the owner's ladder: depth 283.6 (K=7) vs llama
-303-306 = 0.93x; short 241.5 (K=2) vs 290 = 0.83x. Ranked spec levers: (a) acceptance
-mechanics (llama's per-token p-min adaptivity; our Markov-K got +10% depth — the confidence
-pack/prob_of_token_device path is built but unexploited), (b) full-acceptance-under-fp8 would
-be ~318 (per-layer L29-in-q8 scheme parked: needs per-layer fa routing), (c) round graphs
-parked (GPU-bound).
+## 26B STATUS (2026-07-12 night): PLAIN >=1.1x ON EVERY CELL — THE OWNER BAR IS CROSSED
+Validity-gated window (gate 193.94 >= 193), interleaved same-window pairs:
+short **198.4/198.2 vs 179.8/180.1 = 1.10x** | 1.7k **177.8 x3 vs 160.8-162.2 = 1.10x**
+(pairs 1.096/1.106/1.104, median 1.104) | 4.9k **162.5/162.6 vs 141.3/142.6 = 1.14-1.15x**.
+Today's levers, in order (each bit-identical or battery-arbitrated, jsonl per row):
+BW24_GEMMA_WKV default ON (9266ab7) -> v4-rows parity fix (a0903d0) -> raw-e4m3 sV tile
+(610ad37, occupancy 3->4 blocks/SM) -> SPW default 32 (1b500e8, grid-fill at t=1) ->
+graph capture-arm wkv fix (362bc64, GRAPH-GATE IDENTICAL at every ctx) -> Q4_0 wide-load
+expert dot (b6f0ffe, funnelshift, +2.2%/1.7k +1.7%/4.9k).
+Killed arms (jsonl): t-keyed SPW (parity 9/128), gate_up block packing (flat), graph
+serving (flat vs the dc loop), SP512 re-sweep (16 stands), i2 (noise).
+PER THE OWNER LADDER: plain passed >=1.1x -> the SPEC LANE OPENS.
+
+**PARITY BUG (2026-07-12, fixed a0903d0):** fa_decode_rows' g-dispatch excluded the v4 rows
+twin (stale — predates the format-aware wkv-v4 merge fda9790), so under the wkv default
+batched verify rode g-module BASE rows while decode rode g-module V4: short/mid VERIFY-GATE
+maxdiff 1.2-2.8, short spec stream 0/128 (round 1 accepted garbage). Depth-only battery was
+blind (windowed rides rows_w there). Fix: g-route mirrors kvmod's symbol choice (rows_v4 in;
+only the smem twin excluded). STANDING BATTERY NOW INCLUDES: VERIFY-GATE at SHORT + MID +
+DEPTH (all must read 0.000e0) and spec stream at SHORT + DEPTH.
+
+CONFIG LAW: plain serving = GKV+WKV default ON, SPW=48; spec serving = BW24_GEMMA_GKV=0
+(acceptance) + BW24_FA_SPW=64 (verify round cost). SPEC DONE (2026-07-12 night): **26B beats llama on BOTH spec cells** — short 399-406 vs
+llama-mtp 255-263 = **1.55x**, depth 322 vs 302-304 = **1.06x**. Three verify-side fixes
+stacked: v4-rows parity (healed acceptance 0.52->0.91-0.94), b16 tier host bugs, and the
+FR-SPEC TRIM d2t translate (the async round had dropped it — both historical negative trim
+verdicts VOID; trim = +2.8% short/+5.8% depth at IDENTICAL acceptance, head 150->18MB).
+SPEC CONFIG: GKV default-ON (GKV=0 law stale: depth 256-261 vs 292-302), SPW=64 depth
+serving, K=6 both cells, BW24_GEMMA_DRAFT_RANKS=research/gemma4-bringup/
+gemma4-frspec-ranks-32768.txt. b16 tier (t=9..16) correct + open via BW24_SPEC_CAPMAX but
+perf-negative (K8-10 depth 283-293 vs K6 301-306) — cap 7 stands on a measurement.
+
+## 31B CAMPAIGN — IN-PLACE Q4_0 LAYOUT SWAP (opened 2026-07-12, the single dominant lever)
+Fresh standing under all 26B defaults: short 38.8 vs 40.7-40.8 = 0.95x | 1.7k 35.4 vs
+38.6-38.8 = 0.91x. Gen-window profile: the q4_0 matvec trio (fused2 358ms / mr2 266ms /
+fused3 112ms per 1s window) = 76% of decode on the NON-RP kernels — the 18B-stride sector
+overfetch the 26B cured with mirrors. 31B can't mirror (15GB trunk copy vs 24GB card;
+documented at the hybrid.rs build site) -> the lever is the IN-PLACE SWAP:
+1. Loader: repack q4_0 trunk tensors to the split-plane layout AT UPLOAD (replace, not
+   mirror — zero extra VRAM; q4_0_split_rp_build already exists device-side).
+2. Route every consumer: decode mmvq/batched/fused rp twins EXIST (rp flag per tensor);
+   prefill W4A8 MMQ needs a q4_0 is_rp tile-loader arm (NVFP4 precedent:
+   load_tiles_nvfp4_w4a8 is_rp — same flat-block-index remap recipe, bit-identical);
+   Stage-A f32 oracle + any GEMM/dequant consumer need rp-aware reads or a scoped unswap.
+3. Gates: kernel-check rp bit-identity gates (the MMQ-W4A8-RP precedent pins 0 mismatched
+   bits), run-gen MATCH short+depth, 26B battery unchanged (26B keeps mirrors — or moves to
+   the swap too and frees 0.7GB), then the 31B pairing.
+LANDED 2026-07-12 (02c958f): swap + gemm rp + fused-matcher fix + per-model SPW.
+RESULT: short 40.3 vs 40.2-40.3 = PARITY (was 0.95x); 1.7k 36.9 vs 37.8-38.7 = 0.96x
+(was 0.91x). ncu: the swapped FFN pair sits at DRAM 91.7% — the byte wall (~48.7 tok/s
+ceiling at 17.4GB/token); the mmvq-class launches took -7%.
+31B LEDGER (2026-07-12 night, all jsonl'd):
+LANDED: layout swap (short 0.95->1.00x parity, 1.7k 0.91->0.96x) | per-model SPW (dense 64)
+| per-model SP512 (dense 32, +0.5%) | Q4_0 drafter requant (+2.3% spec, accept held).
+DOORS CLOSED ON MEASUREMENT: grid-stride fused (-2.7%, locality), rpb sweep (flat — tail
+doesn't starve DRAM; 92.9% = this rig's controller ceiling), graph replay (-1.2%), dense
+FFN q8 folds (flat — 759 sub-8us launches/token fully hidden at 96.7% GPU busy), 26B->31B
+trim-rank transfer (accept 0.765->0.603).
+31B STANDING (2026-07-12 end): plain short 1.00x | 1.7k ~0.965x | SPEC SHORT 122.4 vs
+llama-mtp 112.1 = 1.09x ABOVE (the WKV unlock — fp8-windowed KV gutted drafter acceptance;
+serving-keyed default landed, v0.24.0) | spec 1.7k 74.6 vs 85.7 = 0.87x (open cell). Remaining plain levers are ATTENTION-class
+and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
+90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
+e2e). The plain bar likely needs a new mechanism class, not tuning.
+31B BURST — ARC CLOSED (2026-07-12, commit 742d7c4): ALL pieces landed and EXACT —
+verify-stream (gemma4_verify_t_am_stream) + the M-round burst loop on the round_stream
+generics; stream 128/128 short+depth on BOTH models at M=1..4. The gates forced three
+parity finds (the arc's durable value): (1) eager hd256 verify rows unified onto
+rows_v4_dc (two-symbol drift poisoned persisted KV), (2) fa_decode_f32_dc DELETED — one
+nullable-ctr fa_decode_f32 whose split partition derives from the ACTUAL len in-kernel
+(ns_eff = ceil(T_kv/split_keys)); the old bucket-partitioned twin deterministically
+flipped 31B verify argmaxes (50/128), (3) per-row fa_decode_dc mirror for globals under
+the fa512 floor. PERF VERDICT: single-stream burst is NEGATIVE everywhere (26B short 304
+vs 379; 31B 74 vs 88) — on ONE stream no draft/verify overlap materializes, so the burst
+only removes launch tax (already hidden) and pays fixed-K drafting for it. Default OFF
+(BW24_GEMMA_SPEC_BURST=0). STAGE 2 (the actual prize, unbuilt): second-stream SPECULATIVE
+draft(N+1) launched under verify(N), discard on partial accept — expected win bounded by
+full-accept-prob x drafter-share (~9% on the 26B at accept .93^6; ~2% on the 31B at
+.76^7 — K-shortening raises it). The burst infra (device rounds, exact) is its
+prerequisite and is DONE.
+ORIGINAL SPEC (historical, for the record):
+1. GEMMA VERIFY-STREAM ARM (~100 LoC, hybrid_forward): a gemma4_verify_attn variant where
+   (i) the append rides append_kv_quantized_rows_dc at the len_d slot (exists; class flag
+   as today), (ii) attention base comes from len_d (the rows arm already takes
+   base_dev/plus; the per-row fallback needs fa_decode_dc), (iii) rope pos_d fills from
+   pos_ctr via EAGER i32_copy_add per slot (in-graph fills replay stale — proven; eager
+   fills reading the DEVICE counter are correct and need no host value). Trunk wrapper:
+   gemma4_decode_step_t_am_dev already takes tok_dev + returns device vam.
+2. BURST LOOP in generate_spec_gemma (~80 LoC): per round, all enqueued — batch_d[0] <-
+   pend_d (u32_copy); pos slots <- i32_copy_add(pos_ctr, +j); draft graph replay (key kr
+   FIXED per burst = k_cap; adaptive kc pauses inside bursts); verify-stream; per-col
+   argmax -> preds_d; spec_accept_greedy_dc; spec_seed_gather(vh->g_seed);
+   spec_rollback_stream(kv_len_ptr_table incl pos_ctr); spec_ring_commit. Drain ring +
+   re-sync host len mirrors once per M rounds (StreamBufs.drain_ring). NO SNAPSHOT needed
+   — gemma KV is append-only (len truncate = full rollback; no conv/ssm states).
+GATES: stream 128/128 short+depth vs the eager round on BOTH gemma models + acceptance
+unchanged; then the perf read — the burst's real prize is draft(N+1)-overlaps-verify(N)
+(~14% of the round is drafter time currently serialized).
+PHYSICS CAUTION (today's repeated lesson): launch/sync taxes are hidden at 96.7% GPU busy
+— the burst pays ONLY via the overlap, not via sync elimination; measure that specifically.
+
+31B SPEC — M-ROUND BURST PORT MAP (recon 2026-07-12; the remaining structural lever,
+llama 2.78x own-plain vs our 2.15x):
+The qwen ROUND-STREAM pieces are MODEL-GENERIC device machinery (lib.rs/cache.rs) and port
+as-is: spec_accept_greedy_dc (device longest-prefix accept), spec_ring_commit (device out
+ring + pend token), spec_rollback_stream (device len_d rollback via a u64 ptr table),
+spec_seed_gather (accepted-row hidden gather), cache.snapshot_into + commit_verified_prefix
+(the D2D snapshot/commit pair), spec_assemble_verify (verify-token assembly + p-min brk).
+GEMMA-SPECIFIC work: (1) the draft chain must become a CAPTURED GRAPH or arg-fixed launch
+sequence (qwen uses a stream-graph `sg` with g_tok/g_pos/g_seed device slots; the gemma
+drafter chain is already zero-sync eager — capture it once per kr bucket), (2) the verify
+must run the DC trunk with device tokens (gemma4_decode_step_t_am_dev EXISTS — vam already
+lands device-side), (3) per-layer len_d ptr table for the rollback (gemma cache layers have
+len_d — build the u64 table once), (4) the accept/emit loop moves fully device-side; ONE
+dtoh per M rounds drains the ring. Estimated shape: ~300-500 LoC in gemma_spec + reuse.
+PRIZE: eliminates per-round host turnaround AND enables llama-class round pipelining; the
+gap it targets is the 0.79x -> 1.0x+ spec stretch. RISK: the 26B round must stay green
+(shared loop) — gate stream 128/128 short+depth on BOTH models every step.\nSPEC 0.76x = THE BIGGER FRONT (85.5 K=5-6 adaptive + Q4 drafter vs llama-mtp 112; accept
+0.756 competitive): llama runs 2.78x own-plain vs our 2.12x — ROUND STRUCTURE. Levers:
+(a) p-min/confidence early-cut on the gemma zero-sync round (pack_tok_p/confidence
+machinery exists for the qwen round, unexploited on gemma; needs a device-side break so
+enqueued draft steps + verify no-op past the cut), (b) 31B-corpus FR ranks (the 26B ranks
+don't transfer), (c) verify round cost at t=6-8 (b8 tier, walled trunk).
+
+## QWEN FP8-KV ARC — BUILD PLAN (2026-07-12, owner: "better kv in lower cost = big lever over llama")
+HISTORY THAT MUST BE RE-READ FIRST: BW24_KV_K=fp8 was FLIP-BLOCKED 2026-07-09 (e2e flat +
+9B ST spec acceptance 74% -> 20.5%, "drift accumulates across K reads"). That verdict
+PREDATES the format-aware v4 arms AND the v4-rows parity fix — the acceptance-collapse
+signature is EXACTLY what the gemma parity bug produced (verify and decode on different
+kernels/formats). Treat the block as UNPROVEN, re-run through the gemma recipe.
+RECIPE (all infra exists from the gemma campaign):
+1. Cache dims: qwen full-attn layers get (32,32) blk bytes under BW24_KV_FP8 (uniform —
+   no window/global split; hybrid GDN layers carry no KV).
+2. Appends: the class flag already threads through append_kv_quantized/_rows/_dc — qwen
+   sites flip from `false` to the flag (incl spec.rs append_kv_quantized_view — that one
+   has NO flag param yet, add it).
+3. FA: pass g=flag at qwen fa_decode/kvmod/rows/dc sites. BRING-UP ORDER: hd128 + g rides
+   the g-module SCALAR first (the kvmod clamp already forces fa_vec=false for g at
+   hd!=256) — correctness before speed; then open the register/v2/v3 g-module lanes one
+   at a time (the macro layer dq_K_lane/dq_V_lane serves them; NOTE the open g-module
+   REGISTER-twin bug at the gemma hd256 shape — verify whether hd128 shares it).
+4. Gates (the 2026-07-09 failure mode is the target): kernel-check, run-gen MATCH 9B/27B/
+   35B + DEPTH oracle, run-spec K=1..8 self-consistency, acceptance A/B vs q8_0/q5_1
+   config (any drop >1pt = parity suspect, bisect verify-vs-decode kernel identity),
+   VERIFY-GATE-class bit checks where the parity law applies.
+5. ACCEPTANCE FIRST (the 2026-07-12 gemma WKV lesson): fp8 KV in layers a DRAFTER attends
+   guts its acceptance (31B .758 -> 1.000 on q8/q5 = spec 88 -> 126). The qwen MTP head
+   attends the trunk cache too — A/B acceptance under BW24_KV_FP8 BEFORE any serve
+   adoption; if it drops, key the default on serving mode like gemma wkv_on().
+6. Perf: depth cells are the prize (gemma gained +6-9% at 1.7k-4.9k from dequant-latency);
+   pair vs llama at 512/6.3k. Positive -> per-model default flip + board refresh.
+PREREQ CLEANUP: root-cause the g-module register twin at the gemma windowed shape (parked
+env-unreachable for gemma; it becomes load-bearing if hd128 register lane opens).
+STATUS 2026-07-12 night: LANE COMPLETE TO OPT-IN — foundation + full site threading +
+the hd128 register g-lane landed; correctness green everywhere (9B run-gen MATCH at
+1.7k/4.9k/12k, run-spec K=1..6 PASS, 27B MATCH; default path bit-unchanged). Perf: 9B
++0.7% (1.7k) -> +2-4% (4.9k-12k), 27B flat at 1.7k (weight-bound); KV bytes 58->32/blk
+(~45%) = the 64k-serving prize. ARC CLOSED TO A PER-MODEL VERDICT (2026-07-12): prefill g-route landed (12k chunked
+prime MATCH), 35B checked — fp8 LOSES -2% there (format-gates the v3 dp4a lane off; the
+hybrid's small KV share cannot repay it). 9B +0.7-4% w/ depth, 27B flat, 35B -2%.
+BW24_KV_FP8 = per-model opt-in door. Acceptance battery p1-p3 + 32k pairing + serve
+adoption ride the NVFP4-PUBLISH arc (the swap replaces these dailies + re-baselines).
+(original notes:) foundation LANDED (Engine::kv_fp8_on + cache.rs (32,32) class for non-gemma
+full-attn; default OFF = zero behavior change). REMAINING SITES (enumerated 2026-07-12):
+- append flag threading: decode.rs:713 (_dc), decode.rs:987, spec.rs:371 (_dc),
+  hybrid_forward.rs:368 (prime rows) — pass kv_fp8_on() && !gemma;
+  spec.rs:458+1182 append_kv_quantized_view and spec.rs:1176 append_kv_quantized_rows_dc
+  need the g PARAM ADDED to the host fns first (they always resolve the default module).
+- fa g threading (qwen sites, g = kv_fp8_on()): decode.rs fa_decode/kvmod decode site,
+  decode.rs:744 fa_decode_dc, decode.rs:563 fa_bucket_key, spec.rs:380 fa_decode_dc,
+  spec.rs:1232 fa_decode_rows (arg 15), graph_decode_gate.rs:40.
+- CHUNKED PRIME: fa_prefill_view parses the quantized past (hybrid_forward.rs:214/377) —
+  needs func_g routing under the flag (or force monolithic prime at bring-up).
+- hd128 + g rides the g-module SCALAR via the existing kvmod clamp (correct, slow) —
+  bring-up gates first, then open register/v2/v3 g-lanes one at a time.
+
+QWEN LANE PICKUPS from this campaign (for the NVFP4-publish arc, memory file):
+1. e4m3 KV (GKV/WKV recipe + kf8vf8 module + format-aware v4 arms) — qwen still runs
+   q8_0/q5_1 KV; the gemma depth lever should port (qwen depth cells are the thinnest).
+2. u32_map_k d2t translate — qwen trim scatters 262k-wide logits per draft
+   (scatter_trim_logits); the 1-thread in-place id map is the cheaper shape.
+3. b16-tier fixes (rp-layout preserved at mcols=16, round-1 clamp) — shared dispatch code,
+   qwen verify t=9..16 is now correct if its cap ever opens.
+4. Wide-load Q4_0 expert dot — N/A to current qwen quants (IQ4_XS already has _v; NVFP4
+   dense has its own family); applies to any future Q4_0 MoE.
 
 ## FP8-GLOBALS ARC — BUILD PLAN (EXECUTED, see status above) (2026-07-11 late, the 26B depth-plain margin lever)
 ncu memory trace (owner protocol: count accesses): depth attention is DEQUANT-LATENCY-bound
