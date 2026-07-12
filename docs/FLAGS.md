@@ -137,6 +137,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_GEMMA_GKV=0` | gemma GLOBAL (hd512) layers back to q8_0/q5_1 KV (default = e4m3 via the kf8vf8 module) | fp8-globals default-on 2026-07-11 — the depth-plain lever (dequant-latency-bound, ncu) |
 | `BW24_GEMMA_WKV=0` | gemma WINDOWED (hd256) layers back to q8_0/q5_1 KV (default = e4m3) | fp8-windowed default-on 2026-07-12 (validity-gated A/B: 1.7k +4, 4.9k above the 1.1x bar); requires the format-aware v4 arms |
 | `BW24_GEMMA_ROWS_W=0` | per-token loop instead of the parity-law rows/rows_w twins (gemma decode+verify) | rows twins = the parity-law foundation, 2026-07-10/11 |
+| `BW24_GEMMA_DRAFT_DC=0` | gemma drafter attention back to the host-len kvmod arm (default = device-len fa_decode_dc/rows_w arms riding the main layers' len_d) | burst-arc step (a/b), 2026-07-12 — required by the draft graphs + burst |
 | `BW24_FA_SPW2=0` | disable the warp-1 staging helper on the windowed v4 kernel (gqa==1) | +0.4-0.7 marginal keep 2026-07-11 |
 | `BW24_FA_V4=0` | pre-v4 FA decode lanes (v4 = key-per-lane score phase; format-aware e4m3 arms 2026-07-12) | default-on 2026-07-10 after the 3-model battery |
 | `BW24_FA_I2=0` | single-key walk in the gemma global rows kernel (i2 = 2-key interleave) | i2 default-on 2026-07-11 (depth +3.5%; i4 was negative — register pressure) |
@@ -176,6 +177,8 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_STATS=1` | per-layer expert-cache hit/miss/staged-bytes prints (forces the stats-visible dispatch path) |
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
+| `BW24_DRAFT_GRAPH_CHECK=1` | re-run the gemma draft chain eagerly after each graph replay and diff the drafted slots (non-destructive replay-vs-eager bisect) |
+| `BW24_BURST_VCHECK=1` | run the gemma verify-STREAM on each eager round's batch before the eager verify and diff argmaxes + per-layer KV byte sums (the burst verify's in-place gate harness) |
 | `BW24_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |
 | `BW24_MOE_CSR` | `0` = rollback the CSR expert-dedup gate_up on spec verify (default ON 2026-07-10: owner-scan dedup of the 38-40% duplicated expert weight-stream+decode, +1-2% spec e2e all K); `2` = run BOTH paths + byte-compare (debug) |
@@ -209,6 +212,8 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_MMA_T=<n>` | MMA t-floor override (bisect seam; <16 puts spec verify on MMA) | verify must stay dp4a (dispatch-parity law) — measurement only |
 | `BW24_IQ_FAST` | opt-in IQ4_XS fast matvec (non-expert path) | UNCLEAR — no concluding JSONL row found; left untouched by the audit |
 | `BW24_EAGLE` / `BW24_EAGLE_ALIGN=0` | EAGLE draft lane (run-eagle bin; ALIGN=0 = un-shifted MTP-style pairing A/B) | experimental lane, not on the daily path |
+| `BW24_GEMMA_DRAFT_GRAPH=1` | gemma draft chain replays as ONE captured CUDA graph (keyed kr/rung/window-regime; pos slots + g_seed are eager-filled graph inputs) | steady-state perf ~0 (launch tax hidden at 96.7% busy) — exists as the BURST enabler; capture-retain allocator mode ships with it (2026-07-12) |
+| `BW24_GEMMA_SPEC_BURST=<M>` (+`_DRAFT_GRAPH=1`) | pre-issue M full spec rounds with ONE host sync per burst (verify-stream + device accept/seed/rollback/ring on the round_stream generics) | EXACT (stream 128/128 short+depth, 26B+31B) but PERF-NEGATIVE single-stream — no draft/verify overlap materializes on one stream and fixed-K costs the adaptive policy (26B short 304 vs 379; 31B 74 vs 88). Default 0. Stage 2 = second-stream speculative draft(N+1) under verify(N) |
 
 ---
 

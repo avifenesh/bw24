@@ -165,9 +165,23 @@ PLAIN STANDING: short 1.00x | 1.7k ~0.965x. Remaining plain levers are ATTENTION
 and small: rows_v4_w at 14.9/16.7% occupancy (smem-ceiling-bound, achieved/theoretical
 90% — the 26B-style grid fixes don't apply; ceiling lifts = heavy restructure for <=+1%
 e2e). The plain bar likely needs a new mechanism class, not tuning.
-31B BURST — EXECUTION STATE (2026-07-12 night): steps a/b/c LANDED (device pos slots,
-device-len drafter attention + len_d lockstep, replayable draft-chain graph + the generic
-Engine CAPTURE-RETAIN mode). REMAINING = two pieces:
+31B BURST — ARC CLOSED (2026-07-12, commit 742d7c4): ALL pieces landed and EXACT —
+verify-stream (gemma4_verify_t_am_stream) + the M-round burst loop on the round_stream
+generics; stream 128/128 short+depth on BOTH models at M=1..4. The gates forced three
+parity finds (the arc's durable value): (1) eager hd256 verify rows unified onto
+rows_v4_dc (two-symbol drift poisoned persisted KV), (2) fa_decode_f32_dc DELETED — one
+nullable-ctr fa_decode_f32 whose split partition derives from the ACTUAL len in-kernel
+(ns_eff = ceil(T_kv/split_keys)); the old bucket-partitioned twin deterministically
+flipped 31B verify argmaxes (50/128), (3) per-row fa_decode_dc mirror for globals under
+the fa512 floor. PERF VERDICT: single-stream burst is NEGATIVE everywhere (26B short 304
+vs 379; 31B 74 vs 88) — on ONE stream no draft/verify overlap materializes, so the burst
+only removes launch tax (already hidden) and pays fixed-K drafting for it. Default OFF
+(BW24_GEMMA_SPEC_BURST=0). STAGE 2 (the actual prize, unbuilt): second-stream SPECULATIVE
+draft(N+1) launched under verify(N), discard on partial accept — expected win bounded by
+full-accept-prob x drafter-share (~9% on the 26B at accept .93^6; ~2% on the 31B at
+.76^7 — K-shortening raises it). The burst infra (device rounds, exact) is its
+prerequisite and is DONE.
+ORIGINAL SPEC (historical, for the record):
 1. GEMMA VERIFY-STREAM ARM (~100 LoC, hybrid_forward): a gemma4_verify_attn variant where
    (i) the append rides append_kv_quantized_rows_dc at the len_d slot (exists; class flag
    as today), (ii) attention base comes from len_d (the rows arm already takes
