@@ -1,3 +1,17 @@
+# E4B — THE CONCURRENCY HYPOTHESIS (2026-07-12 night, THE lead for the 0.87x -> 1x gap)
+
+nsys on llama's E4B decode: their kernels are SLOWER than ours per-op (big-FFN 43.5us vs
+our 36.2; small mmvq 9.9 vs 5.1; more quantizes/norms; fa 7-10.9 vs 3.9) yet they serve
+216.9 vs our 188.8. Their one-token kernel SUM appears to EXCEED their wall -> CUDA-graph
+NODE CONCURRENCY: ggml's graph exposes independent ops and graph exec overlaps them across
+SMs. Our engine is strictly serial (one stream; even our graph captures a serial stream).
+NEXT: (1) confirm with nsys --gpu-metrics on llama (SM overlap) and a clean full-run
+window; (2) if confirmed, restructure the E4B token enqueue into 2-3 streams with events
+(e.g. attention chain || PLE tail of the PREVIOUS layer? — find true independence in the
+dataflow; per-layer: qkv-cat matvec is independent of the PREVIOUS layer's PLE tail once
+xn is out — the emit produces xn early) then capture THAT as a parallel graph. This is a
+bigger arc than fold-grinding and likely the whole remaining gap.
+
 # E4B GLUE-FUSION LANE — STATE + WAVE 3 SPEC (2026-07-12, branch lane/e4b-glue-fusion, merged through wave 2)
 
 STANDING: 186.6 vs llama 216.9 same-window = 0.86x. llama serves AT the DRAM wall
