@@ -8,6 +8,7 @@ import hashlib
 import json
 import tempfile
 from collections import defaultdict
+from math import prod
 from pathlib import Path
 
 
@@ -144,16 +145,81 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         for proj in projections
     }
     tensors = manifest.get("tensors", {})
-    if set(tensors) != set(expected_qtypes):
+    override_names: set[str] = set()
+    override_bytes = 0
+    override_metadata = manifest.get("tensor_overrides")
+    if override_metadata is not None:
+        receipt_path = Path(override_metadata["receipt_path"])
+        if not receipt_path.is_file() or sha256(receipt_path) != override_metadata["receipt_sha256"]:
+            raise ValueError("tensor override receipt is missing or its hash differs")
+        receipt = json.loads(receipt_path.read_text())
+        if receipt.get("format") != "bw24-tensor-overrides-v1":
+            raise ValueError("tensor override receipt has the wrong format")
+        receipt_blob = receipt.get("blob", {})
+        receipt_tensors = receipt.get("tensors", {})
+        if not isinstance(receipt_tensors, dict) or not receipt_tensors:
+            raise ValueError("tensor override receipt has no tensors")
+        override_names = set(receipt_tensors)
+        override_bytes = int(override_metadata["bytes"])
+        if (
+            int(override_metadata["tensor_count"]) != len(override_names)
+            or override_bytes != int(receipt_blob.get("bytes", -1))
+            or override_metadata["blob_sha256"] != receipt_blob.get("sha256")
+        ):
+            raise ValueError("tensor override metadata differs from its receipt")
+        installed_rel = Path("overrides") / f"{override_metadata['blob_sha256']}.bin"
+        installed = root / installed_rel
+        if (
+            not installed.is_file()
+            or installed.stat().st_size != override_bytes
+            or sha256(installed) != override_metadata["blob_sha256"]
+        ):
+            raise ValueError("installed tensor override blob is missing or differs")
+        allowed_suffixes = (".ffn_gate_inp.weight", ".exp_probs_b.bias")
+        for name, receipt_record in receipt_tensors.items():
+            record = tensors.get(name)
+            ne = receipt_record.get("ne")
+            if (
+                not name.startswith("blk.")
+                or not name.endswith(allowed_suffixes)
+                or not isinstance(ne, list)
+                or not ne
+                or any(int(value) <= 0 for value in ne)
+                or receipt_record.get("qtype") != "F32"
+                or record is None
+            ):
+                raise ValueError(f"invalid tensor override {name}")
+            size = int(receipt_record["bytes"])
+            offset = int(receipt_record["offset"])
+            if size != prod(int(value) for value in ne) * 4 or offset < 0:
+                raise ValueError(f"invalid F32 tensor override extent for {name}")
+            expected_record = {
+                "source": receipt_record.get("source", "healed-router"),
+                "file": str(installed_rel),
+                "offset": offset,
+                "qtype": "F32",
+                "ne": [int(value) for value in ne],
+                "bytes": size,
+            }
+            if record != expected_record or offset + size > override_bytes:
+                raise ValueError(f"installed tensor override record differs for {name}")
+
+    expected_tensor_names = set(expected_qtypes) | override_names
+    if set(tensors) != expected_tensor_names:
         raise ValueError(
-            f"expert coverage mismatch: missing={len(set(expected_qtypes) - set(tensors))} "
-            f"extra={len(set(tensors) - set(expected_qtypes))}"
+            f"tensor coverage mismatch: missing={len(expected_tensor_names - set(tensors))} "
+            f"extra={len(set(tensors) - expected_tensor_names)}"
         )
 
     ranges: dict[Path, list[tuple[int, int, str]]] = defaultdict(list)
     qtypes: dict[str, int] = defaultdict(int)
     total = 0
     for name, rec in tensors.items():
+        if name in override_names:
+            path = root / rec["file"]
+            start = int(rec.get("offset", 0))
+            ranges[path].append((start, start + int(rec["bytes"]), name))
+            continue
         qtype = rec["qtype"]
         if qtype not in allowed_qtypes:
             raise ValueError(f"{name}: forbidden expert qtype {qtype}")
@@ -190,6 +256,11 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
                 raise ValueError(f"overlapping tensor ranges in {path}: {left[2]} and {right[2]}")
     if total != int(manifest.get("artifact_bytes", -1)):
         raise ValueError(f"artifact byte total {total} != manifest {manifest.get('artifact_bytes')}")
+    if total + override_bytes != int(manifest.get("payload_bytes", total)):
+        raise ValueError(
+            f"payload byte total {total + override_bytes} != manifest "
+            f"{manifest.get('payload_bytes')}"
+        )
 
     if verify_sources:
         for key, base_key in (("source_fingerprints", "quant_source_dir"), ("fallback_fingerprints", "source_dir")):
@@ -296,6 +367,37 @@ def self_test() -> None:
             assert "differs from plan assignment" in str(exc)
         else:
             raise AssertionError("manifest qtype mismatch was accepted")
+        tensors["blk.1.ffn_up_exps.0.weight"]["qtype"] = "Q8_0"
+
+        override_blob = root / "overrides" / ("a" * 64 + ".bin")
+        override_blob.parent.mkdir()
+        override_blob.write_bytes(b"\0" * 8)
+        blob_hash = sha256(override_blob)
+        installed = override_blob.with_name(blob_hash + ".bin")
+        override_blob.rename(installed)
+        override_name = "blk.1.exp_probs_b.bias"
+        override_receipt = root / "router-overrides.json"
+        override_receipt.write_text(json.dumps({
+            "format": "bw24-tensor-overrides-v1",
+            "blob": {"path": str(installed), "bytes": 8, "sha256": blob_hash},
+            "tensors": {override_name: {
+                "source": "healed-router", "offset": 0, "qtype": "F32",
+                "ne": [2], "bytes": 8,
+            }},
+        }))
+        tensors[override_name] = {
+            "source": "healed-router", "file": f"overrides/{blob_hash}.bin",
+            "offset": 0, "qtype": "F32", "ne": [2], "bytes": 8,
+        }
+        manifest["tensor_overrides"] = {
+            "receipt_path": str(override_receipt),
+            "receipt_sha256": sha256(override_receipt),
+            "blob_sha256": blob_hash, "bytes": 8, "tensor_count": 1,
+        }
+        manifest["payload_bytes"] = 110
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        summary = validate(root, False)
+        assert summary["retained_experts"] == 1 and summary["artifact_bytes"] == 102
         print("artifact validator self-test: PASS")
 
 
