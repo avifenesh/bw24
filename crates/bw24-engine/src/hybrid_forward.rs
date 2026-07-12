@@ -3457,7 +3457,8 @@ impl HybridModel {
     #[allow(clippy::too_many_arguments)]
     fn gemma4_e4b_attn(&self, e: &Engine, il: usize,
                        hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
-                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
+                       dc_bucket: Option<usize>)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, base, scale, swa) = self.gemma4_e4b_geom(il);
         let eps = self.cfg.rms_eps;
@@ -3498,12 +3499,23 @@ impl HybridModel {
             // class flag must match the cache dims (the g-threading sweep hardcoded `false`
             // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
             // degenerate tok-0 stream, 2026-07-12).
-            e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
-                                       kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                       kvl.v_tok_bytes,
-                                       (!swa && crate::Engine::gkv_on())
-                                           || (swa && crate::Engine::wkv_on()))?;
-            kvl.len += t;
+            let cls = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+            if dc_bucket.is_some() {
+                // DC arm (graph serving): append at the len_d slot, advance the counter
+                // in-stream — replay-correct, no host len in the launch args. Host mirrors
+                // are NOT touched here (the replay loop owns them; a bump at capture-record
+                // time would double-count the capture iteration).
+                e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
+                                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                              kvl.v_tok_bytes, cls)?;
+                debug_assert!(t == 1);
+                e.inc_seqlen(&mut kvl.len_d)?;
+            } else {
+                e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
+                                           kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                           kvl.v_tok_bytes, cls)?;
+                kvl.len += t;
+            }
             kv_f32 = Some((k, v));
         }
         // attention: per-row causal fa over the (own or target) quantized cache. The cache
@@ -3525,6 +3537,21 @@ impl HybridModel {
                 e.fa_prefill(&q, kf, vf, &mut attn, hd, nh, nkv, t, t, scale, true)?;
                 return Ok(e.matmul(&fa.wo, &attn, t)?);
             }
+        }
+        if let Some(bucket) = dc_bucket {
+            // DC arm (t == 1, under-window regime — the generate gate enforces it): ONE
+            // fa_decode_dc over the live counter. len_d already advanced past this token
+            // (t_kv = len_d[0], the cache.rs contract). KV-shared layers read the target's
+            // counter (advanced when the target ran earlier in the stack).
+            assert!(t == 1);
+            let k_view = e.view_u8(&kvl.k, kvl.k.len());
+            let v_view = e.view_u8(&kvl.v, kvl.v.len());
+            e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                           &kvl.len_d, bucket, scale,
+                           kvl.k_tok_bytes, kvl.v_tok_bytes,
+                           (!swa && crate::Engine::gkv_on())
+                               || (swa && crate::Engine::wkv_on()))?;
+            return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
             let avail = base_len + i + 1;
@@ -3563,14 +3590,15 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
-        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache)
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)
     }
 
     /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
     /// here is device-driven, so the dc arm shares it verbatim (stream identity with the
     /// eager chain by construction: SAME functions, not twins).
     fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
-                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache)
+                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
+                             dc_bucket: Option<usize>)
                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -3591,7 +3619,7 @@ impl HybridModel {
                 Some(p) => p,
                 None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
             };
-            let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache)?;
+            let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache, dc_bucket)?;
             let mut cur = e.uninit(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
@@ -3631,6 +3659,26 @@ impl HybridModel {
         Ok((ld, x))
     }
 
+    /// E4B GRAPH-CAPTURABLE dc step: same trunk as the dc step but token_d is updated IN
+    /// PLACE (self-feeding replay) and every launch arg is a device counter — pos from
+    /// pos_d (inc'd in-stream), KV slots from len_d (advanced in-stream), attention from
+    /// fa_decode_dc at `bucket`. Host mirrors (cache.pos / kvl.len) advance in the caller's
+    /// replay loop. UNDER-WINDOW regime only (the caller gates pos + budget < window).
+    pub fn gemma4_e4b_decode_step_dcg(&self, e: &Engine, token_d: &mut CudaSlice<u32>,
+                                      pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                      embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                      n_vocab: usize, bucket: usize)
+                                      -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket))?;
+        e.argmax_token_device_into(&ld, token_d, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        Ok(())
+    }
+
     /// E4B DEVICE-COUNTER decode step (the dc serving arm): token id rides `token_d`, the
     /// greedy argmax lands in the returned device buffer — 4B/token host traffic. The layer
     /// stack is gemma4_e4b_trunk_core, i.e. the SAME functions the eager chain runs (stream
@@ -3649,7 +3697,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None)?;
         let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
         e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;

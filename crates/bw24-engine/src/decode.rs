@@ -805,6 +805,34 @@ impl HybridModel {
             let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            // E4B GRAPH SERVING (default ON under the window; BW24_E4B_GRAPH=0 reverts to
+            // dc-eager): the 42-layer stack fires ~800 tiny launches/token — launch-gap
+            // bound (nsys 2026-07-12) — so one whole-token graph replay is the lever.
+            // v1 gate mirrors the 26B graph arc: whole generation under the sliding window.
+            let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+            if e4b && cache.pos + max_new + 2 < win
+                && std::env::var("BW24_E4B_GRAPH").as_deref() != Ok("0") {
+                let mut graph: Option<(usize, cudarc::driver::CudaGraph,
+                                       Vec<Box<dyn std::any::Any + Send>>)> = None;
+                for _ in 0..max_new {
+                    out.push(e.dtoh_u32(&token_d)?[0]);
+                    let need = cache.pos + 2;
+                    let rung = need.next_power_of_two().max(64);
+                    if graph.as_ref().map(|g| g.0) != Some(rung) {
+                        let (g, keep) = e.capture_graph_retained(|e| {
+                            self.gemma4_e4b_decode_step_dcg(e, &mut token_d, &mut pos_d,
+                                                            embd_gpu, qt, rb, &mut cache,
+                                                            n_vocab, rung)
+                        })?;
+                        graph = Some((rung, g, keep));
+                        // capture DOESN'T execute: run the step for real once via replay.
+                    }
+                    graph.as_ref().unwrap().1.launch()?;
+                    cache.pos += 1;
+                    for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+                }
+                return Ok(out);
+            }
             for _ in 0..max_new {
                 out.push(e.dtoh_u32(&token_d)?[0]);
                 token_d = if e4b {
