@@ -14,6 +14,7 @@ SPILL_DEPTH=${SPILL_DEPTH:-8}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-604800}
+TASK_ATTEMPTS=${TASK_ATTEMPTS:-3}
 
 TASKS=(
   gpqa_diamond_cot_zeroshot
@@ -33,6 +34,7 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$HERE/suite.lock.json" ]] || die "missing frozen suite lock"
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 [[ "$EVAL_TIMEOUT_S" =~ ^[1-9][0-9]*$ ]] || die "invalid eval timeout"
+[[ "$TASK_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "invalid task attempt count"
 command -v sudo >/dev/null || die "sudo is required for isolated loopback namespaces"
 command -v ip >/dev/null || die "iproute2 is required for isolated loopback namespaces"
 
@@ -197,16 +199,35 @@ run_arm() (
   [[ -f "$arm_log/health.json" ]] || die "$arm trusted-full server health timeout"
 
   for task in "${TASKS[@]}"; do
-    sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
-      HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
-      TRANSFORMERS_OFFLINE=1 PATH="$USER_PATH" ARM="$arm" MODEL="$arm" \
-      ARTIFACT="$artifact" SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" \
-      BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 \
-      BW24_SERVE_SPEC=0 BASE_URL=http://127.0.0.1:8080/v1/completions \
-      OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" RUN_ID="$RUN_ID" \
-      SUITE=candidate TASKS_OVERRIDE="$task" SHARD_ID="$task" LIMIT=all \
-      MAX_GEN_TOKS=256 NUM_CONCURRENT=1 EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
-      "$HERE/run_public_evals.sh" | tee "$arm_log/$task.log"
+    shard="$OUT_ROOT/$arm/$RUN_ID/shards/$task"
+    completed=0
+    for task_attempt in $(seq 1 "$TASK_ATTEMPTS"); do
+      if [[ -e "$shard" ]]; then
+        failed_root="$OUT_ROOT/_failed/$arm/$RUN_ID"
+        mkdir -p "$failed_root"
+        mv "$shard" "$failed_root/$task-attempt$(date -u +%Y%m%dT%H%M%SZ)-$task_attempt"
+      fi
+      set +e
+      sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
+        HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+        TRANSFORMERS_OFFLINE=1 PATH="$USER_PATH" ARM="$arm" MODEL="$arm" \
+        ARTIFACT="$artifact" SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" \
+        BW24_SPILL_IO=worker BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 \
+        BW24_SERVE_SPEC=0 BASE_URL=http://127.0.0.1:8080/v1/completions \
+        OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" RUN_ID="$RUN_ID" \
+        SUITE=candidate TASKS_OVERRIDE="$task" SHARD_ID="$task" LIMIT=all \
+        MAX_GEN_TOKS=256 NUM_CONCURRENT=1 EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
+        "$HERE/run_public_evals.sh" 2>&1 | tee -a "$arm_log/$task.log"
+      statuses=("${PIPESTATUS[@]}")
+      set -e
+      if (( statuses[0] == 0 && statuses[1] == 0 )); then
+        completed=1
+        break
+      fi
+      echo "task process attempt $task_attempt/$TASK_ATTEMPTS failed: arm=$arm task=$task" \
+        | tee -a "$arm_log/$task.log"
+    done
+    (( completed == 1 )) || die "$arm/$task exhausted process attempts"
     if [[ "$task" == hendrycks_math500 ]]; then
       SUITE_LOCK="$HERE/suite.lock.json" \
         "$HERE/score_promoted_math_container.sh" "$OUT_ROOT/$arm/$RUN_ID" \
