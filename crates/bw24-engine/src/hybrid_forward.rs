@@ -3018,6 +3018,62 @@ impl HybridModel {
         Ok((e.dtoh(&ld)?, hn))
     }
 
+    /// BURST verify trunk (device-slot twin): tokens from a device buffer, rope positions
+    /// iota'd from `ctr`, appends/attention at the layers' len_d counters (verify_attn_stream),
+    /// NO host cache.pos/len advance. Returns (per-row device argmaxes [t], post-norm hidden
+    /// stack [t, n_embd]) — the burst's accept/seed inputs, zero host readbacks.
+    pub(crate) fn gemma4_verify_t_am_stream(&self, e: &Engine, tok_d: &CudaSlice<u32>, t: usize,
+                                            ctr: &CudaSlice<i32>, hint: usize,
+                                            cache: &mut Cache)
+                                            -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let mut pos_d = e.htod_i32(&vec![0i32; t])?;
+        e.i32_iota_from(ctr, &mut pos_d, t)?;
+        // per-row t_kv counters (base + i + 1) for the global layers' under-crossover
+        // per-row fa_decode_dc mirror (the eager fallback's t_kv = avail, device-read).
+        let mut row_ctrs: Vec<CudaSlice<i32>> = Vec::with_capacity(t);
+        for i in 0..t {
+            let mut sl = e.htod_i32(&[0])?;
+            e.i32_copy_add(ctr, &mut sl, (i + 1) as i32)?;
+            row_ctrs.push(sl);
+        }
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+        let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        let mut h_carry: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
+        let n_layers = self.layers.len();
+        for (il, layer) in self.layers.iter().enumerate() {
+            let (hq, hdq) = match h_carry.take() {
+                Some(p) => p,
+                None => e.rms_norm_q8_1(&x, self.layers[0].attn_norm.float_data(), n_embd, t, eps)?,
+            };
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            let o = self.gemma4_verify_attn_stream(e, fa, il, &hq, &hdq, &pos_d, t, cache,
+                                                    hint, &row_ctrs)?;
+            let mut cur = e.uninit(t * n_embd)?;
+            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
+            let next_norm = if il + 1 < n_layers {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
+            x = xn;
+            h_carry = hn;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        let ld = e.matmul(&self.output, &hn, t)?;
+        let n_vocab = self.output.out_features();
+        let mut vam = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut vam, i)?;
+        }
+        Ok((vam, hn))
+    }
+
     /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
     /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
     fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
@@ -3066,6 +3122,93 @@ impl HybridModel {
 
     /// Verify attention: project/norm/rope t rows, append them to the cache, then attend each
     /// row causally over [win_off_i .. base+i] via the SAME fa_decode dispatch as T=1 decode.
+    /// BURST verify attention (device-slot twin of `gemma4_verify_attn`): the append lands
+    /// at the layer's len_d counter (rows_dc), attention bases ride the counter (rows /
+    /// rows_w with base_dev), and NO host len is read or bumped — `hint` is a host UPPER
+    /// bound on base_len used only for split sizing and arm gating (the burst loop passes
+    /// pos0 + burst slack). Host len mirrors re-sync at the burst drain.
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_verify_attn_stream(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
+                                 hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
+                                 pos_d: &CudaSlice<i32>, t: usize,
+                                 cache: &mut Cache, hint: usize,
+                                 row_ctrs: &[CudaSlice<i32>])
+                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        let h0 = e.zeros(0)?;
+        let h = &h0;
+        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        let mut q = e.uninit(t * nh * hd)?;
+        let mut k = e.uninit(t * nkv * hd)?;
+        let mut v = e.uninit(t * nkv * hd)?;
+        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
+                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        let kvl = cache.kv[il].as_mut().unwrap();
+        // append at the DEVICE slot; the counter advances by t on-device.
+        e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
+                                      kvl.kv_dim_k, kvl.kv_dim_v,
+                                      kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                      (!swa && crate::Engine::gkv_on())
+                                          || (swa && crate::Engine::wkv_on()))?;
+        // len_d is NOT advanced here: the burst's device rollback (spec_rollback_stream) is
+        // the sole len writer after this round's attention (base stays = old len, plus = 0).
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        let mut attn = e.uninit(t * nh * hd)?;
+        let k_view = e.view_u8(&kvl.k, kvl.k.len());
+        let v_view = e.view_u8(&kvl.v, kvl.v.len());
+        // arm gating on the host HINT (upper bound; burst entry guards hint >= the vec floor
+        // and a stable window regime — the same rung/regime keys as the draft graph).
+        if swa && hint + 1 >= win {
+            // fully-windowed rows: per-row window geometry from the counter (plus = 0: len_d
+            // still holds the pre-append len; row r's T_kv = ctr + r + 1).
+            e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                               &kvl.len_d, 0, t, scale, win,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        } else if hd == 512 && hint + t < crate::fa512_min_tkv() {
+            // globals UNDER the fa512 crossover: eager runs the per-row fa_decode_kvmod
+            // fallback there (parity with t=1 decode) — mirror it with per-row fa_decode_dc
+            // (bit-correct for any t_kv <= bucket; the drafter dc arc proved the pairing).
+            // Burst entry gates the horizon onto one side of the crossover, so hint decides
+            // for every row.
+            // NO .max(512): fa_decode_dc gates its hd512 dpl16-vs-scalar pick on bucket_max
+            // (mirroring eager's fa512 floor) — forcing 512 here flipped the arm to dpl16
+            // while eager ran scalar (il=5 KV drift, the burst's 4/128).
+            let bucket = (hint + t + 2).next_power_of_two();
+            let qv = e.view(&q, t * nh * hd);
+            for i in 0..t {
+                let q_row = qv.slice(i * nh * hd..(i + 1) * nh * hd);
+                let mut q_one = e.uninit(nh * hd)?;
+                e.copy_view_into(&mut q_one, 0, &q_row, nh * hd)?;
+                let mut a_one = e.uninit(nh * hd)?;
+                e.fa_decode_dc(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv,
+                               &row_ctrs[i], bucket, scale,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes, false)?;
+                e.copy_into(&mut attn, i * nh * hd, &a_one, nh * hd)?;
+            }
+        } else if hd == 512 {
+            // globals past the crossover: dpl16 dc twin via the shared rows wrapper (hint
+            // sizes splits — upper bound; splits beyond the device len exit in-kernel).
+            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, hint, t, scale,
+                             kvl.k_tok_bytes, kvl.v_tok_bytes,
+                             Some((&kvl.len_d, 0)), false, false)?;
+        } else {
+            // hd256 under-window: v4 device-len rows twin.
+            e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                &kvl.len_d, hint + t, t, scale,
+                                kvl.k_tok_bytes, kvl.v_tok_bytes, 0,
+                                swa && crate::Engine::wkv_on())?;
+        }
+        Ok(e.matmul(&fa.wo, &attn, t)?)
+    }
+
     fn gemma4_verify_attn(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
                           hq: &CudaSlice<i8>, hdq: &CudaSlice<f32>,
                           pos_d: &CudaSlice<i32>, t: usize,
@@ -3107,14 +3250,23 @@ impl HybridModel {
         if rows_ok && (!swa || base_len + t <= win) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * kvl.k_tok_bytes);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
-            let bd = if hd == 512 {
+            if hd == 512 {
                 // device-len twin: sync the counter to the verify base (async arg-store).
                 e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
-                Some((&kvl.len_d, 0))
-            } else { None };
-            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t, scale,
-                             kvl.k_tok_bytes, kvl.v_tok_bytes, bd, false,
-                             swa && crate::Engine::wkv_on())?;
+                e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t,
+                                 scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 Some((&kvl.len_d, 0)), false,
+                                 swa && crate::Engine::wkv_on())?;
+            } else {
+                // hd256: the SAME v4_dc symbol the burst verify launches (PARITY LAW — the
+                // host-base rows_v4 twin compiles apart from v4_dc and the two-symbol split
+                // drifted the burst's persisted KV at il=8; one symbol, counter arg-stored).
+                e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
+                e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                    &kvl.len_d, base_len + t, t, scale,
+                                    kvl.k_tok_bytes, kvl.v_tok_bytes, 0,
+                                    swa && crate::Engine::wkv_on())?;
+            }
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         // WINDOWED rows twin (deep ctx, every row fully windowed): one launch, ABSOLUTE-index

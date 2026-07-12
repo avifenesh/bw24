@@ -1227,7 +1227,7 @@ impl HybridModel {
             let k_view = e.view_u8(&kvl.k, (upper.min(cache.max_ctx)) * ktb);
             let v_view = e.view_u8(&kvl.v, (upper.min(cache.max_ctx)) * vtb);
             e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb)?;
+                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb, 0, false)?;
         } else if spec_lean() && t == 1 {
             let t_kv = base_len + 1;
             let k_view = e.view_u8(&kvl.k, t_kv * ktb);

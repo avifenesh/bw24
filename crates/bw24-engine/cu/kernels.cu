@@ -834,6 +834,18 @@ extern "C" __global__ void u32_map_k(unsigned int* __restrict__ buf,
     buf[idx] = map[buf[idx]];
 }
 
+// pos-row fill from a device counter: dst[i] = ctr[0] + i (verify-stream rope positions —
+// no host pos value; one launch per verify).
+extern "C" __global__ void i32_iota_from(const int* __restrict__ ctr, int* __restrict__ dst, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = ctr[0] + i;
+}
+
+// counter += v (device-slot append advance for t rows; the +1 twin is inc_seqlen).
+extern "C" __global__ void i32_add_k(int* __restrict__ d, int v) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) d[0] += v;
+}
+
 // i32 twin (device-len counters, graph arc): async single-slot store, value rides the arg.
 extern "C" __global__ void i32_set_k(int* dst, int v, int idx) {
     if (threadIdx.x == 0 && blockIdx.x == 0) dst[idx] = v;

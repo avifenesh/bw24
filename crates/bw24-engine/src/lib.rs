@@ -1810,6 +1810,28 @@ impl Engine {
         Ok(())
     }
 
+    /// counter += v (device-slot append advance; the +1 twin is `inc_seqlen`).
+    pub fn i32_add_k(&self, d: &mut CudaSlice<i32>, v: i32) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_add_k");
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(d).arg(&v);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// pos rows from a device counter: dst[i] = ctr[0] + i (verify-stream rope positions).
+    pub fn i32_iota_from(&self, ctr: &CudaSlice<i32>, dst: &mut CudaSlice<i32>, n: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("i32_iota_from");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(ctr).arg(dst).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// In-place trim-id translate: buf[idx] = map[buf[idx]] (FR-Spec d2t, async single-slot).
     pub fn u32_map_k(&self, buf: &mut CudaSlice<u32>, map: &CudaSlice<u32>, idx: usize)
                      -> Result<(), Box<dyn std::error::Error>> {
@@ -4834,6 +4856,46 @@ impl Engine {
     /// BW24_GEMMA_WKV read an e4m3 cache — every kernel must come from the kf8vf8 module
     /// and the v4 lane (q8_0-hardcoded staging) is excluded.
     #[allow(clippy::too_many_arguments)]
+    /// UNIFIED scalar decode launch (fa_decode_f32, nullable-ctr): ONE symbol for host-len
+    /// (kvmod eager) and device-len (graph/stream) callers — the textually-identical f32_dc
+    /// twin compiled apart and its ULP drift flipped 31B verify argmaxes (2026-07-12).
+    #[allow(clippy::too_many_arguments)]
+    fn fa_decode_scalar_unified(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                                v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                                head_dim: usize, n_head: usize, n_head_kv: usize,
+                                t_kv_host: usize, t_kv_dev: Option<&CudaSlice<i32>>,
+                                scale: f32, n_splits: usize, split_keys: usize,
+                                k_tok_bytes: usize, v_tok_bytes: usize, g: bool,
+                                part_o: &mut CudaSlice<f32>, part_m: &mut CudaSlice<f32>,
+                                part_l: &mut CudaSlice<f32>)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        let f = if g { self.func_g("fa_decode_f32") } else { self.fa_func("fa_decode_f32", head_dim) };
+        let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 };
+        let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
+        let (ktb, vtb, tkvi, ski) = (k_tok_bytes as i64, v_tok_bytes as i64, t_kv_host as i32,
+                                     split_keys as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match t_kv_dev {
+            Some(d) => { b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                          .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(d).arg(&scale).arg(&nsp)
+                          .arg(&ski).arg(&ktb).arg(&vtb);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                       .arg(&hd).arg(&nh).arg(&nhkv).arg(&tkvi).arg(&null).arg(&scale).arg(&nsp)
+                       .arg(&ski).arg(&ktb).arg(&vtb);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1),
+            block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        let mut b2 = self.gpu.stream.launch_builder(&fc);
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        unsafe { b2.launch(cfg2)?; }
+        Ok(())
+    }
+
     pub fn fa_decode_kvmod(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
                      v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                      head_dim: usize, n_head: usize, n_head_kv: usize, t_kv: usize, scale: f32,
@@ -4961,9 +5023,13 @@ impl Engine {
                      block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
             }
         } else {
-            (if g { self.func_g("fa_decode_f32") } else { self.fa_func("fa_decode_f32", head_dim) },
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            // UNIFIED scalar (nullable-ctr symbol shared with graph/stream callers). The
+            // split ladder value rides along so ns_eff reproduces THIS n_splits in-kernel.
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 t_kv, None, scale, n_splits,
+                                                 if fa_vec { sp } else { 256 },
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 part_o, part_m, part_l);
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
@@ -5245,18 +5311,53 @@ impl Engine {
         Ok(())
     }
 
-    /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. v3-only
-    /// (stream mode gates on fa_v3_active); `t_kv_upper` sizes splits/partials — the same
-    /// one-sp-for-all-rows approximation class the host rows path already uses (battery-
-    /// arbitrated); actual per-row bounds derive in-kernel from the counter.
+    /// ROUND-STREAM stage (c): fa rows with the causal base from a device counter. Two lanes:
+    /// v3 (qwen stream, fa_v3_active) and v4 (gemma hd256 burst — rows_v4_dc, g-module aware);
+    /// `t_kv_upper` sizes splits/partials — the same one-sp-for-all-rows approximation class
+    /// the host rows path already uses (battery-arbitrated); actual per-row bounds derive
+    /// in-kernel from the counter (+ base_plus, v4 lane only — v3's kernel has no plus arg).
     #[allow(clippy::too_many_arguments)]
     pub fn fa_decode_rows_dc(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
                              v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                              head_dim: usize, n_head: usize, n_head_kv: usize,
                              base_dev: &CudaSlice<i32>, t_kv_upper: usize, t: usize, scale: f32,
-                             k_tok_bytes: usize, v_tok_bytes: usize)
+                             k_tok_bytes: usize, v_tok_bytes: usize, base_plus: i32, g: bool)
                              -> Result<(), Box<dyn std::error::Error>> {
-        assert!(fa_v3_active(head_dim), "stream fa rows requires the v3 lane");
+        let v4 = head_dim == 256 && fa_v4_at(t_kv_upper);
+        assert!(v4 || fa_v3_active(head_dim), "stream fa rows requires the v3 or v4 lane");
+        assert!(v4 || base_plus == 0, "v3_dc kernel takes no plus arg");
+        if v4 {
+            let sp = fa_split_keys(t_kv_upper, n_head_kv);
+            let n_splits_max = (t_kv_upper + sp - 1) / sp;
+            let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+            let (nspm, spk) = (n_splits_max as i32, sp as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let gqa = (n_head / n_head_kv).max(1) as u32;
+            let (mut part_o, mut part_m, mut part_l) =
+                (self.zeros(t * n_head * n_splits_max * head_dim)?,
+                 self.zeros(t * n_head * n_splits_max)?,
+                 self.zeros(t * n_head * n_splits_max)?);
+            let f = if g { self.func_g("fa_decode_vec_q_rows_v4_dc") }
+                    else { self.func("fa_decode_vec_q_rows_v4_dc") };
+            let sh = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
+                block_dim: (32, gqa, 1), shared_mem_bytes: sh };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale)
+             .arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+            let fc = self.func("fa_decode_combine_rows_dc");
+            let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+              .arg(base_dev).arg(&base_plus).arg(&nspm).arg(&spk);
+            unsafe { b2.launch(cfg2)?; }
+            return Ok(());
+        }
         let sp = fa_split_keys(t_kv_upper, n_head_kv);
         let n_splits_max = (t_kv_upper + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
@@ -5333,10 +5434,12 @@ impl Engine {
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else if fa_vec && head_dim == 512 {
-            // under the 512 floor eager runs scalar — mirror it (same geometry as the scalar arm).
-            (self.fa_func("fa_decode_f32_dc", head_dim),
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            // under the 512 floor eager runs scalar — the SAME unified symbol, ctr non-null;
+            // ns_eff in-kernel reproduces eager's ceil(t_kv/sp) partition for the LIVE len.
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 0, Some(t_kv_dev), scale, n_splits, sp,
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 &mut part_o, &mut part_m, &mut part_l);
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
             // incl the g-module route + raw-e4m3 sV sizing.
@@ -5374,9 +5477,11 @@ impl Engine {
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: 0 })
         } else {
-            (if g { self.func_g("fa_decode_f32_dc") } else { self.func("fa_decode_f32_dc") },
-             LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
-                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: (4 * (head_dim + 32)) as u32 })
+            return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                 0, Some(t_kv_dev), scale, n_splits,
+                                                 if fa_vec { sp } else { 256 },
+                                                 k_tok_bytes, v_tok_bytes, g,
+                                                 &mut part_o, &mut part_m, &mut part_l);
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)

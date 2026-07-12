@@ -435,15 +435,42 @@ impl HybridModel {
             .map(|_| e.htod_i32(&[0])).collect::<Result<_, _>>()?;
         // clamp round 1 too (the leak above).
         let mut kc = k_cap;
+        // BURST (BW24_GEMMA_SPEC_BURST=M, default off): pre-issue M full rounds — draft-graph
+        // replay + verify-stream + device accept/seed/rollback/ring-commit — with ONE host
+        // sync per M rounds (the ring drain). The draft(N+1)-overlapping-verify(N) window this
+        // opens is the burst arc's whole prize (~14% of a round; launch tax alone is hidden
+        // at 96.7% busy). Requires the draft graphs (step c) and a regime-stable horizon.
+        let burst_m: usize = std::env::var("BW24_GEMMA_SPEC_BURST").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut burst_state: Option<(crate::round_stream::StreamBufs, CudaSlice<f32>,
+                                     CudaSlice<u64>)> = None;
+        let win_main = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+        let g4_shared = self.cfg.gemma4.as_ref().map(|g| g.shared_kv_layers).unwrap_or(0);
         'outer: while out.len() < max_new {
-            let kr = if adapt { kc } else { k_cap };
+            // burst gate first (see the BURST ARM below): a burst round drafts at FULL depth
+            // (kr = k_cap — the captured chain replays a fixed K; adaptation is host logic).
+            let horizon = burst_m * (k_cap + 1);
+            let burst_ok = burst_m >= 1 && graph_on && pmin == 0.0 && g4_shared == 0
+                && (cache.pos + horizon + k_cap + 4 < win_main || cache.pos > win_main)
+                // fa512 crossover: the whole horizon on one side (the stream verify's global
+                // arm picks per-row-dc vs rows by hint; straddling rounds stay eager).
+                && (cache.pos + horizon + k_cap + 4 < crate::fa512_min_tkv()
+                    || cache.pos + 1 >= crate::fa512_min_tkv())
+                && e.fa_rows_eligible(cache.pos, 256)
+                && cache.pos + horizon + k_cap + 2 <= cache.max_ctx
+                && out.len() + horizon <= max_new;
+            let kr = if burst_ok { k_cap } else if adapt { kc } else { k_cap };
             // power-of-2 rung bucket for the dc arms (shared by eager and captured replays);
             // BW24_GEMMA_DRAFT_DC=0 reverts to the host-len kvmod arm.
             let dc_bucket: Option<usize> = {
                 static DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                 if *DC.get_or_init(|| std::env::var("BW24_GEMMA_DRAFT_DC").as_deref() != Ok("0")) {
                     let ml = cache.kv.iter().flatten().map(|kv| kv.len).max().unwrap_or(1);
-                    Some((ml + k_cap + 2).next_power_of_two().max(512))
+                    // burst rounds size the rung for the WHOLE horizon: the captured chain
+                    // replays M rounds between host looks, so the grid must cover the last
+                    // round's len too (a per-round rung undersizes past its pow2 boundary).
+                    let slack = if burst_ok { horizon } else { 0 };
+                    Some((ml + slack + k_cap + 2).next_power_of_two().max(512))
                 } else { None }
             };
             e.u32_set_k(&mut batch_d, last, 0)?;
@@ -483,6 +510,82 @@ impl HybridModel {
                 d.layers.iter().any(|dl| dl.swa
                     && cache.kv[self.layers.len() - 2].as_ref().is_some_and(|kv| kv.len > win))
             };
+            // ---- BURST ARM ---- (gate computed at the loop top; needs dc arms too)
+            if burst_ok && dc_bucket.is_some() {
+                if burst_state.is_none() {
+                    let bufs = crate::round_stream::StreamBufs::new(e, k_cap, burst_m)?;
+                    let fill_dummy = e.zeros(n_embd)?;   // spec_seed_gather j>=1 always: unread
+                    let ptrs = crate::round_stream::kv_len_ptr_table(e, &cache,
+                                                                     Some(&bufs.pos_ctr))?;
+                    burst_state = Some((bufs, fill_dummy, ptrs));
+                }
+                // the loop-top dc_bucket already carries the horizon slack on burst rounds,
+                // so the key below matches the rung the captured chain actually launches with.
+                let key = (k_cap, dc_bucket.unwrap(), over_win);
+                if !draft_graphs.contains_key(&key) {
+                    let g = e.capture_graph_retained(|e| {
+                        run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                    })?;
+                    draft_graphs.insert(key, g);
+                }
+                // entry: `last` is the not-yet-emitted pending token (the ring only ever
+                // carries accepted drafts + bonuses; the entry pend is emitted host-side).
+                out.push(last);
+                if eos.contains(&last) { break 'outer; }
+                if out.len() >= max_new { break 'outer; }
+                let (bufs, fill_dummy, ptrs) = burst_state.as_mut().unwrap();
+                let n_rows = cache.kv.len() + 1;   // + the pos counter row
+                e.set_i32_one(&mut bufs.pos_ctr, cache.pos as i32)?;
+                e.u32_set_k(&mut bufs.ring_d, 0, 0)?;
+                e.u32_set_k(&mut bufs.pend_d, last, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, k_cap as u32, 0)?;   // k_used = K (no p-min cut)
+                e.u32_set_k(&mut bufs.brk_d, 1, 1)?;              // base = 1 (pend always set)
+                e.copy_into(&mut g_seed, 0, &h, n_embd)?;
+                let pos0 = cache.pos;
+                for r in 0..burst_m {
+                    // every op below is ENQUEUED; nothing reads back until the drain.
+                    e.i32_copy_add(&bufs.pos_ctr, &mut bufs.pos_start_d, 0)?;
+                    e.u32_copy(&bufs.pend_d, &mut batch_d)?;      // batch_d[0] <- pend
+                    for (j, slot) in pos_slots.iter_mut().take(k_cap).enumerate() {
+                        e.i32_copy_add(&bufs.pos_ctr, slot, j as i32)?;
+                    }
+                    draft_graphs.get(&key).unwrap().0.launch()?;
+                    // host UPPER bound on this round's base (full-accept growth): sizes the
+                    // stream verify's splits + window-arm gate; device len is the true bound.
+                    let hint = pos0 + (r + 1) * (k_cap + 1) + 2;
+                    let (vam_d, vh) = self.gemma4_verify_t_am_stream(
+                        e, &batch_d, k_cap + 1, &bufs.pos_ctr, hint, &mut cache)?;
+                    e.spec_accept_greedy_dc(&vam_d, &batch_d, &bufs.last_pred_d,
+                                            &bufs.brk_d, &mut bufs.acc_d)?;
+                    e.spec_seed_gather(&vh, fill_dummy, &bufs.acc_d, &mut g_seed, 1, n_embd)?;
+                    e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
+                    e.spec_ring_commit(&batch_d, &bufs.acc_d, &bufs.brk_d,
+                                       &mut bufs.ring_d, &mut bufs.pend_d)?;
+                }
+                // drain: THE one sync per M rounds. Ring = [acc..., bonus] per round; the
+                // final element is the next pending token (eager pushes it next round).
+                let toks = bufs.drain_ring(e)?;
+                let posh = e.dtoh_i32(&bufs.pos_ctr)?[0] as usize;
+                drafted += burst_m * k_cap;
+                rounds += burst_m;
+                accepted += toks.len().saturating_sub(burst_m);   // each round adds n_acc + 1
+                let mut ended = false;
+                for &tk in &toks[..toks.len() - 1] {
+                    out.push(tk);
+                    if eos.contains(&tk) || out.len() >= max_new { ended = true; break; }
+                }
+                last = *toks.last().unwrap();
+                // host mirrors re-sync (device counters are already correct from rollback).
+                cache.pos = posh;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len = posh; }
+                // next seed hidden = g_seed (the final round's device gather).
+                let mut hrow = e.uninit(n_embd)?;
+                e.copy_into(&mut hrow, 0, &g_seed, n_embd)?;
+                h = hrow;
+                kc = k_cap;
+                if ended { break 'outer; }
+                continue 'outer;
+            }
             if graph_on && dc_bucket.is_some() {
                 let key = (kr, dc_bucket.unwrap(), over_win);
                 if !draft_graphs.contains_key(&key) {
@@ -526,7 +629,48 @@ impl HybridModel {
             drafted += kr;
             rounds += 1;
             let pos0 = cache.pos;
+            // BW24_BURST_VCHECK=1: run the STREAM verify first on the same batch/state and
+            // diff its argmaxes against the eager verify (bisect harness — the stream append
+            // writes the same rows the eager append then overwrites, so state is untouched).
+            let vcheck = std::env::var("BW24_BURST_VCHECK").as_deref() == Ok("1");
+            let kvsum = |e: &Engine, cache: &Cache| -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
+                let mut out = Vec::new();
+                for kvl in cache.kv.iter().flatten() {
+                    let kb = e.dtoh_u8(&kvl.k)?;
+                    let vb = e.dtoh_u8(&kvl.v)?;
+                    let lo = pos0 * kvl.k_tok_bytes;
+                    let hi = (pos0 + kr + 1) * kvl.k_tok_bytes;
+                    let lov = pos0 * kvl.v_tok_bytes;
+                    let hiv = (pos0 + kr + 1) * kvl.v_tok_bytes;
+                    out.push((kb[lo..hi].iter().map(|&b| b as u64).sum(),
+                              vb[lov..hiv].iter().map(|&b| b as u64).sum()));
+                }
+                Ok(out)
+            };
+            let vam_s = if vcheck {
+                let mut ctr = e.htod_i32(&[pos0 as i32])?;
+                e.set_i32_one(&mut ctr, pos0 as i32)?;
+                let (vs, _vhs) = self.gemma4_verify_t_am_stream(e, &batch_d, kr + 1, &ctr,
+                                                                pos0 + kr + 3, &mut cache)?;
+                let ss = kvsum(e, &cache)?;
+                Some((e.dtoh_u32(&vs)?, ss))
+            } else { None };
             let (vam_d, vh) = self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?;
+            if let Some((vs, ss)) = vam_s {
+                let se = kvsum(e, &cache)?;
+                for (il, (a, b)) in ss.iter().zip(&se).enumerate() {
+                    if a != b {
+                        eprintln!("[vcheck-kv] round={rounds} il={il} stream={a:?} eager={b:?}");
+                    }
+                }
+                let ve = e.dtoh_u32(&vam_d)?;
+                if vs[..kr + 1] != ve[..kr + 1] {
+                    eprintln!("[vcheck] DIVERGE round={rounds} pos0={pos0} stream={:?} eager={:?}",
+                              &vs[..kr + 1], &ve[..kr + 1]);
+                } else {
+                    eprintln!("[vcheck] match round={rounds} pos0={pos0}");
+                }
+            }
             e.u32_pack2(&batch_d, 1, kr, &vam_d, kr + 1, &mut packed)?;
             let host = e.dtoh_u32(&packed)?;           // the round's ONE sync
             let k = kr;
