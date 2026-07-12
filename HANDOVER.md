@@ -248,7 +248,11 @@ RECIPE (all infra exists from the gemma campaign):
    35B + DEPTH oracle, run-spec K=1..8 self-consistency, acceptance A/B vs q8_0/q5_1
    config (any drop >1pt = parity suspect, bisect verify-vs-decode kernel identity),
    VERIFY-GATE-class bit checks where the parity law applies.
-5. Perf: depth cells are the prize (gemma gained +6-9% at 1.7k-4.9k from dequant-latency);
+5. ACCEPTANCE FIRST (the 2026-07-12 gemma WKV lesson): fp8 KV in layers a DRAFTER attends
+   guts its acceptance (31B .758 -> 1.000 on q8/q5 = spec 88 -> 126). The qwen MTP head
+   attends the trunk cache too — A/B acceptance under BW24_KV_FP8 BEFORE any serve
+   adoption; if it drops, key the default on serving mode like gemma wkv_on().
+6. Perf: depth cells are the prize (gemma gained +6-9% at 1.7k-4.9k from dequant-latency);
    pair vs llama at 512/6.3k. Positive -> per-model default flip + board refresh.
 PREREQ CLEANUP: root-cause the g-module register twin at the gemma windowed shape (parked
 env-unreachable for gemma; it becomes load-bearing if hd128 register lane opens).
