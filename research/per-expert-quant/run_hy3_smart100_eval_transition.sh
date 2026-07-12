@@ -94,6 +94,22 @@ arms_csv=$(IFS=,; echo "${arms[*]}")
   --baseline prune100_joint_heal --panel-lock "$PANEL_LOCK" \
   --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
   --server-sha256 "$SERVER_SHA256" --output "$OUT_ROOT/smart100-summary-$RUN_ID.json"
+OLD_RUN_ID=$(cat /data/results/per-expert-quant/expanded-v2/_active-run-id)
+FRONTIER="$OUT_ROOT/smart100-frontier-$RUN_ID.json"
+"$PY" "$ROOT/research/per-expert-quant/summarize_cross_run_hourish.py" \
+  --panel-lock "$PANEL_LOCK" --server-sha256 "$SERVER_SHA256" \
+  --arm "plain_quant=/data/results/per-expert-quant/expanded-v2::$OLD_RUN_ID" \
+  --arm "traffic_nvfp4_53_q2_139=/data/results/per-expert-quant/expanded-v2::$OLD_RUN_ID" \
+  --arm "prune100_joint_heal=$OUT_ROOT::$RUN_ID" \
+  --arm "smart100_empirical=$OUT_ROOT::$RUN_ID" \
+  --arm "smart100_balanced=$OUT_ROOT::$RUN_ID" \
+  --arm "smart100_rescue=$OUT_ROOT::$RUN_ID" \
+  --baseline plain_quant --output "$FRONTIER"
+PROMOTION="$OUT_ROOT/smart100-promotion-$RUN_ID.json"
+"$PY" "$ROOT/research/per-expert-quant/select_smart100_promotions.py" \
+  --frontier "$FRONTIER" --lock "$ROOT/research/per-expert-quant/smart100-promotion-gates.lock.json" \
+  --output "$PROMOTION"
 sha256sum "$OUT_ROOT/run-configs/$RUN_ID.json" "$OUT_ROOT/smart100-summary-$RUN_ID.json" \
+  "$FRONTIER" "$PROMOTION" \
   "$PRIVATE_GATE_ROOT/evidence.sha256" >"$LOG_ROOT/evidence-$RUN_ID.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
