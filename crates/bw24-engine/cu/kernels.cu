@@ -299,36 +299,45 @@ extern "C" __global__ void rms_pre_add_rms_norm_q8z_f32(
     float* rr = res + (size_t)row * ncols;
     float* dr = dst + (size_t)row * ncols;
     int nblk = ncols / 32;
-    __shared__ float s[32];
-    float suma = 0.0f;
-    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; suma += v * v; }
-    for (int o = 16; o > 0; o >>= 1) suma += __shfl_down_sync(0xffffffff, suma, o);
-    if ((tid & 31) == 0) s[tid >> 5] = suma;
+    __shared__ float s[128];
+    // SINGLE-PHASE (wave 4, same algebra as the closing emit; c == 1 here):
+    // sum(v^2) with v = a*ascale*wa + b  ==  ascale^2*S2 + 2*ascale*S3 + S4.
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
     __syncthreads();
     if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
     }
     __syncthreads();
     float ascale = rsqrtf(s[0] / ncols + eps);
-    __syncthreads();
-    float sum = 0.0f;
+    float sumv2 = ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3];
+    float scale = rsqrtf(sumv2 / ncols + eps);
     for (int i = tid; i < ncols; i += blockDim.x) {
-        float v = (ar[i] * ascale) * wa[i] + br[i];
-        rr[i] = v;
-        sum += v * v;
-    }
-    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
-    if ((tid & 31) == 0) s[tid >> 5] = sum;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
+        rr[i] = (ar[i] * ascale) * wa[i] + br[i];
     }
     __syncthreads();
-    float scale = rsqrtf(s[0] / ncols + eps);
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
     int lane = tid & 31;
@@ -687,6 +696,53 @@ extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const f
 // ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
 // rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
 // (rope_neox math verbatim on the normed row; barrier between store and rope read). ----
+// cat twin (wave 4b): the q|k|v input is ONE contiguous buffer (the qkv_cat matvec output),
+// so the three input segments collapse to base + row*ncols. Outputs stay separate.
+extern "C" __global__ void rms_norm_qkv_rope_cat_f32(
+        const float* __restrict__ qkv,
+        const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
+        float* __restrict__ dq, float* __restrict__ dk, float* __restrict__ dv,
+        int ncols, int rq, int rk,
+        const int* __restrict__ pos, int nh_q, int nh_k,
+        float theta_scale, float freq_scale, const float* __restrict__ ff,
+        float eps) {
+    int row = blockIdx.x;
+    const float* xr = qkv + (size_t)row * ncols;
+    const float* w; float* dr;
+    int seg; int seg_r;
+    if (row < rq)           { seg = 0; seg_r = row;           w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { seg = 1; seg_r = row - rq;      w = wk; dr = dk + (size_t)seg_r * ncols; }
+    else                    { seg = 2; seg_r = row - rq - rk; w = wv; dr = dv + (size_t)seg_r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+    if (seg == 2) return;
+    __syncthreads();
+    int half = ncols / 2;
+    int j = tid;
+    if (j >= half) return;
+    int tok = (seg == 0) ? seg_r / nh_q : seg_r / nh_k;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = dr[j];
+    float x1 = dr[j + half];
+    dr[j]        = x0 * c - x1 * sn;
+    dr[j + half] = x0 * sn + x1 * c;
+}
+
 extern "C" __global__ void rms_norm_qkv_rope_f32(
         const float* __restrict__ q, const float* __restrict__ k, const float* __restrict__ v,
         const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
@@ -916,39 +972,52 @@ extern "C" __global__ void rms_pre_add_scale_rms_norm_q8_1(
     const float* br = b + (size_t)row * ncols;
     float* rr = res + (size_t)row * ncols;
     int nblk = ncols / 32;
-    __shared__ float s[32];
-    // reduction 1: rms scale of a (the rms_norm_f32 program's math).
-    float suma = 0.0f;
-    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; suma += v * v; }
-    for (int o = 16; o > 0; o >>= 1) suma += __shfl_down_sync(0xffffffff, suma, o);
-    if ((tid & 31) == 0) s[tid >> 5] = suma;
+    __shared__ float s[128];
+    // SINGLE-PHASE reductions (wave 4): four simultaneous sums in one pass —
+    //   S1 = sum(a^2)            -> ascale
+    //   S2 = sum((a*wa)^2), S3 = sum(a*wa*b), S4 = sum(b^2)
+    // then sum(v^2) with v = (a*ascale*wa + b)*c expands ALGEBRAICALLY to
+    //   c^2 * (ascale^2*S2 + 2*ascale*S3 + S4)
+    // — one barrier round instead of two full reduction phases. FP-order differs from the
+    // sequential two-phase form (expansion rounding); the argmax/chat gates arbitrate.
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
     __syncthreads();
     if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
     }
     __syncthreads();
     float ascale = rsqrtf(s[0] / ncols + eps);
-    __syncthreads();
-    // reduction 2 + emit: the add_scale_rms_norm_q8_1 program with a -> rms(a)*wa.
-    float sum = 0.0f;
+    float sumv2 = c * c * (ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3]);
+    float scale = rsqrtf(sumv2 / ncols + eps);
+    // store pass: rr written here (the reduction pass no longer writes it).
     for (int i = tid; i < ncols; i += blockDim.x) {
         float an = (ar[i] * ascale) * wa[i];
-        float v = (an + br[i]) * c;
-        rr[i] = v;
-        sum += v * v;
-    }
-    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
-    if ((tid & 31) == 0) s[tid >> 5] = sum;
-    __syncthreads();
-    if (tid < 32) {
-        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
-        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
-        if (tid == 0) s[0] = v;
+        rr[i] = (an + br[i]) * c;
     }
     __syncthreads();
-    float scale = rsqrtf(s[0] / ncols + eps);
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
     int lane = tid & 31;

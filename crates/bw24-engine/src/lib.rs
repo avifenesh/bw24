@@ -1088,6 +1088,14 @@ impl Engine {
     }
 
     /// View a sub-range of a device buffer (for attending over [0..len) of a KV cache).
+    /// u8 twin of copy_into (D2D byte-range copy at an offset).
+    pub fn copy_u8_into(&self, dst: &mut CudaSlice<u8>, off: usize, src: &CudaSlice<u8>, len: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(off..off + len);
+        self.gpu.stream.memcpy_dtod(&src.slice(0..len), &mut view)?;
+        Ok(())
+    }
+
     pub fn view<'a>(&self, b: &'a CudaSlice<f32>, len: usize) -> cudarc::driver::CudaView<'a, f32> {
         b.slice(0..len)
     }
@@ -3125,6 +3133,75 @@ impl Engine {
           .arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
         Ok((out_q, out_d))
+    }
+
+    /// wave-4b: OUT-dim concat of three Q4_0 tensors (same in_features; rows are independent
+    /// blocks, so the concat is a D2D byte concat of the GGUF-layout planes). Returns None
+    /// off-class (non-Q4_0, mismatched widths, or any tensor already rp-swapped in place).
+    pub fn build_q4_out_concat3(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                w2: &crate::model::GpuTensor)
+                                -> Result<Option<crate::model::GpuTensor>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let part = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, rp, .. }
+                    if *qtype == QT_Q4_0 && !*rp => Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((rb1, o1)), Some((rb2, o2))) = (part(w0), part(w1), part(w2))
+        else { return Ok(None) };
+        if rb0 != rb1 || rb0 != rb2
+            || w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
+            return Ok(None);
+        }
+        fn bytes_of(w: &crate::model::GpuTensor) -> &CudaSlice<u8> {
+            match w { crate::model::GpuTensor::Quant { bytes, .. } => bytes, _ => unreachable!() }
+        }
+        let (b0, b1, b2) = (bytes_of(w0), bytes_of(w1), bytes_of(w2));
+        let total = rb0 * (o0 + o1 + o2);
+        let mut cat = self.alloc_u8(total)?;
+        self.copy_u8_into(&mut cat, 0, b0, rb0 * o0)?;
+        self.copy_u8_into(&mut cat, rb0 * o0, b1, rb1 * o1)?;
+        self.copy_u8_into(&mut cat, rb0 * (o0 + o1), b2, rb2 * o2)?;
+        Ok(Some(GpuTensor::Quant {
+            bytes: cat, qtype: QT_Q4_0, row_bytes: rb0,
+            ne: vec![w0.in_features() as u64, (o0 + o1 + o2) as u64], scale: 1.0, rp: false,
+            #[cfg(bw24_cutlass)]
+            cutlass: None,
+            fp8: None, rp4: None,
+        }))
+    }
+
+    /// wave-4b: the qkv-cat twin — one contiguous [rq+2*rk, hd] input from the concat matvec.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_qkv_rope_cat(&self, qkv: &CudaSlice<f32>,
+                                 wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
+                                 q: &mut CudaSlice<f32>, k: &mut CudaSlice<f32>, v: &mut CudaSlice<f32>,
+                                 head_dim: usize, rq: usize, rk: usize,
+                                 pos: &CudaSlice<i32>, nh_q: usize, nh_k: usize,
+                                 base: f32, freq_scale: f32, ff: Option<&CudaSlice<f32>>, eps: f32)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rms_norm_qkv_rope_cat_f32");
+        let rows = rq + rk + rk;
+        let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let theta_scale = base.powf(-2.0 / head_dim as f32);
+        let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match ff {
+            Some(t) => { b.arg(qkv).arg(wq).arg(wk).arg(wv)
+                          .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                          .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                          .arg(&theta_scale).arg(&freq_scale).arg(t).arg(&eps);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(qkv).arg(wq).arg(wk).arg(wv)
+                       .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                       .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                       .arg(&theta_scale).arg(&freq_scale).arg(&null).arg(&eps);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        Ok(())
     }
 
     /// wave-3 fold: rms_norm_qkv + rope_neox2 in ONE launch (n_dims == head_dim; ff nullable).

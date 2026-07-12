@@ -3694,25 +3694,34 @@ impl HybridModel {
                                 &mut q, &mut kdummy, &mut vdummy, hd, nh * t, 0,
                                 pos_d, nh, 1, base, 1.0, ff, eps)?;
         } else {
-            // FUSED qkv (glue-fusion lane, 2026-07-12): one grid-fused launch for the three
-            // Q4_0 matvecs at t == 1 (the gemma fused2/3 class — same per-block dot program,
-            // bit-parity settled by the trunk battery). Falls back per-matvec off-class.
-            let (q0, k0, v0) = match if t == 1 {
-                e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
-            } else { None } {
-                Some(triple) => triple,
-                None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
-                         e.matmul_pre(&fa.wk, hq, hdq, h, t)?,
-                         e.matmul_pre(&fa.wv, hq, hdq, h, t)?),   // E4B: real v (K != V)
-            };
+            // wave-4b: ONE concat matvec (wq|wk|wv) at t == 1 when the cat tensor exists;
+            // else the fused3 grid launch; else per-matvec. The cat output is contiguous
+            // q|k|v rows — the cat norm+rope twin consumes it directly.
+            let e4bits = self.layers[il].gemma4.as_ref().and_then(|g| g.e4b.as_ref());
+            let cat = e4bits.and_then(|e4| e4.qkv_cat.as_ref());
             q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
-            // wave-3 fold: q/k/v norms + q/k rope in ONE launch (rope math verbatim on the
-            // normed rows; V ones-rms, never roped).
-            e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                                &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
-                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            if t == 1 && cat.is_some() {
+                let qkv0 = e.matmul_pre(cat.unwrap(), hq, hdq, h, 1)?;
+                e.rms_norm_qkv_rope_cat(&qkv0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                        &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                                        pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            } else {
+                let (q0, k0, v0) = match if t == 1 {
+                    e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
+                } else { None } {
+                    Some(triple) => triple,
+                    None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
+                             e.matmul_pre(&fa.wk, hq, hdq, h, t)?,
+                             e.matmul_pre(&fa.wv, hq, hdq, h, t)?),   // E4B: real v (K != V)
+                };
+                // wave-3 fold: q/k/v norms + q/k rope in ONE launch (rope math verbatim on
+                // the normed rows; V ones-rms, never roped).
+                e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(),
+                                    fa.k_norm.float_data(), &aux.ones, &mut q, &mut k, &mut v,
+                                    hd, nh * t, nkv * t, pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            }
             let kvl = cache.kv[il].as_mut().unwrap();
             // class flag must match the cache dims (the g-threading sweep hardcoded `false`
             // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
