@@ -12,6 +12,7 @@ HARBOR_BIN=${HARBOR_BIN:-/data/bin/harbor-0.18.0-0a01ad6/harbor}
 HARBOR_HOME=${HARBOR_HOME:-/data/cache/harbor-home}
 FULL_RUNNER=${FULL_RUNNER:-$HERE/run_full_practical_evals.sh}
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_full_practical_results.py}
+FULL_TASK_LOCK=${FULL_TASK_LOCK:-$HERE/full-practical-tasks.lock.json}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
@@ -22,6 +23,7 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -x "$FULL_RUNNER" ]] || die "missing full practical runner"
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing full practical summarizer"
 [[ -f "$HERE/practical-evals.lock.json" ]] || die "missing practical lock"
+[[ -f "$FULL_TASK_LOCK" ]] || die "missing full practical task lock"
 command -v sudo >/dev/null || die "sudo is required"
 command -v ip >/dev/null || die "iproute2 is required"
 
@@ -67,7 +69,7 @@ for arm in "${ARMS[@]}"; do [[ -f "$(artifact_for "$arm")/manifest.json" ]] || d
 
 RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
-export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE
+export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -79,6 +81,8 @@ payload = {
     "trusted_full_report": {"path": os.environ["TRUSTED_REPORT"], "sha256": sha(os.environ["TRUSTED_REPORT"])},
     "practical_lock": {"path": str(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json"),
                        "sha256": sha(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json")},
+    "full_task_lock": {"path": os.environ["FULL_TASK_LOCK"],
+                       "sha256": sha(os.environ["FULL_TASK_LOCK"])},
     "server": {"path": os.environ["SERVER_BIN"], "sha256": sha(os.environ["SERVER_BIN"])},
     "harbor": {"path": os.environ["HARBOR_BIN"], "sha256": sha(os.environ["HARBOR_BIN"])},
     "bw24_commit": subprocess.check_output(["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True).strip(),
@@ -105,11 +109,11 @@ cleanup_all() {
 }
 trap cleanup_all EXIT INT TERM
 
-run_arm() (
-  local arm=$1 gpu=$2 cpus=$3 artifact ns arm_log server_log
+run_lane() (
+  local arm=$1 gpu=$2 cpus=$3 lane=$4 lane_count=$5 artifact ns arm_log server_log
   artifact=$(artifact_for "$arm")
   ns="bw24-agentic-${RUN_ID//[^A-Za-z0-9]/-}-$gpu"
-  arm_log="$LOG_ROOT/$RUN_ID-$arm"
+  arm_log="$LOG_ROOT/$RUN_ID-$arm-lane$lane"
   server_log="$arm_log/server.log"
   mkdir -p "$arm_log"
   sudo ip netns del "$ns" 2>/dev/null || true
@@ -152,11 +156,24 @@ run_arm() (
   [[ -f "$arm_log/health.json" ]] || die "$arm full-agentic health timeout"
 
   for panel in swe terminal; do
+    tasks_json=$(python3 - "$FULL_TASK_LOCK" "$panel" "$lane" "$lane_count" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d[sys.argv[2]]["tasks"]
+lane, count = map(int, sys.argv[3:])
+selected = [row["name"] for index, row in enumerate(rows) if index % count == lane]
+if not selected:
+    raise SystemExit("empty full practical lane")
+print(json.dumps(selected, separators=(",", ":")))
+PY
+)
     sudo ip netns exec "$ns" sudo -u "$USER_NAME" env \
       HOME="$HARBOR_HOME" PATH="$USER_PATH" ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
       BW24_ROOT="$ROOT" \
       SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
-      LOCK="$HERE/practical-evals.lock.json" OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
+      LOCK="$HERE/practical-evals.lock.json" FULL_TASK_LOCK="$FULL_TASK_LOCK" \
+      TASKS_JSON="$tasks_json" SHARD_ID="lane$lane-of-$lane_count" \
+      OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
       BASE_URL=http://127.0.0.1:8080/v1 BW24_SPILL_IO=worker \
       BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
       "$FULL_RUNNER" | tee "$arm_log/$panel.log"
@@ -164,11 +181,17 @@ run_arm() (
   date -u +%FT%TZ > "$arm_log/complete"
 )
 
-CPU_LANES=(0-23 24-47)
-for index in "${!ARMS[@]}"; do
-  NAMESPACES+=("bw24-agentic-${RUN_ID//[^A-Za-z0-9]/-}-$index")
-  run_arm "${ARMS[$index]}" "$index" "${CPU_LANES[$index]}" &
-  WORKER_PIDS+=("$!")
+LANES_PER_ARM=4
+gpu=0
+for arm in "${ARMS[@]}"; do
+  for ((lane=0; lane<LANES_PER_ARM; lane++)); do
+    NAMESPACES+=("bw24-agentic-${RUN_ID//[^A-Za-z0-9]/-}-$gpu")
+    cpu_start=$((gpu * 12))
+    cpu_end=$((cpu_start + 11))
+    run_lane "$arm" "$gpu" "$cpu_start-$cpu_end" "$lane" "$LANES_PER_ARM" &
+    WORKER_PIDS+=("$!")
+    gpu=$((gpu + 1))
+  done
 done
 failed=0
 for pid in "${WORKER_PIDS[@]}"; do wait "$pid" || failed=1; done
@@ -181,6 +204,7 @@ for panel in swe terminal; do
     --baseline "$OUT_ROOT/${ARMS[0]}/$panel/$RUN_ID" \
     --candidate "$OUT_ROOT/${ARMS[1]}/$panel/$RUN_ID" \
     --panel "$panel" --lock "$HERE/practical-evals.lock.json" \
+    --full-task-lock "$FULL_TASK_LOCK" \
     --output "$COMPARE_ROOT/$panel.json"
 done
 python3 - "$COMPARE_ROOT/swe.json" "$COMPARE_ROOT/terminal.json" "$COMPARE_ROOT/combined.json" <<'PY'
@@ -198,6 +222,7 @@ out = {
 pathlib.Path(sys.argv[3]).write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
 PY
 sha256sum "$RUN_CONFIG" "$TRUSTED_REPORT" "$HERE/practical-evals.lock.json" \
+  "$FULL_TASK_LOCK" \
   "$COMPARE_ROOT/swe.json" "$COMPARE_ROOT/terminal.json" "$COMPARE_ROOT/combined.json" \
   > "$LOG_ROOT/$RUN_ID-evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"

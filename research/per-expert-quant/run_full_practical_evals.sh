@@ -4,11 +4,14 @@ set -euo pipefail
 ROOT=${BW24_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 HERE="$ROOT/research/per-expert-quant"
 LOCK=${LOCK:-$HERE/practical-evals.lock.json}
+FULL_TASK_LOCK=${FULL_TASK_LOCK:-$HERE/full-practical-tasks.lock.json}
 HARBOR_BIN=${HARBOR_BIN:-$(command -v harbor || true)}
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1}
 OUT_ROOT=${OUT_ROOT:-$HERE/results/practical-full}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 RESUME_ATTEMPTS=${RESUME_ATTEMPTS:-3}
+TASKS_JSON=${TASKS_JSON:-}
+SHARD_ID=${SHARD_ID:-}
 
 : "${ARM:?set the exact served arm}"
 : "${PANEL:?set PANEL to swe or terminal}"
@@ -26,7 +29,11 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid RUN_ID"
 [[ "$PANEL" == swe || "$PANEL" == terminal ]] || die "PANEL must be swe or terminal"
 [[ -x "$HARBOR_BIN" && -x "$SERVER_BIN" ]] || die "missing Harbor or server"
-[[ -f "$LOCK" && -f "$SERVER_LOG" && -f "$ARTIFACT/manifest.json" ]] || die "missing evidence input"
+[[ -f "$LOCK" && -f "$FULL_TASK_LOCK" && -f "$SERVER_LOG" \
+  && -f "$ARTIFACT/manifest.json" ]] || die "missing evidence input"
+if [[ -n "$SHARD_ID" ]]; then
+  [[ "$SHARD_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid SHARD_ID"
+fi
 [[ "$BW24_SPILL_IO" == worker && "$BW24_SPILL_STATS" == 1 && "$BW24_SERVE_SPEC" == 0 ]] \
   || die "full practical protocol differs"
 [[ "$BW24_SPILL_PREAD_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
@@ -35,36 +42,63 @@ docker info >/dev/null 2>&1 || die "Docker daemon unavailable"
 [[ "$($HARBOR_BIN --version)" == 0.18.0 ]] || die "Harbor version differs"
 python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" >/dev/null
 
-readarray -t suite < <(python3 - "$LOCK" "$PANEL" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-if sys.argv[2] == "swe":
-    x = d["swe_bench_verified"]
-    print(f"{x['harbor_dataset']}@{x['harbor_dataset_digest']}")
-    print(x["harbor_dataset"])
-    print(x["harbor_dataset_digest"])
-    print(x["harbor_dataset_tasks"])
+readarray -t suite < <(python3 - "$LOCK" "$FULL_TASK_LOCK" "$PANEL" "$TASKS_JSON" <<'PY'
+import hashlib, json, sys
+lock = json.load(open(sys.argv[1]))
+full = json.load(open(sys.argv[2]))
+panel = sys.argv[3]
+if full.get("format") != "bw24-full-practical-task-lock-v1":
+    raise SystemExit("wrong full task lock format")
+if full.get("source_practical_lock_sha256") != hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest():
+    raise SystemExit("full task lock does not bind practical lock")
+if panel == "swe":
+    x, fx, prefix = lock["swe_bench_verified"], full["swe"], "swe-bench/"
+    name, digest = x["harbor_dataset"], x["harbor_dataset_digest"]
 else:
-    x = d["terminal_bench_2"]
-    print(f"{x['dataset']}@{x['dataset_digest']}")
-    print(x["dataset"])
-    print(x["dataset_digest"])
-    print(x["dataset_tasks"])
+    x, fx, prefix = lock["terminal_bench_2"], full["terminal"], "terminal-bench/"
+    name, digest = x["dataset"], x["dataset_digest"]
+if fx.get("dataset") != name or fx.get("dataset_digest") != digest:
+    raise SystemExit("full task lock dataset differs")
+available = {row["name"]: row["digest"] for row in fx["tasks"]}
+if sys.argv[4]:
+    selected_names = json.loads(sys.argv[4])
+    if not isinstance(selected_names, list) or not selected_names or len(set(selected_names)) != len(selected_names):
+        raise SystemExit("TASKS_JSON must be a non-empty unique list")
+else:
+    selected_names = sorted(available)
+if any(task not in available for task in selected_names):
+    raise SystemExit("TASKS_JSON contains task outside full lock")
+selected = [{"name": task, "digest": available[task]} for task in selected_names]
+print(f"{name}@{digest}")
+print(name)
+print(digest)
+print(len(selected))
+print(json.dumps(selected, sort_keys=True, separators=(",", ":")))
+for row in selected:
+    if not row["name"].startswith(prefix):
+        raise SystemExit("task prefix differs")
+    print(row["name"].split("/", 1)[1])
 PY
 )
-(( ${#suite[@]} == 4 )) || die "full suite did not resolve"
+(( ${#suite[@]} >= 6 )) || die "full suite did not resolve"
 DATASET=${suite[0]}
 DATASET_NAME=${suite[1]}
 DATASET_DIGEST=${suite[2]}
 EXPECTED_TASKS=${suite[3]}
+SELECTED_TASKS_JSON=${suite[4]}
+INCLUDE_TASKS=("${suite[@]:5}")
+(( ${#INCLUDE_TASKS[@]} == EXPECTED_TASKS )) || die "selected task count differs"
 
 SERVER_ROOT=${BASE_URL%/v1}
 RUN_DIR="$OUT_ROOT/$ARM/$PANEL/$RUN_ID"
+if [[ -n "$SHARD_ID" ]]; then RUN_DIR="$RUN_DIR/shards/$SHARD_ID"; fi
 [[ ! -e "$RUN_DIR" ]] || die "refusing to overwrite $RUN_DIR"
 mkdir -p "$(dirname "$RUN_DIR")"
 mkdir "$RUN_DIR"
 cp "$LOCK" "$RUN_DIR/practical-evals.lock.json"
+cp "$FULL_TASK_LOCK" "$RUN_DIR/full-practical-tasks.lock.json"
 cp "$ARTIFACT/manifest.json" "$RUN_DIR/artifact-manifest.json"
+printf '%s\n' "$SELECTED_TASKS_JSON" > "$RUN_DIR/selected-tasks.json"
 curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$RUN_DIR/server-health.json"
 python3 "$HERE/validate_server_health.py" "$RUN_DIR/server-health.json" "$ARM" --exact
 
@@ -82,11 +116,13 @@ CMD=(
   --agent-kwarg record_terminal_session=true --agent-kwarg "model_info=$MODEL_INFO"
   --agent-kwarg "llm_call_kwargs=$CALL_KWARGS"
 )
+for task in "${INCLUDE_TASKS[@]}"; do CMD+=(--include-task-name "$task"); done
 "${CMD[@]}" --print-config > "$RUN_DIR/resolved-harbor-config.json"
 
 STARTED_UTC=$(date -u +%FT%TZ)
 STARTED_NS=$(date +%s%N)
-export ROOT LOCK ARM PANEL RUN_ID RUN_DIR DATASET DATASET_NAME DATASET_DIGEST EXPECTED_TASKS \
+export ROOT LOCK FULL_TASK_LOCK ARM PANEL RUN_ID RUN_DIR SHARD_ID DATASET DATASET_NAME \
+  DATASET_DIGEST EXPECTED_TASKS SELECTED_TASKS_JSON \
   BASE_URL SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO \
   BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC HARBOR_BIN
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
@@ -115,12 +151,16 @@ server_log = pathlib.Path(os.environ["SERVER_LOG"]).resolve()
 payload = {
     "format": "bw24-full-practical-run-v1", "arm": os.environ["ARM"],
     "panel": os.environ["PANEL"], "run_id": os.environ["RUN_ID"],
+    "shard_id": os.environ.get("SHARD_ID") or None,
     "dataset": os.environ["DATASET"], "dataset_name": os.environ["DATASET_NAME"],
     "dataset_digest": os.environ["DATASET_DIGEST"],
     "expected_tasks": int(os.environ["EXPECTED_TASKS"]), "base_url": os.environ["BASE_URL"],
     "harbor_version": subprocess.check_output([os.environ["HARBOR_BIN"], "--version"], text=True).strip(),
     "bw24_commit": subprocess.check_output(["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True).strip(),
-    "lock_sha256": sha(os.environ["LOCK"]), "artifact_manifest_sha256": sha(manifest),
+    "lock_sha256": sha(os.environ["LOCK"]),
+    "full_task_lock_sha256": sha(os.environ["FULL_TASK_LOCK"]),
+    "selected_tasks_sha256": sha(pathlib.Path(os.environ["RUN_DIR"]) / "selected-tasks.json"),
+    "artifact_manifest_sha256": sha(manifest),
     "artifact_bytes": json.loads(manifest.read_text()).get("artifact_bytes"),
     "server_binary": str(server), "server_binary_sha256": sha(server),
     "server_log_source": str(server_log),
@@ -193,6 +233,9 @@ if not result_path.is_file():
     raise SystemExit(f"missing Harbor result {result_path}")
 result = json.loads(result_path.read_text())
 expected = metadata["expected_tasks"]
+selected = {row["name"]: row["digest"] for row in json.load(open(root / "selected-tasks.json"))}
+if len(selected) != expected:
+    raise SystemExit("selected task lock count differs")
 stats = result.get("stats", {})
 if not (
     result.get("n_total_trials") == expected
@@ -225,6 +268,8 @@ for trial_dir in trial_dirs:
 if len(trials) != expected or len({row["task"] for row in trials}) != expected:
     raise SystemExit("full practical trial set differs")
 trials.sort(key=lambda row: row["task"])
+if {row["task"]: row["task_digest"] for row in trials} != selected:
+    raise SystemExit("full practical task names/digests differ from selected lock")
 (root / "validated-trials.json").write_text(json.dumps(trials, indent=2, sort_keys=True) + "\n")
 end = spill(metadata["server_log_source"])
 start = metadata["spill_snapshot_start"]
