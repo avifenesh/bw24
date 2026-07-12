@@ -3934,6 +3934,55 @@ impl HybridModel {
         Ok((ld, x))
     }
 
+    /// E4B batched VERIFY (device tokens, the spec round's t=K+1 step): t rows through the
+    /// e4b trunk (per-row causal attention; own-KV layers append t rows host-len, KV-shared
+    /// layers ride their targets), per-row device argmax + the POST-output_norm hidden
+    /// stack (the drafter's h convention). Advances cache.pos/kvl.len by t — the spec
+    /// round rolls back rejected rows (shared layers have no KvLayer, so the plain rewind
+    /// covers exactly the layers that appended).
+    pub fn gemma4_e4b_decode_step_t_am_dev(&self, e: &Engine, tok_d: &CudaSlice<u32>,
+                                                  t: usize, pos0: usize, cache: &mut Cache)
+                                                  -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+        let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, tok_d, &x, t)?;
+        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)?;
+        // softcap is monotonic — the per-row argmax is invariant to it (the trunk's head
+        // emit is already capped, matching the eager chain bit-for-bit).
+        let n_vocab = self.output.out_features();
+        let mut vam = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut vam, i)?;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&xp, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        cache.pos += t;
+        Ok((vam, hn))
+    }
+
+    /// E4B verify + host logits + POST-output_norm hidden stack (the short-prompt spec
+    /// prime path — mirror of `gemma4_decode_step_t_h`).
+    pub(crate) fn gemma4_e4b_decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize,
+                                             cache: &mut Cache)
+                                             -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let (ld, xp) = self.gemma4_e4b_trunk(e, tokens, pos0, cache)?;
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&xp, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        cache.pos += t;
+        Ok((e.dtoh(&ld)?, hn))
+    }
+
     /// E4B GRAPH-CAPTURABLE dc step: same trunk as the dc step but token_d is updated IN
     /// PLACE (self-feeding replay) and every launch arg is a device counter — pos from
     /// pos_d (inc'd in-stream), KV slots from len_d (advanced in-stream), attention from
