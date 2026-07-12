@@ -659,6 +659,19 @@ sample log for every pinned task. Never combine shards from different model, ser
 artifact, generation, concurrency, or spill configurations. Full reporting rejects missing receipt
 fields and compares the declared server/harness/tooling hashes, timeout, generation cap,
 concurrency, spill depth, and spec setting across every shard and both arms.
+
+The raw lm-eval MATH aggregate is not trusted because the API stop marker is not guaranteed to be
+enforced before metric extraction. After the complete MATH-500 shard exists, independently rescore
+its immutable answers in the networkless locked container before running the full summarizer:
+
+    SUITE_LOCK=research/per-expert-quant/suite.lock.json \
+      research/per-expert-quant/score_promoted_math_container.sh \
+      /data/results/per-expert-quant/final-full-candidate/ARM/RUN_ID
+
+The scorer refuses overwrite, requires all 500 pinned samples and an identical copied suite lock,
+uses the strict first-nonempty-line answer policy, and records container/tool/output hashes. A full
+report now rejects missing, altered, or mismatched MATH score evidence and ignores the raw lm-eval
+MATH aggregate entirely.
 Each receipt is written as incomplete before generation and finalized with wall time plus evaluator
 and log-pipeline exit codes. Full reporting rejects receipts that are unfinished, timed out, failed,
 or missing a positive elapsed time; concurrency preflights use that recorded wall time. At shard
