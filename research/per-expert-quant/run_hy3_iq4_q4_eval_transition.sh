@@ -26,6 +26,7 @@ PRIVATE_GATE_ROOT=${PRIVATE_GATE_ROOT:-/data/logs/iq3-iq4-q4-private-artifact-ga
 PROMOTION_LOCK=${PROMOTION_LOCK:-$ROOT/research/per-expert-quant/iq4-q4-promotion-gates.lock.json}
 
 die() { echo "IQ4/Q4 eval transition: $*" >&2; exit 1; }
+port_listening() { ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
 mkdir -p "$OUT_ROOT/run-configs" "$LOG_ROOT"
 exec 9>"$LOG_ROOT/transition.lock"
 flock -n 9 || die "another IQ4/Q4 eval transition owns the lock"
@@ -76,7 +77,7 @@ CUDA_VISIBLE_DEVICES=0 taskset -c 0-11 numactl --membind=0 \
     HOURISH_SCORER_LOCK=/tmp/bw24-iq3-iq4-q4-scorer.lock \
     "$EVAL_ROOT/research/per-expert-quant/run_hourish_one_arm.sh" \
     >"$LOG_ROOT/$RUN_ID-$ARM.launcher.log" 2>&1
-pgrep -x bw24-server >/dev/null && die "server remained after candidate evaluation"
+port_listening 8080 && die "server remained on candidate eval port 8080"
 "$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
   --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
   --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
