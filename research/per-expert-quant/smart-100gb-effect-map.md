@@ -153,3 +153,29 @@ prune damage correlates strongly with experts removed (`r=0.85`) and decreases w
 several later layers remain near 0.05 despite far fewer removals. Layer 79 is an exception: 96
 experts can be removed with only 0.0024 normalized MSE. The allocator therefore uses measured
 layer effects rather than a monotonic early/late rule.
+
+## Frozen recipe audit
+
+The final private allocation maps show that scalar objective multipliers are not enough to enforce
+that intent. The base empirical, balanced, rescue, and seven-format Pareto recipes all prune the
+maximum 96 of 192 experts in layers 14, 18, and 19. Their retained projections in those layers are
+almost entirely Q2:
+
+| Plan | Layer 14 non-Q2 projections | Layer 18 non-Q2 projections | Layer 19 non-Q2 projections |
+|---|---:|---:|---:|
+| base empirical | 0 | 0 | 1 Q3_K |
+| balanced | 3 Q3_K | 0 | 0 |
+| rescue | 4 Q3_K | 0 | 2 Q3_K |
+| seven-format Pareto | 0 | 0 | 1 IQ3_S |
+
+The same seven-format Pareto plan spends 397 Q8/Q4_K/IQ4_XS projection choices in layer 79 while
+pruning only 14 experts there. This is consistent with the global private objective: one Q2 cell,
+layer 79 expert 120 down-projection, contributes 91.86% of total Q2 error. The allocator correctly
+protects that cell with Q8, but a single absolute-error hotspot can dominate the global byte trade
+even though the layer-level prune holdout says earlier layers are more structurally fragile.
+
+This rules out merely increasing the existing layer or rescue scalar as a clean next experiment.
+A future private-only allocation should instead preregister a structural control such as a
+layer-normalized objective, a cap on per-cell objective share, or explicit per-layer retention and
+damage budgets. It must be frozen against a new private holdout before another public capability
+screen; public task failures must not be used to choose those bounds.
