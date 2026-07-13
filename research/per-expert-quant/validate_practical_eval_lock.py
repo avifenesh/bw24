@@ -66,6 +66,14 @@ def validate_structure(lock: dict[str, Any]) -> None:
         require(protocol.get(key) is True, f"protocol must require {key}")
     require(protocol.get("mtp_or_speculation") is False, "MTP/speculation must be disabled")
     require(protocol.get("initial_trials_per_task") == 1, "directional screen must use one trial")
+    pilot_tasks = protocol.get("pilot_tasks")
+    require(
+        pilot_tasks == {
+            "swe": "swe-bench/pallets__flask-5014",
+            "terminal": "terminal-bench/db-wal-recovery",
+        },
+        "practical pilot tasks differ from the frozen protocol",
+    )
     scaffold = protocol.get("agent_scaffold")
     require(isinstance(scaffold, dict), "missing practical agent scaffold")
     expected_scaffold = {
@@ -115,6 +123,8 @@ def validate_structure(lock: dict[str, Any]) -> None:
         require(SHA256_RE.fullmatch(str(row.get("digest"))) is not None, f"bad Terminal digest: {row}")
         require(row.get("gpus") == 0, f"Terminal directional task requires GPU: {row['name']}")
         require(isinstance(row.get("agent_timeout_sec"), int) and row["agent_timeout_sec"] <= 2400, f"unbounded Terminal timeout: {row['name']}")
+    require(pilot_tasks["swe"] in {row["harbor_task"] for row in swe_tasks}, "SWE pilot is outside the panel")
+    require(pilot_tasks["terminal"] in {row["name"] for row in terminal_tasks}, "Terminal pilot is outside the panel")
 
 
 def validate_swe_source(lock: dict[str, Any], parquet: Path) -> None:

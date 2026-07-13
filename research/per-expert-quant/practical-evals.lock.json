@@ -12,6 +12,10 @@
     "container_isolation_required": true,
     "initial_trials_per_task": 1,
     "full_suite_only_after_directional_promotion": true,
+    "pilot_tasks": {
+      "swe": "swe-bench/pallets__flask-5014",
+      "terminal": "terminal-bench/db-wal-recovery"
+    },
     "agent_scaffold": {
       "harbor_version": "0.18.0",
       "agent": "terminus-2",

@@ -9,6 +9,7 @@ BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1}
 OUT_ROOT=${OUT_ROOT:-$HERE/results/practical}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 SERVER_BIN=${SERVER_BIN:-}
+PILOT_TASK=${PILOT_TASK:-}
 
 : "${ARM:?set ARM to the exact served model name}"
 : "${PANEL:?set PANEL to swe or terminal}"
@@ -64,6 +65,12 @@ PY
 (( ${#selection[@]} == 13 )) || die "lock did not resolve one dataset plus 12 tasks"
 DATASET=${selection[0]}
 TASKS=("${selection[@]:1}")
+if [[ -n "$PILOT_TASK" ]]; then
+  found=0
+  for task in "${TASKS[@]}"; do [[ "$task" == "$PILOT_TASK" ]] && found=1; done
+  ((found == 1)) || die "pilot task is outside the frozen panel"
+  TASKS=("$PILOT_TASK")
+fi
 
 SERVER_ROOT=${BASE_URL%/v1}
 RUN_DIR="$OUT_ROOT/$ARM/$PANEL/$RUN_ID"
@@ -122,7 +129,7 @@ done
 "${CMD[@]}" --print-config > "$RUN_DIR/resolved-harbor-config.json"
 STARTED_UTC=$(date -u +%FT%TZ)
 STARTED_NS=$(date +%s%N)
-export ROOT LOCK ARM PANEL RUN_ID RUN_DIR DATASET BASE_URL HARBOR_VERSION SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC
+export ROOT LOCK ARM PANEL RUN_ID RUN_DIR DATASET BASE_URL HARBOR_VERSION SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC PILOT_TASK
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, re, subprocess, sys
 
@@ -155,6 +162,7 @@ payload = {
     "arm": os.environ["ARM"], "panel": os.environ["PANEL"],
     "run_id": os.environ["RUN_ID"], "dataset": os.environ["DATASET"],
     "base_url": os.environ["BASE_URL"], "harbor_version": os.environ["HARBOR_VERSION"],
+    "pilot_task": os.environ.get("PILOT_TASK") or None,
     "bw24_commit": subprocess.check_output(
         ["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True
     ).strip(),

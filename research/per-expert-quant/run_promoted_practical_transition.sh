@@ -204,6 +204,23 @@ run_panel() (
   done
   [[ -f "$arm_log/health.json" ]] || die "$arm practical server health timeout"
 
+  local pilot_task pilot_root
+  pilot_task=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["pilot_tasks"][sys.argv[2]])' \
+    "$PRACTICAL_LOCK" "$panel")
+  pilot_root="$OUT_ROOT/_pilots"
+  taskset -c "$cpus" env \
+    HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
+    SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
+    LOCK="$PRACTICAL_LOCK" OUT_ROOT="$pilot_root" RUN_ID="$RUN_ID" PILOT_TASK="$pilot_task" \
+    BASE_URL="http://127.0.0.1:$port/v1" BW24_SPILL_IO=worker \
+    BW24_SPILL_PREAD_DEPTH="$SPILL_DEPTH" BW24_SPILL_STATS=1 BW24_SERVE_SPEC=0 \
+    "$HERE/run_practical_evals.sh" | tee "$arm_log/$panel-pilot.log"
+  python3 "$HERE/validate_practical_pilot.py" \
+    --run-dir "$pilot_root/$arm/$panel/$RUN_ID" --lock "$PRACTICAL_LOCK" \
+    --arm "$arm" --panel "$panel" \
+    | tee "$pilot_root/$arm/$panel/$RUN_ID/pilot-validation.json"
+
   taskset -c "$cpus" env \
     HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 ARM="$arm" PANEL="$panel" ARTIFACT="$artifact" \
@@ -257,8 +274,10 @@ python3 "$PRACTICAL_SELECTOR" \
   --comparison-root "$COMPARE_ROOT" \
   "${selector_args[@]}" \
   --output "$OUT_ROOT/practical-promotion-$RUN_ID.json"
+find "$OUT_ROOT/_pilots" -path "*/$RUN_ID/*" -type f -print0 | sort -z | xargs -0 -r sha256sum \
+  > "$LOG_ROOT/$RUN_ID-pilot-evidence.sha256"
 sha256sum "$RUN_CONFIG" "$PROMOTION" "$GATE_LOCK" "$PRACTICAL_LOCK" \
-  "${evidence_paths[@]}" \
+  "${evidence_paths[@]}" "$LOG_ROOT/$RUN_ID-pilot-evidence.sha256" \
   "$OUT_ROOT/practical-promotion-$RUN_ID.json" > "$LOG_ROOT/$RUN_ID-evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
 trap - EXIT INT TERM
