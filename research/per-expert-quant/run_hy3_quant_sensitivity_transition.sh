@@ -64,7 +64,28 @@ pids=()
 for gpu in $(seq 0 7); do
   out="$OUT_ROOT/lane-$gpu.json"
   log="$LOG_ROOT/lane-$gpu.log"
-  [[ ! -e "$out" ]] || die "refusing existing output $out"
+  if [[ -e "$out" ]]; then
+    "$PY" - "$out" "${layers[$gpu]}" <<'PY'
+import json, sys
+
+payload = json.load(open(sys.argv[1]))
+start, end = (int(value) for value in sys.argv[2].split("-", 1))
+expected = list(range(start, end + 1))
+if payload.get("format") != "bw24-hy3-quant-sensitivity-v1":
+    raise SystemExit(f"invalid existing lane format: {sys.argv[1]}")
+if payload.get("model", {}).get("moe_layers") != expected:
+    raise SystemExit(f"existing lane coverage differs: {sys.argv[1]}")
+rows = payload.get("scores")
+if not isinstance(rows, list) or len(rows) != len(expected) * 192:
+    raise SystemExit(f"existing lane row count differs: {sys.argv[1]}")
+if {(int(row["layer"]), int(row["expert"])) for row in rows} != {
+    (layer, expert) for layer in expected for expert in range(192)
+}:
+    raise SystemExit(f"existing lane identities differ: {sys.argv[1]}")
+PY
+    echo "reusing validated sensitivity lane $gpu: $out"
+    continue
+  fi
   CUDA_VISIBLE_DEVICES=$gpu taskset -c "${cpus[$gpu]}" nice -n 19 \
     "$PY" "$SCORER" \
       --trace-lock "$CALIBRATION/moe-inputs.lock.json" \
