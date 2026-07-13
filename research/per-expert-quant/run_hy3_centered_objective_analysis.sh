@@ -33,12 +33,16 @@ while [[ ! -f "$SENSITIVITY" || ! -f "$UNCENTERED_PLAN" ]]; do sleep 30; done
 plan="$OUT_ROOT/$ARM.json"
 comparison="$OUT_ROOT/allocation-comparison.json"
 receipt="$OUT_ROOT/allocation-comparison.receipt.json"
-for path in "$plan" "$comparison" "$receipt" "$OUT_ROOT/evidence.sha256" "$OUT_ROOT/complete"; do
+damage="$OUT_ROOT/private-damage-comparison.json"
+damage_receipt="$OUT_ROOT/private-damage-comparison.receipt.json"
+for path in "$plan" "$comparison" "$receipt" "$damage" "$damage_receipt" \
+  "$OUT_ROOT/evidence.sha256" "$OUT_ROOT/complete"; do
   [[ ! -e "$path" ]] || die "refusing existing output $path"
 done
 
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" --self-test
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" --self-test
+"$PY" "$ROOT/tools/score_hy3_quant_plan.py" --self-test
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
   --retention-scores "$RETENTION" --quant-sensitivity "$SENSITIVITY" \
   --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
@@ -65,8 +69,22 @@ PY
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" \
   "$REFERENCE_PLAN" "$UNCENTERED_PLAN" "$plan" \
   --analysis-commit "$EXPECTED_COMMIT" --out "$comparison" --receipt "$receipt"
+"$PY" "$ROOT/tools/score_hy3_quant_plan.py" --sensitivity "$SENSITIVITY" \
+  --plan "uncentered=$UNCENTERED_PLAN" --plan "centered=$plan" \
+  --analysis-commit "$EXPECTED_COMMIT" --output "$damage" --receipt "$damage_receipt"
+"$PY" - "$damage" "$TARGET_BYTES" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["public_eval_data_used"] is False
+assert d["lowest_private_damage_plan"] == "centered"
+assert d["plans"]["centered"]["logical_bytes"] <= int(sys.argv[2])
+assert d["plans"]["centered"]["total_additive_damage"] \
+    < d["plans"]["uncentered"]["total_additive_damage"]
+assert d["pairwise"]["uncentered__centered"]["right_minus_left_damage"] < 0
+PY
 sha256sum "$SENSITIVITY" "$REFERENCE_PLAN" "$UNCENTERED_PLAN" "$plan" \
-  "$comparison" "$receipt" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
+  "$comparison" "$receipt" "$damage" "$damage_receipt" \
+  "$ROOT/tools/build_hy3_smart_budget_plan.py" "$ROOT/tools/score_hy3_quant_plan.py" \
   >"$OUT_ROOT/evidence.sha256"
 sha256sum -c "$OUT_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$OUT_ROOT/complete"
