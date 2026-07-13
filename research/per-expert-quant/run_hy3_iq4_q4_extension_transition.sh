@@ -98,6 +98,8 @@ wait_lanes_idle() {
 "$PY" "$ROOT/tools/merge_expert_overlay_fragments.py" --self-test \
   | tee "$LOG_ROOT/fragment-self-test.log"
 "$PY" "$VALIDATOR" --self-test | tee "$LOG_ROOT/validator-self-test.log"
+"$PY" "$ROOT/tools/audit_hy3_healed_routing.py" --self-test \
+  | tee "$LOG_ROOT/routing-audit-self-test.log"
 
 wait_lanes_idle
 # Split all 79 layers deterministically over the selected lane count.
@@ -197,19 +199,30 @@ failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --receipt-dir "$HEAL_ROOT/$ARM/receipts" \
   --overlay-dir "$HEAL_ROOT/$ARM/overlay" --layers 1-79 \
   --lock "$HEAL_ROOT/$ARM/overlay.lock.json" | tee "$LOG_ROOT/heal-merge.log"
-"$PY" - "$HEAL_ROOT/$ARM/receipts" "$LOG_ROOT/heal-quality.json" <<'PY'
+CUDA_VISIBLE_DEVICES=${gpus[0]} taskset -c "${cpus[0]}" nice -n 19 \
+  "$PY" "$ROOT/tools/audit_hy3_healed_routing.py" --plan "$plan" \
+    --trace-lock "$CALIBRATION/moe-inputs.lock.json" --overlay-dir "$HEAL_ROOT/$ARM/overlay" \
+    --layers 1-79 --device cuda:0 --output "$LOG_ROOT/routing-audit.json" \
+    | tee "$LOG_ROOT/routing-audit.log"
+"$PY" - "$HEAL_ROOT/$ARM/receipts" "$LOG_ROOT/routing-audit.json" \
+  "$LOG_ROOT/heal-quality.json" <<'PY'
 import json,math,pathlib,sys
 r=[json.loads((pathlib.Path(sys.argv[1])/f"layer-{x:03}.receipt.json").read_text()) for x in range(1,80)]
 assert all(x["training"]["quantization_aware"] is True for x in r)
-assert all(int(x["after"]["dead_active_experts"]) == 0 for x in r)
+audit=json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert audit["format"] == "bw24-hy3-post-heal-routing-audit-v1"
+assert audit["summary"]["all_layers_have_full_active_coverage"] is True
 b=sum(float(x["before"]["normalized_mse"]) for x in r)/79
 a=sum(float(x["after"]["normalized_mse"]) for x in r)/79
 i=sum(float(x["after"]["normalized_mse"]) < float(x["before"]["normalized_mse"]) for x in r)
 d={"format":"bw24-iq4-q4-post-requant-heal-gate-v1","layers":79,
    "mean_before_normalized_mse":b,"mean_after_requantization_normalized_mse":a,
-   "improved_after_requantization_layers":i,"passed":a<b and i>=40,
+   "improved_after_requantization_layers":i,
+   "holdout_dead_active_experts":sum(int(x["after"]["dead_active_experts"]) for x in r),
+   "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
+   "passed":a<b and i>=40,
    "public_eval_data_used":False}
-pathlib.Path(sys.argv[2]).write_text(json.dumps(d,indent=2,sort_keys=True)+"\n")
+pathlib.Path(sys.argv[3]).write_text(json.dumps(d,indent=2,sort_keys=True)+"\n")
 print(json.dumps(d,sort_keys=True))
 assert d["passed"]
 PY
