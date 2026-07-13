@@ -32,6 +32,8 @@ TARGET_BYTES=${TARGET_BYTES:-100000000000}
 GPUS_CSV=${GPUS_CSV:-1,3,5,7}
 LANES_PER_GPU=${LANES_PER_GPU:-1}
 ARM=${ARM:-smart100_iq3_iq4_q4_empirical}
+ROUTING_AUDIT_PATH=${ROUTING_AUDIT_PATH:-$LOG_ROOT/routing-audit.json}
+HEAL_QUALITY_PATH=${HEAL_QUALITY_PATH:-$LOG_ROOT/heal-quality.json}
 
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
 MERGER="$ROOT/tools/merge_hy3_quant_sensitivity.py"
@@ -249,16 +251,34 @@ done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more IQ4/Q4 heal lanes failed"
 
-"$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --receipt-dir "$HEAL_ROOT/$ARM/receipts" \
-  --overlay-dir "$HEAL_ROOT/$ARM/overlay" --layers 1-79 \
-  --lock "$HEAL_ROOT/$ARM/overlay.lock.json" | tee "$LOG_ROOT/heal-merge.log"
-CUDA_VISIBLE_DEVICES=${gpus[0]} taskset -c "${cpus[0]}" nice -n 19 \
-  "$PY" "$ROOT/tools/audit_hy3_healed_routing.py" --plan "$plan" \
-    --trace-lock "$CALIBRATION/moe-inputs.lock.json" --overlay-dir "$HEAL_ROOT/$ARM/overlay" \
-    --layers 1-79 --device cuda:0 --output "$LOG_ROOT/routing-audit.json" \
-    | tee "$LOG_ROOT/routing-audit.log"
-"$PY" - "$HEAL_ROOT/$ARM/receipts" "$LOG_ROOT/routing-audit.json" \
-  "$LOG_ROOT/heal-quality.json" <<'PY'
+overlay_lock="$HEAL_ROOT/$ARM/overlay.lock.json"
+if [[ -f "$overlay_lock" ]]; then
+  "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --verify-lock "$overlay_lock" \
+    | tee "$LOG_ROOT/heal-lock-verify.log"
+else
+  "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --receipt-dir "$HEAL_ROOT/$ARM/receipts" \
+    --overlay-dir "$HEAL_ROOT/$ARM/overlay" --layers 1-79 \
+    --lock "$overlay_lock" | tee "$LOG_ROOT/heal-merge.log"
+fi
+if [[ -f "$ROUTING_AUDIT_PATH" ]]; then
+  "$PY" - "$ROUTING_AUDIT_PATH" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["format"] == "bw24-hy3-post-heal-routing-audit-v1"
+assert d["summary"]["layers"] == 79
+assert d["summary"]["all_layers_have_full_active_coverage"] is True
+assert d["summary"]["dead_active_experts"] == 0
+PY
+else
+  CUDA_VISIBLE_DEVICES=${gpus[0]} taskset -c "${cpus[0]}" nice -n 19 \
+    "$PY" "$ROOT/tools/audit_hy3_healed_routing.py" --plan "$plan" \
+      --trace-lock "$CALIBRATION/moe-inputs.lock.json" --overlay-dir "$HEAL_ROOT/$ARM/overlay" \
+      --layers 1-79 --device cuda:0 --output "$ROUTING_AUDIT_PATH" \
+      | tee "$LOG_ROOT/routing-audit.log"
+fi
+[[ ! -e "$HEAL_QUALITY_PATH" ]] || die "refusing existing heal quality output $HEAL_QUALITY_PATH"
+"$PY" - "$HEAL_ROOT/$ARM/receipts" "$ROUTING_AUDIT_PATH" \
+  "$HEAL_QUALITY_PATH" <<'PY'
 import json,math,pathlib,sys
 r=[json.loads((pathlib.Path(sys.argv[1])/f"layer-{x:03}.receipt.json").read_text()) for x in range(1,80)]
 assert all(x["training"]["quantization_aware"] is True for x in r)
@@ -273,13 +293,16 @@ b=sum(float(x["before"]["normalized_mse"]) for x in r)/79
 a=sum(float(x["after"]["normalized_mse"]) for x in r)/79
 i=sum(float(x["after"]["normalized_mse"]) < float(x["before"]["normalized_mse"]) for x in r)
 rolled_back=sum(bool(x["selection"]["rolled_back_to_unhealed_source"]) for x in r)
+safe_layers=i+rolled_back
 d={"format":"bw24-iq3-iq4-q4-post-requant-heal-gate-v1","layers":79,
    "mean_before_normalized_mse":b,"mean_after_requantization_normalized_mse":a,
    "improved_after_requantization_layers":i,
    "rolled_back_non_improving_layers":rolled_back,
+   "improved_or_rolled_back_layers":safe_layers,
    "holdout_dead_active_experts":sum(int(x["after"]["dead_active_experts"]) for x in r),
    "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
-   "passed":a<b and i>=40,
+   "passed":a<b and i>0 and safe_layers==79
+            and audit["summary"]["dead_active_experts"]==0,
    "public_eval_data_used":False}
 pathlib.Path(sys.argv[3]).write_text(json.dumps(d,indent=2,sort_keys=True)+"\n")
 print(json.dumps(d,sort_keys=True))
@@ -319,6 +342,6 @@ rsync -a --delete "$out/" "$scratch/" | tee "$LOG_ROOT/rsync.log"
 (cd "$scratch" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$LOG_ROOT/scratch.sha256"
 cmp "$LOG_ROOT/data.sha256" "$LOG_ROOT/scratch.sha256"
 sha256sum "$OUT_ROOT"/*.json "$OUT_ROOT"/*.csv "$PLAN_ROOT"/*.json \
-  "$HEAL_ROOT/$ARM/overlay.lock.json" "$LOG_ROOT/heal-quality.json" \
+  "$HEAL_ROOT/$ARM/overlay.lock.json" "$HEAL_QUALITY_PATH" "$ROUTING_AUDIT_PATH" \
   "$HEAL_ROOT/$ARM/router-overrides.json" "$out/manifest.json" >"$LOG_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"

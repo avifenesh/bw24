@@ -135,11 +135,75 @@ def merge(args: argparse.Namespace) -> dict:
     return lock
 
 
+def verify_lock(path: Path) -> dict:
+    lock = json.loads(path.read_text())
+    if lock.get("format") != LOCK_FORMAT:
+        raise ValueError("wrong heal overlay lock format")
+    if lock.get("public_eval_data_used_for_healing") is not False:
+        raise ValueError("heal overlay lock does not preserve private-only provenance")
+    layers = [int(layer) for layer in lock["layers"]]
+    if len(layers) != len(set(layers)) or not layers:
+        raise ValueError("heal overlay lock has duplicate or empty layers")
+    source = lock["source"]
+    source_dir = Path(source["directory"])
+    if sha256(source_dir / "config.json") != source["config_sha256"]:
+        raise ValueError("heal overlay source config changed")
+    if sha256(source_dir / "model.safetensors.index.json") != source["index_sha256"]:
+        raise ValueError("heal overlay source index changed")
+    overlay = lock["overlay"]
+    overlay_dir = Path(overlay["directory"])
+    if sha256(overlay_dir / "config.json") != overlay["config_sha256"]:
+        raise ValueError("heal overlay config changed")
+    if sha256(overlay_dir / "model.safetensors.index.json") != overlay["index_sha256"]:
+        raise ValueError("heal overlay index changed")
+    seen_layers: set[int] = set()
+    tensor_count = 0
+    total_bytes = 0
+    for item in lock["shards"]:
+        layer = int(item["layer"])
+        if layer in seen_layers:
+            raise ValueError(f"duplicate heal shard layer {layer}")
+        seen_layers.add(layer)
+        receipt_path = Path(item["receipt_path"])
+        if sha256(receipt_path) != item["receipt_sha256"]:
+            raise ValueError(f"heal receipt changed for layer {layer}")
+        receipt = json.loads(receipt_path.read_text())
+        if receipt.get("format") != RECEIPT_FORMAT or int(receipt["layer"]) != layer:
+            raise ValueError(f"invalid heal receipt for layer {layer}")
+        if receipt.get("public_eval_data_used_for_healing") is not False:
+            raise ValueError(f"heal receipt lacks private-only provenance for layer {layer}")
+        if any(receipt.get(key) != lock[key] for key in ("mode", "plan", "scores", "training")):
+            raise ValueError(f"heal receipt configuration differs for layer {layer}")
+        if (
+            Path(receipt["source_dir"]).resolve() != source_dir.resolve()
+            or receipt["source_config_sha256"] != source["config_sha256"]
+            or receipt["source_index_sha256"] != source["index_sha256"]
+        ):
+            raise ValueError(f"heal receipt source differs for layer {layer}")
+        output = receipt["output"]
+        if output != item["shard"]:
+            raise ValueError(f"heal shard receipt differs from lock for layer {layer}")
+        shard = Path(output["path"])
+        if shard.parent.resolve() != overlay_dir.resolve():
+            raise ValueError(f"heal shard is outside overlay for layer {layer}")
+        if shard.stat().st_size != int(output["bytes"]) or sha256(shard) != output["sha256"]:
+            raise ValueError(f"heal shard changed for layer {layer}")
+        tensor_count += int(output["tensor_count"])
+        total_bytes += int(output["bytes"])
+    if seen_layers != set(layers):
+        raise ValueError("heal overlay lock layer coverage differs from shards")
+    if tensor_count != int(overlay["tensor_count"]) or total_bytes != int(overlay["bytes"]):
+        raise ValueError("heal overlay totals differ from shard receipts")
+    return lock
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="bw24-heal-merge-") as tmp:
         root = Path(tmp)
         source, overlay, receipt_dir = root / "source", root / "overlay", root / "receipts"
-        source.mkdir(); overlay.mkdir(); receipt_dir.mkdir()
+        source.mkdir()
+        overlay.mkdir()
+        receipt_dir.mkdir()
         (source / "config.json").write_text("{}\n")
         (source / "model.safetensors.index.json").write_text("{}\n")
         common = {
@@ -173,15 +237,32 @@ def self_test() -> None:
         lock = merge(args)
         assert lock["overlay"]["tensor_count"] == 2
         assert lock["quality"]["improved_layers"] == 2
+        assert verify_lock(args.lock) == lock
+        shard = overlay / "layer-001.safetensors"
+        original = shard.read_bytes()
+        shard.write_bytes(original + b"changed")
+        try:
+            verify_lock(args.lock)
+        except ValueError as error:
+            assert "shard changed" in str(error)
+        else:
+            raise AssertionError("heal overlay verifier accepted changed shard")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--receipt-dir", type=Path, required=True)
-    parser.add_argument("--overlay-dir", type=Path, required=True)
+    parser.add_argument("--receipt-dir", type=Path)
+    parser.add_argument("--overlay-dir", type=Path)
     parser.add_argument("--layers", default="1-79")
-    parser.add_argument("--lock", type=Path, required=True)
-    return parser.parse_args()
+    parser.add_argument("--lock", type=Path)
+    parser.add_argument("--verify-lock", type=Path)
+    args = parser.parse_args()
+    if args.verify_lock is not None:
+        if args.receipt_dir is not None or args.overlay_dir is not None or args.lock is not None:
+            parser.error("--verify-lock cannot be combined with merge arguments")
+    elif args.receipt_dir is None or args.overlay_dir is None or args.lock is None:
+        parser.error("merge requires --receipt-dir, --overlay-dir, and --lock")
+    return args
 
 
 def main() -> None:
@@ -190,6 +271,13 @@ def main() -> None:
         print("Hy3 heal shard merge self-test: PASS")
         return
     args = parse_args()
+    if args.verify_lock is not None:
+        lock = verify_lock(args.verify_lock)
+        print(
+            f"verified {args.verify_lock} sha256={sha256(args.verify_lock)} "
+            f"layers={len(lock['layers'])} tensors={lock['overlay']['tensor_count']}"
+        )
+        return
     lock = merge(args)
     print(
         f"wrote {args.lock} sha256={sha256(args.lock)} "
