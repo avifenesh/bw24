@@ -2839,6 +2839,7 @@ impl HybridModel {
             let mut cur = e.zeros(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             x = self.gemma4_layer_tail_add(e, layer, &cur, &x, t)?;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         cache.pos += t;
         let hiddens = e.clone_dtod(&x)?;
@@ -3316,6 +3317,7 @@ impl HybridModel {
             let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
             x = xn;
             h_carry = hn;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
@@ -3330,6 +3332,25 @@ impl HybridModel {
 
     /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
     /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
+    /// DFlash tap write (dflash lane): copy the post-layer residual rows of `x` into the
+    /// armed sink at the tap slot for `il` (row-major [t, n_taps*hidden]). Per-row D2D
+    /// copies — t <= block_size on verify; prime pays t*n_taps once per prompt (dedicated
+    /// kernel later if it shows in the profile).
+    fn dflash_tap(&self, e: &Engine, cache: &mut Cache, il: usize, x: &CudaSlice<f32>, t: usize)
+                  -> Result<(), Box<dyn std::error::Error>> {
+        let Some(taps) = cache.dflash_taps.as_mut() else { return Ok(()) };
+        let Some(slot) = taps.layer_ids.iter().position(|&l| l == il) else { return Ok(()) };
+        let h = taps.hidden;
+        let n_taps = taps.layer_ids.len();
+        debug_assert_eq!(taps.t, t);
+        let xv = e.view(x, t * h);
+        for r in 0..t {
+            let row = xv.slice(r * h..(r + 1) * h);
+            e.copy_view_into(&mut taps.buf, r * n_taps * h + slot * h, &row, h)?;
+        }
+        Ok(())
+    }
+
     fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
                            tok_dev: Option<&CudaSlice<u32>>)
                            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
@@ -3366,6 +3387,7 @@ impl HybridModel {
             let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
             x = xn;
             h_carry = hn;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
