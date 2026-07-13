@@ -77,6 +77,29 @@ def plan_summary(
     if directional is not None and int(directional["logical_model_bytes"]) != logical_bytes:
         raise ValueError(f"{name} directional artifact has different logical bytes")
     layers = plan["layer_summary"]
+    layer_qtypes: dict[str, dict[str, int]] = {}
+    projection_qtypes: dict[str, dict[str, int]] = {}
+    for assignment in plan["assignments"]:
+        layer = str(assignment["layer"])
+        qtype = str(assignment["qtype"])
+        count = len(assignment["experts"])
+        for projection in assignment["projections"]:
+            layer_counts = layer_qtypes.setdefault(layer, {})
+            layer_counts[qtype] = layer_counts.get(qtype, 0) + count
+            projection_counts = projection_qtypes.setdefault(projection, {})
+            projection_counts[qtype] = projection_counts.get(qtype, 0) + count
+    derived_qtypes: dict[str, int] = {}
+    for counts in layer_qtypes.values():
+        for qtype, count in counts.items():
+            derived_qtypes[qtype] = derived_qtypes.get(qtype, 0) + count
+    policy_qtypes = {
+        str(qtype): int(count)
+        for qtype, count in plan["policy"]["qtype_projection_counts"].items()
+    }
+    for qtype in policy_qtypes:
+        derived_qtypes.setdefault(qtype, 0)
+    if derived_qtypes != policy_qtypes:
+        raise ValueError(f"{name} assignment counts do not match policy summary")
     return {
         "arm": arm,
         "plan": source(path),
@@ -88,9 +111,17 @@ def plan_summary(
         "minimum_survivors_in_layer": min(int(row["retained"]) for row in layers.values()),
         "maximum_pruned_in_layer": max(int(row["pruned"]) for row in layers.values()),
         "qtype_projection_counts": plan["policy"]["qtype_projection_counts"],
+        "projection_qtype_counts": projection_qtypes,
+        "layer_qtype_projection_counts": layer_qtypes,
+        "layer_retention": {
+            layer: {"retained": int(row["retained"]), "pruned": int(row["pruned"])}
+            for layer, row in layers.items()
+        },
         "private_total_additive_damage": float(plan_damage["total_additive_damage"]),
         "private_prune_damage": float(plan_damage["prune_damage"]),
         "private_retained_quant_damage": float(plan_damage["retained_quant_damage"]),
+        "private_projection_quant_damage": plan_damage["projection_quant_damage"],
+        "private_top_damage_cells": plan_damage["top_damage_cells"],
         "directional": (
             {
                 "domain_macro": float(directional["domain_macro"]),
@@ -203,7 +234,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "format_totals": effects["format_totals"],
             "format_pairwise": effects["format_pairwise"],
             "equal_byte_pair_summary": effects["equal_byte_pair_summary"],
+            "projection_damage": effects["projection_damage"],
+            "layer_damage": effects["layer_damage"],
+            "layer_projection_damage": effects["layer_projection_damage"],
             "error_concentration": effects["error_concentration"],
+            "top_sensitive_experts": effects["top_sensitive_experts"][:50],
             "top_sensitive_functions": effects["top_sensitive_functions"][:20],
             "best_precision_upgrades": effects["best_precision_upgrades"][:20],
         },
@@ -249,6 +284,22 @@ def markdown(result: dict[str, Any]) -> str:
             f"{item['pruned_experts']:,} | {item['minimum_survivors_in_layer']} | "
             f"{item['private_total_additive_damage']:.8g} |"
         )
+    measured_plan = winner["measured_global_plan"]
+    if measured_plan is not None:
+        counts = ", ".join(
+            f"{qtype}={count:,}"
+            for qtype, count in sorted(measured_plan["qtype_projection_counts"].items())
+        )
+        lines += [
+            "",
+            "## Recommended measured allocation",
+            "",
+            f"- Retained/pruned experts: {measured_plan['retained_experts']:,} / "
+            f"{measured_plan['pruned_experts']:,}",
+            f"- Projection cells by format: {counts}",
+            f"- Private additive damage: "
+            f"{measured_plan['private_total_additive_damage']:.8g}",
+        ]
     lines += [
         "",
         "The allocation/healing map used only frozen private calibration. Public tasks were used "
@@ -292,19 +343,26 @@ def self_test() -> None:
                 "calibration": {"public_eval_data_used_for_selection": False},
                 "selection": {"retained_experts": 100, "pruned_experts": 92},
                 "layer_summary": layer_summary,
+                "assignments": [{"layer": 1, "experts": list(range(100)),
+                                 "projections": ["gate", "up", "down"],
+                                 "qtype": "Q2_K"}],
             })
             plans[name] = (arm, path, size)
         damage_plans = {
             name: {"sha256": sha256(path), "logical_bytes": size,
                    "total_additive_damage": float(size), "prune_damage": 1.0,
-                   "retained_quant_damage": float(size-1)}
+                   "retained_quant_damage": float(size-1),
+                   "projection_quant_damage": {"gate": 1.0, "up": 2.0, "down": 3.0},
+                   "top_damage_cells": []}
             for name, (_, path, size) in plans.items()
         }
         effects = write("effects.json", {
             "format": "bw24-hy3-quant-effects-map-v1", "public_eval_data_used_for_selection": False,
             "measurement": {"qtypes": ["Q8_0","NVFP4","IQ4_XS","Q4_K","IQ3_S","Q3_K","Q2_K"]},
             "format_totals": {}, "format_pairwise": [], "equal_byte_pair_summary": [],
-            "error_concentration": {}, "top_sensitive_functions": [], "best_precision_upgrades": [],
+            "projection_damage": {}, "layer_damage": [], "layer_projection_damage": [],
+            "error_concentration": {}, "top_sensitive_experts": [],
+            "top_sensitive_functions": [], "best_precision_upgrades": [],
         })
         damage = write("damage.json", {"format":"bw24-hy3-quant-plan-damage-v1",
             "public_eval_data_used":False,"lowest_private_damage_plan":"centered",
