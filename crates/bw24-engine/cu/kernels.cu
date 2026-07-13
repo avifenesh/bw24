@@ -1587,6 +1587,27 @@ extern "C" __global__ void tok_map_u32(unsigned int* __restrict__ tok,
     if (threadIdx.x == 0) tok[0] = map[tok[0]];
 }
 
+// DSpark semi-AR markov head (dflash lane, 2026-07-13): gather ONE bf16 row of
+// markov_w1 [V, rank] by a DEVICE token id into f32 (the rank-256 step vector). The
+// sequential draft chain stays on-device (no per-position dtoh).
+extern "C" __global__ void gather_row_bf16_f32(const unsigned short* __restrict__ table,
+                                               const unsigned int* __restrict__ tok, int idx,
+                                               float* __restrict__ dst, int ncols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < ncols) {
+        unsigned short h = table[(size_t)tok[idx] * ncols + i];
+        dst[i] = __uint_as_float(((unsigned int)h) << 16);
+    }
+}
+
+// bias add on ONE logits row: logits[row0*V .. +V] += bias[0..V]
+extern "C" __global__ void add_row_inplace_f32(float* __restrict__ logits,
+                                               const float* __restrict__ bias,
+                                               int n, long row_off) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) logits[row_off + i] += bias[i];
+}
+
 // LATENCY-HIDING ARC (owner angles, 2026-07-10): L2 prefetch of a byte range — issued 1-2
 // kernels ahead of the consumer (fa's KV stream), so the latency-bound consumer finds its
 // lines L2-warm. Pure scheduling: touches no values, changes no numeric config.

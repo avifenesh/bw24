@@ -801,6 +801,35 @@ impl Engine {
         Ok(())
     }
 
+    /// DSpark markov chain ops (dflash lane): gather one bf16 row of a [V, rank] table
+    /// by the DEVICE token id at tok[idx] into f32.
+    pub fn gather_row_bf16(&self, table: &CudaSlice<u8>, tok: &CudaSlice<u32>, idx: usize,
+                           dst: &mut CudaSlice<f32>, ncols: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gather_row_bf16_f32");
+        let cfg = LaunchConfig { grid_dim: (ncols.div_ceil(256) as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (nc, ix) = (ncols as i32, idx as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(table).arg(tok).arg(&ix).arg(dst).arg(&nc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// logits[row_off .. row_off+n] += bias[0..n] (in place, one row).
+    pub fn add_row_inplace(&self, logits: &mut CudaSlice<f32>, bias: &CudaSlice<f32>,
+                           n: usize, row_off: usize)
+                           -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("add_row_inplace_f32");
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(256) as u32, 1, 1),
+                                 block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let (ni, off) = (n as i32, row_off as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(logits).arg(bias).arg(&ni).arg(&off);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// L2 prefetch of a device byte range (latency-hiding arc; value-free scheduling op).
     pub fn prefetch_l2(&self, p: &CudaSlice<u8>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("prefetch_l2_bytes");

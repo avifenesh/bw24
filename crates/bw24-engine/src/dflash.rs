@@ -50,6 +50,18 @@ pub struct DflashDraft {
     pub fc: GpuTensor,               // [hidden, n_taps*hidden]
     pub hidden_norm: CudaSlice<f32>, // [hidden]
     pub norm: CudaSlice<f32>,        // [hidden]
+    /// DSpark semi-AR markov head (present in the repo-root checkpoint variant):
+    /// draft logits at position k get + W2(W1[prev_realized_token]) — left-to-right
+    /// within the block (the patch's _markov_semiar_sample_block semantics, greedy).
+    /// w1 = raw bf16 [V, rank] (row-gathered by device token id); w2 = q8_0 [rank->V].
+    pub markov: Option<MarkovHead>,
+}
+
+pub struct MarkovHead {
+    pub w1_bf16: CudaSlice<u8>,   // [V, rank] bf16 raw
+    pub w2: GpuTensor,            // [rank -> V] q8_0
+    pub rank: usize,
+    pub vocab: usize,
 }
 
 fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
@@ -216,12 +228,33 @@ impl DflashDraft {
                 k_norm: up(&p("self_attn.k_norm.weight"))?,
             });
         }
+        let markov = if let Some((info, bytes)) = st.raw("markov_head.markov_w1.weight") {
+            let sh = info.ne(); // [rank, vocab] in ggml order (safetensors [V, rank] reversed)
+            let (rank, vocab) = (sh[0] as usize, sh[1] as usize);
+            let (_i2, b2) = st.raw("markov_head.markov_w2.weight")
+                .ok_or("markov_w2 missing beside markov_w1")?;
+            let w2f = bf16_to_f32(b2);
+            let w2q = encode_q8_0(&w2f);
+            Some(MarkovHead {
+                w1_bf16: e.upload_u8(bytes)?,
+                w2: GpuTensor::Quant {
+                    bytes: e.upload_u8(&w2q)?, qtype: crate::QT_Q8_0,
+                    row_bytes: rank / 32 * 34, ne: vec![rank as u64, vocab as u64],
+                    scale: 1.0, rp: false,
+                    #[cfg(bw24_cutlass)]
+                    cutlass: None,
+                    fp8: None, rp4: None,
+                },
+                rank, vocab,
+            })
+        } else { None };
         Ok(Self {
             fc: upw("fc.weight")?,
             hidden_norm: up("hidden_norm.weight")?,
             norm: up("norm.weight")?,
             cfg,
             layers,
+            markov,
         })
     }
 
@@ -564,8 +597,12 @@ impl crate::hybrid::HybridModel {
         // (65ms/verify) while b8 rides the tuned r2 tier; with ~2.7 committed/round the
         // deep block positions almost never survive anyway. Exactness unaffected (verify
         // still decides every committed token).
-        let vt: usize = std::env::var("BW24_DFLASH_VERIFY_T").ok()
+        let vt_cap: usize = std::env::var("BW24_DFLASH_VERIFY_T").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(8).clamp(2, b);
+        // adaptive verify width (BW24_DFLASH_ADAPT!=0, MTP accepted+1 recipe): next round
+        // verifies one past this round's accepted run, clamped [3, cap].
+        let adapt = std::env::var("BW24_DFLASH_ADAPT").as_deref() != Ok("0");
+        let mut vt = vt_cap;
         let mut attempted = 0usize;
         let mut accepted = 0usize;
         // The whole round runs in the decode-exact matmul scope: the m=16 draft mms were
@@ -595,12 +632,30 @@ impl crate::hybrid::HybridModel {
                 let tail = dv.slice(n_embd..b * n_embd);
                 e.copy_view_into(&mut rows, 0, &tail, (b - 1) * n_embd)?;
             }
-            let dl = e.matmul(&self.output, &rows, b - 1)?;
-            let mut dtoks_d = e.stream().alloc_zeros::<u32>(b - 1)?;
-            for i in 0..(b - 1) {
-                e.argmax_token_device_col(&dl, i, n_vocab, &mut dtoks_d, i)?;
+            let mut dl = e.matmul(&self.output, &rows, b - 1)?;
+            // SEMI-AR MARKOV CHAIN (DSpark head, when present + BW24_DFLASH_MARKOV!=0):
+            // left-to-right, logits_k += W2(W1[prev realized token]) — the whole chain
+            // stays on-device (chain_d[0] = the pending token; argmax k writes
+            // chain_d[k+1], the k+1 bias gathers from it). Greedy mirror of the patch's
+            // _markov_semiar_sample_block.
+            let markov_on = std::env::var("BW24_DFLASH_MARKOV").as_deref() != Ok("0");
+            let mut chain_d = e.stream().alloc_zeros::<u32>(b)?;
+            if let (Some(mk), true) = (&draft.markov, markov_on) {
+                e.set_u32_one(&mut chain_d, last)?;
+                for k in 0..(b - 1) {
+                    let mut f = e.uninit(mk.rank)?;
+                    e.gather_row_bf16(&mk.w1_bf16, &chain_d, k, &mut f, mk.rank)?;
+                    let bias = e.matmul(&mk.w2, &f, 1)?;
+                    e.add_row_inplace(&mut dl, &bias, n_vocab, k * n_vocab)?;
+                    e.argmax_token_device_col(&dl, k, n_vocab, &mut chain_d, k + 1)?;
+                }
+            } else {
+                for i in 0..(b - 1) {
+                    e.argmax_token_device_col(&dl, i, n_vocab, &mut chain_d, i + 1)?;
+                }
             }
-            let dtoks = e.dtoh_u32(&dtoks_d)?;
+            let chain = e.dtoh_u32(&chain_d)?;
+            let dtoks = &chain[1..];
             for (i, &dt) in dtoks.iter().enumerate() { block[i + 1] = dt; }
             let dbg = std::env::var("BW24_DFLASH_DEBUG").as_deref() == Ok("1");
 
@@ -652,6 +707,7 @@ impl crate::hybrid::HybridModel {
                 ctx_len += keep;
             }
             last = next;
+            if adapt { vt = (m + 2).clamp(3, vt_cap); }
         }
         e.set_verify_exact(false);
         if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
