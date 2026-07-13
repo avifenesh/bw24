@@ -2626,7 +2626,20 @@ impl HybridModel {
                              e.matmul_pre(ffn_up, &zq, &zd, &zsh, 1)?),
                 }
             } else {
-                (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
+                // BATCHED FUSED2 (DEFAULT ON 2026-07-13, BW24_F2B=0 seam): one segmented
+                // launch for the verify's gate+up — the up segment's blocks fill SMs as
+                // the gate segment drains (the launch-tail mechanism behind the b-tier
+                // plateau; first positive after six falsified in-kernel variants).
+                static F2B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let f2b = *F2B.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+                let fused = if f2b {
+                    let (zq, zd) = e.quantize_q8_1(&zsh, t, n_embd)?;
+                    e.matmul_q4_fused2_batched(ffn_gate, ffn_up, &zq, &zd, t)?
+                } else { None };
+                match fused {
+                    Some(p) => p,
+                    None => (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?),
+                }
             };
             let mut act = e.uninit(t * n_ff)?;
             // act quantize folds into the GELU epilogue (bit-identical q8_1 rounding);
@@ -3415,9 +3428,32 @@ impl HybridModel {
         let aux = self.gemma4_aux.as_ref().unwrap();
         let h0 = e.zeros(0)?;
         let h = &h0;
-        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        // BATCHED FUSED qkv (BW24_F2B=1, megakernel microcosm): swa layers fuse all three,
+        // globals fuse q,k (v := k clone). Bit-identical per row; segments tail-fill.
+        static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let f2b = *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+        let fused_qkv = if f2b {
+            if swa {
+                e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    .map(|(a, b, c)| (a, b, Some(c)))
+            } else {
+                e.matmul_q4_fused2_batched(&fa.wq, &fa.wk, hq, hdq, t)?
+                    .map(|(a, b)| (a, b, None))
+            }
+        } else { None };
+        let (q0, k0, v0) = match fused_qkv {
+            Some((a, b, cv)) => {
+                let v = match cv { Some(c) => c, None => e.clone_dtod(&b)? };
+                (a, b, v)
+            }
+            None => {
+                let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+                let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+                let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? }
+                         else { e.clone_dtod(&k0)? };
+                (q0, k0, v0)
+            }
+        };
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
@@ -3503,9 +3539,32 @@ impl HybridModel {
 
         let h0 = e.zeros(0)?;
         let h = &h0;
-        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        // BATCHED FUSED qkv (BW24_F2B=1, megakernel microcosm): swa layers fuse all three,
+        // globals fuse q,k (v := k clone). Bit-identical per row; segments tail-fill.
+        static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let f2b = *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+        let fused_qkv = if f2b {
+            if swa {
+                e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    .map(|(a, b, c)| (a, b, Some(c)))
+            } else {
+                e.matmul_q4_fused2_batched(&fa.wq, &fa.wk, hq, hdq, t)?
+                    .map(|(a, b)| (a, b, None))
+            }
+        } else { None };
+        let (q0, k0, v0) = match fused_qkv {
+            Some((a, b, cv)) => {
+                let v = match cv { Some(c) => c, None => e.clone_dtod(&b)? };
+                (a, b, v)
+            }
+            None => {
+                let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+                let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+                let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? }
+                         else { e.clone_dtod(&k0)? };
+                (q0, k0, v0)
+            }
+        };
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
