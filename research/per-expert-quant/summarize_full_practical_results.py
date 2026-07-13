@@ -53,6 +53,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
     require(bool(receipt_paths), f"no full practical receipts under {run_dir}")
     rewards: dict[str, float] = {}
     digests: dict[str, str] = {}
+    timeouts: dict[str, bool] = {}
     reference: dict[str, Any] | None = None
     artifact_bytes: int | None = None
     elapsed_total = 0.0
@@ -130,19 +131,35 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
                 require(receipt.get(key) == reference.get(key), f"shards differ on {key}")
         observed: dict[str, str] = {}
         shard_solved = 0.0
+        shard_timeouts = 0
         for row in trials:
             task, task_digest, reward = row.get("task"), row.get("task_digest"), row.get("reward")
             require(isinstance(task, str) and task not in rewards and task not in observed, f"duplicate task: {shard}")
-            require(isinstance(task_digest, str) and task_digest and isinstance(reward, (int, float)) and not isinstance(reward, bool) and math.isfinite(reward), f"bad trial: {shard}")
+            timed_out = row.get("timed_out")
+            require(
+                isinstance(task_digest, str) and task_digest
+                and isinstance(reward, (int, float)) and not isinstance(reward, bool)
+                and math.isfinite(reward) and isinstance(timed_out, bool)
+                and (not timed_out or float(reward) == 0.0),
+                f"bad trial: {shard}",
+            )
             observed[task] = task_digest
             rewards[task] = float(reward)
             digests[task] = task_digest
+            timeouts[task] = timed_out
             shard_solved += float(reward)
+            shard_timeouts += int(timed_out)
         require(observed == selected, f"selected task/digest set differs: {shard}")
         require(math.isclose(shard_solved, float(receipt.get("solved")), abs_tol=1e-12), f"solved differs: {shard}")
+        require(receipt.get("timed_out") == shard_timeouts, f"timeout count differs: {shard}")
     require(digests == expected_map, f"full task union differs: {run_dir}")
     assert reference is not None and artifact_bytes is not None
-    return {"arm": reference["arm"], "artifact_bytes": artifact_bytes, "elapsed_seconds": elapsed_total, "rewards": rewards, "task_digests": digests, "receipt": reference}
+    return {
+        "arm": reference["arm"], "artifact_bytes": artifact_bytes,
+        "elapsed_seconds": elapsed_total, "rewards": rewards,
+        "timeouts": timeouts, "timeout_count": sum(timeouts.values()),
+        "task_digests": digests, "receipt": reference,
+    }
 
 
 def compare(
@@ -163,16 +180,22 @@ def compare(
         wins += delta > 0
         losses += delta < 0
         ties += delta == 0
-        tasks.append({"task": task, "baseline_reward": base, "candidate_reward": cand, "delta": delta})
+        tasks.append({
+            "task": task, "baseline_reward": base, "candidate_reward": cand,
+            "delta": delta, "baseline_timed_out": baseline["timeouts"][task],
+            "candidate_timed_out": candidate["timeouts"][task],
+        })
     n = len(tasks)
     return {
         "format": "bw24-full-practical-comparison-v1", "panel": panel, "n_tasks": n,
         "baseline": {"arm": baseline["arm"], "solved": sum(baseline["rewards"].values()),
                      "rate": sum(baseline["rewards"].values()) / n,
-                     "artifact_bytes": baseline["artifact_bytes"], "elapsed_seconds": baseline["elapsed_seconds"]},
+                     "artifact_bytes": baseline["artifact_bytes"], "elapsed_seconds": baseline["elapsed_seconds"],
+                     "timed_out": baseline["timeout_count"]},
         "candidate": {"arm": candidate["arm"], "solved": sum(candidate["rewards"].values()),
                       "rate": sum(candidate["rewards"].values()) / n,
-                      "artifact_bytes": candidate["artifact_bytes"], "elapsed_seconds": candidate["elapsed_seconds"]},
+                      "artifact_bytes": candidate["artifact_bytes"], "elapsed_seconds": candidate["elapsed_seconds"],
+                      "timed_out": candidate["timeout_count"]},
         "candidate_solved_delta": sum(candidate["rewards"].values()) - sum(baseline["rewards"].values()),
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties, "tasks": tasks,
         "note": "Complete digest-pinned Harbor suite with one attempt per task.",

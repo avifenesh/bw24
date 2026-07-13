@@ -22,6 +22,8 @@ CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-center
 PARETO_ART_ROOT=${PARETO_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
+SWE_PILOT_TASK=${SWE_PILOT_TASK:-}
+TERMINAL_PILOT_TASK=${TERMINAL_PILOT_TASK:-}
 
 die() { echo "error: $*" >&2; exit 2; }
 
@@ -40,6 +42,25 @@ value = float(sys.argv[1])
 if not 0.5 <= value < 0.9:
     raise SystemExit("VRAM_FRAC must be in [0.5, 0.9)")
 PY
+readarray -t PILOT_TASKS < <(python3 - "$PRACTICAL_LOCK" "$SWE_PILOT_TASK" "$TERMINAL_PILOT_TASK" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1]))
+overrides = {"swe": sys.argv[2], "terminal": sys.argv[3]}
+for panel in ("swe", "terminal"):
+    available = (
+        {row["harbor_task"] for row in lock["swe_bench_verified"]["tasks"]}
+        if panel == "swe"
+        else {row["name"] for row in lock["terminal_bench_2"]["tasks"]}
+    )
+    task = overrides[panel] or lock["protocol"]["pilot_tasks"][panel]
+    if task not in available:
+        raise SystemExit(f"{panel} pilot is outside the frozen panel")
+    print(task)
+PY
+)
+(( ${#PILOT_TASKS[@]} == 2 )) || die "pilot task resolution failed"
+SWE_PILOT_TASK=${PILOT_TASKS[0]}
+TERMINAL_PILOT_TASK=${PILOT_TASKS[1]}
 
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
@@ -102,7 +123,7 @@ RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 [[ ! -e "$RUN_CONFIG" ]] || die "run config already exists"
 export RUN_ID PROMOTION GATE_LOCK PRACTICAL_LOCK SERVER_BIN HARBOR_BIN \
   CONFIRMATION_LOCK FRONTIER VRAM_FRAC IQ4_ART_ROOT
-export CENTERED_ART_ROOT PARETO_ART_ROOT
+export CENTERED_ART_ROOT PARETO_ART_ROOT SWE_PILOT_TASK TERMINAL_PILOT_TASK
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -115,6 +136,10 @@ payload = {
     "run_id": os.environ["RUN_ID"],
     "arms": arms,
     "panels": ["swe", "terminal"],
+    "pilot_tasks": {
+        "swe": os.environ["SWE_PILOT_TASK"],
+        "terminal": os.environ["TERMINAL_PILOT_TASK"],
+    },
     "protocol": "parallel unique localhost ports; one GPU and concurrency one per panel",
     "vram_fraction": float(os.environ["VRAM_FRAC"]),
     "directional_promotion": {"path": os.environ["PROMOTION"], "sha256": sha(os.environ["PROMOTION"])},
@@ -221,8 +246,11 @@ run_panel() (
   [[ -f "$arm_log/health.json" ]] || die "$arm practical server health timeout"
 
   local pilot_task pilot_root
-  pilot_task=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["pilot_tasks"][sys.argv[2]])' \
-    "$PRACTICAL_LOCK" "$panel")
+  if [[ "$panel" == swe ]]; then
+    pilot_task=$SWE_PILOT_TASK
+  else
+    pilot_task=$TERMINAL_PILOT_TASK
+  fi
   pilot_root="$OUT_ROOT/_pilots"
   taskset -c "$cpus" env \
     HOME="$HARBOR_HOME" PATH="$USER_PATH" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
@@ -234,7 +262,7 @@ run_panel() (
     "$HERE/run_practical_evals.sh" | tee "$arm_log/$panel-pilot.log"
   python3 "$HERE/validate_practical_pilot.py" \
     --run-dir "$pilot_root/$arm/$panel/$RUN_ID" --lock "$PRACTICAL_LOCK" \
-    --arm "$arm" --panel "$panel" \
+    --arm "$arm" --panel "$panel" --expected-task "$pilot_task" \
     | tee "$pilot_root/$arm/$panel/$RUN_ID/pilot-validation.json"
 
   taskset -c "$cpus" env \

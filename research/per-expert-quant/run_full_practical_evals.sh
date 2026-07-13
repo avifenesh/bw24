@@ -247,11 +247,24 @@ stats = result.get("stats", {})
 if not (
     result.get("n_total_trials") == expected
     and stats.get("n_completed_trials") == expected
-    and stats.get("n_errored_trials") == 0
     and stats.get("n_cancelled_trials") == 0
+    and stats.get("n_running_trials", 0) == 0
+    and stats.get("n_pending_trials", 0) == 0
     and stats.get("n_retries") == 0
 ):
     raise SystemExit("Harbor full-suite completion counts differ")
+
+def is_agent_timeout(exception):
+    return (
+        isinstance(exception, dict)
+        and exception.get("exception_type") == "AgentTimeoutError"
+        and isinstance(exception.get("exception_message"), str)
+        and exception["exception_message"].startswith("Agent execution timed out after ")
+        and exception["exception_message"].endswith(" seconds")
+        and "harbor.trial.errors.AgentTimeoutError" in exception.get("exception_traceback", "")
+        and isinstance(exception.get("occurred_at"), str)
+    )
+
 trials = []
 trial_dirs = sorted(path for path in job.iterdir() if path.is_dir())
 if len(trial_dirs) != expected:
@@ -264,16 +277,29 @@ for trial_dir in trial_dirs:
     task = row.get("task_name")
     reward = row.get("verifier_result", {}).get("rewards", {}).get("reward")
     ref = row.get("task_id", {}).get("ref")
+    exception = row.get("exception_info")
+    timed_out = is_agent_timeout(exception)
+    agent = row.get("agent_info", {})
+    model = agent.get("model_info", {})
     if (
         not isinstance(task, str) or not task or not isinstance(ref, str) or not ref
-        or row.get("exception_info") is not None
+        or (exception is not None and not timed_out)
+        or agent.get("name") != "terminus-2"
+        or model.get("name") != metadata["arm"] or model.get("provider") != "openai"
         or not isinstance(reward, (int, float)) or isinstance(reward, bool)
         or not math.isfinite(float(reward)) or not 0 <= reward <= 1
+        or (timed_out and float(reward) != 0.0)
     ):
         raise SystemExit(f"invalid full practical trial {path}")
-    trials.append({"task": task, "task_digest": ref, "reward": float(reward), "result_sha256": sha(path)})
+    trials.append({
+        "task": task, "task_digest": ref, "reward": float(reward),
+        "timed_out": timed_out, "result_sha256": sha(path),
+    })
 if len(trials) != expected or len({row["task"] for row in trials}) != expected:
     raise SystemExit("full practical trial set differs")
+timeout_count = sum(row["timed_out"] for row in trials)
+if stats.get("n_errored_trials") != timeout_count:
+    raise SystemExit("Harbor full-suite error count differs from accepted timeouts")
 trials.sort(key=lambda row: row["task"])
 if {row["task"]: row["task_digest"] for row in trials} != selected:
     raise SystemExit("full practical task names/digests differ from selected lock")
@@ -291,7 +317,7 @@ metadata.update({
     "container_images_sha256": sha(root / "container-images.jsonl"),
     "harbor_result_sha256": sha(result_path), "validated_trials_sha256": sha(root / "validated-trials.json"),
     "spill_snapshot_end": end, "spill_delta": {key: end[key] - start[key] for key in keys},
-    "solved": sum(row["reward"] for row in trials),
+    "solved": sum(row["reward"] for row in trials), "timed_out": timeout_count,
 })
 metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 PY

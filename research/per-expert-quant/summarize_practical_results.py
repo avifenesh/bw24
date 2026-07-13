@@ -27,6 +27,18 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def is_agent_timeout(exception: object) -> bool:
+    return (
+        isinstance(exception, dict)
+        and exception.get("exception_type") == "AgentTimeoutError"
+        and isinstance(exception.get("exception_message"), str)
+        and exception["exception_message"].startswith("Agent execution timed out after ")
+        and exception["exception_message"].endswith(" seconds")
+        and "harbor.trial.errors.AgentTimeoutError" in exception.get("exception_traceback", "")
+        and isinstance(exception.get("occurred_at"), str)
+    )
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -142,17 +154,8 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     job_result = json.loads(job_result_path.read_text())
     stats = job_result.get("stats", {})
     require(job_result.get("n_total_trials") == len(expected), f"wrong total trials: {run_dir}")
-    require(
-        stats.get("n_completed_trials") == len(expected)
-        and stats.get("n_errored_trials") == 0
-        and stats.get("n_cancelled_trials") == 0
-        and stats.get("n_running_trials", 0) == 0
-        and stats.get("n_pending_trials", 0) == 0
-        and stats.get("n_retries") == 0,
-        f"Harbor job has incomplete/error/retry trials: {run_dir}",
-    )
-
     rewards: dict[str, float] = {}
+    timeouts: dict[str, bool] = {}
     trial_paths = sorted(path for path in job_dir.iterdir() if path.is_dir())
     require(len(trial_paths) == len(expected), f"wrong number of trial directories: {run_dir}")
     for trial_dir in trial_paths:
@@ -164,16 +167,38 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         require(task_name not in rewards, f"duplicate practical task {task_name}: {run_dir}")
         task_id = result.get("task_id", {})
         require(task_id.get("ref") == expected[task_name], f"task digest differs for {task_name}: {run_dir}")
-        require(result.get("exception_info") is None, f"trial exception for {task_name}: {run_dir}")
+        exception = result.get("exception_info")
+        timed_out = is_agent_timeout(exception)
+        require(
+            exception is None or timed_out,
+            f"non-timeout trial exception for {task_name}: {run_dir}",
+        )
         agent_info = result.get("agent_info", {})
         require(agent_info.get("name") == "terminus-2", f"wrong trial agent for {task_name}: {run_dir}")
-        require(agent_info.get("model_info", {}).get("name") == f"openai/{arm}", f"wrong trial model for {task_name}: {run_dir}")
+        trial_model = agent_info.get("model_info", {})
+        require(
+            trial_model.get("name") == arm and trial_model.get("provider") == "openai",
+            f"wrong trial model for {task_name}: {run_dir}",
+        )
         reward = result.get("verifier_result", {}).get("rewards", {}).get("reward")
         require(isinstance(reward, (int, float)) and not isinstance(reward, bool) and math.isfinite(float(reward)) and 0 <= reward <= 1, f"invalid reward for {task_name}: {run_dir}")
+        require(not timed_out or float(reward) == 0.0, f"timed-out task scored nonzero: {task_name}")
         require(isinstance(result.get("started_at"), str) and isinstance(result.get("finished_at"), str), f"missing trial timestamps for {task_name}: {run_dir}")
         rewards[task_name] = float(reward)
+        timeouts[task_name] = timed_out
     require(rewards.keys() == expected.keys(), f"practical tasks differ from lock: {run_dir}")
     rewards = {task_name: rewards[task_name] for task_name in expected}
+    timeouts = {task_name: timeouts[task_name] for task_name in expected}
+    timeout_count = sum(timeouts.values())
+    require(
+        stats.get("n_completed_trials") == len(expected)
+        and stats.get("n_errored_trials") == timeout_count
+        and stats.get("n_cancelled_trials") == 0
+        and stats.get("n_running_trials", 0) == 0
+        and stats.get("n_pending_trials", 0) == 0
+        and stats.get("n_retries") == 0,
+        f"Harbor job completion/error accounting differs: {run_dir}",
+    )
 
     return {
         "arm": arm,
@@ -182,6 +207,8 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         "receipt": receipt,
         "normalized_config": normalized_harbor_config(config),
         "rewards": rewards,
+        "timeouts": timeouts,
+        "timeout_count": timeout_count,
         "mean_reward": sum(rewards.values()) / len(rewards),
         "elapsed_seconds": float(elapsed),
     }
@@ -208,14 +235,18 @@ def build_report(baseline_dir: Path, candidate_dir: Path, lock_path: Path, panel
             losses += 1
         else:
             ties += 1
-        tasks.append({"task": task_name, "baseline_reward": base, "candidate_reward": cand, "delta": delta})
+        tasks.append({
+            "task": task_name, "baseline_reward": base, "candidate_reward": cand,
+            "delta": delta, "baseline_timed_out": baseline["timeouts"][task_name],
+            "candidate_timed_out": candidate["timeouts"][task_name],
+        })
     size_reduction = 1.0 - candidate["logical_model_bytes"] / baseline["logical_model_bytes"]
     return {
         "format": "bw24-practical-comparison-v1",
         "panel": panel,
         "n_tasks": len(tasks),
-        "baseline": {key: baseline[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds")},
-        "candidate": {key: candidate[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds")},
+        "baseline": {key: baseline[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds", "timeout_count")},
+        "candidate": {key: candidate[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds", "timeout_count")},
         "candidate_mean_delta": candidate["mean_reward"] - baseline["mean_reward"],
         "candidate_size_reduction": size_reduction,
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties,
@@ -230,10 +261,10 @@ def markdown(report: dict[str, Any]) -> str:
     lines = [
         f"# Practical {report['panel']} comparison",
         "",
-        "| Arm | Logical bytes | Mean reward | Wall hours |",
-        "|---|---:|---:|---:|",
-        f"| {base['arm']} | {base['logical_model_bytes']:,} | {base['mean_reward']:.3f} | {base['elapsed_seconds']/3600:.2f} |",
-        f"| {cand['arm']} | {cand['logical_model_bytes']:,} | {cand['mean_reward']:.3f} | {cand['elapsed_seconds']/3600:.2f} |",
+        "| Arm | Logical bytes | Mean reward | Timeouts | Wall hours |",
+        "|---|---:|---:|---:|---:|",
+        f"| {base['arm']} | {base['logical_model_bytes']:,} | {base['mean_reward']:.3f} | {base['timeout_count']} | {base['elapsed_seconds']/3600:.2f} |",
+        f"| {cand['arm']} | {cand['logical_model_bytes']:,} | {cand['mean_reward']:.3f} | {cand['timeout_count']} | {cand['elapsed_seconds']/3600:.2f} |",
         "",
         f"Candidate delta: **{report['candidate_mean_delta']:+.3f}**; size reduction: **{report['candidate_size_reduction']:.2%}**; paired W/L/T: **{report['paired_wins']}/{report['paired_losses']}/{report['paired_ties']}**; exact sign p={report['exact_sign_p']:.4f}.",
         "",
@@ -275,7 +306,11 @@ def self_test() -> None:
         lock_path = root / "lock.json"
         lock_path.write_text(json.dumps(lock))
 
-        def make_run(arm: str, rewards: list[float], artifact_bytes: int) -> Path:
+        def make_run(
+            arm: str, rewards: list[float], artifact_bytes: int,
+            timed_out: set[str] | None = None,
+        ) -> Path:
+            timed_out = timed_out or set()
             run = root / arm
             job = run / "jobs" / "run"
             job.mkdir(parents=True)
@@ -322,7 +357,7 @@ def self_test() -> None:
             }
             (run / "resolved-harbor-config.json").write_text(json.dumps(config))
             (job / "result.json").write_text(json.dumps({
-                "n_total_trials": 2, "stats": {"n_completed_trials": 2, "n_errored_trials": 0,
+                "n_total_trials": 2, "stats": {"n_completed_trials": 2, "n_errored_trials": len(timed_out),
                 "n_cancelled_trials": 0, "n_retries": 0},
             }))
             for name, digest, reward in zip(("a", "b"), ("sha256:a", "sha256:b"), rewards):
@@ -330,17 +365,26 @@ def self_test() -> None:
                 trial.mkdir()
                 (trial / "result.json").write_text(json.dumps({
                     "task_name": f"terminal-bench/{name}", "task_id": {"ref": digest},
-                    "exception_info": None, "agent_info": {"name": "terminus-2", "model_info": {"name": f"openai/{arm}"}},
+                    "exception_info": ({
+                        "exception_type": "AgentTimeoutError",
+                        "exception_message": "Agent execution timed out after 60.0 seconds",
+                        "exception_traceback": "harbor.trial.errors.AgentTimeoutError: timeout",
+                        "occurred_at": "now",
+                    } if name in timed_out else None),
+                    "agent_info": {"name": "terminus-2", "model_info": {
+                        "name": arm, "provider": "openai",
+                    }},
                     "verifier_result": {"rewards": {"reward": reward}},
                     "started_at": "start", "finished_at": "finish",
                 }))
             return run
 
-        baseline = make_run("plain", [0, 1], 100)
+        baseline = make_run("plain", [0, 1], 100, {"a"})
         candidate = make_run("candidate", [1, 1], 80)
         report = build_report(baseline, candidate, lock_path, "terminal")
         assert report["candidate_mean_delta"] == 0.5
         assert report["paired_wins"] == 1 and report["paired_losses"] == 0
+        assert report["baseline"]["timeout_count"] == 1
         assert "Directional matched panel" in markdown(report)
     print("practical result summarizer self-test: PASS")
 
