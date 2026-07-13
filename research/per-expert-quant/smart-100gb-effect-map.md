@@ -58,6 +58,15 @@ The base objective is measured router-weighted output squared error scaled to th
 count. Optional multipliers protect REAP/domain importance, correct low-confidence rescue experts,
 and layers where the current mask causes high teacher reconstruction error.
 
+The integer program is exact for bytes and pruning, but its mixed-precision objective is an additive
+sum of gate-only, up-only, and down-only ablations. It does not claim that this sum is the exact joint
+error of every mixed `(gate, up, down)` tuple: the SiLU gate and up projection interact
+multiplicatively. Therefore an allocation is only an optimizer proposal. Promotion additionally
+requires terminal requantization followed by the joint expert-output holdout gate, the full-corpus
+routing audit, and matched capability evaluation. If a plan's predicted error-per-byte improvement
+does not survive those joint gates, the next measurement extension is gate/up pairwise interaction
+damage rather than another public-eval-tuned allocation.
+
 ## Three candidates
 
 All candidates have the same byte ceiling, private calibration, exact quantizer measurements, and
@@ -88,9 +97,10 @@ healing pass from consuming capability budget.
 `(layer, expert, projection) -> {Q8_0, NVFP4, IQ4_XS, Q4_K, IQ3_S, Q3_K, Q2_K,
 PRUNED}` map before healing starts. It writes `allocation-comparison.json` beside the plans with
 each plan and allocation hash, exact
-per-layer tier counts, and pairwise qtype/prune transitions. Historical whole-expert v2 plans are
-accepted for comparison, but absent historical byte totals remain explicitly null rather than
-being reconstructed.
+per-layer tier counts, per-projection qtype counts, ranked `(gate, up, down)` format combinations,
+uniform-versus-mixed expert counts, and pairwise qtype/prune transitions. Historical whole-expert v2
+plans are accepted for comparison, but absent historical byte totals remain explicitly null rather
+than being reconstructed.
 
 The smart build uses `--require-distinct`: two objective recipes that produce the same allocation
 are not separately healed or evaluated. This prevents benchmark noise from being mistaken for an
