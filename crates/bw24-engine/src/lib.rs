@@ -324,6 +324,11 @@ pub struct Engine {
     /// verify between replays) reuse their addresses and the replay reads/writes live memory
     /// (the draft-graph corruption root cause). Fast-path cost when off: one relaxed atomic.
     capture_keep_on: std::sync::atomic::AtomicBool,
+    /// VERIFY-EXACT scope (dflash lane, 2026-07-13): when set, matmul/matmul_pre skip the
+    /// m>=16 prefill-GEMM branches so a t>=16 batched VERIFY rides the decode-exact b-tier
+    /// class (the parity law). The t=16 dflash verify tripped the GEMM threshold — 770us/
+    /// matmul (54% of the round) AND a different FP order than decode (issue-10 landmine).
+    verify_exact: std::sync::atomic::AtomicBool,
     capture_keep: Mutex<Vec<Box<dyn std::any::Any + Send>>>,
     /// EDGE-1 §C.2: dedicated H2D copy stream for async prefetch (event-synced to the compute stream).
     pub copy_stream: Arc<CudaStream>,
@@ -501,6 +506,7 @@ impl Engine {
         Ok(Self { gpu, module, hybrid, qmatvec, flash, flash_g: std::sync::OnceLock::new(), gemm, router, sample,
                   moe_cache: Mutex::new(None), copy_stream,
                   capture_keep_on: std::sync::atomic::AtomicBool::new(false),
+                  verify_exact: std::sync::atomic::AtomicBool::new(false),
                   capture_keep: Mutex::new(Vec::new()),
                   argmax_partials: Mutex::new(None),
                   prime_deqw_ws: Mutex::new(None),
@@ -718,6 +724,14 @@ impl Engine {
     /// capture (capture encodes native programmatic edges — the post-capture edge-REWRITE
     /// arm died: engine graphs hold cuMemAllocAsync alloc nodes, edge edits on those return
     /// CUDA_ERROR_NOT_SUPPORTED). BW24_PDL=0 rollback seam.
+    /// See the `verify_exact` field. Scoped by the dflash round around its t=16 verify.
+    pub fn set_verify_exact(&self, on: bool) {
+        self.verify_exact.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn verify_exact_on(&self) -> bool {
+        self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn pdl_on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("BW24_PDL").map(|v| v != "0").unwrap_or(true))
@@ -3710,7 +3724,9 @@ impl Engine {
         // NEGATIVE — the MMA tile grid starves at m=4 (BN=256 -> grid.y=1) and its FP order
         // shifted verify argmax at tight margins. Do not lower without re-running that battery.
         #[allow(non_snake_case)]
-        let GEMM_M_THRESHOLD = 16usize;
+        // VERIFY-EXACT scope pushes the GEMM crossover out of reach (usize::MAX) — the
+        // t>=16 dflash verify must ride the decode-exact batched class (parity law).
+        let GEMM_M_THRESHOLD = if self.verify_exact_on() { usize::MAX } else { 16usize };
 
         // PREFILL GEMM (m>=16). ACCURACY-FIRST dispatch (2026-06-28, prefill-gemm-beat-research wf
         // wllbyo6vc step 1): the int8 W4A8 GEMM (qmatvec_gemm, q8_1 activation, s32 accumulate) is
@@ -3884,25 +3900,25 @@ impl Engine {
         use crate::model::GpuTensor;
         // FP8-ACT PREFILL (BW24_PP_FP8=1): same arm as `matmul` — the fp8 operand needs the RAW
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
-        if m >= 16 {
+        if m >= 16 && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
         }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
         // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not aq/ad.
-        if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) {
+        if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) && !self.verify_exact_on() {
             return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
         // from q8_1), so re-quantize from x_fallback rather than reuse aq/ad. NVFP4 only, m>=16.
-        if m >= 16 {
+        if m >= 16 && !self.verify_exact_on() {
             if let Some(y) = self.try_fp4_gemm(w, x_fallback, m, w.in_features(), w.out_features())? {
                 return Ok(y);
             }
         }
         // Prefill GEMM root fix: if T>1 and the dtype has a GEMM kernel, batch via tensor cores
         // (reuses the already-quantized aq/ad — no extra quantize). m=1 falls through to dp4a.
-        if m >= 16 && self.gemm_supports(w) {
+        if m >= 16 && self.gemm_supports(w) && !self.verify_exact_on() {
             return self.qmatvec_gemm(w, aq, ad, m);
         }
         if !self.uses_q8_1_fast(w) { return self.matmul(w, x_fallback, m); }
