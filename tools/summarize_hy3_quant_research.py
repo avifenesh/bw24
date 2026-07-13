@@ -20,6 +20,7 @@ PLAN_FORMAT = "bw24-expert-tier-plan-v2"
 PLAN_ARMS = {
     "uncentered": "smart100_iq3_iq4_q4_empirical",
     "centered": "smart100_iq3_iq4_q4_centered",
+    "pareto": "smart100_iq3_iq4_q4_pareto",
 }
 
 
@@ -228,8 +229,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(f"expected {expected}, got {payload.get('format')}")
     if damage.get("public_eval_data_used") is not False:
         raise ValueError("private plan damage report used public eval")
-    if damage.get("lowest_private_damage_plan") != "centered":
-        raise ValueError("centered plan is not the private-damage winner")
+    if damage.get("lowest_private_damage_plan") != "pareto":
+        raise ValueError("Pareto-pruned plan is not the private-damage winner")
     trusted_counts = trusted.get("n_per_task")
     trusted_documents = int(trusted.get("documents_per_arm", 0))
     if (
@@ -424,6 +425,7 @@ def self_test() -> None:
         for name, arm, size in (
             ("uncentered", PLAN_ARMS["uncentered"], 100),
             ("centered", PLAN_ARMS["centered"], 99),
+            ("pareto", PLAN_ARMS["pareto"], 98),
         ):
             path = write(f"{name}.json", {
                 "format": PLAN_FORMAT, "recipe": "measured-global-projection-budget",
@@ -462,31 +464,32 @@ def self_test() -> None:
             "top_sensitive_functions": [], "best_precision_upgrades": [],
         })
         damage = write("damage.json", {"format":"bw24-hy3-quant-plan-damage-v1",
-            "public_eval_data_used":False,"lowest_private_damage_plan":"centered",
+            "public_eval_data_used":False,"lowest_private_damage_plan":"pareto",
             "plans":damage_plans,"pairwise":{}})
         arm_rows = {"plain_quant":{"logical_model_bytes":200,"domain_macro":.8,"question_weighted":.8},
                     PLAN_ARMS["uncentered"]:{"logical_model_bytes":100,"domain_macro":.7,"question_weighted":.7},
-                    PLAN_ARMS["centered"]:{"logical_model_bytes":99,"domain_macro":.71,"question_weighted":.71}}
+                    PLAN_ARMS["centered"]:{"logical_model_bytes":99,"domain_macro":.71,"question_weighted":.71},
+                    PLAN_ARMS["pareto"]:{"logical_model_bytes":98,"domain_macro":.72,"question_weighted":.72}}
         frontier = write("frontier.json", {"format":"bw24-cross-run-expanded-capability-frontier-v1",
-            "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["centered"]]})
+            "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["pareto"]]})
         directional = write("directional.json", {"format":"bw24-smart100-directional-promotion-v1",
-            "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",PLAN_ARMS["centered"]]})
+            "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",PLAN_ARMS["pareto"]]})
         practical = write("practical.json", {"format":"bw24-practical-promotion-v1",
-            "trusted_full_arms":["plain_quant",PLAN_ARMS["centered"]]})
+            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]]})
         trusted = write("trusted.json", {"format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
             "baseline":"plain_quant","arms":{},
-            "paired_vs_baseline":{},"selection":{"selected_finalist":PLAN_ARMS["centered"]}})
+            "paired_vs_baseline":{},"selection":{"selected_finalist":PLAN_ARMS["pareto"]}})
         full = write("full.json", {"format":"bw24-full-agentic-comparison-v1",
-            "baseline":"plain_quant","candidate":PLAN_ARMS["centered"],"total_tasks":589,
+            "baseline":"plain_quant","candidate":PLAN_ARMS["pareto"],"total_tasks":589,
             "candidate_total_solved_delta":1})
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
             directional_promotion=directional, practical_promotion=practical,
             trusted_report=trusted, full_agentic=full,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
-        assert result["recommended_method"]["arm"] == PLAN_ARMS["centered"]
-        assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .505) < 1e-12
+        assert result["recommended_method"]["arm"] == PLAN_ARMS["pareto"]
+        assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .51) < 1e-12
         assert result["format_efficiency"]["point_estimate_pareto"] == [
             "Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0"
         ]

@@ -11,23 +11,25 @@ REMOTE=${REMOTE:-bw24-research-g6e}
 REGION=${REGION:-us-east-2}
 INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
 EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
-REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-v1}
-REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-v1/complete}
-REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/iq3-iq4-q4-centered-directional-v1}
-REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-iq3-iq4-q4-v1}
-REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-iq3-iq4-q4-v1}
+REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-pareto-v1}
+REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-pareto-v1/complete}
+REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/iq3-iq4-q4-pareto-directional-v1}
+REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-iq3-iq4-q4-pareto-v1}
+REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-iq3-iq4-q4-pareto-v1}
 REMOTE_FINALIZER_ROOT=${REMOTE_FINALIZER_ROOT:-/data/src/bw24-finalizer-conclusion-v1}
 REMOTE_CONCLUSION_ROOT=${REMOTE_CONCLUSION_ROOT:-/data/analysis/per-expert-quant-final-conclusion-v1}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
 BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
 IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-9a1c92c}
 CENTERED_ALLOCATION_ANALYSIS=${CENTERED_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-centered-a7200c0}
+PARETO_ALLOCATION_ANALYSIS=${PARETO_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-dominance-6c5c5ea}
 PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
 BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
 IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-seven-format-effects-38af56e}
-PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$CENTERED_ALLOCATION_ANALYSIS/private-damage-comparison.json}
+PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$PARETO_ALLOCATION_ANALYSIS/private-damage-three-way.json}
 UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
-CENTERED_PLAN=${CENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-centered-0f98d7d/smart100_iq3_iq4_q4_centered.json}
+CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
+PARETO_PLAN=${PARETO_PLAN:-$PARETO_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_pareto.json}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -38,10 +40,11 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
-  /data/calibration/hy3-quant-iq3-iq4-q4-centered-0f98d7d
+  /data/calibration/hy3-quant-iq3-iq4-q4-pareto-6c5c5ea
   "$BASELINE_ALLOCATION_ANALYSIS"
   "$IQ4_ALLOCATION_ANALYSIS"
   "$CENTERED_ALLOCATION_ANALYSIS"
+  "$PARETO_ALLOCATION_ANALYSIS"
   "$PAIR_ALLOCATION_ANALYSIS"
   "$BASE_EFFECT_ANALYSIS"
   "$IQ4_EFFECT_ANALYSIS"
@@ -52,7 +55,7 @@ EVIDENCE_ROOTS=(
   /data/heal/per-expert-quant-smart100-2605fde/smart100_balanced/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
   /data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical/receipts
-  /data/heal/per-expert-quant-iq3-iq4-q4-centered-0f98d7d/smart100_iq3_iq4_q4_centered/receipts
+  /data/heal/per-expert-quant-iq3-iq4-q4-pareto-6c5c5ea/smart100_iq3_iq4_q4_pareto/receipts
 )
 
 die() { echo "smart100 finalizer: $*" >&2; exit 1; }
@@ -86,7 +89,7 @@ ssh "$REMOTE" bash -s -- \
   "$REMOTE_FINALIZER_ROOT" "$analysis_commit" "$REMOTE_CONCLUSION_ROOT" \
   "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" \
   "$directional_frontier" "$directional_promotion" "$practical_promotion" \
-  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" <<'SH'
+  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" <<'SH'
 set -euo pipefail
 root=$1
 commit=$2
@@ -100,6 +103,7 @@ trusted=$9
 full=${10}
 uncentered=${11}
 centered=${12}
+pareto=${13}
 tool="$root/tools/summarize_hy3_quant_research.py"
 output="$out_root/conclusion.json"
 markdown="$out_root/conclusion.md"
@@ -108,7 +112,7 @@ evidence="$out_root/evidence.sha256"
 [[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
 [[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
 for path in "$tool" "$effects" "$damage" "$frontier" "$directional" "$practical" \
-  "$trusted" "$full" "$uncentered" "$centered"; do
+  "$trusted" "$full" "$uncentered" "$centered" "$pareto"; do
   [[ -f "$path" ]]
 done
 if [[ ! -f "$receipt" ]]; then
@@ -116,7 +120,7 @@ if [[ ! -f "$receipt" ]]; then
   python3 "$tool" --effects "$effects" --damage "$damage" --frontier "$frontier" \
     --directional-promotion "$directional" --practical-promotion "$practical" \
     --trusted-report "$trusted" --full-agentic "$full" \
-    --plan "uncentered=$uncentered" --plan "centered=$centered" \
+    --plan "uncentered=$uncentered" --plan "centered=$centered" --plan "pareto=$pareto" \
     --analysis-commit "$commit" --output "$output" --markdown "$markdown" \
     --receipt "$receipt"
   sha256sum "$output" "$markdown" "$receipt" "$tool" >"$evidence"
@@ -140,6 +144,8 @@ case "$finalist" in
     remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3/$finalist" ;;
   smart100_iq3_iq4_q4_centered)
     remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d/$finalist" ;;
+  smart100_iq3_iq4_q4_pareto)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea/$finalist" ;;
   prune100_joint_heal)
     remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
   traffic_nvfp4_53_q2_139)
@@ -155,12 +161,12 @@ for f in \
   /data/logs/smart100-directional-v1/complete \
   /data/logs/iq3-iq4-q4-extension-99f3dc3/complete \
   /data/logs/iq3-iq4-q4-directional-v1/complete \
-  /data/logs/iq3-iq4-q4-centered-0f98d7d/complete \
-  /data/logs/iq3-iq4-q4-centered-directional-v1/complete \
-  /data/logs/practical-iq3-iq4-q4-v1/complete \
-  /data/logs/trusted-full-iq3-iq4-q4-v1/complete \
-  /data/logs/full-agentic-iq3-iq4-q4-v1/complete \
-  /data/logs/full-agentic-iq3-iq4-q4-v1/chain-complete; do test -f "$f"; done
+  /data/logs/iq3-iq4-q4-pareto-6c5c5ea/complete \
+  /data/logs/iq3-iq4-q4-pareto-directional-v1/complete \
+  /data/logs/practical-iq3-iq4-q4-pareto-v1/complete \
+  /data/logs/trusted-full-iq3-iq4-q4-pareto-v1/complete \
+  /data/logs/full-agentic-iq3-iq4-q4-pareto-v1/complete \
+  /data/logs/full-agentic-iq3-iq4-q4-pareto-v1/chain-complete; do test -f "$f"; done
 test -z "$(pgrep -x bw24-server || true)"
 test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"
@@ -170,6 +176,7 @@ ALLOCATION_RECEIPTS=(
   "$BASELINE_ALLOCATION_ANALYSIS/receipt.json"
   "$IQ4_ALLOCATION_ANALYSIS/receipt.json"
   "$CENTERED_ALLOCATION_ANALYSIS/allocation-comparison.receipt.json"
+  "$PARETO_ALLOCATION_ANALYSIS/allocation-comparison.receipt.json"
   "$PAIR_ALLOCATION_ANALYSIS/receipt.json"
 )
 for receipt_path in "${ALLOCATION_RECEIPTS[@]}"; do
@@ -199,6 +206,8 @@ ssh "$REMOTE" "test -f '$CENTERED_ALLOCATION_ANALYSIS/complete' && \
   test -s '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256' && \
   sha256sum -c '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256'" \
   >/dev/null || die "centered allocation evidence validation failed"
+ssh "$REMOTE" "test -f '$PARETO_ALLOCATION_ANALYSIS/complete'" \
+  >/dev/null || die "Pareto allocation evidence validation failed"
 
 for root in "$BASE_EFFECT_ANALYSIS" "$IQ4_EFFECT_ANALYSIS"; do
   ssh "$REMOTE" "test -s '$root/evidence.sha256' && sha256sum -c '$root/evidence.sha256'" \
