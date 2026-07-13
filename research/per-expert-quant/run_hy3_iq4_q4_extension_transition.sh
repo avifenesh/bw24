@@ -15,6 +15,10 @@ GGML_SOURCE_COMMIT=${GGML_SOURCE_COMMIT:?set GGML_SOURCE_COMMIT to the full llam
 BASE_BUILD_COMPLETE=${BASE_BUILD_COMPLETE:-/data/logs/smart100-build-2605fde/complete}
 BASE_SENSITIVITY=${BASE_SENSITIVITY:-/data/calibration/hy3-quant-sensitivity-53de6ca/quant-sensitivity.json}
 REUSE_SENSITIVITY_ROOT=${REUSE_SENSITIVITY_ROOT:-}
+REUSE_EXISTING_ANALYSIS=${REUSE_EXISTING_ANALYSIS:-0}
+EXPECTED_IQ3_IQ4_Q4_SENSITIVITY_SHA256=${EXPECTED_IQ3_IQ4_Q4_SENSITIVITY_SHA256:-}
+EXPECTED_SEVEN_FORMAT_SENSITIVITY_SHA256=${EXPECTED_SEVEN_FORMAT_SENSITIVITY_SHA256:-}
+EXPECTED_SEVEN_FORMAT_EFFECTS_SHA256=${EXPECTED_SEVEN_FORMAT_EFFECTS_SHA256:-}
 CALIBRATION=${CALIBRATION:-/data/calibration/hy3-100gb-5f02c37}
 REQUESTS=${REQUESTS:-/data/calibration/hy3-confidence-v1/requests.jsonl}
 SOURCE=${SOURCE:-/opt/dlami/nvme/models/hy3-source}
@@ -162,7 +166,22 @@ done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more IQ3/IQ4/Q4 sensitivity lanes failed"
 
-if [[ -n "$REUSE_SENSITIVITY_ROOT" ]]; then
+if [[ "$REUSE_EXISTING_ANALYSIS" == 1 ]]; then
+  for item in \
+    "iq3-iq4-q4-sensitivity.json:$EXPECTED_IQ3_IQ4_Q4_SENSITIVITY_SHA256" \
+    "seven-format-sensitivity.json:$EXPECTED_SEVEN_FORMAT_SENSITIVITY_SHA256" \
+    "seven-format-effects-map.json:$EXPECTED_SEVEN_FORMAT_EFFECTS_SHA256"; do
+    name=${item%%:*}
+    expected=${item#*:}
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "missing expected SHA-256 for $name"
+    [[ -f "$OUT_ROOT/$name" ]] || die "missing reusable analysis $OUT_ROOT/$name"
+    [[ $(sha256sum "$OUT_ROOT/$name" | cut -d' ' -f1) == "$expected" ]] \
+      || die "reusable analysis SHA-256 mismatch for $name"
+  done
+  printf '%s\n' "reused immutable sensitivity and effects analysis from $OUT_ROOT" \
+    | tee "$LOG_ROOT/merge-lanes.log" "$LOG_ROOT/merge-qtypes.log" \
+      "$LOG_ROOT/effects-map.log"
+elif [[ -n "$REUSE_SENSITIVITY_ROOT" ]]; then
   for name in iq3-iq4-q4-sensitivity.json seven-format-sensitivity.json; do
     source_map="$REUSE_SENSITIVITY_ROOT/$name"
     [[ -f "$source_map" ]] || die "missing reusable sensitivity map $source_map"
@@ -201,11 +220,13 @@ else
     "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" --out "$OUT_ROOT/seven-format-sensitivity.json" \
     | tee "$LOG_ROOT/merge-qtypes.log"
 fi
-"$PY" "$SUMMARIZER" "$OUT_ROOT/seven-format-sensitivity.json" \
-  --out "$OUT_ROOT/seven-format-effects-map.json" \
-  --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" \
-  --layer-projection-csv "$OUT_ROOT/seven-format-layer-projection-effects.csv" \
-  | tee "$LOG_ROOT/effects-map.log"
+if [[ "$REUSE_EXISTING_ANALYSIS" != 1 ]]; then
+  "$PY" "$SUMMARIZER" "$OUT_ROOT/seven-format-sensitivity.json" \
+    --out "$OUT_ROOT/seven-format-effects-map.json" \
+    --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" \
+    --layer-projection-csv "$OUT_ROOT/seven-format-layer-projection-effects.csv" \
+    | tee "$LOG_ROOT/effects-map.log"
+fi
 
 plan="$PLAN_ROOT/$ARM.json"
 if [[ ! -f "$plan" ]]; then
