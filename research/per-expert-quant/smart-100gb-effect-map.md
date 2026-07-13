@@ -37,6 +37,9 @@ For every `(layer, expert, qtype)` it records:
 The derived effects map also preserves per-layer/per-projection damage and aggregate equal-byte
 win counts by projection. This makes Q3_K versus IQ3_S and NVFP4 versus Q4_K directly auditable
 without inferring a winner from nominal bit width or a small list of top outliers.
+It also reports top-1/top-10/top-100 error share, Herfindahl concentration, and effective error-cell
+count per format and projection. A private objective dominated by one routed function is therefore
+visible before treating its byte allocation as a generally useful model-quality policy.
 
 The base map has 15,168 expert rows and four precision alternatives. The extension measures
 IQ3_S, IQ4_XS, and Q4_K on the same frozen routed samples using the current pinned upstream ggml C

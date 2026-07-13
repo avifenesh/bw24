@@ -49,6 +49,25 @@ def weighted_summary(values: list[tuple[float, float]]) -> dict[str, float]:
     }
 
 
+def concentration_summary(values: list[float]) -> dict[str, float | int]:
+    ordered = sorted((float(value) for value in values), reverse=True)
+    total = sum(ordered)
+    shares = [value / total for value in ordered] if total > 0 else [0.0] * len(ordered)
+    return {
+        "cells": len(ordered),
+        "total_full_scaled_squared_error": total,
+        "top_1_share": sum(shares[:1]),
+        "top_10_share": sum(shares[:10]),
+        "top_100_share": sum(shares[:100]),
+        "herfindahl_index": sum(share * share for share in shares),
+        "effective_error_cells": (
+            1.0 / sum(share * share for share in shares)
+            if any(shares)
+            else 0.0
+        ),
+    }
+
+
 def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
     if payload.get("format") != FORMAT:
         raise ValueError(f"input format must be {FORMAT}")
@@ -260,6 +279,27 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
                     for projection in PROJECTIONS
                 },
             })
+    error_concentration = {
+        "by_qtype": {
+            qtype: concentration_summary([
+                float(item["full_scaled_squared_error"])
+                for item in hotspots
+                if item["qtype"] == qtype
+            ])
+            for qtype in qtypes
+        },
+        "by_qtype_projection": {
+            qtype: {
+                projection: concentration_summary([
+                    float(item["full_scaled_squared_error"])
+                    for item in hotspots
+                    if item["qtype"] == qtype and item["projection"] == projection
+                ])
+                for projection in PROJECTIONS
+            }
+            for qtype in qtypes
+        },
+    }
     format_pairwise = []
     for index, first in enumerate(qtypes):
         for second in qtypes[index + 1:]:
@@ -324,6 +364,7 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
         "format_totals": format_totals,
         "format_pairwise": format_pairwise,
         "equal_byte_pair_summary": equal_byte_pair_summary,
+        "error_concentration": error_concentration,
         "top_sensitive_experts": expert_hotspots[:top_n],
         "top_sensitive_functions": hotspots[:top_n],
         "best_precision_upgrades": upgrades[:top_n],
@@ -426,6 +467,13 @@ def self_test() -> None:
         == 4
         for projection in PROJECTIONS
     )
+    assert result["error_concentration"]["by_qtype"]["Q8_0"]["cells"] == 12
+    assert result["error_concentration"]["by_qtype_projection"]["Q8_0"]["gate"][
+        "cells"
+    ] == 4
+    assert 0 < result["error_concentration"]["by_qtype"]["Q8_0"][
+        "effective_error_cells"
+    ] <= 12
     assert result["projection_damage"]["gate"]["Q8_0"]["weighted_mean"] \
         < result["projection_damage"]["gate"]["Q2_K"]["weighted_mean"]
     with tempfile.TemporaryDirectory() as tmp:
