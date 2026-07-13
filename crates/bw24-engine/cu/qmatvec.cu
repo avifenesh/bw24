@@ -6751,6 +6751,121 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// ---- Q4_0 M-SPLIT r2 twin (2026-07-13, the 31B depth-verify occupancy fix): the b8_r2_rp
+// kernel is REGISTER-CHOKED (ncu: 72 regs, occupancy capped at 7 blocks, warps 47-55%,
+// DRAM 25-45% of wall) — the acc[2][MCOLS] array is the pressure. The rpms pattern (NVFP4,
+// 2026-07-06) splits the M columns across a warp PAIR: both warps walk the FULL k-range of
+// the SAME 2 rows, each owning half the columns — acc drops to [2][MCOLS/2], grid.x doubles
+// (block (32,4) = 2 pairs x 2 rows), and every (token,row) dot keeps the reference per-lane
+// serial chain + warp_reduce_sum -> BIT-IDENTICAL to _r2_rp (column partition, not k-order;
+// the rpks k-order lesson). The twin warp re-reads the same weight int4s in near-lockstep ->
+// L1 serves the second copy.
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    constexpr int CH = MCOLS / 2;           // columns per warp
+    int pair = (int)threadIdx.y >> 1;       // 0..1: which 2-row group of the block
+    int kc   = (int)threadIdx.y & 1;        // 0..1: which column half
+    int o0 = (blockIdx.x * 2 + pair) * 2;
+    if (o0 >= out_f) return;
+    int c0 = kc * CH;
+    if (c0 >= m) return;                    // whole column half masked
+    bool two = (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq0; const unsigned short* wd0;
+    const unsigned char* wq1; const unsigned short* wd1;
+    q4_0_rp_planes(W, out_f, o0, nblk, &wq0, &wd0);
+    q4_0_rp_planes(W, out_f, o0 + 1, nblk, &wq1, &wd1);
+    float acc0[CH], acc1[CH];
+    #pragma unroll
+    for (int c = 0; c < CH; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo0[k] = qk[k] & 0x0F0F0F0F;
+                hi0[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo1[k] = qk[k] & 0x0F0F0F0F;
+                hi1[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(wd0[blk]);
+        float d41 = two ? half_to_float(wd1[blk]) : 0.0f;
+        #pragma unroll
+        for (int c = 0; c < CH; c++) {
+            int col = c0 + c;
+            if (col >= m) break;
+            const signed char* arow = aq + (size_t)col * in_f;
+            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            int a[8];
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            float d8 = ad[(size_t)col * nblk + blk];
+            int s0 = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                s0 = dp4a(lo0[k], a[k], s0);
+                s0 = dp4a(hi0[k], a[4 + k], s0);
+            }
+            acc0[c] += d40 * (float)(s0 - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) {
+                    s1 = dp4a(lo1[k], a[k], s1);
+                    s1 = dp4a(hi1[k], a[4 + k], s1);
+                }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < CH; c++) {
+        int col = c0 + c;
+        if (col >= m) break;
+        float a0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)col * out_f + o0] = a0;
+        if (two) {
+            float a1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)col * out_f + o0 + 1] = a1;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
 extern "C" __global__ void qmatvec_q4_0_mmvq_b16_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

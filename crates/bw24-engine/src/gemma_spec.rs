@@ -433,8 +433,18 @@ impl HybridModel {
         };
 
         let mut last = crate::forward::argmax(&pl) as u32;
-                let mut out: Vec<u32> = Vec::with_capacity(max_new);
+                // BW24_PROFILE_SPEC=2: capture starts at the ROUND LOOP (prime excluded) — pair
+        // with `nsys -c cudaProfilerApi` (the qwen loop's pattern, spec.rs).
+        if std::env::var("BW24_PROFILE_SPEC").as_deref() == Ok("2") {
+            unsafe extern "C" { fn cudaProfilerStart() -> i32; }
+            unsafe { cudaProfilerStart(); }
+        }
+        let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let (mut drafted, mut accepted, mut rounds) = (0usize, 0usize, 0usize);
+        // per-position accept histogram (BW24_SPEC_STATS): [attempted, accepted] per slot —
+        // the depth-K policy statistic (deep slots' marginal accept decides fixed-cap vs deep).
+        let mut pos_att = [0usize; 16];
+        let mut pos_acc = [0usize; 16];
 
         // ASYNC ROUND v2 (dc class): the whole draft chain + verify enqueue with ZERO host
         // syncs — token seeds via kernel-arg store (u32_set_k, no host-memory transfer), draft
@@ -943,6 +953,10 @@ impl HybridModel {
                           cache.pos);
             }
             accepted += m;
+            for j in 0..k.min(16) {
+                pos_att[j] += 1;
+                if j < m { pos_acc[j] += 1; }
+            }
             // emit last + accepted drafts; the correction token comes from verify row m.
             out.push(last);
             if eos.contains(&last) { break 'outer; }
@@ -989,6 +1003,11 @@ impl HybridModel {
         eprintln!("[gemma-spec] rounds={rounds} drafted={drafted} accepted={accepted}                    accept-rate={:.3} tok/round={:.2}",
                   accepted as f64 / drafted.max(1) as f64,
                   out.len() as f64 / rounds.max(1) as f64);
+        if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
+            let hist: Vec<String> = (0..16).filter(|&j| pos_att[j] > 0)
+                .map(|j| format!("p{j}:{}/{}", pos_acc[j], pos_att[j])).collect();
+            eprintln!("[gemma-spec] per-position accept: {}", hist.join(" "));
+        }
         Ok(out)
     }
 }
