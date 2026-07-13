@@ -62,6 +62,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
+    // BW24_PROMPT_DIR=<dir>: BENCH-SWEEP mode — iterate every *.txt prompt in the dir with ONE
+    // resident model (per-invocation model load dominates multi-prompt sweeps: a Spec-Bench /
+    // MT-Bench pass is 80+ prompts). Per prompt: one plain generate (baseline) + one
+    // generate_spec at BW24_SPEC_K (default 4); prints per-prompt and aggregate acceptance +
+    // gen-only tok/s. Honors BW24_CHAT / BW24_NGEN / BW24_SPEC_TEMP / BW24_SEED like the
+    // single-prompt path. No self-consistency gate here (bench mode, not the exactness battery).
+    if let Ok(dir) = std::env::var("BW24_PROMPT_DIR") {
+        let tok = match &g {
+            Some(g) => bw24_tokenizer::Tokenizer::from_gguf(g)?,
+            None => bw24_tokenizer::Tokenizer::from_hf_dir(&tok_dir)
+                .map_err(|err| format!("HF tokenizer init failed: {err}"))?,
+        };
+        let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(256);
+        let k: usize = std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let chat = std::env::var("BW24_CHAT").is_ok();
+        let mut files: Vec<_> = std::fs::read_dir(&dir)?
+            .filter_map(|d| d.ok().map(|d| d.path()))
+            .filter(|p| p.extension().map(|x| x == "txt").unwrap_or(false)).collect();
+        files.sort();
+        let _ = model.generate(&e, &[55u32], 1)?;   // cold-start warmup
+        let (mut tot_acc, mut tot_draft, mut sum_gen_t, mut sum_spec_t, mut tot_tok) =
+            (0usize, 0usize, 0f64, 0f64, 0usize);
+        for fp in &files {
+            let text = std::fs::read_to_string(fp)?;
+            let to_encode = if chat { tok.apply_chat_template(&[("user", &text)], true) }
+                            else { text.clone() };
+            let ids = tok.encode(&to_encode, true);
+            e.stream().synchronize()?;
+            let t0 = std::time::Instant::now();
+            let _gold = model.generate(&e, &ids, n_new)?;
+            e.stream().synchronize()?;
+            let p1 = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+            let gen_dt = (t0.elapsed().as_secs_f64() - p1).max(1e-9);
+            let t1 = std::time::Instant::now();
+            let (_spec, drafted, accepted) = model.generate_spec(&e, &ids, n_new, k)?;
+            e.stream().synchronize()?;
+            let p2 = bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+            let spec_dt = (t1.elapsed().as_secs_f64() - p2).max(1e-9);
+            let stem = fp.file_stem().unwrap().to_string_lossy();
+            println!("[{stem}] prompt {} tok | acc {accepted}/{drafted} = {:.1}% | gen {:.1} \
+                      spec {:.1} tok/s ({:.2}x)",
+                     ids.len(),
+                     if drafted > 0 { accepted as f64 / drafted as f64 * 100.0 } else { 0.0 },
+                     (n_new - 1) as f64 / gen_dt, (n_new - 1) as f64 / spec_dt, gen_dt / spec_dt);
+            tot_acc += accepted; tot_draft += drafted;
+            sum_gen_t += gen_dt; sum_spec_t += spec_dt; tot_tok += n_new - 1;
+        }
+        println!("\n[SWEEP] {} prompts K={k} | acceptance {tot_acc}/{tot_draft} = {:.1}% | \
+                  gen {:.1} tok/s spec {:.1} tok/s ({:.2}x)",
+                 files.len(),
+                 if tot_draft > 0 { tot_acc as f64 / tot_draft as f64 * 100.0 } else { 0.0 },
+                 tot_tok as f64 / sum_gen_t, tot_tok as f64 / sum_spec_t,
+                 sum_gen_t / sum_spec_t);
+        return Ok(());
+    }
+
     // TEXT prompt path (BW24_PROMPT env): tokenize with the model's own tokenizer — REAL prompts
     // give the true acceptance rate (synthetic numeric sequences under-state it badly: the 27B
     // measured 45% on seq-101..228 vs ~75% on real code in the llama serve config).
