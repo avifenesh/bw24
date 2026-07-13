@@ -14,6 +14,7 @@ GGML_LIB_SHA256=${GGML_LIB_SHA256:?set GGML_LIB_SHA256 to the exact library SHA-
 GGML_SOURCE_COMMIT=${GGML_SOURCE_COMMIT:?set GGML_SOURCE_COMMIT to the full llama.cpp commit}
 BASE_BUILD_COMPLETE=${BASE_BUILD_COMPLETE:-/data/logs/smart100-build-2605fde/complete}
 BASE_SENSITIVITY=${BASE_SENSITIVITY:-/data/calibration/hy3-quant-sensitivity-53de6ca/quant-sensitivity.json}
+REUSE_SENSITIVITY_ROOT=${REUSE_SENSITIVITY_ROOT:-}
 CALIBRATION=${CALIBRATION:-/data/calibration/hy3-100gb-5f02c37}
 REQUESTS=${REQUESTS:-/data/calibration/hy3-confidence-v1/requests.jsonl}
 SOURCE=${SOURCE:-/opt/dlami/nvme/models/hy3-source}
@@ -159,11 +160,45 @@ done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more IQ3/IQ4/Q4 sensitivity lanes failed"
 
-"$PY" "$MERGER" "$OUT_ROOT"/lanes/lane-*.json --out "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" \
-  | tee "$LOG_ROOT/merge-lanes.log"
-"$PY" "$MERGER" --merge-qtypes "$BASE_SENSITIVITY" \
-  "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" --out "$OUT_ROOT/seven-format-sensitivity.json" \
-  | tee "$LOG_ROOT/merge-qtypes.log"
+if [[ -n "$REUSE_SENSITIVITY_ROOT" ]]; then
+  for name in iq3-iq4-q4-sensitivity.json seven-format-sensitivity.json; do
+    source_map="$REUSE_SENSITIVITY_ROOT/$name"
+    [[ -f "$source_map" ]] || die "missing reusable sensitivity map $source_map"
+    cp --reflink=auto "$source_map" "$OUT_ROOT/$name"
+    cmp "$source_map" "$OUT_ROOT/$name"
+  done
+  "$PY" - "$REUSE_SENSITIVITY_ROOT" "$OUT_ROOT" <<'PY'
+import hashlib,json,pathlib,sys
+
+source=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2])
+lane_paths=sorted((out/"lanes").glob("lane-*.json"), key=lambda p: int(p.stem.split("-")[-1]))
+assert len(lane_paths) == 24
+merged=json.loads((out/"iq3-iq4-q4-sensitivity.json").read_text())
+receipts=merged["lanes"]
+assert len(receipts) == len(lane_paths)
+receipts={pathlib.Path(item["path"]).name:item for item in receipts}
+assert set(receipts) == {lane.name for lane in lane_paths}
+for lane in lane_paths:
+    receipt=receipts[lane.name]
+    source_lane=source/"lanes"/lane.name
+    assert pathlib.Path(receipt["path"]) == source_lane.resolve()
+    assert receipt["sha256"] == hashlib.sha256(lane.read_bytes()).hexdigest()
+    assert lane.read_bytes() == source_lane.read_bytes()
+full=json.loads((out/"seven-format-sensitivity.json").read_text())
+component={pathlib.Path(item["path"]).name:item for item in full["qtype_components"]}
+item=component["iq3-iq4-q4-sensitivity.json"]
+assert pathlib.Path(item["path"]) == (source/"iq3-iq4-q4-sensitivity.json").resolve()
+assert item["sha256"] == hashlib.sha256((out/"iq3-iq4-q4-sensitivity.json").read_bytes()).hexdigest()
+PY
+  printf '%s\n' "reused byte-identical sensitivity maps from $REUSE_SENSITIVITY_ROOT" \
+    | tee "$LOG_ROOT/merge-lanes.log" "$LOG_ROOT/merge-qtypes.log"
+else
+  "$PY" "$MERGER" "$OUT_ROOT"/lanes/lane-*.json --out "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" \
+    | tee "$LOG_ROOT/merge-lanes.log"
+  "$PY" "$MERGER" --merge-qtypes "$BASE_SENSITIVITY" \
+    "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" --out "$OUT_ROOT/seven-format-sensitivity.json" \
+    | tee "$LOG_ROOT/merge-qtypes.log"
+fi
 "$PY" "$SUMMARIZER" "$OUT_ROOT/seven-format-sensitivity.json" \
   --out "$OUT_ROOT/seven-format-effects-map.json" \
   --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" \
