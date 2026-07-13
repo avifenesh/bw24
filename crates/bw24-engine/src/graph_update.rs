@@ -126,7 +126,7 @@ pub struct FaMain {
     bucket_splits: u32,
     /// scalar-unified main: `split_keys` arg value (read at plan build) — grid-only shrink.
     self_split_keys: Option<i32>,
-    combine: Option<(sys::CUgraphNode, sys::CUDA_KERNEL_NODE_PARAMS)>,
+    combine: Option<(sys::CUgraphNode, sys::CUDA_KERNEL_NODE_PARAMS, usize /*nsp idx*/)>,
     /// last applied split count — updates are pushed only on change (splits step every
     /// `split_keys` tokens, so exec updates are rare, not per-token).
     cur: u32,
@@ -138,7 +138,8 @@ const VEC_NSP_IDX: usize = 11;      // Q,K,V,pO,pM,pL,hd,nh,nhkv,ctr,scale,[n_sp
 const VEC_PARTO_IDX: usize = 3;
 const SCALAR_NSP_IDX: usize = 12;   // ...,hd,nh,nhkv,tkv_host,ctr,scale,[n_splits],[split_keys],...
 const SCALAR_SKI_IDX: usize = 13;
-const COMBINE_NSP_IDX: usize = 6;   // pO,pM,pL,O,hd,nh,[n_splits]
+const COMBINE_NSP_IDX: usize = 6;      // pO,pM,pL,O,hd,nh,[n_splits]
+const COMBINE_Q8_NSP_IDX: usize = 7;   // pO,pM,pL,out_q,out_d,hd,nh,[n_splits]
 const COMBINE_PARTO_IDX: usize = 0;
 
 /// Classify a captured graph's fa-decode nodes into per-token-updatable [`FaMain`]s.
@@ -155,8 +156,8 @@ pub fn fa_plan(graph: &cudarc::driver::CudaGraph)
     // stream capture appends nodes in issue order, and the combine is always issued
     // right after its main within one fa_decode_* call).
     let mut mains: Vec<(usize, FaMain)> = Vec::new();
-    let mut combines: Vec<Option<(usize, u64, sys::CUgraphNode, sys::CUDA_KERNEL_NODE_PARAMS)>> =
-        Vec::new();
+    let mut combines: Vec<Option<(usize, u64, sys::CUgraphNode, sys::CUDA_KERNEL_NODE_PARAMS,
+                                   usize)>> = Vec::new();
     for (i, n) in nodes.iter().enumerate() {
         match n.name.as_str() {
             "fa_decode_vec_q_v4_dc" | "fa_decode_vec_q_v3_dc" | "fa_decode_vec_q_v2_dc"
@@ -175,9 +176,11 @@ pub fn fa_plan(graph: &cudarc::driver::CudaGraph)
                     node: n.node, params: n.params,
                 }));
             }
-            "fa_decode_combine_f32" => {
+            "fa_decode_combine_f32" | "fa_decode_combine_q8_1" => {
                 let po = unsafe { read_ptr_arg(&n.params, COMBINE_PARTO_IDX) };
-                combines.push(Some((i, po, n.node, n.params)));
+                let nsp_idx = if n.name == "fa_decode_combine_q8_1" { COMBINE_Q8_NSP_IDX }
+                              else { COMBINE_NSP_IDX };
+                combines.push(Some((i, po, n.node, n.params, nsp_idx)));
             }
             _ => {}
         }
@@ -189,7 +192,8 @@ pub fn fa_plan(graph: &cudarc::driver::CudaGraph)
             .filter(|c| c.as_ref().is_some_and(|(ci, cpo, ..)| *ci > mi && *cpo == po))
             .min_by_key(|c| c.as_ref().unwrap().0);
         match slot {
-            Some(c) => { let (_, _, cn, cp) = c.take().unwrap(); m.combine = Some((cn, cp)); }
+            Some(c) => { let (_, _, cn, cp, ci) = c.take().unwrap();
+                         m.combine = Some((cn, cp, ci)); }
             // a main without its combine cannot be updated consistently (stride vs merge
             // count would diverge) — refuse loudly rather than corrupt replays.
             None => return Err("fa_plan: fa main has no partO-paired combine node".into()),
@@ -219,8 +223,8 @@ pub fn fa_apply(graph: &cudarc::driver::CudaGraph, plan: &mut [FaMain], t_kv: us
         let nsp_idx = if m.self_split_keys.is_some() { SCALAR_NSP_IDX } else { VEC_NSP_IDX };
         unsafe { write_i32_arg(&m.params, nsp_idx, ns as i32); }
         set_exec_params(graph, m.node, &m.params)?;
-        if let Some((cn, cp)) = &m.combine {
-            unsafe { write_i32_arg(cp, COMBINE_NSP_IDX, ns as i32); }
+        if let Some((cn, cp, ci)) = &m.combine {
+            unsafe { write_i32_arg(cp, *ci, ns as i32); }
             set_exec_params(graph, *cn, cp)?;
         }
         m.cur = ns;

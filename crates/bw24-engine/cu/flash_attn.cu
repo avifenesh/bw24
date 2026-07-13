@@ -436,6 +436,35 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows_dc(
     }
 }
 
+// SINGLE-BLOCK dc append with a FUSED counter inc (E4B glue wave 5c): t=1 row append +
+// len_d += 1 in ONE launch — kills the separate inc_i32 per own-KV layer. One block so the
+// t_dev read (all threads, before any write) strictly precedes the inc (thread 0, after
+// __syncthreads) — the multi-block form would race blocks' reads against the incrementor.
+// Quant math = quant_K_block/quant_V_block verbatim (bit-identical rows).
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1_dc_inc(
+        const float* __restrict__ k_row, const float* __restrict__ v_row,
+        uint8_t* __restrict__ K, uint8_t* __restrict__ V,
+        int* __restrict__ t_dev, int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int t = t_dev[0];
+    const int lane = threadIdx.x & 31;
+    const int nb_max = (kv_dim_k > kv_dim_v ? kv_dim_k : kv_dim_v) / 32;
+    for (int b = (int)(threadIdx.x >> 5); b < nb_max; b += (int)(blockDim.x >> 5)) {
+        const int eidx = b * 32 + lane;
+        if (b * 32 < kv_dim_k) {
+            float x = (eidx < kv_dim_k) ? k_row[eidx] : 0.0f;
+            quant_K_block(x, lane, K + (size_t)t * k_tok_bytes + (size_t)b * K_BLK_B);
+        }
+        if (b * 32 < kv_dim_v) {
+            float x = (eidx < kv_dim_v) ? v_row[eidx] : 0.0f;
+            quant_V_block(x, lane, V + (size_t)t * v_tok_bytes + (size_t)b * V_BLK_B);
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) t_dev[0] = t + 1;
+}
+
 // ----- DEVICE-COUNTER variant (CUDA-GRAPH-PLAN Phase 2): identical math to
 // append_quantize_kv_q8_0_q5_1, but the per-step WRITE OFFSET `t` is read from a
 // device int[1] counter (t_dev[0]) instead of a host int arg. This is the only
@@ -3406,6 +3435,48 @@ extern "C" __global__ void fa_decode_combine_f32(
     }
     float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
     O[((size_t)0 * n_head + head) * head_dim + tid] = o * linv;
+}
+
+// combine twin with a FUSED q8_1 emit (E4B glue wave 5b): the ONLY consumer of the t=1
+// decode attention output is the wo matmul_pre, so the combine emits (int8, per-32 scales)
+// directly and the standalone quantize_q8_1 launch + the f32 O round-trip disappear.
+// BIT-IDENTITY: the merge loop is fa_decode_combine_f32's verbatim; the quantize is
+// quantize_q8_1's exact recipe (per-32 amax via shuffle over the tid group, d = amax/127,
+// __float2int_rn) applied to the SAME o*linv values the f32 twin writes — element index
+// head*head_dim + tid is 32-aligned per warp-group, so scale groups match quantize_q8_1's.
+extern "C" __global__ void fa_decode_combine_q8_1(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, signed char* __restrict__ out_q,
+        float* __restrict__ out_d,
+        int head_dim, int n_head, int n_splits)
+{
+    const int head = blockIdx.x;
+    const int tid  = threadIdx.x;
+    if (head >= n_head || tid >= head_dim) return;
+
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, partM[head * n_splits + s]);
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = partM[head * n_splits + s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += partL[head * n_splits + s] * w;
+        o += partO[(size_t)head * n_splits * head_dim + (size_t)s * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    float v = o * linv;
+
+    // quantize_q8_1's per-32 recipe on the element index head*head_dim + tid.
+    float amax = fabsf(v);
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+    float d = amax / 127.0f;
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    int gidx = head * head_dim + tid;
+    out_q[gidx] = (signed char)__float2int_rn(v * id);
+    if ((tid & 31) == 0) out_d[gidx >> 5] = d;
 }
 
 // ===================================================================== //

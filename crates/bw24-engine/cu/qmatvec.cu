@@ -6482,6 +6482,54 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
         if (two) y[(size_t)t * out_f + o0 + 1] = acc1;
     }
 }
+// mr1 split-plane twin (E4B mr2-efficiency probe, 2026-07-13): ONE row per warp — 2x the
+// blocks of mr2 for tall-input/short-output shapes (ffn_down 10240->2560 runs 69% of the
+// byte floor under mr2's 4-wave grid; more blocks = more latency hiding + finer tail).
+// Per-row dot = q4_0_mmvq_row2_rp's acc0 path VERBATIM (bit-identical per row).
+__device__ __forceinline__ void q4_0_mmvq_row1_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes, int o0, int t) {
+    (void)row_bytes;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nsb;
+    float acc0 = 0.0f;
+    const unsigned char* wq0; const unsigned short* wd0;
+    q4_0_rp_planes(W, out_f, o0, nsb, &wq0, &wd0);
+    for (int g = lane; g < nsb; g += 32) {
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sums = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
+        {
+            int4 qv = *(const int4*)(wq0 + (size_t)g * 16);
+            float d4 = half_to_float(wd0[g]);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                sumi = dp4a(qk[k] & 0x0F0F0F0F, aq4[k], sumi);
+                sumi = dp4a((int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc0 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+    }
+    acc0 = warp_reduce_sum(acc0);
+    if (lane == 0) y[(size_t)t * out_f + o0] = acc0;
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_row1_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                      blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y, blockIdx.y);
+}
 extern "C" __global__ void qmatvec_q4_0_mmvq_mr2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
