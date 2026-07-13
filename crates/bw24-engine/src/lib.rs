@@ -4288,6 +4288,8 @@ impl Engine {
         // valid-window interleaved, bit-identical per row — same dot program).
         if m == 1 && qtype == QT_Q4_0 {
             static Q40MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            // shape policy PROBED NEGATIVE (2026-07-13): tall-only mr1 197.2 vs
+            // mr1-everywhere 198.7 — mr1 wins wide-output shapes too; arm removed.
             mr = *Q40MR.get_or_init(|| std::env::var("BW24_Q40_MR").ok()
                 .and_then(|v| v.parse().ok()).unwrap_or(1));
         }
