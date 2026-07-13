@@ -25,7 +25,8 @@ CENTERED_ALLOCATION_ANALYSIS=${CENTERED_ALLOCATION_ANALYSIS:-/data/analysis/per-
 PARETO_ALLOCATION_ANALYSIS=${PARETO_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-dominance-6c5c5ea}
 PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
 BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
-IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-seven-format-effects-38af56e}
+IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/calibration/hy3-quant-iq3-iq4-q4-pareto-6c5c5ea}
+IQ4_EFFECT_EVIDENCE=${IQ4_EFFECT_EVIDENCE:-/data/logs/iq3-iq4-q4-pareto-6c5c5ea/build/evidence.sha256}
 PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$PARETO_ALLOCATION_ANALYSIS/private-damage-three-way.json}
 UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
 CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
@@ -40,7 +41,6 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
-  /data/calibration/hy3-quant-iq3-iq4-q4-pareto-6c5c5ea
   "$BASELINE_ALLOCATION_ANALYSIS"
   "$IQ4_ALLOCATION_ANALYSIS"
   "$CENTERED_ALLOCATION_ANALYSIS"
@@ -209,10 +209,11 @@ ssh "$REMOTE" "test -f '$CENTERED_ALLOCATION_ANALYSIS/complete' && \
 ssh "$REMOTE" "test -f '$PARETO_ALLOCATION_ANALYSIS/complete'" \
   >/dev/null || die "Pareto allocation evidence validation failed"
 
-for root in "$BASE_EFFECT_ANALYSIS" "$IQ4_EFFECT_ANALYSIS"; do
-  ssh "$REMOTE" "test -s '$root/evidence.sha256' && sha256sum -c '$root/evidence.sha256'" \
-    >/dev/null || die "quant effects evidence validation failed for $root"
-done
+ssh "$REMOTE" "test -s '$BASE_EFFECT_ANALYSIS/evidence.sha256' && \
+  sha256sum -c '$BASE_EFFECT_ANALYSIS/evidence.sha256'" \
+  >/dev/null || die "base quant effects evidence validation failed"
+ssh "$REMOTE" "test -s '$IQ4_EFFECT_EVIDENCE' && sha256sum -c '$IQ4_EFFECT_EVIDENCE'" \
+  >/dev/null || die "seven-format quant effects evidence validation failed"
 
 for root in "${EVIDENCE_ROOTS[@]}"; do
   ssh "$REMOTE" "test -e '$root'" || die "missing remote evidence root $root"
