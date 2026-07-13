@@ -176,9 +176,6 @@ done
 eligible_arms=()
 rejected_arms=()
 for arm in "${arms[@]}"; do
-  "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" \
-    --receipt-dir "$HEAL_ROOT/$arm/receipts" --overlay-dir "$HEAL_ROOT/$arm/overlay" \
-    --layers 1-79 --lock "$HEAL_ROOT/$arm/overlay.lock.json" | tee "$LOG_ROOT/merge-$arm.log"
   "$PY" - "$HEAL_ROOT/$arm/receipts" "$LOG_ROOT/routing-audit-$arm.json" \
     "$LOG_ROOT/heal-quality-$arm.json" <<'PY'
 import json,math,pathlib,sys
@@ -209,7 +206,8 @@ result={"format":"bw24-smart100-post-requant-heal-gate-v1","layers":len(receipts
         "rolled_back_non_improving_layers":rolled_back,
         "holdout_dead_active_experts":sum(int(d["after"]["dead_active_experts"]) for d in receipts),
         "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
-        "passed":after < before and improved >= 40,"public_eval_data_used":False}
+        "passed":after < before and improved >= 40 and audit["summary"]["dead_active_experts"] == 0,
+        "public_eval_data_used":False}
 pathlib.Path(sys.argv[3]).write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
 print(json.dumps(result,sort_keys=True))
 PY
@@ -221,6 +219,9 @@ PY
     continue
   fi
   eligible_arms+=("$arm")
+  "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" \
+    --receipt-dir "$HEAL_ROOT/$arm/receipts" --overlay-dir "$HEAL_ROOT/$arm/overlay" \
+    --layers 1-79 --lock "$HEAL_ROOT/$arm/overlay.lock.json" | tee "$LOG_ROOT/merge-$arm.log"
   "$PY" "$ROOT/tools/export_hy3_router_overrides.py" \
     --overlay-dir "$HEAL_ROOT/$arm/overlay" --layers 1-79 \
     --blob "$HEAL_ROOT/$arm/router-overrides.f32" \
@@ -272,9 +273,11 @@ pathlib.Path(out).write_text(json.dumps({
     "rejected_arms":split(rejected),
 },indent=2,sort_keys=True)+"\n")
 PY
-sha256sum "$PLAN_ROOT"/*.json "$PLAN_ROOT/plan-agreement-layers.csv" \
-  "$HEAL_ROOT"/*/overlay.lock.json "$LOG_ROOT"/heal-quality-*.json \
-  "$LOG_ROOT"/routing-audit-*.json \
-  "$LOG_ROOT/eligible-arms.json" "$HEAL_ROOT"/*/router-overrides.json "$ARTIFACT_ROOT"/*/manifest.json \
-  >"$LOG_ROOT/evidence.sha256"
+evidence=("$PLAN_ROOT"/*.json "$PLAN_ROOT/plan-agreement-layers.csv" \
+  "$LOG_ROOT"/heal-quality-*.json "$LOG_ROOT"/routing-audit-*.json "$LOG_ROOT/eligible-arms.json")
+for arm in "${eligible_arms[@]}"; do
+  evidence+=("$HEAL_ROOT/$arm/overlay.lock.json" "$HEAL_ROOT/$arm/router-overrides.json" \
+    "$ARTIFACT_ROOT/$arm/manifest.json")
+done
+sha256sum "${evidence[@]}" >"$LOG_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
