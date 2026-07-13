@@ -24,6 +24,8 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
+  /data/analysis/per-expert-quant-smart100-1a97cb3
+  /data/analysis/per-expert-quant-iq3-iq4-q4-1a97cb3
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
@@ -81,6 +83,8 @@ for f in \
   /data/logs/trusted-full-iq3-iq4-q4-v1/complete \
   /data/logs/full-agentic-iq3-iq4-q4-v1/complete \
   /data/logs/full-agentic-iq3-iq4-q4-v1/chain-complete; do test -f "$f"; done
+test -f /data/analysis/per-expert-quant-smart100-1a97cb3/receipt.json
+test -f /data/analysis/per-expert-quant-iq3-iq4-q4-1a97cb3/receipt.json
 test -z "$(pgrep -x bw24-server || true)"
 test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"
