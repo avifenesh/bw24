@@ -61,6 +61,13 @@ whole-expert decision, so a pruned expert removes all three projections. Constra
 - retention of every private per-stratum protected expert;
 - exactly one precision for every retained projection.
 
+An optional `bw24-hy3-layer-constraints-v1` file may raise the survivor floor and cap the number
+of Q2 projections separately in every layer. The file must cover every MoE layer and attest that
+public evaluation data was not used for selection; the allocator rejects it otherwise. Its path,
+hash, resolved bounds, and achieved per-layer counts are written into the plan. This provides a
+structural control for a new private holdout without changing the global byte ceiling or tuning a
+bound from public task outcomes.
+
 The base objective is measured router-weighted output squared error scaled to the full routed-token
 count. Optional multipliers protect REAP/domain importance, correct low-confidence rescue experts,
 and layers where the current mask causes high teacher reconstruction error.
@@ -177,5 +184,6 @@ even though the layer-level prune holdout says earlier layers are more structura
 This rules out merely increasing the existing layer or rescue scalar as a clean next experiment.
 A future private-only allocation should instead preregister a structural control such as a
 layer-normalized objective, a cap on per-cell objective share, or explicit per-layer retention and
-damage budgets. It must be frozen against a new private holdout before another public capability
-screen; public task failures must not be used to choose those bounds.
+damage budgets. The allocator now supports the explicit per-layer survivor and Q2 bounds needed for
+that experiment. The bounds must be frozen against a new private holdout before another public
+capability screen; public task failures must not be used to choose them.

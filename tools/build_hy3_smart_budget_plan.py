@@ -25,6 +25,7 @@ from scipy.sparse import coo_array
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
 RETENTION_FORMAT = "bw24-expert-retention-scores-v1"
 SENSITIVITY_FORMAT = "bw24-hy3-quant-sensitivity-v1"
+LAYER_CONSTRAINTS_FORMAT = "bw24-hy3-layer-constraints-v1"
 PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q8_0": (32, 34),
@@ -104,6 +105,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     sensitivity = load_json(args.quant_sensitivity)
     reference = load_json(args.reference_plan)
     confidence = load_json(args.confidence_plan) if args.confidence_plan else None
+    layer_constraints = load_json(args.layer_constraints) if args.layer_constraints else None
     if retention.get("format") != RETENTION_FORMAT:
         raise ValueError("unsupported retention score format")
     if sensitivity.get("format") != SENSITIVITY_FORMAT:
@@ -132,6 +134,36 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     expert_count = int(model["expert_count"])
     hidden, intermediate = int(model["hidden_size"]), int(model["intermediate_size"])
     experts = [(layer, expert) for layer in layers for expert in range(expert_count)]
+    layer_policy: dict[int, dict[str, int]] = {
+        layer: {
+            "min_survivors": args.min_survivors_per_layer,
+            "max_q2_projections": expert_count * len(PROJECTIONS),
+        }
+        for layer in layers
+    }
+    if layer_constraints is not None:
+        if layer_constraints.get("format") != LAYER_CONSTRAINTS_FORMAT:
+            raise ValueError("unsupported layer constraints format")
+        calibration = layer_constraints.get("calibration", {})
+        if calibration.get("public_eval_data_used_for_selection") is not False:
+            raise ValueError("layer constraints must use private selection evidence")
+        rows = layer_constraints.get("layers")
+        if not isinstance(rows, dict) or set(rows) != {str(layer) for layer in layers}:
+            raise ValueError("layer constraints must exactly cover model MoE layers")
+        for layer in layers:
+            row = rows[str(layer)]
+            if not isinstance(row, dict):
+                raise ValueError(f"invalid layer constraints row for layer {layer}")
+            minimum = int(row.get("min_survivors", args.min_survivors_per_layer))
+            max_q2 = int(row.get("max_q2_projections", expert_count * len(PROJECTIONS)))
+            if not args.min_survivors_per_layer <= minimum <= expert_count:
+                raise ValueError(f"invalid min_survivors for layer {layer}: {minimum}")
+            if not 0 <= max_q2 <= expert_count * len(PROJECTIONS):
+                raise ValueError(f"invalid max_q2_projections for layer {layer}: {max_q2}")
+            layer_policy[layer] = {
+                "min_survivors": minimum,
+                "max_q2_projections": max_q2,
+            }
     retention_rows = {
         (int(row["layer"]), int(row["expert"])): row for row in retention["scores"]
     }
@@ -280,11 +312,25 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         if value:
             row_ids.append(row); col_ids.append(index); data.append(value)
     lower.append(-np.inf); upper.append(float(expert_budget)); row += 1
-    # Per-layer survivor floor.
+    # Per-layer structural constraints.  The optional private policy can raise the survivor floor
+    # or cap Q2 assignments in fragile layers without changing the global byte ceiling.
     for layer in layers:
         for expert in range(expert_count):
-            row_ids.append(row); col_ids.append(prune_index[(layer, expert)]); data.append(1.0)
-        lower.append(-np.inf); upper.append(float(expert_count - args.min_survivors_per_layer)); row += 1
+            row_ids.append(row)
+            col_ids.append(prune_index[(layer, expert)])
+            data.append(1.0)
+        lower.append(-np.inf)
+        upper.append(float(expert_count - layer_policy[layer]["min_survivors"]))
+        row += 1
+        if "Q2_K" in qtypes:
+            for expert in range(expert_count):
+                for projection in PROJECTIONS:
+                    row_ids.append(row)
+                    col_ids.append(quant_index[(layer, expert, projection, "Q2_K")])
+                    data.append(1.0)
+            lower.append(-np.inf)
+            upper.append(float(layer_policy[layer]["max_q2_projections"]))
+            row += 1
     matrix = coo_array(
         (np.asarray(data), (np.asarray(row_ids), np.asarray(col_ids))),
         shape=(row, n_variables),
@@ -354,6 +400,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         layer_summary[str(layer)] = {
             "retained": expert_count - len(layer_pruned),
             "pruned": len(layer_pruned),
+            "min_survivors": layer_policy[layer]["min_survivors"],
+            "max_q2_projections": layer_policy[layer]["max_q2_projections"],
             "current_prune_damage_normalized_mse": layer_before[layer],
             "current_prune_damage_percentile": layer_percentile[layer],
         }
@@ -374,6 +422,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "result_logical_bytes": logical_bytes,
             "headroom_bytes": args.target_logical_bytes - logical_bytes,
             "min_survivors_per_layer": args.min_survivors_per_layer,
+            "layer_constraints": {
+                str(layer): layer_policy[layer] for layer in layers
+            },
             "rank_metric": "measured_projection_output_error_per_byte",
             "importance_weights": {
                 "retention": args.retention_weight,
@@ -409,6 +460,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "quant_sensitivity": {"path": str(args.quant_sensitivity.resolve()), "sha256": sha256(args.quant_sensitivity)},
             "confidence_plan": ({"path": str(args.confidence_plan.resolve()), "sha256": sha256(args.confidence_plan)} if args.confidence_plan else None),
             "joint_heal_receipts": receipt_hashes,
+            "layer_constraints": (
+                {"path": str(args.layer_constraints.resolve()), "sha256": sha256(args.layer_constraints)}
+                if args.layer_constraints else None
+            ),
             "public_eval_data_used_for_selection": False,
         },
         "reference_plan": {"path": str(args.reference_plan.resolve()), "sha256": sha256(args.reference_plan)},
@@ -496,7 +551,7 @@ def self_test() -> None:
             joint_receipts=None, target_logical_bytes=100 + 6 * 3 * q2_projection,
             min_survivors_per_layer=1, retention_weight=1.0, confidence_weight=1.0,
             layer_weight=0.0, time_limit_seconds=30,
-            mip_rel_gap=1e-4,
+            mip_rel_gap=1e-4, layer_constraints=None,
         )
         plan = build_plan(args)
         assert plan["policy"]["result_logical_bytes"] <= args.target_logical_bytes
@@ -515,6 +570,32 @@ def self_test() -> None:
             plan["selection"]["estimated_centered_output_damage"]
             + centering["constant_offset"],
         )
+        layer_constraints = {
+            "format": LAYER_CONSTRAINTS_FORMAT,
+            "calibration": {"public_eval_data_used_for_selection": False},
+            "layers": {
+                "1": {"min_survivors": 3, "max_q2_projections": 0},
+                "2": {"min_survivors": 1, "max_q2_projections": 9},
+            },
+        }
+        paths["layer_constraints"] = root / "layer-constraints.json"
+        paths["layer_constraints"].write_text(json.dumps(layer_constraints))
+        args.layer_constraints = paths["layer_constraints"]
+        constrained = build_plan(args)
+        assert constrained["layer_summary"]["1"]["retained"] == 3
+        assert constrained["layer_summary"]["1"]["max_q2_projections"] == 0
+        assert not any(
+            row["layer"] == 1 and row["qtype"] == "Q2_K"
+            for row in constrained["assignments"]
+        )
+        layer_constraints["calibration"]["public_eval_data_used_for_selection"] = True
+        paths["layer_constraints"].write_text(json.dumps(layer_constraints))
+        try:
+            build_plan(args)
+        except ValueError as error:
+            assert "private selection evidence" in str(error)
+        else:
+            raise AssertionError("public-derived layer constraints were accepted")
         from prepare_mixed_expert_repack import load_assignments
         path = root / "plan.json"; path.write_text(json.dumps(plan))
         _, expanded, pruned = load_assignments(path)
@@ -527,6 +608,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retention-scores", type=Path, required=True)
     parser.add_argument("--quant-sensitivity", type=Path, required=True)
     parser.add_argument("--confidence-plan", type=Path)
+    parser.add_argument("--layer-constraints", type=Path)
     parser.add_argument("--joint-receipts", type=Path)
     parser.add_argument("--reference-plan", type=Path, required=True)
     parser.add_argument("--target-logical-bytes", type=int, default=100_000_000_000)
