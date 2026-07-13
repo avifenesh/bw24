@@ -65,6 +65,14 @@ The base objective is measured router-weighted output squared error scaled to th
 count. Optional multipliers protect REAP/domain importance, correct low-confidence rescue experts,
 and layers where the current mask causes high teacher reconstruction error.
 
+Before solving, the allocator subtracts each expert projection's lowest measured retained-format
+error from every format choice and subtracts the three corresponding minima from that expert's
+prune choice. Every feasible solution therefore loses the same constant and the exact optimum is
+unchanged. The centered objective prevents a large unavoidable reconstruction floor in one
+layer/expert/projection cell from consuming the MILP relative-gap tolerance and making the remaining
+precision choices effectively arbitrary. The plan records the removed constant, centered scale,
+centered objective, and reconstructed absolute objective.
+
 The integer program is exact for bytes and pruning, but its mixed-precision objective is an additive
 sum of gate-only, up-only, and down-only ablations. It does not claim that this sum is the exact joint
 error of every mixed `(gate, up, down)` tuple: the SiLU gate and up projection interact

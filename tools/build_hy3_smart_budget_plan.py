@@ -173,23 +173,49 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     n_variables = next_index
     objective = np.zeros(n_variables, dtype=np.float64)
     bytes_vector = np.zeros(n_variables, dtype=np.float64)
+    objective_offset = 0.0
     for key in experts:
         row = sensitivity_rows[key]
         first_qtype = qtypes[0]
-        baseline = float(
+        prune_damage = float(
             row["quantization"][first_qtype]["joint_output_error"]["baseline_energy"]
         ) * float(row["sample_scale"])
-        objective[prune_index[key]] = baseline * importance[key]
+        prune_damage *= importance[key]
+        projection_minima: dict[str, float] = {}
         for projection in PROJECTIONS:
+            projection_values: dict[str, float] = {}
             for qtype in qtypes:
                 metric = row["quantization"][qtype]["projection_output_error"][projection]
                 index = quant_index[(*key, projection, qtype)]
-                objective[index] = (
+                projection_values[qtype] = (
                     float(metric["squared_error"]) * float(row["sample_scale"]) * importance[key]
                 )
+                objective[index] = projection_values[qtype]
                 bytes_vector[index] = projection_bytes(
                     projection, hidden, intermediate, qtype
                 )
+            projection_minima[projection] = min(projection_values.values())
+
+        # Each feasible expert contributes either one prune variable or one quant variable for
+        # every projection.  Subtracting the corresponding per-projection minimum from both sides
+        # therefore removes the same constant from every feasible solution.  This preserves the
+        # exact argmin while preventing a large, unavoidable Q8 reconstruction floor in one cell
+        # from swallowing HiGHS' relative-gap tolerance for the rest of the model.
+        expert_offset = sum(projection_minima.values())
+        centered_prune_damage = prune_damage - expert_offset
+        tolerance = 1e-12 * max(abs(prune_damage), abs(expert_offset), 1.0)
+        if centered_prune_damage < -tolerance:
+            raise ValueError(
+                f"best retained quant damage exceeds prune damage for {key}: "
+                f"retained={expert_offset} prune={prune_damage}"
+            )
+        objective[prune_index[key]] = max(centered_prune_damage, 0.0)
+        for projection in PROJECTIONS:
+            minimum = projection_minima[projection]
+            for qtype in qtypes:
+                index = quant_index[(*key, projection, qtype)]
+                objective[index] = max(objective[index] - minimum, 0.0)
+        objective_offset += expert_offset
     scale = max(float(objective.max(initial=0.0)), 1e-30)
     objective /= scale
 
@@ -313,6 +339,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "mip_gap": float(getattr(result, "mip_gap", 0.0)),
             "mip_gap_target": args.mip_rel_gap,
             "optimal": int(result.status) == 0,
+            "objective_centering": {
+                "method": "per_expert_projection_minimum",
+                "preserves_exact_argmin": True,
+                "constant_offset": objective_offset,
+                "centered_scale": scale,
+            },
         },
         "calibration": {
             "retention_scores": {"path": str(args.retention_scores.resolve()), "sha256": sha256(args.retention_scores)},
@@ -327,6 +359,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "pruned_experts": len(pruned),
             "protected_experts": len(protected),
             "estimated_objective": float(result.fun),
+            "estimated_centered_output_damage": float(result.fun) * scale,
+            "estimated_absolute_output_damage": float(result.fun) * scale + objective_offset,
         },
         "pruned_experts": {
             str(layer): [expert for expert in range(expert_count) if (layer, expert) in pruned]
@@ -406,6 +440,15 @@ def self_test() -> None:
         assert plan["policy"]["result_logical_bytes"] <= args.target_logical_bytes
         assert plan["selection"]["protected_experts"] == 1
         assert 2 not in plan["pruned_experts"]["1"]
+        centering = plan["policy"]["objective_centering"]
+        assert centering["method"] == "per_expert_projection_minimum"
+        assert centering["preserves_exact_argmin"] is True
+        assert centering["constant_offset"] > 0
+        assert math.isclose(
+            plan["selection"]["estimated_absolute_output_damage"],
+            plan["selection"]["estimated_centered_output_damage"]
+            + centering["constant_offset"],
+        )
         from prepare_mixed_expert_repack import load_assignments
         path = root / "plan.json"; path.write_text(json.dumps(plan))
         _, expanded, pruned = load_assignments(path)
