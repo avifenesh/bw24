@@ -143,10 +143,20 @@ impl DflashDraft {
             let (_info, bytes) = st.raw(name).ok_or_else(|| format!("missing tensor {name}"))?;
             Ok(e.htod(&bf16_to_f32(bytes))?)
         };
+        // Precision policy (BW24_DFLASH_PREC seam): "q8" = all q8_0 (1.6GB, default);
+        // "mixed" = bf16 attn+fc (the ctx-conditioning path) + q8_0 ffn (~2.2GB — fits the
+        // ~2.8GB headroom beside the 31B trunk); "bf16" = all bf16 (parity runs, no target).
+        let prec = std::env::var("BW24_DFLASH_PREC").unwrap_or_else(|_| "q8".into());
         let upw = |name: &str| -> Result<GpuTensor, Box<dyn std::error::Error>> {
             let (info, bytes) = st.raw(name).ok_or_else(|| format!("missing tensor {name}"))?;
             let shape = info.ne(); // ggml order: ne[0]=in_f, ne[1]=out_f
             let in_f = shape[0] as usize;
+            let is_ffn = name.contains(".mlp.");
+            let bf16 = prec == "bf16" || (prec == "mixed" && !is_ffn)
+                || (prec == "fc" && name == "fc.weight");
+            if bf16 {
+                return Ok(GpuTensor::FloatBf16 { data: e.upload_u8(bytes)?, ne: shape.to_vec() });
+            }
             let f32s = bf16_to_f32(bytes);
             let q = encode_q8_0(&f32s);
             Ok(GpuTensor::Quant {
