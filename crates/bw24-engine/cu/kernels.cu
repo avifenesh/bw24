@@ -3,6 +3,18 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+// PDL entry hook (SOTA item 2, 2026-07-13). Under a plain launch this is a documented
+// no-op (grid dependencies are complete before any block starts). Under a PROGRAMMATIC
+// graph edge (the BW24_PDL post-capture rewrite) it orders this kernel's global reads
+// after the producer kernel's writes while still letting the grid launch overlap the
+// producer's drain (~120ns/kernel on sm_120, pdl_probe). sm_90+ only; the sm_89
+// portable arm compiles it out.
+#if !defined(BW24_PORTABLE_CUDA) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#define BW24_PDL_ENTRY() cudaGridDependencySynchronize()
+#else
+#define BW24_PDL_ENTRY()
+#endif
+
 // ---- GPU-resident greedy argmax over logits[n_vocab] -> token_out[0] (u32). ----
 // CUDA-GRAPH-PLAN Phase 1: removes the per-step dtoh(logits)+synchronize host barrier (the hard
 // graph-capture blocker). Single CTA, 256 threads. Tie-break = SMALLEST index wins, bit-identical
@@ -301,6 +313,7 @@ extern "C" __global__ void rms_pre_add_rms_norm_q8z_f32(
         float* __restrict__ dst,
         signed char* __restrict__ out_q, float* __restrict__ out_d,
         int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;
@@ -477,6 +490,7 @@ extern "C" __global__ void add_q8_1_f32(const float* __restrict__ a, const float
 extern "C" __global__ void rms_norm_q8_1(const float* __restrict__ x, const float* __restrict__ w,
                                          signed char* __restrict__ out_q, float* __restrict__ out_d,
                                          int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* xr = x + (size_t)row * ncols;
@@ -775,6 +789,7 @@ extern "C" __global__ void rms_norm_qkv_rope_cat_f32(
         const int* __restrict__ pos, int nh_q, int nh_k,
         float theta_scale, float freq_scale, const float* __restrict__ ff,
         float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     const float* xr = qkv + (size_t)row * ncols;
     const float* w; float* dr;
@@ -820,6 +835,7 @@ extern "C" __global__ void rms_norm_qkv_rope_f32(
         const int* __restrict__ pos, int nh_q, int nh_k,
         float theta_scale, float freq_scale, const float* __restrict__ ff,
         float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     const float* xr; const float* w; float* dr;
     int seg; int seg_r;
@@ -1035,6 +1051,7 @@ extern "C" __global__ void rms_pre_add_scale_rms_norm_q8_1(
         float* __restrict__ res,
         signed char* __restrict__ out_q, float* __restrict__ out_d,
         int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;
@@ -1290,6 +1307,7 @@ extern "C" __global__ void gelu_tanh_mul_q8_1(const float* __restrict__ gate,
                                               signed char* __restrict__ out_q,
                                               float* __restrict__ out_d,
                                               int ncols) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     int lane = tid & 31;

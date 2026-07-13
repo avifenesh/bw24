@@ -207,6 +207,12 @@ pub fn fa_plan(graph: &cudarc::driver::CudaGraph)
 /// vec mains get the EAGER split count ns = ceil(t_kv/split_keys(t_kv, nkv)); scalar mains
 /// shrink grid.y to their in-kernel ns_eff. No-op when the counts haven't stepped.
 /// `split_keys` is the caller's ladder (fa_split_keys) so graph and eager stay in lockstep.
+// PDL EDGE-REWRITE ARM KILLED (2026-07-13): post-capture rewrite of captured edges to the
+// programmatic encoding worked in pdl_probe (2690 -> 2434 ns/pair) but the ENGINE's captured
+// graphs contain cuMemAllocAsync ALLOC NODES (cudarc allocs inside the captured step) and
+// CUDA returns CUDA_ERROR_NOT_SUPPORTED for edge topology edits on such graphs. The live PDL
+// mechanism is LAUNCH-SIDE instead: Engine::pdl-attributed launches of the BW24_PDL_ENTRY
+// consumer kernels (lib.rs pdl launcher) — capture encodes the programmatic edges natively.
 pub fn fa_apply(graph: &cudarc::driver::CudaGraph, plan: &mut [FaMain], t_kv: usize,
                 split_keys: impl Fn(usize, usize) -> usize)
     -> Result<(), Box<dyn std::error::Error>>

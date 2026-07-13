@@ -3041,6 +3041,10 @@ impl HybridModel {
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
+        // Weight prefetch NOT wired here (26B/31B/qwen probes 2026-07-13: 26B flat
+        // 196.6/196.0 vs 196.4/196.1 — MoE ffn dilutes wo; 31B −0.2% — dense decode sits
+        // at the DRAM wall, no idle window to front-load into). E4B keeps the arm
+        // (gemma4_e4b_attn, +0.65% valid window).
         match cap_bucket_max {
             None => {
                 // dc-EAGER: host knows the length — R6 window views EXACTLY like the eager
@@ -3815,6 +3819,16 @@ impl HybridModel {
             let k_view = e.view_u8(&kvl.k, kvl.k.len());
             let v_view = e.view_u8(&kvl.v, kvl.v.len());
             let g = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+            // Weight prefetch (SOTA item 3, 2026-07-13): wo's decode plane prefetched into
+            // L2 across the fa window — fa reads KV only, the weight DRAM lanes are idle
+            // there (E4B valid window +0.65%: 196.8 vs 195.6). Value-free scheduling op,
+            // captured into the dc graph like any other launch. Extending the cascade to
+            // the ffn gate/up planes measured NEGATIVE (193.9 vs 195.8 — 29MB/layer floods
+            // the fill path and evicts still-hot lines); wo-only is the shipped shape.
+            // BW24_WPF=0 rollback seam.
+            if crate::Engine::wpf_level() >= 1 {
+                e.prefetch_weight_l2(&fa.wo)?;
+            }
             // wave 5b: the combine emits the wo input q8 pair directly — the standalone
             // quantize launch + the f32 attn round-trip fold away (t=1 fast path only).
             if e.uses_q8_1_fast(&fa.wo) {
@@ -3868,7 +3882,7 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
-        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)
     }
 
     /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
@@ -3876,7 +3890,7 @@ impl HybridModel {
     /// eager chain by construction: SAME functions, not twins).
     fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
                              pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
-                             dc_bucket: Option<usize>)
+                             dc_bucket: Option<usize>, cap_logits: bool)
                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -3955,8 +3969,13 @@ impl HybridModel {
         let (oq, odq) = h_carry.take().unwrap();
         let h0 = e.zeros(0)?;
         let mut ld = e.matmul_pre(&self.output, &oq, &odq, &h0, t)?;
-        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        // softcap is strictly monotonic — greedy (argmax-only) consumers skip it, matching
+        // the 26B/31B dc precedent (their dc head goes matmul -> argmax with no cap).
+        // Logit-returning callers (host logits / spec prime) keep the capped emit.
+        if cap_logits {
+            let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+            e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        }
         Ok((ld, x))
     }
 
@@ -3980,7 +3999,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, tok_d, &x, t)?;
-        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)?;
+        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)?;
         // softcap is monotonic — the per-row argmax is invariant to it (the trunk's head
         // emit is already capped, matching the eager chain bit-for-bit).
         let n_vocab = self.output.out_features();
@@ -4023,7 +4042,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket))?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket), false)?;
         e.argmax_token_device_into(&ld, token_d, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         Ok(())
@@ -4047,7 +4066,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None, false)?;
         let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
         e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;
