@@ -5034,15 +5034,12 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
     const int kv_head = blockIdx.x;
     const int split   = blockIdx.y;
     if (kv_head >= n_head_kv || split >= n_splits) return;
-    // STAGING-PARALLEL twin (2026-07-11): gqa==1 host-gated; warp 1 is a STAGING HELPER
-    // (the v4 phase probe: staging = 61% of the kernel) — bsz doubles, score/softmax/value
-    // phases run on warp 0 only. Numerics identical to v4_w (same stage layout, same chains).
+    // STAGING-PARALLEL twin (2026-07-11; gqa probe 2026-07-13)
     const int gqa  = n_head / n_head_kv;
     const int wy   = threadIdx.y;
     const int lane = threadIdx.x;
-    (void)gqa;
-    const int head = kv_head;
-    const int dpl  = head_dim >> 5;           // == 8 (host-gated hd256)
+    const int head = kv_head * gqa + min(wy, gqa - 1);
+    const int dpl  = head_dim >> 5;
 
     const int per  = (window + n_splits - 1) / n_splits;
     const int t_lo = start + split * per;
@@ -5052,7 +5049,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
     fa_v4_smem* sm = (fa_v4_smem*)sm_raw_v4;
     fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_v4 + sizeof(fa_v4_smem));
 
-    if (wy == 0) fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, 0, sm);
+    if (wy < gqa) fa_v4_stage_q(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
     __syncthreads();
 
     float m_i = NEG_INF, l_i = 0.0f;
@@ -5061,7 +5058,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) acc[i] = 0.0f;
 
     const int bt  = wy * WARP_SZ + lane;
-    const int bsz = WARP_SZ * 2;
+    const int bsz = WARP_SZ * (int)blockDim.y;
     const int kblk0 = (kv_head * head_dim) >> 5;
 
     for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
@@ -5120,7 +5117,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
         fa_v4_stage_k(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
         __syncthreads();
 
-        if (wy == 0) {
+        if (wy < gqa) {
         // ---- V4 SCORE PHASE: lane j owns key j; full dot chunk-serial, zero shuffles ----
         float my_score = NEG_INF;
         if (lane < nt) {
@@ -5186,7 +5183,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
         __syncthreads();   // tile fully consumed before restaging
     }
 
-    if (wy == 0) {
+    if (wy < gqa) {
     #pragma unroll
     for (int i = 0; i < FA_DEC_MAX_DPL; ++i) {
         if (i < dpl) {
