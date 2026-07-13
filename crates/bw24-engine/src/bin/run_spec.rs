@@ -77,17 +77,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(256);
         let k: usize = std::env::var("BW24_SPEC_K").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
         let chat = std::env::var("BW24_CHAT").is_ok();
-        let mut files: Vec<_> = std::fs::read_dir(&dir)?
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| format!("BW24_PROMPT_DIR {dir}: {e}"))?
             .filter_map(|d| d.ok().map(|d| d.path()))
             .filter(|p| p.extension().map(|x| x == "txt").unwrap_or(false)).collect();
         files.sort();
+        if files.is_empty() {
+            eprintln!("BW24_PROMPT_DIR {dir}: no *.txt prompts");
+            std::process::exit(2);
+        }
         let _ = model.generate(&e, &[55u32], 1)?;   // cold-start warmup
         let (mut tot_acc, mut tot_draft, mut sum_gen_t, mut sum_spec_t, mut tot_tok) =
             (0usize, 0usize, 0f64, 0f64, 0usize);
         for fp in &files {
             let text = std::fs::read_to_string(fp)?;
             let to_encode = if chat { tok.apply_chat_template(&[("user", &text)], true) }
-                            else { text.clone() };
+                            else { text };
             let ids = tok.encode(&to_encode, true);
             e.stream().synchronize()?;
             let t0 = std::time::Instant::now();
