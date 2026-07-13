@@ -826,6 +826,28 @@ impl Engine {
         Ok(())
     }
 
+    /// t=1 dc append with a FUSED len_d increment (wave 5c) — one launch replaces
+    /// append_rows_dc + inc_seqlen. Single block (read-before-inc ordering).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_kv_quantized_row_dc_inc(&self, k_row: &CudaSlice<f32>, v_row: &CudaSlice<f32>,
+                                          kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
+                                          t0_dev: &mut CudaSlice<i32>,
+                                          kv_dim_k: usize, kv_dim_v: usize,
+                                          k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
+                                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc_inc") }
+                else { self.func("append_quantize_kv_q8_0_q5_1_dc_inc") };
+        let nthreads = ((kv_dim_k.max(kv_dim_v) / 32) * 32).min(1024) as u32;
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (nthreads, 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(t0_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM: draft-chain pack + in-graph d2t remap (see kernels.cu headers).
     pub fn pack_tok_p(&self, tok: &CudaSlice<u32>, p: &CudaSlice<f32>, out: &mut CudaSlice<u32>,
                       slot: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -4260,11 +4282,14 @@ impl Engine {
         //     of the 27B p3 spec wall; latency-bound like the other k-quants pre-fix).
         //   Q4_K/Q6_K m=1 -> single-row (mr2 measured +0.7% / flat — weight-bandwidth-bound).
         let mut mr: u32 = if m == 1 && (qtype == QT_NVFP4 || qtype == QT_Q5_K) { 2 } else { 1 };
-        // Q4_0 mr2 (gemma trunk): BW24_Q40_MR override; default 2 pending the sweep below.
+        // Q4_0 mr (gemma trunk): DEFAULT 1 since 2026-07-13 (BW24_Q40_MR=2 reverts) — the
+        // mr1 rp twin doubles the block count and wins the tail-quantization/latency battle
+        // on every gemma model (E4B +3.75%: 198.9 vs 191.7; 26B +0.7%; 31B +0.9%; N=2-3
+        // valid-window interleaved, bit-identical per row — same dot program).
         if m == 1 && qtype == QT_Q4_0 {
             static Q40MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
             mr = *Q40MR.get_or_init(|| std::env::var("BW24_Q40_MR").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(2));
+                .and_then(|v| v.parse().ok()).unwrap_or(1));
         }
         // q5issue lane (2026-07-08): BW24_Q5K_ISSUE swaps the q5_K m=1 mmvq kernels for the
         // issue-reduced `_il` bodies (uint4 header/qh/qs loads + branchless scale decode —
@@ -4283,12 +4308,14 @@ impl Engine {
         let q5_il = qtype == QT_Q5_K && m == 1
             && (q5_force || q5_mode.as_deref().map(|v| v != "0").unwrap_or(true));
         if q5_il && !q5_force && out_f > 65536 { mr = 1; }
-        // Q4_0 split-plane mirror has only the mr2 twin — force mr=2 under rp.
-        if qtype == QT_Q4_0 && rp { mr = 2; }
+        // Q4_0 split-plane rp: mr2 default; BW24_Q40_MR=1 reaches the mr1 rp twin
+        // (2026-07-13 — the tall-input/short-output tail-quantization probe).
+        if qtype == QT_Q4_0 && rp && mr != 1 { mr = 2; }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
             (QT_NVFP4, _, true)  => "qmatvec_nvfp4_mmvq_rp",
+            (QT_Q4_0, 1, true)   => "qmatvec_q4_0_mmvq_rp",
             (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",

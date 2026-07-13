@@ -436,6 +436,35 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows_dc(
     }
 }
 
+// SINGLE-BLOCK dc append with a FUSED counter inc (E4B glue wave 5c): t=1 row append +
+// len_d += 1 in ONE launch — kills the separate inc_i32 per own-KV layer. One block so the
+// t_dev read (all threads, before any write) strictly precedes the inc (thread 0, after
+// __syncthreads) — the multi-block form would race blocks' reads against the incrementor.
+// Quant math = quant_K_block/quant_V_block verbatim (bit-identical rows).
+extern "C" __global__ void append_quantize_kv_q8_0_q5_1_dc_inc(
+        const float* __restrict__ k_row, const float* __restrict__ v_row,
+        uint8_t* __restrict__ K, uint8_t* __restrict__ V,
+        int* __restrict__ t_dev, int kv_dim_k, int kv_dim_v,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int t = t_dev[0];
+    const int lane = threadIdx.x & 31;
+    const int nb_max = (kv_dim_k > kv_dim_v ? kv_dim_k : kv_dim_v) / 32;
+    for (int b = (int)(threadIdx.x >> 5); b < nb_max; b += (int)(blockDim.x >> 5)) {
+        const int eidx = b * 32 + lane;
+        if (b * 32 < kv_dim_k) {
+            float x = (eidx < kv_dim_k) ? k_row[eidx] : 0.0f;
+            quant_K_block(x, lane, K + (size_t)t * k_tok_bytes + (size_t)b * K_BLK_B);
+        }
+        if (b * 32 < kv_dim_v) {
+            float x = (eidx < kv_dim_v) ? v_row[eidx] : 0.0f;
+            quant_V_block(x, lane, V + (size_t)t * v_tok_bytes + (size_t)b * V_BLK_B);
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) t_dev[0] = t + 1;
+}
+
 // ----- DEVICE-COUNTER variant (CUDA-GRAPH-PLAN Phase 2): identical math to
 // append_quantize_kv_q8_0_q5_1, but the per-step WRITE OFFSET `t` is read from a
 // device int[1] counter (t_dev[0]) instead of a host int arg. This is the only

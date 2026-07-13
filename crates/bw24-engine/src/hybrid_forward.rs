@@ -3765,11 +3765,11 @@ impl HybridModel {
                 // in-stream — replay-correct, no host len in the launch args. Host mirrors
                 // are NOT touched here (the replay loop owns them; a bump at capture-record
                 // time would double-count the capture iteration).
-                e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
-                                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                              kvl.v_tok_bytes, cls)?;
                 debug_assert!(t == 1);
-                e.inc_seqlen(&mut kvl.len_d)?;
+                // wave 5c: append + len_d inc fused (one launch; single-block ordering).
+                e.append_kv_quantized_row_dc_inc(&k, &v, &mut kvl.k, &mut kvl.v,
+                                                 &mut kvl.len_d, kvl.kv_dim_k, kvl.kv_dim_v,
+                                                 kvl.k_tok_bytes, kvl.v_tok_bytes, cls)?;
             } else {
                 e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
                                            kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,

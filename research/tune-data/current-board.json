@@ -90,24 +90,24 @@
  "extra_card_rows": [
   {
    "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
-   "bw24": 197.9,
+   "bw24": 200.6,
    "llama": 189.7
   },
   {
    "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
-   "bw24": 399.3,
+   "bw24": 355.2,
    "llama": 258.7,
    "spec": true
   },
   {
    "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
-   "bw24": 129.3,
+   "bw24": 126.0,
    "llama": 112.1,
    "spec": true
   },
   {
    "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
-   "bw24": 188.2,
+   "bw24": 199.0,
    "llama": 181.3
   },
   {
