@@ -81,6 +81,8 @@ fi
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" --self-test | tee "$LOG_ROOT/plan-self-test.log"
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" --self-test \
   | tee "$LOG_ROOT/allocation-comparison-self-test.log"
+"$PY" "$ROOT/tools/summarize_hy3_plan_agreement.py" --self-test \
+  | tee "$LOG_ROOT/plan-agreement-self-test.log"
 "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" --self-test | tee "$LOG_ROOT/heal-self-test.log"
 "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --self-test | tee "$LOG_ROOT/heal-merge-self-test.log"
 "$PY" "$ROOT/tools/export_hy3_router_overrides.py" --self-test | tee "$LOG_ROOT/export-self-test.log"
@@ -108,6 +110,9 @@ done
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" \
   "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/allocation-comparison.json" \
   --require-distinct | tee "$LOG_ROOT/allocation-comparison.log"
+"$PY" "$ROOT/tools/summarize_hy3_plan_agreement.py" \
+  "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/plan-agreement.json" \
+  --layer-csv "$PLAN_ROOT/plan-agreement-layers.csv" | tee "$LOG_ROOT/plan-agreement.log"
 
 "$PY" - "$PLAN_ROOT" "$TARGET_BYTES" "${arms[@]}" <<'PY'
 import json, pathlib, sys
@@ -259,7 +264,8 @@ pathlib.Path(out).write_text(json.dumps({
     "rejected_arms":split(rejected),
 },indent=2,sort_keys=True)+"\n")
 PY
-sha256sum "$PLAN_ROOT"/*.json "$HEAL_ROOT"/*/overlay.lock.json "$LOG_ROOT"/heal-quality-*.json \
+sha256sum "$PLAN_ROOT"/*.json "$PLAN_ROOT/plan-agreement-layers.csv" \
+  "$HEAL_ROOT"/*/overlay.lock.json "$LOG_ROOT"/heal-quality-*.json \
   "$LOG_ROOT"/routing-audit-*.json \
   "$LOG_ROOT/eligible-arms.json" "$HEAL_ROOT"/*/router-overrides.json "$ARTIFACT_ROOT"/*/manifest.json \
   >"$LOG_ROOT/evidence.sha256"

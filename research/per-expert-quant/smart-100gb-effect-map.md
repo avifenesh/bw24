@@ -88,6 +88,11 @@ The smart build uses `--require-distinct`: two objective recipes that produce th
 are not separately healed or evaluated. This prevents benchmark noise from being mistaken for an
 allocation effect and keeps every scored arm a genuinely different compression hypothesis.
 
+`tools/summarize_hy3_plan_agreement.py` also writes a reproducible consensus map: pairwise pruning
+overlap, exact quant/prune-state agreement, stable per-projection quant counts, and layer-level
+disagreement. This separates structural decisions that survive all private priors from precision
+choices that still require held-out capability evaluation.
+
 ## Evaluation order
 
 1. Validate plan coverage, distinct allocation hashes, exact bytes, source hashes, and zero routing
