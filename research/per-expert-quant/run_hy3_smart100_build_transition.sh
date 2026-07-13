@@ -36,10 +36,13 @@ for path in "$SENSITIVITY" "$RETENTION" "$CONFIDENCE" "$REFERENCE_PLAN" \
   "$SOURCE/config.json" "$SOURCE/model.safetensors.index.json"; do
   [[ -f "$path" ]] || die "missing input $path"
 done
-if pgrep -x bw24-server >/dev/null || pgrep -af '/harbor run ' >/dev/null; then
-  die "model server or Harbor evaluator is active"
-fi
-[[ -z $(docker ps -q) ]] || die "task containers are active"
+while pgrep -x bw24-server >/dev/null \
+  || pgrep -af '/harbor run ' >/dev/null \
+  || [[ -n $(docker ps -q) ]]; do
+  echo "$(date -u +%FT%TZ) waiting for active model/eval work to release GPUs" \
+    | tee -a "$LOG_ROOT/transition.log"
+  sleep 30
+done
 
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" --self-test | tee "$LOG_ROOT/plan-self-test.log"
 "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" --self-test | tee "$LOG_ROOT/heal-self-test.log"
