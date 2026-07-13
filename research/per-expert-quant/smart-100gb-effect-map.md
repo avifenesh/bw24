@@ -2,7 +2,7 @@
 
 ## Question
 
-Can an exact-format, globally optimized mixture of per-projection Q8/NVFP4/Q3/Q2 and whole-expert
+Can an exact-format, globally optimized mixture of per-projection Q8/NVFP4/IQ4_XS/Q4_K/Q3/Q2 and whole-expert
 pruning retain more quality at the same 100GB ceiling than the first traffic-ranked prune + joint
 heal arm?
 
@@ -34,13 +34,19 @@ For every `(layer, expert, qtype)` it records:
 - exact encoded bytes and weight reconstruction error per projection;
 - routed-token count, sampled router mass, baseline contribution energy, and sample scale.
 
-The complete map has 15,168 expert rows and four precision alternatives. Eight disjoint layer
-shards are merged only if calibration, source, measurement policy, and complete coverage match.
+The base map has 15,168 expert rows and four precision alternatives. The extension measures
+IQ4_XS and Q4_K on the same frozen routed samples using the current pinned upstream ggml C
+quantizers and private per-column activation importance. Eight disjoint layer shards are merged
+only if calibration, source, measurement policy, and complete coverage match; the two full maps are
+then joined only if their routed evidence is identical. Library SHA, upstream commit, sidecar hashes,
+and sidecar shapes are carried through the plan, heal receipts, artifact manifest, and validator.
 
 ## Global allocator
 
 `tools/build_hy3_smart_budget_plan.py` solves one global integer program. Each retained
-gate/up/down projection independently chooses Q8, NVFP4, Q3, or Q2. Pruning is a shared
+gate/up/down projection independently chooses any exactly measured format. The six-format extension
+adds IQ4_XS and Q4_K beside Q8, NVFP4, Q3, and Q2; equal-size Q4_K/NVFP4 alternatives compete on
+measured error without a precision-order assumption. Pruning is a shared
 whole-expert decision, so a pruned expert removes all three projections. Constraints enforce:
 
 - logical size at or below 100,000,000,000 bytes;
@@ -63,8 +69,10 @@ joint rank-8 expert + F32 router/bias healing. Only the frozen objective weights
 | `smart100_balanced` | 1 | 1 | 1 | Equal protection for function, hard-token rescue, and depth. |
 | `smart100_rescue` | 0.5 | 2 | 1 | Test whether rare hard-token experts deserve disproportionate precision. |
 
-The existing `prune100_joint_heal` remains the traffic-ranked control. No further recipe is added
-until these three establish which signal improves held-out generation.
+The existing `prune100_joint_heal` remains the traffic-ranked control. A single
+`smart100_iq4_q4_empirical` extension re-solves the pure measured-error objective with all six
+formats at the same exact 100GB ceiling. It is promoted only if its matched held-out evidence adds
+to or improves the current Pareto frontier.
 
 ## Allocation comparison receipt
 

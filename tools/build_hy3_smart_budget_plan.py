@@ -29,6 +29,8 @@ PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q8_0": (32, 34),
     "NVFP4": (64, 36),
+    "IQ4_XS": (256, 136),
+    "Q4_K": (256, 144),
     "Q3_K": (256, 110),
     "Q2_K": (256, 84),
 }
@@ -89,6 +91,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         confidence_rows = []
 
     model = sensitivity["model"]
+    qtypes = tuple(sensitivity.get("measurement", {}).get("qtypes", ()))
+    if not qtypes or len(set(qtypes)) != len(qtypes) or any(qtype not in QTYPES for qtype in qtypes):
+        raise ValueError(f"sensitivity qtypes must be distinct values drawn from {tuple(QTYPES)}")
     layers = [int(x) for x in model["moe_layers"]]
     expert_count = int(model["expert_count"])
     hidden, intermediate = int(model["hidden_size"]), int(model["intermediate_size"])
@@ -99,6 +104,16 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     sensitivity_rows = {
         (int(row["layer"]), int(row["expert"])): row for row in sensitivity["scores"]
     }
+    if any(set(row.get("quantization", {})) != set(qtypes) for row in sensitivity_rows.values()):
+        raise ValueError("sensitivity rows do not exactly cover their declared qtypes")
+    external = set(qtypes) & {"IQ4_XS", "Q4_K"}
+    if external:
+        sidecars = sensitivity.get("importance_sidecars", {})
+        if set(sidecars) != {str(layer) for layer in layers}:
+            raise ValueError(f"{sorted(external)} require one private importance sidecar per layer")
+        provenance = sensitivity["measurement"].get("exact_quantizer_implementation", {})
+        if not isinstance(provenance, dict) or any(qtype not in provenance for qtype in external):
+            raise ValueError(f"{sorted(external)} lack exact quantizer provenance")
     confidence_scores = {
         (int(row["layer"]), int(row["expert"])): float(row["score"])
         for row in confidence_rows
@@ -151,7 +166,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     next_index = len(experts)
     for layer, expert in experts:
         for projection in PROJECTIONS:
-            for qtype in QTYPES:
+            for qtype in qtypes:
                 quant_index[(layer, expert, projection, qtype)] = next_index
                 next_index += 1
     n_variables = next_index
@@ -159,13 +174,13 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     bytes_vector = np.zeros(n_variables, dtype=np.float64)
     for key in experts:
         row = sensitivity_rows[key]
-        first_qtype = next(iter(QTYPES))
+        first_qtype = qtypes[0]
         baseline = float(
             row["quantization"][first_qtype]["joint_output_error"]["baseline_energy"]
         ) * float(row["sample_scale"])
         objective[prune_index[key]] = baseline * importance[key]
         for projection in PROJECTIONS:
-            for qtype in QTYPES:
+            for qtype in qtypes:
                 metric = row["quantization"][qtype]["projection_output_error"][projection]
                 index = quant_index[(*key, projection, qtype)]
                 objective[index] = (
@@ -187,7 +202,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     for key in experts:
         for projection in PROJECTIONS:
             row_ids.append(row); col_ids.append(prune_index[key]); data.append(1.0)
-            for qtype in QTYPES:
+            for qtype in qtypes:
                 row_ids.append(row); col_ids.append(quant_index[(*key, projection, qtype)])
                 data.append(1.0)
             lower.append(1.0); upper.append(1.0); row += 1
@@ -235,11 +250,11 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     result.x = rounded
     pruned = {key for key in experts if result.x[prune_index[key]] >= 0.5}
     assignments = []
-    counts = {qtype: 0 for qtype in QTYPES}
+    counts = {qtype: 0 for qtype in qtypes}
     selected_bytes = 0
     for layer in layers:
         for projection in PROJECTIONS:
-            for qtype in QTYPES:
+            for qtype in qtypes:
                 ids = [
                     expert for expert in range(expert_count)
                     if (layer, expert) not in pruned
@@ -290,6 +305,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "layer": args.layer_weight,
             },
             "qtype_projection_counts": counts,
+            "candidate_qtypes": list(qtypes),
             "solver": "scipy.optimize.milp/HiGHS",
             "solver_status": int(result.status),
             "solver_message": str(result.message),
@@ -322,7 +338,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="bw24-smart-budget-") as tmp:
-        root = Path(tmp); layers = [1, 2]; experts = range(3); qtypes = list(QTYPES)
+        root = Path(tmp); layers = [1, 2]; experts = range(3)
+        qtypes = ["Q8_0", "NVFP4", "Q3_K", "Q2_K"]
         retention = {
             "format": RETENTION_FORMAT,
             "calibration": {"public_eval_data_used_for_selection": False},
@@ -352,6 +369,7 @@ def self_test() -> None:
             "format": SENSITIVITY_FORMAT,
             "model": {"expert_count": 3, "top_k": 1, "hidden_size": 256,
                       "intermediate_size": 256, "moe_layers": layers},
+            "measurement": {"qtypes": qtypes},
             "calibration": {"public_eval_data_used_for_selection": False},
             "scores": sensitivity_rows,
         }

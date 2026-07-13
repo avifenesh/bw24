@@ -26,6 +26,11 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from build_hy3_reap_scores import load_requests, load_routes, parse_layers, tensor_name
+from ggml_quant_bridge import (
+    EXTERNAL_QTYPES,
+    GgmlQuantBridge,
+    sha256_file as bridge_sha256,
+)
 from prepare_mixed_expert_repack import (
     E2M1,
     QUANTIZERS,
@@ -39,7 +44,8 @@ from prepare_mixed_expert_repack import (
 
 FORMAT = "bw24-hy3-quant-sensitivity-v1"
 TRACE_LOCK_FORMAT = "bw24-moe-input-trace-lock-v1"
-QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
+QTYPES = ("Q8_0", "NVFP4", "IQ4_XS", "Q4_K", "Q3_K", "Q2_K")
+DEFAULT_QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
 
 
 def sha256(path: Path) -> str:
@@ -116,10 +122,21 @@ DEQUANTIZERS = {
 }
 
 
-def quant_dequant(tensor: torch.Tensor, qtype: str) -> tuple[torch.Tensor, dict[str, float]]:
+def quant_dequant(
+    tensor: torch.Tensor,
+    qtype: str,
+    *,
+    importance: np.ndarray | None = None,
+    bridge: GgmlQuantBridge | None = None,
+) -> tuple[torch.Tensor, dict[str, float]]:
     source = tensor.float().cpu().numpy()
-    raw = QUANTIZERS[qtype](source)
-    restored = DEQUANTIZERS[qtype](raw, *source.shape)
+    if qtype in EXTERNAL_QTYPES:
+        if bridge is None or importance is None:
+            raise ValueError(f"{qtype} requires a pinned ggml bridge and private importance")
+        raw, restored = bridge.quant_dequant(source, qtype, importance)
+    else:
+        raw = QUANTIZERS[qtype](source)
+        restored = DEQUANTIZERS[qtype](raw, *source.shape)
     error = restored - source
     metrics = {
         "encoded_bytes": len(raw),
@@ -161,27 +178,44 @@ def expert_metrics(
     down: torch.Tensor,
     qtypes: tuple[str, ...],
     device: torch.device,
-) -> dict[str, Any]:
+    bridge: GgmlQuantBridge | None,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     x = x.to(device=device, dtype=torch.bfloat16)
     weights = weights.to(device=device, dtype=torch.float32)
+    # Keep the source weights on CPU for exact quantization.  Separate device copies avoid a
+    # needless device-to-host round trip for every expert and format.
     gate = gate.to(dtype=torch.bfloat16)
     up = up.to(dtype=torch.bfloat16)
     down = down.to(dtype=torch.bfloat16)
+    gate_device = gate.to(device)
+    up_device = up.to(device)
+    down_device = down.to(device)
+    gate_ref = F.linear(x, gate_device).float()
+    up_ref = F.linear(x, up_device).float()
+    activated_ref = F.silu(gate_ref) * up_ref
+    output_ref = F.linear(activated_ref.to(torch.bfloat16), down_device).float()
+    importance = {
+        "input": np.maximum(
+            torch.square(x.float()).mean(dim=0).cpu().numpy(), 1e-12
+        ).astype(np.float32),
+        "down": np.maximum(
+            torch.square(activated_ref).mean(dim=0).cpu().numpy(), 1e-12
+        ).astype(np.float32),
+    }
     quantized = {
         qtype: {
-            "gate": quant_dequant(gate, qtype),
-            "up": quant_dequant(up, qtype),
-            "down": quant_dequant(down, qtype),
+            "gate": quant_dequant(
+                gate, qtype, importance=importance["input"], bridge=bridge
+            ),
+            "up": quant_dequant(
+                up, qtype, importance=importance["input"], bridge=bridge
+            ),
+            "down": quant_dequant(
+                down, qtype, importance=importance["down"], bridge=bridge
+            ),
         }
         for qtype in qtypes
     }
-    gate = gate.to(device)
-    up = up.to(device)
-    down = down.to(device)
-    gate_ref = F.linear(x, gate).float()
-    up_ref = F.linear(x, up).float()
-    activated_ref = F.silu(gate_ref) * up_ref
-    output_ref = F.linear(activated_ref.to(torch.bfloat16), down).float()
     result: dict[str, Any] = {}
     for qtype in qtypes:
         gate_q, gate_weight = quantized[qtype]["gate"]
@@ -191,8 +225,12 @@ def expert_metrics(
         gate_out = F.linear(x, gate_q).float()
         up_out = F.linear(x, up_q).float()
         activated_q = F.silu(gate_out) * up_out
-        gate_only = F.linear((F.silu(gate_out) * up_ref).to(torch.bfloat16), down).float()
-        up_only = F.linear((F.silu(gate_ref) * up_out).to(torch.bfloat16), down).float()
+        gate_only = F.linear(
+            (F.silu(gate_out) * up_ref).to(torch.bfloat16), down_device
+        ).float()
+        up_only = F.linear(
+            (F.silu(gate_ref) * up_out).to(torch.bfloat16), down_device
+        ).float()
         down_only = F.linear(activated_ref.to(torch.bfloat16), down_q).float()
         joint = F.linear(activated_q.to(torch.bfloat16), down_q).float()
         result[qtype] = {
@@ -210,13 +248,25 @@ def expert_metrics(
         }
         del gate_q, up_q, down_q, gate_out, up_out, activated_q, gate_only, up_only, down_only, joint
     del quantized
-    return result
+    return result, importance
 
 
 def score(args: argparse.Namespace) -> dict[str, Any]:
     qtypes = tuple(x for x in args.qtypes.split(",") if x)
     if not qtypes or any(x not in QTYPES for x in qtypes) or len(set(qtypes)) != len(qtypes):
         raise ValueError(f"qtypes must be distinct values drawn from {QTYPES}")
+    external = sorted(set(qtypes) & set(EXTERNAL_QTYPES))
+    bridge = None
+    if external:
+        if not all((args.ggml_lib, args.ggml_lib_sha256, args.ggml_source_commit)):
+            raise ValueError(f"{external} require --ggml-lib, its SHA-256, and source commit")
+        if args.importance_dir is None:
+            raise ValueError(f"{external} require --importance-dir")
+        bridge = GgmlQuantBridge(
+            args.ggml_lib, args.ggml_lib_sha256, args.ggml_source_commit
+        )
+    if args.importance_dir is not None:
+        args.importance_dir.mkdir(parents=True, exist_ok=True)
     trace_lock = json.loads(args.trace_lock.read_text())
     if trace_lock.get("format") != TRACE_LOCK_FORMAT:
         raise ValueError(f"trace lock format must be {TRACE_LOCK_FORMAT}")
@@ -237,6 +287,7 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
         torch.cuda.set_device(device)
         torch.backends.cuda.matmul.allow_tf32 = False
     rows: list[dict[str, Any]] = []
+    importance_sidecars: dict[str, dict[str, Any]] = {}
     for layer in layers:
         hidden_path = Path(trace_lock["trace_dir"]) / f"layer-{layer:03}.f32"
         receipt = trace_lock["files"][hidden_path.name]
@@ -244,6 +295,12 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(f"layer {layer} hidden trace hash mismatch")
         hidden = np.memmap(
             hidden_path, dtype="<f4", mode="r", shape=(len(token_strata), args.hidden_size)
+        )
+        input_importance = np.empty(
+            (args.expert_count, args.hidden_size), dtype=np.float32
+        )
+        down_importance = np.empty(
+            (args.expert_count, args.intermediate_size), dtype=np.float32
         )
         names = [
             tensor_name(layer, expert, projection)
@@ -280,10 +337,12 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
                         tensor_name(layer, expert, projection)
                     ) for projection in ("gate", "up", "down")
                 }
-                metrics = expert_metrics(
+                metrics, importance = expert_metrics(
                     x=x, weights=weights, gate=tensors["gate"], up=tensors["up"],
-                    down=tensors["down"], qtypes=qtypes, device=device,
+                    down=tensors["down"], qtypes=qtypes, device=device, bridge=bridge,
                 )
+                input_importance[expert] = importance["input"]
+                down_importance[expert] = importance["down"]
                 rows.append({
                     "layer": layer,
                     "expert": expert,
@@ -302,6 +361,19 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
                     print(f"layer={layer} experts={expert + 1}/{args.expert_count}", flush=True)
                 del x, weights, tensors
         del hidden
+        if args.importance_dir is not None:
+            sidecar = args.importance_dir / f"layer-{layer:03}.npz"
+            temporary = sidecar.with_name(sidecar.name + ".tmp")
+            with temporary.open("wb") as handle:
+                np.savez(handle, input=input_importance, down=down_importance)
+            temporary.replace(sidecar)
+            importance_sidecars[str(layer)] = {
+                "path": str(sidecar.resolve()),
+                "bytes": sidecar.stat().st_size,
+                "sha256": bridge_sha256(sidecar),
+                "input_shape": list(input_importance.shape),
+                "down_shape": list(down_importance.shape),
+            }
         if device.type == "cuda":
             torch.cuda.empty_cache()
     return {
@@ -323,7 +395,14 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "metric": "router-weighted expert-output normalized MSE",
             "projection_ablation": "one quantized projection with the other two at source precision",
-            "exact_quantizer_implementation": "prepare_mixed_expert_repack.py",
+            "exact_quantizer_implementation": {
+                qtype: (
+                    bridge.provenance if qtype in EXTERNAL_QTYPES
+                    else {"implementation": "prepare_mixed_expert_repack.py"}
+                )
+                for qtype in qtypes
+            },
+            "importance_metric": "per-column mean squared private calibration activation",
         },
         "calibration": {
             "requests": {"path": str(args.requests.resolve()), "sha256": sha256(args.requests)},
@@ -337,6 +416,7 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
             "index_sha256": sha256(index_path),
             "config_sha256": sha256(args.source_dir / "config.json"),
         },
+        "importance_sidecars": importance_sidecars,
         "scores": rows,
     }
 
@@ -377,12 +457,13 @@ def self_test() -> None:
             trace_lock=lock, weight_trace=routes, requests=requests, source_dir=source,
             layers="1", expert_count=3, top_k=1, hidden_size=256, intermediate_size=256,
             max_tokens_per_expert=2, qtypes="Q8_0,NVFP4,Q3_K,Q2_K", device="cpu",
-            progress_every=0,
+            progress_every=0, importance_dir=root / "importance",
+            ggml_lib=None, ggml_lib_sha256=None, ggml_source_commit=None,
         )
         result = score(args)
         assert len(result["scores"]) == 3
         for row in result["scores"]:
-            for qtype in QTYPES:
+            for qtype in DEFAULT_QTYPES:
                 value = row["quantization"][qtype]["joint_output_error"]["normalized_mse"]
                 assert math.isfinite(value) and value >= 0
         assert result["scores"][0]["quantization"]["Q8_0"]["joint_output_error"]["normalized_mse"] \
@@ -390,6 +471,9 @@ def self_test() -> None:
         assert result["scores"][2]["measurement_source"] == "unrouted_function_probe"
         assert result["scores"][2]["routed_tokens"] == 0
         assert result["scores"][2]["sample_scale"] == 0.0
+        assert set(result["importance_sidecars"]) == {"1"}
+        sidecar = result["importance_sidecars"]["1"]
+        assert bridge_sha256(Path(sidecar["path"])) == sidecar["sha256"]
         probe = rng.normal(size=(3, 256)).astype(np.float32)
         scalar = {
             "Q8_0": _dequant_q8_0,
@@ -397,7 +481,7 @@ def self_test() -> None:
             "Q3_K": _dequant_q3k,
             "Q2_K": _dequant_q2k,
         }
-        for qtype in QTYPES:
+        for qtype in DEFAULT_QTYPES:
             raw = QUANTIZERS[qtype](probe)
             expected = scalar[qtype](raw, probe.shape[1])
             actual = DEQUANTIZERS[qtype](raw, *probe.shape)
@@ -416,7 +500,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-size", type=int, default=4096)
     parser.add_argument("--intermediate-size", type=int, default=1536)
     parser.add_argument("--max-tokens-per-expert", type=int, default=16)
-    parser.add_argument("--qtypes", default=",".join(QTYPES))
+    parser.add_argument("--qtypes", default=",".join(DEFAULT_QTYPES))
+    parser.add_argument("--importance-dir", type=Path)
+    parser.add_argument("--ggml-lib", type=Path)
+    parser.add_argument("--ggml-lib-sha256")
+    parser.add_argument("--ggml-source-commit")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--progress-every", type=int, default=16)
     parser.add_argument("--out", type=Path, required=True)

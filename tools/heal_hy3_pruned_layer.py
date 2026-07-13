@@ -20,6 +20,8 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+from ggml_quant_bridge import EXTERNAL_QTYPES, GgmlQuantBridge, load_importance_sidecar
+
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
 SCORE_FORMAT = "bw24-expert-retention-scores-v1"
@@ -57,10 +59,18 @@ def load_source_tensor(
     return handles[weight_map[name]].get_tensor(name)
 
 
-def quantized_base(tensor: torch.Tensor, qtype: str) -> torch.Tensor:
+def quantized_base(
+    tensor: torch.Tensor,
+    qtype: str,
+    *,
+    importance: np.ndarray | None = None,
+    bridge: GgmlQuantBridge | None = None,
+) -> torch.Tensor:
     """Round-trip through the artifact builder's exact bytes before repair."""
     from build_hy3_quant_sensitivity import quant_dequant
-    restored, _ = quant_dequant(tensor, qtype)
+    restored, _ = quant_dequant(
+        tensor, qtype, importance=importance, bridge=bridge
+    )
     return restored
 
 
@@ -210,6 +220,8 @@ def load_student(
     weight_map: dict[str, str],
     device: torch.device,
     quant_assignments: dict[tuple[int, int, str], str] | None = None,
+    quant_bridge: GgmlQuantBridge | None = None,
+    quant_importance: dict[str, np.ndarray] | None = None,
 ) -> LayerStudent:
     names = [router_name(args.layer), bias_name(args.layer)] + [
         tensor_name(args.layer, expert, projection)
@@ -248,7 +260,15 @@ def load_student(
                 )
                 if quant_assignments is not None:
                     qtype = quant_assignments[(args.layer, expert, projection)]
-                    source = quantized_base(source, qtype)
+                    importance = None
+                    if qtype in EXTERNAL_QTYPES:
+                        if quant_importance is None:
+                            raise ValueError(f"{qtype} healing lacks private importance")
+                        key = "input" if projection in ("gate", "up") else "down"
+                        importance = quant_importance[key][expert]
+                    source = quantized_base(
+                        source, qtype, importance=importance, bridge=quant_bridge
+                    )
                 destination[local].copy_(source)
     return LayerStudent(
         active_ids=active_ids,
@@ -352,14 +372,33 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
         torch.cuda.set_device(device)
         torch.backends.cuda.matmul.allow_tf32 = False
     quant_assignments = None
+    quant_bridge = None
+    quant_importance = None
+    importance_receipt = None
     if args.quantization_aware:
-        from prepare_mixed_expert_repack import load_assignments
+        from prepare_mixed_expert_repack import (
+            _external_quantization_context,
+            load_assignments,
+        )
         _, quant_assignments, plan_pruned = load_assignments(args.plan)
         if plan_pruned[args.layer] != pruned:
             raise ValueError("quantization-aware plan pruning differs from healer pruning")
+        quant_bridge, importance_receipts = _external_quantization_context(
+            plan, quant_assignments, args
+        )
+        if quant_bridge is not None:
+            importance_receipt = importance_receipts[str(args.layer)]
+            quant_importance = load_importance_sidecar(
+                importance_receipt,
+                args.expert_count,
+                args.hidden_size,
+                args.intermediate_size,
+            )
     model = load_student(
         args, active_ids, config, weight_map, device,
         quant_assignments=quant_assignments,
+        quant_bridge=quant_bridge,
+        quant_importance=quant_importance,
     ).to(device)
 
     score_rows = {
@@ -429,8 +468,16 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
                 ("gate", model.gate_base), ("up", model.up_base), ("down", model.down_base),
             ):
                 name = tensor_name(args.layer, expert, projection)
+                qtype = quant_assignments[(args.layer, expert, projection)]
+                importance = None
+                if qtype in EXTERNAL_QTYPES:
+                    assert quant_importance is not None
+                    key = "input" if projection in ("gate", "up") else "down"
+                    importance = quant_importance[key][expert]
                 destination[local].copy_(
-                    quantized_base(tensors[name], quant_assignments[(args.layer, expert, projection)]).to(device)
+                    quantized_base(
+                        tensors[name], qtype, importance=importance, bridge=quant_bridge
+                    ).to(device)
                 )
         model.mode = "router"
         after = evaluate(model, hidden, teacher, holdout, args.eval_batch_tokens, device)
@@ -479,6 +526,9 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
         },
         "public_eval_data_used_for_healing": False,
     }
+    if quant_bridge is not None:
+        receipt["external_quantizer"] = quant_bridge.provenance
+        receipt["importance_sidecar"] = importance_receipt
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     return receipt
@@ -580,6 +630,9 @@ def parse_args() -> argparse.Namespace:
         "--quantization-aware", action="store_true",
         help="initialize retained projections from their plan-assigned exact quantized bytes",
     )
+    parser.add_argument("--ggml-lib", type=Path)
+    parser.add_argument("--ggml-lib-sha256")
+    parser.add_argument("--ggml-source-commit")
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--holdout-modulus", type=int, default=10)
     parser.add_argument("--log-every", type=int, default=20)

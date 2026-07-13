@@ -44,7 +44,7 @@ def merge(args: argparse.Namespace) -> dict[str, Any]:
     common_keys = (
         "format", "source_dir", "quant_source_dir", "quality", "plan", "plan_sha256",
         "plan_canonical_sha256", "pruned_experts", "source_fingerprints",
-        "fallback_fingerprints",
+        "fallback_fingerprints", "external_quantizer", "importance_sidecars",
     )
     common = {key: first.get(key) for key in common_keys}
     if first.get("plan_canonical_sha256") != canonical_json_sha256(first["plan"]):

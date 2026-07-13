@@ -75,8 +75,10 @@ Exact validated overlay, staged-directory, logical payload, tier, and prune coun
 [`evidence/five-arm-artifact-sizes-g7e-20260710.md`](evidence/five-arm-artifact-sizes-g7e-20260710.md).
 
 Q8 means GGUF Q8_0 (8.5 effective bits/weight), Q2 means GGUF Q2_K (2.625 effective bits/weight),
-Q3 means Q3_K (3.4375 bits/weight), and
-NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). The mixed path is correctness
+Q3 means Q3_K (3.4375 bits/weight), IQ4_XS is 4.25 bits/weight, Q4_K is 4.5 bits/weight, and
+NVFP4 is bw24's 64-value/36-byte block format (4.5 bits/weight). IQ4_XS and Q4_K candidates use an
+explicitly hashed upstream `libggml-base` build plus private activation-importance sidecars; the
+bridge never substitutes an approximate Python quantizer. The mixed path is correctness
 first: Q2_K uses the generic staged f32-dequant kernel until a dedicated target-rig-gated fast
 kernel exists.
 
@@ -93,7 +95,9 @@ kernel exists.
 - tools/recover_hy3_reap_mask.py reconstructs the public REAP50 original-id mask from router rows,
   requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
-  and writes Q8_0, Q2_K, Q3_K, and NVFP4 byte ranges. Bounded `--workers` parallelism preserves exact
+  and writes Q8_0, Q2_K, Q3_K, NVFP4, IQ4_XS, and Q4_K byte ranges. IQ4_XS/Q4_K manifests bind the
+  exact external library/source hash and every private importance sidecar. Bounded `--workers`
+  parallelism preserves exact
   expert order and is byte-compared against the single-worker path. `--resume` only reuses files
   whose atomic completion receipt matches the exact plan, layout, source identity, shape, and byte
   count. Every active expert projection must be assigned.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a bw24 expert overlay with per-expert Q8_0, Q2_K, Q3_K, or NVFP4 encodings.
+"""Build a bw24 expert overlay with exact per-expert mixed GGUF encodings.
 
 The quantization source may be an indexed BF16/F16/F32 Hugging Face checkpoint or the stacked
 MLX-affine Hy3 checkpoint. Dense/router tensors resolve from --fallback-dir, which may itself be
@@ -34,6 +34,11 @@ from hy3_mlx_to_q4k import (
     sha256_file,
     trim_process_memory,
 )
+from ggml_quant_bridge import (
+    EXTERNAL_QTYPES,
+    GgmlQuantBridge,
+    load_importance_sidecar,
+)
 
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
@@ -45,6 +50,8 @@ QTYPES = {
     "Q2_K": (256, 84, ".q2k"),
     "Q3_K": (256, 110, ".q3k"),
     "NVFP4": (64, 36, ".nvfp4"),
+    "IQ4_XS": (256, 136, ".iq4xs"),
+    "Q4_K": (256, 144, ".q4k"),
 }
 
 
@@ -303,6 +310,39 @@ QUANTIZERS = {
 }
 
 
+def _external_quantization_context(
+    plan: dict[str, Any], assignments: dict[tuple[int, int, str], str], args: argparse.Namespace,
+) -> tuple[GgmlQuantBridge | None, dict[str, dict[str, Any]]]:
+    external = sorted(set(assignments.values()) & set(EXTERNAL_QTYPES))
+    if not external:
+        return None, {}
+    lib = getattr(args, "ggml_lib", None)
+    lib_sha = getattr(args, "ggml_lib_sha256", None)
+    commit = getattr(args, "ggml_source_commit", None)
+    if not all((lib, lib_sha, commit)):
+        raise ValueError(f"{external} require --ggml-lib, its SHA-256, and source commit")
+    sensitivity_receipt = plan.get("calibration", {}).get("quant_sensitivity")
+    if not isinstance(sensitivity_receipt, dict):
+        raise ValueError(f"{external} require a plan-bound quant sensitivity map")
+    sensitivity_path = Path(sensitivity_receipt["path"])
+    if sha256_file(sensitivity_path) != sensitivity_receipt["sha256"]:
+        raise ValueError("plan-bound quant sensitivity map hash changed")
+    sensitivity = json.loads(sensitivity_path.read_text())
+    sidecars = sensitivity.get("importance_sidecars", {})
+    layers = {str(layer) for layer in _layers_from_model(plan["model"])}
+    if set(sidecars) != layers:
+        raise ValueError(f"{external} require one private importance sidecar per layer")
+    provenance = sensitivity.get("measurement", {}).get("exact_quantizer_implementation", {})
+    for qtype in external:
+        record = provenance.get(qtype, {}) if isinstance(provenance, dict) else {}
+        if (
+            record.get("library_sha256") != lib_sha
+            or record.get("llama_cpp_commit") != commit
+        ):
+            raise ValueError(f"{qtype} bridge differs from sensitivity provenance")
+    return GgmlQuantBridge(Path(lib), lib_sha, commit), sidecars
+
+
 def _dequant_q8_0(raw: bytes, in_f: int) -> np.ndarray:
     b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, in_f // 32, 34)
     d = b[:, :, :2].copy().reshape(-1, in_f // 32, 2).view("<f2").reshape(-1, in_f // 32)
@@ -551,6 +591,7 @@ def prepare(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir).resolve()
     plan_path = Path(args.plan).resolve()
     plan, assignments, pruned = load_assignments(plan_path)
+    bridge, importance_receipts = _external_quantization_context(plan, assignments, args)
     if not (source_dir / "model.safetensors.index.json").exists():
         raise FileNotFoundError("quantization source requires model.safetensors.index.json")
     config = json.loads((source_dir / "config.json").read_text())
@@ -588,17 +629,27 @@ def prepare(args: argparse.Namespace) -> None:
         "tensors": {},
         "tier_summary": {},
     }
+    if bridge is not None:
+        manifest["external_quantizer"] = bridge.provenance
+        manifest["importance_sidecars"] = importance_receipts
     if fragment_path:
         manifest["fragment_layers"] = layers
     n_expert = int(plan["model"]["expert_count"])
     try:
         for layer in layers:
             active = [ex for ex in range(n_expert) if ex not in pruned[layer]]
+            layer_importance: dict[str, np.ndarray] | None = None
             for proj in PROJECTIONS:
                 source = ProjectionSource(store, config, layer, proj, active, max_work)
                 if source.stem is not None and source.n_expert < n_expert:
                     raise ValueError(
                         f"source layer {layer}/{proj} has {source.n_expert} experts, plan expects {n_expert}"
+                    )
+                if bridge is not None and layer_importance is None:
+                    if proj != "gate":
+                        raise AssertionError("gate must initialize the layer importance sidecar")
+                    layer_importance = load_importance_sidecar(
+                        importance_receipts[str(layer)], n_expert, source.in_f, source.out_f
                     )
                 rel = Path("experts") / f"blk{layer}-{proj}-mixed.bin"
                 out_path = out_dir / rel
@@ -644,6 +695,9 @@ def prepare(args: argparse.Namespace) -> None:
                     },
                     "expected_bytes": expected,
                 }
+                if any(item["qtype"] in EXTERNAL_QTYPES for item in expert_layout):
+                    receipt["external_quantizer"] = bridge.provenance
+                    receipt["importance_sidecar"] = importance_receipts[str(layer)]
                 receipt_path = _completion_receipt_path(out_path)
                 reuse = (
                     args.resume
@@ -659,7 +713,16 @@ def prepare(args: argparse.Namespace) -> None:
 
                     def encode_expert(expert: int) -> tuple[int, bytes]:
                         qtype = assignments[layer, expert, proj]
-                        parts = [QUANTIZERS[qtype](rows) for rows in source.rows(expert)]
+                        if qtype in EXTERNAL_QTYPES:
+                            assert bridge is not None and layer_importance is not None
+                            key = "input" if proj in ("gate", "up") else "down"
+                            importance = layer_importance[key][expert]
+                            parts = [
+                                bridge.quantize(rows, qtype, importance)
+                                for rows in source.rows(expert)
+                            ]
+                        else:
+                            parts = [QUANTIZERS[qtype](rows) for rows in source.rows(expert)]
                         return expert, b"".join(parts)
 
                     if handle is not None and args.workers > 1 and source.stem is None:
@@ -893,7 +956,7 @@ def self_test() -> None:
         gate_path.write_bytes(plan_a_bytes[gate_path.name])
         _completion_receipt_path(gate_path).unlink()
         assert gate_path.read_bytes() != (fresh_b / "experts" / gate_path.name).read_bytes()
-        calls = {qtype: 0 for qtype in QTYPES}
+        calls = {qtype: 0 for qtype in QUANTIZERS}
         original_quantizers = QUANTIZERS.copy()
         for qtype, quantizer in original_quantizers.items():
             def counted(rows: np.ndarray, *, _qtype: str = qtype, _quantizer=quantizer) -> bytes:
@@ -956,6 +1019,9 @@ def main() -> int:
     prep.add_argument("--max-work-mb", type=int, default=512)
     prep.add_argument("--workers", type=int, default=1)
     prep.add_argument("--resume", action="store_true")
+    prep.add_argument("--ggml-lib", type=Path)
+    prep.add_argument("--ggml-lib-sha256")
+    prep.add_argument("--ggml-source-commit")
     prep.add_argument(
         "--layers",
         help="optional comma-separated or inclusive range subset for a disjoint fragment build",

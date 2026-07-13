@@ -18,7 +18,7 @@ from typing import Any
 FORMAT = "bw24-hy3-quant-sensitivity-v1"
 OUTPUT_FORMAT = "bw24-hy3-quant-effects-map-v1"
 PROJECTIONS = ("gate", "up", "down")
-QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
+DEFAULT_QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
 
 
 def sha256(path: Path) -> str:
@@ -55,6 +55,9 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
     if payload["calibration"].get("public_eval_data_used_for_selection") is not False:
         raise ValueError("effects map requires private-only selection evidence")
     rows = payload["scores"]
+    qtypes = tuple(payload.get("measurement", {}).get("qtypes", ()))
+    if not qtypes or len(set(qtypes)) != len(qtypes):
+        raise ValueError("measurement.qtypes must contain distinct quantization types")
     expected = len(payload["model"]["complete_moe_layers"]) * int(payload["model"]["expert_count"])
     if len(rows) != expected:
         raise ValueError(f"expected {expected} expert rows, got {len(rows)}")
@@ -66,7 +69,10 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
     for row in rows:
         layer, expert = int(row["layer"]), int(row["expert"])
         scale = float(row["sample_scale"])
-        for qtype in QTYPES:
+        missing = [qtype for qtype in qtypes if qtype not in row["quantization"]]
+        if missing:
+            raise ValueError(f"layer {layer} expert {expert} is missing qtypes {missing}")
+        for qtype in qtypes:
             quant = row["quantization"][qtype]
             joint = quant["joint_output_error"]
             joint_weight = float(joint["baseline_energy"]) * scale
@@ -83,31 +89,41 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
                     "routed_tokens": int(row["routed_tokens"]),
                 })
         for projection in PROJECTIONS:
-            for lower, higher in zip(reversed(QTYPES[1:]), reversed(QTYPES[:-1]), strict=True):
-                low = row["quantization"][lower]
-                high = row["quantization"][higher]
-                low_error = float(low["projection_output_error"][projection]["squared_error"]) * scale
-                high_error = float(high["projection_output_error"][projection]["squared_error"]) * scale
-                low_bytes = int(low["projection_weight_error"][projection]["encoded_bytes"])
-                high_bytes = int(high["projection_weight_error"][projection]["encoded_bytes"])
-                extra_bytes = high_bytes - low_bytes
-                reduction = low_error - high_error
-                if extra_bytes > 0 and math.isfinite(reduction):
-                    upgrades.append({
-                        "layer": layer, "expert": expert, "projection": projection,
-                        "from_qtype": lower, "to_qtype": higher,
-                        "extra_bytes": extra_bytes, "error_reduction": reduction,
-                        "error_reduction_per_gb": reduction * 1_000_000_000 / extra_bytes,
-                    })
+            # Compare every strictly larger representation.  This remains valid when two formats
+            # have equal byte cost (for example Q4_K and NVFP4) and does not assume the input list
+            # is ordered by precision.
+            for lower in qtypes:
+                for higher in qtypes:
+                    if lower == higher:
+                        continue
+                    low = row["quantization"][lower]
+                    high = row["quantization"][higher]
+                    low_error = (
+                        float(low["projection_output_error"][projection]["squared_error"]) * scale
+                    )
+                    high_error = (
+                        float(high["projection_output_error"][projection]["squared_error"]) * scale
+                    )
+                    low_bytes = int(low["projection_weight_error"][projection]["encoded_bytes"])
+                    high_bytes = int(high["projection_weight_error"][projection]["encoded_bytes"])
+                    extra_bytes = high_bytes - low_bytes
+                    reduction = low_error - high_error
+                    if extra_bytes > 0 and math.isfinite(reduction):
+                        upgrades.append({
+                            "layer": layer, "expert": expert, "projection": projection,
+                            "from_qtype": lower, "to_qtype": higher,
+                            "extra_bytes": extra_bytes, "error_reduction": reduction,
+                            "error_reduction_per_gb": reduction * 1_000_000_000 / extra_bytes,
+                        })
 
     layers: dict[str, Any] = {}
     for layer in payload["model"]["complete_moe_layers"]:
         layers[str(layer)] = {
-            qtype: weighted_summary(layer_values[(int(layer), qtype)]) for qtype in QTYPES
+            qtype: weighted_summary(layer_values[(int(layer), qtype)]) for qtype in qtypes
         }
     projection_map = {
         projection: {
-            qtype: weighted_summary(projection_values[(projection, qtype)]) for qtype in QTYPES
+            qtype: weighted_summary(projection_values[(projection, qtype)]) for qtype in qtypes
         } for projection in PROJECTIONS
     }
     hotspots.sort(key=lambda row: (-row["full_scaled_squared_error"], row["layer"], row["expert"]))
@@ -143,7 +159,7 @@ def self_test() -> None:
     for layer in (1, 2):
         for expert in (0, 1):
             quant = {}
-            for rank, qtype in enumerate(QTYPES):
+            for rank, qtype in enumerate(DEFAULT_QTYPES):
                 error = 0.01 * (rank + 1) * (layer + expert)
                 quant[qtype] = {
                     "joint_output_error": {"normalized_mse": error, "baseline_energy": 10.0},
@@ -160,7 +176,7 @@ def self_test() -> None:
     payload = {
         "format": FORMAT,
         "model": {"complete_moe_layers": [1, 2], "expert_count": 2},
-        "measurement": {}, "source": {},
+        "measurement": {"qtypes": list(DEFAULT_QTYPES)}, "source": {},
         "calibration": {"public_eval_data_used_for_selection": False}, "scores": rows,
     }
     result = build_map(payload, 3)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import tempfile
 from collections import defaultdict
 from math import prod
@@ -81,6 +82,8 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         "Q2_K": (256, 84),
         "Q3_K": (256, 110),
         "NVFP4": (64, 36),
+        "IQ4_XS": (256, 136),
+        "Q4_K": (256, 144),
     }
     allowed_qtypes = set(qtype_geometry)
     projections = ("gate", "up", "down")
@@ -138,6 +141,48 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
             f"missing={len(expected_projections - assigned_projections)} "
             f"extra={len(assigned_projections - expected_projections)}"
         )
+
+    external_qtypes = set(assigned_qtypes.values()) & {"IQ4_XS", "Q4_K"}
+    if external_qtypes:
+        external = manifest.get("external_quantizer", {})
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", str(external.get("library_sha256", "")))
+            or not re.fullmatch(r"[0-9a-f]{40}", str(external.get("llama_cpp_commit", "")))
+        ):
+            raise ValueError("external qtypes require pinned libggml provenance")
+        sensitivity_receipt = plan.get("calibration", {}).get("quant_sensitivity")
+        if not isinstance(sensitivity_receipt, dict):
+            raise ValueError("external qtypes require plan-bound quant sensitivity")
+        sensitivity_path = Path(sensitivity_receipt["path"])
+        if (
+            not sensitivity_path.is_file()
+            or sha256(sensitivity_path) != sensitivity_receipt["sha256"]
+        ):
+            raise ValueError("plan-bound quant sensitivity is missing or changed")
+        sensitivity = json.loads(sensitivity_path.read_text())
+        expected_sidecars = sensitivity.get("importance_sidecars", {})
+        if manifest.get("importance_sidecars") != expected_sidecars:
+            raise ValueError("artifact importance sidecars differ from sensitivity evidence")
+        if set(expected_sidecars) != {str(layer) for layer in layers}:
+            raise ValueError("external qtypes require one importance sidecar per layer")
+        for layer, receipt in expected_sidecars.items():
+            path = Path(receipt["path"])
+            if (
+                not path.is_file()
+                or path.stat().st_size != int(receipt["bytes"])
+                or sha256(path) != receipt["sha256"]
+            ):
+                raise ValueError(f"importance sidecar {layer} is missing or changed")
+        provenance = sensitivity.get("measurement", {}).get(
+            "exact_quantizer_implementation", {}
+        )
+        for qtype in external_qtypes:
+            record = provenance.get(qtype, {}) if isinstance(provenance, dict) else {}
+            if (
+                record.get("library_sha256") != external["library_sha256"]
+                or record.get("llama_cpp_commit") != external["llama_cpp_commit"]
+            ):
+                raise ValueError(f"{qtype} artifact quantizer differs from sensitivity evidence")
 
     expected_qtypes = {
         f"blk.{layer}.ffn_{proj}_exps.{expert}.weight": assigned_qtypes[(layer, expert, proj)]
