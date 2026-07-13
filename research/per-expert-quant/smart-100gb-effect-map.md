@@ -66,9 +66,23 @@ joint rank-8 expert + F32 router/bias healing. Only the frozen objective weights
 The existing `prune100_joint_heal` remains the traffic-ranked control. No further recipe is added
 until these three establish which signal improves held-out generation.
 
+## Allocation comparison receipt
+
+`tools/summarize_hy3_smart_allocations.py` expands every plan into the canonical
+`(layer, expert, projection) -> {Q8_0, NVFP4, Q3_K, Q2_K, PRUNED}` map before healing starts. It
+writes `allocation-comparison.json` beside the plans with each plan and allocation hash, exact
+per-layer tier counts, and pairwise qtype/prune transitions. Historical whole-expert v2 plans are
+accepted for comparison, but absent historical byte totals remain explicitly null rather than
+being reconstructed.
+
+The smart build uses `--require-distinct`: two objective recipes that produce the same allocation
+are not separately healed or evaluated. This prevents benchmark noise from being mistaken for an
+allocation effect and keeps every scored arm a genuinely different compression hypothesis.
+
 ## Evaluation order
 
-1. Validate plan coverage, exact bytes, source hashes, and zero routing to pruned ids.
+1. Validate plan coverage, distinct allocation hashes, exact bytes, source hashes, and zero routing
+   to pruned ids.
 2. Jointly heal each plan against the same teacher targets; require finite loss, no dead active
    experts, and immutable per-layer receipts.
 3. Run the matched 115-question capability panel on all three in parallel with the existing control.
