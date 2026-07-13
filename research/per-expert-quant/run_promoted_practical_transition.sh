@@ -17,6 +17,7 @@ HARBOR_BIN=${HARBOR_BIN:-/data/bin/harbor-0.18.0-0a01ad6/harbor}
 HARBOR_HOME=${HARBOR_HOME:-/data/cache/harbor-home}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
+IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq4-q4-99f3dc3}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 
@@ -79,6 +80,8 @@ artifact_for() {
       printf '/scratch/bw24-artifacts-100gb-5f02c37/%s\n' "$1" ;;
     smart100_empirical|smart100_balanced|smart100_rescue)
       printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
+    smart100_iq4_q4_empirical)
+      printf '%s/%s\n' "$IQ4_ART_ROOT" "$1" ;;
     *) die "no frozen artifact mapping for $1" ;;
   esac
 }
@@ -92,7 +95,7 @@ RUN_ID="practical-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 [[ ! -e "$RUN_CONFIG" ]] || die "run config already exists"
 export RUN_ID PROMOTION GATE_LOCK PRACTICAL_LOCK SERVER_BIN HARBOR_BIN \
-  CONFIRMATION_LOCK FRONTIER VRAM_FRAC
+  CONFIRMATION_LOCK FRONTIER VRAM_FRAC IQ4_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, sys
 
@@ -126,6 +129,8 @@ if os.environ.get("CONFIRMATION_LOCK"):
 for arm in arms:
     if arm.startswith("prune100_"):
         root = pathlib.Path("/scratch/bw24-artifacts-100gb-5f02c37") / arm
+    elif arm == "smart100_iq4_q4_empirical":
+        root = pathlib.Path(os.environ["IQ4_ART_ROOT"]) / arm
     elif arm.startswith("smart100_"):
         root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm
     else:
