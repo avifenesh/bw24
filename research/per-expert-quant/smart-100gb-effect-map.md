@@ -90,8 +90,10 @@ allocation effect and keeps every scored arm a genuinely different compression h
 
 `tools/summarize_hy3_plan_agreement.py` also writes a reproducible consensus map: pairwise pruning
 overlap, exact quant/prune-state agreement, stable per-projection quant counts, and layer-level
-disagreement. This separates structural decisions that survive all private priors from precision
-choices that still require held-out capability evaluation.
+disagreement. Its optional private retention-score overlay records routed weight mass and frequency
+for every pruned/quantized state, preventing expert-count compression from being mistaken for
+negligible functional traffic. This separates structural decisions that survive all private priors
+from precision choices that still require held-out capability evaluation.
 
 ## Evaluation order
 

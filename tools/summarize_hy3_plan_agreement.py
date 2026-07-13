@@ -16,6 +16,7 @@ from typing import Any
 
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
+SCORE_FORMAT = "bw24-expert-retention-scores-v1"
 OUTPUT_FORMAT = "bw24-hy3-smart-plan-agreement-v1"
 PROJECTIONS = ("gate", "up", "down")
 PRUNED = "PRUNE"
@@ -81,7 +82,9 @@ def expand_plan(path: Path) -> dict[str, Any]:
     }
 
 
-def build_summary(paths: list[Path]) -> dict[str, Any]:
+def build_summary(
+    paths: list[Path], retention_scores: Path | None = None
+) -> dict[str, Any]:
     if len(paths) < 2:
         raise ValueError("at least two plans are required")
     plans = [expand_plan(path) for path in paths]
@@ -161,7 +164,7 @@ def build_summary(paths: list[Path]) -> dict[str, Any]:
                 qtype: layer_qtypes[qtype] for qtype in qtypes
             },
         }
-    return {
+    result = {
         "format": OUTPUT_FORMAT,
         "inputs": [
             {"name": plan["name"], "path": str(plan["path"]), "sha256": plan["sha256"]}
@@ -196,6 +199,83 @@ def build_summary(paths: list[Path]) -> dict[str, Any]:
         "layers": layer_rows,
         "public_eval_data_used_for_selection": False,
     }
+    if retention_scores is not None:
+        attach_traffic_overlay(result, plans, retention_scores)
+    return result
+
+
+def attach_traffic_overlay(
+    result: dict[str, Any], plans: list[dict[str, Any]], path: Path
+) -> None:
+    payload = json.loads(path.read_text())
+    if payload.get("format") != SCORE_FORMAT:
+        raise ValueError(f"{path} is not a {SCORE_FORMAT} file")
+    if payload.get("calibration", {}).get("public_eval_data_used_for_selection") is not False:
+        raise ValueError(f"{path} is not private-only retention evidence")
+    layers = tuple(int(layer) for layer in result["model"]["moe_layers"])
+    expert_count = int(result["model"]["expert_count"])
+    expected = {(layer, expert) for layer in layers for expert in range(expert_count)}
+    mass: dict[tuple[int, int], float] = {}
+    frequency: dict[tuple[int, int], int] = {}
+    for row in payload["scores"]:
+        key = (int(row["layer"]), int(row["expert"]))
+        if key in mass:
+            raise ValueError(f"{path} repeats score row {key}")
+        mass[key] = float(row["router_weight_mass"])
+        frequency[key] = int(row["frequency"])
+        if mass[key] < 0 or frequency[key] < 0:
+            raise ValueError(f"{path} has negative traffic for {key}")
+    if set(mass) != expected:
+        raise ValueError(f"{path} does not cover the plan's complete expert bank")
+    total_mass, total_frequency = sum(mass.values()), sum(frequency.values())
+    if total_mass <= 0 or total_frequency <= 0:
+        raise ValueError(f"{path} has zero total traffic")
+    stable_pruned = {
+        (int(layer), int(expert))
+        for layer, experts in result["consensus"]["stable_pruned_expert_ids_by_layer"].items()
+        for expert in experts
+    }
+    result["traffic_overlay"] = {
+        "source": {"path": str(path.resolve()), "sha256": sha256(path)},
+        "stable_pruned_router_weight_mass_fraction":
+            sum(mass[key] for key in stable_pruned) / total_mass,
+        "stable_pruned_frequency_fraction":
+            sum(frequency[key] for key in stable_pruned) / total_frequency,
+        "plans": {},
+    }
+    for plan in plans:
+        state_mass: Counter[str] = Counter()
+        state_frequency: Counter[str] = Counter()
+        for (layer, expert, _projection), state in plan["states"].items():
+            key = (layer, expert)
+            state_mass[state] += mass[key] / len(PROJECTIONS)
+            state_frequency[state] += frequency[key] / len(PROJECTIONS)
+        result["traffic_overlay"]["plans"][plan["name"]] = {
+            "pruned_router_weight_mass_fraction":
+                sum(mass[key] for key in plan["pruned"]) / total_mass,
+            "pruned_frequency_fraction":
+                sum(frequency[key] for key in plan["pruned"]) / total_frequency,
+            "state_router_weight_mass_fraction": {
+                state: value / total_mass for state, value in sorted(state_mass.items())
+            },
+            "state_frequency_fraction": {
+                state: value / total_frequency
+                for state, value in sorted(state_frequency.items())
+            },
+        }
+    for layer in layers:
+        layer_mass = sum(mass[(layer, expert)] for expert in range(expert_count))
+        layer_frequency = sum(frequency[(layer, expert)] for expert in range(expert_count))
+        layer_stable = {
+            (layer, int(expert))
+            for expert in result["consensus"]["stable_pruned_expert_ids_by_layer"][str(layer)]
+        }
+        result["layers"][str(layer)].update({
+            "stable_pruned_router_weight_mass_fraction":
+                sum(mass[key] for key in layer_stable) / max(layer_mass, 1e-30),
+            "stable_pruned_frequency_fraction":
+                sum(frequency[key] for key in layer_stable) / max(layer_frequency, 1),
+        })
 
 
 def write_layer_csv(result: dict[str, Any], path: Path) -> None:
@@ -203,7 +283,13 @@ def write_layer_csv(result: dict[str, Any], path: Path) -> None:
     fieldnames = [
         "layer", "all_state_agreement_fraction", "stable_pruned_experts",
         "variable_prune_experts",
-    ] + [f"stable_{qtype.lower()}_projections" for qtype in qtypes]
+    ]
+    if "traffic_overlay" in result:
+        fieldnames += [
+            "stable_pruned_router_weight_mass_fraction",
+            "stable_pruned_frequency_fraction",
+        ]
+    fieldnames += [f"stable_{qtype.lower()}_projections" for qtype in qtypes]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -214,6 +300,12 @@ def write_layer_csv(result: dict[str, Any], path: Path) -> None:
                 "all_state_agreement_fraction": row["all_state_agreement_fraction"],
                 "stable_pruned_experts": row["stable_pruned_experts"],
                 "variable_prune_experts": row["variable_prune_experts"],
+                **({
+                    "stable_pruned_router_weight_mass_fraction":
+                        row["stable_pruned_router_weight_mass_fraction"],
+                    "stable_pruned_frequency_fraction":
+                        row["stable_pruned_frequency_fraction"],
+                } if "traffic_overlay" in result else {}),
                 **{
                     f"stable_{qtype.lower()}_projections":
                         row["stable_qtype_projection_counts"][qtype]
@@ -253,11 +345,26 @@ def self_test() -> None:
         make_plan(root / "a.json", {1: [2], 2: []}, {(2, 1, "down"): "Q3_K"})
         make_plan(root / "b.json", {1: [2], 2: []}, {(2, 1, "down"): "Q8_0"})
         make_plan(root / "c.json", {1: [1], 2: []}, {(2, 1, "down"): "Q3_K"})
-        result = build_summary([root / "a.json", root / "b.json", root / "c.json"])
+        scores = root / "scores.json"
+        scores.write_text(json.dumps({
+            "format": SCORE_FORMAT,
+            "calibration": {"public_eval_data_used_for_selection": False},
+            "scores": [
+                {"layer": layer, "expert": expert,
+                 "router_weight_mass": 1 + expert, "frequency": 2 + expert}
+                for layer in (1, 2) for expert in range(3)
+            ],
+        }))
+        result = build_summary(
+            [root / "a.json", root / "b.json", root / "c.json"], scores
+        )
         assert result["model"]["expert_count"] == 3
         assert result["consensus"]["stable_pruned_experts"] == 0
         assert result["consensus"]["variable_prune_experts"] == 2
         assert result["layers"]["2"]["all_state_agreement_fraction"] == 8 / 9
+        assert result["traffic_overlay"]["stable_pruned_router_weight_mass_fraction"] == 0
+        for plan in result["traffic_overlay"]["plans"].values():
+            assert abs(sum(plan["state_router_weight_mass_fraction"].values()) - 1) < 1e-12
         assert len(result["pairwise"]) == 3
         csv_path = root / "layers.csv"
         write_layer_csv(result, csv_path)
@@ -273,10 +380,11 @@ def main() -> None:
         return
     parser = argparse.ArgumentParser()
     parser.add_argument("plans", nargs="+", type=Path)
+    parser.add_argument("--retention-scores", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--layer-csv", type=Path)
     args = parser.parse_args()
-    result = build_summary(args.plans)
+    result = build_summary(args.plans, args.retention_scores)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     if args.layer_csv:

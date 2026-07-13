@@ -112,6 +112,7 @@ done
   --require-distinct | tee "$LOG_ROOT/allocation-comparison.log"
 "$PY" "$ROOT/tools/summarize_hy3_plan_agreement.py" \
   "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/plan-agreement.json" \
+  --retention-scores "$RETENTION" \
   --layer-csv "$PLAN_ROOT/plan-agreement-layers.csv" | tee "$LOG_ROOT/plan-agreement.log"
 
 "$PY" - "$PLAN_ROOT" "$TARGET_BYTES" "${arms[@]}" <<'PY'
