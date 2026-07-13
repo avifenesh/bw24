@@ -102,6 +102,12 @@ uniform-versus-mixed expert counts, and pairwise qtype/prune transitions. Histor
 plans are accepted for comparison, but absent historical byte totals remain explicitly null rather
 than being reconstructed.
 
+For archived analysis, pass `--receipt RECEIPT --analysis-commit COMMIT`. The output and receipt
+must both be new paths. The receipt binds the exact analysis commit, script SHA-256, ordered plan
+paths and SHA-256 values, output path and SHA-256, and the private-only selection declaration. This
+keeps the finalizer input reproducible and prevents a later automation pass from silently replacing
+an allocation map.
+
 The smart build uses `--require-distinct`: two objective recipes that produce the same allocation
 are not separately healed or evaluated. This prevents benchmark noise from being mistaken for an
 allocation effect and keeps every scored arm a genuinely different compression hypothesis.

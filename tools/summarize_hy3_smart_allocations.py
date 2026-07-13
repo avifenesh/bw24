@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -15,6 +16,7 @@ from typing import Any
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
 OUTPUT_FORMAT = "bw24-hy3-smart-allocation-comparison-v1"
+RECEIPT_FORMAT = "bw24-hy3-allocation-analysis-receipt-v1"
 PROJECTIONS = ("gate", "up", "down")
 
 
@@ -197,6 +199,32 @@ def summarize(paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def write_receipt(
+    *,
+    receipt_path: Path,
+    analysis_commit: str,
+    inputs: list[Path],
+    output: Path,
+) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", analysis_commit):
+        raise ValueError("analysis commit must be a full lowercase Git SHA")
+    if receipt_path.exists():
+        raise FileExistsError(f"refusing to overwrite receipt {receipt_path}")
+    script = Path(__file__).resolve()
+    receipt = {
+        "format": RECEIPT_FORMAT,
+        "analysis_commit": analysis_commit,
+        "inputs": [
+            {"path": str(path.resolve()), "sha256": sha256(path)} for path in inputs
+        ],
+        "output": {"path": str(output.resolve()), "sha256": sha256(output)},
+        "script": {"path": str(script), "sha256": sha256(script)},
+        "public_eval_data_used": False,
+    }
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+
+
 def self_test() -> None:
     def plan(qtype: str, prune: int | None) -> dict[str, Any]:
         pruned = [] if prune is None else [prune]
@@ -258,6 +286,46 @@ def self_test() -> None:
         assert legacy_result["pairwise"]["a__legacy"]["changed_cells"] == 3
         assert legacy_result["plans"]["legacy"]["logical_model_bytes"] is None
         assert legacy_result["plans"]["legacy"]["retained_experts"] == 3
+        output = root / "analysis.json"
+        output.write_text(json.dumps(result, sort_keys=True) + "\n")
+        receipt = root / "receipt.json"
+        commit = "1" * 40
+        write_receipt(
+            receipt_path=receipt,
+            analysis_commit=commit,
+            inputs=paths,
+            output=output,
+        )
+        receipt_data = json.loads(receipt.read_text())
+        assert receipt_data["format"] == RECEIPT_FORMAT
+        assert receipt_data["analysis_commit"] == commit
+        assert receipt_data["public_eval_data_used"] is False
+        assert receipt_data["output"]["sha256"] == sha256(output)
+        assert [item["sha256"] for item in receipt_data["inputs"]] == [
+            sha256(path) for path in paths
+        ]
+        try:
+            write_receipt(
+                receipt_path=receipt,
+                analysis_commit=commit,
+                inputs=paths,
+                output=output,
+            )
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("existing receipt was overwritten")
+        try:
+            write_receipt(
+                receipt_path=root / "invalid-receipt.json",
+                analysis_commit="short",
+                inputs=paths,
+                output=output,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid analysis commit was accepted")
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,6 +333,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("plans", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--require-distinct", action="store_true")
+    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--analysis-commit")
     return parser.parse_args()
 
 
@@ -274,10 +344,26 @@ def main() -> None:
         print("Hy3 smart allocation comparison self-test: PASS")
         return
     args = parse_args()
+    if bool(args.receipt) != bool(args.analysis_commit):
+        raise SystemExit("--receipt and --analysis-commit must be supplied together")
+    if args.analysis_commit and not re.fullmatch(r"[0-9a-f]{40}", args.analysis_commit):
+        raise SystemExit("--analysis-commit must be a full lowercase Git SHA")
+    if args.receipt and (args.out.exists() or args.receipt.exists()):
+        raise SystemExit(
+            "immutable analysis output and receipt paths must both be absent"
+        )
     result = summarize(args.plans)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(f"wrote {args.out} sha256={sha256(args.out)}")
+    if args.receipt:
+        write_receipt(
+            receipt_path=args.receipt,
+            analysis_commit=args.analysis_commit,
+            inputs=args.plans,
+            output=args.out,
+        )
+        print(f"wrote {args.receipt} sha256={sha256(args.receipt)}")
     if args.require_distinct and result["duplicate_allocations"]:
         raise SystemExit(f"duplicate candidate allocations: {result['duplicate_allocations']}")
 
