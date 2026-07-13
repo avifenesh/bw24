@@ -14,6 +14,8 @@ EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
 REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-v1}
 REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-v1/complete}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
+BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
+IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-9a1c92c}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -24,8 +26,8 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
-  /data/analysis/per-expert-quant-smart100-1a97cb3
-  /data/analysis/per-expert-quant-iq3-iq4-q4-1a97cb3
+  "$BASELINE_ALLOCATION_ANALYSIS"
+  "$IQ4_ALLOCATION_ANALYSIS"
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
@@ -83,12 +85,34 @@ for f in \
   /data/logs/trusted-full-iq3-iq4-q4-v1/complete \
   /data/logs/full-agentic-iq3-iq4-q4-v1/complete \
   /data/logs/full-agentic-iq3-iq4-q4-v1/chain-complete; do test -f "$f"; done
-test -f /data/analysis/per-expert-quant-smart100-1a97cb3/receipt.json
-test -f /data/analysis/per-expert-quant-iq3-iq4-q4-1a97cb3/receipt.json
 test -z "$(pgrep -x bw24-server || true)"
 test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"
 ' || die "remote completion or idle-process gate failed"
+
+for root in "$BASELINE_ALLOCATION_ANALYSIS" "$IQ4_ALLOCATION_ANALYSIS"; do
+  ssh "$REMOTE" "python3 - '$root/receipt.json'" <<'PY'
+import hashlib,json,pathlib,re,sys
+
+def sha256(path):
+    digest=hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda:handle.read(1<<20),b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+path=pathlib.Path(sys.argv[1])
+receipt=json.loads(path.read_text())
+assert receipt["format"] == "bw24-hy3-allocation-analysis-receipt-v1"
+assert re.fullmatch(r"[0-9a-f]{40}", receipt["analysis_commit"])
+assert receipt["public_eval_data_used"] is False
+assert receipt["inputs"]
+for item in [*receipt["inputs"], receipt["output"], receipt["script"]]:
+    target=pathlib.Path(item["path"])
+    assert target.is_file()
+    assert sha256(target) == item["sha256"]
+PY
+done
 
 for root in "${EVIDENCE_ROOTS[@]}"; do
   ssh "$REMOTE" "test -e '$root'" || die "missing remote evidence root $root"
