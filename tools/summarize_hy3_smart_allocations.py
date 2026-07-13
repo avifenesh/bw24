@@ -90,6 +90,16 @@ def summarize(paths: list[Path]) -> dict[str, Any]:
             raise ValueError("plans do not cover the same model cells")
         digest = allocation_hash(cells)
         hashes.setdefault(digest, []).append(arm)
+        expert_keys = {key[:2] for key in cells}
+        pruned_keys = {
+            key for key in expert_keys
+            if all(cells[(*key, projection)] == "PRUNED" for projection in PROJECTIONS)
+        }
+        derived_qtype_counts = Counter(
+            qtype for qtype in cells.values() if qtype != "PRUNED"
+        )
+        logical_model_bytes = plan["policy"].get("result_logical_bytes")
+        headroom_bytes = plan["policy"].get("headroom_bytes")
         layer_counts: dict[str, dict[str, int]] = {}
         for (layer, _expert, _projection), qtype in cells.items():
             layer_counts.setdefault(str(layer), {})[qtype] = (
@@ -99,11 +109,21 @@ def summarize(paths: list[Path]) -> dict[str, Any]:
             "path": str(path.resolve()),
             "sha256": sha256(path),
             "allocation_sha256": digest,
-            "logical_model_bytes": int(plan["policy"]["result_logical_bytes"]),
-            "headroom_bytes": int(plan["policy"]["headroom_bytes"]),
-            "retained_experts": int(plan["selection"]["retained_experts"]),
-            "pruned_experts": int(plan["selection"]["pruned_experts"]),
-            "qtype_projection_counts": plan["policy"]["qtype_projection_counts"],
+            "logical_model_bytes": (
+                int(logical_model_bytes) if logical_model_bytes is not None else None
+            ),
+            "headroom_bytes": int(headroom_bytes) if headroom_bytes is not None else None,
+            "retained_experts": int(
+                plan.get("selection", {}).get(
+                    "retained_experts", len(expert_keys) - len(pruned_keys)
+                )
+            ),
+            "pruned_experts": int(
+                plan.get("selection", {}).get("pruned_experts", len(pruned_keys))
+            ),
+            "qtype_projection_counts": plan["policy"].get(
+                "qtype_projection_counts", dict(sorted(derived_qtype_counts.items()))
+            ),
             "layer_cell_counts": layer_counts,
         }
     pairwise: dict[str, Any] = {}
@@ -192,9 +212,15 @@ def self_test() -> None:
         legacy = root / "legacy.json"
         legacy_payload = plan("Q3_K", None)
         del legacy_payload["assignments"][0]["projections"]
+        legacy_payload["policy"].pop("result_logical_bytes")
+        legacy_payload["policy"].pop("headroom_bytes")
+        legacy_payload["policy"].pop("qtype_projection_counts")
+        legacy_payload.pop("selection")
         legacy.write_text(json.dumps(legacy_payload))
         legacy_result = summarize([paths[0], legacy])
         assert legacy_result["pairwise"]["a__legacy"]["changed_cells"] == 3
+        assert legacy_result["plans"]["legacy"]["logical_model_bytes"] is None
+        assert legacy_result["plans"]["legacy"]["retained_experts"] == 3
 
 
 def parse_args() -> argparse.Namespace:
