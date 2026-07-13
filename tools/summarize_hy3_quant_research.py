@@ -380,7 +380,10 @@ def markdown(result: dict[str, Any]) -> str:
             f"{item['full_scaled_squared_error']:.8g} | "
             f"{'yes' if item['point_estimate_pareto'] else 'no'} |"
         )
-    for item in result["format_efficiency"]["same_byte_winners"]:
+    same_byte_winners = result["format_efficiency"]["same_byte_winners"]
+    if same_byte_winners:
+        lines.append("")
+    for item in same_byte_winners:
         lines.append(
             f"- At identical bytes, `{item['winner']}` reduces measured damage by "
             f"{item['damage_reduction']:.2%} versus `{item['loser']}`."
