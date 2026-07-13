@@ -41,7 +41,11 @@ fi
 docker info >/dev/null 2>&1 || die "Docker daemon unavailable"
 [[ "$($HARBOR_BIN --version)" == 0.18.0 ]] || die "Harbor version differs"
 python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" >/dev/null
-MAX_TURNS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["agent_scaffold"]["max_turns"])' "$LOCK")
+# Eight turns is the frozen directional-screen budget. The complete agentic
+# suite gets a separate, non-binding-in-practice ceiling and remains bounded by
+# each digest-pinned task's timeout.
+MAX_TURNS=${FULL_MAX_TURNS:-100}
+[[ "$MAX_TURNS" == 100 ]] || die "full practical protocol requires 100 turns"
 
 readarray -t suite < <(python3 - "$LOCK" "$FULL_TASK_LOCK" "$PANEL" "$TASKS_JSON" <<'PY'
 import hashlib, json, sys
@@ -126,7 +130,7 @@ STARTED_NS=$(date +%s%N)
 export ROOT LOCK FULL_TASK_LOCK ARM PANEL RUN_ID RUN_DIR SHARD_ID DATASET DATASET_NAME \
   DATASET_DIGEST EXPECTED_TASKS SELECTED_TASKS_JSON \
   BASE_URL SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO \
-  BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC HARBOR_BIN
+  BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC HARBOR_BIN MAX_TURNS
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, re, subprocess, sys
 
@@ -171,6 +175,7 @@ payload = {
     "declared_spill_pread_depth": os.environ["BW24_SPILL_PREAD_DEPTH"],
     "declared_spill_stats": os.environ["BW24_SPILL_STATS"],
     "declared_serve_spec": os.environ["BW24_SERVE_SPEC"],
+    "declared_max_turns": int(os.environ["MAX_TURNS"]),
     "spill_snapshot_start": spill(server_log), "spill_snapshot_end": None,
     "spill_delta": None, "started_utc": os.environ["STARTED_UTC"],
     "completed_utc": None, "elapsed_seconds": None, "harbor_exit_code": None,

@@ -18,6 +18,7 @@ IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
 PARETO_ART_ROOT=${PARETO_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
+FULL_MAX_TURNS=${FULL_MAX_TURNS:-100}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 
@@ -34,6 +35,7 @@ value = float(sys.argv[1])
 if not 0.5 <= value < 0.9:
     raise SystemExit("VRAM_FRAC must be in [0.5, 0.9)")
 PY
+[[ "$FULL_MAX_TURNS" == 100 ]] || die "full agentic protocol requires 100 turns"
 mkdir -p "$LOG_ROOT" "$OUT_ROOT/run-configs"
 exec 9>"$LOG_ROOT/transition.lock"
 flock -n 9 || exit 0
@@ -94,6 +96,7 @@ for arm in "${ARMS[@]}"; do [[ -f "$(artifact_for "$arm")/manifest.json" ]] || d
 RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC \
+  FULL_MAX_TURNS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
@@ -104,6 +107,7 @@ payload = {
     "arms": sys.argv[2:], "baseline": "plain_quant",
     "suites": {"swe": 500, "terminal": 89},
     "vram_fraction": float(os.environ["VRAM_FRAC"]),
+    "agent_max_turns": int(os.environ["FULL_MAX_TURNS"]),
     "trusted_full_report": {"path": os.environ["TRUSTED_REPORT"], "sha256": sha(os.environ["TRUSTED_REPORT"])},
     "practical_lock": {"path": str(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json"),
                        "sha256": sha(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json")},
@@ -213,6 +217,7 @@ PY
       BW24_ROOT="$ROOT" \
       SERVER_BIN="$SERVER_BIN" SERVER_LOG="$server_log" HARBOR_BIN="$HARBOR_BIN" \
       LOCK="$HERE/practical-evals.lock.json" FULL_TASK_LOCK="$FULL_TASK_LOCK" \
+      FULL_MAX_TURNS="$FULL_MAX_TURNS" \
       TASKS_JSON="$tasks_json" SHARD_ID="lane$lane-of-$lane_count" \
       OUT_ROOT="$OUT_ROOT" RUN_ID="$RUN_ID" \
       BASE_URL="http://127.0.0.1:$port/v1" BW24_SPILL_IO=worker \

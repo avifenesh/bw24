@@ -12,11 +12,12 @@ from typing import Any
 
 
 SPILL_KEYS = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
+FULL_MAX_TURNS = 100
 SHARED_KEYS = (
     "panel", "dataset", "dataset_name", "dataset_digest", "base_url",
     "harbor_version", "bw24_commit", "lock_sha256", "server_binary_sha256",
     "declared_spill_io", "declared_spill_pread_depth", "declared_spill_stats",
-    "declared_serve_spec",
+    "declared_serve_spec", "declared_max_turns",
 )
 
 
@@ -90,6 +91,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         require(all(isinstance(spill[k], int) and spill[k] >= 0 for k in SPILL_KEYS), f"negative spill: {shard}")
         require(spill["reads"] > 0 and spill["bytes"] > 0 and spill["errors"] == 0 and spill["short_reads"] == 0, f"spill failure: {shard}")
         require(receipt.get("dataset_name") == name and receipt.get("dataset_digest") == digest, f"dataset differs: {shard}")
+        require(receipt.get("declared_max_turns") == FULL_MAX_TURNS, f"full turn budget differs: {shard}")
         datasets = config.get("datasets")
         require(isinstance(datasets, list) and len(datasets) == 1 and datasets[0].get("name") == name and (datasets[0].get("version") == digest or datasets[0].get("ref") == digest), f"Harbor dataset differs: {shard}")
         require(datasets[0].get("task_names") == list(selected), f"Harbor selected tasks differ: {shard}")
@@ -102,7 +104,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         expected_kwargs = {
             "api_base": scaffold["api_base"],
             "temperature": scaffold["temperature"],
-            "max_turns": scaffold["max_turns"],
+            "max_turns": FULL_MAX_TURNS,
             "parser_name": scaffold["parser_name"],
             "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
             "enable_summarize": scaffold["enable_summarize"],
