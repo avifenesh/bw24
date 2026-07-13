@@ -11,12 +11,13 @@ import math
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
 SPILL_KEYS = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
 SHARED_RECEIPT_KEYS = (
-    "panel", "dataset", "base_url", "harbor_version", "bw24_commit",
+    "panel", "dataset", "harbor_version", "bw24_commit",
     "server_binary_sha256", "declared_spill_io", "declared_spill_pread_depth",
     "declared_spill_stats", "declared_serve_spec", "lock_sha256",
 )
@@ -61,6 +62,24 @@ def expected_tasks(lock: dict[str, Any], panel: str) -> dict[str, str]:
     return {row["name"]: row["digest"] for row in lock["terminal_bench_2"]["tasks"]}
 
 
+def normalized_loopback_api_base(value: object) -> str:
+    require(isinstance(value, str), "practical API base is not a string")
+    parsed = urlsplit(value)
+    require(
+        parsed.scheme == "http"
+        and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None
+        and 1 <= parsed.port <= 65535
+        and parsed.path == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+        and parsed.password is None,
+        f"practical API base is not an isolated loopback /v1 endpoint: {value!r}",
+    )
+    return "http://127.0.0.1:{port}/v1"
+
+
 def normalized_harbor_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = copy.deepcopy(config)
     normalized.pop("job_name", None)
@@ -68,6 +87,9 @@ def normalized_harbor_config(config: dict[str, Any]) -> dict[str, Any]:
     agents = normalized.get("agents")
     if isinstance(agents, list) and len(agents) == 1:
         agents[0]["model_name"] = "openai/{arm}"
+        kwargs = agents[0].get("kwargs")
+        if isinstance(kwargs, dict):
+            kwargs["api_base"] = normalized_loopback_api_base(kwargs.get("api_base"))
     return normalized
 
 
@@ -84,6 +106,8 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text())
     require(receipt.get("format") == "bw24-practical-run-v1", f"bad receipt format: {run_dir}")
     require(receipt.get("panel") == panel, f"wrong panel in {run_dir}")
+    actual_api_base = receipt.get("base_url")
+    normalized_loopback_api_base(actual_api_base)
     elapsed = receipt.get("elapsed_seconds")
     require(
         receipt.get("completed_successfully") is True
@@ -118,8 +142,9 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     require(config.get("n_concurrent_trials") == 1, f"wrong Harbor concurrency: {run_dir}")
     require(config.get("agent_timeout_multiplier") == 4.0, f"wrong Harbor agent timeout multiplier: {run_dir}")
     scaffold = lock["protocol"]["agent_scaffold"]
+    normalized_loopback_api_base(scaffold["api_base"])
     expected_kwargs = {
-        "api_base": scaffold["api_base"], "temperature": scaffold["temperature"],
+        "api_base": actual_api_base, "temperature": scaffold["temperature"],
         "max_turns": scaffold["max_turns"], "parser_name": scaffold["parser_name"],
         "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
         "enable_summarize": scaffold["enable_summarize"],
@@ -291,7 +316,7 @@ def self_test() -> None:
         root = Path(tmp)
         lock = {
             "protocol": {"agent_scaffold": {
-                "api_base": "http://server/v1", "temperature": 0, "max_turns": 2,
+                "api_base": "http://127.0.0.1:8080/v1", "temperature": 0, "max_turns": 2,
                 "parser_name": "json", "proactive_summarization_threshold": 1,
                 "enable_summarize": True, "store_all_messages": True,
                 "record_terminal_session": True, "max_input_tokens": 8,
@@ -308,7 +333,7 @@ def self_test() -> None:
 
         def make_run(
             arm: str, rewards: list[float], artifact_bytes: int,
-            timed_out: set[str] | None = None,
+            timed_out: set[str] | None = None, port: int = 8080,
         ) -> Path:
             timed_out = timed_out or set()
             run = root / arm
@@ -316,7 +341,7 @@ def self_test() -> None:
             job.mkdir(parents=True)
             receipt = {
                 "format": "bw24-practical-run-v1", "arm": arm, "panel": "terminal",
-                "dataset": "terminal@digest", "base_url": "http://server/v1",
+                "dataset": "terminal@digest", "base_url": f"http://127.0.0.1:{port}/v1",
                 "harbor_version": "0.18.0", "bw24_commit": "commit",
                 "server_binary_sha256": "server", "declared_spill_io": "worker",
                 "declared_spill_pread_depth": "16", "declared_spill_stats": "1",
@@ -343,7 +368,7 @@ def self_test() -> None:
                 "n_concurrent_trials": 1,
                 "agent_timeout_multiplier": 4.0,
                 "agents": [{"name": "terminus-2", "model_name": f"openai/{arm}", "kwargs": {
-                    "api_base": "http://server/v1", "temperature": 0, "max_turns": 2,
+                    "api_base": f"http://127.0.0.1:{port}/v1", "temperature": 0, "max_turns": 2,
                     "parser_name": "json", "proactive_summarization_threshold": 1,
                     "enable_summarize": True, "store_all_messages": True,
                     "record_terminal_session": True,
@@ -379,13 +404,23 @@ def self_test() -> None:
                 }))
             return run
 
-        baseline = make_run("plain", [0, 1], 100, {"a"})
-        candidate = make_run("candidate", [1, 1], 80)
+        baseline = make_run("plain", [0, 1], 100, {"a"}, port=8080)
+        candidate = make_run("candidate", [1, 1], 80, port=8082)
         report = build_report(baseline, candidate, lock_path, "terminal")
         assert report["candidate_mean_delta"] == 0.5
         assert report["paired_wins"] == 1 and report["paired_losses"] == 0
         assert report["baseline"]["timeout_count"] == 1
         assert "Directional matched panel" in markdown(report)
+        candidate_receipt = candidate / "run-metadata.json"
+        payload = json.loads(candidate_receipt.read_text())
+        payload["base_url"] = "http://example.com/v1"
+        candidate_receipt.write_text(json.dumps(payload))
+        try:
+            build_report(baseline, candidate, lock_path, "terminal")
+        except ValueError as exc:
+            assert "isolated loopback" in str(exc)
+        else:
+            raise AssertionError("non-loopback practical endpoint was accepted")
     print("practical result summarizer self-test: PASS")
 
 

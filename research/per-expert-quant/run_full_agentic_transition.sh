@@ -17,6 +17,7 @@ SPILL_DEPTH=${SPILL_DEPTH:-8}
 IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
 PARETO_ART_ROOT=${PARETO_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea}
+LAYER_BALANCED_ART_ROOT=${LAYER_BALANCED_ART_ROOT:-/scratch/bw24-artifacts-layer-balanced100-3db293f}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
 FULL_MAX_TURNS=${FULL_MAX_TURNS:-100}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
@@ -87,6 +88,8 @@ artifact_for() {
       printf '%s/%s\n' "$CENTERED_ART_ROOT" "$1" ;;
     smart100_iq3_iq4_q4_pareto)
       printf '%s/%s\n' "$PARETO_ART_ROOT" "$1" ;;
+    layer_balanced100)
+      printf '%s/%s\n' "$LAYER_BALANCED_ART_ROOT" "$1" ;;
     *) die "no artifact mapping for $1" ;;
   esac
 }
@@ -97,7 +100,7 @@ RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
 export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC \
   FULL_MAX_TURNS \
-  IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT
+  IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT LAYER_BALANCED_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -129,6 +132,8 @@ for arm in sys.argv[2:]:
         root = pathlib.Path(os.environ["CENTERED_ART_ROOT"]) / arm
     elif arm == "smart100_iq3_iq4_q4_pareto":
         root = pathlib.Path(os.environ["PARETO_ART_ROOT"]) / arm
+    elif arm == "layer_balanced100":
+        root = pathlib.Path(os.environ["LAYER_BALANCED_ART_ROOT"]) / arm
     elif arm.startswith("smart100_"):
         root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm
     else:
