@@ -180,6 +180,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("corpus done: {} prompts, {} tokens -> {}", files.len(), total, outp);
         return Ok(());
     }
+    // BW24_SPEC_DFLASH=<draft dir>: DFlash block-drafter round — prime, block16 draft,
+    // t=16 verify, accept. Compares the spec stream against plain greedy (exactness gate)
+    // + times both. BW24_SPEC_STATS=1 prints acceptance.
+    if let Ok(dpath) = std::env::var("BW24_SPEC_DFLASH") {
+        let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let draft = bw24_engine::dflash::DflashDraft::load(&e, std::path::Path::new(&dpath))?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        println!("dflash spec block={} n_new={n_new} prompt={} toks", draft.cfg.block_size, toks.len());
+        let spec_only = std::env::var("BW24_SPEC_ONLY").as_deref() == Ok("1");
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let plain = if spec_only { Vec::new() } else { model.generate(&e, &toks, n_new)? };
+        e.stream().synchronize()?;
+        let dt_plain = t0.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let t1 = std::time::Instant::now();
+        let spec = model.generate_spec_dflash(&e, &draft, &toks, n_new, &[])?;
+        e.stream().synchronize()?;
+        let dt_spec = t1.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let same = plain.iter().zip(&spec).take_while(|(a, b)| a == b).count();
+        if spec_only {
+            println!("dflash spec: {:.2} tok/s (spec-only)", spec.len() as f64 / dt_spec);
+            return Ok(());
+        }
+        println!("plain: {:.2} tok/s | dflash spec: {:.2} tok/s ({:.2}x) | stream agreement {}/{}",
+                 plain.len() as f64 / dt_plain, spec.len() as f64 / dt_spec,
+                 dt_plain / dt_spec * (spec.len() as f64 / plain.len() as f64),
+                 same, plain.len().min(spec.len()));
+        if same < plain.len().min(spec.len()) {
+            println!("plain: {:?}", &plain[..plain.len().min(24)]);
+            println!("spec : {:?}", &spec[..spec.len().min(24)]);
+        }
+        return Ok(());
+    }
     // BW24_SPEC=K + BW24_DRAFT=<drafter.gguf>: MTP spec loop — prime, draft K, verify, accept.
     // Compares the spec token stream against plain greedy (self-consistency) + times both.
     if let (Ok(kk), Ok(dpath)) = (std::env::var("BW24_SPEC"), std::env::var("BW24_DRAFT")) {

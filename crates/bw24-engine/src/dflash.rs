@@ -59,6 +59,40 @@ fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Host q8_0 encode (ggml block layout: [d f16][32 x i8] = 34B/32 vals). The drafter's
+/// weights ride the dp4a fast path at 1.6GB resident (bf16 3.1GB + the 31B trunk OOM'd
+/// 24GB; f32 6.2GB worse). Drafter quantization moves ACCEPTANCE only — verify exactness
+/// is structural.
+fn encode_q8_0(vals: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vals.len() / 32 * 34);
+    for blk in vals.chunks_exact(32) {
+        let amax = blk.iter().fold(0f32, |a, v| a.max(v.abs()));
+        let d = amax / 127.0;
+        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+        let dh = half_from_f32(d);
+        out.extend_from_slice(&dh.to_le_bytes());
+        for &v in blk {
+            out.push(((v * id).round().clamp(-127.0, 127.0)) as i8 as u8);
+        }
+    }
+    out
+}
+
+fn half_from_f32(v: f32) -> u16 {
+    // f32 -> IEEE f16 (round-to-nearest-even; range of q8_0 d values is tame)
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+    let man = b & 0x7fffff;
+    if exp <= 0 { return sign; }              // flush tiny d to zero
+    if exp >= 31 { return sign | 0x7c00; }    // inf (unreachable for sane d)
+    let mut h = sign | ((exp as u16) << 10) | ((man >> 13) as u16);
+    // round to nearest even on the truncated 13 bits
+    let rem = man & 0x1fff;
+    if rem > 0x1000 || (rem == 0x1000 && (h & 1) == 1) { h += 1; }
+    h
+}
+
 impl DflashDraft {
     /// Load the backbone-only checkpoint dir (config.json + model.safetensors, bf16).
     /// Config scalars ride a minimal extractor (no json dep in-tree — HfConfig precedent).
@@ -112,8 +146,16 @@ impl DflashDraft {
         let upw = |name: &str| -> Result<GpuTensor, Box<dyn std::error::Error>> {
             let (info, bytes) = st.raw(name).ok_or_else(|| format!("missing tensor {name}"))?;
             let shape = info.ne(); // ggml order: ne[0]=in_f, ne[1]=out_f
-            Ok(GpuTensor::Float { data: e.htod(&bf16_to_f32(bytes))?,
-                                  ne: shape.to_vec() })
+            let in_f = shape[0] as usize;
+            let f32s = bf16_to_f32(bytes);
+            let q = encode_q8_0(&f32s);
+            Ok(GpuTensor::Quant {
+                bytes: e.upload_u8(&q)?, qtype: crate::QT_Q8_0,
+                row_bytes: in_f / 32 * 34, ne: shape.to_vec(), scale: 1.0, rp: false,
+                #[cfg(bw24_cutlass)]
+                cutlass: None,
+                fp8: None, rp4: None,
+            })
         };
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for i in 0..cfg.n_layer {
@@ -155,25 +197,41 @@ impl DflashDraft {
     /// `noise_emb`:     [block, hidden] — target embed rows for [accepted, MASK x b-1].
     /// `pos`:           absolute positions for ctx rows THEN block rows (ctx+block i32).
     /// Returns final normed hidden [block, hidden] (feed target lm_head for draft logits).
+    /// ctx features for `t` tapped rows: hidden_norm(fc(taps)) — the drafter's context
+    /// representation, cacheable across rounds (append-only in committed-token order).
+    pub fn ctx_features(&self, e: &Engine, taps: &CudaSlice<f32>, t: usize)
+                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let c = &self.cfg;
+        let n_taps = c.target_layer_ids.len();
+        let fc_out = self.mm(e, &self.fc, taps, t, n_taps * c.hidden, c.hidden)?;
+        let mut out = e.uninit(t * c.hidden)?;
+        e.rms_norm(&fc_out, &self.hidden_norm, &mut out, c.hidden, t, c.eps)?;
+        Ok(out)
+    }
+
     pub fn forward(
         &self, e: &Engine, target_hidden: &CudaSlice<f32>, noise_emb: &CudaSlice<f32>,
+        pos: &[i32], ctx: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let ctx_f = self.ctx_features(e, target_hidden, ctx)?;
+        if let Ok(dir) = std::env::var("BW24_DFLASH_DUMP") {
+            let v = e.dtoh(&ctx_f)?;
+            let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
+            std::fs::write(format!("{dir}/bw24-ctx_features.f32"), bytes)?;
+        }
+        self.forward_block(e, &ctx_f, noise_emb, pos, ctx)
+    }
+
+    /// Block forward over PRECOMPUTED ctx features (the round arm's entry: features are
+    /// cached across rounds; only the block work repeats).
+    pub fn forward_block(
+        &self, e: &Engine, ctx_f: &CudaSlice<f32>, noise_emb: &CudaSlice<f32>,
         pos: &[i32], ctx: usize,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let c = &self.cfg;
         let (h, nh, nkv, hd) = (c.hidden, c.n_head, c.n_kv, c.head_dim);
         let b = c.block_size;
         assert_eq!(pos.len(), ctx + b, "pos covers ctx rows then block rows");
-        let n_taps = c.target_layer_ids.len();
-
-        // ctx features: hidden_norm(fc(target_hidden))  [ctx, hidden]
-        let fc_out = self.mm(e, &self.fc, target_hidden, ctx, n_taps * h, h)?;
-        let mut ctx_f = e.uninit(ctx * h)?;
-        e.rms_norm(&fc_out, &self.hidden_norm, &mut ctx_f, h, ctx, c.eps)?;
-        if let Ok(dir) = std::env::var("BW24_DFLASH_DUMP") {
-            let v = e.dtoh(&ctx_f)?;
-            let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
-            std::fs::write(format!("{dir}/bw24-ctx_features.f32"), bytes)?;
-        }
 
         let pos_blk = e.htod_i32(&pos[ctx..])?;
 
@@ -187,8 +245,8 @@ impl DflashDraft {
 
             // q from block; k/v from [ctx_f ; block-normed]
             let q0 = self.mm(e, &l.wq, &xn, b, h, nh * hd)?;
-            let k0c = self.mm(e, &l.wk, &ctx_f, ctx, h, nkv * hd)?;
-            let v0c = self.mm(e, &l.wv, &ctx_f, ctx, h, nkv * hd)?;
+            let k0c = self.mm(e, &l.wk, ctx_f, ctx, h, nkv * hd)?;
+            let v0c = self.mm(e, &l.wv, ctx_f, ctx, h, nkv * hd)?;
             let k0b = self.mm(e, &l.wk, &xn, b, h, nkv * hd)?;
             let v0b = self.mm(e, &l.wv, &xn, b, h, nkv * hd)?;
 
@@ -280,6 +338,153 @@ impl DflashDraft {
         }
         let mut out = e.uninit(b * h)?;
         e.rms_norm(&x, &self.norm, &mut out, h, b, c.eps)?;
+        Ok(out)
+    }
+}
+
+// ================= DFlash spec round (greedy, first light) =================
+// Exact contract: identical output stream to plain greedy decode BY CONSTRUCTION — the
+// target's batched verify argmax decides every committed token; the drafter only proposes.
+// (Same verify+rewind pattern as generate_spec_gemma's eager round; t=16 verify rides the
+// straddle-split-safe fa_decode_rows.)
+impl crate::hybrid::HybridModel {
+    pub fn generate_spec_dflash(
+        &self, e: &Engine, draft: &DflashDraft, prompt: &[u32], max_new: usize, eos: &[u32],
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        use crate::cache::{Cache, DflashTapSink};
+        let n_embd = self.cfg.n_embd as usize;
+        let c = &draft.cfg;
+        assert_eq!(n_embd, c.hidden, "draft hidden must match target n_embd");
+        let b = c.block_size;
+        let n_taps = c.target_layer_ids.len();
+        let max_ctx = prompt.len() + max_new + b + 8;
+        // First light holds ctx <= sliding_window: the draft was trained with 4 sliding
+        // layers (window 2048) and the first-light attention is windowless full — inside
+        // the window the two are identical. The depth cell (1736 + 128) fits.
+        assert!(max_ctx <= c.sliding_window,
+                "first-light dflash round is windowless — ctx cap {} exceeds the draft window {}",
+                max_ctx, c.sliding_window);
+        let mut cache = Cache::new(e, &self.cfg, max_ctx)?;
+
+        // ---- prime with taps armed ----
+        let tp = prompt.len();
+        cache.dflash_taps = Some(DflashTapSink {
+            layer_ids: c.target_layer_ids.clone(),
+            buf: e.uninit(tp * n_taps * n_embd)?,
+            hidden: n_embd, t: tp,
+        });
+        let (logits, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
+        let mut last = crate::forward::argmax(&logits) as u32;
+        // ctx features for the whole prompt (append-only device buffer, committed order)
+        let mut ctx_f_all = e.uninit(max_ctx * n_embd)?;
+        {
+            let taps = cache.dflash_taps.take().unwrap();
+            let f = draft.ctx_features(e, &taps.buf, tp)?;
+            e.copy_into(&mut ctx_f_all, 0, &f, tp * n_embd)?;
+        }
+        let mut ctx_len = tp;
+
+        // embed-scale seam (BW24_DFLASH_EMB_SCALE): gemma trunks scale embeddings by
+        // sqrt(n_embd) INSIDE the forward; whether the z-lab gemma4 training fed the
+        // drafter scaled or raw embed rows is not visible from the reference (qwen path
+        // uses raw embed_tokens). Acceptance arbitrates; default raw.
+        let emb_scale = if std::env::var("BW24_DFLASH_EMB_SCALE").as_deref() == Ok("1") {
+            (n_embd as f32).sqrt()
+        } else { 1.0 };
+
+        let mut out = Vec::with_capacity(max_new);
+        let n_vocab = self.output.out_features();
+        let mut attempted = 0usize;
+        let mut accepted = 0usize;
+        'outer: while out.len() < max_new {
+            let start = cache.pos; // committed length
+            // ---- draft: block = [last, MASK x b-1] ----
+            let mut block: Vec<u32> = vec![c.mask_token_id; b];
+            block[0] = last;
+            let mut noise = e.htod(&self.embd.gather(n_embd, &block))?;
+            if emb_scale != 1.0 { e.scale_inplace(&mut noise, emb_scale, b * n_embd)?; }
+            if std::env::var("BW24_DFLASH_DEBUG").as_deref() == Ok("1") && start == cache.pos {
+                let nv = e.dtoh(&noise)?;
+                let r0: f32 = nv[..n_embd].iter().map(|x| x * x).sum::<f32>().sqrt();
+                let r1: f32 = nv[n_embd..2 * n_embd].iter().map(|x| x * x).sum::<f32>().sqrt();
+                eprintln!("[dflash noise] |row0(last)|={r0:.3} |row1(MASK id {})|={r1:.3}",
+                          c.mask_token_id);
+            }
+            let pos: Vec<i32> = (0..ctx_len as i32).chain(
+                (start as i32)..(start + b) as i32).collect();
+            let ctx_view_len = ctx_len * n_embd;
+            // forward_block reads ctx rows [0..ctx_len) of ctx_f_all
+            let ctx_f = e.view(&ctx_f_all, ctx_view_len);
+            let mut ctx_owned = e.uninit(ctx_view_len)?;
+            e.copy_view_into(&mut ctx_owned, 0, &ctx_f, ctx_view_len)?;
+            let dh = draft.forward_block(e, &ctx_owned, &noise, &pos, ctx_len)?;
+            // draft tokens = argmax(lm_head(h rows 1..b))
+            let mut rows = e.uninit((b - 1) * n_embd)?;
+            {
+                let dv = e.view(&dh, b * n_embd);
+                let tail = dv.slice(n_embd..b * n_embd);
+                e.copy_view_into(&mut rows, 0, &tail, (b - 1) * n_embd)?;
+            }
+            let dl = e.matmul(&self.output, &rows, b - 1)?;
+            let mut dtoks_d = e.stream().alloc_zeros::<u32>(b - 1)?;
+            for i in 0..(b - 1) {
+                e.argmax_token_device_col(&dl, i, n_vocab, &mut dtoks_d, i)?;
+            }
+            let dtoks = e.dtoh_u32(&dtoks_d)?;
+            for (i, &dt) in dtoks.iter().enumerate() { block[i + 1] = dt; }
+            let dbg = std::env::var("BW24_DFLASH_DEBUG").as_deref() == Ok("1");
+
+            // ---- verify: one t=b target forward with taps armed ----
+            cache.dflash_taps = Some(DflashTapSink {
+                layer_ids: c.target_layer_ids.clone(),
+                buf: e.uninit(b * n_taps * n_embd)?,
+                hidden: n_embd, t: b,
+            });
+            let (vam, _vh) = self.gemma4_decode_step_t_am(e, &block, start, &mut cache)?;
+            let taps = cache.dflash_taps.take().unwrap();
+            if dbg {
+                eprintln!("[dflash r] start={start} last={last}\n  draft={:?}\n  vam  ={:?}",
+                          &block[1..], &vam);
+            }
+
+            // ---- accept ----
+            let mut m = 0usize;
+            while m < b - 1 && block[m + 1] as usize == vam[m] as usize { m += 1; }
+            attempted += b - 1;
+            accepted += m;
+            out.push(last);
+            if eos.contains(&last) { break 'outer; }
+            for &dt in &block[1..=m] {
+                out.push(dt);
+                if eos.contains(&dt) { break 'outer; }
+                if out.len() >= max_new { break 'outer; }
+            }
+            let next = vam[m] as u32;
+
+            // ---- commit/rollback: keep m+1 of the b appended rows ----
+            let keep = m + 1;
+            for kvl in cache.kv.iter_mut().flatten() {
+                kvl.len -= b - keep;
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            cache.pos -= b - keep;
+
+            // ---- ctx features for the kept rows ----
+            {
+                let tv = e.view(&taps.buf, b * n_taps * n_embd);
+                let keep_view = tv.slice(0..keep * n_taps * n_embd);
+                let mut kept = e.uninit(keep * n_taps * n_embd)?;
+                e.copy_view_into(&mut kept, 0, &keep_view, keep * n_taps * n_embd)?;
+                let f = draft.ctx_features(e, &kept, keep)?;
+                e.copy_into(&mut ctx_f_all, ctx_len * n_embd, &f, keep * n_embd)?;
+                ctx_len += keep;
+            }
+            last = next;
+        }
+        if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
+            eprintln!("[dflash] acceptance {accepted}/{attempted} = {:.3}",
+                      accepted as f64 / attempted.max(1) as f64);
+        }
         Ok(out)
     }
 }
