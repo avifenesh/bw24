@@ -66,6 +66,39 @@ def percentile(values: dict[int, float]) -> dict[int, float]:
     return {key: index / (len(ranked) - 1) for index, key in enumerate(ranked)}
 
 
+def dominated_qtypes(
+    projection_values: dict[str, float], projection_sizes: dict[str, int]
+) -> dict[str, str]:
+    """Return states that cannot improve any byte-constrained solution."""
+    if projection_values.keys() != projection_sizes.keys():
+        raise ValueError("projection values and sizes cover different qtypes")
+    for qtype, value in projection_values.items():
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"invalid projection damage for {qtype}: {value}")
+    dominated: dict[str, str] = {}
+    for candidate, candidate_value in projection_values.items():
+        candidate_size = projection_sizes[candidate]
+        witnesses = [
+            other
+            for other, other_value in projection_values.items()
+            if other != candidate
+            and projection_sizes[other] <= candidate_size
+            and other_value <= candidate_value
+            and (
+                projection_sizes[other] < candidate_size
+                or other_value < candidate_value
+            )
+        ]
+        if witnesses:
+            dominated[candidate] = min(
+                witnesses,
+                key=lambda other: (
+                    projection_sizes[other], projection_values[other], other
+                ),
+            )
+    return dominated
+
+
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     retention = load_json(args.retention_scores)
     sensitivity = load_json(args.quant_sensitivity)
@@ -174,6 +207,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     objective = np.zeros(n_variables, dtype=np.float64)
     bytes_vector = np.zeros(n_variables, dtype=np.float64)
     objective_offset = 0.0
+    dominated_states: dict[tuple[int, int, str, str], str] = {}
     for key in experts:
         row = sensitivity_rows[key]
         first_qtype = qtypes[0]
@@ -184,6 +218,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         projection_minima: dict[str, float] = {}
         for projection in PROJECTIONS:
             projection_values: dict[str, float] = {}
+            projection_sizes: dict[str, int] = {}
             for qtype in qtypes:
                 metric = row["quantization"][qtype]["projection_output_error"][projection]
                 index = quant_index[(*key, projection, qtype)]
@@ -191,9 +226,16 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                     float(metric["squared_error"]) * float(row["sample_scale"]) * importance[key]
                 )
                 objective[index] = projection_values[qtype]
-                bytes_vector[index] = projection_bytes(
+                projection_sizes[qtype] = projection_bytes(
                     projection, hidden, intermediate, qtype
                 )
+                bytes_vector[index] = projection_sizes[qtype]
+            dominated_states.update({
+                (*key, projection, qtype): witness
+                for qtype, witness in dominated_qtypes(
+                    projection_values, projection_sizes
+                ).items()
+            })
             projection_minima[projection] = min(projection_values.values())
 
         # Each feasible expert contributes either one prune variable or one quant variable for
@@ -252,6 +294,8 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     }
     lb = np.zeros(n_variables)
     ub = np.ones(n_variables)
+    for state in dominated_states:
+        ub[quant_index[state]] = 0.0
     for key in protected:
         ub[prune_index[key]] = 0.0
     result = milp(
@@ -275,6 +319,11 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise RuntimeError("smart budget solver incumbent violates frozen constraints")
     result.x = rounded
+    selected_dominated = [
+        state for state in dominated_states if result.x[quant_index[state]] >= 0.5
+    ]
+    if selected_dominated:
+        raise RuntimeError(f"solver selected dominated quant states: {selected_dominated[:3]}")
     pruned = {key for key in experts if result.x[prune_index[key]] >= 0.5}
     assignments = []
     counts = {qtype: 0 for qtype in qtypes}
@@ -345,6 +394,15 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "constant_offset": objective_offset,
                 "centered_scale": scale,
             },
+            "per_cell_dominance_pruning": {
+                "condition": "other_bytes <= candidate_bytes and other_damage <= candidate_damage with at least one strict inequality",
+                "preserves_exact_feasible_argmin": True,
+                "disabled_states": len(dominated_states),
+                "disabled_by_qtype": {
+                    qtype: sum(state[3] == qtype for state in dominated_states)
+                    for qtype in qtypes
+                },
+            },
         },
         "calibration": {
             "retention_scores": {"path": str(args.retention_scores.resolve()), "sha256": sha256(args.retention_scores)},
@@ -372,6 +430,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
+    assert dominated_qtypes(
+        {"IQ3_S": 1.0, "Q3_K": 2.0, "Q2_K": 3.0},
+        {"IQ3_S": 110, "Q3_K": 110, "Q2_K": 84},
+    ) == {"Q3_K": "IQ3_S"}
     with tempfile.TemporaryDirectory(prefix="bw24-smart-budget-") as tmp:
         root = Path(tmp); layers = [1, 2]; experts = range(3)
         qtypes = ["Q8_0", "NVFP4", "IQ3_S", "Q3_K", "Q2_K"]
@@ -444,6 +506,10 @@ def self_test() -> None:
         assert centering["method"] == "per_expert_projection_minimum"
         assert centering["preserves_exact_argmin"] is True
         assert centering["constant_offset"] > 0
+        dominance = plan["policy"]["per_cell_dominance_pruning"]
+        assert dominance["preserves_exact_feasible_argmin"] is True
+        assert dominance["disabled_by_qtype"]["Q3_K"] == 18
+        assert plan["policy"]["qtype_projection_counts"]["Q3_K"] == 0
         assert math.isclose(
             plan["selection"]["estimated_absolute_output_damage"],
             plan["selection"]["estimated_centered_output_damage"]
