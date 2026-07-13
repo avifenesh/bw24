@@ -694,6 +694,98 @@ impl Engine {
         Ok(())
     }
 
+    /// WEIGHT PREFETCH (SOTA item 3, 2026-07-13, DEFAULT ON): during a bandwidth-idle
+    /// window (the fa launch reads KV, not weights) prefetch the NEXT matvec's
+    /// decode-plane bytes into L2 so it reads L2-warm. Value-free scheduling op — same
+    /// class as prefetch_l2 (numerics untouched by construction). Wired only where it
+    /// measured positive: the E4B dc attn arm (+0.65%). 26B (flat — MoE ffn dominates),
+    /// 31B (−0.2% — decode at the DRAM wall) and the ffn gate/up cascade (−1% — 29MB/layer
+    /// floods the fill path) all probed and NOT wired. BW24_WPF=0 rollback seam.
+    pub fn wpf_level() -> u32 {
+        static ON: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_WPF").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(1))
+    }
+
+    /// PDL launch arm (SOTA item 2, 2026-07-13, DEFAULT ON): the six BW24_PDL_ENTRY glue
+    /// kernels launch through cuLaunchKernelEx with PROGRAMMATIC_STREAM_SERIALIZATION — the
+    /// grid launches while the predecessor drains (~120ns/kernel back, pdl_probe), the
+    /// kernels' entry grid-dep sync restores read order (SASS-audited: ACQBULK precedes
+    /// every LDG in all six). Valid windows: E4B +1.0-1.2% (128 AND 384-tok gens);
+    /// 26B/31B/qwen flat no-harm. Battery: kernel-check GREEN, run-gen tokens IDENTICAL x3
+    /// gemma, spec 64/64 E4B K=1/4/8 + 26B/31B K=4 + qwen PASS. Works eager AND under
+    /// capture (capture encodes native programmatic edges — the post-capture edge-REWRITE
+    /// arm died: engine graphs hold cuMemAllocAsync alloc nodes, edge edits on those return
+    /// CUDA_ERROR_NOT_SUPPORTED). BW24_PDL=0 rollback seam.
+    pub fn pdl_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_PDL").map(|v| v != "0").unwrap_or(true))
+    }
+
+    /// Raw CUfunction for a PDL-attributed launch: the SAME kernels.fatbin loaded once more
+    /// through the raw driver API (cudarc hides its CUfunction handles; a duplicate module
+    /// of tiny glue kernels is free). Resolved lazily per name, cached process-wide.
+    fn pdl_func(&self, name: &'static str) -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
+        use cudarc::driver::sys as cu;
+        static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        static FNS: std::sync::Mutex<Option<std::collections::HashMap<&'static str, usize>>> =
+            std::sync::Mutex::new(None);
+        let module = *MODULE.get_or_init(|| {
+            let bytes = std::fs::read(env!("BW24_ENGINE_FATBIN")).expect("kernels fatbin");
+            let mut m: cu::CUmodule = std::ptr::null_mut();
+            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl module load: {r:?}");
+            m as usize
+        });
+        let mut fns = FNS.lock().unwrap();
+        let map = fns.get_or_insert_with(Default::default);
+        if let Some(&f) = map.get(name) { return Ok(f as cu::CUfunction); }
+        let cname = std::ffi::CString::new(name)?;
+        let mut f: cu::CUfunction = std::ptr::null_mut();
+        let r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+        if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func {name}: {r:?}").into()); }
+        map.insert(name, f as usize);
+        Ok(f)
+    }
+
+    /// cuLaunchKernelEx with CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION on the
+    /// compute stream. ONLY legal for kernels whose entry carries BW24_PDL_ENTRY.
+    ///
+    /// # Safety
+    /// `params` must match the kernel's exact parameter list (order, types, count) —
+    /// a mismatch corrupts the launch silently.
+    unsafe fn launch_pdl(&self, name: &'static str, grid: (u32, u32, u32), block: (u32, u32, u32),
+                         params: &mut [*mut std::ffi::c_void])
+                         -> Result<(), Box<dyn std::error::Error>> {
+        use cudarc::driver::sys as cu;
+        let f = self.pdl_func(name)?;
+        let mut attr = cu::CUlaunchAttribute {
+            id: cu::CUlaunchAttributeID::CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION,
+            pad: [0; 4],
+            value: cu::CUlaunchAttributeValue { programmaticStreamSerializationAllowed: 1 },
+        };
+        let cfg = cu::CUlaunchConfig {
+            gridDimX: grid.0, gridDimY: grid.1, gridDimZ: grid.2,
+            blockDimX: block.0, blockDimY: block.1, blockDimZ: block.2,
+            sharedMemBytes: 0, hStream: self.gpu.stream.cu_stream(),
+            attrs: &mut attr, numAttrs: 1,
+        };
+        let r = unsafe { cu::cuLaunchKernelEx(&cfg, f, params.as_mut_ptr(), std::ptr::null_mut()) };
+        if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("launch_pdl {name}: {r:?}").into()); }
+        Ok(())
+    }
+
+    /// L2-prefetch a quant weight's DECODE plane (the rp4 split-plane mirror when present —
+    /// that is what the m<=8 dispatch reads — else the raw block bytes). No-op on float arms.
+    pub fn prefetch_weight_l2(&self, w: &crate::model::GpuTensor)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        if let crate::model::GpuTensor::Quant { bytes, rp4, .. } = w {
+            let p = rp4.as_ref().unwrap_or(bytes);
+            self.prefetch_l2(p, p.len())?;
+        }
+        Ok(())
+    }
+
     /// L2 prefetch of a device byte range (latency-hiding arc; value-free scheduling op).
     pub fn prefetch_l2(&self, p: &CudaSlice<u8>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("prefetch_l2_bytes");
@@ -2984,9 +3076,29 @@ impl Engine {
                                            -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let (nc, e2) = (ncols as i32, eps);
+        if Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pa, _g0) = a.device_ptr(s); let (pwa, _g1) = wa.device_ptr(s);
+            let (pb, _g2) = b_in.device_ptr(s); let (pw, _g3) = w.device_ptr(s);
+            let (pr, _g4) = res.device_ptr_mut(s);
+            let (pq, _g5) = out_q.device_ptr_mut(s); let (pd, _g6) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pa as *const _ as *mut std::ffi::c_void, &pwa as *const _ as *mut _,
+                &pb as *const _ as *mut _, &c as *const _ as *mut _,
+                &pw as *const _ as *mut _, &pr as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pd as *const _ as *mut _,
+                &nc as *const _ as *mut _, &e2 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_pre_add_scale_rms_norm_q8_1", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            }
+            return Ok((out_q, out_d));
+        }
         let f = self.func("rms_pre_add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e2) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(a).arg(wa).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
@@ -3001,9 +3113,26 @@ impl Engine {
         debug_assert!(ncols % 128 == 0);
         let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let nc = ncols as i32;
+        if Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pg, _g0) = gate.device_ptr(s); let (pu, _g1) = up.device_ptr(s);
+            let (pact, _g2) = act.device_ptr_mut(s);
+            let (pq, _g3) = out_q.device_ptr_mut(s); let (pd, _g4) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pg as *const _ as *mut std::ffi::c_void, &pu as *const _ as *mut _,
+                &pact as *const _ as *mut _, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("gelu_tanh_mul_q8_1", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            }
+            return Ok((out_q, out_d));
+        }
         let f = self.func("gelu_tanh_mul_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let nc = ncols as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(gate).arg(up).arg(act).arg(&mut out_q).arg(&mut out_d).arg(&nc);
         unsafe { b.launch(cfg)?; }
@@ -3096,11 +3225,27 @@ impl Engine {
         let nblk = ncols / 32;
         let mut q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut d = self.alloc_uninit::<f32>(nrows * nblk)?;
+        let (nc, e) = (ncols as i32, eps);
+        if Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
+            let (pq, _g2) = q.device_ptr_mut(s); let (pd, _g3) = d.device_ptr_mut(s);
+            let mut ps = [
+                &px as *const _ as *mut std::ffi::c_void, &pw as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pd as *const _ as *mut _,
+                &nc as *const _ as *mut _, &e as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_norm_q8_1", (nrows as u32, 1, 1), (1024, 1, 1),
+                                     &mut ps)?; }
+            }
+            return Ok((q, d));
+        }
         let f = self.func("rms_norm_q8_1");
         // 1024 threads: decode is nrows=1 -> ONE CTA; 32 warps hide the pass1->pass2 latency
         // (s[32] reduce already sized for 32 warps). Same shape math at any blockDim.
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
-        let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
@@ -3168,9 +3313,29 @@ impl Engine {
         debug_assert!(ncols % 128 == 0);
         let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let (nc, e) = (ncols as i32, eps);
+        if Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pa, _g0) = a.device_ptr(s); let (pwa, _g1) = wa.device_ptr(s);
+            let (pb, _g2) = b.device_ptr(s); let (pw, _g3) = w.device_ptr(s);
+            let (pr, _g4) = res.device_ptr_mut(s); let (pdst, _g5) = dst.device_ptr_mut(s);
+            let (pq, _g6) = out_q.device_ptr_mut(s); let (pd, _g7) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pa as *const _ as *mut std::ffi::c_void, &pwa as *const _ as *mut _,
+                &pb as *const _ as *mut _, &pw as *const _ as *mut _,
+                &pr as *const _ as *mut _, &pdst as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pd as *const _ as *mut _,
+                &nc as *const _ as *mut _, &e as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_pre_add_rms_norm_q8z_f32", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            }
+            return Ok((out_q, out_d));
+        }
         let f = self.func("rms_pre_add_rms_norm_q8z_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e) = (ncols as i32, eps);
         let mut b2 = self.gpu.stream.launch_builder(&f);
         b2.arg(a).arg(wa).arg(b).arg(w).arg(&mut *res).arg(&mut *dst)
           .arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e);
@@ -3225,11 +3390,40 @@ impl Engine {
                                  pos: &CudaSlice<i32>, nh_q: usize, nh_k: usize,
                                  base: f32, freq_scale: f32, ff: Option<&CudaSlice<f32>>, eps: f32)
                                  -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("rms_norm_qkv_rope_cat_f32");
         let rows = rq + rk + rk;
-        let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let theta_scale = base.powf(-2.0 / head_dim as f32);
         let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
+        if Self::pdl_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pqkv, _g0) = qkv.device_ptr(s);
+            let (pwq, _g1) = wq.device_ptr(s); let (pwk, _g2) = wk.device_ptr(s);
+            let (pwv, _g3) = wv.device_ptr(s);
+            let (pq, _g4) = q.device_ptr_mut(s); let (pk, _g5) = k.device_ptr_mut(s);
+            let (pv, _g6) = v.device_ptr_mut(s);
+            let (ppos, _g7) = pos.device_ptr(s);
+            let (pff, _g8) = match ff {
+                Some(t) => { let (p, g) = t.device_ptr(s); (p, Some(g)) }
+                None => (0, None),
+            };
+            let mut ps = [
+                &pqkv as *const _ as *mut std::ffi::c_void,
+                &pwq as *const _ as *mut _, &pwk as *const _ as *mut _,
+                &pwv as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pk as *const _ as *mut _,
+                &pv as *const _ as *mut _,
+                &nc as *const _ as *mut _, &rqi as *const _ as *mut _,
+                &rki as *const _ as *mut _, &ppos as *const _ as *mut _,
+                &nhq as *const _ as *mut _, &nhk as *const _ as *mut _,
+                &theta_scale as *const _ as *mut _, &freq_scale as *const _ as *mut _,
+                &pff as *const _ as *mut _, &eps as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_norm_qkv_rope_cat_f32", (rows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
+        let f = self.func("rms_norm_qkv_rope_cat_f32");
+        let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
         let mut b = self.gpu.stream.launch_builder(&f);
         match ff {
             Some(t) => { b.arg(qkv).arg(wq).arg(wk).arg(wv)
@@ -5495,16 +5689,31 @@ impl Engine {
                 .and_then(|x| x.parse().ok()).unwrap_or(0));
             sp = if v >= 8 { v } else { FA_SP512_DEFAULT.load(std::sync::atomic::Ordering::Relaxed) };
         }
-        let n_splits_max = (t_kv_max + sp - 1) / sp;
         let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
-        let (base_i, nspm, spk) = (base_len as i32, n_splits_max as i32, sp as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let gqa = (n_head / n_head_kv).max(1) as u32;
-        let o_len = t * n_head * n_splits_max * head_dim;
-        let ml_len = t * n_head * n_splits_max;
-        let (mut part_o, mut part_m, mut part_l) =
-            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
-        let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
+        // LADDER-RUNG STRADDLE FIX (issue #10, 2026-07-13, g7e-proven): one sp for every row
+        // diverges from eager decode when a split-ladder rung falls INSIDE the batch — row r's
+        // eager twin used fa_split_keys(t_kv_r), the batch used fa_split_keys(t_kv_max), and
+        // the different partition changes the combine's FP order (greedy tie flips at depth;
+        // BW24_FA_SPLIT=64 pin -> PASS on the exact g7e failing config). Fix: group
+        // consecutive rows by their OWN ladder value and launch once per group — each row then
+        // executes the exact per-row program eager ran. Rungs land once per doubling, so this
+        // is 1 launch in the common case and 2 on a crossing round. hd512 keeps one group (its
+        // sp override is t_kv-independent by construction).
+        let mut groups: Vec<(usize, usize, usize)> = Vec::new();   // (row0, t_g, sp_g)
+        if head_dim == 512 || fa_split_keys(base_len + 1, n_head_kv) == sp {
+            groups.push((0, t, sp));
+        } else {
+            let mut r0 = 0usize;
+            while r0 < t {
+                let sp_g = fa_split_keys(base_len + r0 + 1, n_head_kv);
+                let mut r1 = r0 + 1;
+                while r1 < t && fa_split_keys(base_len + r1 + 1, n_head_kv) == sp_g { r1 += 1; }
+                groups.push((r0, r1 - r0, sp_g));
+                r0 = r1;
+            }
+        }
         // Deep-ctx smem twin for the VERIFY rows (2026-07-05): same threshold + rationale as
         // fa_decode's dispatch — at 40k the register path's GQA L2-reuse premise is dead and the
         // verify multiplies the 4x DRAM re-read by T rows. Bit-identical per (row,token,split).
@@ -5551,38 +5760,58 @@ impl Engine {
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             sh
         } else { 0 };
-        let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
-            block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
-        let mut b = self.gpu.stream.launch_builder(&f);
-        if head_dim == 512 {
-            let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
-            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
-             .arg(&hd).arg(&nh).arg(&nhkv).arg(bd).arg(&plus).arg(&scale).arg(&nspm).arg(&spk)
-             .arg(&ktb).arg(&vtb);
-            unsafe { b.launch(cfg)?; }
-        } else {
-            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
-             .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
-             .arg(&ktb).arg(&vtb);
-            unsafe { b.launch(cfg)?; }
-        }
-        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
-                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
-        if head_dim == 512 {
-            // device-len combine (shared by verify/eager/graph — parity by symbol): the
-            // per-row n_splits derives from the SAME counter the rows kernel read.
-            let (bd, plus) = base_dev.unwrap();
-            let fc = self.fa_func("fa_decode_combine_rows_dc", head_dim);
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
-            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
-              .arg(bd).arg(&plus).arg(&nspm).arg(&spk);
-            unsafe { b2.launch(cfg2)?; }
-        } else {
-            let fc = self.func("fa_decode_combine_rows");
-            let mut b2 = self.gpu.stream.launch_builder(&fc);
-            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
-              .arg(&base_i).arg(&nspm).arg(&spk);
-            unsafe { b2.launch(cfg2)?; }
+        // Per-GROUP launches (single group in the common case — identical to the pre-fix
+        // single launch there): each group gets its own partials (the rows kernel indexes
+        // partials by its LOCAL grid.z row) and q/o row-offset views.
+        for &(r0, t_g, sp_g) in &groups {
+            let n_splits_g = (base_len + r0 + t_g).div_ceil(sp_g);
+            let (nspm, spk) = (n_splits_g as i32, sp_g as i32);
+            let base_i = (base_len + r0) as i32;
+            let o_len = t_g * n_head * n_splits_g * head_dim;
+            let ml_len = t_g * n_head * n_splits_g;
+            let (mut part_o, mut part_m, mut part_l) =
+                (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+            let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
+            let qv = self.view(q, t * n_head * head_dim);
+            let q_g = qv.slice(r0 * n_head * head_dim..(r0 + t_g) * n_head * head_dim);
+            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_g as u32, t_g as u32),
+                block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
+            {
+                let mut b = self.gpu.stream.launch_builder(&f);
+                if head_dim == 512 {
+                    let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
+                    let plus_g = plus + r0 as i32;
+                    b.arg(&q_g).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                     .arg(&hd).arg(&nh).arg(&nhkv).arg(bd).arg(&plus_g).arg(&scale).arg(&nspm).arg(&spk)
+                     .arg(&ktb).arg(&vtb);
+                    unsafe { b.launch(cfg)?; }
+                } else {
+                    b.arg(&q_g).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                     .arg(&hd).arg(&nh).arg(&nhkv).arg(&base_i).arg(&scale).arg(&nspm).arg(&spk)
+                     .arg(&ktb).arg(&vtb);
+                    unsafe { b.launch(cfg)?; }
+                }
+            }
+            let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t_g as u32, 1),
+                    block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+            let mut o_g = o.slice_mut(r0 * n_head * head_dim..(r0 + t_g) * n_head * head_dim);
+            if head_dim == 512 {
+                // device-len combine (shared by verify/eager/graph — parity by symbol): the
+                // per-row n_splits derives from the SAME counter the rows kernel read.
+                let (bd, plus) = base_dev.unwrap();
+                let plus_g = plus + r0 as i32;
+                let fc = self.fa_func("fa_decode_combine_rows_dc", head_dim);
+                let mut b2 = self.gpu.stream.launch_builder(&fc);
+                b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
+                  .arg(bd).arg(&plus_g).arg(&nspm).arg(&spk);
+                unsafe { b2.launch(cfg2)?; }
+            } else {
+                let fc = self.func("fa_decode_combine_rows");
+                let mut b2 = self.gpu.stream.launch_builder(&fc);
+                b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
+                  .arg(&base_i).arg(&nspm).arg(&spk);
+                unsafe { b2.launch(cfg2)?; }
+            }
         }
         Ok(())
     }
