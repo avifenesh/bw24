@@ -18,10 +18,27 @@ ARTIFACT_ROOT=${ARTIFACT_ROOT:-/data/artifacts/per-expert-quant-smart100-2605fde
 SCRATCH_ROOT=${SCRATCH_ROOT:-/scratch/bw24-artifacts-smart100-2605fde}
 LOG_ROOT=${LOG_ROOT:-/data/logs/smart100-build-2605fde}
 TARGET_BYTES=${TARGET_BYTES:-100000000000}
+BUILD_GPUS_CSV=${BUILD_GPUS_CSV:-}
 
 arms=(smart100_empirical smart100_balanced smart100_rescue)
 weights=("0 0 0" "1 1 1" "0.5 2 1")
-cpus=(0-11 12-23 24-35 36-47 48-59 60-71 72-83 84-95)
+all_cpus=(0-11 12-23 24-35 36-47 48-59 60-71 72-83 84-95)
+if [[ -n "$BUILD_GPUS_CSV" ]]; then
+  IFS=, read -r -a gpus <<<"$BUILD_GPUS_CSV"
+else
+  gpus=(0 1 2 3 4 5 6 7)
+fi
+cpus=()
+seen_gpus=,
+for gpu in "${gpus[@]}"; do
+  [[ "$gpu" =~ ^[0-7]$ ]] || { echo "invalid build GPU $gpu" >&2; exit 2; }
+  [[ "$seen_gpus" != *",$gpu,"* ]] || { echo "duplicate build GPU $gpu" >&2; exit 2; }
+  seen_gpus+="$gpu,"
+  cpus+=("${all_cpus[$gpu]}")
+done
+[[ ${#gpus[@]} -eq ${#cpus[@]} && ${#gpus[@]} -gt 0 ]] || exit 2
+lane_count=${#gpus[@]}
+control_cpus=$(IFS=,; echo "${cpus[*]}")
 layers=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79)
 
 die() { echo "smart100 build transition: $*" >&2; exit 1; }
@@ -36,13 +53,29 @@ for path in "$SENSITIVITY" "$RETENTION" "$CONFIDENCE" "$REFERENCE_PLAN" \
   "$SOURCE/config.json" "$SOURCE/model.safetensors.index.json"; do
   [[ -f "$path" ]] || die "missing input $path"
 done
-while pgrep -x bw24-server >/dev/null \
-  || pgrep -af '/harbor run ' >/dev/null \
-  || [[ -n $(docker ps -q) ]]; do
-  echo "$(date -u +%FT%TZ) waiting for active model/eval work to release GPUs" \
+if [[ -n "$BUILD_GPUS_CSV" ]]; then
+  echo "$(date -u +%FT%TZ) isolated build lanes GPUs=$BUILD_GPUS_CSV CPUs=$control_cpus" \
     | tee -a "$LOG_ROOT/transition.log"
-  sleep 30
-done
+  while true; do
+    busy=0
+    for gpu in "${gpus[@]}"; do
+      if nvidia-smi -i "$gpu" --query-compute-apps=pid --format=csv,noheader,nounits \
+        | grep -Eq '^[0-9]+$'; then busy=1; fi
+    done
+    ((busy == 0)) && break
+    echo "$(date -u +%FT%TZ) waiting for isolated build GPUs to become idle" \
+      | tee -a "$LOG_ROOT/transition.log"
+    sleep 30
+  done
+else
+  while pgrep -x bw24-server >/dev/null \
+    || pgrep -af '/harbor run ' >/dev/null \
+    || [[ -n $(docker ps -q) ]]; do
+    echo "$(date -u +%FT%TZ) waiting for active model/eval work to release GPUs" \
+      | tee -a "$LOG_ROOT/transition.log"
+    sleep 30
+  done
+fi
 
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" --self-test | tee "$LOG_ROOT/plan-self-test.log"
 "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" --self-test | tee "$LOG_ROOT/heal-self-test.log"
@@ -55,7 +88,7 @@ for index in "${!arms[@]}"; do
   arm=${arms[$index]}; read -r retention_weight confidence_weight layer_weight <<<"${weights[$index]}"
   plan="$PLAN_ROOT/$arm.json"
   [[ ! -e "$plan" ]] || die "refusing existing plan $plan"
-  "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
+  taskset -c "$control_cpus" "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
     --retention-scores "$RETENTION" --quant-sensitivity "$SENSITIVITY" \
     --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
     --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$TARGET_BYTES" \
@@ -82,8 +115,8 @@ heal_lane() {
   for arm in "${arms[@]}"; do
     mkdir -p "$HEAL_ROOT/$arm/overlay" "$HEAL_ROOT/$arm/receipts"
     for layer in "${layers[@]}"; do
-      if ((ordinal % 8 == lane)); then
-        CUDA_VISIBLE_DEVICES=$lane taskset -c "${cpus[$lane]}" nice -n 19 \
+      if ((ordinal % lane_count == lane)); then
+        CUDA_VISIBLE_DEVICES=${gpus[$lane]} taskset -c "${cpus[$lane]}" nice -n 19 \
           "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" \
             --mode joint --quantization-aware --layer "$layer" \
             --plan "$PLAN_ROOT/$arm.json" --scores "$SCORES" --source-dir "$SOURCE" \
@@ -96,7 +129,9 @@ heal_lane() {
   done
 }
 pids=()
-for lane in $(seq 0 7); do heal_lane "$lane" >"$LOG_ROOT/heal-lane-$lane.log" 2>&1 & pids+=("$!"); done
+for lane in $(seq 0 $((lane_count - 1))); do
+  heal_lane "$lane" >"$LOG_ROOT/heal-lane-$lane.log" 2>&1 & pids+=("$!")
+done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more quantization-aware heal lanes failed"
 
@@ -134,9 +169,11 @@ PY
   out="$ARTIFACT_ROOT/$arm"; [[ ! -e "$out" ]] || die "refusing existing artifact $out"
   mkdir -p "$out" "$LOG_ROOT/fragments/$arm"
   pids=(); fragments=()
-  for lane in $(seq 0 7); do
+  for lane in $(seq 0 $((lane_count - 1))); do
     selected=()
-    for layer in "${layers[@]}"; do (( (layer - 1) % 8 == lane )) && selected+=("$layer"); done
+    for layer in "${layers[@]}"; do
+      (( (layer - 1) % lane_count == lane )) && selected+=("$layer")
+    done
     csv=$(IFS=,; echo "${selected[*]}")
     fragment="$LOG_ROOT/fragments/$arm/lane-$lane.manifest.json"; fragments+=("$fragment")
     taskset -c "${cpus[$lane]}" nice -n 19 "$PY" "$ROOT/tools/prepare_mixed_expert_repack.py" prepare \
