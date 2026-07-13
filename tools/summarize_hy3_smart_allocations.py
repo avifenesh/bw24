@@ -48,9 +48,13 @@ def load_plan(path: Path) -> tuple[dict[str, Any], dict[tuple[int, int, str], st
     for assignment in plan["assignments"]:
         layer = int(assignment["layer"])
         qtype = str(assignment["qtype"])
+        projections = assignment.get("projections", PROJECTIONS)
         for expert in assignment["experts"]:
-            for projection in assignment["projections"]:
-                key = (layer, int(expert), str(projection))
+            for projection_value in projections:
+                projection = str(projection_value)
+                if projection not in PROJECTIONS:
+                    raise ValueError(f"{path}: unsupported projection {projection!r}")
+                key = (layer, int(expert), projection)
                 if key in cells:
                     raise ValueError(f"{path}: duplicate allocation for {key}")
                 cells[key] = qtype
@@ -185,6 +189,12 @@ def self_test() -> None:
         duplicate.write_text(json.dumps(plan("Q3_K", 0)))
         duplicate_result = summarize([paths[0], duplicate])
         assert duplicate_result["duplicate_allocations"] == [["a", "duplicate"]]
+        legacy = root / "legacy.json"
+        legacy_payload = plan("Q3_K", None)
+        del legacy_payload["assignments"][0]["projections"]
+        legacy.write_text(json.dumps(legacy_payload))
+        legacy_result = summarize([paths[0], legacy])
+        assert legacy_result["pairwise"]["a__legacy"]["changed_cells"] == 3
 
 
 def parse_args() -> argparse.Namespace:
