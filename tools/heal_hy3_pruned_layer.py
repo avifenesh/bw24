@@ -287,6 +287,39 @@ def load_student(
     )
 
 
+def load_identity_overlay_tensors(
+    args: argparse.Namespace,
+    active_ids: list[int],
+    weight_map: dict[str, str],
+) -> dict[str, torch.Tensor]:
+    """Load the exact source values whose one-pass repack recreates the unhealed baseline."""
+    names = [router_name(args.layer), bias_name(args.layer)]
+    if args.mode == "joint":
+        names.extend(
+            tensor_name(args.layer, expert, projection)
+            for expert in active_ids
+            for projection in ("gate", "up", "down")
+        )
+    shards = sorted({weight_map[name] for name in names})
+    with contextlib.ExitStack() as stack:
+        handles = {
+            shard: stack.enter_context(
+                safe_open(str(args.source_dir / shard), framework="pt", device="cpu")
+            )
+            for shard in shards
+        }
+        tensors = {
+            name: load_source_tensor(name, args.source_dir, weight_map, handles)
+            .cpu()
+            .contiguous()
+            for name in names
+        }
+    # Runtime router overrides are F32.  Preserve source values while matching that contract.
+    tensors[router_name(args.layer)] = tensors[router_name(args.layer)].float().contiguous()
+    tensors[bias_name(args.layer)] = tensors[bias_name(args.layer)].float().contiguous()
+    return tensors
+
+
 @torch.no_grad()
 def evaluate(
     model: LayerStudent,
@@ -454,7 +487,7 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
             history.append(record)
             print(json.dumps(record, sort_keys=True), flush=True)
     model.eval()
-    after_pre_requantization = evaluate(
+    trained_after_pre_requantization = evaluate(
         model, hidden, teacher, holdout, args.eval_batch_tokens, device
     )
 
@@ -480,9 +513,24 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
                     ).to(device)
                 )
         model.mode = "router"
-        after = evaluate(model, hidden, teacher, holdout, args.eval_batch_tokens, device)
+        trained_after = evaluate(
+            model, hidden, teacher, holdout, args.eval_batch_tokens, device
+        )
     else:
-        after = after_pre_requantization
+        trained_after = trained_after_pre_requantization
+
+    rolled_back = (
+        args.rollback_non_improving
+        and trained_after["normalized_mse"] >= before["normalized_mse"]
+    )
+    if rolled_back:
+        del tensors
+        tensors = load_identity_overlay_tensors(args, active_ids, weight_map)
+        after_pre_requantization = dict(before)
+        after = dict(before)
+    else:
+        after_pre_requantization = trained_after_pre_requantization
+        after = trained_after
     save_file(tensors, args.out_shard)
     receipt = {
         "format": CHECKPOINT_FORMAT,
@@ -509,14 +557,25 @@ def heal(args: argparse.Namespace) -> dict[str, Any]:
             "router_anchor_weight": args.router_anchor_weight,
             "holdout_modulus": args.holdout_modulus,
             "quantization_aware": args.quantization_aware,
+            "rollback_non_improving": args.rollback_non_improving,
             "quantization_base": (
                 "exact GGUF quantizer bytes dequantized to BF16 before joint repair"
                 if args.quantization_aware else "source checkpoint precision"
             ),
         },
         "before": before,
+        "trained_after_pre_requantization": trained_after_pre_requantization,
+        "trained_after_requantization": trained_after,
         "after_pre_requantization": after_pre_requantization,
         "after": after,
+        "selection": {
+            "policy": (
+                "private_holdout_terminal_mse_monotonic"
+                if args.rollback_non_improving else "always_trained"
+            ),
+            "rolled_back_to_unhealed_source": rolled_back,
+            "public_eval_data_used": False,
+        },
         "history": history,
         "output": {
             "path": str(args.out_shard.resolve()),
@@ -594,6 +653,7 @@ def self_test() -> None:
             learning_rate=1e-3, bias_learning_rate=0.01, bias_max_delta=0.1,
             router_anchor_weight=1e-4,
             quantization_aware=False,
+            rollback_non_improving=False,
             max_grad_norm=1.0, holdout_modulus=5, log_every=1, seed=11, device="cpu",
             out_shard=root / "healed.safetensors", receipt=root / "receipt.json",
         )
@@ -604,6 +664,27 @@ def self_test() -> None:
         with safe_open(str(args.out_shard), framework="pt", device="cpu") as handle:
             assert handle.get_tensor(router_name(1)).dtype == torch.float32
             assert handle.get_tensor(bias_name(1)).dtype == torch.float32
+
+        rollback_args = argparse.Namespace(**vars(args))
+        rollback_args.steps = 0
+        rollback_args.rollback_non_improving = True
+        rollback_args.out_shard = root / "rolled-back.safetensors"
+        rollback_args.receipt = root / "rolled-back.receipt.json"
+        rollback = heal(rollback_args)
+        assert rollback["selection"] == {
+            "policy": "private_holdout_terminal_mse_monotonic",
+            "rolled_back_to_unhealed_source": True,
+            "public_eval_data_used": False,
+        }
+        assert rollback["after"] == rollback["before"]
+        assert rollback["trained_after_requantization"]["normalized_mse"] >= rollback["before"]["normalized_mse"]
+        with safe_open(str(source / "model.safetensors"), framework="pt", device="cpu") as source_handle:
+            with safe_open(str(rollback_args.out_shard), framework="pt", device="cpu") as output_handle:
+                for name in output_handle.keys():
+                    expected = source_handle.get_tensor(name)
+                    if name in (router_name(1), bias_name(1)):
+                        expected = expected.float()
+                    assert torch.equal(output_handle.get_tensor(name), expected), name
 
 
 def parse_args() -> argparse.Namespace:
@@ -630,6 +711,10 @@ def parse_args() -> argparse.Namespace:
         "--quantization-aware", action="store_true",
         help="initialize retained projections from their plan-assigned exact quantized bytes",
     )
+    parser.add_argument(
+        "--rollback-non-improving", action="store_true",
+        help="restore exact source values when private terminal holdout MSE does not improve",
+    )
     parser.add_argument("--ggml-lib", type=Path)
     parser.add_argument("--ggml-lib-sha256")
     parser.add_argument("--ggml-source-commit")
@@ -653,7 +738,8 @@ def main() -> None:
     print(
         f"wrote {args.out_shard} sha256={receipt['output']['sha256']} "
         f"before={receipt['before']['normalized_mse']:.6g} "
-        f"after={receipt['after']['normalized_mse']:.6g}"
+        f"after={receipt['after']['normalized_mse']:.6g} "
+        f"rolled_back={receipt['selection']['rolled_back_to_unhealed_source']}"
     )
 
 

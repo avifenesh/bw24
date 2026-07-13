@@ -145,7 +145,7 @@ heal_lane() {
           || die "$arm layer $layer has an incomplete shard/receipt pair"
         CUDA_VISIBLE_DEVICES=${gpus[$lane]} taskset -c "${cpus[$lane]}" nice -n 19 \
           "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" \
-            --mode joint --quantization-aware --layer "$layer" \
+            --mode joint --quantization-aware --rollback-non-improving --layer "$layer" \
             --plan "$PLAN_ROOT/$arm.json" --scores "$SCORES" --source-dir "$SOURCE" \
             --device cuda:0 --out-shard "$shard" --receipt "$receipt"
         echo "$arm lane=$lane layer=$layer complete"
@@ -186,8 +186,13 @@ receipts=[]
 for layer in range(1,80):
     p=pathlib.Path(sys.argv[1])/f"layer-{layer:03}.receipt.json"
     d=json.loads(p.read_text()); assert d["training"]["quantization_aware"] is True
-    for section in ("before","after_pre_requantization","after"):
+    assert d["training"]["rollback_non_improving"] is True
+    assert d["selection"]["policy"] == "private_holdout_terminal_mse_monotonic"
+    assert d["selection"]["public_eval_data_used"] is False
+    for section in ("before","trained_after_pre_requantization","trained_after_requantization",
+                    "after_pre_requantization","after"):
         assert all(math.isfinite(float(v)) for v in d[section].values())
+    assert float(d["after"]["normalized_mse"]) <= float(d["before"]["normalized_mse"])
     receipts.append(d)
 audit=json.loads(pathlib.Path(sys.argv[2]).read_text())
 assert audit["format"] == "bw24-hy3-post-heal-routing-audit-v1"
@@ -197,9 +202,11 @@ before=sum(float(d["before"]["normalized_mse"]) for d in receipts)/len(receipts)
 pre=sum(float(d["after_pre_requantization"]["normalized_mse"]) for d in receipts)/len(receipts)
 after=sum(float(d["after"]["normalized_mse"]) for d in receipts)/len(receipts)
 improved=sum(float(d["after"]["normalized_mse"]) < float(d["before"]["normalized_mse"]) for d in receipts)
+rolled_back=sum(bool(d["selection"]["rolled_back_to_unhealed_source"]) for d in receipts)
 result={"format":"bw24-smart100-post-requant-heal-gate-v1","layers":len(receipts),
         "mean_before_normalized_mse":before,"mean_after_pre_requantization_normalized_mse":pre,
         "mean_after_requantization_normalized_mse":after,"improved_after_requantization_layers":improved,
+        "rolled_back_non_improving_layers":rolled_back,
         "holdout_dead_active_experts":sum(int(d["after"]["dead_active_experts"]) for d in receipts),
         "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
         "passed":after < before and improved >= 40,"public_eval_data_used":False}

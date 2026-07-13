@@ -183,7 +183,7 @@ heal_lane() {
     if [[ -f "$shard" && -f "$receipt" ]]; then continue; fi
     [[ ! -e "$shard" && ! -e "$receipt" ]] || die "incomplete heal pair for layer $layer"
     CUDA_VISIBLE_DEVICES=${gpus[$lane]} taskset -c "${cpus[$lane]}" nice -n 19 \
-      "$PY" "$HEALER" --mode joint --quantization-aware --layer "$layer" \
+      "$PY" "$HEALER" --mode joint --quantization-aware --rollback-non-improving --layer "$layer" \
         --plan "$plan" --scores "$RETENTION" --source-dir "$SOURCE" --device cuda:0 \
         --ggml-lib "$GGML_LIB" --ggml-lib-sha256 "$GGML_LIB_SHA256" \
         --ggml-source-commit "$GGML_SOURCE_COMMIT" \
@@ -209,15 +209,21 @@ CUDA_VISIBLE_DEVICES=${gpus[0]} taskset -c "${cpus[0]}" nice -n 19 \
 import json,math,pathlib,sys
 r=[json.loads((pathlib.Path(sys.argv[1])/f"layer-{x:03}.receipt.json").read_text()) for x in range(1,80)]
 assert all(x["training"]["quantization_aware"] is True for x in r)
+assert all(x["training"]["rollback_non_improving"] is True for x in r)
+assert all(x["selection"]["policy"] == "private_holdout_terminal_mse_monotonic" for x in r)
+assert all(x["selection"]["public_eval_data_used"] is False for x in r)
+assert all(float(x["after"]["normalized_mse"]) <= float(x["before"]["normalized_mse"]) for x in r)
 audit=json.loads(pathlib.Path(sys.argv[2]).read_text())
 assert audit["format"] == "bw24-hy3-post-heal-routing-audit-v1"
 assert audit["summary"]["all_layers_have_full_active_coverage"] is True
 b=sum(float(x["before"]["normalized_mse"]) for x in r)/79
 a=sum(float(x["after"]["normalized_mse"]) for x in r)/79
 i=sum(float(x["after"]["normalized_mse"]) < float(x["before"]["normalized_mse"]) for x in r)
+rolled_back=sum(bool(x["selection"]["rolled_back_to_unhealed_source"]) for x in r)
 d={"format":"bw24-iq3-iq4-q4-post-requant-heal-gate-v1","layers":79,
    "mean_before_normalized_mse":b,"mean_after_requantization_normalized_mse":a,
    "improved_after_requantization_layers":i,
+   "rolled_back_non_improving_layers":rolled_back,
    "holdout_dead_active_experts":sum(int(x["after"]["dead_active_experts"]) for x in r),
    "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
    "passed":a<b and i>=40,

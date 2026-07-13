@@ -74,6 +74,14 @@ The existing `prune100_joint_heal` remains the traffic-ranked control. A single
 formats at the same exact 100GB ceiling. It is promoted only if its matched held-out evidence adds
 to or improves the current Pareto frontier.
 
+Healing uses a private-holdout monotonic selector. Every layer is trained and terminally requantized,
+but a trained overlay is retained only when its frozen private holdout normalized MSE is strictly
+lower than the unhealed quantized layer. A non-improving layer emits the exact source expert/router/
+bias values whose one-pass artifact repack recreates the unhealed baseline. Receipts preserve both
+the rejected trained metrics and the selected metrics; public evaluation is never used for this
+decision. This prevents the systematic late-layer regressions observed in the first always-trained
+healing pass from consuming capability budget.
+
 ## Allocation comparison receipt
 
 `tools/summarize_hy3_smart_allocations.py` expands every plan into the canonical
