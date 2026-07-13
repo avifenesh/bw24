@@ -6818,10 +6818,9 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_ms_rp(
             int col = c0 + c;
             if (col >= m) break;
             const signed char* arow = aq + (size_t)col * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
-            int a[8];
-            #pragma unroll
-            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
             int sums = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
