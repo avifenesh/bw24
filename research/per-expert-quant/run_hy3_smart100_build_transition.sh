@@ -78,6 +78,8 @@ else
 fi
 
 "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" --self-test | tee "$LOG_ROOT/plan-self-test.log"
+"$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" --self-test \
+  | tee "$LOG_ROOT/allocation-comparison-self-test.log"
 "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" --self-test | tee "$LOG_ROOT/heal-self-test.log"
 "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" --self-test | tee "$LOG_ROOT/heal-merge-self-test.log"
 "$PY" "$ROOT/tools/export_hy3_router_overrides.py" --self-test | tee "$LOG_ROOT/export-self-test.log"
@@ -96,6 +98,10 @@ for index in "${!arms[@]}"; do
     --confidence-weight "$confidence_weight" --layer-weight "$layer_weight" \
     --time-limit-seconds 900 --mip-rel-gap 1e-4 --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
 done
+
+"$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" \
+  "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/allocation-comparison.json" \
+  --require-distinct | tee "$LOG_ROOT/allocation-comparison.log"
 
 "$PY" - "$PLAN_ROOT" "$TARGET_BYTES" "${arms[@]}" <<'PY'
 import json, pathlib, sys
