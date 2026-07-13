@@ -98,6 +98,21 @@ def summarize(paths: list[Path]) -> dict[str, Any]:
         derived_qtype_counts = Counter(
             qtype for qtype in cells.values() if qtype != "PRUNED"
         )
+        retained_keys = sorted(expert_keys - pruned_keys)
+        projection_qtype_counts = {
+            projection: dict(sorted(Counter(
+                cells[(*key, projection)] for key in retained_keys
+            ).items()))
+            for projection in PROJECTIONS
+        }
+        expert_projection_combinations = Counter(
+            tuple(cells[(*key, projection)] for projection in PROJECTIONS)
+            for key in retained_keys
+        )
+        uniform_precision_experts = sum(
+            len({cells[(*key, projection)] for projection in PROJECTIONS}) == 1
+            for key in retained_keys
+        )
         logical_model_bytes = plan["policy"].get("result_logical_bytes")
         headroom_bytes = plan["policy"].get("headroom_bytes")
         layer_counts: dict[str, dict[str, int]] = {}
@@ -124,6 +139,19 @@ def summarize(paths: list[Path]) -> dict[str, Any]:
             "qtype_projection_counts": plan["policy"].get(
                 "qtype_projection_counts", dict(sorted(derived_qtype_counts.items()))
             ),
+            "projection_qtype_counts": projection_qtype_counts,
+            "expert_projection_combinations": [
+                {
+                    "qtypes": dict(zip(PROJECTIONS, combination)),
+                    "experts": count,
+                }
+                for combination, count in sorted(
+                    expert_projection_combinations.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ],
+            "uniform_precision_experts": uniform_precision_experts,
+            "mixed_precision_experts": len(retained_keys) - uniform_precision_experts,
             "layer_cell_counts": layer_counts,
         }
     pairwise: dict[str, Any] = {}
@@ -203,6 +231,15 @@ def self_test() -> None:
             paths.append(path)
         result = summarize(paths)
         assert result["duplicate_allocations"] == []
+        assert result["plans"]["a"]["uniform_precision_experts"] == 2
+        assert result["plans"]["a"]["mixed_precision_experts"] == 0
+        assert result["plans"]["a"]["projection_qtype_counts"] == {
+            projection: {"Q3_K": 2} for projection in PROJECTIONS
+        }
+        assert result["plans"]["a"]["expert_projection_combinations"] == [{
+            "qtypes": {projection: "Q3_K" for projection in PROJECTIONS},
+            "experts": 2,
+        }]
         assert result["pairwise"]["a__b"]["changed_cells"] == 6
         assert result["pairwise"]["a__c"]["retention_changed_experts"] == 2
         duplicate = root / "duplicate.json"

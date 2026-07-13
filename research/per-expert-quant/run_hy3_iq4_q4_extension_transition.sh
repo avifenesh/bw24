@@ -35,6 +35,7 @@ ARM=${ARM:-smart100_iq3_iq4_q4_empirical}
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
 MERGER="$ROOT/tools/merge_hy3_quant_sensitivity.py"
 SUMMARIZER="$ROOT/tools/summarize_hy3_quant_effects.py"
+ALLOCATION_SUMMARIZER="$ROOT/tools/summarize_hy3_smart_allocations.py"
 PLAN_BUILDER="$ROOT/tools/build_hy3_smart_budget_plan.py"
 HEALER="$ROOT/tools/heal_hy3_pruned_layer.py"
 REPACKER="$ROOT/tools/prepare_mixed_expert_repack.py"
@@ -103,6 +104,8 @@ wait_lanes_idle() {
 "$PY" "$SCORER" --self-test | tee "$LOG_ROOT/sensitivity-self-test.log"
 "$PY" "$MERGER" --self-test | tee "$LOG_ROOT/merge-self-test.log"
 "$PY" "$SUMMARIZER" --self-test | tee "$LOG_ROOT/effects-self-test.log"
+"$PY" "$ALLOCATION_SUMMARIZER" --self-test \
+  | tee "$LOG_ROOT/allocation-comparison-self-test.log"
 "$PY" "$PLAN_BUILDER" --self-test | tee "$LOG_ROOT/plan-self-test.log"
 "$PY" "$HEALER" --self-test | tee "$LOG_ROOT/heal-self-test.log"
 "$PY" "$REPACKER" test | tee "$LOG_ROOT/repack-self-test.log"
@@ -182,6 +185,8 @@ assert d["policy"]["result_logical_bytes"] <= int(sys.argv[2])
 assert set(d["policy"]["candidate_qtypes"]) == {"Q8_0","NVFP4","IQ3_S","IQ4_XS","Q4_K","Q3_K","Q2_K"}
 assert min(x["retained"] for x in d["layer_summary"].values()) >= 96
 PY
+"$PY" "$ALLOCATION_SUMMARIZER" "$REFERENCE_PLAN" "$plan" \
+  --out "$PLAN_ROOT/allocation-comparison.json" | tee "$LOG_ROOT/allocation-comparison.log"
 
 wait_lanes_idle
 mkdir -p "$HEAL_ROOT/$ARM/overlay" "$HEAL_ROOT/$ARM/receipts"
