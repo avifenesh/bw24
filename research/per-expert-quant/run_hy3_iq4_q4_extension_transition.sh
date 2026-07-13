@@ -332,7 +332,8 @@ PY
 
 "$PY" "$ROOT/tools/export_hy3_router_overrides.py" --overlay-dir "$HEAL_ROOT/$ARM/overlay" \
   --layers 1-79 --blob "$HEAL_ROOT/$ARM/router-overrides.f32" \
-  --receipt "$HEAL_ROOT/$ARM/router-overrides.json" | tee "$LOG_ROOT/router-export.log"
+  --receipt "$HEAL_ROOT/$ARM/router-overrides.json" --overlay-lock "$overlay_lock" \
+  | tee "$LOG_ROOT/router-export.log"
 out="$ARTIFACT_ROOT/$ARM"; [[ ! -e "$out" ]] || die "refusing existing artifact $out"
 mkdir -p "$out" "$LOG_ROOT/fragments"
 pids=(); fragments=()

@@ -54,6 +54,36 @@ def ggml_names(layer: int) -> tuple[str, str]:
     )
 
 
+def load_verified_shard_hashes(
+    lock_path: Path, overlay_dir: Path, index_path: Path, hash_file=sha256
+) -> tuple[dict[str, str], dict[str, str]]:
+    lock = json.loads(lock_path.read_text())
+    if lock.get("format") != "bw24-hy3-prune-heal-overlay-v1":
+        raise ValueError(f"unsupported overlay lock format in {lock_path}")
+    resolved_overlay = overlay_dir.resolve()
+    if Path(lock["overlay"]["directory"]).resolve() != resolved_overlay:
+        raise ValueError("overlay lock directory does not match --overlay-dir")
+    if lock["overlay"]["index_sha256"] != hash_file(index_path):
+        raise ValueError("overlay index does not match verified overlay lock")
+
+    shard_hashes: dict[str, str] = {}
+    for item in lock["shards"]:
+        shard = item["shard"]
+        path = Path(shard["path"])
+        if path.resolve().parent != resolved_overlay:
+            raise ValueError(f"overlay lock shard is outside overlay directory: {path}")
+        current = overlay_dir / path.name
+        if current.resolve() != path.resolve() or current.stat().st_size != shard["bytes"]:
+            raise ValueError(f"overlay lock shard metadata mismatch: {path.name}")
+        if path.name in shard_hashes:
+            raise ValueError(f"duplicate overlay lock shard: {path.name}")
+        shard_hashes[path.name] = shard["sha256"]
+    return shard_hashes, {
+        "path": str(lock_path.resolve()),
+        "sha256": hash_file(lock_path),
+    }
+
+
 def export(args: argparse.Namespace, hash_file=sha256) -> dict:
     layers = parse_layers(args.layers)
     index_path = args.overlay_dir / "model.safetensors.index.json"
@@ -63,7 +93,14 @@ def export(args: argparse.Namespace, hash_file=sha256) -> dict:
     tmp_blob = args.blob.with_name(args.blob.name + ".tmp")
     tensors: dict[str, dict] = {}
     sources: dict[str, dict] = {}
-    shard_hashes: dict[str, str] = {}
+    overlay_lock = getattr(args, "overlay_lock", None)
+    if overlay_lock is not None:
+        shard_hashes, overlay_lock_record = load_verified_shard_hashes(
+            overlay_lock, args.overlay_dir, index_path, hash_file=hash_file
+        )
+    else:
+        shard_hashes, overlay_lock_record = {}, None
+    used_shard_hashes: dict[str, str] = {}
     offset = 0
     try:
         with tmp_blob.open("wb") as output:
@@ -87,10 +124,17 @@ def export(args: argparse.Namespace, hash_file=sha256) -> dict:
                         raise ValueError(f"{hf_name}: non-finite value")
                     raw = values.tobytes(order="C")
                     output.write(raw)
-                    shard_sha256 = shard_hashes.get(shard_name)
+                    shard_sha256 = used_shard_hashes.get(shard_name)
                     if shard_sha256 is None:
-                        shard_sha256 = hash_file(args.overlay_dir / shard_name)
-                        shard_hashes[shard_name] = shard_sha256
+                        if overlay_lock_record is not None:
+                            shard_sha256 = shard_hashes.get(shard_name)
+                            if shard_sha256 is None:
+                                raise ValueError(
+                                    f"verified overlay lock is missing shard {shard_name}"
+                                )
+                        else:
+                            shard_sha256 = hash_file(args.overlay_dir / shard_name)
+                        used_shard_hashes[shard_name] = shard_sha256
                     tensors[ggml_name] = {
                         "source": hf_name,
                         "offset": offset,
@@ -125,6 +169,8 @@ def export(args: argparse.Namespace, hash_file=sha256) -> dict:
         "tensors": dict(sorted(tensors.items())),
         "sources": dict(sorted(sources.items())),
     }
+    if overlay_lock_record is not None:
+        receipt["overlay_lock"] = overlay_lock_record
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     return receipt
@@ -143,9 +189,10 @@ def self_test() -> None:
         (overlay / "model.safetensors.index.json").write_text(json.dumps({
             "weight_map": {hf_router: shard.name, hf_bias: shard.name}
         }))
+        index = overlay / "model.safetensors.index.json"
         args = argparse.Namespace(
             overlay_dir=overlay, layers="1", blob=root / "router.bin",
-            receipt=root / "overrides.json",
+            receipt=root / "overrides.json", overlay_lock=None,
         )
         hash_counts: dict[Path, int] = {}
 
@@ -166,6 +213,31 @@ def self_test() -> None:
         ).reshape(3, 4)
         assert np.array_equal(got_router, router.numpy())
 
+        lock = root / "overlay.lock.json"
+        lock.write_text(json.dumps({
+            "format": "bw24-hy3-prune-heal-overlay-v1",
+            "overlay": {
+                "directory": str(overlay.resolve()),
+                "index_sha256": sha256(index),
+            },
+            "shards": [{
+                "layer": 1,
+                "shard": {
+                    "path": str(shard.resolve()),
+                    "bytes": shard.stat().st_size,
+                    "sha256": sha256(shard),
+                },
+            }],
+        }))
+        args.overlay_lock = lock
+        args.blob = root / "router-from-lock.bin"
+        args.receipt = root / "overrides-from-lock.json"
+        hash_counts.clear()
+        locked_receipt = export(args, hash_file=counted_sha256)
+        assert hash_counts.get(shard, 0) == 0
+        assert locked_receipt["overlay_lock"]["sha256"] == sha256(lock)
+        assert locked_receipt["sources"][hf_router]["shard_sha256"] == sha256(shard)
+
 
 def main() -> None:
     if sys.argv[1:] == ["--self-test"]:
@@ -177,6 +249,10 @@ def main() -> None:
     parser.add_argument("--layers", default="1-79")
     parser.add_argument("--blob", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument(
+        "--overlay-lock", type=Path,
+        help="reuse shard hashes from an immediately verified heal overlay lock",
+    )
     args = parser.parse_args()
     receipt = export(args)
     print(
