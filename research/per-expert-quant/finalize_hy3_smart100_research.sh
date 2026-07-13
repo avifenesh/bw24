@@ -16,6 +16,7 @@ REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-v1/com
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
 BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
 IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-9a1c92c}
+CENTERED_ALLOCATION_ANALYSIS=${CENTERED_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-centered-a7200c0}
 PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
 BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
 IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-seven-format-effects-38af56e}
@@ -31,6 +32,7 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
   "$BASELINE_ALLOCATION_ANALYSIS"
   "$IQ4_ALLOCATION_ANALYSIS"
+  "$CENTERED_ALLOCATION_ANALYSIS"
   "$PAIR_ALLOCATION_ANALYSIS"
   "$BASE_EFFECT_ANALYSIS"
   "$IQ4_EFFECT_ANALYSIS"
@@ -97,7 +99,7 @@ test -z "$(docker ps -q)"
 ' || die "remote completion or idle-process gate failed"
 
 for root in "$BASELINE_ALLOCATION_ANALYSIS" "$IQ4_ALLOCATION_ANALYSIS" \
-  "$PAIR_ALLOCATION_ANALYSIS"; do
+  "$CENTERED_ALLOCATION_ANALYSIS" "$PAIR_ALLOCATION_ANALYSIS"; do
   ssh "$REMOTE" "python3 - '$root/receipt.json'" <<'PY'
 import hashlib,json,pathlib,re,sys
 
@@ -120,6 +122,10 @@ for item in [*receipt["inputs"], receipt["output"], receipt["script"]]:
     assert sha256(target) == item["sha256"]
 PY
 done
+ssh "$REMOTE" "test -f '$CENTERED_ALLOCATION_ANALYSIS/complete' && \
+  test -s '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256' && \
+  sha256sum -c '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256'" \
+  >/dev/null || die "centered allocation evidence validation failed"
 
 for root in "$BASE_EFFECT_ANALYSIS" "$IQ4_EFFECT_ANALYSIS"; do
   ssh "$REMOTE" "test -s '$root/evidence.sha256' && sha256sum -c '$root/evidence.sha256'" \
