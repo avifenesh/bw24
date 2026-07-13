@@ -6660,11 +6660,11 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_rp(
 // batched 2-rows-per-warp twin — body mirrors q4_0_mmvq_batched_mr2 (row-shared activation
 // int4 loads + ones-sums, per-row chains in the same order).
 template<int MCOLS>
-__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
-        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp_bx(
+        int bx, const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
-    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    int o0 = (bx * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
     if (o0 >= out_f) return;
     bool two = (o0 + 1) < out_f;
     int lane = threadIdx.x;
@@ -6741,6 +6741,98 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
         }
     }
 }
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x, W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
+// ---- BATCHED FUSED2 (2026-07-13, the megakernel tail-fill mechanism in microcosm):
+// ONE launch covers gate rows THEN up rows via grid segmentation — the up segment's
+// blocks schedule onto SMs as the gate segment drains, filling the per-launch tail
+// waves that the 6-falsification b-tier plateau evidence points at. Bit-identical per
+// row (the exact mr2_rp program; only the block->work mapping changes).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    int nb0 = (out0 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    if ((int)blockIdx.x < nb0) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x, W0, aq, ad, y0, in_f, out0, m, row_bytes);
+    } else {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x - nb0, W1, aq, ad, y1, in_f, out1, m, row_bytes);
+    }
+}
+// f3 twin: three segments (the verify qkv triple on swa layers; globals fuse q,k via f2).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    int nb0 = (out0 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    int nb1 = (out1 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    int bx = blockIdx.x;
+    if (bx < nb0) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx, W0, aq, ad, y0, in_f, out0, m, row_bytes);
+    } else if (bx < nb0 + nb1) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx - nb0, W1, aq, ad, y1, in_f, out1, m, row_bytes);
+    } else {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx - nb0 - nb1, W2, aq, ad, y2, in_f, out2, m, row_bytes);
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<2>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<8>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<2>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<4>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<8>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+
 extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,

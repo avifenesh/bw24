@@ -4287,6 +4287,109 @@ impl Engine {
         Ok(Some((y0, y1)))
     }
 
+    /// BATCHED fused2 (2026-07-13, megakernel-microcosm probe): gate+up b-tier matvecs in
+    /// ONE segmented-grid launch — the up segment fills SMs as the gate segment drains
+    /// (the per-launch tail waves behind the 6x-falsified b-tier plateau). Bit-identical
+    /// per row to two mr2_rp launches. rp layout required; m in 2..=8 (b16 has no twin).
+    pub fn matmul_q4_fused2_batched(&self, w0: &crate::model::GpuTensor,
+                                    w1: &crate::model::GpuTensor,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if m < 2 || m > 8 { return Ok(None); }
+        let q4 = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, .. } if *qtype == QT_Q4_0 =>
+                    Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((_rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(None) };
+        if w0.in_features() != w1.in_features() { return Ok(None); }
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(mr) => (mr, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1)) = (eff(w0), eff(w1));
+        if !rp0 || !rp1 { return Ok(None); }
+        let mcols = Self::batched_mcols(m);
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2 * rpb);
+        let grid = nb(o0) + nb(o1);
+        let mut y0 = self.alloc_uninit::<f32>(m * o0)?;
+        let mut y1 = self.alloc_uninit::<f32>(m * o1)?;
+        let f = self.func(match mcols { 2 => "qmatvec_q4_0_mmvq_b2_f2_rp",
+                                        4 => "qmatvec_q4_0_mmvq_b4_f2_rp",
+                                        _ => "qmatvec_q4_0_mmvq_b8_f2_rp" });
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1),
+                                 shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1, mi) = (o0 as i32, o1 as i32, m as i32);
+        let rb = rb0 as i64;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some((y0, y1)))
+    }
+
+    /// BATCHED fused3 (see matmul_q4_fused2_batched): three-segment single launch for the
+    /// verify qkv triple. Same-in_f q4_0 rp tensors, m in 2..=8. Bit-identical per row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn matmul_q4_fused3_batched(&self, w0: &crate::model::GpuTensor,
+                                    w1: &crate::model::GpuTensor, w2: &crate::model::GpuTensor,
+                                    aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, m: usize)
+        -> Result<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        if m < 2 || m > 8 { return Ok(None); }
+        let q4 = |w: &GpuTensor| -> Option<usize> {
+            match w {
+                GpuTensor::Quant { qtype, .. } if *qtype == QT_Q4_0 => Some(w.out_features()),
+                _ => None,
+            }
+        };
+        let (Some(o0), Some(o1), Some(o2)) = (q4(w0), q4(w1), q4(w2)) else { return Ok(None) };
+        if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
+            return Ok(None);
+        }
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(mr) => (mr, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1), (b2, rp2)) = (eff(w0), eff(w1), eff(w2));
+        if !rp0 || !rp1 || !rp2 { return Ok(None); }
+        let mcols = Self::batched_mcols(m);
+        let rpb: u32 = 4;
+        let nb = |o: usize| (o as u32).div_ceil(2 * rpb);
+        let grid = nb(o0) + nb(o1) + nb(o2);
+        let mut y0 = self.alloc_uninit::<f32>(m * o0)?;
+        let mut y1 = self.alloc_uninit::<f32>(m * o1)?;
+        let mut y2 = self.alloc_uninit::<f32>(m * o2)?;
+        let f = self.func(match mcols { 2 => "qmatvec_q4_0_mmvq_b2_f3_rp",
+                                        4 => "qmatvec_q4_0_mmvq_b4_f3_rp",
+                                        _ => "qmatvec_q4_0_mmvq_b8_f3_rp" });
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1),
+                                 shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1, oo2, mi) = (o0 as i32, o1 as i32, o2 as i32, m as i32);
+        let rb = 0i64;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(Some((y0, y1, y2)))
+    }
+
     pub fn matmul_q8_fused3(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
                             w2: &crate::model::GpuTensor,
                             aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
