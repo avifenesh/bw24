@@ -71,7 +71,7 @@ def validate_structure(lock: dict[str, Any]) -> None:
     expected_scaffold = {
         "harbor_version": "0.18.0", "agent": "terminus-2",
         "model_name_template": "openai/{arm}", "api_base": "http://127.0.0.1:8080/v1",
-        "temperature": 0, "parser_name": "json", "max_turns": 20,
+        "temperature": 0, "parser_name": "json", "max_turns": 8,
         "proactive_summarization_threshold": 1024, "store_all_messages": True,
         "max_input_tokens": 5120, "max_output_tokens": 3072,
         "llm_call_max_tokens": 3072, "llm_call_timeout_seconds": 7200,

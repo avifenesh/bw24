@@ -41,6 +41,7 @@ fi
 docker info >/dev/null 2>&1 || die "Docker daemon unavailable"
 [[ "$($HARBOR_BIN --version)" == 0.18.0 ]] || die "Harbor version differs"
 python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" >/dev/null
+MAX_TURNS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["agent_scaffold"]["max_turns"])' "$LOCK")
 
 readarray -t suite < <(python3 - "$LOCK" "$FULL_TASK_LOCK" "$PANEL" "$TASKS_JSON" <<'PY'
 import hashlib, json, sys
@@ -111,7 +112,7 @@ CMD=(
   --n-concurrent 1 --n-concurrent-agents 1 --n-attempts 1 --max-retries 0
   --agent-timeout-multiplier 4.0 --yes
   --agent-kwarg "api_base=$BASE_URL" --agent-kwarg temperature=0
-  --agent-kwarg max_turns=20 --agent-kwarg parser_name=json
+  --agent-kwarg "max_turns=$MAX_TURNS" --agent-kwarg parser_name=json
   --agent-kwarg proactive_summarization_threshold=1024
   --agent-kwarg enable_summarize=true --agent-kwarg store_all_messages=true
   --agent-kwarg record_terminal_session=true --agent-kwarg "model_info=$MODEL_INFO"

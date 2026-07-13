@@ -44,6 +44,7 @@ docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
 HARBOR_VERSION=$($HARBOR_BIN --version)
 [[ "$HARBOR_VERSION" == 0.18.0 ]] || die "expected Harbor 0.18.0, got $HARBOR_VERSION"
 python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK"
+MAX_TURNS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["agent_scaffold"]["max_turns"])' "$LOCK")
 
 mapfile -t selection < <(python3 - "$LOCK" "$PANEL" <<'PY'
 import json, sys
@@ -105,7 +106,7 @@ CMD=(
   --yes
   --agent-kwarg "api_base=$BASE_URL"
   --agent-kwarg temperature=0
-  --agent-kwarg max_turns=20
+  --agent-kwarg "max_turns=$MAX_TURNS"
   --agent-kwarg parser_name=json
   --agent-kwarg proactive_summarization_threshold=1024
   --agent-kwarg enable_summarize=true

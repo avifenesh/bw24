@@ -1,8 +1,8 @@
 {
   "format": "bw24-practical-evals-v1",
   "generated_utc": "2026-07-11T05:56:41Z",
-  "revised_utc": "2026-07-12T21:32:00Z",
-  "revision_reason": "Reserve 3072 output tokens inside the same 8192-token context after matched proactive-summary responses were truncated at 512, 1024, and 2048 tokens; all arms retain identical tasks, turns, agent, generation, and verifier settings.",
+  "revised_utc": "2026-07-13T04:46:00Z",
+  "revision_reason": "Keep the matched 3072-token response capacity but cap directional agents at eight turns after all three compile-compcert arms exhausted the previous 20-turn Harbor timeout; the failed run is excluded, and tasks, agent, generation, and verifier settings remain matched.",
   "protocol": {
     "purpose": "directional practical-task comparison after public capability promotion",
     "same_agent_scaffold": true,
@@ -19,7 +19,7 @@
       "api_base": "http://127.0.0.1:8080/v1",
       "temperature": 0,
       "parser_name": "json",
-      "max_turns": 20,
+      "max_turns": 8,
       "proactive_summarization_threshold": 1024,
       "store_all_messages": true,
       "max_input_tokens": 5120,

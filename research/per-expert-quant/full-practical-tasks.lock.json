@@ -1,7 +1,7 @@
 {
   "format": "bw24-full-practical-task-lock-v1",
   "harbor_version": "0.18.0",
-  "source_practical_lock_sha256": "77f5db5bff1d273a4db0230fbf6474c8c4cde14c62872701503324e63633db9c",
+  "source_practical_lock_sha256": "4d2f41a6016f722204903a829d6b56de6b61b225e869d2013dd9a8d8260efe8b",
   "swe": {
     "dataset": "swe-bench/swe-bench-verified",
     "dataset_digest": "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
