@@ -64,6 +64,9 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
 
     projection_values: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
     layer_values: dict[tuple[int, str], list[tuple[float, float]]] = defaultdict(list)
+    layer_projection_values: dict[
+        tuple[int, str, str], list[tuple[float, float]]
+    ] = defaultdict(list)
     format_totals: dict[str, dict[str, float | int]] = {
         qtype: {"encoded_bytes": 0, "full_scaled_squared_error": 0.0}
         for qtype in qtypes
@@ -105,6 +108,7 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
                     quant["projection_weight_error"][projection]["encoded_bytes"]
                 )
                 projection_values[(projection, qtype)].append((value, weight))
+                layer_projection_values[(layer, projection, qtype)].append((value, weight))
                 format_totals[qtype]["encoded_bytes"] += encoded_bytes
                 format_totals[qtype]["full_scaled_squared_error"] += full_error
                 qtype_entry["projections"][projection] = {
@@ -201,6 +205,61 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
             qtype: weighted_summary(projection_values[(projection, qtype)]) for qtype in qtypes
         } for projection in PROJECTIONS
     }
+    layer_projection_map = {
+        str(layer): {
+            projection: {
+                qtype: weighted_summary(
+                    layer_projection_values[(int(layer), projection, qtype)]
+                )
+                for qtype in qtypes
+            }
+            for projection in PROJECTIONS
+        }
+        for layer in payload["model"]["complete_moe_layers"]
+    }
+    equal_byte_pair_summary = []
+    for index, first in enumerate(qtypes):
+        for second in qtypes[index + 1:]:
+            matches = [
+                item for item in equal_byte_swaps
+                if item["qtype_a"] == first and item["qtype_b"] == second
+            ]
+            if not matches:
+                continue
+
+            def summarize_matches(items: list[dict[str, Any]]) -> dict[str, Any]:
+                error_a = sum(float(item["full_scaled_squared_error_a"]) for item in items)
+                error_b = sum(float(item["full_scaled_squared_error_b"]) for item in items)
+                wins_a = sum(item["winner"] == first for item in items)
+                wins_b = sum(item["winner"] == second for item in items)
+                ties = len(items) - wins_a - wins_b
+                return {
+                    "comparisons": len(items),
+                    "wins_a": wins_a,
+                    "wins_b": wins_b,
+                    "ties": ties,
+                    "total_encoded_bytes": sum(int(item["encoded_bytes"]) for item in items),
+                    "total_full_scaled_squared_error_a": error_a,
+                    "total_full_scaled_squared_error_b": error_b,
+                    "error_delta_a_minus_b": error_a - error_b,
+                    "lower_total_error_qtype": (
+                        first if error_a < error_b
+                        else second if error_b < error_a
+                        else "tie"
+                    ),
+                }
+
+            equal_byte_pair_summary.append({
+                "qtype_a": first,
+                "qtype_b": second,
+                **summarize_matches(matches),
+                "by_projection": {
+                    projection: summarize_matches([
+                        item for item in matches if item["projection"] == projection
+                    ])
+                    for projection in PROJECTIONS
+                },
+            })
     format_pairwise = []
     for index, first in enumerate(qtypes):
         for second in qtypes[index + 1:]:
@@ -261,8 +320,10 @@ def build_map(payload: dict[str, Any], top_n: int) -> dict[str, Any]:
         "coverage": {"expert_rows": len(rows), "layers": len(layers)},
         "projection_damage": projection_map,
         "layer_damage": layers,
+        "layer_projection_damage": layer_projection_map,
         "format_totals": format_totals,
         "format_pairwise": format_pairwise,
+        "equal_byte_pair_summary": equal_byte_pair_summary,
         "top_sensitive_experts": expert_hotspots[:top_n],
         "top_sensitive_functions": hotspots[:top_n],
         "best_precision_upgrades": upgrades[:top_n],
@@ -281,6 +342,25 @@ def write_csv(result: dict[str, Any], path: Path) -> None:
         for layer, qtypes in result["layer_damage"].items():
             for qtype, metrics in qtypes.items():
                 writer.writerow({"layer": layer, "qtype": qtype, **metrics})
+
+
+def write_layer_projection_csv(result: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            "layer", "projection", "qtype", "weighted_mean", "weighted_median",
+            "maximum", "weight",
+        ])
+        writer.writeheader()
+        for layer, projections in result["layer_projection_damage"].items():
+            for projection, qtypes in projections.items():
+                for qtype, metrics in qtypes.items():
+                    writer.writerow({
+                        "layer": layer,
+                        "projection": projection,
+                        "qtype": qtype,
+                        **metrics,
+                    })
 
 
 def self_test() -> None:
@@ -320,6 +400,8 @@ def self_test() -> None:
     }
     result = build_map(payload, 3)
     assert result["coverage"] == {"expert_rows": 4, "layers": 2}
+    assert len(result["layer_projection_damage"]) == 2
+    assert set(result["layer_projection_damage"]["1"]) == set(PROJECTIONS)
     assert len(result["top_sensitive_functions"]) == 3
     assert len(result["top_sensitive_experts"]) == 3
     assert len(result["best_precision_upgrades"]) == 3
@@ -331,19 +413,36 @@ def self_test() -> None:
     assert pairwise[("NVFP4", "Q4_K")]["same_encoded_bytes"] is True
     assert pairwise[("Q3_K", "IQ3_S")]["same_encoded_bytes"] is True
     assert pairwise[("Q4_K", "IQ4_XS")]["same_encoded_bytes"] is False
+    equal_pairwise = {
+        (item["qtype_a"], item["qtype_b"]): item
+        for item in result["equal_byte_pair_summary"]
+    }
+    assert equal_pairwise[("NVFP4", "Q4_K")]["comparisons"] == 12
+    assert equal_pairwise[("NVFP4", "Q4_K")]["wins_a"] == 12
+    assert equal_pairwise[("Q3_K", "IQ3_S")]["comparisons"] == 12
+    assert equal_pairwise[("Q3_K", "IQ3_S")]["wins_a"] == 12
+    assert all(
+        equal_pairwise[("Q3_K", "IQ3_S")]["by_projection"][projection]["comparisons"]
+        == 4
+        for projection in PROJECTIONS
+    )
     assert result["projection_damage"]["gate"]["Q8_0"]["weighted_mean"] \
         < result["projection_damage"]["gate"]["Q2_K"]["weighted_mean"]
     with tempfile.TemporaryDirectory() as tmp:
         write_csv(result, Path(tmp) / "layers.csv")
+        write_layer_projection_csv(result, Path(tmp) / "layer-projections.csv")
 
 
 def main() -> None:
     if sys.argv[1:] == ["--self-test"]:
-        self_test(); print("Hy3 quant effects map self-test: PASS"); return
+        self_test()
+        print("Hy3 quant effects map self-test: PASS")
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--layer-csv", type=Path)
+    parser.add_argument("--layer-projection-csv", type=Path)
     parser.add_argument("--top-n", type=int, default=256)
     args = parser.parse_args()
     result = build_map(json.loads(args.input.read_text()), args.top_n)
@@ -351,6 +450,8 @@ def main() -> None:
     args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     if args.layer_csv:
         write_csv(result, args.layer_csv)
+    if args.layer_projection_csv:
+        write_layer_projection_csv(result, args.layer_projection_csv)
     print(f"wrote {args.out} sha256={sha256(args.out)}")
 
 

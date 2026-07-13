@@ -34,6 +34,10 @@ For every `(layer, expert, qtype)` it records:
 - exact encoded bytes and weight reconstruction error per projection;
 - routed-token count, sampled router mass, baseline contribution energy, and sample scale.
 
+The derived effects map also preserves per-layer/per-projection damage and aggregate equal-byte
+win counts by projection. This makes Q3_K versus IQ3_S and NVFP4 versus Q4_K directly auditable
+without inferring a winner from nominal bit width or a small list of top outliers.
+
 The base map has 15,168 expert rows and four precision alternatives. The extension measures
 IQ3_S, IQ4_XS, and Q4_K on the same frozen routed samples using the current pinned upstream ggml C
 quantizers and private per-column activation importance. Eight disjoint layer shards are merged

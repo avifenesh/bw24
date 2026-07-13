@@ -166,7 +166,9 @@ failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
   | tee "$LOG_ROOT/merge-qtypes.log"
 "$PY" "$SUMMARIZER" "$OUT_ROOT/seven-format-sensitivity.json" \
   --out "$OUT_ROOT/seven-format-effects-map.json" \
-  --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" | tee "$LOG_ROOT/effects-map.log"
+  --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" \
+  --layer-projection-csv "$OUT_ROOT/seven-format-layer-projection-effects.csv" \
+  | tee "$LOG_ROOT/effects-map.log"
 
 plan="$PLAN_ROOT/$ARM.json"
 if [[ ! -f "$plan" ]]; then
