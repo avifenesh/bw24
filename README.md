@@ -89,11 +89,11 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| 31B dense plain, short | 40.3 | 40.25 | 1.00x — parity, NOT done (bar is above) |
-| 31B dense plain, 1.7k | 36.9 | 38.3 | 0.96x |
-| 31B MTP spec, short (K=7 + FR trim) | 129.3 | 112.1 | **1.15x** |
-| 31B MTP spec, 1.7k (K=6 + FR trim) | 76.0 | 85.7 | 0.89x |
-| E4B plain, short | 188.8 | 216.9 | 0.87x (glue-fusion lane live) |
+| 31B dense plain, short | 40.6 | 39.8 | 1.02x — parity is not the bar |
+| 31B dense plain, 1.7k | 36.8 | 37.6 | 0.98x |
+| 31B MTP spec, short (K=7 + FR trim) | 167.5 | 112.1 | **1.49x** |
+| 31B MTP spec, 1.7k (K=6 + FR trim) | 87.7 | 98.2 | 0.89x |
+| E4B plain, short | 199.9 | 181.0 | **1.10x** (PDL + weight-prefetch + softcap-skip, 2026-07-13) |
 
 The 31B spec jump (0.79x → 1.09x, 2026-07-12) came from a serving-mode config, not a new
 kernel: the FP8 (e4m3) windowed KV cache — a win for plain decode at depth — turns out to
@@ -109,7 +109,7 @@ pairs, N=2 each side.
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma open cells: 31B plain (1.00x short — parity is not the bar — and 0.96x at 1.7k), 31B spec 1.7k (0.89x), E4B plain (0.86x). Done/above: 26B every cell; 31B spec short 1.15x.
+- Gemma open cells: 31B plain (1.02x short — parity is not the bar — and 0.98x at 1.7k), 31B spec 1.7k (0.89x), 26B plain (1.06x). Done/above: 26B spec both depths; 31B spec short 1.49x; E4B plain 1.10x + spec 1.43x.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
 
 ## What's inside

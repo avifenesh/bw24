@@ -1,120 +1,120 @@
 {
- "updated": "2026-07-13",
- "rig": "RTX 5090 Laptop",
- "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss",
- "plain_decode": {
-  "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
-  "rows": [
-   {
-    "model": "Qwen3.5-9B NVFP4 (GGUF)",
-    "bw24": 135.7,
-    "llama": 126.7
-   },
-   {
-    "model": "Qwen3.6-27B NVFP4 (GGUF)",
-    "bw24": 48.4,
-    "llama": 44.9
-   },
-   {
-    "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-    "bw24": 178.2,
-    "llama": 167.8
-   }
-  ]
- },
- "speculative": {
-  "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
-  "rows": [
-   {
-    "model": "Qwen3.5-9B (K=3 + native trim)",
-    "bw24": [
-     238.9,
-     210.2,
-     212.0
-    ],
-    "llama": [
-     123.6,
-     122.6,
-     119.2
+  "updated": "2026-07-13",
+  "rig": "RTX 5090 Laptop",
+  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss",
+  "plain_decode": {
+    "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
+    "rows": [
+      {
+        "model": "Qwen3.5-9B NVFP4 (GGUF)",
+        "bw24": 135.7,
+        "llama": 126.7
+      },
+      {
+        "model": "Qwen3.6-27B NVFP4 (GGUF)",
+        "bw24": 48.4,
+        "llama": 44.9
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+        "bw24": 178.2,
+        "llama": 167.8
+      }
     ]
-   },
-   {
-    "model": "Qwen3.6-27B (K=3 + draft + code75 trim)",
-    "bw24": [
-     107.3,
-     96.9,
-     103.5
-    ],
-    "llama": [
-     86.3,
-     91.7,
-     93.4
+  },
+  "speculative": {
+    "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt — rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
+    "rows": [
+      {
+        "model": "Qwen3.5-9B (K=3 + native trim)",
+        "bw24": [
+          238.9,
+          210.2,
+          212.0
+        ],
+        "llama": [
+          123.6,
+          122.6,
+          119.2
+        ]
+      },
+      {
+        "model": "Qwen3.6-27B (K=3 + draft + code75 trim)",
+        "bw24": [
+          107.3,
+          96.9,
+          103.5
+        ],
+        "llama": [
+          86.3,
+          91.7,
+          93.4
+        ]
+      },
+      {
+        "model": "Qwen3.6-35B-A3B (K=3 + trim + zero-draft)",
+        "bw24": [
+          292.2,
+          249.6,
+          275.3
+        ],
+        "llama": [
+          251.9,
+          221.4,
+          248.9
+        ]
+      }
     ]
-   },
-   {
-    "model": "Qwen3.6-35B-A3B (K=3 + trim + zero-draft)",
-    "bw24": [
-     292.2,
-     249.6,
-     275.3
-    ],
-    "llama": [
-     251.9,
-     221.4,
-     248.9
+  },
+  "bold_ratio_threshold": 1.05,
+  "plain_decode_depth": {
+    "context": "tg128 at 6257-token context (same session/hour-regime)",
+    "rows": [
+      {
+        "model": "Qwen3.5-9B NVFP4 (GGUF)",
+        "bw24": 127.2,
+        "llama": 120.0
+      },
+      {
+        "model": "Qwen3.6-27B NVFP4 (GGUF)",
+        "bw24": 45.9,
+        "llama": 43.0
+      },
+      {
+        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+        "bw24": 163.7,
+        "llama": 160.9
+      }
     ]
-   }
+  },
+  "extra_card_rows": [
+    {
+      "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
+      "bw24": 200.6,
+      "llama": 189.7
+    },
+    {
+      "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
+      "bw24": 381.9,
+      "llama": 258.7,
+      "spec": true
+    },
+    {
+      "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
+      "bw24": 167.5,
+      "llama": 112.1,
+      "spec": true
+    },
+    {
+      "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
+      "bw24": 199.9,
+      "llama": 181.0
+    },
+    {
+      "model": "Gemma-4 E4B (K=2 MTP assistant)",
+      "bw24": 259.9,
+      "llama": 181.3,
+      "spec": true
+    }
   ]
- },
- "bold_ratio_threshold": 1.05,
- "plain_decode_depth": {
-  "context": "tg128 at 6257-token context (same session/hour-regime)",
-  "rows": [
-   {
-    "model": "Qwen3.5-9B NVFP4 (GGUF)",
-    "bw24": 127.2,
-    "llama": 120.0
-   },
-   {
-    "model": "Qwen3.6-27B NVFP4 (GGUF)",
-    "bw24": 45.9,
-    "llama": 43.0
-   },
-   {
-    "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-    "bw24": 163.7,
-    "llama": 160.9
-   }
-  ]
- },
- "extra_card_rows": [
-  {
-   "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
-   "bw24": 200.6,
-   "llama": 189.7
-  },
-  {
-   "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
-   "bw24": 381.9,
-   "llama": 258.7,
-   "spec": true
-  },
-  {
-   "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
-   "bw24": 167.5,
-   "llama": 112.1,
-   "spec": true
-  },
-  {
-   "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
-   "bw24": 199.0,
-   "llama": 181.3
-  },
-  {
-   "model": "Gemma-4 E4B (K=2 MTP assistant)",
-   "bw24": 259.9,
-   "llama": 181.3,
-   "spec": true
-  }
- ]
 }
