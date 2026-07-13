@@ -5,6 +5,7 @@ ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 PY=${PY:-python3}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the detached orchestration commit}
 BUILD_COMPLETE=${BUILD_COMPLETE:-/data/logs/smart100-build-2605fde/complete}
+ELIGIBILITY=${ELIGIBILITY:-/data/logs/smart100-build-2605fde/eligible-arms.json}
 ART_ROOT=${ART_ROOT:-/scratch/bw24-artifacts-smart100-2605fde}
 CONTROL_ARTIFACT=${CONTROL_ARTIFACT:-/scratch/bw24-artifacts-100gb-5f02c37/prune100_joint_heal}
 EVAL_ROOT=${EVAL_ROOT:-/data/src/bw24-expanded-panel}
@@ -18,8 +19,8 @@ LOG_ROOT=${LOG_ROOT:-/data/logs/smart100-directional-v1}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 PRIVATE_GATE_ROOT=${PRIVATE_GATE_ROOT:-/data/logs/smart100-private-artifact-gate-2605fde}
 
-arms=(prune100_joint_heal smart100_empirical smart100_balanced smart100_rescue)
-artifacts=("$CONTROL_ARTIFACT" "$ART_ROOT/smart100_empirical" "$ART_ROOT/smart100_balanced" "$ART_ROOT/smart100_rescue")
+arms=(prune100_joint_heal)
+artifacts=("$CONTROL_ARTIFACT")
 gpus=(0 2 4 6)
 cpus=(0-11 24-35 48-59 72-83)
 numas=(0 0 1 1)
@@ -32,6 +33,22 @@ flock -n 9 || die "another transition owns $LOG_ROOT/transition.lock"
 echo "$(date -u +%FT%TZ) smart100 directional transition started" | tee -a "$LOG_ROOT/transition.log"
 [[ $(git -C "$ROOT" rev-parse HEAD) == "$EXPECTED_COMMIT" ]] || die "orchestration commit mismatch"
 while [[ ! -f "$BUILD_COMPLETE" ]]; do sleep 30; done
+[[ -f "$ELIGIBILITY" ]] || die "missing candidate eligibility manifest"
+mapfile -t eligible_arms < <("$PY" - "$ELIGIBILITY" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["format"] == "bw24-smart100-heal-eligibility-v1"
+assert d["eligible_arms"]
+for arm in d["eligible_arms"]:
+    assert arm in {"smart100_empirical","smart100_balanced","smart100_rescue"}
+    print(arm)
+PY
+)
+(( ${#eligible_arms[@]} > 0 )) || die "eligibility manifest contains no candidates"
+for arm in "${eligible_arms[@]}"; do
+  arms+=("$arm")
+  artifacts+=("$ART_ROOT/$arm")
+done
 [[ $(git -C "$EVAL_ROOT" rev-parse HEAD) == "$EVAL_COMMIT" ]] || die "eval tooling commit mismatch"
 [[ $(sha256sum "$PANEL_LOCK" | cut -d' ' -f1) == "$PANEL_SHA256" ]] || die "panel hash mismatch"
 [[ $(sha256sum "$SERVER_BIN" | cut -d' ' -f1) == "$SERVER_SHA256" ]] || die "server hash mismatch"
@@ -47,7 +64,7 @@ if [[ ! -f "$PRIVATE_GATE_ROOT/complete" ]]; then
     PY="$PY" CAPTURE_TOOL="$EVAL_ROOT/research/per-expert-quant/capture_calibration.py" \
     HEALTH_TOOL="$EVAL_ROOT/research/per-expert-quant/validate_server_health.py" \
     ROUTE_VALIDATOR="$ROOT/research/per-expert-quant/validate_pruned_route_trace.py" \
-    ARMS_CSV=smart100_empirical,smart100_balanced,smart100_rescue \
+    ARMS_CSV="$(IFS=,; echo "${eligible_arms[*]}")" \
     "$ROOT/research/per-expert-quant/run_100gb_private_artifact_gate.sh"
 fi
 
@@ -56,11 +73,12 @@ RUN_ID=smart100-v1-$(git -C "$ROOT" rev-parse --short=7 HEAD)-$(date -u +%Y%m%dT
 mkdir -p "$OUT_ROOT/run-configs"
 printf '%s\n' "$RUN_ID" >"$OUT_ROOT/_active-run-id"
 "$PY" - "$OUT_ROOT/run-configs/$RUN_ID.json" "$RUN_ID" "$ROOT" "$EVAL_ROOT" \
-  "$PANEL_LOCK" "$SERVER_BIN" "${artifacts[@]}" <<'PY'
+  "$PANEL_LOCK" "$SERVER_BIN" "$(IFS=,; echo "${arms[*]}")" "${artifacts[@]}" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
-out,run_id,root,eval_root,panel,server,*artifacts=sys.argv[1:]
+out,run_id,root,eval_root,panel,server,arms_csv,*artifacts=sys.argv[1:]
 sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
-arms=["prune100_joint_heal","smart100_empirical","smart100_balanced","smart100_rescue"]
+arms=arms_csv.split(",")
+assert len(arms) == len(artifacts) and 2 <= len(arms) <= 4
 d={"format":"bw24-smart100-directional-run-v1","run_id":run_id,
    "orchestration_commit":subprocess.check_output(["git","-C",root,"rev-parse","HEAD"],text=True).strip(),
    "eval_commit":subprocess.check_output(["git","-C",eval_root,"rev-parse","HEAD"],text=True).strip(),
@@ -96,15 +114,15 @@ arms_csv=$(IFS=,; echo "${arms[*]}")
   --server-sha256 "$SERVER_SHA256" --output "$OUT_ROOT/smart100-summary-$RUN_ID.json"
 OLD_RUN_ID=$(cat /data/results/per-expert-quant/expanded-v2/_active-run-id)
 FRONTIER="$OUT_ROOT/smart100-frontier-$RUN_ID.json"
-"$PY" "$ROOT/research/per-expert-quant/summarize_cross_run_hourish.py" \
+frontier_args=(
   --panel-lock "$PANEL_LOCK" --server-sha256 "$SERVER_SHA256" \
   --arm "plain_quant=/data/results/per-expert-quant/expanded-v2::$OLD_RUN_ID" \
   --arm "traffic_nvfp4_53_q2_139=/data/results/per-expert-quant/expanded-v2::$OLD_RUN_ID" \
   --arm "prune100_joint_heal=$OUT_ROOT::$RUN_ID" \
-  --arm "smart100_empirical=$OUT_ROOT::$RUN_ID" \
-  --arm "smart100_balanced=$OUT_ROOT::$RUN_ID" \
-  --arm "smart100_rescue=$OUT_ROOT::$RUN_ID" \
-  --baseline plain_quant --output "$FRONTIER"
+)
+for arm in "${eligible_arms[@]}"; do frontier_args+=(--arm "$arm=$OUT_ROOT::$RUN_ID"); done
+frontier_args+=(--baseline plain_quant --output "$FRONTIER")
+"$PY" "$ROOT/research/per-expert-quant/summarize_cross_run_hourish.py" "${frontier_args[@]}"
 PROMOTION="$OUT_ROOT/smart100-promotion-$RUN_ID.json"
 "$PY" "$ROOT/research/per-expert-quant/select_smart100_promotions.py" \
   --frontier "$FRONTIER" --lock "$ROOT/research/per-expert-quant/smart100-promotion-gates.lock.json" \

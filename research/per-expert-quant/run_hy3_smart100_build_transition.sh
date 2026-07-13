@@ -141,6 +141,8 @@ done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 ((failed == 0)) || die "one or more quantization-aware heal lanes failed"
 
+eligible_arms=()
+rejected_arms=()
 for arm in "${arms[@]}"; do
   "$PY" "$ROOT/tools/merge_hy3_heal_shards.py" \
     --receipt-dir "$HEAL_ROOT/$arm/receipts" --overlay-dir "$HEAL_ROOT/$arm/overlay" \
@@ -165,8 +167,15 @@ result={"format":"bw24-smart100-post-requant-heal-gate-v1","layers":len(receipts
         "passed":after < before and improved >= 40,"public_eval_data_used":False}
 pathlib.Path(sys.argv[2]).write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
 print(json.dumps(result,sort_keys=True))
-assert result["passed"], result
 PY
+  if [[ $("$PY" -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["passed"]).lower())' \
+      "$LOG_ROOT/heal-quality-$arm.json") != true ]]; then
+    rejected_arms+=("$arm")
+    echo "$(date -u +%FT%TZ) rejecting $arm after post-requantization heal gate" \
+      | tee -a "$LOG_ROOT/transition.log"
+    continue
+  fi
+  eligible_arms+=("$arm")
   "$PY" "$ROOT/tools/export_hy3_router_overrides.py" \
     --overlay-dir "$HEAL_ROOT/$arm/overlay" --layers 1-79 \
     --blob "$HEAL_ROOT/$arm/router-overrides.f32" \
@@ -206,7 +215,19 @@ PY
   cmp "$LOG_ROOT/$arm.data.sha256" "$LOG_ROOT/$arm.scratch.sha256"
 done
 
+(( ${#eligible_arms[@]} > 0 )) || die "all smart100 candidates failed the post-requantization heal gate"
+"$PY" - "$LOG_ROOT/eligible-arms.json" \
+  "$(IFS=,; echo "${eligible_arms[*]}")" "$(IFS=,; echo "${rejected_arms[*]}")" <<'PY'
+import json,pathlib,sys
+out,eligible,rejected=sys.argv[1:]
+split=lambda value: [item for item in value.split(",") if item]
+pathlib.Path(out).write_text(json.dumps({
+    "format":"bw24-smart100-heal-eligibility-v1",
+    "eligible_arms":split(eligible),
+    "rejected_arms":split(rejected),
+},indent=2,sort_keys=True)+"\n")
+PY
 sha256sum "$PLAN_ROOT"/*.json "$HEAL_ROOT"/*/overlay.lock.json "$LOG_ROOT"/heal-quality-*.json \
-  "$HEAL_ROOT"/*/router-overrides.json "$ARTIFACT_ROOT"/*/manifest.json \
+  "$LOG_ROOT/eligible-arms.json" "$HEAL_ROOT"/*/router-overrides.json "$ARTIFACT_ROOT"/*/manifest.json \
   >"$LOG_ROOT/evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"

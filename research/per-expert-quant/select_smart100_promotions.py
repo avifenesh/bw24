@@ -28,16 +28,20 @@ def select(frontier: dict[str, Any], lock: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("panel hashes differ")
     required = {
         lock["quality_ceiling_arm"], lock["strong_compact_arm"],
-        lock["same_size_control_arm"], *lock["candidate_arms"],
+        lock["same_size_control_arm"],
     }
     missing = required - frontier["arms"].keys()
     if missing:
         raise ValueError(f"frontier is missing {sorted(missing)}")
+    available_candidates = [arm for arm in lock["candidate_arms"] if arm in frontier["arms"]]
+    unavailable_candidates = [arm for arm in lock["candidate_arms"] if arm not in frontier["arms"]]
+    if not available_candidates:
+        raise ValueError("frontier contains no heal-eligible smart100 candidates")
     control_name = lock["same_size_control_arm"]
     control = frontier["arms"][control_name]
     decisions = {}
     passed = []
-    for arm in lock["candidate_arms"]:
+    for arm in available_candidates:
         candidate = frontier["arms"][arm]
         deficits = {
             task: float(control["tasks"][task]["rate"]) - float(candidate["tasks"][task]["rate"])
@@ -72,6 +76,7 @@ def select(frontier: dict[str, Any], lock: dict[str, Any]) -> dict[str, Any]:
         "format": OUTPUT_FORMAT,
         "same_size_control_arm": control_name,
         "directional_decisions": decisions,
+        "unavailable_candidate_arms": unavailable_candidates,
         "qualified_candidates": passed,
         "selected_practical_candidates": selected,
         "practical_arms": [lock["quality_ceiling_arm"], lock["strong_compact_arm"], *selected],
@@ -100,6 +105,10 @@ def self_test() -> None:
         "max_practical_candidates": 2, "trusted_full_max_arms": 3}
     result = select(frontier, lock)
     assert result["selected_practical_candidates"] == ["good"]
+    del frontier["arms"]["bad"]
+    result = select(frontier, lock)
+    assert result["selected_practical_candidates"] == ["good"]
+    assert result["unavailable_candidate_arms"] == ["bad"]
 
 
 def main() -> None:
