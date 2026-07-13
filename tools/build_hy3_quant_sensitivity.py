@@ -261,11 +261,19 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
                 sampled = deterministic_sample(np.arange(len(token_index)), args.max_tokens_per_expert)
                 chosen_tokens = token_index[sampled]
                 chosen_slots = slot[sampled]
-                if not len(chosen_tokens):
-                    raise ValueError(f"layer {layer} expert {expert} was never routed")
+                observed_routing = bool(len(chosen_tokens))
+                if not observed_routing:
+                    # Preserve function-space quantization evidence for experts absent from
+                    # the frozen top-k trace, but give it zero routed-mass in allocation.
+                    chosen_tokens = deterministic_sample(
+                        np.arange(len(token_strata)), args.max_tokens_per_expert
+                    )
                 x = torch.from_numpy(np.asarray(hidden[chosen_tokens], dtype=np.float32))
-                weights = torch.from_numpy(
-                    route_weights[layer][chosen_tokens, chosen_slots].astype(np.float32)
+                weights = (
+                    torch.from_numpy(
+                        route_weights[layer][chosen_tokens, chosen_slots].astype(np.float32)
+                    )
+                    if observed_routing else torch.ones(len(chosen_tokens), dtype=torch.float32)
                 )
                 tensors = {
                     projection: handles[weight_map[tensor_name(layer, expert, projection)]].get_tensor(
@@ -281,7 +289,12 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
                     "expert": expert,
                     "routed_tokens": int(len(token_index)),
                     "sampled_tokens": int(len(chosen_tokens)),
-                    "sample_scale": float(len(token_index) / len(chosen_tokens)),
+                    "sample_scale": (
+                        float(len(token_index) / len(chosen_tokens)) if observed_routing else 0.0
+                    ),
+                    "measurement_source": (
+                        "routed_top_k" if observed_routing else "unrouted_function_probe"
+                    ),
                     "sampled_router_weight_mass": float(weights.sum(dtype=torch.float64)),
                     "quantization": metrics,
                 })
@@ -304,7 +317,10 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
         "measurement": {
             "qtypes": list(qtypes),
             "max_tokens_per_expert": args.max_tokens_per_expert,
-            "sampling": "deterministic evenly spaced routed-token positions",
+            "sampling": (
+                "deterministic evenly spaced routed-token positions; experts absent from the "
+                "frozen top-k trace use a deterministic function probe with zero routed mass"
+            ),
             "metric": "router-weighted expert-output normalized MSE",
             "projection_ablation": "one quantized projection with the other two at source precision",
             "exact_quantizer_implementation": "prepare_mixed_expert_repack.py",
@@ -347,7 +363,7 @@ def self_test() -> None:
             "public_eval_data_used_for_selection": False,
         }))
         tensors: dict[str, torch.Tensor] = {}; weight_map = {}
-        for expert in range(2):
+        for expert in range(3):
             for projection, shape in {
                 "gate": (256, 256), "up": (256, 256), "down": (256, 256),
             }.items():
@@ -359,18 +375,21 @@ def self_test() -> None:
         (source / "config.json").write_text("{}")
         args = argparse.Namespace(
             trace_lock=lock, weight_trace=routes, requests=requests, source_dir=source,
-            layers="1", expert_count=2, top_k=1, hidden_size=256, intermediate_size=256,
+            layers="1", expert_count=3, top_k=1, hidden_size=256, intermediate_size=256,
             max_tokens_per_expert=2, qtypes="Q8_0,NVFP4,Q3_K,Q2_K", device="cpu",
             progress_every=0,
         )
         result = score(args)
-        assert len(result["scores"]) == 2
+        assert len(result["scores"]) == 3
         for row in result["scores"]:
             for qtype in QTYPES:
                 value = row["quantization"][qtype]["joint_output_error"]["normalized_mse"]
                 assert math.isfinite(value) and value >= 0
         assert result["scores"][0]["quantization"]["Q8_0"]["joint_output_error"]["normalized_mse"] \
             < result["scores"][0]["quantization"]["Q2_K"]["joint_output_error"]["normalized_mse"]
+        assert result["scores"][2]["measurement_source"] == "unrouted_function_probe"
+        assert result["scores"][2]["routed_tokens"] == 0
+        assert result["scores"][2]["sample_scale"] == 0.0
         probe = rng.normal(size=(3, 256)).astype(np.float32)
         scalar = {
             "Q8_0": _dequant_q8_0,
