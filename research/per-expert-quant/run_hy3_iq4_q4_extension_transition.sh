@@ -29,6 +29,7 @@ SCRATCH_ROOT=${SCRATCH_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 LOG_ROOT=${LOG_ROOT:-/data/logs/iq3-iq4-q4-extension-99f3dc3}
 TARGET_BYTES=${TARGET_BYTES:-100000000000}
 GPUS_CSV=${GPUS_CSV:-1,3,5,7}
+LANES_PER_GPU=${LANES_PER_GPU:-1}
 ARM=${ARM:-smart100_iq3_iq4_q4_empirical}
 
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
@@ -61,21 +62,31 @@ done
 [[ -d "$REFERENCE_RECEIPTS" ]] || die "missing reference heal receipts"
 while [[ ! -f "$BASE_BUILD_COMPLETE" ]]; do sleep 30; done
 
-all_cpus=(0-11 12-23 24-35 36-47 48-59 60-71 72-83 84-95)
-IFS=, read -r -a gpus <<<"$GPUS_CSV"
-cpus=(); seen=,
-for gpu in "${gpus[@]}"; do
+[[ "$LANES_PER_GPU" =~ ^[0-9]+$ ]] || die "LANES_PER_GPU must be an integer"
+((LANES_PER_GPU >= 1 && LANES_PER_GPU <= 12)) \
+  || die "LANES_PER_GPU must be between 1 and 12"
+IFS=, read -r -a physical_gpus <<<"$GPUS_CSV"
+gpus=(); cpus=(); seen=,
+for gpu in "${physical_gpus[@]}"; do
   [[ "$gpu" =~ ^[0-7]$ ]] || die "invalid GPU $gpu"
   [[ "$seen" != *",$gpu,"* ]] || die "duplicate GPU $gpu"
-  seen+="$gpu,"; cpus+=("${all_cpus[$gpu]}")
+  seen+="$gpu,"
+  for replica in $(seq 0 $((LANES_PER_GPU - 1))); do
+    cpu_start=$((gpu * 12 + 12 * replica / LANES_PER_GPU))
+    cpu_end=$((gpu * 12 + 12 * (replica + 1) / LANES_PER_GPU - 1))
+    gpus+=("$gpu")
+    cpus+=("$cpu_start-$cpu_end")
+  done
 done
 lane_count=${#gpus[@]}
-((lane_count >= 1 && lane_count <= 8)) || die "invalid lane count"
+((lane_count >= 1 && lane_count <= 96)) || die "invalid lane count"
+echo "$(date -u +%FT%TZ) sensitivity lanes=$lane_count physical_gpus=$GPUS_CSV lanes_per_gpu=$LANES_PER_GPU" \
+  | tee -a "$LOG_ROOT/transition.log"
 
 wait_lanes_idle() {
   while true; do
     local busy=0
-    for gpu in "${gpus[@]}"; do
+    for gpu in "${physical_gpus[@]}"; do
       if nvidia-smi -i "$gpu" --query-compute-apps=pid --format=csv,noheader,nounits \
         | grep -Eq '^[0-9]+$'; then busy=1; fi
     done
