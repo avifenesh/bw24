@@ -11,13 +11,13 @@ REMOTE=${REMOTE:-bw24-research-g6e}
 REGION=${REGION:-us-east-2}
 INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
 EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
-REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-pareto-v1}
-REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-pareto-v1/complete}
-REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/iq3-iq4-q4-pareto-directional-v1}
-REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-iq3-iq4-q4-pareto-v1}
-REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-iq3-iq4-q4-pareto-v1}
-REMOTE_FINALIZER_ROOT=${REMOTE_FINALIZER_ROOT:-/data/src/bw24-finalizer-conclusion-v1}
-REMOTE_CONCLUSION_ROOT=${REMOTE_CONCLUSION_ROOT:-/data/analysis/per-expert-quant-final-conclusion-v1}
+REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-final-pareto-v1}
+REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-final-pareto-v1/complete}
+REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/layer-balanced100-directional-v1}
+REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-layer-balanced100-v1}
+REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-final-pareto-v1}
+REMOTE_FINALIZER_ROOT=${REMOTE_FINALIZER_ROOT:-/data/src/bw24-finalizer-conclusion-v2}
+REMOTE_CONCLUSION_ROOT=${REMOTE_CONCLUSION_ROOT:-/data/analysis/per-expert-quant-final-conclusion-v2}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
 BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
 IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-uncentered-c91898f}
@@ -31,6 +31,7 @@ PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$PARETO_ALLOCATION_ANALYSIS/private-damage-thre
 UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
 CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
 PARETO_PLAN=${PARETO_PLAN:-$PARETO_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_pareto.json}
+LAYER_BALANCED_PLAN=${LAYER_BALANCED_PLAN:-/data/plans/per-expert-quant-layer-balanced100-3db293f/layer_balanced100.json}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -48,6 +49,12 @@ EVIDENCE_ROOTS=(
   "$PAIR_ALLOCATION_ANALYSIS"
   "$BASE_EFFECT_ANALYSIS"
   "$IQ4_EFFECT_ANALYSIS"
+  /data/plans/per-expert-quant-layer-balanced100-3db293f
+  /data/logs/layer-balanced100-3db293f
+  /data/logs/layer-balanced100-directional-v1
+  /data/logs/practical-layer-balanced100-v1
+  /data/logs/trusted-full-final-pareto-v1
+  /data/logs/full-agentic-final-pareto-v1
   "$REMOTE_CONCLUSION_ROOT"
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
@@ -56,6 +63,7 @@ EVIDENCE_ROOTS=(
   /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
   /data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical/receipts
   /data/heal/per-expert-quant-iq3-iq4-q4-pareto-6c5c5ea/smart100_iq3_iq4_q4_pareto/receipts
+  /data/heal/per-expert-quant-layer-balanced100-3db293f/layer_balanced100/receipts
 )
 
 die() { echo "smart100 finalizer: $*" >&2; exit 1; }
@@ -79,8 +87,8 @@ practical_run=$(ssh "$REMOTE" "cat '$REMOTE_PRACTICAL_ROOT/_active-run-id'")
 trusted_run=$(ssh "$REMOTE" "cat '$REMOTE_TRUSTED_ROOT/_active-run-id'")
 analysis_commit=$(ssh "$REMOTE" "git -C '$REMOTE_FINALIZER_ROOT' rev-parse HEAD")
 [[ "$analysis_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid remote finalizer commit"
-directional_frontier="$REMOTE_DIRECTIONAL_ROOT/iq3-iq4-q4-frontier-$directional_run.json"
-directional_promotion="$REMOTE_DIRECTIONAL_ROOT/iq3-iq4-q4-promotion-$directional_run.json"
+directional_frontier="$REMOTE_DIRECTIONAL_ROOT/layer-balanced100-frontier-$directional_run.json"
+directional_promotion="$REMOTE_DIRECTIONAL_ROOT/layer-balanced100-promotion-$directional_run.json"
 practical_promotion="$REMOTE_PRACTICAL_ROOT/practical-promotion-$practical_run.json"
 trusted_report="$REMOTE_TRUSTED_ROOT/_runs/$trusted_run/trusted-full-results.json"
 combined="$REMOTE_FULL_ROOT/comparisons/$run_id/combined.json"
@@ -89,7 +97,8 @@ ssh "$REMOTE" bash -s -- \
   "$REMOTE_FINALIZER_ROOT" "$analysis_commit" "$REMOTE_CONCLUSION_ROOT" \
   "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" \
   "$directional_frontier" "$directional_promotion" "$practical_promotion" \
-  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" <<'SH'
+  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" \
+  "$LAYER_BALANCED_PLAN" <<'SH'
 set -euo pipefail
 root=$1
 commit=$2
@@ -104,6 +113,7 @@ full=${10}
 uncentered=${11}
 centered=${12}
 pareto=${13}
+layer_balanced=${14}
 tool="$root/tools/summarize_hy3_quant_research.py"
 output="$out_root/conclusion.json"
 markdown="$out_root/conclusion.md"
@@ -112,7 +122,7 @@ evidence="$out_root/evidence.sha256"
 [[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
 [[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
 for path in "$tool" "$effects" "$damage" "$frontier" "$directional" "$practical" \
-  "$trusted" "$full" "$uncentered" "$centered" "$pareto"; do
+  "$trusted" "$full" "$uncentered" "$centered" "$pareto" "$layer_balanced"; do
   [[ -f "$path" ]]
 done
 if [[ ! -f "$receipt" ]]; then
@@ -121,6 +131,7 @@ if [[ ! -f "$receipt" ]]; then
     --directional-promotion "$directional" --practical-promotion "$practical" \
     --trusted-report "$trusted" --full-agentic "$full" \
     --plan "uncentered=$uncentered" --plan "centered=$centered" --plan "pareto=$pareto" \
+    --plan "layer_balanced=$layer_balanced" \
     --analysis-commit "$commit" --output "$output" --markdown "$markdown" \
     --receipt "$receipt"
   sha256sum "$output" "$markdown" "$receipt" "$tool" >"$evidence"
@@ -146,6 +157,8 @@ case "$finalist" in
     remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d/$finalist" ;;
   smart100_iq3_iq4_q4_pareto)
     remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea/$finalist" ;;
+  layer_balanced100)
+    remote_artifact="/scratch/bw24-artifacts-layer-balanced100-3db293f/$finalist" ;;
   prune100_joint_heal)
     remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
   traffic_nvfp4_53_q2_139)
@@ -164,9 +177,12 @@ for f in \
   /data/logs/iq3-iq4-q4-pareto-6c5c5ea/complete \
   /data/logs/iq3-iq4-q4-pareto-directional-v1/complete \
   /data/logs/practical-iq3-iq4-q4-pareto-v1/complete \
-  /data/logs/trusted-full-iq3-iq4-q4-pareto-v1/complete \
-  /data/logs/full-agentic-iq3-iq4-q4-pareto-v1/complete \
-  /data/logs/full-agentic-iq3-iq4-q4-pareto-v1/chain-complete; do test -f "$f"; done
+  /data/logs/layer-balanced100-3db293f/complete \
+  /data/logs/layer-balanced100-directional-v1/complete \
+  /data/logs/practical-layer-balanced100-v1/complete \
+  /data/logs/trusted-full-final-pareto-v1/complete \
+  /data/logs/full-agentic-final-pareto-v1/complete \
+  /data/logs/full-agentic-final-pareto-v1/chain-complete; do test -f "$f"; done
 test -z "$(pgrep -x bw24-server || true)"
 test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"

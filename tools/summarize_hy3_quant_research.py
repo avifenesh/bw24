@@ -21,6 +21,7 @@ PLAN_ARMS = {
     "uncentered": "smart100_iq3_iq4_q4_empirical",
     "centered": "smart100_iq3_iq4_q4_centered",
     "pareto": "smart100_iq3_iq4_q4_pareto",
+    "layer_balanced": "layer_balanced100",
 }
 PLAN_DAMAGE_KEYS = {
     "uncentered": "uncentered",
@@ -138,12 +139,45 @@ def plan_summary(
     if plan.get("calibration", {}).get("public_eval_data_used_for_selection") is not False:
         raise ValueError(f"{name} does not attest private-only allocation")
     arm = PLAN_ARMS[name]
-    plan_damage = damage["plans"][PLAN_DAMAGE_KEYS[name]]
-    if plan_damage["sha256"] != sha256(path):
-        raise ValueError(f"{name} damage receipt binds a different plan")
     logical_bytes = int(plan["policy"]["result_logical_bytes"])
-    if int(plan_damage["logical_bytes"]) != logical_bytes:
-        raise ValueError(f"{name} logical bytes differ between plan and damage report")
+    damage_key = PLAN_DAMAGE_KEYS.get(name)
+    if damage_key is not None:
+        plan_damage = damage["plans"][damage_key]
+        if plan_damage["sha256"] != sha256(path):
+            raise ValueError(f"{name} damage receipt binds a different plan")
+        if int(plan_damage["logical_bytes"]) != logical_bytes:
+            raise ValueError(f"{name} logical bytes differ between plan and damage report")
+        private_damage = {
+            "metric": "measured_additive_projection_output_damage",
+            "source": "independent_plan_damage_receipt",
+            "total": float(plan_damage["total_additive_damage"]),
+            "centered_total": None,
+            "normalized_objective": None,
+            "prune": float(plan_damage["prune_damage"]),
+            "retained_quant": float(plan_damage["retained_quant_damage"]),
+            "projection_quant": plan_damage["projection_quant_damage"],
+            "top_damage_cells": plan_damage["top_damage_cells"],
+        }
+    else:
+        selection = plan["selection"]
+        absolute = float(selection["estimated_absolute_output_damage"])
+        centered = float(selection["estimated_centered_output_damage"])
+        objective = float(selection["estimated_objective"])
+        if not all(math.isfinite(value) and value >= 0 for value in (
+            absolute, centered, objective
+        )):
+            raise ValueError(f"{name} has invalid private damage estimates")
+        private_damage = {
+            "metric": "measured_additive_projection_output_damage",
+            "source": "optimal_plan_selection_estimate",
+            "total": absolute,
+            "centered_total": centered,
+            "normalized_objective": objective,
+            "prune": None,
+            "retained_quant": None,
+            "projection_quant": None,
+            "top_damage_cells": None,
+        }
     directional = frontier["arms"].get(arm)
     if directional is not None and int(directional["logical_model_bytes"]) != logical_bytes:
         raise ValueError(f"{name} directional artifact has different logical bytes")
@@ -188,11 +222,15 @@ def plan_summary(
             layer: {"retained": int(row["retained"]), "pruned": int(row["pruned"])}
             for layer, row in layers.items()
         },
-        "private_total_additive_damage": float(plan_damage["total_additive_damage"]),
-        "private_prune_damage": float(plan_damage["prune_damage"]),
-        "private_retained_quant_damage": float(plan_damage["retained_quant_damage"]),
-        "private_projection_quant_damage": plan_damage["projection_quant_damage"],
-        "private_top_damage_cells": plan_damage["top_damage_cells"],
+        "private_damage_metric": private_damage["metric"],
+        "private_damage_source": private_damage["source"],
+        "private_total_additive_damage": private_damage["total"],
+        "private_centered_output_damage": private_damage["centered_total"],
+        "private_normalized_objective": private_damage["normalized_objective"],
+        "private_prune_damage": private_damage["prune"],
+        "private_retained_quant_damage": private_damage["retained_quant"],
+        "private_projection_quant_damage": private_damage["projection_quant"],
+        "private_top_damage_cells": private_damage["top_damage_cells"],
         "directional": (
             {
                 "domain_macro": float(directional["domain_macro"]),
@@ -299,7 +337,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         },
         "seven_format_candidates": plans,
         "private_damage_comparison": {
-            "lowest_damage_plan": damage["lowest_private_damage_plan"],
+            "legacy_three_plan_lowest_damage_plan": damage["lowest_private_damage_plan"],
+            "all_candidate_point_estimate_lowest_damage_plan": min(
+                plans,
+                key=lambda name: plans[name]["private_total_additive_damage"],
+            ),
             "pairwise": damage["pairwise"],
         },
         "format_effects": {
@@ -431,12 +473,20 @@ def self_test() -> None:
             ("uncentered", PLAN_ARMS["uncentered"], 100),
             ("centered", PLAN_ARMS["centered"], 99),
             ("pareto", PLAN_ARMS["pareto"], 98),
+            ("layer_balanced", PLAN_ARMS["layer_balanced"], 97),
         ):
+            selection = {"retained_experts": 100, "pruned_experts": 92}
+            if name == "layer_balanced":
+                selection.update({
+                    "estimated_absolute_output_damage": 97.0,
+                    "estimated_centered_output_damage": 96.0,
+                    "estimated_objective": 0.97,
+                })
             path = write(f"{name}.json", {
                 "format": PLAN_FORMAT, "recipe": "measured-global-projection-budget",
                 "policy": {"result_logical_bytes": size, "qtype_projection_counts": {"Q2_K": 300}},
                 "calibration": {"public_eval_data_used_for_selection": False},
-                "selection": {"retained_experts": 100, "pruned_experts": 92},
+                "selection": selection,
                 "layer_summary": layer_summary,
                 "assignments": [{"layer": 1, "experts": list(range(100)),
                                  "projections": ["gate", "up", "down"],
@@ -450,6 +500,7 @@ def self_test() -> None:
                    "projection_quant_damage": {"gate": 1.0, "up": 2.0, "down": 3.0},
                    "top_damage_cells": []}
             for name, (_, path, size) in plans.items()
+            if name in PLAN_DAMAGE_KEYS
         }
         format_totals = {
             "Q2_K": {"encoded_bytes": 10, "full_scaled_squared_error": 100.0},
@@ -474,27 +525,34 @@ def self_test() -> None:
         arm_rows = {"plain_quant":{"logical_model_bytes":200,"domain_macro":.8,"question_weighted":.8},
                     PLAN_ARMS["uncentered"]:{"logical_model_bytes":100,"domain_macro":.7,"question_weighted":.7},
                     PLAN_ARMS["centered"]:{"logical_model_bytes":99,"domain_macro":.71,"question_weighted":.71},
-                    PLAN_ARMS["pareto"]:{"logical_model_bytes":98,"domain_macro":.72,"question_weighted":.72}}
+                    PLAN_ARMS["pareto"]:{"logical_model_bytes":98,"domain_macro":.72,"question_weighted":.72},
+                    PLAN_ARMS["layer_balanced"]:{"logical_model_bytes":97,"domain_macro":.73,"question_weighted":.73}}
         frontier = write("frontier.json", {"format":"bw24-cross-run-expanded-capability-frontier-v1",
             "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["pareto"]]})
         directional = write("directional.json", {"format":"bw24-smart100-directional-promotion-v1",
-            "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",PLAN_ARMS["pareto"]]})
+            "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
+                              PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
         practical = write("practical.json", {"format":"bw24-practical-promotion-v1",
-            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]]})
+            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"],
+                                 PLAN_ARMS["layer_balanced"]]})
         trusted = write("trusted.json", {"format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
             "baseline":"plain_quant","arms":{},
-            "paired_vs_baseline":{},"selection":{"selected_finalist":PLAN_ARMS["pareto"]}})
+            "paired_vs_baseline":{},
+            "selection":{"selected_finalist":PLAN_ARMS["layer_balanced"]}})
         full = write("full.json", {"format":"bw24-full-agentic-comparison-v1",
-            "baseline":"plain_quant","candidate":PLAN_ARMS["pareto"],"total_tasks":589,
+            "baseline":"plain_quant","candidate":PLAN_ARMS["layer_balanced"],"total_tasks":589,
             "candidate_total_solved_delta":1})
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
             directional_promotion=directional, practical_promotion=practical,
             trusted_report=trusted, full_agentic=full,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
-        assert result["recommended_method"]["arm"] == PLAN_ARMS["pareto"]
-        assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .51) < 1e-12
+        assert result["recommended_method"]["arm"] == PLAN_ARMS["layer_balanced"]
+        assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .515) < 1e-12
+        assert result["seven_format_candidates"]["layer_balanced"][
+            "private_damage_source"
+        ] == "optimal_plan_selection_estimate"
         assert result["format_efficiency"]["point_estimate_pareto"] == [
             "Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0"
         ]
