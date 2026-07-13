@@ -12,6 +12,11 @@ PY=${PY:-python3}
 ORIGINAL_READY=${ORIGINAL_READY:-/data/logs/iq3-iq4-q4-extension-99f3dc3/complete}
 ORIGINAL_ROOT=${ORIGINAL_ROOT:-/data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3}
 CENTERED_ANALYSIS=${CENTERED_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-centered-a7200c0}
+PLAN_DAMAGE=${PLAN_DAMAGE:-$CENTERED_ANALYSIS/private-damage-comparison.json}
+PLAN_DAMAGE_RECEIPT=${PLAN_DAMAGE_RECEIPT:-$CENTERED_ANALYSIS/private-damage-comparison.receipt.json}
+PLAN_DAMAGE_KEY=${PLAN_DAMAGE_KEY:-centered}
+EXPECTED_DAMAGE_WINNER=${EXPECTED_DAMAGE_WINNER:-centered}
+DAMAGE_COMPARISON=${DAMAGE_COMPARISON:-uncentered__centered}
 ARM=${ARM:-smart100_iq3_iq4_q4_centered}
 OUT_ROOT=${OUT_ROOT:-/data/calibration/hy3-quant-iq3-iq4-q4-centered-0f98d7d}
 PLAN_ROOT=${PLAN_ROOT:-/data/plans/per-expert-quant-iq3-iq4-q4-centered-0f98d7d}
@@ -31,33 +36,34 @@ flock -n 9 || die "another centered build transition owns the lock"
 while [[ ! -f "$ORIGINAL_READY" || ! -f "$CENTERED_ANALYSIS/complete" ]]; do sleep 30; done
 
 source_plan="$CENTERED_ANALYSIS/$ARM.json"
-damage="$CENTERED_ANALYSIS/private-damage-comparison.json"
-damage_receipt="$CENTERED_ANALYSIS/private-damage-comparison.receipt.json"
+damage="$PLAN_DAMAGE"
+damage_receipt="$PLAN_DAMAGE_RECEIPT"
 for path in "$source_plan" "$damage" "$damage_receipt" "$CENTERED_ANALYSIS/evidence.sha256" \
   "$ORIGINAL_ROOT/seven-format-sensitivity.json"; do
   [[ -f "$path" ]] || die "missing prerequisite $path"
 done
 sha256sum -c "$CENTERED_ANALYSIS/evidence.sha256" >"$LOG_ROOT/centered-evidence-check.log"
 "$PY" - "$damage" "$damage_receipt" "$source_plan" \
-  "$ORIGINAL_ROOT/seven-format-sensitivity.json" <<'PY'
+  "$ORIGINAL_ROOT/seven-format-sensitivity.json" "$PLAN_DAMAGE_KEY" \
+  "$EXPECTED_DAMAGE_WINNER" "$DAMAGE_COMPARISON" <<'PY'
 import hashlib,json,pathlib,sys
 
 def sha(path): return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-damage_path,receipt_path,plan_path,sensitivity_path=sys.argv[1:]
+damage_path,receipt_path,plan_path,sensitivity_path,plan_key,winner,pair_key=sys.argv[1:]
 d=json.load(open(damage_path)); r=json.load(open(receipt_path))
 assert d["format"] == "bw24-hy3-quant-plan-damage-v1"
 assert d["public_eval_data_used"] is False
-assert d["lowest_private_damage_plan"] == "centered"
-assert d["plans"]["centered"]["sha256"] == sha(plan_path)
+assert d["lowest_private_damage_plan"] == winner
+assert d["plans"][plan_key]["sha256"] == sha(plan_path)
 assert d["sensitivity"]["sha256"] == sha(sensitivity_path)
-pair=d["pairwise"]["uncentered__centered"]
+pair=d["pairwise"][pair_key]
 assert pair["right_minus_left_damage"] < 0
-assert d["plans"]["centered"]["logical_bytes"] <= 100_000_000_000
+assert d["plans"][plan_key]["logical_bytes"] <= 100_000_000_000
 assert r["format"] == "bw24-hy3-quant-plan-damage-receipt-v1"
 assert r["public_eval_data_used"] is False
 assert r["output"]["sha256"] == sha(damage_path)
 assert r["sensitivity"]["sha256"] == sha(sensitivity_path)
-assert any(x["name"] == "centered" and x["sha256"] == sha(plan_path) for x in r["plans"])
+assert any(x["name"] == plan_key and x["sha256"] == sha(plan_path) for x in r["plans"])
 PY
 
 for path in "$OUT_ROOT" "$PLAN_ROOT" "$HEAL_ROOT" "$ARTIFACT_ROOT" "$SCRATCH_ROOT"; do
