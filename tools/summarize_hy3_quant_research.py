@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import tempfile
@@ -53,6 +54,70 @@ def verify_receipt(path: Path) -> None:
         target = Path(item["path"])
         if not target.is_file() or sha256(target) != item["sha256"]:
             raise ValueError(f"conclusion evidence mismatch: {target}")
+
+
+def format_efficiency_summary(effects: dict[str, Any]) -> dict[str, Any]:
+    expected = {"Q8_0", "NVFP4", "IQ4_XS", "Q4_K", "IQ3_S", "Q3_K", "Q2_K"}
+    totals = effects["format_totals"]
+    if set(totals) != expected:
+        raise ValueError("format totals do not cover the seven-format study")
+    rows: list[dict[str, Any]] = []
+    for qtype, values in totals.items():
+        encoded_bytes = int(values["encoded_bytes"])
+        damage = float(values["full_scaled_squared_error"])
+        if encoded_bytes <= 0 or not math.isfinite(damage) or damage < 0:
+            raise ValueError(f"invalid format total for {qtype}")
+        dominated_by = sorted(
+            other
+            for other, candidate in totals.items()
+            if other != qtype
+            and int(candidate["encoded_bytes"]) <= encoded_bytes
+            and float(candidate["full_scaled_squared_error"]) <= damage
+            and (
+                int(candidate["encoded_bytes"]) < encoded_bytes
+                or float(candidate["full_scaled_squared_error"]) < damage
+            )
+        )
+        rows.append({
+            "qtype": qtype,
+            "encoded_bytes": encoded_bytes,
+            "full_scaled_squared_error": damage,
+            "point_estimate_pareto": not dominated_by,
+            "dominated_by": dominated_by,
+        })
+    rows.sort(key=lambda row: (
+        row["encoded_bytes"], row["full_scaled_squared_error"], row["qtype"]
+    ))
+    same_byte: list[dict[str, Any]] = []
+    byte_groups: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        byte_groups.setdefault(row["encoded_bytes"], []).append(row)
+    for encoded_bytes, group in sorted(byte_groups.items()):
+        if len(group) < 2:
+            continue
+        winner = min(group, key=lambda row: (
+            row["full_scaled_squared_error"], row["qtype"]
+        ))
+        for loser in sorted(group, key=lambda row: row["qtype"]):
+            if loser is winner:
+                continue
+            loser_damage = float(loser["full_scaled_squared_error"])
+            same_byte.append({
+                "encoded_bytes": encoded_bytes,
+                "winner": winner["qtype"],
+                "loser": loser["qtype"],
+                "damage_reduction": (
+                    0.0 if loser_damage == 0 else
+                    1.0 - float(winner["full_scaled_squared_error"]) / loser_damage
+                ),
+            })
+    return {
+        "formats": rows,
+        "point_estimate_pareto": [
+            row["qtype"] for row in rows if row["point_estimate_pareto"]
+        ],
+        "same_byte_winners": same_byte,
+    }
 
 
 def plan_summary(
@@ -198,6 +263,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     size_reduction = 1.0 - int(winner["logical_model_bytes"]) / int(
         baseline["logical_model_bytes"]
     )
+    format_efficiency = format_efficiency_summary(effects)
     result = {
         "format": OUTPUT_FORMAT,
         "analysis_commit": args.analysis_commit,
@@ -242,6 +308,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "top_sensitive_functions": effects["top_sensitive_functions"][:20],
             "best_precision_upgrades": effects["best_precision_upgrades"][:20],
         },
+        "format_efficiency": format_efficiency,
         "directional": {
             "point_estimate_pareto": frontier["point_estimate_pareto"],
             "promotion": directional,
@@ -302,6 +369,24 @@ def markdown(result: dict[str, Any]) -> str:
         ]
     lines += [
         "",
+        "## Private format quality per byte",
+        "",
+        "| Format | Full-bank size (GB) | Scaled quant damage | Point-estimate Pareto |",
+        "|---|---:|---:|:---:|",
+    ]
+    for item in result["format_efficiency"]["formats"]:
+        lines.append(
+            f"| {item['qtype']} | {item['encoded_bytes']/1e9:.3f} | "
+            f"{item['full_scaled_squared_error']:.8g} | "
+            f"{'yes' if item['point_estimate_pareto'] else 'no'} |"
+        )
+    for item in result["format_efficiency"]["same_byte_winners"]:
+        lines.append(
+            f"- At identical bytes, `{item['winner']}` reduces measured damage by "
+            f"{item['damage_reduction']:.2%} versus `{item['loser']}`."
+        )
+    lines += [
+        "",
         "The allocation/healing map used only frozen private calibration. Public tasks were used "
         "only after artifact construction through preregistered promotion gates.",
         "",
@@ -356,10 +441,19 @@ def self_test() -> None:
                    "top_damage_cells": []}
             for name, (_, path, size) in plans.items()
         }
+        format_totals = {
+            "Q2_K": {"encoded_bytes": 10, "full_scaled_squared_error": 100.0},
+            "Q3_K": {"encoded_bytes": 20, "full_scaled_squared_error": 50.0},
+            "IQ3_S": {"encoded_bytes": 20, "full_scaled_squared_error": 40.0},
+            "IQ4_XS": {"encoded_bytes": 25, "full_scaled_squared_error": 20.0},
+            "NVFP4": {"encoded_bytes": 30, "full_scaled_squared_error": 15.0},
+            "Q4_K": {"encoded_bytes": 30, "full_scaled_squared_error": 10.0},
+            "Q8_0": {"encoded_bytes": 60, "full_scaled_squared_error": 1.0},
+        }
         effects = write("effects.json", {
             "format": "bw24-hy3-quant-effects-map-v1", "public_eval_data_used_for_selection": False,
             "measurement": {"qtypes": ["Q8_0","NVFP4","IQ4_XS","Q4_K","IQ3_S","Q3_K","Q2_K"]},
-            "format_totals": {}, "format_pairwise": [], "equal_byte_pair_summary": [],
+            "format_totals": format_totals, "format_pairwise": [], "equal_byte_pair_summary": [],
             "projection_damage": {}, "layer_damage": [], "layer_projection_damage": [],
             "error_concentration": {}, "top_sensitive_experts": [],
             "top_sensitive_functions": [], "best_precision_upgrades": [],
@@ -390,7 +484,18 @@ def self_test() -> None:
         result = build(args)
         assert result["recommended_method"]["arm"] == PLAN_ARMS["centered"]
         assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .505) < 1e-12
+        assert result["format_efficiency"]["point_estimate_pareto"] == [
+            "Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0"
+        ]
+        same_byte = result["format_efficiency"]["same_byte_winners"]
+        assert [
+            (item["encoded_bytes"], item["winner"], item["loser"])
+            for item in same_byte
+        ] == [(20, "IQ3_S", "Q3_K"), (30, "Q4_K", "NVFP4")]
+        assert math.isclose(same_byte[0]["damage_reduction"], .2)
+        assert math.isclose(same_byte[1]["damage_reduction"], 1 / 3)
         assert "Recommended arm" in markdown(result)
+        assert "Private format quality per byte" in markdown(result)
         output = write("conclusion.json", result)
         rendered = root / "conclusion.md"
         rendered.write_text(markdown(result))
