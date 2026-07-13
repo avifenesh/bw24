@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MODE=${1:---dry-run}
+[[ "$MODE" == --dry-run || "$MODE" == --execute ]] || {
+  echo "usage: $0 [--dry-run|--execute]" >&2
+  exit 2
+}
+
 REMOTE=${REMOTE:-bw24-research-g6e}
 REGION=${REGION:-us-east-2}
 INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
@@ -8,7 +14,21 @@ EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
 REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-smart100-v1}
 REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-smart100-v1/complete}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
-WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-60}
+
+EVIDENCE_ROOTS=(
+  /data/results/per-expert-quant
+  /data/logs
+  /data/plans
+  /data/calibration/hy3-routing-v1
+  /data/calibration/hy3-confidence-v1
+  /data/calibration/hy3-100gb-5f02c37
+  /data/calibration/hy3-quant-sensitivity-53de6ca
+  /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
+  /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_balanced/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
+)
 
 die() { echo "smart100 finalizer: $*" >&2; exit 1; }
 command -v aws >/dev/null || die "aws CLI is required"
@@ -22,8 +42,9 @@ account=$(aws sts get-caller-identity --query Account --output text)
 state=$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].State.Name' --output text)
 [[ "$state" == running ]] || die "instance state is $state, expected running"
+ssh "$REMOTE" "test -f '$REMOTE_FULL_READY'" \
+  || die "complete smart100 agentic evidence is not ready"
 
-while ! ssh "$REMOTE" "test -f '$REMOTE_FULL_READY'"; do sleep "$WAIT_INTERVAL_S"; done
 run_id=$(ssh "$REMOTE" "cat '$REMOTE_FULL_ROOT/_active-run-id'")
 combined="$REMOTE_FULL_ROOT/comparisons/$run_id/combined.json"
 finalist=$(ssh "$REMOTE" "python3 - '$combined'" <<'PY'
@@ -40,11 +61,10 @@ case "$finalist" in
   prune100_joint_heal)
     remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
   traffic_nvfp4_53_q2_139)
-    remote_artifact="/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139" ;;
+    remote_artifact=/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139 ;;
   *) die "unexpected full-agentic finalist $finalist" ;;
 esac
 
-# Require every stage and every final report before copying or terminating anything.
 ssh "$REMOTE" 'set -eu
 for f in \
   /data/logs/practical-v1/complete \
@@ -59,71 +79,65 @@ test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"
 ' || die "remote completion or idle-process gate failed"
 
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  ssh "$REMOTE" "test -e '$root'" || die "missing remote evidence root $root"
+done
+ssh "$REMOTE" "test -f '$remote_artifact/manifest.json'" \
+  || die "missing finalist manifest"
+
+quoted_roots=$(printf ' %q' "${EVIDENCE_ROOTS[@]}" "$remote_artifact")
+remote_bytes=$(ssh "$REMOTE" "du -sb$quoted_roots | awk '{sum += \$1} END {print sum}'")
+[[ "$remote_bytes" =~ ^[1-9][0-9]*$ ]] || die "invalid remote archive size"
+available_bytes=$(df -B1 --output=avail "$LOCAL_ROOT" | tail -1 | tr -d ' ')
+required_bytes=$((remote_bytes + remote_bytes / 10))
+((available_bytes >= required_bytes)) \
+  || die "archive needs $required_bytes bytes with headroom; $available_bytes available"
+
+if [[ "$MODE" == --dry-run ]]; then
+  echo "smart100 finalizer dry-run: ready finalist=$finalist bytes=$remote_bytes required=$required_bytes"
+  exit 0
+fi
+
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 dest="$LOCAL_ROOT/$stamp"
-mkdir "$dest" "$dest/evidence-root" "$dest/finalist"
-list="$dest/evidence-files.txt"
-manifest="$dest/evidence.sha256"
-ssh "$REMOTE" 'set -eu
-roots=(
- /data/results/per-expert-quant/expanded-v2
- /data/results/per-expert-quant/100gb-heal-v1
- /data/results/per-expert-quant/practical-v1
- /data/results/per-expert-quant/smart100-directional-v1
- /data/results/per-expert-quant/practical-smart100-v1
- /data/results/per-expert-quant/trusted-full-smart100-v1
- /data/results/per-expert-quant/full-agentic-smart100-v1
- /data/logs/100gb-heal-build-5f02c37
- /data/logs/practical-v1
- /data/logs/hy3-quant-sensitivity-53de6ca
- /data/logs/smart100-build-2605fde
- /data/logs/smart100-directional-v1
- /data/logs/practical-smart100-v1
- /data/logs/trusted-full-smart100-v1
- /data/logs/full-agentic-smart100-v1
- /data/plans/per-expert-quant-smart100-2605fde
- /data/calibration/hy3-quant-sensitivity-53de6ca
- /data/venvs/hy3-research.freeze.txt
- /data/venvs/hy3-research.freeze.txt.sha256
- /data/heal/per-expert-quant-smart100-2605fde
- /data/artifacts/per-expert-quant-smart100-2605fde
-)
-for root in "${roots[@]}"; do test -e "$root"; done
-find "${roots[@]}" -type f \
-  ! -path "*/experts/*" ! -name "*.safetensors" ! -name "*.f32" ! -name "*.bin" \
-  -printf "%p\n" | sed "s#^/##" | LC_ALL=C sort -u
-' >"$list"
-[[ -s "$list" ]] || die "remote evidence list is empty"
-rsync -a --partial --files-from="$list" "$REMOTE:/" "$dest/evidence-root/"
-(cd "$dest/evidence-root" && xargs -d '\n' sha256sum <"$list") >"$manifest"
+mkdir "$dest" "$dest/evidence-root" "$dest/finalist" "$dest/inventories"
 
-# Compare against hashes recomputed independently on the remote paths.
-remote_manifest="$dest/evidence.remote.sha256"
-ssh "$REMOTE" 'cd /; xargs -d "\n" sha256sum' <"$list" >"$remote_manifest"
-cmp "$manifest" "$remote_manifest" || die "evidence inventory differs"
-(cd "$dest/evidence-root" && sha256sum -c "$manifest" >/dev/null)
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  rsync -a --partial --append-verify "$REMOTE:/./${root#/}/" "$dest/evidence-root/"
+done
+rsync -a --partial --append-verify "$REMOTE:$remote_artifact/" "$dest/finalist/"
 
-artifact_bytes=$(ssh "$REMOTE" "du -sb '$remote_artifact' | cut -f1")
-available=$(df -B1 --output=avail "$LOCAL_ROOT" | tail -1 | tr -d ' ')
-(( available > artifact_bytes + 20000000000 )) || die "insufficient local space for finalist"
-rsync -a --partial --info=progress2 "$REMOTE:$remote_artifact/" "$dest/finalist/"
-ssh "$REMOTE" "cd '$remote_artifact' && find . -type f -print0 | sort -z | xargs -0 sha256sum" \
-  >"$dest/finalist.remote.sha256"
-(cd "$dest/finalist" && find . -type f -print0 | sort -z | xargs -0 sha256sum) \
-  >"$dest/finalist.local.sha256"
-cmp "$dest/finalist.remote.sha256" "$dest/finalist.local.sha256" \
-  || die "finalist artifact inventory differs"
+verify_tree() {
+  local label=$1 remote_root=$2 local_root=$3
+  local remote_out="$dest/inventories/$label.remote.sha256"
+  local local_out="$dest/inventories/$label.local.sha256"
+  ssh "$REMOTE" "cd '$remote_root' && find . -type f -print0 | sort -z | xargs -0 sha256sum" \
+    >"$remote_out"
+  (cd "$local_root" && find . -type f -print0 | sort -z | xargs -0 sha256sum) \
+    >"$local_out"
+  cmp "$remote_out" "$local_out" || die "$label inventory differs"
+}
+
+index=0
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  verify_tree "evidence-$index" "$root" "$dest/evidence-root$root"
+  index=$((index + 1))
+done
+verify_tree finalist "$remote_artifact" "$dest/finalist"
 
 python3 - "$dest/finalization-receipt.json" "$run_id" "$finalist" "$INSTANCE_ID" \
-  "$REGION" "$manifest" "$dest/finalist.local.sha256" <<'PY'
+  "$REGION" "$remote_bytes" "$dest/inventories" <<'PY'
 import datetime,hashlib,json,pathlib,sys
-out,run_id,finalist,instance,region,evidence,artifact=sys.argv[1:]
-sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+out,run_id,finalist,instance,region,remote_bytes,inventory_root=sys.argv[1:]
+root=pathlib.Path(inventory_root)
+inventories={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(root.glob("*.remote.sha256"))}
 pathlib.Path(out).write_text(json.dumps({
- "format":"bw24-smart100-local-finalization-v1","completed_utc":datetime.datetime.now(datetime.UTC).isoformat(),
+ "format":"bw24-smart100-local-finalization-v2",
+ "synced_and_verified_utc":datetime.datetime.now(datetime.UTC).isoformat(),
  "full_agentic_run_id":run_id,"finalist":finalist,"instance_id":instance,"region":region,
- "evidence_manifest_sha256":sha(evidence),"finalist_inventory_sha256":sha(artifact),
- "remote_instance_action":"terminate-after-verified-sync"
+ "remote_synced_bytes":int(remote_bytes),"remote_inventory_sha256":inventories,
+ "remote_instance_action":"terminate-after-complete-inventory-verification"
 },indent=2,sort_keys=True)+"\n")
 PY
 
