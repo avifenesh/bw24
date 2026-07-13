@@ -15,6 +15,7 @@ FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_full_practical_results.py}
 FULL_TASK_LOCK=${FULL_TASK_LOCK:-$HERE/full-practical-tasks.lock.json}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
 IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
+CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
@@ -70,6 +71,8 @@ artifact_for() {
       printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
     smart100_iq3_iq4_q4_empirical)
       printf '%s/%s\n' "$IQ4_ART_ROOT" "$1" ;;
+    smart100_iq3_iq4_q4_centered)
+      printf '%s/%s\n' "$CENTERED_ART_ROOT" "$1" ;;
     *) die "no artifact mapping for $1" ;;
   esac
 }
@@ -78,7 +81,8 @@ for arm in "${ARMS[@]}"; do [[ -f "$(artifact_for "$arm")/manifest.json" ]] || d
 
 RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
-export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC
+export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC \
+  IQ4_ART_ROOT CENTERED_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -96,7 +100,24 @@ payload = {
     "server": {"path": os.environ["SERVER_BIN"], "sha256": sha(os.environ["SERVER_BIN"])},
     "harbor": {"path": os.environ["HARBOR_BIN"], "sha256": sha(os.environ["HARBOR_BIN"])},
     "bw24_commit": subprocess.check_output(["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True).strip(),
+    "artifacts": {},
 }
+for arm in sys.argv[2:]:
+    if arm == "plain_quant":
+        root = pathlib.Path("/scratch/bw24-artifacts/plain-quant")
+    elif arm == "traffic_nvfp4_53_q2_139":
+        root = pathlib.Path("/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139")
+    elif arm == "smart100_iq3_iq4_q4_empirical":
+        root = pathlib.Path(os.environ["IQ4_ART_ROOT"]) / arm
+    elif arm == "smart100_iq3_iq4_q4_centered":
+        root = pathlib.Path(os.environ["CENTERED_ART_ROOT"]) / arm
+    elif arm.startswith("smart100_"):
+        root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm
+    else:
+        root = pathlib.Path("/scratch/bw24-artifacts-100gb-5f02c37") / arm
+    payload["artifacts"][arm] = {
+        "path": str(root), "manifest_sha256": sha(root / "manifest.json")
+    }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 sha256sum "$RUN_CONFIG" > "$RUN_CONFIG.sha256"

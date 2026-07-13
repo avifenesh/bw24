@@ -30,6 +30,7 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
   /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
+  /data/calibration/hy3-quant-iq3-iq4-q4-centered-0f98d7d
   "$BASELINE_ALLOCATION_ANALYSIS"
   "$IQ4_ALLOCATION_ANALYSIS"
   "$CENTERED_ALLOCATION_ANALYSIS"
@@ -42,6 +43,7 @@ EVIDENCE_ROOTS=(
   /data/heal/per-expert-quant-smart100-2605fde/smart100_balanced/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
   /data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical/receipts
+  /data/heal/per-expert-quant-iq3-iq4-q4-centered-0f98d7d/smart100_iq3_iq4_q4_centered/receipts
 )
 
 die() { echo "smart100 finalizer: $*" >&2; exit 1; }
@@ -74,6 +76,8 @@ case "$finalist" in
     remote_artifact="/scratch/bw24-artifacts-smart100-2605fde/$finalist" ;;
   smart100_iq3_iq4_q4_empirical)
     remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3/$finalist" ;;
+  smart100_iq3_iq4_q4_centered)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d/$finalist" ;;
   prune100_joint_heal)
     remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
   traffic_nvfp4_53_q2_139)
@@ -89,6 +93,8 @@ for f in \
   /data/logs/smart100-directional-v1/complete \
   /data/logs/iq3-iq4-q4-extension-99f3dc3/complete \
   /data/logs/iq3-iq4-q4-directional-v1/complete \
+  /data/logs/iq3-iq4-q4-centered-0f98d7d/complete \
+  /data/logs/iq3-iq4-q4-centered-directional-v1/complete \
   /data/logs/practical-iq3-iq4-q4-v1/complete \
   /data/logs/trusted-full-iq3-iq4-q4-v1/complete \
   /data/logs/full-agentic-iq3-iq4-q4-v1/complete \
@@ -98,9 +104,14 @@ test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"
 ' || die "remote completion or idle-process gate failed"
 
-for root in "$BASELINE_ALLOCATION_ANALYSIS" "$IQ4_ALLOCATION_ANALYSIS" \
-  "$CENTERED_ALLOCATION_ANALYSIS" "$PAIR_ALLOCATION_ANALYSIS"; do
-  ssh "$REMOTE" "python3 - '$root/receipt.json'" <<'PY'
+ALLOCATION_RECEIPTS=(
+  "$BASELINE_ALLOCATION_ANALYSIS/receipt.json"
+  "$IQ4_ALLOCATION_ANALYSIS/receipt.json"
+  "$CENTERED_ALLOCATION_ANALYSIS/allocation-comparison.receipt.json"
+  "$PAIR_ALLOCATION_ANALYSIS/receipt.json"
+)
+for receipt_path in "${ALLOCATION_RECEIPTS[@]}"; do
+  ssh "$REMOTE" "python3 - '$receipt_path'" <<'PY'
 import hashlib,json,pathlib,re,sys
 
 def sha256(path):
