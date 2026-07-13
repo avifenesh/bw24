@@ -85,8 +85,8 @@ CHAT_STATUS=$(curl -sS --max-time 10 -o "$RUN_DIR/chat-route-probe.json" -w '%{h
 [[ "$CHAT_STATUS" == 400 ]] || die "chat route probe expected HTTP 400, got $CHAT_STATUS"
 
 export OPENAI_API_KEY=${BW24_API_KEY:-dummy}
-MODEL_INFO='{"max_input_tokens":6144,"max_output_tokens":2048,"input_cost_per_token":0,"output_cost_per_token":0}'
-CALL_KWARGS='{"max_tokens":2048,"timeout":7200}'
+MODEL_INFO='{"max_input_tokens":5120,"max_output_tokens":3072,"input_cost_per_token":0,"output_cost_per_token":0}'
+CALL_KWARGS='{"max_tokens":3072,"timeout":7200}'
 CMD=(
   "$HARBOR_BIN" run
   --dataset "$DATASET"

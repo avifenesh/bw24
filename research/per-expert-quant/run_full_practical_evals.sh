@@ -103,8 +103,8 @@ curl -fsS --max-time 10 "$SERVER_ROOT/health" > "$RUN_DIR/server-health.json"
 python3 "$HERE/validate_server_health.py" "$RUN_DIR/server-health.json" "$ARM" --exact
 
 export OPENAI_API_KEY=${BW24_API_KEY:-dummy}
-MODEL_INFO='{"max_input_tokens":6144,"max_output_tokens":2048,"input_cost_per_token":0,"output_cost_per_token":0}'
-CALL_KWARGS='{"max_tokens":2048,"timeout":7200}'
+MODEL_INFO='{"max_input_tokens":5120,"max_output_tokens":3072,"input_cost_per_token":0,"output_cost_per_token":0}'
+CALL_KWARGS='{"max_tokens":3072,"timeout":7200}'
 CMD=(
   "$HARBOR_BIN" run --dataset "$DATASET" --agent terminus-2 --model "openai/$ARM"
   --job-name "$RUN_ID" --jobs-dir "$RUN_DIR/jobs" --env docker --cpus limit --memory limit
