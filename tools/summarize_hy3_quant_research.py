@@ -22,6 +22,11 @@ PLAN_ARMS = {
     "centered": "smart100_iq3_iq4_q4_centered",
     "pareto": "smart100_iq3_iq4_q4_pareto",
 }
+PLAN_DAMAGE_KEYS = {
+    "uncentered": "uncentered",
+    "centered": "old_centered",
+    "pareto": "pareto",
+}
 
 
 def sha256(path: Path) -> str:
@@ -133,7 +138,7 @@ def plan_summary(
     if plan.get("calibration", {}).get("public_eval_data_used_for_selection") is not False:
         raise ValueError(f"{name} does not attest private-only allocation")
     arm = PLAN_ARMS[name]
-    plan_damage = damage["plans"][name]
+    plan_damage = damage["plans"][PLAN_DAMAGE_KEYS[name]]
     if plan_damage["sha256"] != sha256(path):
         raise ValueError(f"{name} damage receipt binds a different plan")
     logical_bytes = int(plan["policy"]["result_logical_bytes"])
@@ -439,7 +444,7 @@ def self_test() -> None:
             })
             plans[name] = (arm, path, size)
         damage_plans = {
-            name: {"sha256": sha256(path), "logical_bytes": size,
+            PLAN_DAMAGE_KEYS[name]: {"sha256": sha256(path), "logical_bytes": size,
                    "total_additive_damage": float(size), "prune_damage": 1.0,
                    "retained_quant_damage": float(size-1),
                    "projection_quant_damage": {"gate": 1.0, "up": 2.0, "down": 3.0},
