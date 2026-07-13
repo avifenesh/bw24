@@ -89,7 +89,10 @@ fi
 for index in "${!arms[@]}"; do
   arm=${arms[$index]}; read -r retention_weight confidence_weight layer_weight <<<"${weights[$index]}"
   plan="$PLAN_ROOT/$arm.json"
-  [[ ! -e "$plan" ]] || die "refusing existing plan $plan"
+  if [[ -f "$plan" ]]; then
+    echo "$(date -u +%FT%TZ) reusing existing frozen plan $plan" | tee -a "$LOG_ROOT/transition.log"
+    continue
+  fi
   taskset -c "$control_cpus" "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
     --retention-scores "$RETENTION" --quant-sensitivity "$SENSITIVITY" \
     --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
@@ -122,12 +125,20 @@ heal_lane() {
     mkdir -p "$HEAL_ROOT/$arm/overlay" "$HEAL_ROOT/$arm/receipts"
     for layer in "${layers[@]}"; do
       if ((ordinal % lane_count == lane)); then
+        shard="$HEAL_ROOT/$arm/overlay/layer-$(printf '%03d' "$layer").safetensors"
+        receipt="$HEAL_ROOT/$arm/receipts/layer-$(printf '%03d' "$layer").receipt.json"
+        if [[ -f "$shard" && -f "$receipt" ]]; then
+          echo "$arm lane=$lane layer=$layer already complete"
+          ordinal=$((ordinal + 1))
+          continue
+        fi
+        [[ ! -e "$shard" && ! -e "$receipt" ]] \
+          || die "$arm layer $layer has an incomplete shard/receipt pair"
         CUDA_VISIBLE_DEVICES=${gpus[$lane]} taskset -c "${cpus[$lane]}" nice -n 19 \
           "$PY" "$ROOT/tools/heal_hy3_pruned_layer.py" \
             --mode joint --quantization-aware --layer "$layer" \
             --plan "$PLAN_ROOT/$arm.json" --scores "$SCORES" --source-dir "$SOURCE" \
-            --device cuda:0 --out-shard "$HEAL_ROOT/$arm/overlay/layer-$(printf '%03d' "$layer").safetensors" \
-            --receipt "$HEAL_ROOT/$arm/receipts/layer-$(printf '%03d' "$layer").receipt.json"
+            --device cuda:0 --out-shard "$shard" --receipt "$receipt"
         echo "$arm lane=$lane layer=$layer complete"
       fi
       ordinal=$((ordinal + 1))
