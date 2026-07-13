@@ -16,6 +16,7 @@ AGENTIC_ROOT=${AGENTIC_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4
 AGENTIC_LOG=${AGENTIC_LOG:-/data/logs/full-agentic-iq3-iq4-q4-v1}
 IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
+PARETO_ART_ROOT=${PARETO_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea}
 
 die() { echo "IQ4/Q4 promoted chain: $*" >&2; exit 1; }
 mkdir -p "$PRACTICAL_LOG" "$TRUSTED_LOG" "$AGENTIC_LOG"
@@ -33,6 +34,7 @@ BW24_ROOT="$ROOT" PROMOTION="$promotion" PROMOTION_READY="$DIRECTIONAL_READY" \
   PRACTICAL_SELECTOR="$ROOT/research/per-expert-quant/select_practical_promotions.py" \
   OUT_ROOT="$PRACTICAL_ROOT" LOG_ROOT="$PRACTICAL_LOG" IQ4_ART_ROOT="$IQ4_ART_ROOT" \
   CENTERED_ART_ROOT="$CENTERED_ART_ROOT" \
+  PARETO_ART_ROOT="$PARETO_ART_ROOT" \
   SERVER_BIN=/data/build/bw24-portable-ada-fix-target/release/bw24-server \
   HARBOR_BIN=/data/bin/harbor-0.18.0-0a01ad6/harbor \
   HARBOR_HOME=/data/cache/harbor-home SPILL_DEPTH=8 \
@@ -41,6 +43,7 @@ BW24_ROOT="$ROOT" PROMOTION="$promotion" PROMOTION_READY="$DIRECTIONAL_READY" \
 BW24_ROOT="$ROOT" PRACTICAL_ROOT="$PRACTICAL_ROOT" PRACTICAL_READY="$PRACTICAL_LOG/complete" \
   OUT_ROOT="$TRUSTED_ROOT" LOG_ROOT="$TRUSTED_LOG" IQ4_ART_ROOT="$IQ4_ART_ROOT" \
   CENTERED_ART_ROOT="$CENTERED_ART_ROOT" \
+  PARETO_ART_ROOT="$PARETO_ART_ROOT" \
   SERVER_BIN=/data/build/bw24-portable-ada-fix-target/release/bw24-server \
   SPILL_DEPTH=8 TASK_ATTEMPTS=3 \
   "$ROOT/research/per-expert-quant/run_trusted_full_transition.sh"
@@ -48,6 +51,7 @@ BW24_ROOT="$ROOT" PRACTICAL_ROOT="$PRACTICAL_ROOT" PRACTICAL_READY="$PRACTICAL_L
 BW24_ROOT="$ROOT" TRUSTED_ROOT="$TRUSTED_ROOT" TRUSTED_READY="$TRUSTED_LOG/complete" \
   OUT_ROOT="$AGENTIC_ROOT" LOG_ROOT="$AGENTIC_LOG" IQ4_ART_ROOT="$IQ4_ART_ROOT" \
   CENTERED_ART_ROOT="$CENTERED_ART_ROOT" \
+  PARETO_ART_ROOT="$PARETO_ART_ROOT" \
   SERVER_BIN=/data/build/bw24-portable-ada-fix-target/release/bw24-server \
   HARBOR_BIN=/data/bin/harbor-0.18.0-0a01ad6/harbor \
   HARBOR_HOME=/data/cache/harbor-home SPILL_DEPTH=8 \
