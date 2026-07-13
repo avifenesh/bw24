@@ -167,15 +167,16 @@ run_lane() (
   fi
 
   stop_server() {
-    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
-      kill "$server_pid" 2>/dev/null || true
+    local pid=${server_pid:-}
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
       for _ in {1..100}; do
-        kill -0 "$server_pid" 2>/dev/null || break
+        kill -0 "$pid" 2>/dev/null || break
         sleep 0.1
       done
-      kill -KILL "$server_pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true
     fi
-    [[ -z "$server_pid" ]] || wait "$server_pid" 2>/dev/null || true
+    [[ -z "$pid" ]] || wait "$pid" 2>/dev/null || true
   }
   trap stop_server EXIT INT TERM
 
