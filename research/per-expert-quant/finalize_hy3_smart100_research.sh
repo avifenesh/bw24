@@ -11,8 +11,8 @@ REMOTE=${REMOTE:-bw24-research-g6e}
 REGION=${REGION:-us-east-2}
 INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
 EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
-REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-smart100-v1}
-REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-smart100-v1/complete}
+REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-v1}
+REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-v1/complete}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
 
 EVIDENCE_ROOTS=(
@@ -23,11 +23,13 @@ EVIDENCE_ROOTS=(
   /data/calibration/hy3-confidence-v1
   /data/calibration/hy3-100gb-5f02c37
   /data/calibration/hy3-quant-sensitivity-53de6ca
+  /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_balanced/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
+  /data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical/receipts
 )
 
 die() { echo "smart100 finalizer: $*" >&2; exit 1; }
@@ -58,6 +60,8 @@ PY
 case "$finalist" in
   smart100_empirical|smart100_balanced|smart100_rescue)
     remote_artifact="/scratch/bw24-artifacts-smart100-2605fde/$finalist" ;;
+  smart100_iq3_iq4_q4_empirical)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3/$finalist" ;;
   prune100_joint_heal)
     remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
   traffic_nvfp4_53_q2_139)
@@ -71,9 +75,12 @@ for f in \
   /data/logs/hy3-quant-sensitivity-53de6ca/complete \
   /data/logs/smart100-build-2605fde/complete \
   /data/logs/smart100-directional-v1/complete \
-  /data/logs/practical-smart100-v1/final-complete \
-  /data/logs/trusted-full-smart100-v1/complete \
-  /data/logs/full-agentic-smart100-v1/complete; do test -f "$f"; done
+  /data/logs/iq3-iq4-q4-extension-99f3dc3/complete \
+  /data/logs/iq3-iq4-q4-directional-v1/complete \
+  /data/logs/practical-iq3-iq4-q4-v1/complete \
+  /data/logs/trusted-full-iq3-iq4-q4-v1/complete \
+  /data/logs/full-agentic-iq3-iq4-q4-v1/complete \
+  /data/logs/full-agentic-iq3-iq4-q4-v1/chain-complete; do test -f "$f"; done
 test -z "$(pgrep -x bw24-server || true)"
 test -z "$(pgrep -af "[/]harbor run " || true)"
 test -z "$(docker ps -q)"

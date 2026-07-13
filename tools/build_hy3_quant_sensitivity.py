@@ -44,7 +44,7 @@ from prepare_mixed_expert_repack import (
 
 FORMAT = "bw24-hy3-quant-sensitivity-v1"
 TRACE_LOCK_FORMAT = "bw24-moe-input-trace-lock-v1"
-QTYPES = ("Q8_0", "NVFP4", "IQ4_XS", "Q4_K", "Q3_K", "Q2_K")
+QTYPES = ("Q8_0", "NVFP4", "IQ4_XS", "Q4_K", "IQ3_S", "Q3_K", "Q2_K")
 DEFAULT_QTYPES = ("Q8_0", "NVFP4", "Q3_K", "Q2_K")
 
 

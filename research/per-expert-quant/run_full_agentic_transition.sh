@@ -14,7 +14,7 @@ FULL_RUNNER=${FULL_RUNNER:-$HERE/run_full_practical_evals.sh}
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_full_practical_results.py}
 FULL_TASK_LOCK=${FULL_TASK_LOCK:-$HERE/full-practical-tasks.lock.json}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
-IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq4-q4-99f3dc3}
+IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
@@ -68,7 +68,7 @@ artifact_for() {
       printf '/scratch/bw24-artifacts-100gb-5f02c37/%s\n' "$1" ;;
     smart100_empirical|smart100_balanced|smart100_rescue)
       printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
-    smart100_iq4_q4_empirical)
+    smart100_iq3_iq4_q4_empirical)
       printf '%s/%s\n' "$IQ4_ART_ROOT" "$1" ;;
     *) die "no artifact mapping for $1" ;;
   esac

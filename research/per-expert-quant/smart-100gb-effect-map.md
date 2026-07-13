@@ -2,7 +2,7 @@
 
 ## Question
 
-Can an exact-format, globally optimized mixture of per-projection Q8/NVFP4/IQ4_XS/Q4_K/Q3/Q2 and whole-expert
+Can an exact-format, globally optimized mixture of per-projection Q8/NVFP4/IQ4_XS/Q4_K/IQ3_S/Q3_K/Q2 and whole-expert
 pruning retain more quality at the same 100GB ceiling than the first traffic-ranked prune + joint
 heal arm?
 
@@ -35,7 +35,7 @@ For every `(layer, expert, qtype)` it records:
 - routed-token count, sampled router mass, baseline contribution energy, and sample scale.
 
 The base map has 15,168 expert rows and four precision alternatives. The extension measures
-IQ4_XS and Q4_K on the same frozen routed samples using the current pinned upstream ggml C
+IQ3_S, IQ4_XS, and Q4_K on the same frozen routed samples using the current pinned upstream ggml C
 quantizers and private per-column activation importance. Eight disjoint layer shards are merged
 only if calibration, source, measurement policy, and complete coverage match; the two full maps are
 then joined only if their routed evidence is identical. Library SHA, upstream commit, sidecar hashes,
@@ -44,9 +44,9 @@ and sidecar shapes are carried through the plan, heal receipts, artifact manifes
 ## Global allocator
 
 `tools/build_hy3_smart_budget_plan.py` solves one global integer program. Each retained
-gate/up/down projection independently chooses any exactly measured format. The six-format extension
-adds IQ4_XS and Q4_K beside Q8, NVFP4, Q3, and Q2; equal-size Q4_K/NVFP4 alternatives compete on
-measured error without a precision-order assumption. Pruning is a shared
+gate/up/down projection independently chooses any exactly measured format. The seven-format extension
+adds IQ3_S, IQ4_XS, and Q4_K beside Q8, NVFP4, Q3_K, and Q2; equal-size Q3_K/IQ3_S
+and Q4_K/NVFP4 alternatives compete on measured error without a precision-order assumption. Pruning is a shared
 whole-expert decision, so a pruned expert removes all three projections. Constraints enforce:
 
 - logical size at or below 100,000,000,000 bytes;
@@ -70,15 +70,16 @@ joint rank-8 expert + F32 router/bias healing. Only the frozen objective weights
 | `smart100_rescue` | 0.5 | 2 | 1 | Test whether rare hard-token experts deserve disproportionate precision. |
 
 The existing `prune100_joint_heal` remains the traffic-ranked control. A single
-`smart100_iq4_q4_empirical` extension re-solves the pure measured-error objective with all six
+`smart100_iq3_iq4_q4_empirical` extension re-solves the pure measured-error objective with all seven
 formats at the same exact 100GB ceiling. It is promoted only if its matched held-out evidence adds
 to or improves the current Pareto frontier.
 
 ## Allocation comparison receipt
 
 `tools/summarize_hy3_smart_allocations.py` expands every plan into the canonical
-`(layer, expert, projection) -> {Q8_0, NVFP4, Q3_K, Q2_K, PRUNED}` map before healing starts. It
-writes `allocation-comparison.json` beside the plans with each plan and allocation hash, exact
+`(layer, expert, projection) -> {Q8_0, NVFP4, IQ4_XS, Q4_K, IQ3_S, Q3_K, Q2_K,
+PRUNED}` map before healing starts. It writes `allocation-comparison.json` beside the plans with
+each plan and allocation hash, exact
 per-layer tier counts, and pairwise qtype/prune transitions. Historical whole-expert v2 plans are
 accepted for comparison, but absent historical byte totals remain explicitly null rather than
 being reconstructed.

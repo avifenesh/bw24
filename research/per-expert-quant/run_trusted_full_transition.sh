@@ -12,7 +12,7 @@ FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_promoted_results.py}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 HF_HOME=${HF_HOME:-/data/cache/huggingface}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
-IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq4-q4-99f3dc3}
+IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
@@ -84,7 +84,7 @@ artifact_for() {
       printf '/scratch/bw24-artifacts-100gb-5f02c37/%s\n' "$1" ;;
     smart100_empirical|smart100_balanced|smart100_rescue)
       printf '/scratch/bw24-artifacts-smart100-2605fde/%s\n' "$1" ;;
-    smart100_iq4_q4_empirical)
+    smart100_iq3_iq4_q4_empirical)
       printf '%s/%s\n' "$IQ4_ART_ROOT" "$1" ;;
     *) die "no frozen artifact mapping for $1" ;;
   esac
@@ -142,7 +142,7 @@ for arm in arms:
         root = pathlib.Path("/scratch/bw24-artifacts/plain-quant")
     elif arm == "traffic_nvfp4_53_q2_139":
         root = pathlib.Path("/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139")
-    elif arm == "smart100_iq4_q4_empirical":
+    elif arm == "smart100_iq3_iq4_q4_empirical":
         root = pathlib.Path(os.environ["IQ4_ART_ROOT"]) / arm
     elif arm.startswith("smart100_"):
         root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict ctypes bridge to pinned ggml IQ4_XS and Q4_K quantizers.
+"""Strict ctypes bridge to pinned ggml IQ3_S, IQ4_XS, and Q4_K quantizers.
 
 Quantization is delegated to an explicitly hashed libggml-base build.  The bridge never falls
 back to an in-tree approximation: candidate bytes, dequantized sensitivity measurements, healing,
@@ -9,6 +9,7 @@ and final artifacts therefore use the same upstream implementation.
 from __future__ import annotations
 
 import argparse
+import atexit
 import ctypes
 import hashlib
 import json
@@ -20,9 +21,12 @@ import numpy as np
 
 
 EXTERNAL_QTYPES = {
+    "IQ3_S": (256, 110),
     "IQ4_XS": (256, 136),
     "Q4_K": (256, 144),
 }
+GGML_TYPE_IQ3_S = 21
+_INITIALIZED_LIBRARIES: set[str] = set()
 
 
 def sha256_file(path: Path) -> str:
@@ -46,9 +50,24 @@ class GgmlQuantBridge:
         self.library_sha256 = actual
         self.source_commit = source_commit
         self._lib = ctypes.CDLL(str(self.library))
+        library_key = str(self.library)
+        if library_key not in _INITIALIZED_LIBRARIES:
+            quantize_init = self._lib.ggml_quantize_init
+            quantize_init.argtypes = (ctypes.c_int,)
+            quantize_init.restype = None
+            quantize_free = self._lib.ggml_quantize_free
+            quantize_free.argtypes = ()
+            quantize_free.restype = None
+            quantize_init(GGML_TYPE_IQ3_S)
+            atexit.register(quantize_free)
+            _INITIALIZED_LIBRARIES.add(library_key)
         self._quantizers: dict[str, Any] = {}
         self._dequantizers: dict[str, Any] = {}
-        for qtype, suffix in (("IQ4_XS", "iq4_xs"), ("Q4_K", "q4_K")):
+        for qtype, suffix in (
+            ("IQ3_S", "iq3_s"),
+            ("IQ4_XS", "iq4_xs"),
+            ("Q4_K", "q4_K"),
+        ):
             quantize = getattr(self._lib, f"quantize_{suffix}")
             quantize.argtypes = (
                 ctypes.POINTER(ctypes.c_float), ctypes.c_void_p,

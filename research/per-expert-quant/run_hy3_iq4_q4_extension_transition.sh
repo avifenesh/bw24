@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Measure exact upstream IQ4_XS/Q4_K bytes on the frozen private calibration corpus, merge those
-# measurements with the immutable four-format map, and build one healed exact-100GB candidate.
+# Measure exact upstream IQ3_S/IQ4_XS/Q4_K bytes on the frozen private calibration corpus, merge
+# those measurements with the immutable four-format map, and build one healed exact-100GB candidate.
 # The default odd GPU lanes can overlap the existing even-GPU directional screen without sharing
 # a GPU.  Public capability data is not read anywhere in this transition.
 
@@ -21,15 +21,15 @@ RETENTION=${RETENTION:-/data/calibration/hy3-100gb-5f02c37/expert-retention-scor
 CONFIDENCE=${CONFIDENCE:-/data/calibration/hy3-100gb-5f02c37/confidence-expert-scores-13a4d92.json}
 REFERENCE_PLAN=${REFERENCE_PLAN:-/data/plans/per-expert-quant-100gb-5f02c37/traffic-nvfp4-53-q2-139-exact100gb.json}
 REFERENCE_RECEIPTS=${REFERENCE_RECEIPTS:-/data/heal/per-expert-quant-100gb-5f02c37/joint/receipts}
-OUT_ROOT=${OUT_ROOT:-/data/calibration/hy3-quant-iq4-q4-99f3dc3}
-PLAN_ROOT=${PLAN_ROOT:-/data/plans/per-expert-quant-iq4-q4-99f3dc3}
-HEAL_ROOT=${HEAL_ROOT:-/data/heal/per-expert-quant-iq4-q4-99f3dc3}
-ARTIFACT_ROOT=${ARTIFACT_ROOT:-/data/artifacts/per-expert-quant-iq4-q4-99f3dc3}
-SCRATCH_ROOT=${SCRATCH_ROOT:-/scratch/bw24-artifacts-iq4-q4-99f3dc3}
-LOG_ROOT=${LOG_ROOT:-/data/logs/iq4-q4-extension-99f3dc3}
+OUT_ROOT=${OUT_ROOT:-/data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3}
+PLAN_ROOT=${PLAN_ROOT:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3}
+HEAL_ROOT=${HEAL_ROOT:-/data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3}
+ARTIFACT_ROOT=${ARTIFACT_ROOT:-/data/artifacts/per-expert-quant-iq3-iq4-q4-99f3dc3}
+SCRATCH_ROOT=${SCRATCH_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
+LOG_ROOT=${LOG_ROOT:-/data/logs/iq3-iq4-q4-extension-99f3dc3}
 TARGET_BYTES=${TARGET_BYTES:-100000000000}
 GPUS_CSV=${GPUS_CSV:-1,3,5,7}
-ARM=${ARM:-smart100_iq4_q4_empirical}
+ARM=${ARM:-smart100_iq3_iq4_q4_empirical}
 
 SCORER="$ROOT/tools/build_hy3_quant_sensitivity.py"
 MERGER="$ROOT/tools/merge_hy3_quant_sensitivity.py"
@@ -121,10 +121,10 @@ for lane in $(seq 0 $((lane_count - 1))); do
 import json,sys
 d=json.load(open(sys.argv[1])); a,b=map(int,sys.argv[2].split("-"))
 assert d["model"]["moe_layers"] == list(range(a,b+1))
-assert d["measurement"]["qtypes"] == ["IQ4_XS","Q4_K"]
+assert d["measurement"]["qtypes"] == ["IQ3_S","IQ4_XS","Q4_K"]
 assert len(d["scores"]) == (b-a+1)*192
 assert set(d["importance_sidecars"]) == {str(x) for x in range(a,b+1)}
-for q in ("IQ4_XS","Q4_K"):
+for q in ("IQ3_S","IQ4_XS","Q4_K"):
     p=d["measurement"]["exact_quantizer_implementation"][q]
     assert p["library_sha256"] == sys.argv[3]
     assert p["llama_cpp_commit"] == sys.argv[4]
@@ -136,28 +136,28 @@ PY
     "$PY" "$SCORER" --trace-lock "$CALIBRATION/moe-inputs.lock.json" \
       --weight-trace "$CALIBRATION/routes-weighted.trace" --requests "$REQUESTS" \
       --source-dir "$SOURCE" --layers "$range" --device cuda:0 \
-      --max-tokens-per-expert 16 --qtypes IQ4_XS,Q4_K \
+      --max-tokens-per-expert 16 --qtypes IQ3_S,IQ4_XS,Q4_K \
       --importance-dir "$OUT_ROOT/importance" --ggml-lib "$GGML_LIB" \
       --ggml-lib-sha256 "$GGML_LIB_SHA256" --ggml-source-commit "$GGML_SOURCE_COMMIT" \
       --out "$out" >"$LOG_ROOT/sensitivity-lane-$lane.log" 2>&1 &
   pids+=("$!")
 done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
-((failed == 0)) || die "one or more IQ4/Q4 sensitivity lanes failed"
+((failed == 0)) || die "one or more IQ3/IQ4/Q4 sensitivity lanes failed"
 
-"$PY" "$MERGER" "$OUT_ROOT"/lanes/lane-*.json --out "$OUT_ROOT/iq4-q4-sensitivity.json" \
+"$PY" "$MERGER" "$OUT_ROOT"/lanes/lane-*.json --out "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" \
   | tee "$LOG_ROOT/merge-lanes.log"
 "$PY" "$MERGER" --merge-qtypes "$BASE_SENSITIVITY" \
-  "$OUT_ROOT/iq4-q4-sensitivity.json" --out "$OUT_ROOT/six-format-sensitivity.json" \
+  "$OUT_ROOT/iq3-iq4-q4-sensitivity.json" --out "$OUT_ROOT/seven-format-sensitivity.json" \
   | tee "$LOG_ROOT/merge-qtypes.log"
-"$PY" "$SUMMARIZER" "$OUT_ROOT/six-format-sensitivity.json" \
-  --out "$OUT_ROOT/six-format-effects-map.json" \
-  --layer-csv "$OUT_ROOT/six-format-layer-effects.csv" | tee "$LOG_ROOT/effects-map.log"
+"$PY" "$SUMMARIZER" "$OUT_ROOT/seven-format-sensitivity.json" \
+  --out "$OUT_ROOT/seven-format-effects-map.json" \
+  --layer-csv "$OUT_ROOT/seven-format-layer-effects.csv" | tee "$LOG_ROOT/effects-map.log"
 
 plan="$PLAN_ROOT/$ARM.json"
 if [[ ! -f "$plan" ]]; then
   taskset -c "$(IFS=,; echo "${cpus[*]}")" "$PY" "$PLAN_BUILDER" \
-    --retention-scores "$RETENTION" --quant-sensitivity "$OUT_ROOT/six-format-sensitivity.json" \
+    --retention-scores "$RETENTION" --quant-sensitivity "$OUT_ROOT/seven-format-sensitivity.json" \
     --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
     --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$TARGET_BYTES" \
     --min-survivors-per-layer 96 --retention-weight 0 --confidence-weight 0 --layer-weight 0 \
@@ -168,7 +168,7 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 assert d["calibration"]["public_eval_data_used_for_selection"] is False
 assert d["policy"]["result_logical_bytes"] <= int(sys.argv[2])
-assert set(d["policy"]["candidate_qtypes"]) == {"Q8_0","NVFP4","IQ4_XS","Q4_K","Q3_K","Q2_K"}
+assert set(d["policy"]["candidate_qtypes"]) == {"Q8_0","NVFP4","IQ3_S","IQ4_XS","Q4_K","Q3_K","Q2_K"}
 assert min(x["retained"] for x in d["layer_summary"].values()) >= 96
 PY
 
@@ -215,7 +215,7 @@ assert audit["summary"]["all_layers_have_full_active_coverage"] is True
 b=sum(float(x["before"]["normalized_mse"]) for x in r)/79
 a=sum(float(x["after"]["normalized_mse"]) for x in r)/79
 i=sum(float(x["after"]["normalized_mse"]) < float(x["before"]["normalized_mse"]) for x in r)
-d={"format":"bw24-iq4-q4-post-requant-heal-gate-v1","layers":79,
+d={"format":"bw24-iq3-iq4-q4-post-requant-heal-gate-v1","layers":79,
    "mean_before_normalized_mse":b,"mean_after_requantization_normalized_mse":a,
    "improved_after_requantization_layers":i,
    "holdout_dead_active_experts":sum(int(x["after"]["dead_active_experts"]) for x in r),
@@ -247,7 +247,7 @@ for lane in $(seq 0 $((lane_count - 1))); do
     >"$LOG_ROOT/repack-lane-$lane.log" 2>&1 & pids+=("$!")
 done
 failed=0; for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
-((failed == 0)) || die "one or more IQ4/Q4 repack lanes failed"
+((failed == 0)) || die "one or more IQ3/IQ4/Q4 repack lanes failed"
 merge_args=(); for fragment in "${fragments[@]}"; do merge_args+=(--fragment "$fragment"); done
 "$PY" "$ROOT/tools/merge_expert_overlay_fragments.py" "${merge_args[@]}" --plan "$plan" \
   --out-dir "$out" --tensor-overrides "$HEAL_ROOT/$ARM/router-overrides.json" \

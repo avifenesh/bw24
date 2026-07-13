@@ -29,6 +29,7 @@ PROJECTIONS = ("gate", "up", "down")
 QTYPES = {
     "Q8_0": (32, 34),
     "NVFP4": (64, 36),
+    "IQ3_S": (256, 110),
     "IQ4_XS": (256, 136),
     "Q4_K": (256, 144),
     "Q3_K": (256, 110),
@@ -106,7 +107,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     }
     if any(set(row.get("quantization", {})) != set(qtypes) for row in sensitivity_rows.values()):
         raise ValueError("sensitivity rows do not exactly cover their declared qtypes")
-    external = set(qtypes) & {"IQ4_XS", "Q4_K"}
+    external = set(qtypes) & {"IQ3_S", "IQ4_XS", "Q4_K"}
     if external:
         sidecars = sensitivity.get("importance_sidecars", {})
         if set(sidecars) != {str(layer) for layer in layers}:
@@ -339,7 +340,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
 def self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="bw24-smart-budget-") as tmp:
         root = Path(tmp); layers = [1, 2]; experts = range(3)
-        qtypes = ["Q8_0", "NVFP4", "Q3_K", "Q2_K"]
+        qtypes = ["Q8_0", "NVFP4", "IQ3_S", "Q3_K", "Q2_K"]
         retention = {
             "format": RETENTION_FORMAT,
             "calibration": {"public_eval_data_used_for_selection": False},
@@ -369,8 +370,12 @@ def self_test() -> None:
             "format": SENSITIVITY_FORMAT,
             "model": {"expert_count": 3, "top_k": 1, "hidden_size": 256,
                       "intermediate_size": 256, "moe_layers": layers},
-            "measurement": {"qtypes": qtypes},
+            "measurement": {
+                "qtypes": qtypes,
+                "exact_quantizer_implementation": {"IQ3_S": {"implementation": "test"}},
+            },
             "calibration": {"public_eval_data_used_for_selection": False},
+            "importance_sidecars": {str(layer): {"path": "test"} for layer in layers},
             "scores": sensitivity_rows,
         }
         confidence = {

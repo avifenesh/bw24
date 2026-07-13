@@ -95,9 +95,9 @@ kernel exists.
 - tools/recover_hy3_reap_mask.py reconstructs the public REAP50 original-id mask from router rows,
   requires one-to-one high-margin matches, and independently checks correction biases.
 - tools/prepare_mixed_expert_repack.py streams BF16/F16/F32 or stacked MLX-affine experts on CPU
-  and writes Q8_0, Q2_K, Q3_K, NVFP4, IQ4_XS, and Q4_K byte ranges. IQ4_XS/Q4_K manifests bind the
-  exact external library/source hash and every private importance sidecar. Bounded `--workers`
-  parallelism preserves exact
+  and writes Q8_0, Q2_K, Q3_K, IQ3_S, NVFP4, IQ4_XS, and Q4_K byte ranges.
+  IQ3_S/IQ4_XS/Q4_K manifests bind the exact external library/source hash and every private
+  importance sidecar. Bounded `--workers` parallelism preserves exact
   expert order and is byte-compared against the single-worker path. `--resume` only reuses files
   whose atomic completion receipt matches the exact plan, layout, source identity, shape, and byte
   count. Every active expert projection must be assigned.

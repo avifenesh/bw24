@@ -82,6 +82,7 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
         "Q2_K": (256, 84),
         "Q3_K": (256, 110),
         "NVFP4": (64, 36),
+        "IQ3_S": (256, 110),
         "IQ4_XS": (256, 136),
         "Q4_K": (256, 144),
     }
@@ -142,7 +143,7 @@ def validate(root: Path, verify_sources: bool) -> dict[str, int]:
             f"extra={len(assigned_projections - expected_projections)}"
         )
 
-    external_qtypes = set(assigned_qtypes.values()) & {"IQ4_XS", "Q4_K"}
+    external_qtypes = set(assigned_qtypes.values()) & {"IQ3_S", "IQ4_XS", "Q4_K"}
     if external_qtypes:
         external = manifest.get("external_quantizer", {})
         if (
