@@ -10,8 +10,18 @@ CAPTURE_TOOL=${CAPTURE_TOOL:?}
 HEALTH_TOOL=${HEALTH_TOOL:?}
 ROUTE_VALIDATOR=${ROUTE_VALIDATOR:?}
 ARMS_CSV=${ARMS_CSV:-prune100_unhealed,prune100_router_repair,prune100_joint_heal}
+GPU_BASE=${GPU_BASE:-0}
+PORT_BASE=${PORT_BASE:-8070}
+CPU_BASE=${CPU_BASE:-0}
+CPUS_PER_LANE=${CPUS_PER_LANE:-12}
+NUMA_SPLIT_GPU=${NUMA_SPLIT_GPU:-4}
 IFS=, read -r -a ARMS <<<"$ARMS_CSV"
 (( ${#ARMS[@]} >= 1 && ${#ARMS[@]} <= 8 )) || { echo "ARMS_CSV must contain 1-8 arms" >&2; exit 2; }
+[[ "$GPU_BASE" =~ ^[0-9]+$ && "$PORT_BASE" =~ ^[1-9][0-9]{0,4}$ \
+  && "$CPU_BASE" =~ ^[0-9]+$ && "$CPUS_PER_LANE" =~ ^[1-9][0-9]*$ \
+  && "$NUMA_SPLIT_GPU" =~ ^[1-9][0-9]*$ && "$PORT_BASE" -le 65535 \
+  && $((PORT_BASE + ${#ARMS[@]} - 1)) -le 65535 ]] \
+  || { echo "invalid private-gate lane configuration" >&2; exit 2; }
 
 mkdir -p "$OUT_ROOT"
 exec 9>"$OUT_ROOT/gate.lock"
@@ -61,14 +71,15 @@ trap cleanup EXIT
 for lane in "${!ARMS[@]}"; do
   arm=${ARMS[$lane]}
   artifact="$ART_ROOT/$arm"
-  port=$((8070 + lane))
-  start=$((lane * 12)); end=$((start + 11))
+  gpu=$((GPU_BASE + lane))
+  port=$((PORT_BASE + lane))
+  start=$((CPU_BASE + lane * CPUS_PER_LANE)); end=$((start + CPUS_PER_LANE - 1))
   trace="$OUT_ROOT/$arm.routes.trace"
   log="$OUT_ROOT/$arm.server.log"
   [[ -f "$artifact/manifest.json" && ! -e "$trace" ]]
-  numa=0; (( lane >= 4 )) && numa=1
+  numa=0; (( gpu >= NUMA_SPLIT_GPU )) && numa=1
   taskset -c "$start-$end" numactl --membind="$numa" env -u BW24_API_KEY -u BW24_FULL_PREC \
-    CUDA_VISIBLE_DEVICES="$lane" \
+    CUDA_VISIBLE_DEVICES="$gpu" \
     BW24_COMPAT=openai BW24_SERVE_SPEC=0 BW24_KV_REUSE=0 BW24_CTX=1032 \
     BW24_FAST=1 BW24_MMVQ=1 BW24_MOE_CACHE=1 BW24_MOE_GROUPED=1 \
     BW24_MOE_PREWARM=1 BW24_MOE_PREFETCH=1 BW24_MOE_PAGE_PREFETCH=1 \
@@ -81,7 +92,7 @@ for lane in "${!ARMS[@]}"; do
 done
 
 for lane in "${!ARMS[@]}"; do
-  arm=${ARMS[$lane]}; port=$((8070 + lane)); pid=${server_pids[$lane]}
+  arm=${ARMS[$lane]}; port=$((PORT_BASE + lane)); pid=${server_pids[$lane]}
   health="$OUT_ROOT/$arm.health.json"
   for _ in {1..900}; do
     kill -0 "$pid" 2>/dev/null || { tail -n 100 "$OUT_ROOT/$arm.server.log"; exit 4; }

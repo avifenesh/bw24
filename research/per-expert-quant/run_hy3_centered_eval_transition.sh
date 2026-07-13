@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Evaluate the privately superior centered seven-format allocation only after both its immutable
-# artifact and the uncentered directional frontier are complete.  Promotion is then recomputed over
-# the full combined frontier, preventing either seven-format candidate from starting practical
-# evaluation before the other has matched capability evidence.
+# Evaluate the privately superior centered seven-format allocation as soon as its immutable artifact
+# is complete. Promotion still waits for the uncentered directional frontier, so both candidates have
+# matched capability evidence before either can start practical evaluation.
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 PY=${PY:-python3}
@@ -27,8 +26,16 @@ CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 PRIVATE_GATE_ROOT=${PRIVATE_GATE_ROOT:-/data/logs/iq3-iq4-q4-centered-private-artifact-gate-0f98d7d}
 PRIVATE_DAMAGE_RECEIPT=${PRIVATE_DAMAGE_RECEIPT:-/data/analysis/per-expert-quant-iq3-iq4-q4-centered-a7200c0/private-damage-comparison.receipt.json}
 PROMOTION_LOCK=${PROMOTION_LOCK:-$ROOT/research/per-expert-quant/iq4-q4-centered-promotion-gates.lock.json}
+EVAL_GPU=${EVAL_GPU:-1}
+EVAL_PORT=${EVAL_PORT:-8081}
+PRIVATE_GATE_PORT=${PRIVATE_GATE_PORT:-8071}
+EVAL_CPU_START=${EVAL_CPU_START:-12}
+EVAL_CPU_END=${EVAL_CPU_END:-23}
+EVAL_NUMA=${EVAL_NUMA:-0}
+SCORER_LOCK=${SCORER_LOCK:-/tmp/bw24-iq3-iq4-q4-scorer.lock}
 
 die() { echo "centered IQ4/Q4 eval transition: $*" >&2; exit 1; }
+port_listening() { ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
 mkdir -p "$OUT_ROOT/run-configs" "$LOG_ROOT"
 exec 9>"$LOG_ROOT/transition.lock"
 flock -n 9 || die "another centered directional transition owns the lock"
@@ -39,16 +46,19 @@ echo "$(date -u +%FT%TZ) centered IQ4/Q4 directional transition started" \
 [[ $(sha256sum "$PANEL_LOCK" | cut -d' ' -f1) == "$PANEL_SHA256" ]] || die "panel mismatch"
 [[ $(sha256sum "$SERVER_BIN" | cut -d' ' -f1) == "$SERVER_SHA256" ]] || die "server mismatch"
 [[ -f "$PROMOTION_LOCK" ]] || die "missing frozen combined promotion lock"
-while [[ ! -f "$BUILD_COMPLETE" || ! -f "$BASE_DIRECTIONAL_COMPLETE" ]]; do sleep 30; done
+[[ "$EVAL_GPU" =~ ^[0-9]+$ && "$EVAL_PORT" =~ ^[1-9][0-9]{0,4}$ \
+  && "$PRIVATE_GATE_PORT" =~ ^[1-9][0-9]{0,4}$ && "$EVAL_CPU_START" =~ ^[0-9]+$ \
+  && "$EVAL_CPU_END" =~ ^[0-9]+$ && "$EVAL_NUMA" =~ ^[0-9]+$ \
+  && "$EVAL_PORT" -le 65535 && "$PRIVATE_GATE_PORT" -le 65535 \
+  && "$EVAL_CPU_START" -le "$EVAL_CPU_END" ]] || die "invalid eval lane configuration"
+while [[ ! -f "$BUILD_COMPLETE" ]]; do sleep 30; done
 artifact="$ART_ROOT/$ARM"
 for path in "$artifact/manifest.json" "$BUILD_EVIDENCE" "$PRIVATE_DAMAGE_RECEIPT"; do
   [[ -f "$path" ]] || die "missing centered prerequisite $path"
 done
 sha256sum -c "$BUILD_EVIDENCE" >"$LOG_ROOT/build-evidence-check.log"
-if pgrep -x bw24-server >/dev/null || pgrep -af '/harbor run ' >/dev/null \
-  || [[ -n $(docker ps -q) ]]; then
-  die "GPU evaluation work remains active after centered prerequisites"
-fi
+port_listening "$PRIVATE_GATE_PORT" && die "private gate port $PRIVATE_GATE_PORT is already in use"
+port_listening "$EVAL_PORT" && die "eval port $EVAL_PORT is already in use"
 
 if [[ ! -f "$PRIVATE_GATE_ROOT/complete" ]]; then
   SERVER_BIN="$SERVER_BIN" ART_ROOT="$ART_ROOT" \
@@ -56,19 +66,17 @@ if [[ ! -f "$PRIVATE_GATE_ROOT/complete" ]]; then
     PY="$PY" CAPTURE_TOOL="$EVAL_ROOT/research/per-expert-quant/capture_calibration.py" \
     HEALTH_TOOL="$EVAL_ROOT/research/per-expert-quant/validate_server_health.py" \
     ROUTE_VALIDATOR="$ROOT/research/per-expert-quant/validate_pruned_route_trace.py" \
+    GPU_BASE="$EVAL_GPU" PORT_BASE="$PRIVATE_GATE_PORT" CPU_BASE="$EVAL_CPU_START" \
     ARMS_CSV="$ARM" "$ROOT/research/per-expert-quant/run_100gb_private_artifact_gate.sh"
 fi
 
 RUN_ID=centered-iq3-iq4-q4-v1-$(git -C "$ROOT" rev-parse --short=7 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
 printf '%s\n' "$RUN_ID" >"$OUT_ROOT/_active-run-id"
-base_run=$(<"$BASE_DIRECTIONAL_ROOT/_active-run-id")
-base_frontier="$BASE_DIRECTIONAL_ROOT/iq3-iq4-q4-frontier-$base_run.json"
-[[ -f "$base_frontier" ]] || die "missing uncentered combined frontier"
 "$PY" - "$OUT_ROOT/run-configs/$RUN_ID.json" "$RUN_ID" "$ROOT" "$EVAL_ROOT" \
-  "$PANEL_LOCK" "$SERVER_BIN" "$artifact" "$ARM" "$base_frontier" \
-  "$PRIVATE_DAMAGE_RECEIPT" <<'PY'
+  "$PANEL_LOCK" "$SERVER_BIN" "$artifact" "$ARM" "$PRIVATE_DAMAGE_RECEIPT" \
+  "$EVAL_GPU" "$EVAL_PORT" "$EVAL_CPU_START" "$EVAL_CPU_END" "$EVAL_NUMA" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
-out,run_id,root,eval_root,panel,server,artifact,arm,frontier,damage=sys.argv[1:]
+out,run_id,root,eval_root,panel,server,artifact,arm,damage,gpu,port,cpu_start,cpu_end,numa=sys.argv[1:]
 sha=lambda p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 d={"format":"bw24-centered-iq3-iq4-q4-directional-run-v1","run_id":run_id,
    "orchestration_commit":subprocess.check_output(
@@ -78,27 +86,33 @@ d={"format":"bw24-centered-iq3-iq4-q4-directional-run-v1","run_id":run_id,
    "panel":{"path":str(pathlib.Path(panel).resolve()),"sha256":sha(panel)},
    "server":{"path":str(pathlib.Path(server).resolve()),"sha256":sha(server)},
    "settings":{"mtp":False,"spec":False,"kv_reuse":False,"concurrency":1,"spill_depth":8},
+   "lane":{"gpu":int(gpu),"port":int(port),"cpu_start":int(cpu_start),
+           "cpu_end":int(cpu_end),"numa":int(numa)},
    "artifact":{"arm":arm,"path":str(pathlib.Path(artifact).resolve()),
                "manifest_sha256":sha(pathlib.Path(artifact)/"manifest.json")},
-   "base_frontier":{"path":str(pathlib.Path(frontier).resolve()),"sha256":sha(frontier)},
    "private_damage_receipt":{"path":str(pathlib.Path(damage).resolve()),"sha256":sha(damage)}}
 pathlib.Path(out).write_text(json.dumps(d,indent=2,sort_keys=True)+"\n")
 PY
 
-CUDA_VISIBLE_DEVICES=0 taskset -c 0-11 numactl --membind=0 \
+CUDA_VISIBLE_DEVICES="$EVAL_GPU" taskset -c "$EVAL_CPU_START-$EVAL_CPU_END" \
+  numactl --membind="$EVAL_NUMA" \
   env ARM="$ARM" ARTIFACT="$artifact" RUN_ID="$RUN_ID" SERVER_BIN="$SERVER_BIN" \
     OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" PANEL_LOCK="$PANEL_LOCK" \
-    ADDR=127.0.0.1:8080 BW24_SPILL_PREAD_DEPTH=8 \
-    HOURISH_SCORER_LOCK=/tmp/bw24-centered-iq3-iq4-q4-scorer.lock \
+    ADDR="127.0.0.1:$EVAL_PORT" BW24_SPILL_PREAD_DEPTH=8 \
+    HOURISH_SCORER_LOCK="$SCORER_LOCK" \
     "$EVAL_ROOT/research/per-expert-quant/run_hourish_one_arm.sh" \
     >"$LOG_ROOT/$RUN_ID-$ARM.launcher.log" 2>&1
-pgrep -x bw24-server >/dev/null && die "server remained after centered evaluation"
+port_listening "$EVAL_PORT" && die "server remained on eval port $EVAL_PORT"
 summary="$OUT_ROOT/centered-iq3-iq4-q4-summary-$RUN_ID.json"
 "$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
   --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
   --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
   --server-sha256 "$SERVER_SHA256" --output "$summary"
 
+while [[ ! -f "$BASE_DIRECTIONAL_COMPLETE" ]]; do sleep 30; done
+base_run=$(<"$BASE_DIRECTIONAL_ROOT/_active-run-id")
+base_frontier="$BASE_DIRECTIONAL_ROOT/iq3-iq4-q4-frontier-$base_run.json"
+[[ -f "$base_frontier" ]] || die "missing uncentered combined frontier"
 mapfile -t base_specs < <("$PY" - "$base_frontier" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
