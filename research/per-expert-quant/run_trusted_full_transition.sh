@@ -11,6 +11,7 @@ SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-s
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_promoted_results.py}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 HF_HOME=${HF_HOME:-/data/cache/huggingface}
+DATASET_SNAPSHOTTER=${DATASET_SNAPSHOTTER:-$HERE/snapshot_trusted_dataset_cache.py}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
 IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
@@ -37,6 +38,7 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -x "$HERE/run_public_evals.sh" ]] || die "missing public-eval runner"
 [[ -x "$HERE/score_promoted_math_container.sh" ]] || die "missing trusted MATH scorer"
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing trusted-full summarizer"
+[[ -f "$DATASET_SNAPSHOTTER" ]] || die "missing trusted dataset snapshotter"
 [[ -f "$HERE/suite.lock.json" ]] || die "missing frozen suite lock"
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 python3 - "$VRAM_FRAC" <<'PY'
@@ -103,10 +105,17 @@ done
 
 RUN_ID="trusted-full-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
+DATASET_RECEIPT="$OUT_ROOT/run-configs/$RUN_ID.datasets.json"
+HARNESS_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lm_eval_commit"])' "$HERE/suite.lock.json")
+HARNESS_PYTHON="$CACHE_DIR/lm-eval-${HARNESS_COMMIT:0:12}/.venv/bin/python"
+[[ -x "$HARNESS_PYTHON" ]] || die "missing pinned lm-eval Python for dataset snapshot"
+HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+  TRANSFORMERS_OFFLINE=1 nice -n 19 "$HARNESS_PYTHON" "$DATASET_SNAPSHOTTER" \
+  --lock "$HERE/suite.lock.json" --output "$DATASET_RECEIPT"
 ARM_COUNT=${#ARMS[@]}
 BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
-export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC \
+export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
@@ -137,6 +146,8 @@ payload = {
     },
     "suite_lock": {"path": str(pathlib.Path(os.environ["HERE"]) / "suite.lock.json"),
                    "sha256": sha(pathlib.Path(os.environ["HERE"]) / "suite.lock.json")},
+    "dataset_cache_receipt": {"path": os.environ["DATASET_RECEIPT"],
+                              "sha256": sha(os.environ["DATASET_RECEIPT"])},
     "server": {"path": os.environ["SERVER_BIN"], "sha256": sha(os.environ["SERVER_BIN"])},
     "bw24_commit": subprocess.check_output(
         ["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True
@@ -301,7 +312,7 @@ PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 "$FULL_SUMMARIZER" \
   --baseline plain_quant --expected-n all \
   --lock "$HERE/suite.lock.json" \
   --out "$OUT_ROOT/_runs/$RUN_ID/trusted-full-results.md"
-sha256sum "$RUN_CONFIG" "$PRACTICAL_PROMOTION" "$HERE/suite.lock.json" \
+sha256sum "$RUN_CONFIG" "$PRACTICAL_PROMOTION" "$HERE/suite.lock.json" "$DATASET_RECEIPT" \
   "$OUT_ROOT/_runs/$RUN_ID/trusted-full-results.json" > "$LOG_ROOT/$RUN_ID-evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
 trap - EXIT INT TERM
