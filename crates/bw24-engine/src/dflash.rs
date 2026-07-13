@@ -78,6 +78,28 @@ fn encode_q8_0(vals: &[f32]) -> Vec<u8> {
     out
 }
 
+/// Host q4_0 encode (ggml: [d f16][16B packed nibbles] = 18B/32 vals; q = round(v/d)+8,
+/// d = amax/-7 sign trick NOT used — plain amax/7? ggml uses d = max/-8 .. follow ggml:
+/// d = amax / -8 when the max is negative-dominant; reference quantize_row_q4_0: d =
+/// max(|v|)/-8 signed-max form). Implemented to match ggml quantize_row_q4_0_ref.
+fn encode_q4_0(vals: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vals.len() / 32 * 18);
+    for blk in vals.chunks_exact(32) {
+        // ggml ref: pick the value with the LARGEST |v| (keeping sign), d = that / -8
+        let mut amax = 0f32; let mut mx = 0f32;
+        for &v in blk { if v.abs() > amax { amax = v.abs(); mx = v; } }
+        let d = mx / -8.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+        out.extend_from_slice(&half_from_f32(d).to_le_bytes());
+        for j in 0..16 {
+            let x0 = (blk[j] * id + 8.5).clamp(0.0, 15.0) as u8;
+            let x1 = (blk[j + 16] * id + 8.5).clamp(0.0, 15.0) as u8;
+            out.push(x0 | (x1 << 4));
+        }
+    }
+    out
+}
+
 fn half_from_f32(v: f32) -> u16 {
     // f32 -> IEEE f16 (round-to-nearest-even; range of q8_0 d values is tame)
     let b = v.to_bits();
@@ -158,6 +180,16 @@ impl DflashDraft {
                 return Ok(GpuTensor::FloatBf16 { data: e.upload_u8(bytes)?, ne: shape.to_vec() });
             }
             let f32s = bf16_to_f32(bytes);
+            if prec == "q4" {
+                let q = encode_q4_0(&f32s);
+                return Ok(GpuTensor::Quant {
+                    bytes: e.upload_u8(&q)?, qtype: crate::QT_Q4_0,
+                    row_bytes: in_f / 32 * 18, ne: shape.to_vec(), scale: 1.0, rp: false,
+                    #[cfg(bw24_cutlass)]
+                    cutlass: None,
+                    fp8: None, rp4: None,
+                });
+            }
             let q = encode_q8_0(&f32s);
             Ok(GpuTensor::Quant {
                 bytes: e.upload_u8(&q)?, qtype: crate::QT_Q8_0,
@@ -352,6 +384,107 @@ impl DflashDraft {
     }
 }
 
+/// Draft KV cache (round-cost fix, 2026-07-13): per-layer normed+roped ctx K and raw ctx V,
+/// append-only in committed order. Block K/V land TRANSIENTLY at [len..len+b] each round
+/// (never committed — the reference crops them identically). Kills the per-round full-ctx
+/// projection recompute (first light was O(ctx)/round -> 7 tok/s).
+pub struct DflashKv {
+    pub k: Vec<CudaSlice<f32>>,   // per layer [cap + block, nkv*hd]
+    pub v: Vec<CudaSlice<f32>>,
+    pub len: usize,
+    pub cap: usize,
+}
+
+impl DflashKv {
+    pub fn new(e: &Engine, cfg: &DflashCfg, cap: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let rowsz = cfg.n_kv * cfg.head_dim;
+        let mut k = Vec::with_capacity(cfg.n_layer);
+        let mut v = Vec::with_capacity(cfg.n_layer);
+        for _ in 0..cfg.n_layer {
+            k.push(e.uninit((cap + cfg.block_size) * rowsz)?);
+            v.push(e.uninit((cap + cfg.block_size) * rowsz)?);
+        }
+        Ok(Self { k, v, len: 0, cap })
+    }
+}
+
+impl DflashDraft {
+    /// Ingest `t` NEW ctx-feature rows (committed order, absolute positions `pos_new`) into
+    /// the draft KV: per layer k/v projections + k head-norm + rope, appended at kv.len.
+    pub fn ingest_ctx(&self, e: &Engine, kv: &mut DflashKv, feats: &CudaSlice<f32>,
+                      pos_new: &[i32], t: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let c = &self.cfg;
+        let (h, nkv, hd) = (c.hidden, c.n_kv, c.head_dim);
+        assert!(kv.len + t <= kv.cap, "draft kv overflow");
+        let pos_d = e.htod_i32(pos_new)?;
+        for (li, l) in self.layers.iter().enumerate() {
+            let k0 = self.mm(e, &l.wk, feats, t, h, nkv * hd)?;
+            let v0 = self.mm(e, &l.wv, feats, t, h, nkv * hd)?;
+            let mut kn = e.uninit(t * nkv * hd)?;
+            e.rms_norm(&k0, &l.k_norm, &mut kn, hd, t * nkv, c.eps)?;
+            e.rope_neox(&mut kn, &pos_d, hd, hd, nkv, t, c.rope_theta, 1.0)?;
+            e.copy_into(&mut kv.k[li], kv.len * nkv * hd, &kn, t * nkv * hd)?;
+            e.copy_into(&mut kv.v[li], kv.len * nkv * hd, &v0, t * nkv * hd)?;
+        }
+        kv.len += t;
+        Ok(())
+    }
+
+    /// Block forward over the CACHED ctx KV: only the 16 block rows are projected per layer;
+    /// block K/V land transiently at kv[len..len+b]. Bit-class-identical to forward_block
+    /// (same kernels, same per-row programs; ONLY the ctx K/V recompute is cached).
+    pub fn forward_round(&self, e: &Engine, kv: &mut DflashKv, noise_emb: &CudaSlice<f32>,
+                         pos_block: &[i32]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let c = &self.cfg;
+        let (h, nh, nkv, hd) = (c.hidden, c.n_head, c.n_kv, c.head_dim);
+        let b = c.block_size;
+        assert_eq!(pos_block.len(), b);
+        let ctx = kv.len;
+        let pos_blk = e.htod_i32(pos_block)?;
+        let mut x = e.clone_dtod(noise_emb)?;
+        for (li, l) in self.layers.iter().enumerate() {
+            let mut xn = e.uninit(b * h)?;
+            e.rms_norm(&x, &l.ln_in, &mut xn, h, b, c.eps)?;
+            let q0 = self.mm(e, &l.wq, &xn, b, h, nh * hd)?;
+            let k0b = self.mm(e, &l.wk, &xn, b, h, nkv * hd)?;
+            let v0b = self.mm(e, &l.wv, &xn, b, h, nkv * hd)?;
+            let mut q = e.uninit(b * nh * hd)?;
+            let mut kb = e.uninit(b * nkv * hd)?;
+            e.rms_norm(&q0, &l.q_norm, &mut q, hd, b * nh, c.eps)?;
+            e.rms_norm(&k0b, &l.k_norm, &mut kb, hd, b * nkv, c.eps)?;
+            e.rope_neox(&mut q, &pos_blk, hd, hd, nh, b, c.rope_theta, 1.0)?;
+            e.rope_neox(&mut kb, &pos_blk, hd, hd, nkv, b, c.rope_theta, 1.0)?;
+            e.copy_into(&mut kv.k[li], ctx * nkv * hd, &kb, b * nkv * hd)?;
+            e.copy_into(&mut kv.v[li], ctx * nkv * hd, &v0b, b * nkv * hd)?;
+            let mut attn = e.uninit(b * nh * hd)?;
+            let scale = 1.0f32 / (hd as f32).sqrt();
+            if std::env::var("BW24_DFLASH_FA").is_ok() {
+                e.fa_prefill(&q, &kv.k[li], &kv.v[li], &mut attn, hd, nh, nkv, b, ctx + b,
+                             scale, false)?;
+            } else {
+                e.sdpa_naive(&q, &kv.k[li], &kv.v[li], &mut attn, hd, nh, nkv, b, ctx + b,
+                             scale, false)?;
+            }
+            let o = self.mm(e, &l.wo, &attn, b, nh * hd, h)?;
+            let mut x1 = e.uninit(b * h)?;
+            e.add(&o, &x, &mut x1, b * h)?;
+            let mut x1n = e.uninit(b * h)?;
+            e.rms_norm(&x1, &l.ln_post, &mut x1n, h, b, c.eps)?;
+            let gate = self.mm(e, &l.w_gate, &x1n, b, h, c.n_ff)?;
+            let up_ = self.mm(e, &l.w_up, &x1n, b, h, c.n_ff)?;
+            let mut act = e.uninit(b * c.n_ff)?;
+            e.silu_mul(&gate, &up_, &mut act, b * c.n_ff)?;
+            let down = self.mm(e, &l.w_down, &act, b, c.n_ff, h)?;
+            let mut x2 = e.uninit(b * h)?;
+            e.add(&down, &x1, &mut x2, b * h)?;
+            x = x2;
+        }
+        let mut out = e.uninit(b * h)?;
+        e.rms_norm(&x, &self.norm, &mut out, h, b, c.eps)?;
+        Ok(out)
+    }
+}
+
 // ================= DFlash spec round (greedy, first light) =================
 // Exact contract: identical output stream to plain greedy decode BY CONSTRUCTION — the
 // target's batched verify argmax decides every committed token; the drafter only proposes.
@@ -383,16 +516,37 @@ impl crate::hybrid::HybridModel {
             buf: e.uninit(tp * n_taps * n_embd)?,
             hidden: n_embd, t: tp,
         });
+        let t_prime = std::time::Instant::now();
         let (logits, _h_seed, _hiddens) = self.prime_cache(e, prompt, &mut cache)?;
         let mut last = crate::forward::argmax(&logits) as u32;
-        // ctx features for the whole prompt (append-only device buffer, committed order)
-        let mut ctx_f_all = e.uninit(max_ctx * n_embd)?;
+        // draft KV cache: ingest the prompt's ctx features once; per round only the kept
+        // rows ingest + the block projects (round cost O(block), not O(ctx)).
+        let mut dkv = DflashKv::new(e, &draft.cfg, max_ctx)?;
         {
+            // CHUNKED ingest (depth OOM fix): the 1736-row prompt tap buffer is ~224MB f32;
+            // running fc + 5-layer k/v projection over it in one shot stacks another
+            // ~300MB of transients on the ~21.3GB trunk peak. 256-row windows bound the
+            // transient set; identical values (row-independent ops).
             let taps = cache.dflash_taps.take().unwrap();
-            let f = draft.ctx_features(e, &taps.buf, tp)?;
-            e.copy_into(&mut ctx_f_all, 0, &f, tp * n_embd)?;
+            let n_taps_h = n_taps * n_embd;
+            let mut r0 = 0usize;
+            while r0 < tp {
+                let t_c = (tp - r0).min(256);
+                let tv = e.view(&taps.buf, tp * n_taps_h);
+                let win = tv.slice(r0 * n_taps_h..(r0 + t_c) * n_taps_h);
+                let mut chunk = e.uninit(t_c * n_taps_h)?;
+                e.copy_view_into(&mut chunk, 0, &win, t_c * n_taps_h)?;
+                let f = draft.ctx_features(e, &chunk, t_c)?;
+                let pos_c: Vec<i32> = ((r0 as i32)..(r0 + t_c) as i32).collect();
+                draft.ingest_ctx(e, &mut dkv, &f, &pos_c, t_c)?;
+                r0 += t_c;
+            }
         }
         let mut ctx_len = tp;
+        e.stream().synchronize()?;
+        // published prime wall (the run-spec/gemma-gate timing contract subtracts it)
+        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
+                                 std::sync::atomic::Ordering::Relaxed);
 
         // embed-scale seam (BW24_DFLASH_EMB_SCALE): gemma trunks scale embeddings by
         // sqrt(n_embd) INSIDE the forward; whether the z-lab gemma4 training fed the
@@ -404,8 +558,20 @@ impl crate::hybrid::HybridModel {
 
         let mut out = Vec::with_capacity(max_new);
         let n_vocab = self.output.out_features();
+        // VERIFY WIDTH (BW24_DFLASH_VERIFY_T, default 8): the drafter always drafts a full
+        // block (its trained mask pattern) but only the first vt rows go through the target
+        // verify — the t=16 verify rides the untuned b16 tier at ~32% of the byte wall
+        // (65ms/verify) while b8 rides the tuned r2 tier; with ~2.7 committed/round the
+        // deep block positions almost never survive anyway. Exactness unaffected (verify
+        // still decides every committed token).
+        let vt: usize = std::env::var("BW24_DFLASH_VERIFY_T").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(8).clamp(2, b);
         let mut attempted = 0usize;
         let mut accepted = 0usize;
+        // The whole round runs in the decode-exact matmul scope: the m=16 draft mms were
+        // otherwise falling into the prefill-GEMM class (770us/matmul, 17% of the depth
+        // round). Prime (before this loop) keeps the prefill GEMM path.
+        e.set_verify_exact(true);
         'outer: while out.len() < max_new {
             let start = cache.pos; // committed length
             // ---- draft: block = [last, MASK x b-1] ----
@@ -420,14 +586,8 @@ impl crate::hybrid::HybridModel {
                 eprintln!("[dflash noise] |row0(last)|={r0:.3} |row1(MASK id {})|={r1:.3}",
                           c.mask_token_id);
             }
-            let pos: Vec<i32> = (0..ctx_len as i32).chain(
-                (start as i32)..(start + b) as i32).collect();
-            let ctx_view_len = ctx_len * n_embd;
-            // forward_block reads ctx rows [0..ctx_len) of ctx_f_all
-            let ctx_f = e.view(&ctx_f_all, ctx_view_len);
-            let mut ctx_owned = e.uninit(ctx_view_len)?;
-            e.copy_view_into(&mut ctx_owned, 0, &ctx_f, ctx_view_len)?;
-            let dh = draft.forward_block(e, &ctx_owned, &noise, &pos, ctx_len)?;
+            let pos_block: Vec<i32> = ((start as i32)..(start + b) as i32).collect();
+            let dh = draft.forward_round(e, &mut dkv, &noise, &pos_block)?;
             // draft tokens = argmax(lm_head(h rows 1..b))
             let mut rows = e.uninit((b - 1) * n_embd)?;
             {
@@ -444,13 +604,14 @@ impl crate::hybrid::HybridModel {
             for (i, &dt) in dtoks.iter().enumerate() { block[i + 1] = dt; }
             let dbg = std::env::var("BW24_DFLASH_DEBUG").as_deref() == Ok("1");
 
-            // ---- verify: one t=b target forward with taps armed ----
+            // ---- verify: one t=vt target forward with taps armed ----
+            let vblock = &block[..vt];
             cache.dflash_taps = Some(DflashTapSink {
                 layer_ids: c.target_layer_ids.clone(),
-                buf: e.uninit(b * n_taps * n_embd)?,
-                hidden: n_embd, t: b,
+                buf: e.uninit(vt * n_taps * n_embd)?,
+                hidden: n_embd, t: vt,
             });
-            let (vam, _vh) = self.gemma4_decode_step_t_am(e, &block, start, &mut cache)?;
+            let (vam, _vh) = self.gemma4_decode_step_t_am(e, vblock, start, &mut cache)?;
             let taps = cache.dflash_taps.take().unwrap();
             if dbg {
                 eprintln!("[dflash r] start={start} last={last}\n  draft={:?}\n  vam  ={:?}",
@@ -459,8 +620,8 @@ impl crate::hybrid::HybridModel {
 
             // ---- accept ----
             let mut m = 0usize;
-            while m < b - 1 && block[m + 1] as usize == vam[m] as usize { m += 1; }
-            attempted += b - 1;
+            while m < vt - 1 && block[m + 1] as usize == vam[m] as usize { m += 1; }
+            attempted += vt - 1;
             accepted += m;
             out.push(last);
             if eos.contains(&last) { break 'outer; }
@@ -474,23 +635,25 @@ impl crate::hybrid::HybridModel {
             // ---- commit/rollback: keep m+1 of the b appended rows ----
             let keep = m + 1;
             for kvl in cache.kv.iter_mut().flatten() {
-                kvl.len -= b - keep;
+                kvl.len -= vt - keep;
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
-            cache.pos -= b - keep;
+            cache.pos -= vt - keep;
 
-            // ---- ctx features for the kept rows ----
+            // ---- ingest the kept rows' ctx features into the draft KV ----
             {
-                let tv = e.view(&taps.buf, b * n_taps * n_embd);
+                let tv = e.view(&taps.buf, vt * n_taps * n_embd);
                 let keep_view = tv.slice(0..keep * n_taps * n_embd);
                 let mut kept = e.uninit(keep * n_taps * n_embd)?;
                 e.copy_view_into(&mut kept, 0, &keep_view, keep * n_taps * n_embd)?;
                 let f = draft.ctx_features(e, &kept, keep)?;
-                e.copy_into(&mut ctx_f_all, ctx_len * n_embd, &f, keep * n_embd)?;
+                let pos_k: Vec<i32> = ((ctx_len as i32)..(ctx_len + keep) as i32).collect();
+                draft.ingest_ctx(e, &mut dkv, &f, &pos_k, keep)?;
                 ctx_len += keep;
             }
             last = next;
         }
+        e.set_verify_exact(false);
         if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
             eprintln!("[dflash] acceptance {accepted}/{attempted} = {:.3}",
                       accepted as f64 / attempted.max(1) as f64);
