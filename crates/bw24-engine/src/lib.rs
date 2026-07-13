@@ -4514,12 +4514,17 @@ impl Engine {
             // fill rule as q4_K: r2 when the halved grid still fills the SMs.
             static Q40BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
             let q40 = *Q40BV.get_or_init(|| match std::env::var("BW24_Q40_BV").as_deref() {
-                Ok("base") => "base", Ok("r2") => "r2", _ => "auto",
+                // "ms" = force-only measurement seam (flat verdict 2026-07-13, never auto).
+                Ok("base") => "base", Ok("r2") => "r2", Ok("ms") => "ms", _ => "auto",
             });
             let v = if q40 != "auto" { q40 }
             else if (out_f as u32).div_ceil(8) >= 4 * sms as u32 { "r2" } else { "base" };
             // split-plane mirror twins (2026-07-10): same fill rule, _rp names.
-            if rp { if v == "r2" { "r2_rp" } else { "rp" } } else { v }
+            // (m-split r2 pair twin PROBED FLAT 2026-07-13 — nvcc kept 72 regs either way
+            // and the limiter is the per-column activation load chain (long_scoreboard
+            // 42.5%), not occupancy; arm killed per doctrine, jsonl row is the record.)
+            if rp { match v { "ms" => "r2ms_rp", "r2" => "r2_rp", _ => "rp" } }
+            else if v == "ms" { "r2" } else { v }
         } else if qtype != QT_NVFP4 && !kq_r2 {
             "base"
         } else if kq_r2 {
@@ -4648,6 +4653,7 @@ impl Engine {
             "rpksc" => (format!("{base_name}_rpksc").into(), ROWS_PER_BLOCK),
             "rpms" => (format!("{base_name}_rpms").into(), ROWS_PER_BLOCK),
             "rpmsc" => (format!("{base_name}_rpmsc").into(), ROWS_PER_BLOCK),
+            "r2ms_rp" => (format!("{base_name}_r2ms_rp").into(), ROWS_PER_BLOCK),
             v => (format!("{base_name}_{v}").into(), ROWS_PER_BLOCK * 2), // r2-class: 2 rows/warp
         };
         debug_assert!(!rp || name.contains("_rp"), "rp weight dispatched to a GGUF-layout kernel");
