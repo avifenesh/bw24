@@ -49,7 +49,16 @@ while [[ ! -f "$TRUSTED_REPORT" ]]; do sleep "$WAIT_INTERVAL_S"; done
 mapfile -t ARMS < <(python3 - "$TRUSTED_REPORT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-if d.get("format") != "bw24-promoted-candidate-v1" or d.get("n_per_task") != "all":
+counts = d.get("n_per_task")
+documents = d.get("documents_per_arm")
+if (
+    d.get("format") != "bw24-promoted-candidate-v1"
+    or not isinstance(counts, dict)
+    or not counts
+    or any(not isinstance(value, int) or value <= 0 for value in counts.values())
+    or sum(counts.values()) != documents
+    or documents != 4746
+):
     raise SystemExit("wrong trusted-full report")
 arms = d.get("selection", {}).get("full_eval_arms")
 if not isinstance(arms, list) or len(arms) != 2 or len(set(arms)) != 2:

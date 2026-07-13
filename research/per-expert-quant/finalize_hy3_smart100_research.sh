@@ -13,6 +13,11 @@ INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
 EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
 REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-iq3-iq4-q4-v1}
 REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-iq3-iq4-q4-v1/complete}
+REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/iq3-iq4-q4-centered-directional-v1}
+REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-iq3-iq4-q4-v1}
+REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-iq3-iq4-q4-v1}
+REMOTE_FINALIZER_ROOT=${REMOTE_FINALIZER_ROOT:-/data/src/bw24-finalizer-conclusion-v1}
+REMOTE_CONCLUSION_ROOT=${REMOTE_CONCLUSION_ROOT:-/data/analysis/per-expert-quant-final-conclusion-v1}
 LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100-final}
 BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
 IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-9a1c92c}
@@ -20,6 +25,9 @@ CENTERED_ALLOCATION_ANALYSIS=${CENTERED_ALLOCATION_ANALYSIS:-/data/analysis/per-
 PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
 BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
 IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-seven-format-effects-38af56e}
+PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$CENTERED_ALLOCATION_ANALYSIS/private-damage-comparison.json}
+UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
+CENTERED_PLAN=${CENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-centered-0f98d7d/smart100_iq3_iq4_q4_centered.json}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -37,6 +45,7 @@ EVIDENCE_ROOTS=(
   "$PAIR_ALLOCATION_ANALYSIS"
   "$BASE_EFFECT_ANALYSIS"
   "$IQ4_EFFECT_ANALYSIS"
+  "$REMOTE_CONCLUSION_ROOT"
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
@@ -62,7 +71,60 @@ ssh "$REMOTE" "test -f '$REMOTE_FULL_READY'" \
   || die "complete smart100 agentic evidence is not ready"
 
 run_id=$(ssh "$REMOTE" "cat '$REMOTE_FULL_ROOT/_active-run-id'")
+directional_run=$(ssh "$REMOTE" "cat '$REMOTE_DIRECTIONAL_ROOT/_active-run-id'")
+practical_run=$(ssh "$REMOTE" "cat '$REMOTE_PRACTICAL_ROOT/_active-run-id'")
+trusted_run=$(ssh "$REMOTE" "cat '$REMOTE_TRUSTED_ROOT/_active-run-id'")
+analysis_commit=$(ssh "$REMOTE" "git -C '$REMOTE_FINALIZER_ROOT' rev-parse HEAD")
+[[ "$analysis_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid remote finalizer commit"
+directional_frontier="$REMOTE_DIRECTIONAL_ROOT/iq3-iq4-q4-frontier-$directional_run.json"
+directional_promotion="$REMOTE_DIRECTIONAL_ROOT/iq3-iq4-q4-promotion-$directional_run.json"
+practical_promotion="$REMOTE_PRACTICAL_ROOT/practical-promotion-$practical_run.json"
+trusted_report="$REMOTE_TRUSTED_ROOT/_runs/$trusted_run/trusted-full-results.json"
 combined="$REMOTE_FULL_ROOT/comparisons/$run_id/combined.json"
+
+ssh "$REMOTE" bash -s -- \
+  "$REMOTE_FINALIZER_ROOT" "$analysis_commit" "$REMOTE_CONCLUSION_ROOT" \
+  "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" \
+  "$directional_frontier" "$directional_promotion" "$practical_promotion" \
+  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" <<'SH'
+set -euo pipefail
+root=$1
+commit=$2
+out_root=$3
+effects=$4
+damage=$5
+frontier=$6
+directional=$7
+practical=$8
+trusted=$9
+full=${10}
+uncentered=${11}
+centered=${12}
+tool="$root/tools/summarize_hy3_quant_research.py"
+output="$out_root/conclusion.json"
+markdown="$out_root/conclusion.md"
+receipt="$out_root/receipt.json"
+evidence="$out_root/evidence.sha256"
+[[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
+[[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
+for path in "$tool" "$effects" "$damage" "$frontier" "$directional" "$practical" \
+  "$trusted" "$full" "$uncentered" "$centered"; do
+  [[ -f "$path" ]]
+done
+if [[ ! -f "$receipt" ]]; then
+  mkdir -p "$out_root"
+  python3 "$tool" --effects "$effects" --damage "$damage" --frontier "$frontier" \
+    --directional-promotion "$directional" --practical-promotion "$practical" \
+    --trusted-report "$trusted" --full-agentic "$full" \
+    --plan "uncentered=$uncentered" --plan "centered=$centered" \
+    --analysis-commit "$commit" --output "$output" --markdown "$markdown" \
+    --receipt "$receipt"
+  sha256sum "$output" "$markdown" "$receipt" "$tool" >"$evidence"
+fi
+python3 "$tool" --verify-receipt "$receipt"
+sha256sum -c "$evidence"
+SH
+
 finalist=$(ssh "$REMOTE" "python3 - '$combined'" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
