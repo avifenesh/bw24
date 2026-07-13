@@ -110,7 +110,9 @@ dest="$LOCAL_ROOT/$stamp"
 mkdir "$dest" "$dest/evidence-root" "$dest/finalist" "$dest/inventories"
 
 for root in "${EVIDENCE_ROOTS[@]}"; do
-  rsync -a --partial --append-verify "$REMOTE:/./${root#/}/" "$dest/evidence-root/"
+  # Preserve each absolute subtree below evidence-root so the per-root verifier addresses the
+  # same path locally (for example, /data/logs -> evidence-root/data/logs).
+  rsync -aR --partial --append-verify "$REMOTE:/./${root#/}/" "$dest/evidence-root/"
 done
 rsync -a --partial --append-verify "$REMOTE:$remote_artifact/" "$dest/finalist/"
 
