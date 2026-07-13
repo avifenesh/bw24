@@ -2852,6 +2852,11 @@ impl Engine {
         self.alloc_uninit::<f32>(n)
     }
 
+    /// i8 uninitialized scratch (same contract as `uninit`).
+    pub fn alloc_i8_uninit(&self, n: usize) -> Result<CudaSlice<i8>, Box<dyn std::error::Error>> {
+        self.alloc_uninit::<i8>(n)
+    }
+
     /// RMSNorm: x[ncols,nrows] row-major, weight[ncols] -> dst. One block/row, 256 threads.
     /// gemma4: 3 rms_norms of the SAME input in one launch (one reduction, three weights).
     /// Per-output bit-identical to three rms_norm calls (verbatim reduction/scale chain).
@@ -3263,6 +3268,25 @@ impl Engine {
         let nc = ncols as i32;
         let mut b2 = self.gpu.stream.launch_builder(&f);
         b2.arg(a).arg(b).arg(&mut *res).arg(&mut out_q).arg(&mut out_d).arg(&nc);
+        unsafe { b2.launch(cfg)?; }
+        Ok((out_q, out_d))
+    }
+
+    /// E4B FFN-tail exit fusion (glue wave 5): resid = b + rms(a, wa) emitted f32 + q8_1 pair
+    /// in ONE launch — replaces rms_norm(a,wa->sn) + add_q8_1(sn,b). Same rms_block() config
+    /// as both parents (bit-identity: identical reduction + quad-walk quantize).
+    pub fn rms_pre_add_q8_1(&self, a: &CudaSlice<f32>, wa: &CudaSlice<f32>, b: &CudaSlice<f32>,
+                            res: &mut CudaSlice<f32>, ncols: usize, nrows: usize, eps: f32)
+                            -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert!(ncols % 128 == 0);
+        let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
+        let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let f = self.func("rms_pre_add_q8_1_f32");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1),
+                                 shared_mem_bytes: 0 };
+        let (nc, ep) = (ncols as i32, eps);
+        let mut b2 = self.gpu.stream.launch_builder(&f);
+        b2.arg(a).arg(wa).arg(b).arg(&mut *res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&ep);
         unsafe { b2.launch(cfg)?; }
         Ok((out_q, out_d))
     }
@@ -5178,6 +5202,7 @@ impl Engine {
     /// (kvmod eager) and device-len (graph/stream) callers — the textually-identical f32_dc
     /// twin compiled apart and its ULP drift flipped 31B verify argmaxes (2026-07-12).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn fa_decode_scalar_unified(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
                                 v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                                 head_dim: usize, n_head: usize, n_head_kv: usize,
@@ -5185,7 +5210,8 @@ impl Engine {
                                 scale: f32, n_splits: usize, split_keys: usize,
                                 k_tok_bytes: usize, v_tok_bytes: usize, g: bool,
                                 part_o: &mut CudaSlice<f32>, part_m: &mut CudaSlice<f32>,
-                                part_l: &mut CudaSlice<f32>)
+                                part_l: &mut CudaSlice<f32>,
+                                q8_out: Option<(&mut CudaSlice<i8>, &mut CudaSlice<f32>)>)
                                 -> Result<(), Box<dyn std::error::Error>> {
         let f = if g { self.func_g("fa_decode_f32") } else { self.fa_func("fa_decode_f32", head_dim) };
         let cfg = LaunchConfig { grid_dim: (n_head as u32, n_splits as u32, 1),
@@ -5205,9 +5231,18 @@ impl Engine {
                        .arg(&ski).arg(&ktb).arg(&vtb);
                       unsafe { b.launch(cfg)?; } }
         }
-        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1),
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        if let Some((oq, od)) = q8_out {
+            // wave-5b: q8-emitting combine — the wo matmul_pre consumes the pair directly.
+            let fc = if g { self.func_g("fa_decode_combine_q8_1") }
+                     else { self.fa_func("fa_decode_combine_q8_1", head_dim) };
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
+            unsafe { b2.launch(cfg2)?; }
+            return Ok(());
+        }
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
@@ -5347,7 +5382,7 @@ impl Engine {
                                                  t_kv, None, scale, n_splits,
                                                  if fa_vec { sp } else { 256 },
                                                  k_tok_bytes, v_tok_bytes, g,
-                                                 part_o, part_m, part_l);
+                                                 part_o, part_m, part_l, None);
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
@@ -5724,6 +5759,20 @@ impl Engine {
                         t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
                         k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                         -> Result<(), Box<dyn std::error::Error>> {
+        self.fa_decode_dc_q8(q, k, v, o, head_dim, n_head, n_head_kv, t_kv_dev, bucket_max,
+                             scale, k_tok_bytes, v_tok_bytes, g, None)
+    }
+
+    /// `fa_decode_dc` with an optional q8_1 sink (wave 5b): when `q8_out` is given the
+    /// combine emits (int8, per-32 scales) for the wo matmul_pre and skips the f32 O write.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_decode_dc_q8(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                        v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                        head_dim: usize, n_head: usize, n_head_kv: usize,
+                        t_kv_dev: &CudaSlice<i32>, bucket_max: usize, scale: f32,
+                        k_tok_bytes: usize, v_tok_bytes: usize, g: bool,
+                        q8_out: Option<(&mut CudaSlice<i8>, &mut CudaSlice<f32>)>)
+                        -> Result<(), Box<dyn std::error::Error>> {
         // The fa_vec gate + n_splits are sized from bucket_max (host, fixed at capture). The kernel
         // reads the ACTUAL t_kv from t_kv_dev for the per-split bound. DEFAULT-ON to MATCH the eager
         // `fa_decode` gate above — graph capture must mirror eager's kernel choice or the graph-vs-eager
@@ -5757,7 +5806,7 @@ impl Engine {
             return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
                                                  0, Some(t_kv_dev), scale, n_splits, sp,
                                                  k_tok_bytes, v_tok_bytes, g,
-                                                 &mut part_o, &mut part_m, &mut part_l);
+                                                 &mut part_o, &mut part_m, &mut part_l, q8_out);
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
             // incl the g-module route + raw-e4m3 sV sizing.
@@ -5799,7 +5848,7 @@ impl Engine {
                                                  0, Some(t_kv_dev), scale, n_splits,
                                                  if fa_vec { sp } else { 256 },
                                                  k_tok_bytes, v_tok_bytes, g,
-                                                 &mut part_o, &mut part_m, &mut part_l);
+                                                 &mut part_o, &mut part_m, &mut part_l, q8_out);
         };
         let ski = sp as i32;   // one-partition law: the twins derive ns_eff from (T_kv, ski)
         let mut b = self.gpu.stream.launch_builder(&f);
@@ -5807,8 +5856,16 @@ impl Engine {
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ski)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
-        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, 1, 1), block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        if let Some((oq, od)) = q8_out {
+            let fc = if g { self.func_g("fa_decode_combine_q8_1") }
+                     else { self.fa_func("fa_decode_combine_q8_1", head_dim) };
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
+            unsafe { b2.launch(cfg2)?; }
+            return Ok(());
+        }
+        let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }

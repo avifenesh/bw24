@@ -2575,15 +2575,18 @@ impl HybridModel {
     fn gemma4_layer_tail_core(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
                               cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize)
                               -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        self.gemma4_layer_tail_core_pn(e, layer, cur, x, t, None)
+        self.gemma4_layer_tail_core_pn(e, layer, cur, x, t, None, false)
     }
 
     /// tail_core with an optional PRE-NORM fold (glue-fusion lane): `pre_norm = Some(wa)`
     /// means `cur` is the RAW attention output and the dense entry runs
     /// rms(cur, wa) + residual-add + ffn_norm as ONE launch (E4B's post-attn norm fold).
+    /// `defer_post_norm`: dense-arm exit returns RAW f0 (ffn_down output) instead of
+    /// sn = rms(f0, post_ffw) — the caller fuses the post-norm into its residual emit
+    /// (rms_pre_add_q8_1, E4B glue wave 5). MoE arm ignores it.
     fn gemma4_layer_tail_core_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
                                  cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
-                                 pre_norm: Option<&CudaSlice<f32>>)
+                                 pre_norm: Option<&CudaSlice<f32>>, defer_post_norm: bool)
                                  -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -2637,6 +2640,7 @@ impl HybridModel {
                 e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
                 e.matmul(ffn_down, &act, t)?
             };
+            if defer_post_norm { return Ok((f0, attn_out)); }
             let mut sn = e.uninit(t * n_embd)?;
             e.rms_norm(&f0, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
             return Ok((sn, attn_out));
@@ -2751,7 +2755,7 @@ impl HybridModel {
         let n_embd = self.cfg.n_embd as usize;
         let bits = layer.gemma4.as_ref().unwrap();
         let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
-            e, layer, o, x, t, Some(layer.post_attn_norm.float_data()))?;
+            e, layer, o, x, t, Some(layer.post_attn_norm.float_data()), false)?;
         let mut xn = e.uninit(t * n_embd)?;
         match next_norm {
             Some(w) => {
@@ -3810,11 +3814,21 @@ impl HybridModel {
             } else { bucket };
             let k_view = e.view_u8(&kvl.k, kvl.k.len());
             let v_view = e.view_u8(&kvl.v, kvl.v.len());
+            let g = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+            // wave 5b: the combine emits the wo input q8 pair directly — the standalone
+            // quantize launch + the f32 attn round-trip fold away (t=1 fast path only).
+            if e.uses_q8_1_fast(&fa.wo) {
+                let mut oq = e.alloc_i8_uninit(nh * hd)?;
+                let mut od = e.zeros(nh * hd / 32)?;
+                e.fa_decode_dc_q8(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                  &kvl.len_d, bucket, scale,
+                                  kvl.k_tok_bytes, kvl.v_tok_bytes, g,
+                                  Some((&mut oq, &mut od)))?;
+                return Ok(e.matmul_pre(&fa.wo, &oq, &od, &attn, t)?);
+            }
             e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                            &kvl.len_d, bucket, scale,
-                           kvl.k_tok_bytes, kvl.v_tok_bytes,
-                           (!swa && crate::Engine::gkv_on())
-                               || (swa && crate::Engine::wkv_on()))?;
+                           kvl.k_tok_bytes, kvl.v_tok_bytes, g)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
@@ -3886,18 +3900,25 @@ impl HybridModel {
             let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache, dc_bucket)?;
             // dense ffn tail with the post-attn norm FOLDED into its entry (one launch for
             // rms(o, post_attn_norm) + residual add + ffn_norm — glue-fusion lane).
-            let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
-                e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()))?;
-            let mut resid = e.uninit(t * n_embd)?;
-            // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
+            // glue wave 5: at t=1 the tail DEFERS its post_ffw norm — the FFN exit fuses
+            // rms(f0, post_ffw) + residual add + q8 emit into ONE launch (rms_pre_add_q8_1),
+            // killing the rms_norm + add_q8_1 pair per layer. Bit-identical chain.
+            let fuse_exit = t == 1 && e.uses_q8_1_fast(&e4b.inp_gate);
+            let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
+                e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()), fuse_exit)?;
+            let mut resid = e.uninit(t * n_embd)?;
+            // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
             // wave-2: the residual add emits q8_1 alongside — inp_gate rides matmul_pre.
             // (PLE one-block mega-fusion PROBED NEGATIVE 2026-07-13: argmax-correct but
             // 126 vs 189 tok/s — one SM pulling 0.74MB of weights loses to the multi-block
             // launch chain it replaced; jsonl row. Kernel deleted per doctrine.)
-            let g = if t == 1 && e.uses_q8_1_fast(&e4b.inp_gate) {
-                let (rq, rd) = e.add_q8_1(&sn, &attn_out, &mut resid, n_embd, t)?;
+            let g = if fuse_exit {
+                // sn here = RAW f0 (post_ffw deferred).
+                let (rq, rd) = e.rms_pre_add_q8_1(&sn, bits.post_ffw_norm.float_data(),
+                                                  &attn_out, &mut resid, n_embd, t,
+                                                  self.cfg.rms_eps)?;
                 e.matmul_pre(&e4b.inp_gate, &rq, &rd, &resid, t)?
             } else {
                 e.add(&sn, &attn_out, &mut resid, t * n_embd)?;

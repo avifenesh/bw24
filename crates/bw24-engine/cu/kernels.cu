@@ -374,6 +374,66 @@ extern "C" __global__ void rms_pre_add_rms_norm_q8z_f32(
 
 // ---- E4B glue fusion wave 2: a + b with the sum ALSO emitted q8_1 (resid feeds inp_gate
 // through matmul_pre; f32 resid stays written for the later residual add). ----
+// ---- E4B FFN-tail EXIT fusion (glue wave 5): resid = attn_out + rms(f0, post_ffw), ----
+// emitted f32 + q8_1 pair in ONE launch — replaces rms_norm_f32(f0 -> sn) + add_q8_1_f32(sn,
+// attn_out). BIT-IDENTITY: the rms reduction reads f0 in rms_norm_f32's exact strided order
+// (same single sum, same block reduce); the per-element value is ((f0[i]*s)*w[i]) + b[i] — the
+// identical op chain of the two-kernel pair (the f32 round-trip of sn is exact, removing it
+// changes no bits); the quantize section is add_q8_1_f32's float4-quad walk verbatim.
+extern "C" __global__ void rms_pre_add_q8_1_f32(
+        const float* __restrict__ a,   // f0 (ffn_down output)
+        const float* __restrict__ wa,  // post_ffw_norm weight
+        const float* __restrict__ b,   // attn_out (the residual carry)
+        float* __restrict__ res,       // resid f32 out
+        signed char* __restrict__ out_q, float* __restrict__ out_d,
+        int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    int nblk = ncols / 32;
+
+    // phase 1: rms_norm_f32's reduction, verbatim.
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+
+    // phase 2: add_q8_1_f32's quad walk verbatim, with v = ((a*scale)*wa) + b inline.
+    int lane = tid & 31;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    const float* war = wa;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        const float4 a4 = ((const float4*)ar)[i4];
+        const float4 w4 = ((const float4*)war)[i4];
+        const float4 b4 = ((const float4*)br)[i4];
+        float4 v = make_float4(a4.x * scale * w4.x + b4.x, a4.y * scale * w4.y + b4.y,
+                               a4.z * scale * w4.z + b4.z, a4.w * scale * w4.w + b4.w);
+        ((float4*)rr)[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
 extern "C" __global__ void add_q8_1_f32(const float* __restrict__ a, const float* __restrict__ b,
                                         float* __restrict__ res,
                                         signed char* __restrict__ out_q, float* __restrict__ out_d,
