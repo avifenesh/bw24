@@ -20,6 +20,8 @@ from summarize_hourish_results import MATH_SCORE_POLICY, MATH_SCORE_VERSIONS
 # The promoted artifacts are expert overlays for the same frozen BW24 GGUF body.
 # Keep this explicit so reports compare the finished logical model, not just the overlay.
 DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
+# The trusted full suite permits complete reasoning; directional screens remain at 256.
+TRUSTED_MAX_GEN_TOKS = 2048
 FULL_SHARED_RECEIPT_KEYS = (
     "suite",
     "base_url",
@@ -231,6 +233,8 @@ def load_arm(
         for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
             if reference.get(key) is None:
                 raise ValueError(f"{arm}: full receipt missing {key}")
+        if reference.get("max_gen_toks_override") != TRUSTED_MAX_GEN_TOKS:
+            raise ValueError(f"{arm}: full receipt has wrong generation budget")
         for path, receipt in receipts:
             for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
                 if receipt.get(key) != reference.get(key):
@@ -307,6 +311,7 @@ def load_arm(
         raise ValueError(f"{arm}: copied manifest does not match receipt artifact identity")
 
     expected_limit = None if full_run else float(next(iter(expected_counts.values())))
+    expected_max_gen_toks = TRUSTED_MAX_GEN_TOKS if full_run else 256
     expected_model_args = {
         "model": arm,
         "base_url": reference["base_url"],
@@ -338,7 +343,7 @@ def load_arm(
             or config.get("model") != "local-completions"
             or config.get("model_args") != expected_model_args
             or str(config.get("batch_size")) != "1"
-            or config.get("gen_kwargs") != {"max_gen_toks": 256}
+            or config.get("gen_kwargs") != {"max_gen_toks": expected_max_gen_toks}
             or config.get("random_seed") != 0
             or config.get("numpy_seed") != 1234
             or config.get("torch_seed") != 1234
@@ -797,12 +802,17 @@ def self_test(lock: dict[str, Any]) -> None:
             result_path = run_dir / arm / "results_fixture.json"
             result = json.loads(result_path.read_text())
             result["config"]["limit"] = None
+            result["config"]["gen_kwargs"] = {"max_gen_toks": TRUSTED_MAX_GEN_TOKS}
             # The raw aggregate is deliberately poisoned. Full reporting must use only the
             # independently rescored immutable MATH evidence below.
             result[math_spec["result_section"]][PROMOTED_MATH_TASK][
                 f"{math_spec['metric']},{math_spec['filter']}"
             ] = 0.123456
             result_path.write_text(json.dumps(result))
+            receipt_path = run_dir / "run-metadata.json"
+            receipt = json.loads(receipt_path.read_text())
+            receipt["max_gen_toks_override"] = TRUSTED_MAX_GEN_TOKS
+            receipt_path.write_text(json.dumps(receipt))
             (run_dir / "suite.lock.json").write_text(json.dumps(full_lock))
             sample_path = exactly_one(
                 sorted((run_dir / arm).glob(math_spec["sample_glob"])),
@@ -850,6 +860,18 @@ def self_test(lock: dict[str, Any]) -> None:
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
         assert "full pinned" in markdown(full_report)
+        candidate_receipt_path = root / "candidate" / "fixture" / "run-metadata.json"
+        candidate_receipt = json.loads(candidate_receipt_path.read_text())
+        candidate_receipt["max_gen_toks_override"] = 256
+        candidate_receipt_path.write_text(json.dumps(candidate_receipt))
+        try:
+            build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
+        except ValueError as exc:
+            assert "wrong generation budget" in str(exc)
+        else:
+            raise AssertionError("truncated trusted-full receipt was accepted")
+        candidate_receipt["max_gen_toks_override"] = TRUSTED_MAX_GEN_TOKS
+        candidate_receipt_path.write_text(json.dumps(candidate_receipt))
         candidate_math = root / "candidate" / "fixture" / "math-score.json"
         original_candidate_math = candidate_math.read_text()
         candidate_math.write_text(original_candidate_math + "\n")

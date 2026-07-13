@@ -21,6 +21,9 @@ WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 EVAL_TIMEOUT_S=${EVAL_TIMEOUT_S:-604800}
 TASK_ATTEMPTS=${TASK_ATTEMPTS:-3}
+# MMLU-Pro's pinned task contract uses 2048; apply the same ceiling to GPQA/MATH so
+# strict final-answer extraction cannot be turned into a 256-token truncation test.
+TRUSTED_MAX_GEN_TOKS=2048
 
 TASKS=(
   gpqa_diamond_cot_zeroshot
@@ -115,7 +118,7 @@ HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
 ARM_COUNT=${#ARMS[@]}
 BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
-export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT \
+export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
@@ -134,6 +137,7 @@ payload = {
         "mmlu_pro_other", "mmlu_pro_economics", "mmlu_pro_law", "mmlu_pro_psychology",
     ],
     "documents_per_arm": 4746,
+    "max_gen_toks": int(os.environ["TRUSTED_MAX_GEN_TOKS"]),
     "vram_fraction": float(os.environ["VRAM_FRAC"]),
     "protocol": "all eight GPUs; task-family shards balanced across isolated per-arm server lanes; concurrency one per lane",
     "lane_allocation": {
@@ -266,7 +270,7 @@ run_lane() (
         BW24_SERVE_SPEC=0 BASE_URL=http://127.0.0.1:8080/v1/completions \
         OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" RUN_ID="$RUN_ID" \
         SUITE=candidate TASKS_OVERRIDE="$task" SHARD_ID="$task" LIMIT=all \
-        MAX_GEN_TOKS=256 NUM_CONCURRENT=1 EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
+        MAX_GEN_TOKS="$TRUSTED_MAX_GEN_TOKS" NUM_CONCURRENT=1 EVAL_TIMEOUT_S="$EVAL_TIMEOUT_S" \
         "$HERE/run_public_evals.sh" 2>&1 | tee -a "$arm_log/$task.log"
       statuses=("${PIPESTATUS[@]}")
       set -e
