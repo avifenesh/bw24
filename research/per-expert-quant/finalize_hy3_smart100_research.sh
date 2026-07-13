@@ -17,6 +17,8 @@ LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/smart100
 BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
 IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-9a1c92c}
 PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
+BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
+IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-seven-format-effects-38af56e}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -30,6 +32,8 @@ EVIDENCE_ROOTS=(
   "$BASELINE_ALLOCATION_ANALYSIS"
   "$IQ4_ALLOCATION_ANALYSIS"
   "$PAIR_ALLOCATION_ANALYSIS"
+  "$BASE_EFFECT_ANALYSIS"
+  "$IQ4_EFFECT_ANALYSIS"
   /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
   /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
   /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
@@ -115,6 +119,11 @@ for item in [*receipt["inputs"], receipt["output"], receipt["script"]]:
     assert target.is_file()
     assert sha256(target) == item["sha256"]
 PY
+done
+
+for root in "$BASE_EFFECT_ANALYSIS" "$IQ4_EFFECT_ANALYSIS"; do
+  ssh "$REMOTE" "test -s '$root/evidence.sha256' && sha256sum -c '$root/evidence.sha256'" \
+    >/dev/null || die "quant effects evidence validation failed for $root"
 done
 
 for root in "${EVIDENCE_ROOTS[@]}"; do
