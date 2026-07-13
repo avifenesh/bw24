@@ -2846,16 +2846,18 @@ __device__ __forceinline__ void q4_0_mmvq_batched(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            // int4-vectorized (2026-07-13, the L1TEX fix): same values, same dp4a order.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            const int al[4] = { a01.x, a01.y, a01.z, a01.w };
+            const int ah[4] = { a23.x, a23.y, a23.z, a23.w };
             int sumi = 0, sums = 0;
             #pragma unroll
             for (int k = 0; k < 4; k++) {
-                int a_lo = aq4[k];
-                int a_hi = aq4[4 + k];
-                sumi = dp4a(lo[k], a_lo, sumi);
-                sumi = dp4a(hi[k], a_hi, sumi);
-                sums = dp4a(0x01010101, a_lo, sums);
-                sums = dp4a(0x01010101, a_hi, sums);
+                sumi = dp4a(lo[k], al[k], sumi);
+                sumi = dp4a(hi[k], ah[k], sumi);
+                sums = dp4a(0x01010101, al[k], sums);
+                sums = dp4a(0x01010101, ah[k], sums);
             }
             acc[c] += d4 * (float)(sumi - 8 * sums) * ad[(size_t)c * nblk + blk];
         }
@@ -2913,10 +2915,12 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
-            int a[8];
-            #pragma unroll
-            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            // int4-vectorized (2026-07-13): the 8 scalar int loads were 4x the L1TEX
+            // transactions of the t=1 walk's two 16B loads — L1TEX measured 90% saturated
+            // (the b-tier limiter). Same bytes, same order per k — bit-identical.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
             int sums = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
@@ -6611,16 +6615,18 @@ __device__ __forceinline__ void q4_0_mmvq_batched_rp(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            // int4-vectorized (2026-07-13, the L1TEX fix): same values, same dp4a order.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            const int al[4] = { a01.x, a01.y, a01.z, a01.w };
+            const int ah[4] = { a23.x, a23.y, a23.z, a23.w };
             int sumi = 0, sums = 0;
             #pragma unroll
             for (int k = 0; k < 4; k++) {
-                int a_lo = aq4[k];
-                int a_hi = aq4[4 + k];
-                sumi = dp4a(lo[k], a_lo, sumi);
-                sumi = dp4a(hi[k], a_hi, sumi);
-                sums = dp4a(0x01010101, a_lo, sums);
-                sums = dp4a(0x01010101, a_hi, sums);
+                sumi = dp4a(lo[k], al[k], sumi);
+                sumi = dp4a(hi[k], ah[k], sumi);
+                sums = dp4a(0x01010101, al[k], sums);
+                sums = dp4a(0x01010101, ah[k], sums);
             }
             acc[c] += d4 * (float)(sumi - 8 * sums) * ad[(size_t)c * nblk + blk];
         }
@@ -6696,10 +6702,12 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
-            int a[8];
-            #pragma unroll
-            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            // int4-vectorized (2026-07-13): the 8 scalar int loads were 4x the L1TEX
+            // transactions of the t=1 walk's two 16B loads — L1TEX measured 90% saturated
+            // (the b-tier limiter). Same bytes, same order per k — bit-identical.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
             int sums = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);

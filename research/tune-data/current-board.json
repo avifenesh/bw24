@@ -95,13 +95,13 @@
   },
   {
    "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
-   "bw24": 355.2,
+   "bw24": 381.9,
    "llama": 258.7,
    "spec": true
   },
   {
    "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
-   "bw24": 126.0,
+   "bw24": 167.5,
    "llama": 112.1,
    "spec": true
   },
@@ -111,8 +111,8 @@
    "llama": 181.3
   },
   {
-   "model": "Gemma-4 E4B (K=1 MTP assistant)",
-   "bw24": 239.7,
+   "model": "Gemma-4 E4B (K=2 MTP assistant)",
+   "bw24": 259.9,
    "llama": 181.3,
    "spec": true
   }
