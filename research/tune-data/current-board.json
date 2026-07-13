@@ -112,7 +112,7 @@
     },
     {
       "model": "Gemma-4 E4B (K=2 MTP assistant)",
-      "bw24": 259.9,
+      "bw24": 264.1,
       "llama": 181.3,
       "spec": true
     }

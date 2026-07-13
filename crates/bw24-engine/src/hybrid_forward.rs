@@ -3916,10 +3916,17 @@ impl HybridModel {
             // rms(o, post_attn_norm) + residual add + ffn_norm — glue-fusion lane).
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
-            // glue wave 5: at t=1 the tail DEFERS its post_ffw norm — the FFN exit fuses
+            // glue wave 5: the tail DEFERS its post_ffw norm — the FFN exit fuses
             // rms(f0, post_ffw) + residual add + q8 emit into ONE launch (rms_pre_add_q8_1),
-            // killing the rms_norm + add_q8_1 pair per layer. Bit-identical chain.
-            let fuse_exit = t == 1 && e.uses_q8_1_fast(&e4b.inp_gate);
+            // killing the rms_norm + add_q8_1 pair per layer. T-GENERIC since 2026-07-13:
+            // the fused single-phase reduction is NOT FP-order-identical to the unfused
+            // rms_norm+add pair (the original "bit-identical chain" claim was FALSE — the
+            // t==1 gate left the batched VERIFY on the unfused chain and split E4B verify
+            // from decode by logit maxdiff ~0.45, the greedy tie-flip at depth: gate 135/256.
+            // NOFUSE bisect: disabling ONLY this fusion -> verify maxdiff 0.000e0). With the
+            // gate dropped, decode AND verify ride the same fused chain — parity by
+            // construction, VERIFY-GATE 0.000e0.
+            let fuse_exit = e.uses_q8_1_fast(&e4b.inp_gate);
             let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
                 e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()), fuse_exit)?;
             let mut resid = e.uninit(t * n_embd)?;
