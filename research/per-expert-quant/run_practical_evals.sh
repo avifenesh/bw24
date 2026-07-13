@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 LOCK=${LOCK:-$HERE/practical-evals.lock.json}
 HARBOR_BIN=${HARBOR_BIN:-$(command -v harbor || true)}
+HARBOR_TASK_CACHE_ROOT=${HARBOR_TASK_CACHE_ROOT:-$HOME/.cache/harbor/tasks/packages}
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1}
 OUT_ROOT=${OUT_ROOT:-$HERE/results/practical}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
@@ -30,6 +31,8 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_ID may contain only letters, digits, dot, underscore, and dash"
 [[ "$PANEL" == swe || "$PANEL" == terminal ]] || die "PANEL must be swe or terminal"
 [[ -x "$HARBOR_BIN" ]] || die "Harbor is required"
+[[ -d "$HARBOR_TASK_CACHE_ROOT/swe-bench" ]] || die "missing cached SWE tasks: $HARBOR_TASK_CACHE_ROOT/swe-bench"
+[[ -d "$HARBOR_TASK_CACHE_ROOT/terminal-bench" ]] || die "missing cached Terminal tasks: $HARBOR_TASK_CACHE_ROOT/terminal-bench"
 [[ -f "$LOCK" ]] || die "missing practical eval lock: $LOCK"
 [[ -x "$SERVER_BIN" ]] || die "missing executable server: $SERVER_BIN"
 [[ -f "$SERVER_LOG" ]] || die "missing server log: $SERVER_LOG"
@@ -44,7 +47,9 @@ docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
 
 HARBOR_VERSION=$($HARBOR_BIN --version)
 [[ "$HARBOR_VERSION" == 0.18.0 ]] || die "expected Harbor 0.18.0, got $HARBOR_VERSION"
-python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK"
+python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" \
+  --swe-harbor-root "$HARBOR_TASK_CACHE_ROOT/swe-bench" \
+  --terminal-root "$HARBOR_TASK_CACHE_ROOT/terminal-bench"
 MAX_TURNS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["agent_scaffold"]["max_turns"])' "$LOCK")
 
 mapfile -t selection < <(python3 - "$LOCK" "$PANEL" <<'PY'

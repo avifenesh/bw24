@@ -55,6 +55,15 @@ def task_content_hash(task_dir: Path) -> str:
     return outer.hexdigest()
 
 
+def resolve_cached_task(root: Path, name: str, digest: str) -> Path:
+    task_root = root / name
+    if (task_root / "task.toml").is_file():
+        return task_root
+    digest_dir = task_root / digest.removeprefix("sha256:")
+    require(digest_dir.is_dir(), f"missing cached task directory: {digest_dir}")
+    return digest_dir
+
+
 def validate_structure(lock: dict[str, Any]) -> None:
     require(lock.get("format") == "bw24-practical-evals-v1", "wrong lock format")
     protocol = lock.get("protocol")
@@ -151,8 +160,7 @@ def validate_swe_source(lock: dict[str, Any], parquet: Path) -> None:
 def validate_terminal_source(lock: dict[str, Any], root: Path) -> None:
     for expected in lock["terminal_bench_2"]["tasks"]:
         short_name = expected["name"].split("/", 1)[1]
-        task_dir = root / short_name
-        require(task_dir.is_dir(), f"missing Terminal task directory: {task_dir}")
+        task_dir = resolve_cached_task(root, short_name, expected["digest"])
         config = tomllib.loads((task_dir / "task.toml").read_text())
         require(config["task"]["name"] == expected["name"], f"Terminal task name differs: {short_name}")
         require(config["metadata"]["difficulty"] == expected["difficulty"], f"Terminal difficulty differs: {short_name}")
@@ -167,8 +175,7 @@ def validate_terminal_source(lock: dict[str, Any], root: Path) -> None:
 
 def validate_swe_harbor_source(lock: dict[str, Any], root: Path) -> None:
     for expected in lock["swe_bench_verified"]["tasks"]:
-        task_dir = root / expected["instance_id"]
-        require(task_dir.is_dir(), f"missing SWE Harbor task directory: {task_dir}")
+        task_dir = resolve_cached_task(root, expected["instance_id"], expected["harbor_digest"])
         config = tomllib.loads((task_dir / "task.toml").read_text())
         require(config["task"]["name"] == expected["harbor_task"], f"SWE Harbor task name differs: {expected['instance_id']}")
         actual_digest = "sha256:" + task_content_hash(task_dir)
@@ -186,6 +193,11 @@ def self_test() -> None:
         (task / "instruction.md").write_text("do the task\n")
         second = task_content_hash(task)
         assert first != second and len(first) == 64 and len(second) == 64
+        digest = "a" * 64
+        cached = task / "cached-task" / digest
+        cached.mkdir(parents=True)
+        (cached / "task.toml").write_text("version = '1'\n")
+        assert resolve_cached_task(task, "cached-task", f"sha256:{digest}") == cached
     print("practical eval lock self-test: PASS")
 
 
