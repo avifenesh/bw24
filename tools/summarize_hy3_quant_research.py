@@ -533,6 +533,77 @@ def plan_summary(
     }
 
 
+def effect_alignment_summary(
+    plan: dict[str, Any], effect_summary: dict[str, Any]
+) -> dict[str, Any]:
+    assignments: dict[tuple[int, int, str], str] = {}
+    for item in plan["assignments"]:
+        layer = int(item["layer"])
+        qtype = str(item["qtype"])
+        for expert in item["experts"]:
+            for projection in item["projections"]:
+                key = (layer, int(expert), str(projection))
+                if key in assignments:
+                    raise ValueError(f"duplicate plan assignment for {key}")
+                assignments[key] = qtype
+
+    def assigned_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        for row in rows:
+            key = (int(row["layer"]), int(row["expert"]), str(row["projection"]))
+            result.append({**row, "assigned_qtype": assignments.get(key, "PRUNED")})
+        return result
+
+    sensitive_functions = assigned_rows(
+        effect_summary["most_q2_sensitive_functions"]
+    )
+    precision_upgrades = assigned_rows(effect_summary["best_precision_upgrades"])
+
+    def qtype_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in rows:
+            qtype = row["assigned_qtype"]
+            counts[qtype] = counts.get(qtype, 0) + 1
+        return dict(sorted(counts.items()))
+
+    layer_summary = plan["layer_summary"]
+    sensitive_layers = {
+        int(row["layer"]) for row in effect_summary["most_q2_sensitive_layers"]
+    }
+    all_layers = {int(layer) for layer in layer_summary}
+    if not sensitive_layers or not sensitive_layers < all_layers:
+        raise ValueError("sensitive-layer set cannot be contrasted with remaining layers")
+    sensitive_retained = [
+        int(layer_summary[str(layer)]["retained"]) for layer in sensitive_layers
+    ]
+    other_retained = [
+        int(layer_summary[str(layer)]["retained"])
+        for layer in all_layers - sensitive_layers
+    ]
+    sensitive_pruned = [
+        int(layer_summary[str(layer)]["pruned"]) for layer in sensitive_layers
+    ]
+    other_pruned = [
+        int(layer_summary[str(layer)]["pruned"])
+        for layer in all_layers - sensitive_layers
+    ]
+    return {
+        "most_q2_sensitive_function_assignments": sensitive_functions,
+        "most_q2_sensitive_function_qtype_counts": qtype_counts(sensitive_functions),
+        "best_precision_upgrade_assignments": precision_upgrades,
+        "best_precision_upgrade_qtype_counts": qtype_counts(precision_upgrades),
+        "top_sensitive_layer_count": len(sensitive_layers),
+        "top_sensitive_layers_mean_retained": (
+            math.fsum(sensitive_retained) / len(sensitive_retained)
+        ),
+        "other_layers_mean_retained": math.fsum(other_retained) / len(other_retained),
+        "top_sensitive_layers_mean_pruned": (
+            math.fsum(sensitive_pruned) / len(sensitive_pruned)
+        ),
+        "other_layers_mean_pruned": math.fsum(other_pruned) / len(other_pruned),
+    }
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     effects = load(args.effects)
     damage = load(args.damage)
@@ -621,6 +692,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     format_efficiency = format_efficiency_summary(effects)
     effect_summary = effect_map_summary(effects)
+    plans["layer_balanced"]["effect_alignment"] = effect_alignment_summary(
+        load(plan_paths["layer_balanced"]), effect_summary
+    )
     healing_ablation = healing_ablation_summary(healing_frontier)
     directional_frontier = directional_frontier_summary(frontier)
     result = {
@@ -769,6 +843,9 @@ def markdown(result: dict[str, Any]) -> str:
             f"{item['damage_reduction']:.2%} versus `{item['loser']}`."
         )
     effect_map = result["effect_map_summary"]
+    alignment = result["seven_format_candidates"]["layer_balanced"][
+        "effect_alignment"
+    ]
     lines += [
         "",
         "## Private layer, expert, and function effect map",
@@ -797,6 +874,12 @@ def markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"| {row['layer']} | {row['weighted_mean']:.6g} | {row['maximum']:.6g} |"
         )
+    lines += [
+        "",
+        f"The top {alignment['top_sensitive_layer_count']} Q2-sensitive layers retain "
+        f"{alignment['top_sensitive_layers_mean_retained']:.1f} experts on average, versus "
+        f"{alignment['other_layers_mean_retained']:.1f} across the remaining layers.",
+    ]
     if measured_plan is not None:
         lines += [
             "",
@@ -831,12 +914,13 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         "### Most Q2-sensitive expert functions",
         "",
-        "| Layer | Expert | Projection | Routed tokens | Normalized MSE | Scaled error |",
-        "|---:|---:|---|---:|---:|---:|",
+        "| Layer | Expert | Projection | Assigned format | Routed tokens | Normalized MSE | Scaled error |",
+        "|---:|---:|---|---|---:|---:|---:|",
     ]
-    for row in effect_map["most_q2_sensitive_functions"]:
+    for row in alignment["most_q2_sensitive_function_assignments"]:
         lines.append(
             f"| {row['layer']} | {row['expert']} | {row['projection']} | "
+            f"{row['assigned_qtype']} | "
             f"{row['routed_tokens']:,} | {row['normalized_mse']:.6g} | "
             f"{row['full_scaled_squared_error']:.6g} |"
         )
@@ -844,13 +928,14 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         "### Best measured precision upgrades",
         "",
-        "| Layer | Expert | Projection | Upgrade | Extra bytes | Error reduction/GB |",
-        "|---:|---:|---|---|---:|---:|",
+        "| Layer | Expert | Projection | Suggested upgrade | Assigned format | Extra bytes | Error reduction/GB |",
+        "|---:|---:|---|---|---|---:|---:|",
     ]
-    for row in effect_map["best_precision_upgrades"]:
+    for row in alignment["best_precision_upgrade_assignments"]:
         lines.append(
             f"| {row['layer']} | {row['expert']} | {row['projection']} | "
-            f"{row['from_qtype']} -> {row['to_qtype']} | {row['extra_bytes']:,} | "
+            f"{row['from_qtype']} -> {row['to_qtype']} | {row['assigned_qtype']} | "
+            f"{row['extra_bytes']:,} | "
             f"{row['error_reduction_per_gb']:.6g} |"
         )
     healing = result["healing_ablation"]
@@ -928,7 +1013,10 @@ def self_test() -> None:
             paths[name] = path
             return path
 
-        layer_summary = {"1": {"retained": 100, "pruned": 92}}
+        layer_summary = {
+            "1": {"retained": 100, "pruned": 92},
+            "2": {"retained": 90, "pruned": 102},
+        }
         plans = {}
         for name, arm, size in (
             ("uncentered", PLAN_ARMS["uncentered"], 100),
@@ -936,7 +1024,7 @@ def self_test() -> None:
             ("pareto", PLAN_ARMS["pareto"], 98),
             ("layer_balanced", PLAN_ARMS["layer_balanced"], 97),
         ):
-            selection = {"retained_experts": 100, "pruned_experts": 92}
+            selection = {"retained_experts": 190, "pruned_experts": 194}
             if name == "layer_balanced":
                 selection.update({
                     "estimated_absolute_output_damage": 97.0,
@@ -945,13 +1033,15 @@ def self_test() -> None:
                 })
             path = write(f"{name}.json", {
                 "format": PLAN_FORMAT, "recipe": "measured-global-projection-budget",
-                "policy": {"result_logical_bytes": size, "qtype_projection_counts": {"Q2_K": 300}},
+                "policy": {"result_logical_bytes": size, "qtype_projection_counts": {"Q2_K": 570}},
                 "calibration": {"public_eval_data_used_for_selection": False},
                 "selection": selection,
                 "layer_summary": layer_summary,
-                "assignments": [{"layer": 1, "experts": list(range(100)),
-                                 "projections": ["gate", "up", "down"],
-                                 "qtype": "Q2_K"}],
+                "assignments": [
+                    {"layer": layer, "experts": list(range(layer_summary[str(layer)]["retained"])),
+                     "projections": ["gate", "up", "down"], "qtype": "Q2_K"}
+                    for layer in (1, 2)
+                ],
             })
             plans[name] = (arm, path, size)
         damage_plans = {
