@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -55,8 +56,40 @@ def parse_arm_spec(raw: str) -> tuple[str, pathlib.Path, str]:
     return arm, pathlib.Path(out_root).resolve(), run_id
 
 
+def parse_commit_pair(raw: str) -> tuple[str, str]:
+    try:
+        reference, candidate = raw.split("=", 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "compatible commits must be REFERENCE=CANDIDATE"
+        ) from exc
+    if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (reference, candidate)):
+        raise argparse.ArgumentTypeError("compatible commits must be full lowercase Git SHAs")
+    if reference == candidate:
+        raise argparse.ArgumentTypeError("compatible commits must differ")
+    return reference, candidate
+
+
 def comparable_config(value: dict[str, Any]) -> dict[str, Any]:
     return {key: value.get(key) for key in COMPARABLE_CONFIG_KEYS}
+
+
+def config_compatibility_override(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    compatible_commit_pairs: set[tuple[str, str]],
+) -> dict[str, str] | None:
+    differing = sorted(key for key in reference if reference[key] != candidate[key])
+    if not differing:
+        return None
+    pair = (reference.get("bw24_commit"), candidate.get("bw24_commit"))
+    if differing != ["bw24_commit"] or pair not in compatible_commit_pairs:
+        raise ValueError("run configuration differs from baseline")
+    return {
+        "key": "bw24_commit",
+        "reference": pair[0],
+        "candidate": pair[1],
+    }
 
 
 def pareto_arms(loaded: dict[str, dict[str, Any]]) -> list[str]:
@@ -121,6 +154,7 @@ def summarize(
     expected_server_sha: str,
     arm_specs: list[tuple[str, pathlib.Path, str]],
     baseline: str,
+    compatible_commit_pairs: set[tuple[str, str]],
 ) -> dict[str, Any]:
     if len({arm for arm, _, _ in arm_specs}) != len(arm_specs):
         raise ValueError("arm specs contain duplicate arm names")
@@ -136,9 +170,18 @@ def summarize(
     }
     reference = loaded[baseline]
     reference_config = comparable_config(reference["shared_config"])
+    compatibility_overrides = []
     for arm, data in loaded.items():
-        if comparable_config(data["shared_config"]) != reference_config:
-            raise ValueError(f"{arm}: run configuration differs from baseline")
+        try:
+            override = config_compatibility_override(
+                reference_config,
+                comparable_config(data["shared_config"]),
+                compatible_commit_pairs,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{arm}: {exc}") from exc
+        if override is not None:
+            compatibility_overrides.append({"arm": arm, **override})
         if data["task_hashes"] != reference["task_hashes"]:
             raise ValueError(f"{arm}: task definitions differ from baseline")
         if data["suite_lock_sha256"] != reference["suite_lock_sha256"]:
@@ -184,6 +227,7 @@ def summarize(
         "server_binary_sha256": expected_server_sha,
         "baseline": baseline,
         "source_runs": sources,
+        "configuration_compatibility_overrides": compatibility_overrides,
         "arms": loaded,
         "comparisons_to_baseline": comparisons,
         "pairwise_comparisons": pairwise,
@@ -193,6 +237,29 @@ def summarize(
 
 def self_test() -> None:
     assert parse_arm_spec("a=/tmp/x::run") == ("a", pathlib.Path("/tmp/x"), "run")
+    old = "a" * 40
+    new = "b" * 40
+    assert parse_commit_pair(f"{old}={new}") == (old, new)
+    reference_config = {key: "same" for key in COMPARABLE_CONFIG_KEYS}
+    reference_config["bw24_commit"] = old
+    candidate_config = dict(reference_config, bw24_commit=new)
+    assert config_compatibility_override(
+        reference_config, candidate_config, {(old, new)}
+    ) == {"key": "bw24_commit", "reference": old, "candidate": new}
+    for pairs in (set(), {(new, old)}):
+        try:
+            config_compatibility_override(reference_config, candidate_config, pairs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unaudited commit mismatch was accepted")
+    rejected_config = dict(candidate_config, num_concurrent=2)
+    try:
+        config_compatibility_override(reference_config, rejected_config, {(old, new)})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-commit configuration mismatch was accepted")
     loaded = {
         "small": {"logical_model_bytes": 100, "domain_macro": 0.5},
         "large": {"logical_model_bytes": 200, "domain_macro": 0.7},
@@ -220,12 +287,20 @@ def main() -> None:
     parser.add_argument("--server-sha256", required=True)
     parser.add_argument("--arm", action="append", type=parse_arm_spec, required=True)
     parser.add_argument("--baseline", required=True)
+    parser.add_argument(
+        "--compatible-bw24-commits",
+        action="append",
+        default=[],
+        type=parse_commit_pair,
+        help="explicitly audited REFERENCE=CANDIDATE orchestration commit pair",
+    )
     parser.add_argument("--output", type=pathlib.Path, required=True)
     args = parser.parse_args()
     if len(args.server_sha256) != 64:
         raise SystemExit("--server-sha256 must be a SHA-256 digest")
     report = summarize(
-        args.panel_lock.resolve(), args.server_sha256, args.arm, args.baseline
+        args.panel_lock.resolve(), args.server_sha256, args.arm, args.baseline,
+        set(args.compatible_bw24_commits),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

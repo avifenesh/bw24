@@ -18,6 +18,7 @@ BASE_DIRECTIONAL_ROOT=${BASE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/iq
 BASE_DIRECTIONAL_COMPLETE=${BASE_DIRECTIONAL_COMPLETE:-/data/logs/iq3-iq4-q4-pareto-directional-v1/complete}
 EVAL_ROOT=${EVAL_ROOT:-/data/src/bw24-eval-valid-c8689ec}
 EVAL_COMMIT=${EVAL_COMMIT:-c8689ec937c899fbdbd399432ec175e7d48b53ae}
+BASE_EVAL_COMMIT=${BASE_EVAL_COMMIT:-ae89c11975d7d51bbce0a56ae5963ad42dc68a6a}
 PANEL_LOCK=${PANEL_LOCK:-$EVAL_ROOT/research/per-expert-quant/expanded-capability-panel.lock.json}
 PANEL_SHA256=${PANEL_SHA256:-33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b}
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
@@ -34,6 +35,7 @@ EVAL_CPU_START=${EVAL_CPU_START:-48}
 EVAL_CPU_END=${EVAL_CPU_END:-59}
 EVAL_NUMA=${EVAL_NUMA:-1}
 SCORER_LOCK=${SCORER_LOCK:-/tmp/bw24-layer-balanced100-scorer.lock}
+RESUME_RUN_ID=${RESUME_RUN_ID:-}
 
 die() { echo "layer-balanced100 eval transition: $*" >&2; exit 1; }
 port_listening() { ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
@@ -66,23 +68,22 @@ for path in "$artifact/manifest.json" "$BUILD_EVIDENCE" "$PLAN" "$CONSTRAINTS"; 
   [[ -f "$path" ]] || die "missing layer-balanced100 prerequisite $path"
 done
 sha256sum -c "$BUILD_EVIDENCE" >"$LOG_ROOT/build-evidence-check.log"
-port_listening "$PRIVATE_GATE_PORT" && die "private gate port $PRIVATE_GATE_PORT is already in use"
-port_listening "$EVAL_PORT" && die "eval port $EVAL_PORT is already in use"
-gpu_busy "$EVAL_GPU" && die "eval GPU $EVAL_GPU is already in use"
-
-if [[ ! -f "$PRIVATE_GATE_ROOT/complete" ]]; then
-  SERVER_BIN="$SERVER_BIN" ART_ROOT="$ART_ROOT" \
-    REQUESTS=/data/calibration/hy3-confidence-v1/requests.jsonl OUT_ROOT="$PRIVATE_GATE_ROOT" \
-    PY="$PY" CAPTURE_TOOL="$EVAL_ROOT/research/per-expert-quant/capture_calibration.py" \
-    HEALTH_TOOL="$EVAL_ROOT/research/per-expert-quant/validate_server_health.py" \
-    ROUTE_VALIDATOR="$ROOT/research/per-expert-quant/validate_pruned_route_trace.py" \
-    GPU_BASE="$EVAL_GPU" PORT_BASE="$PRIVATE_GATE_PORT" CPU_BASE="$EVAL_CPU_START" \
-    ARMS_CSV="$ARM" "$ROOT/research/per-expert-quant/run_100gb_private_artifact_gate.sh"
-fi
-
-RUN_ID=layer-balanced100-v1-$(git -C "$ROOT" rev-parse --short=7 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
-printf '%s\n' "$RUN_ID" >"$OUT_ROOT/_active-run-id"
-"$PY" - "$OUT_ROOT/run-configs/$RUN_ID.json" "$RUN_ID" "$ROOT" "$EVAL_ROOT" \
+if [[ -z "$RESUME_RUN_ID" ]]; then
+  port_listening "$PRIVATE_GATE_PORT" && die "private gate port $PRIVATE_GATE_PORT is already in use"
+  port_listening "$EVAL_PORT" && die "eval port $EVAL_PORT is already in use"
+  gpu_busy "$EVAL_GPU" && die "eval GPU $EVAL_GPU is already in use"
+  if [[ ! -f "$PRIVATE_GATE_ROOT/complete" ]]; then
+    SERVER_BIN="$SERVER_BIN" ART_ROOT="$ART_ROOT" \
+      REQUESTS=/data/calibration/hy3-confidence-v1/requests.jsonl OUT_ROOT="$PRIVATE_GATE_ROOT" \
+      PY="$PY" CAPTURE_TOOL="$EVAL_ROOT/research/per-expert-quant/capture_calibration.py" \
+      HEALTH_TOOL="$EVAL_ROOT/research/per-expert-quant/validate_server_health.py" \
+      ROUTE_VALIDATOR="$ROOT/research/per-expert-quant/validate_pruned_route_trace.py" \
+      GPU_BASE="$EVAL_GPU" PORT_BASE="$PRIVATE_GATE_PORT" CPU_BASE="$EVAL_CPU_START" \
+      ARMS_CSV="$ARM" "$ROOT/research/per-expert-quant/run_100gb_private_artifact_gate.sh"
+  fi
+  RUN_ID=layer-balanced100-v1-$(git -C "$ROOT" rev-parse --short=7 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
+  printf '%s\n' "$RUN_ID" >"$OUT_ROOT/_active-run-id"
+  "$PY" - "$OUT_ROOT/run-configs/$RUN_ID.json" "$RUN_ID" "$ROOT" "$EVAL_ROOT" \
   "$PANEL_LOCK" "$SERVER_BIN" "$artifact" "$ARM" "$PLAN" "$CONSTRAINTS" \
   "$EVAL_GPU" "$EVAL_PORT" "$EVAL_CPU_START" "$EVAL_CPU_END" "$EVAL_NUMA" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
@@ -107,20 +108,39 @@ d={"format":"bw24-layer-balanced100-directional-run-v1","run_id":run_id,
 pathlib.Path(out).write_text(json.dumps(d,indent=2,sort_keys=True)+"\n")
 PY
 
-CUDA_VISIBLE_DEVICES="$EVAL_GPU" taskset -c "$EVAL_CPU_START-$EVAL_CPU_END" \
-  numactl --membind="$EVAL_NUMA" \
-  env ARM="$ARM" ARTIFACT="$artifact" RUN_ID="$RUN_ID" SERVER_BIN="$SERVER_BIN" \
-    OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" PANEL_LOCK="$PANEL_LOCK" \
-    ADDR="127.0.0.1:$EVAL_PORT" BW24_SPILL_PREAD_DEPTH=8 \
-    HOURISH_SCORER_LOCK="$SCORER_LOCK" \
-    "$EVAL_ROOT/research/per-expert-quant/run_hourish_one_arm.sh" \
-    >"$LOG_ROOT/$RUN_ID-$ARM.launcher.log" 2>&1
-port_listening "$EVAL_PORT" && die "server remained on eval port $EVAL_PORT"
-summary="$OUT_ROOT/layer-balanced100-summary-$RUN_ID.json"
-"$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
-  --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
-  --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
-  --server-sha256 "$SERVER_SHA256" --output "$summary"
+  CUDA_VISIBLE_DEVICES="$EVAL_GPU" taskset -c "$EVAL_CPU_START-$EVAL_CPU_END" \
+    numactl --membind="$EVAL_NUMA" \
+    env ARM="$ARM" ARTIFACT="$artifact" RUN_ID="$RUN_ID" SERVER_BIN="$SERVER_BIN" \
+      OUT_ROOT="$OUT_ROOT" CACHE_DIR="$CACHE_DIR" PANEL_LOCK="$PANEL_LOCK" \
+      ADDR="127.0.0.1:$EVAL_PORT" BW24_SPILL_PREAD_DEPTH=8 \
+      HOURISH_SCORER_LOCK="$SCORER_LOCK" \
+      "$EVAL_ROOT/research/per-expert-quant/run_hourish_one_arm.sh" \
+      >"$LOG_ROOT/$RUN_ID-$ARM.launcher.log" 2>&1
+  port_listening "$EVAL_PORT" && die "server remained on eval port $EVAL_PORT"
+  summary="$OUT_ROOT/layer-balanced100-summary-$RUN_ID.json"
+  "$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
+    --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
+    --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
+    --server-sha256 "$SERVER_SHA256" --output "$summary"
+else
+  [[ "$RESUME_RUN_ID" =~ ^layer-balanced100-v1-[A-Za-z0-9._-]+$ ]] \
+    || die "invalid RESUME_RUN_ID"
+  [[ -f "$OUT_ROOT/_active-run-id" && $(<"$OUT_ROOT/_active-run-id") == "$RESUME_RUN_ID" ]] \
+    || die "RESUME_RUN_ID does not match the active run"
+  RUN_ID=$RESUME_RUN_ID
+  summary="$OUT_ROOT/layer-balanced100-summary-$RUN_ID.json"
+  [[ -f "$summary" && -f "$OUT_ROOT/run-configs/$RUN_ID.json" ]] \
+    || die "resume requires the immutable run config and strict summary"
+  verify_summary=$(mktemp "$LOG_ROOT/resume-summary.XXXXXX.json")
+  trap 'rm -f "${verify_summary:-}"' EXIT
+  "$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
+    --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
+    --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
+    --server-sha256 "$SERVER_SHA256" --output "$verify_summary"
+  cmp -s "$verify_summary" "$summary" || die "resume summary differs from immutable summary"
+  rm -f "$verify_summary"
+  trap - EXIT
+fi
 
 while [[ ! -f "$BASE_DIRECTIONAL_COMPLETE" ]]; do sleep 30; done
 base_run=$(<"$BASE_DIRECTIONAL_ROOT/_active-run-id")
@@ -135,7 +155,8 @@ for item in d["source_runs"]:
 PY
 )
 frontier="$OUT_ROOT/layer-balanced100-frontier-$RUN_ID.json"
-frontier_args=(--panel-lock "$PANEL_LOCK" --server-sha256 "$SERVER_SHA256")
+frontier_args=(--panel-lock "$PANEL_LOCK" --server-sha256 "$SERVER_SHA256" \
+  --compatible-bw24-commits "$BASE_EVAL_COMMIT=$EVAL_COMMIT")
 for spec in "${base_specs[@]}"; do frontier_args+=(--arm "$spec"); done
 frontier_args+=(--arm "$ARM=$OUT_ROOT::$RUN_ID" --baseline plain_quant --output "$frontier")
 "$PY" "$ROOT/research/per-expert-quant/summarize_cross_run_hourish.py" "${frontier_args[@]}"
