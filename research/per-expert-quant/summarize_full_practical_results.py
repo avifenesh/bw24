@@ -7,18 +7,67 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SPILL_KEYS = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
 FULL_MAX_TURNS = 100
 SHARED_KEYS = (
-    "panel", "dataset", "dataset_name", "dataset_digest", "base_url",
+    "panel", "dataset", "dataset_name", "dataset_digest",
     "harbor_version", "bw24_commit", "lock_sha256", "server_binary_sha256",
     "declared_spill_io", "declared_spill_pread_depth", "declared_spill_stats",
     "declared_serve_spec", "declared_max_turns",
 )
+
+
+def validate_lane_base_url(value: Any) -> str:
+    require(isinstance(value, str), "full practical base_url is not a string")
+    parsed = urlsplit(value)
+    require(
+        parsed.scheme == "http"
+        and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None
+        and 8080 <= parsed.port <= 8087
+        and parsed.path == "/v1"
+        and not parsed.query
+        and not parsed.fragment,
+        f"invalid full practical base_url: {value}",
+    )
+    return value
+
+
+def validate_lane_base_urls(values: list[str], expected_count: int) -> list[str]:
+    require(len(values) == expected_count, "full practical endpoint count differs")
+    validated = [validate_lane_base_url(value) for value in values]
+    if expected_count > 1:
+        require(len(set(validated)) == expected_count, "full practical lanes share an endpoint")
+    return sorted(validated)
+
+
+def expected_agent_kwargs(scaffold: dict[str, Any], lane_base_url: str) -> dict[str, Any]:
+    return {
+        "api_base": validate_lane_base_url(lane_base_url),
+        "temperature": scaffold["temperature"],
+        "max_turns": FULL_MAX_TURNS,
+        "parser_name": scaffold["parser_name"],
+        "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
+        "enable_summarize": scaffold["enable_summarize"],
+        "store_all_messages": scaffold["store_all_messages"],
+        "record_terminal_session": scaffold["record_terminal_session"],
+        "model_info": {
+            "max_input_tokens": scaffold["max_input_tokens"],
+            "max_output_tokens": scaffold["max_output_tokens"],
+            "input_cost_per_token": 0,
+            "output_cost_per_token": 0,
+        },
+        "llm_call_kwargs": {
+            "max_tokens": scaffold["llm_call_max_tokens"],
+            "timeout": scaffold["llm_call_timeout_seconds"],
+        },
+    }
 
 
 def require(condition: bool, message: str) -> None:
@@ -58,6 +107,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
     reference: dict[str, Any] | None = None
     artifact_bytes: int | None = None
     elapsed_total = 0.0
+    base_urls: list[str] = []
     for receipt_path in receipt_paths:
         shard = receipt_path.parent
         paths = {
@@ -94,6 +144,8 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         require(spill["reads"] > 0 and spill["bytes"] > 0 and spill["errors"] == 0 and spill["short_reads"] == 0, f"spill failure: {shard}")
         require(receipt.get("dataset_name") == name and receipt.get("dataset_digest") == digest, f"dataset differs: {shard}")
         require(receipt.get("declared_max_turns") == FULL_MAX_TURNS, f"full turn budget differs: {shard}")
+        lane_base_url = validate_lane_base_url(receipt.get("base_url"))
+        base_urls.append(lane_base_url)
         datasets = config.get("datasets")
         require(isinstance(datasets, list) and len(datasets) == 1 and datasets[0].get("name") == name and (datasets[0].get("version") == digest or datasets[0].get("ref") == digest), f"Harbor dataset differs: {shard}")
         require(datasets[0].get("task_names") == list(selected), f"Harbor selected tasks differ: {shard}")
@@ -103,26 +155,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         agents = config.get("agents")
         require(isinstance(agents, list) and len(agents) == 1 and agents[0].get("name") == "terminus-2" and agents[0].get("model_name") == f"openai/{arm}", f"wrong model: {shard}")
         scaffold = lock["protocol"]["agent_scaffold"]
-        expected_kwargs = {
-            "api_base": scaffold["api_base"],
-            "temperature": scaffold["temperature"],
-            "max_turns": FULL_MAX_TURNS,
-            "parser_name": scaffold["parser_name"],
-            "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
-            "enable_summarize": scaffold["enable_summarize"],
-            "store_all_messages": scaffold["store_all_messages"],
-            "record_terminal_session": scaffold["record_terminal_session"],
-            "model_info": {
-                "max_input_tokens": scaffold["max_input_tokens"],
-                "max_output_tokens": scaffold["max_output_tokens"],
-                "input_cost_per_token": 0,
-                "output_cost_per_token": 0,
-            },
-            "llm_call_kwargs": {
-                "max_tokens": scaffold["llm_call_max_tokens"],
-                "timeout": scaffold["llm_call_timeout_seconds"],
-            },
-        }
+        expected_kwargs = expected_agent_kwargs(scaffold, lane_base_url)
         require(agents[0].get("kwargs") == expected_kwargs, f"agent scaffold differs: {shard}")
         if reference is None:
             reference = receipt
@@ -176,9 +209,11 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         )
         require(receipt.get("timed_out") == shard_timeouts, f"timeout count differs: {shard}")
     require(digests == expected_map, f"full task union differs: {run_dir}")
+    base_urls = validate_lane_base_urls(base_urls, len(receipt_paths))
     assert reference is not None and artifact_bytes is not None
     return {
         "arm": reference["arm"], "artifact_bytes": artifact_bytes,
+        "base_urls": base_urls,
         "elapsed_seconds": elapsed_total, "rewards": rewards,
         "raw_verifier_rewards": raw_verifier_rewards,
         "timeouts": timeouts, "timeout_count": sum(timeouts.values()),
@@ -199,6 +234,10 @@ def compare(
         require(baseline["receipt"].get(key) == candidate["receipt"].get(key), f"receipts differ on {key}")
     require(baseline["task_digests"] == candidate["task_digests"], "task digests differ")
     require(baseline["rewards"].keys() == candidate["rewards"].keys(), "task sets differ")
+    require(
+        set(baseline["base_urls"]).isdisjoint(candidate["base_urls"]),
+        "baseline and candidate share a full practical endpoint",
+    )
     wins = losses = ties = 0
     tasks = []
     for task, base in baseline["rewards"].items():
@@ -222,13 +261,15 @@ def compare(
                      "rate": sum(baseline["rewards"].values()) / n,
                      "artifact_bytes": baseline["artifact_bytes"], "elapsed_seconds": baseline["elapsed_seconds"],
                      "timed_out": baseline["timeout_count"],
-                     "timeout_reward_overrides": baseline["timeout_reward_override_count"]},
+                     "timeout_reward_overrides": baseline["timeout_reward_override_count"],
+                     "base_urls": baseline["base_urls"]},
         "candidate": {"arm": candidate["arm"], "solved": sum(candidate["rewards"].values()),
                       "raw_verifier_solved": sum(candidate["raw_verifier_rewards"].values()),
                       "rate": sum(candidate["rewards"].values()) / n,
                       "artifact_bytes": candidate["artifact_bytes"], "elapsed_seconds": candidate["elapsed_seconds"],
                       "timed_out": candidate["timeout_count"],
-                      "timeout_reward_overrides": candidate["timeout_reward_override_count"]},
+                      "timeout_reward_overrides": candidate["timeout_reward_override_count"],
+                      "base_urls": candidate["base_urls"]},
         "candidate_solved_delta": sum(candidate["rewards"].values()) - sum(baseline["rewards"].values()),
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties, "tasks": tasks,
         "note": (
@@ -238,7 +279,32 @@ def compare(
     }
 
 
+def self_test() -> None:
+    assert "base_url" not in SHARED_KEYS
+    assert validate_lane_base_urls(
+        [f"http://127.0.0.1:{port}/v1" for port in range(8080, 8084)], 4
+    ) == [f"http://127.0.0.1:{port}/v1" for port in range(8080, 8084)]
+    lock = json.loads(Path(__file__).with_name("practical-evals.lock.json").read_text())
+    kwargs = expected_agent_kwargs(lock["protocol"]["agent_scaffold"], "http://127.0.0.1:8087/v1")
+    assert kwargs["api_base"] == "http://127.0.0.1:8087/v1"
+    for values, count in (
+        (["http://127.0.0.1:8080/v1"] * 2, 2),
+        (["http://127.0.0.1:9000/v1"], 1),
+        (["http://localhost:8080/v1"], 1),
+    ):
+        try:
+            validate_lane_base_urls(values, count)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid endpoint set passed: {values}")
+
+
 def main() -> None:
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        print("full practical summarizer self-test: PASS")
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
