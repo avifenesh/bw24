@@ -399,6 +399,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     healing_frontier = load(args.healing_frontier)
     directional = load(args.directional_promotion)
     practical = load(args.practical_promotion)
+    trusted_selection_path = getattr(args, "trusted_selection", None)
+    trusted_selection = (
+        load(trusted_selection_path) if trusted_selection_path is not None else practical
+    )
     trusted = load(args.trusted_report)
     full = load(args.full_agentic)
     if effects.get("format") != "bw24-hy3-quant-effects-map-v1":
@@ -420,6 +424,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     for payload, expected in expected_formats:
         if payload.get("format") != expected:
             raise ValueError(f"expected {expected}, got {payload.get('format')}")
+    if trusted_selection.get("format") not in {
+        "bw24-practical-promotion-v1",
+        "bw24-effective-trusted-full-selection-v1",
+    }:
+        raise ValueError("wrong effective trusted-selection format")
+    if trusted_selection.get("format") == "bw24-effective-trusted-full-selection-v1":
+        if trusted_selection.get("base_trusted_full_arms") != practical.get(
+            "trusted_full_arms"
+        ):
+            raise ValueError("effective trusted selection rewrote the frozen practical verdict")
+        if trusted_selection.get("practical_promotion", {}).get("sha256") != sha256(
+            args.practical_promotion
+        ):
+            raise ValueError("effective trusted selection is not bound to practical evidence")
     if damage.get("public_eval_data_used") is not False:
         raise ValueError("private plan damage report used public eval")
     if damage.get("lowest_private_damage_plan") != "pareto":
@@ -439,7 +457,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     finalist = str(full["candidate"])
     if trusted["selection"]["selected_finalist"] != finalist:
         raise ValueError("trusted and full-agentic finalists differ")
-    if finalist not in practical["trusted_full_arms"] or finalist not in frontier["arms"]:
+    if (
+        finalist not in trusted_selection["trusted_full_arms"]
+        or finalist not in frontier["arms"]
+    ):
         raise ValueError("finalist is absent from the promotion chain")
 
     plan_paths = {name: path for name, path in args.plan}
@@ -482,9 +503,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "measured_global_plan": winner_method,
             "interpretation": (
-                "Winner of the preregistered directional, practical, trusted full capability, "
-                "and complete SWE/Terminal chain among tested candidates; uncertainty remains "
-                "descriptive rather than an equivalence claim."
+                "Winner after the frozen directional and practical evidence, the separately "
+                "recorded trusted-coverage decision, trusted full capability, and complete "
+                "SWE/Terminal chain among tested candidates; uncertainty remains descriptive "
+                "rather than an equivalence claim."
             ),
         },
         "seven_format_candidates": plans,
@@ -515,6 +537,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "promotion": directional,
         },
         "practical_promotion": practical,
+        "effective_trusted_selection": trusted_selection,
         "trusted_full": {
             "documents_per_arm": trusted["documents_per_arm"],
             "arms": trusted["arms"],
@@ -759,8 +782,17 @@ def self_test() -> None:
             "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
                               PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
         practical = write("practical.json", {"format":"bw24-practical-promotion-v1",
+            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]]})
+        trusted_selection = write("trusted-selection.json", {
+            "format":"bw24-effective-trusted-full-selection-v1",
             "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"],
-                                 PLAN_ARMS["layer_balanced"]]})
+                                 PLAN_ARMS["layer_balanced"]],
+            "base_trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]],
+            "practical_promotion":{"path":str(practical.resolve()),
+                                   "sha256":sha256(practical)},
+            "decision":{"candidate_arm":PLAN_ARMS["layer_balanced"],
+                        "qualified_by_user_policy":True,
+                        "forced_into_trusted_full":True}})
         trusted = write("trusted.json", {"format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
             "baseline":"plain_quant","arms":{},
@@ -772,10 +804,14 @@ def self_test() -> None:
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
             healing_frontier=healing_frontier,
             directional_promotion=directional, practical_promotion=practical,
+            trusted_selection=trusted_selection,
             trusted_report=trusted, full_agentic=full,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
         assert result["recommended_method"]["arm"] == PLAN_ARMS["layer_balanced"]
+        assert result["effective_trusted_selection"]["decision"][
+            "forced_into_trusted_full"
+        ]
         assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .515) < 1e-12
         assert result["seven_format_candidates"]["layer_balanced"][
             "private_damage_source"
@@ -840,6 +876,7 @@ def main() -> None:
     parser.add_argument("--healing-frontier", type=Path, required=True)
     parser.add_argument("--directional-promotion", type=Path, required=True)
     parser.add_argument("--practical-promotion", type=Path, required=True)
+    parser.add_argument("--trusted-selection", type=Path)
     parser.add_argument("--trusted-report", type=Path, required=True)
     parser.add_argument("--full-agentic", type=Path, required=True)
     parser.add_argument("--plan", action="append", type=parse_plan, required=True)
@@ -859,7 +896,9 @@ def main() -> None:
     args.markdown.write_text(markdown(result))
     inputs = [args.effects,args.damage,args.frontier,args.healing_frontier,
               args.directional_promotion,
-              args.practical_promotion,args.trusted_report,args.full_agentic,
+              args.practical_promotion,
+              *([args.trusted_selection] if args.trusted_selection else []),
+              args.trusted_report,args.full_agentic,
               *(path for _,path in args.plan)]
     receipt = {
         "format": RECEIPT_FORMAT,
