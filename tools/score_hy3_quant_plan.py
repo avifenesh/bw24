@@ -50,7 +50,19 @@ def expand_plan(
     if plan.get("calibration", {}).get("public_eval_data_used_for_selection") is not False:
         raise ValueError("plan does not attest private-only selection")
     expected_experts = {(layer, expert) for layer in layers for expert in range(expert_count)}
-    raw_pruned = plan.get("pruned_experts", {})
+    raw_pruned = plan.get("pruned_experts")
+    if raw_pruned is None:
+        policy = plan.get("policy", {})
+        # Frozen full-bank traffic plans encode the absence of pruning as a
+        # policy invariant instead of materializing 79 empty lists.  Accept
+        # that compact representation only when both no-prune fields agree.
+        if (
+            int(policy.get("fixed_prune_count", -1)) == 0
+            and policy.get("prune_unused") is False
+        ):
+            raw_pruned = {str(layer): [] for layer in layers}
+        else:
+            raise ValueError("plan omits pruned_experts without a no-prune policy")
     if set(raw_pruned) != {str(layer) for layer in layers}:
         raise ValueError("plan pruned_experts layer coverage mismatch")
     pruned = {
@@ -258,15 +270,47 @@ def self_test() -> None:
         retained.update({"pruned_experts": {"1": []}, "assignments": [
             {"layer": 1, "experts": [0, 1], "qtype": "Q2_K"}
         ]})
+        full_bank_policy = dict(base)
+        full_bank_policy.update({
+            "policy": {
+                "result_logical_bytes": 100,
+                "fixed_prune_count": 0,
+                "prune_unused": False,
+            },
+            "assignments": [
+                {"layer": 1, "experts": [0, 1], "qtype": "Q2_K"}
+            ],
+        })
         paths = []
-        for name, payload in (("pruned", pruned), ("retained", retained)):
+        for name, payload in (
+            ("pruned", pruned),
+            ("retained", retained),
+            ("full_bank_policy", full_bank_policy),
+        ):
             path = root / f"{name}.json"
             path.write_text(json.dumps(payload))
             paths.append((name, path))
         result = build_output(sensitivity_path, paths)
         assert math.isclose(result["plans"]["pruned"]["total_additive_damage"], 10.3)
         assert math.isclose(result["plans"]["retained"]["total_additive_damage"], 6.0)
-        assert result["lowest_private_damage_plan"] == "retained"
+        assert math.isclose(
+            result["plans"]["full_bank_policy"]["total_additive_damage"], 6.0
+        )
+        assert result["plans"]["full_bank_policy"]["pruned_experts"] == 0
+        assert result["lowest_private_damage_plan"] == "full_bank_policy"
+        invalid_path = root / "invalid-omitted-prune-map.json"
+        invalid_path.write_text(json.dumps({
+            **base,
+            "assignments": [
+                {"layer": 1, "experts": [0, 1], "qtype": "Q2_K"}
+            ],
+        }))
+        try:
+            score_plan(sensitivity, invalid_path)
+        except ValueError as error:
+            assert "omits pruned_experts" in str(error)
+        else:
+            raise AssertionError("accepted omitted prune map without no-prune policy")
         output = root / "output.json"
         output.write_text(json.dumps(result))
         receipt = root / "receipt.json"
