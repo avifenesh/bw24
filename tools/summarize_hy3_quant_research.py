@@ -537,16 +537,25 @@ def practical_screen_summary(practical: dict[str, Any]) -> dict[str, Any]:
                 or passed != (deficit <= 1.0)
             ):
                 raise ValueError(f"practical verdict differs for {candidate}/{panel}")
+            wins = int(report["paired_wins"])
+            losses = int(report["paired_losses"])
+            ties = int(report["paired_ties"])
+            sign_p = float(report["exact_sign_p"])
+            if (
+                min(wins, losses, ties) < 0 or wins + losses + ties != 12
+                or not math.isfinite(sign_p) or not 0 <= sign_p <= 1
+            ):
+                raise ValueError(f"practical paired evidence differs for {candidate}/{panel}")
             panel_passes.append(passed)
             panels[panel] = {
                 "passed": passed,
                 "strong_compact": totals["baseline"],
                 "candidate": totals["candidate"],
                 "solved_deficit": deficit,
-                "paired_wins": int(report["paired_wins"]),
-                "paired_losses": int(report["paired_losses"]),
-                "paired_ties": int(report["paired_ties"]),
-                "exact_sign_p": float(report["exact_sign_p"]),
+                "paired_wins": wins,
+                "paired_losses": losses,
+                "paired_ties": ties,
+                "exact_sign_p": sign_p,
                 "comparison": source(comparison_path),
             }
         passed = all(panel_passes)
@@ -572,6 +581,8 @@ def trusted_full_summary(trusted: dict[str, Any]) -> dict[str, Any]:
     paired = trusted.get("paired_vs_baseline")
     if not isinstance(arms, dict) or baseline not in arms or not isinstance(paired, dict):
         raise ValueError("trusted capability report lacks arm evidence")
+    if set(paired) != set(arms) - {baseline}:
+        raise ValueError("trusted paired comparisons do not match trusted arms")
     rows = []
     for arm, values in arms.items():
         size = int(values["logical_model_bytes"])
@@ -581,14 +592,32 @@ def trusted_full_summary(trusted: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"invalid trusted capability aggregate for {arm}")
         if not isinstance(tasks, dict) or not tasks:
             raise ValueError(f"trusted capability tasks are absent for {arm}")
-        if sum(int(task["n"]) for task in tasks.values()) != 4746:
+        task_counts = [int(task["n"]) for task in tasks.values()]
+        task_successes = [int(task["successes"]) for task in tasks.values()]
+        if (
+            sum(task_counts) != 4746
+            or any(n <= 0 or successes < 0 or successes > n
+                   for n, successes in zip(task_counts, task_successes))
+        ):
             raise ValueError(f"trusted capability task count differs for {arm}")
+        pair = paired.get(arm)
+        if pair is not None:
+            interval = pair.get("bootstrap_ci95")
+            if (
+                not isinstance(interval, list) or len(interval) != 2
+                or any(not math.isfinite(float(value)) for value in interval)
+                or not math.isfinite(float(pair["macro_delta"]))
+                or not math.isclose(float(pair["macro_delta"]), macro - float(arms[baseline]["macro"]))
+                or min(int(pair["paired_wins"]), int(pair["paired_losses"])) < 0
+                or not 0 <= float(pair["exact_sign_p"]) <= 1
+            ):
+                raise ValueError(f"trusted paired evidence differs for {arm}")
         rows.append({
             "arm": arm,
             "logical_model_bytes": size,
             "macro": macro,
             "tasks": tasks,
-            "paired_vs_baseline": paired.get(arm),
+            "paired_vs_baseline": pair,
         })
     selected = str(trusted.get("selection", {}).get("selected_finalist", ""))
     if selected not in arms or trusted.get("selection", {}).get("full_eval_arms") != [
@@ -632,6 +661,11 @@ def full_agentic_summary(full: dict[str, Any]) -> dict[str, Any]:
             report["baseline"]["solved"]
         )):
             raise ValueError(f"full agentic {panel} solved delta differs")
+        wins = int(report["paired_wins"])
+        losses = int(report["paired_losses"])
+        ties = int(report["paired_ties"])
+        if min(wins, losses, ties) < 0 or wins + losses + ties != expected_n:
+            raise ValueError(f"full agentic {panel} paired evidence differs")
         total_delta += delta
         panels.append({
             "panel": panel,
@@ -639,9 +673,9 @@ def full_agentic_summary(full: dict[str, Any]) -> dict[str, Any]:
             "baseline": report["baseline"],
             "candidate": report["candidate"],
             "candidate_solved_delta": delta,
-            "paired_wins": int(report["paired_wins"]),
-            "paired_losses": int(report["paired_losses"]),
-            "paired_ties": int(report["paired_ties"]),
+            "paired_wins": wins,
+            "paired_losses": losses,
+            "paired_ties": ties,
         })
     if not math.isclose(total_delta, float(full["candidate_total_solved_delta"])):
         raise ValueError("full agentic combined solved delta differs")
