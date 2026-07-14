@@ -181,9 +181,35 @@ layer 79 expert 120 down-projection, contributes 91.86% of total Q2 error. The a
 protects that cell with Q8, but a single absolute-error hotspot can dominate the global byte trade
 even though the layer-level prune holdout says earlier layers are more structurally fragile.
 
-This rules out merely increasing the existing layer or rescue scalar as a clean next experiment.
-A future private-only allocation should instead preregister a structural control such as a
-layer-normalized objective, a cap on per-cell objective share, or explicit per-layer retention and
-damage budgets. The allocator now supports the explicit per-layer survivor and Q2 bounds needed for
-that experiment. The bounds must be frozen against a new private holdout before another public
-capability screen; public task failures must not be used to choose them.
+This ruled out merely increasing the existing layer or rescue scalar as a clean next experiment.
+The implemented private-only structural control instead freezes explicit per-layer survivor and Q2
+bounds. The bounds were selected from private reconstruction evidence before public generation;
+public task failures were not used to choose them.
+
+## Measured structural control and bridge budgets
+
+`layer_balanced100` applies those frozen layer constraints with the pure measured seven-format
+objective. Its solved allocation is 99,999,322,624 logical bytes, retains 9,638 of 15,168 layer
+expert positions, and prunes 5,530. Across retained projections it assigns 216 Q8_0, 2,521 Q4_K,
+4,985 IQ4_XS, 6,597 IQ3_S, 14 Q3_K, 14,581 Q2_K, and zero NVFP4. Monotonic joint healing accepts
+21 layer updates and rolls 58 layers back to their exact unhealed source values. On the frozen
+115-question screen it scores 71, versus 68 for the earlier same-size joint-heal arm and 74 for the
+137,459,192,320-byte Traffic137 arm. This is a measured +3 questions at effectively the same 100GB
+budget, not a full-suite equivalence claim.
+
+The remaining question is whether Traffic137's fixed full-bank `53 NVFP4 + 139 Q2` recipe is the
+best use of its additional 37.46GB. Two bridge budgets were therefore frozen before either bridge
+artifact produced public generations:
+
+| Arm | Solved logical bytes | Retained | Pruned | Q8 | Q4 | IQ4 | IQ3 | Q3 | Q2 | NVFP4 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `layer_balanced120` | 119,999,861,248 | 10,299 | 4,869 | 3,783 | 2,215 | 4,713 | 6,949 | 12 | 13,224 | 1 |
+| `layer_balanced137` | 137,457,717,760 | 10,958 | 4,210 | 6,891 | 2,183 | 4,749 | 5,413 | 11 | 13,626 | 1 |
+
+Counts in the precision columns are expert projections; retained/pruned counts are whole expert
+positions across 79 layers. Layer137 is the direct recipe control: it is 1,474,560 bytes smaller
+than Traffic137 but spends far more bytes on measured sensitive projections while pruning whole
+low-value experts. Layer120 tests the shape of the size-quality curve between Layer100 and
+Traffic137. Both reuse the exact private sensitivity map, structural bounds, zero scalar importance
+weights, and holdout-monotonic quantization-aware healing. Only a new point-estimate Pareto leader
+without task collapse advances to matched practical evaluation.
