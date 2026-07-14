@@ -52,7 +52,25 @@ def source(path: Path) -> dict[str, Any]:
     return {"path": str(path.resolve()), "sha256": sha256(path)}
 
 
-def verify_receipt(path: Path) -> None:
+def remap_evidence_path(
+    path: Path, path_maps: list[tuple[Path, Path]]
+) -> Path:
+    resolved = path.resolve()
+    for source_root, destination_root in sorted(
+        path_maps, key=lambda item: len(item[0].parts), reverse=True
+    ):
+        try:
+            relative = resolved.relative_to(source_root.resolve())
+        except ValueError:
+            continue
+        return destination_root.resolve() / relative
+    return resolved
+
+
+def verify_receipt(
+    path: Path, path_maps: list[tuple[Path, Path]] | None = None
+) -> None:
+    path_maps = path_maps or []
     receipt = load(path)
     if receipt.get("format") != RECEIPT_FORMAT:
         raise ValueError("wrong conclusion receipt format")
@@ -64,9 +82,18 @@ def verify_receipt(path: Path) -> None:
     if not items or any(not isinstance(item, dict) for item in items):
         raise ValueError("conclusion receipt has malformed evidence entries")
     for item in items:
-        target = Path(item["path"])
+        target = remap_evidence_path(Path(item["path"]), path_maps)
         if not target.is_file() or sha256(target) != item["sha256"]:
             raise ValueError(f"conclusion evidence mismatch: {target}")
+
+
+def parse_path_map(value: str) -> tuple[Path, Path]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("path map must be SOURCE=DESTINATION")
+    source_root, destination_root = value.split("=", 1)
+    if not source_root.startswith("/") or not destination_root.startswith("/"):
+        raise argparse.ArgumentTypeError("path map roots must be absolute")
+    return Path(source_root), Path(destination_root)
 
 
 def format_efficiency_summary(effects: dict[str, Any]) -> dict[str, Any]:
@@ -1882,6 +1909,11 @@ def self_test() -> None:
             "script": source(Path(__file__).resolve()),
         })
         verify_receipt(receipt)
+        mirror = root / "archive"
+        for original in (effects, damage, output, rendered):
+            archived = mirror / original.relative_to(root)
+            archived.parent.mkdir(parents=True, exist_ok=True)
+            archived.write_bytes(original.read_bytes())
         output.write_text("{}")
         try:
             verify_receipt(receipt)
@@ -1889,6 +1921,7 @@ def self_test() -> None:
             assert "evidence mismatch" in str(error)
         else:
             raise AssertionError("receipt verifier accepted mutated evidence")
+        verify_receipt(receipt, [(root, mirror)])
 
 
 def main() -> None:
@@ -1896,8 +1929,13 @@ def main() -> None:
         self_test()
         print("Hy3 quant research conclusion self-test: PASS")
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "--verify-receipt":
-        verify_receipt(Path(sys.argv[2]))
+    if sys.argv[1:2] == ["--verify-receipt"]:
+        verifier = argparse.ArgumentParser()
+        verifier.add_argument("--verify-receipt", type=Path, required=True)
+        verifier.add_argument("--path-map", action="append", type=parse_path_map,
+                              default=[])
+        verify_args = verifier.parse_args()
+        verify_receipt(verify_args.verify_receipt, verify_args.path_map)
         print("Hy3 quant research conclusion receipt: PASS")
         return
     parser = argparse.ArgumentParser()
