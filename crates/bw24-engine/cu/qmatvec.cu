@@ -4417,14 +4417,14 @@ __device__ __forceinline__ float expert_dot_iq4xs_g_v(const unsigned char* wrow,
     const unsigned char* b = wrow + (long)sblk * 136;
     if (((unsigned long long)b & 7ull) != 0ull)
         return expert_dot_iq4xs_g(wrow, g, aqb, d8);      // non-8-aligned slab: scalar body
-    uint2 hdr = *(const uint2*)b;                         // d(2B) | sh(2B) | sl(4B), one LDG.64
+    uint2 hdr = __ldcs((const uint2*)b);                  // d(2B) | sh(2B) | sl(4B), one LDG.64 (streaming: single-use expert bytes)
     float d_sb = half_to_float((unsigned short)(hdr.x & 0xffffu));
     unsigned short sh = (unsigned short)(hdr.x >> 16);
     // sl[ib>>1] is byte (ib>>1) of hdr.y (little-endian); fold the byte+nibble shifts.
     int ls = ((hdr.y >> (8 * (ib >> 1) + 4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
     int scale = ls - 32;
     const int2* qs2 = (const int2*)(b + 8 + ib * 16);     // (8 + ib*16) % 8 == 0 -> 8-aligned
-    int2 q01 = qs2[0], q23 = qs2[1];
+    int2 q01 = __ldcs(&qs2[0]), q23 = __ldcs(&qs2[1]);
     const int* aLo = (const int*)(aqb);
     const int* aHi = (const int*)(aqb + 16);
     int2 v0 = get_int_from_table_16_d(q01.x, kvalues_iq4nl_d);
@@ -4453,7 +4453,9 @@ __device__ __forceinline__ float expert_dot_q4_0_g_v(const unsigned char* wrow, 
     const unsigned char* b = wrow + (long)g * 18;
     const unsigned sh8 = ((unsigned)(size_t)b & 3u) * 8u;
     const uint32_t* ap = (const uint32_t*)((size_t)b & ~(size_t)3);
-    uint32_t w0 = ap[0], w1 = ap[1], w2 = ap[2], w3 = ap[3], w4 = ap[4], w5 = ap[5];
+    // streaming loads (2026-07-14 L2 arc): expert bytes are single-use per token
+    uint32_t w0 = __ldcs(&ap[0]), w1 = __ldcs(&ap[1]), w2 = __ldcs(&ap[2]),
+             w3 = __ldcs(&ap[3]), w4 = __ldcs(&ap[4]), w5 = __ldcs(&ap[5]);
     uint32_t s0 = __funnelshift_r(w0, w1, sh8);   // bytes b[0..3]
     uint32_t s1 = __funnelshift_r(w1, w2, sh8);   // b[4..7]
     uint32_t s2 = __funnelshift_r(w2, w3, sh8);   // b[8..11]
