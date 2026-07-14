@@ -560,11 +560,28 @@ def build_report(
         )
         if not dominated:
             pareto_arms.append(arm)
-    # Freeze the N=50 down-selection rule before looking at the result. Quality is primary; exact
-    # point-estimate ties go to the smaller finished model. The baseline is always retained for the
-    # full comparison, and the uncertainty fields remain separate so this choice cannot be read as
-    # a claim of equivalence or statistically proven superiority.
+    # Quality is primary; exact point-estimate ties go to the smaller finished model. The baseline
+    # is always retained for the subsequent agentic comparison, and uncertainty remains separate so
+    # this choice cannot be read as a claim of equivalence or statistically proven superiority.
     selected_finalist = select_finalist(loaded, arms, baseline)
+    if full_run:
+        selection_rule = (
+            "highest candidate macro point estimate on the matched 4,746-document "
+            "trusted capability suite; exact tie chooses smaller logical model"
+        )
+        selection_note = (
+            "Trusted full-capability down-selection; uncertainty is reported separately and "
+            "this is not an equivalence claim."
+        )
+    else:
+        selection_rule = (
+            "highest candidate macro point estimate on the directional screen; "
+            "exact tie chooses smaller logical model"
+        )
+        selection_note = (
+            "Directional down-selection only; uncertainty is reported separately and this is "
+            "not an equivalence claim."
+        )
     return {
         "format": "bw24-promoted-candidate-v1",
         "run_id": run_id,
@@ -576,10 +593,10 @@ def build_report(
         "paired_vs_baseline": paired,
         "point_estimate_pareto_arms": pareto_arms,
         "selection": {
-            "rule": "highest candidate macro point estimate; exact tie chooses smaller logical model",
+            "rule": selection_rule,
             "selected_finalist": selected_finalist,
             "full_eval_arms": [baseline, selected_finalist],
-            "note": "Directional down-selection only; uncertainty is reported separately and this is not an equivalence claim.",
+            "note": selection_note,
         },
         "tasks": [{"task": spec["result_task"], "label": spec["label"]} for spec in specs],
     }
@@ -770,6 +787,8 @@ def self_test(lock: dict[str, Any]) -> None:
         assert report["point_estimate_pareto_arms"] == ["plain_quant"]
         assert report["selection"]["selected_finalist"] == "candidate"
         assert report["selection"]["full_eval_arms"] == ["plain_quant", "candidate"]
+        assert "directional screen" in report["selection"]["rule"]
+        assert report["selection"]["note"].startswith("Directional down-selection")
         assert "Selected finalist" in markdown(report)
         assert "Wilson 95% CI" in markdown(report)
         report_out = root / "reports" / "promoted-results.md"
