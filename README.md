@@ -70,9 +70,9 @@ are real prompt depths — the FP8 KV cache makes the lead widen as context grow
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
-| plain, short ctx | 198.3 | 180.0 | **1.10x** |
-| plain, 1.7k ctx | 177.8 | 161.3 | **1.10x** |
-| plain, 4.9k ctx | 162.6 | 142.0 | **1.14x** |
+| plain, short ctx | 199.7 | 187.6 | 1.06x |
+| plain, 1.7k ctx | 183.1 | 173.1 | 1.06x |
+| plain, 4.9k ctx | 162.6 | 142.0 | **1.14x** (fa-off bar — re-pair pending) |
 | MTP spec, short ctx (K=6 + FR trim) | 399.3 | 258.7 | **1.54x** |
 | MTP spec, 1.7k ctx (K=6 + FR trim) | 322.0 | 303.3 | **1.06x** |
 
