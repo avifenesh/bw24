@@ -28,6 +28,7 @@ BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-eff
 IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/calibration/hy3-quant-iq3-iq4-q4-pareto-6c5c5ea}
 IQ4_EFFECT_EVIDENCE=${IQ4_EFFECT_EVIDENCE:-/data/logs/iq3-iq4-q4-pareto-6c5c5ea/build/evidence.sha256}
 PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$PARETO_ALLOCATION_ANALYSIS/private-damage-three-way.json}
+HEALING_FRONTIER=${HEALING_FRONTIER:-/data/results/per-expert-quant/100gb-heal-v1/cross-run-frontier.json}
 UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
 CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
 PARETO_PLAN=${PARETO_PLAN:-$PARETO_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_pareto.json}
@@ -95,7 +96,7 @@ combined="$REMOTE_FULL_ROOT/comparisons/$run_id/combined.json"
 
 ssh "$REMOTE" bash -s -- \
   "$REMOTE_FINALIZER_ROOT" "$analysis_commit" "$REMOTE_CONCLUSION_ROOT" \
-  "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" \
+  "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" "$HEALING_FRONTIER" \
   "$directional_frontier" "$directional_promotion" "$practical_promotion" \
   "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" \
   "$LAYER_BALANCED_PLAN" <<'SH'
@@ -105,15 +106,16 @@ commit=$2
 out_root=$3
 effects=$4
 damage=$5
-frontier=$6
-directional=$7
-practical=$8
-trusted=$9
-full=${10}
-uncentered=${11}
-centered=${12}
-pareto=${13}
-layer_balanced=${14}
+healing_frontier=$6
+frontier=$7
+directional=$8
+practical=$9
+trusted=${10}
+full=${11}
+uncentered=${12}
+centered=${13}
+pareto=${14}
+layer_balanced=${15}
 tool="$root/tools/summarize_hy3_quant_research.py"
 output="$out_root/conclusion.json"
 markdown="$out_root/conclusion.md"
@@ -121,13 +123,14 @@ receipt="$out_root/receipt.json"
 evidence="$out_root/evidence.sha256"
 [[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
 [[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
-for path in "$tool" "$effects" "$damage" "$frontier" "$directional" "$practical" \
+for path in "$tool" "$effects" "$damage" "$healing_frontier" "$frontier" "$directional" "$practical" \
   "$trusted" "$full" "$uncentered" "$centered" "$pareto" "$layer_balanced"; do
   [[ -f "$path" ]]
 done
 if [[ ! -f "$receipt" ]]; then
   mkdir -p "$out_root"
   python3 "$tool" --effects "$effects" --damage "$damage" --frontier "$frontier" \
+    --healing-frontier "$healing_frontier" \
     --directional-promotion "$directional" --practical-promotion "$practical" \
     --trusted-report "$trusted" --full-agentic "$full" \
     --plan "uncentered=$uncentered" --plan "centered=$centered" --plan "pareto=$pareto" \

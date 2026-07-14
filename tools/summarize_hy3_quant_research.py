@@ -28,6 +28,11 @@ PLAN_DAMAGE_KEYS = {
     "centered": "old_centered",
     "pareto": "pareto",
 }
+HEALING_ARMS = (
+    "prune100_unhealed",
+    "prune100_router_repair",
+    "prune100_joint_heal",
+)
 
 
 def sha256(path: Path) -> str:
@@ -124,6 +129,89 @@ def format_efficiency_summary(effects: dict[str, Any]) -> dict[str, Any]:
             row["qtype"] for row in rows if row["point_estimate_pareto"]
         ],
         "same_byte_winners": same_byte,
+    }
+
+
+def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
+    if frontier.get("format") != "bw24-cross-run-expanded-capability-frontier-v1":
+        raise ValueError("wrong healing frontier format")
+    arms = frontier.get("arms")
+    if not isinstance(arms, dict) or any(name not in arms for name in HEALING_ARMS):
+        raise ValueError("healing frontier does not contain the complete ablation")
+    rows: dict[str, dict[str, Any]] = {}
+    logical_bytes = set()
+    total_questions = set()
+    for name in HEALING_ARMS:
+        arm = arms[name]
+        tasks = arm.get("tasks")
+        if not isinstance(tasks, dict) or not tasks:
+            raise ValueError(f"{name} has no task evidence")
+        task_successes: dict[str, int] = {}
+        task_counts: dict[str, int] = {}
+        for task, values in tasks.items():
+            successes = int(values["successes"])
+            count = int(values["n"])
+            if count <= 0 or successes < 0 or successes > count:
+                raise ValueError(f"{name}/{task} has invalid task counts")
+            task_successes[str(task)] = successes
+            task_counts[str(task)] = count
+        size = int(arm["logical_model_bytes"])
+        questions = int(arm["total_questions"])
+        correct = int(arm["total_correct"])
+        question_weighted = float(arm["question_weighted"])
+        domain_macro = float(arm["domain_macro"])
+        if (
+            size <= 0 or questions <= 0 or correct < 0 or correct > questions
+            or not math.isfinite(question_weighted) or not math.isfinite(domain_macro)
+            or not 0 <= question_weighted <= 1 or not 0 <= domain_macro <= 1
+            or sum(task_counts.values()) != questions
+            or sum(task_successes.values()) != correct
+        ):
+            raise ValueError(f"{name} has invalid aggregate evidence")
+        logical_bytes.add(size)
+        total_questions.add(questions)
+        rows[name] = {
+            "logical_model_bytes": size,
+            "total_correct": correct,
+            "total_questions": questions,
+            "question_weighted": question_weighted,
+            "domain_macro": domain_macro,
+            "task_successes": task_successes,
+            "task_counts": task_counts,
+        }
+    if len(logical_bytes) != 1 or len(total_questions) != 1:
+        raise ValueError("healing ablation is not matched for size and question count")
+    task_shapes = {
+        tuple(sorted(row["task_counts"].items())) for row in rows.values()
+    }
+    if len(task_shapes) != 1:
+        raise ValueError("healing ablation task sets or counts differ")
+    unhealed = rows["prune100_unhealed"]
+    deltas: dict[str, dict[str, Any]] = {}
+    for name in HEALING_ARMS[1:]:
+        arm = rows[name]
+        deltas[name] = {
+            "total_correct_delta": arm["total_correct"] - unhealed["total_correct"],
+            "question_weighted_delta": (
+                arm["question_weighted"] - unhealed["question_weighted"]
+            ),
+            "domain_macro_delta": arm["domain_macro"] - unhealed["domain_macro"],
+            "task_success_delta": {
+                task: arm["task_successes"][task] - unhealed["task_successes"][task]
+                for task in sorted(unhealed["task_successes"])
+            },
+        }
+    return {
+        "matched_logical_model_bytes": next(iter(logical_bytes)),
+        "total_questions": next(iter(total_questions)),
+        "arms": rows,
+        "deltas_vs_unhealed": deltas,
+        "best_question_weighted_arm": max(
+            HEALING_ARMS, key=lambda name: (rows[name]["question_weighted"], name)
+        ),
+        "best_domain_macro_arm": max(
+            HEALING_ARMS, key=lambda name: (rows[name]["domain_macro"], name)
+        ),
     }
 
 
@@ -247,6 +335,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     effects = load(args.effects)
     damage = load(args.damage)
     frontier = load(args.frontier)
+    healing_frontier = load(args.healing_frontier)
     directional = load(args.directional_promotion)
     practical = load(args.practical_promotion)
     trusted = load(args.trusted_report)
@@ -308,6 +397,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         baseline["logical_model_bytes"]
     )
     format_efficiency = format_efficiency_summary(effects)
+    healing_ablation = healing_ablation_summary(healing_frontier)
     result = {
         "format": OUTPUT_FORMAT,
         "analysis_commit": args.analysis_commit,
@@ -357,6 +447,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "best_precision_upgrades": effects["best_precision_upgrades"][:20],
         },
         "format_efficiency": format_efficiency,
+        "healing_ablation": healing_ablation,
         "directional": {
             "point_estimate_pareto": frontier["point_estimate_pareto"],
             "promotion": directional,
@@ -436,6 +527,29 @@ def markdown(result: dict[str, Any]) -> str:
             f"- At identical bytes, `{item['winner']}` reduces measured damage by "
             f"{item['damage_reduction']:.2%} versus `{item['loser']}`."
         )
+    healing = result["healing_ablation"]
+    lines += [
+        "",
+        "## Matched healing ablation",
+        "",
+        "| Arm | Correct | Question-weighted | Domain macro |",
+        "|---|---:|---:|---:|",
+    ]
+    for name in HEALING_ARMS:
+        row = healing["arms"][name]
+        lines.append(
+            f"| {name} | {row['total_correct']}/{row['total_questions']} | "
+            f"{row['question_weighted']:.2%} | {row['domain_macro']:.2%} |"
+        )
+    joint = healing["deltas_vs_unhealed"]["prune100_joint_heal"]
+    router = healing["deltas_vs_unhealed"]["prune100_router_repair"]
+    lines += [
+        "",
+        f"- Joint heal changes total correct by {joint['total_correct_delta']:+d} and "
+        f"domain macro by {joint['domain_macro_delta']:+.2%} versus unhealed.",
+        f"- Router-only repair changes total correct by {router['total_correct_delta']:+d} and "
+        f"domain macro by {router['domain_macro_delta']:+.2%} versus unhealed.",
+    ]
     lines += [
         "",
         "The allocation/healing map used only frozen private calibration. Public tasks were used "
@@ -529,6 +643,35 @@ def self_test() -> None:
                     PLAN_ARMS["layer_balanced"]:{"logical_model_bytes":97,"domain_macro":.73,"question_weighted":.73}}
         frontier = write("frontier.json", {"format":"bw24-cross-run-expanded-capability-frontier-v1",
             "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["pareto"]]})
+        healing_frontier = write("healing-frontier.json", {
+            "format":"bw24-cross-run-expanded-capability-frontier-v1",
+            "arms": {
+                "prune100_unhealed": {
+                    "logical_model_bytes": 97, "total_correct": 66, "total_questions": 115,
+                    "question_weighted": 66/115, "domain_macro": .54,
+                    "tasks": {"code": {"n": 32, "successes": 27},
+                              "math": {"n": 56, "successes": 26},
+                              "history": {"n": 10, "successes": 2},
+                              "other": {"n": 17, "successes": 11}},
+                },
+                "prune100_router_repair": {
+                    "logical_model_bytes": 97, "total_correct": 65, "total_questions": 115,
+                    "question_weighted": 65/115, "domain_macro": .542,
+                    "tasks": {"code": {"n": 32, "successes": 29},
+                              "math": {"n": 56, "successes": 22},
+                              "history": {"n": 10, "successes": 1},
+                              "other": {"n": 17, "successes": 13}},
+                },
+                "prune100_joint_heal": {
+                    "logical_model_bytes": 97, "total_correct": 68, "total_questions": 115,
+                    "question_weighted": 68/115, "domain_macro": .592,
+                    "tasks": {"code": {"n": 32, "successes": 28},
+                              "math": {"n": 56, "successes": 25},
+                              "history": {"n": 10, "successes": 4},
+                              "other": {"n": 17, "successes": 11}},
+                },
+            },
+        })
         directional = write("directional.json", {"format":"bw24-smart100-directional-promotion-v1",
             "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
                               PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
@@ -544,6 +687,7 @@ def self_test() -> None:
             "baseline":"plain_quant","candidate":PLAN_ARMS["layer_balanced"],"total_tasks":589,
             "candidate_total_solved_delta":1})
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
+            healing_frontier=healing_frontier,
             directional_promotion=directional, practical_promotion=practical,
             trusted_report=trusted, full_agentic=full,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
@@ -563,8 +707,15 @@ def self_test() -> None:
         ] == [(20, "IQ3_S", "Q3_K"), (30, "Q4_K", "NVFP4")]
         assert math.isclose(same_byte[0]["damage_reduction"], .2)
         assert math.isclose(same_byte[1]["damage_reduction"], 1 / 3)
+        assert result["healing_ablation"]["best_question_weighted_arm"] == (
+            "prune100_joint_heal"
+        )
+        assert result["healing_ablation"]["deltas_vs_unhealed"][
+            "prune100_router_repair"
+        ]["total_correct_delta"] == -1
         assert "Recommended arm" in markdown(result)
         assert "Private format quality per byte" in markdown(result)
+        assert "Matched healing ablation" in markdown(result)
         output = write("conclusion.json", result)
         rendered = root / "conclusion.md"
         rendered.write_text(markdown(result))
@@ -599,6 +750,7 @@ def main() -> None:
     parser.add_argument("--effects", type=Path, required=True)
     parser.add_argument("--damage", type=Path, required=True)
     parser.add_argument("--frontier", type=Path, required=True)
+    parser.add_argument("--healing-frontier", type=Path, required=True)
     parser.add_argument("--directional-promotion", type=Path, required=True)
     parser.add_argument("--practical-promotion", type=Path, required=True)
     parser.add_argument("--trusted-report", type=Path, required=True)
@@ -618,7 +770,8 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     args.markdown.write_text(markdown(result))
-    inputs = [args.effects,args.damage,args.frontier,args.directional_promotion,
+    inputs = [args.effects,args.damage,args.frontier,args.healing_frontier,
+              args.directional_promotion,
               args.practical_promotion,args.trusted_report,args.full_agentic,
               *(path for _,path in args.plan)]
     receipt = {
