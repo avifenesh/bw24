@@ -580,6 +580,8 @@ __device__ __forceinline__ void mmvq_block_reduce_write(float acc, float* __rest
 // Vectorized weight-int load: 4 int8 starting at `p` (only 2-byte aligned in Q8_0 -> uint16x2).
 // Mirrors llama.cpp get_int_b2 (vecdotq.cuh:18-25). Safe for any 2-byte-aligned source.
 __device__ __forceinline__ int get_int_b2(const void* p) {
+    // NOT streaming: only 2-byte aligned — an __ldcs pair here split the single 32-bit
+    // load and cost −0.8% on the 31B depth cell (2026-07-14 probe); b4 streams instead.
     const unsigned short* u = (const unsigned short*)p;
     return (int)u[0] | ((int)u[1] << 16);
 }
@@ -589,7 +591,7 @@ __device__ __forceinline__ int get_int_b2(const void* p) {
 // (row_bytes=(in_f/64)*36 -> mult of 4; qs=b+4; qss=qs+s*8) so the qs stream qualifies. Do NOT
 // widen to int2/LDG.E.64 there: rows are only 8-aligned when in_f%128==0 -> faults on odd in_f/64.
 __device__ __forceinline__ int get_int_b4(const void* p) {
-    return *(const int*)p;
+    return __ldcs((const int*)p);   // streaming: weight-only helper (see get_int_b2)
 }
 
 // ============================ Stage-B MMVQ (warp-per-row decode) ============================
