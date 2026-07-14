@@ -93,7 +93,7 @@ def self_test() -> None:
         "max_total_correct_deficit": 1,
         "required_total_questions": 115,
         "hard_logical_byte_ceiling": 100,
-        "max_trusted_full_arms": 3,
+        "max_trusted_full_arms": 5,
     }
 
     def frontier(candidate_score: int, candidate_bytes: int = 100) -> dict[str, Any]:
@@ -115,6 +115,15 @@ def self_test() -> None:
 
     selected = select(practical, frontier(84), policy)
     assert selected["trusted_full_arms"] == ["plain", "compact", "small"]
+    assert selected["decision"]["forced_into_trusted_full"]
+    expanded = dict(
+        practical,
+        trusted_full_arms=["plain", "compact", "bridge120", "bridge137"],
+    )
+    selected = select(expanded, frontier(84), policy)
+    assert selected["trusted_full_arms"] == [
+        "plain", "compact", "bridge120", "bridge137", "small"
+    ]
     assert selected["decision"]["forced_into_trusted_full"]
     assert not select(practical, frontier(83), policy)["decision"]["qualified_by_user_policy"]
     assert not select(practical, frontier(84, 101), policy)["decision"]["qualified_by_user_policy"]
