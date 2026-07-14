@@ -20,6 +20,7 @@ IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
 PARETO_ART_ROOT=${PARETO_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea}
 LAYER_BALANCED_ART_ROOT=${LAYER_BALANCED_ART_ROOT:-/scratch/bw24-artifacts-layer-balanced100-3db293f}
+BRIDGE_ART_ROOT=${BRIDGE_ART_ROOT:-/scratch/bw24-artifacts-layer-balanced-bridge}
 VRAM_FRAC=${VRAM_FRAC:-0.75}
 WAIT_INTERVAL_S=${WAIT_INTERVAL_S:-30}
 SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
@@ -94,8 +95,8 @@ if d.get("format") not in {
 }:
     raise SystemExit("wrong trusted selection format")
 arms = d.get("trusted_full_arms")
-if not isinstance(arms, list) or not 2 <= len(arms) <= 3 or len(set(arms)) != len(arms):
-    raise SystemExit("expected two or three unique trusted-full arms")
+if not isinstance(arms, list) or not 2 <= len(arms) <= 5 or len(set(arms)) != len(arms):
+    raise SystemExit("expected two to five unique trusted-full arms")
 if arms[0] != "plain_quant":
     raise SystemExit("plain_quant must remain the trusted-full baseline")
 for arm in arms:
@@ -119,6 +120,8 @@ artifact_for() {
       printf '%s/%s\n' "$PARETO_ART_ROOT" "$1" ;;
     layer_balanced100)
       printf '%s/%s\n' "$LAYER_BALANCED_ART_ROOT" "$1" ;;
+    layer_balanced120|layer_balanced137)
+      printf '%s/%s\n' "$BRIDGE_ART_ROOT" "$1" ;;
     *) die "no frozen artifact mapping for $1" ;;
   esac
 }
@@ -142,6 +145,7 @@ BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
 export RUN_ID PRACTICAL_PROMOTION TRUSTED_SELECTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT LAYER_BALANCED_ART_ROOT
+export BRIDGE_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
 
@@ -197,6 +201,8 @@ for arm in arms:
         root = pathlib.Path(os.environ["PARETO_ART_ROOT"]) / arm
     elif arm == "layer_balanced100":
         root = pathlib.Path(os.environ["LAYER_BALANCED_ART_ROOT"]) / arm
+    elif arm in ("layer_balanced120", "layer_balanced137"):
+        root = pathlib.Path(os.environ["BRIDGE_ART_ROOT"]) / arm
     elif arm.startswith("smart100_"):
         root = pathlib.Path("/scratch/bw24-artifacts-smart100-2605fde") / arm
     else:
