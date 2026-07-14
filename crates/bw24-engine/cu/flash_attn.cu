@@ -5809,170 +5809,168 @@ static __device__ __forceinline__ void fa_v4_stage_k_512(
 #endif
 }
 
-extern "C" __global__ void fa_decode_vec_q_rows_v4_512(
+
+// T-BATCHED hd512 twin (2026-07-14): the depth profile's remaining fa inefficiency is the
+// x t x gqa DRAM re-read — every verify row walks the SAME full-ctx K/V (47MB/layer at
+// t=7, thrashing L2 unlike the swa 9MB window). This twin drops grid.z: one block per
+// (kv_head, split) stages its tile ONCE and loops the verify rows over it. Partition is a
+// FIXED absolute grid (t_lo = split*split_keys, per-row causal mask) instead of the
+// per-row ceil split — NEW NUMERIC CONFIG for the combine order; every hd512 caller
+// shares the symbol (host seam BW24_FA_TB512), so decode t=1 and verify flip together.
+// Per-row FP order is preserved (ascending keys, same tile, shorter mask); a row skips a
+// split exactly when the combine's per-row split count excludes it (t_lo >= T_r).
+// Host gates split_keys <= FA_DEC_TILE (single staged tile; acc reused per row).
+extern "C" __global__ void fa_decode_vec_q_rows_v4_512_tb(
         const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
         float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
         int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
         float scale, int n_splits_max, int split_keys,
-        long k_tok_bytes, long v_tok_bytes)
+        long k_tok_bytes, long v_tok_bytes, int n_rows)
 {
-    const int r        = blockIdx.z;
-    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
-    const int n_splits = (T_kv + split_keys - 1) / split_keys;
-    const int kv_head  = blockIdx.x;
-    const int split    = blockIdx.y;
-    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int kv_head = blockIdx.x;
+    const int split   = blockIdx.y;
     const int gqa  = n_head / n_head_kv;
     const int wy   = threadIdx.y;
     const int lane = threadIdx.x;
     const int head = kv_head * gqa + min(wy, gqa - 1);
     const int dpl  = head_dim >> 5;                     // 16
+    const int T0   = t_kv_base_dev[0] + base_plus + 1;  // row 0's key bound
+    const int t_lo = split * split_keys;                // FIXED absolute partition
+    if (kv_head >= n_head_kv || t_lo >= T0 + n_rows - 1 + 1) return;
+    const int t_hi = min(T0 + n_rows - 1, t_lo + split_keys);   // widest row's bound
+    const int nt   = t_hi - t_lo;                       // staged keys (<= FA_DEC_TILE)
 
-    const int per  = (T_kv + n_splits - 1) / n_splits;
-    const int t_lo = split * per;
-    const int t_hi = min(T_kv, t_lo + per);
-
-    extern __shared__ unsigned char sm_raw_512[];
-    fa_v4_smem_512* sm = (fa_v4_smem_512*)sm_raw_512;
-    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_512 + sizeof(fa_v4_smem_512));
-
-    if (wy < gqa) fa_v4_stage_q_512(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
-    __syncthreads();
-
-    float m_i = NEG_INF, l_i = 0.0f;
-    float acc[FA_DEC_MAX_DPL16];
-    #pragma unroll
-    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) acc[i] = 0.0f;
+    extern __shared__ unsigned char sm_raw_512tb[];
+    fa_v4_smem_512* sm = (fa_v4_smem_512*)sm_raw_512tb;
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_512tb + sizeof(fa_v4_smem_512));
 
     const int bt  = wy * WARP_SZ + lane;
     const int bsz = WARP_SZ * (int)blockDim.y;
     const int kblk0 = (kv_head * head_dim) >> 5;
 
-    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
-        const int nt = min(FA_DEC_TILE, t_hi - t0);
-        // stage V (all warps; the sp kernel's format arms verbatim at dpl=16)
-        for (int b = bt; b < nt * dpl * 4; b += bsz) {
-            const int sub   = b & 3;
-            const int b32   = b >> 2;
-            const int j     = b32 / dpl;
-            const int blk_i = b32 - j * dpl;
-            #if BW24_KV_VFMT == 2
-            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
-                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
-            #pragma unroll
-            for (int e0 = 0; e0 < 8; ++e0) {
-                const int e2 = sub * 8 + e0;
-                out[e2] = blk[e2];
-            }
-            #elif BW24_KV_VFMT == 1
-            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
-                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
-            const float d40 = __half2float(*(const half*)blk);
-            const uint8_t* qs4 = blk + 2;
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
-            #pragma unroll
-            for (int e0 = 0; e0 < 8; ++e0) {
-                const int e2 = sub * 8 + e0;
-                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
-                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
-            }
-            #else
-            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
-                                   + (size_t)(kblk0 + blk_i) * 24;
-            uint32_t wdm; memcpy(&wdm, blk, 4);
-            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
-            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
-            uint32_t qh; memcpy(&qh, blk + 4, 4);
-            uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
-            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
-            #pragma unroll
-            for (int e0 = 0; e0 < 8; ++e0) {
-                const int e2   = sub * 8 + e0;
-                const int byte = (e2 < 16) ? e2 : e2 - 16;
-                const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
-                const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
-                const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
-                out[e2] = __float2bfloat16(d * (float)q5 + m);
-            }
-            #endif
-        }
-        fa_v4_stage_k_512(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
-        __syncthreads();
-
-        if (wy < gqa) {
-        // ---- score: lane owns key; 16 chunks x 8 dp4a, zero shuffles ----
-        float my_score = NEG_INF;
-        if (lane < nt) {
-            float s = 0.0f;
-            #pragma unroll
-            for (int c = 0; c < 16; c++) {
-                int sumi = 0;
-                #pragma unroll
-                for (int w = 0; w < 8; w++)
-                    sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
-                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
-            }
-            my_score = s;
-        }
-        float tile_max = m_i;
-        {
-            float v = my_score;
-            #pragma unroll
-            for (int off = 16; off > 0; off >>= 1)
-                v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
-            tile_max = fmaxf(tile_max, v);
-        }
-        const float m_new = tile_max;
-        const float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
-        const float p_lane = (lane < nt) ? exp2f((my_score - m_new) * LOG2E) : 0.0f;
-        l_i = l_i * alpha + warp_reduce_sum(p_lane);
+    // ---- stage K/V ONCE for all rows ----
+    for (int b = bt; b < nt * dpl * 4; b += bsz) {
+        const int sub   = b & 3;
+        const int b32   = b >> 2;
+        const int j     = b32 / dpl;
+        const int blk_i = b32 - j * dpl;
+        #if BW24_KV_VFMT == 2
+        const uint8_t* blk = V + (size_t)(t_lo + j) * v_tok_bytes
+                               + (size_t)(kblk0 + blk_i) * V_BLK_B;
+        fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
         #pragma unroll
-        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
-            if (i < dpl) acc[i] *= alpha;
+        for (int e0 = 0; e0 < 8; ++e0) {
+            const int e2 = sub * 8 + e0;
+            out[e2] = blk[e2];
         }
-        m_i = m_new;
-        #pragma unroll 8
-        for (int j = 0; j < nt; ++j) {
-            const float p = __shfl_sync(0xffffffffu, p_lane, j);
-            #if BW24_KV_VFMT == 2
-            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
-            #pragma unroll
-            for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
-                if (2 * i2 < dpl) {
-                    const uchar2 vv = vj2[lane + (i2 << 5)];
-                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
-                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
-                }
-            }
-            #else
-            const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
-            #pragma unroll
-            for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
-                if (2 * i2 < dpl) {
-                    const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
-                    acc[2 * i2]     += p * __bfloat162float(vv.x);
-                    acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
-                }
-            }
-            #endif
+        #elif BW24_KV_VFMT == 1
+        const uint8_t* blk = V + (size_t)(t_lo + j) * v_tok_bytes
+                               + (size_t)(kblk0 + blk_i) * V_BLK_B;
+        const float d40 = __half2float(*(const half*)blk);
+        const uint8_t* qs4 = blk + 2;
+        __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+        #pragma unroll
+        for (int e0 = 0; e0 < 8; ++e0) {
+            const int e2 = sub * 8 + e0;
+            const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+            out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
         }
+        #else
+        const uint8_t* blk = V + (size_t)(t_lo + j) * v_tok_bytes
+                               + (size_t)(kblk0 + blk_i) * 24;
+        uint32_t wdm; memcpy(&wdm, blk, 4);
+        const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+        const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
+        uint32_t qh; memcpy(&qh, blk + 4, 4);
+        uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
+        __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+        #pragma unroll
+        for (int e0 = 0; e0 < 8; ++e0) {
+            const int e2   = sub * 8 + e0;
+            const int byte = (e2 < 16) ? e2 : e2 - 16;
+            const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
+            const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
+            const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
+            out[e2] = __float2bfloat16(d * (float)q5 + m);
         }
-        __syncthreads();   // tile fully consumed before restaging
+        #endif
     }
+    fa_v4_stage_k_512(K, t_lo, nt, bt, bsz, kblk0, k_tok_bytes, sm);
+    __syncthreads();
 
-    if (wy < gqa) {
-        #pragma unroll
-        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
-            if (i < dpl) {
-                // paired-B3 dim map (the mr lesson: acc[2*i2] holds dim 2*lane + 64*i2)
-                int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);
-                partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+    // ---- rows loop over the shared tile (q restaged per row, warp-local) ----
+    for (int r = 0; r < n_rows; ++r) {
+        const int T_r  = T0 + r;
+        if (t_lo >= T_r) continue;                      // combine skips this split for row r
+        const int nt_r = min(nt, T_r - t_lo);
+        if (wy < gqa) {
+            fa_v4_stage_q_512(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
+            __syncwarp();
+
+            float my_score = NEG_INF;
+            if (lane < nt_r) {
+                float s = 0.0f;
+                #pragma unroll
+                for (int c = 0; c < 16; c++) {
+                    int sumi = 0;
+                    #pragma unroll
+                    for (int w = 0; w < 8; w++)
+                        sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
+                    s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+                }
+                my_score = s;
             }
-        }
-        if (lane == 0) {
-            partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
-            partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+            float m_i = NEG_INF;
+            {
+                float v = my_score;
+                #pragma unroll
+                for (int off = 16; off > 0; off >>= 1)
+                    v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+                m_i = v;
+            }
+            const float p_lane = (lane < nt_r) ? exp2f((my_score - m_i) * LOG2E) : 0.0f;
+            const float l_i = warp_reduce_sum(p_lane);
+            float acc[FA_DEC_MAX_DPL16];
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) acc[i] = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < nt_r; ++j) {
+                const float p = __shfl_sync(0xffffffffu, p_lane, j);
+                #if BW24_KV_VFMT == 2
+                const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+                #pragma unroll
+                for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
+                    if (2 * i2 < dpl) {
+                        const uchar2 vv = vj2[lane + (i2 << 5)];
+                        acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                        acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                    }
+                }
+                #else
+                const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
+                #pragma unroll
+                for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
+                    if (2 * i2 < dpl) {
+                        const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                        acc[2 * i2]     += p * __bfloat162float(vv.x);
+                        acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                    }
+                }
+                #endif
+            }
+            #pragma unroll
+            for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+                if (i < dpl) {
+                    // paired-B3 dim map (the mr lesson)
+                    int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);
+                    partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+                }
+            }
+            if (lane == 0) {
+                partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+                partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+            }
+            __syncwarp();   // q_ints[wy] fully consumed before the next row restages it
         }
     }
 }

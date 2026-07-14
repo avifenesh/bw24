@@ -5886,10 +5886,19 @@ impl Engine {
         // globals lane (depth profile: i2 ~4.6x off its byte floor — the v3-class
         // reduce-per-key latency signature). NEW NUMERIC CONFIG shared by every hd512
         // caller (decode+verify flip together); run-gen argmax + acceptance arbitrate.
-        static V512: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let v512 = head_dim == 512
-            && *V512.get_or_init(|| std::env::var("BW24_FA_V512").as_deref() == Ok("1"));
-        let fname = if v512 { "fa_decode_vec_q_rows_v4_512" }
+        // T-BATCHED hd512 (DEFAULT ON 2026-07-14, BW24_FA_TB512=0 seam): one block per
+        // (kv_head, split) stages its tile once and loops the rows over it — kills the
+        // x t DRAM re-read of the full-ctx globals (depth cell +1.4%, plain flat, N=3
+        // interleaved). FIXED absolute partition = NEW NUMERIC for the combine order,
+        // shared by every hd512 caller through this wrapper (decode+verify flip together;
+        // depth stream identical, acceptance unshifted, spec 256/256 x3 models).
+        // Requires sp <= 32 (single staged tile; acc reused per row). The z-form v4_512
+        // sibling (in-kernel dp4a port alone) probed FLAT — hd512 was DRAM-re-read-bound,
+        // not unpack-bound; jsonl 2026-07-14.
+        static TB512: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let tb512 = head_dim == 512 && sp <= 32
+            && *TB512.get_or_init(|| std::env::var("BW24_FA_TB512").as_deref() != Ok("0"));
+        let fname = if tb512 { "fa_decode_vec_q_rows_v4_512_tb" }
                     else if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
                     else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
@@ -5909,7 +5918,7 @@ impl Engine {
                     self.func_g(if smem_rows { "fa_decode_vec_q_rows" } else { fname })
                 }
                 else { self.func(fname) };
-        let shmem = if v512 {
+        let shmem = if tb512 {
             // fa_v4_smem_512 (q 4.5KB + k tile 18KB) + sV 32*512 (e4m3 module halves it)
             let gk = Self::gkv_on();
             let sh = (4096 + 512 + 32 * 512 + 32 * 64
@@ -5943,7 +5952,19 @@ impl Engine {
                 block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
             {
                 let mut b = self.gpu.stream.launch_builder(&f);
-                if head_dim == 512 {
+                if tb512 {
+                    // rows-inner launch: grid.z dropped, the kernel loops n_rows itself.
+                    let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
+                    let plus_g = plus + r0 as i32;
+                    let nr = t_g as i32;
+                    let cfg_tb = LaunchConfig {
+                        grid_dim: (n_head_kv as u32, n_splits_g as u32, 1),
+                        block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
+                    b.arg(&q_g).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
+                     .arg(&hd).arg(&nh).arg(&nhkv).arg(bd).arg(&plus_g).arg(&scale).arg(&nspm).arg(&spk)
+                     .arg(&ktb).arg(&vtb).arg(&nr);
+                    unsafe { b.launch(cfg_tb)?; }
+                } else if head_dim == 512 {
                     let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
                     let plus_g = plus + r0 as i32;
                     b.arg(&q_g).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
