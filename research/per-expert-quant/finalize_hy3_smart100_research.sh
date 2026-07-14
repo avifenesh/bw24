@@ -33,6 +33,7 @@ UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3d
 CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
 PARETO_PLAN=${PARETO_PLAN:-$PARETO_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_pareto.json}
 LAYER_BALANCED_PLAN=${LAYER_BALANCED_PLAN:-/data/plans/per-expert-quant-layer-balanced100-3db293f/layer_balanced100.json}
+TRAFFIC_PLAN=${TRAFFIC_PLAN:-/data/plans/per-expert-quant-expanded-controls-2591961/traffic-nvfp4-53-q2-139-no-prune.json}
 
 EVIDENCE_ROOTS=(
   /data/results/per-expert-quant
@@ -99,7 +100,7 @@ ssh "$REMOTE" bash -s -- \
   "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" "$HEALING_FRONTIER" \
   "$directional_frontier" "$directional_promotion" "$practical_promotion" \
   "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" \
-  "$LAYER_BALANCED_PLAN" <<'SH'
+  "$LAYER_BALANCED_PLAN" "$TRAFFIC_PLAN" <<'SH'
 set -euo pipefail
 root=$1
 commit=$2
@@ -116,6 +117,7 @@ uncentered=${12}
 centered=${13}
 pareto=${14}
 layer_balanced=${15}
+traffic=${16}
 tool="$root/tools/summarize_hy3_quant_research.py"
 output="$out_root/conclusion.json"
 markdown="$out_root/conclusion.md"
@@ -124,7 +126,7 @@ evidence="$out_root/evidence.sha256"
 [[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
 [[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
 for path in "$tool" "$effects" "$damage" "$healing_frontier" "$frontier" "$directional" "$practical" \
-  "$trusted" "$full" "$uncentered" "$centered" "$pareto" "$layer_balanced"; do
+  "$trusted" "$full" "$uncentered" "$centered" "$pareto" "$layer_balanced" "$traffic"; do
   [[ -f "$path" ]]
 done
 if [[ ! -f "$receipt" ]]; then
@@ -133,6 +135,7 @@ if [[ ! -f "$receipt" ]]; then
     --healing-frontier "$healing_frontier" \
     --directional-promotion "$directional" --practical-promotion "$practical" \
     --trusted-report "$trusted" --full-agentic "$full" \
+    --traffic-plan "$traffic" \
     --plan "uncentered=$uncentered" --plan "centered=$centered" --plan "pareto=$pareto" \
     --plan "layer_balanced=$layer_balanced" \
     --analysis-commit "$commit" --output "$output" --markdown "$markdown" \

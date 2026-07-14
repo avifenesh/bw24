@@ -33,6 +33,7 @@ HEALING_ARMS = (
     "prune100_router_repair",
     "prune100_joint_heal",
 )
+TRAFFIC_ARM = "traffic_nvfp4_53_q2_139"
 
 
 def sha256(path: Path) -> str:
@@ -533,6 +534,102 @@ def plan_summary(
     }
 
 
+def traffic_plan_summary(
+    path: Path, plan: dict[str, Any], frontier: dict[str, Any]
+) -> dict[str, Any]:
+    if plan.get("format") != PLAN_FORMAT or plan.get("recipe") != "traffic-ladder":
+        raise ValueError("strong compact reference has unsupported plan format or recipe")
+    if plan.get("calibration", {}).get("public_eval_data_used_for_selection") is not False:
+        raise ValueError("strong compact reference does not attest private-only allocation")
+    policy = plan.get("policy", {})
+    expected_tiers = {"Q8_0": 0, "NVFP4": 53, "Q2_K": 139}
+    if (
+        policy.get("fixed_tier_counts") != expected_tiers
+        or int(policy.get("fixed_prune_count", -1)) != 0
+        or policy.get("prune_unused") is not False
+    ):
+        raise ValueError("strong compact reference is not the frozen 53-NVFP4/139-Q2 plan")
+    model = plan.get("model", {})
+    layers = [int(layer) for layer in model.get("moe_layers", [])]
+    expert_count = int(model.get("expert_count", 0))
+    if len(layers) != 79 or len(set(layers)) != 79 or expert_count != 192:
+        raise ValueError("strong compact reference has the wrong model shape")
+
+    by_layer: dict[int, dict[str, set[int]]] = {
+        layer: {"NVFP4": set(), "Q2_K": set()} for layer in layers
+    }
+    for assignment in plan.get("assignments", []):
+        layer = int(assignment["layer"])
+        qtype = str(assignment["qtype"])
+        if layer not in by_layer or qtype not in by_layer[layer]:
+            raise ValueError("strong compact reference has an unexpected assignment")
+        experts = {int(expert) for expert in assignment["experts"]}
+        if len(experts) != len(assignment["experts"]):
+            raise ValueError("strong compact reference repeats an expert")
+        if by_layer[layer][qtype] & experts:
+            raise ValueError("strong compact reference repeats an assignment")
+        by_layer[layer][qtype].update(experts)
+
+    all_experts = set(range(expert_count))
+    for layer, qtypes in by_layer.items():
+        if len(qtypes["NVFP4"]) != 53 or len(qtypes["Q2_K"]) != 139:
+            raise ValueError(f"strong compact layer {layer} has the wrong tier counts")
+        if qtypes["NVFP4"] & qtypes["Q2_K"] or set.union(*qtypes.values()) != all_experts:
+            raise ValueError(f"strong compact layer {layer} does not cover the expert bank")
+        summary = plan.get("layer_summary", {}).get(str(layer), {})
+        if (
+            int(summary.get("nvfp4", -1)) != 53
+            or int(summary.get("q2_k", -1)) != 139
+            or int(summary.get("pruned", -1)) != 0
+        ):
+            raise ValueError(f"strong compact layer {layer} summary differs")
+
+    directional = frontier.get("arms", {}).get(TRAFFIC_ARM)
+    if directional is None:
+        raise ValueError("strong compact reference is absent from the directional frontier")
+    logical_bytes = int(directional["logical_model_bytes"])
+    per_projection = {"NVFP4": 53 * len(layers), "Q2_K": 139 * len(layers)}
+    layer_projection = {"NVFP4": 53 * 3, "Q2_K": 139 * 3}
+    return {
+        "arm": TRAFFIC_ARM,
+        "plan": source(path),
+        "recipe": plan["recipe"],
+        "description": plan.get("description"),
+        "logical_model_bytes": logical_bytes,
+        "logical_model_gib": logical_bytes / 2**30,
+        "retained_experts": expert_count * len(layers),
+        "pruned_experts": 0,
+        "minimum_survivors_in_layer": expert_count,
+        "maximum_pruned_in_layer": 0,
+        "qtype_projection_counts": {
+            qtype: count * 3 for qtype, count in per_projection.items()
+        },
+        "projection_qtype_counts": {
+            projection: dict(per_projection) for projection in ("gate", "up", "down")
+        },
+        "layer_qtype_projection_counts": {
+            str(layer): dict(layer_projection) for layer in layers
+        },
+        "layer_retention": {
+            str(layer): {"retained": expert_count, "pruned": 0} for layer in layers
+        },
+        "private_damage_metric": None,
+        "private_damage_source": "not_in_seven_format_plan_damage_study",
+        "private_total_additive_damage": None,
+        "private_centered_output_damage": None,
+        "private_normalized_objective": None,
+        "private_prune_damage": None,
+        "private_retained_quant_damage": None,
+        "private_projection_quant_damage": None,
+        "private_top_damage_cells": None,
+        "directional": {
+            "domain_macro": float(directional["domain_macro"]),
+            "question_weighted": float(directional["question_weighted"]),
+            "tasks": directional.get("tasks", {}),
+        },
+    }
+
+
 def effect_alignment_summary(
     plan: dict[str, Any], effect_summary: dict[str, Any]
 ) -> dict[str, Any]:
@@ -682,10 +779,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         name: plan_summary(name, path, load(path), damage, frontier)
         for name, path in sorted(plan_paths.items())
     }
+    traffic_method = traffic_plan_summary(
+        args.traffic_plan, load(args.traffic_plan), frontier
+    )
     baseline = frontier["arms"]["plain_quant"]
     winner = frontier["arms"][finalist]
+    method_candidates = [traffic_method, *plans.values()]
     winner_method = next(
-        (summary for summary in plans.values() if summary["arm"] == finalist), None
+        (summary for summary in method_candidates if summary["arm"] == finalist), None
     )
     size_reduction = 1.0 - int(winner["logical_model_bytes"]) / int(
         baseline["logical_model_bytes"]
@@ -725,6 +826,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "rather than an equivalence claim."
             ),
         },
+        "strong_compact_reference": traffic_method,
         "seven_format_candidates": plans,
         "private_damage_comparison": {
             "legacy_three_plan_lowest_damage_plan": damage["lowest_private_damage_plan"],
@@ -768,6 +870,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
 def markdown(result: dict[str, Any]) -> str:
     winner = result["recommended_method"]
+    traffic = result["strong_compact_reference"]
     lines = [
         "# Hy3 MoE prune/quant research conclusion",
         "",
@@ -780,6 +883,13 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Directional question-weighted score: {winner['directional_question_weighted']:.2%}",
         f"- Full SWE/Terminal solved delta versus plain: "
         f"{winner['full_agentic_candidate_total_solved_delta']:+d}",
+        "",
+        "## Strong compact reference",
+        "",
+        f"- Arm: `{traffic['arm']}`",
+        f"- Logical size: {traffic['logical_model_bytes']/1e9:.3f} GB",
+        "- Allocation per MoE layer: 53 NVFP4 experts, 139 Q2_K experts, zero pruned",
+        "- Ranking: private router-selection traffic with ascending expert-id tie break",
         "",
         "## Seven-format candidates",
         "",
@@ -805,19 +915,23 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Retained/pruned experts: {measured_plan['retained_experts']:,} / "
             f"{measured_plan['pruned_experts']:,}",
             f"- Projection cells by format: {counts}",
-            f"- Private additive damage: "
-            f"{measured_plan['private_total_additive_damage']:.8g}",
+        ]
+        private_damage = measured_plan["private_total_additive_damage"]
+        if private_damage is not None:
+            lines.append(f"- Private additive damage: {private_damage:.8g}")
+        lines += [
             "",
             "### Projection allocation",
             "",
-            "| Projection | Q8_0 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            "| Projection | Q8_0 | NVFP4 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for projection in ("gate", "up", "down"):
             values = measured_plan["projection_qtype_counts"].get(projection, {})
             lines.append(
                 f"| {projection} | {values.get('Q8_0', 0):,} | "
-                f"{values.get('Q4_K', 0):,} | {values.get('IQ4_XS', 0):,} | "
+                f"{values.get('NVFP4', 0):,} | {values.get('Q4_K', 0):,} | "
+                f"{values.get('IQ4_XS', 0):,} | "
                 f"{values.get('IQ3_S', 0):,} | {values.get('Q3_K', 0):,} | "
                 f"{values.get('Q2_K', 0):,} |"
             )
@@ -885,8 +999,8 @@ def markdown(result: dict[str, Any]) -> str:
             "",
             "### Recommended allocation at the most Q2-sensitive layers",
             "",
-            "| Layer | Retained | Pruned | Q8_0 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
-            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Layer | Retained | Pruned | Q8_0 | NVFP4 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for row in effect_map["most_q2_sensitive_layers"]:
             layer = str(row["layer"])
@@ -894,7 +1008,8 @@ def markdown(result: dict[str, Any]) -> str:
             values = measured_plan["layer_qtype_projection_counts"][layer]
             lines.append(
                 f"| {layer} | {retention['retained']:,} | {retention['pruned']:,} | "
-                f"{values.get('Q8_0', 0):,} | {values.get('Q4_K', 0):,} | "
+                f"{values.get('Q8_0', 0):,} | {values.get('NVFP4', 0):,} | "
+                f"{values.get('Q4_K', 0):,} | "
                 f"{values.get('IQ4_XS', 0):,} | {values.get('IQ3_S', 0):,} | "
                 f"{values.get('Q3_K', 0):,} | {values.get('Q2_K', 0):,} |"
             )
@@ -1044,6 +1159,32 @@ def self_test() -> None:
                 ],
             })
             plans[name] = (arm, path, size)
+        traffic_layers = list(range(1, 80))
+        traffic_plan = write("traffic.json", {
+            "format": PLAN_FORMAT,
+            "recipe": "traffic-ladder",
+            "description": "Usage-ranked full bank: top 0 Q8_0, next 53 NVFP4, "
+                           "next 139 Q2_K, coldest 0 pruned",
+            "model": {"expert_count": 192, "moe_layers": traffic_layers},
+            "policy": {
+                "fixed_tier_counts": {"Q8_0": 0, "NVFP4": 53, "Q2_K": 139},
+                "fixed_prune_count": 0,
+                "prune_unused": False,
+            },
+            "calibration": {"public_eval_data_used_for_selection": False},
+            "layer_summary": {
+                str(layer): {"nvfp4": 53, "q2_k": 139, "pruned": 0}
+                for layer in traffic_layers
+            },
+            "assignments": [
+                assignment
+                for layer in traffic_layers
+                for assignment in (
+                    {"layer": layer, "qtype": "NVFP4", "experts": list(range(53))},
+                    {"layer": layer, "qtype": "Q2_K", "experts": list(range(53, 192))},
+                )
+            ],
+        })
         damage_plans = {
             PLAN_DAMAGE_KEYS[name]: {"sha256": sha256(path), "logical_bytes": size,
                    "total_additive_damage": float(size), "prune_damage": 1.0,
@@ -1102,6 +1243,7 @@ def self_test() -> None:
             "public_eval_data_used":False,"lowest_private_damage_plan":"pareto",
             "plans":damage_plans,"pairwise":{}})
         arm_rows = {"plain_quant":{"logical_model_bytes":200,"domain_macro":.8,"question_weighted":.8},
+                    TRAFFIC_ARM:{"logical_model_bytes":137,"domain_macro":.75,"question_weighted":.74},
                     PLAN_ARMS["uncentered"]:{"logical_model_bytes":100,"domain_macro":.7,"question_weighted":.7},
                     PLAN_ARMS["centered"]:{"logical_model_bytes":99,"domain_macro":.71,"question_weighted":.71},
                     PLAN_ARMS["pareto"]:{"logical_model_bytes":98,"domain_macro":.72,"question_weighted":.72},
@@ -1165,6 +1307,7 @@ def self_test() -> None:
             directional_promotion=directional, practical_promotion=practical,
             trusted_selection=trusted_selection,
             trusted_report=trusted, full_agentic=full,
+            traffic_plan=traffic_plan,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
         assert result["recommended_method"]["arm"] == PLAN_ARMS["layer_balanced"]
@@ -1175,6 +1318,42 @@ def self_test() -> None:
         assert result["seven_format_candidates"]["layer_balanced"][
             "private_damage_source"
         ] == "optimal_plan_selection_estimate"
+        assert result["strong_compact_reference"]["qtype_projection_counts"] == {
+            "NVFP4": 53 * 79 * 3,
+            "Q2_K": 139 * 79 * 3,
+        }
+        assert result["strong_compact_reference"]["pruned_experts"] == 0
+        traffic_trusted = write("traffic-trusted.json", {
+            "format":"bw24-promoted-candidate-v1",
+            "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
+            "baseline":"plain_quant","arms":{},"paired_vs_baseline":{},
+            "selection":{"selected_finalist":TRAFFIC_ARM}})
+        traffic_full = write("traffic-full.json", {
+            "format":"bw24-full-agentic-comparison-v1",
+            "baseline":"plain_quant","candidate":TRAFFIC_ARM,"total_tasks":589,
+            "candidate_total_solved_delta":0})
+        traffic_selection = write("traffic-selection.json", {
+            "format":"bw24-effective-trusted-full-selection-v1",
+            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"],TRAFFIC_ARM],
+            "base_trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]],
+            "practical_promotion":{"path":str(practical.resolve()),
+                                   "sha256":sha256(practical)},
+            "decision":{"candidate_arm":TRAFFIC_ARM,
+                        "qualified_by_user_policy":True,
+                        "forced_into_trusted_full":True}})
+        traffic_args = argparse.Namespace(
+            **{
+                **vars(args),
+                "trusted_selection": traffic_selection,
+                "trusted_report": traffic_trusted,
+                "full_agentic": traffic_full,
+            }
+        )
+        traffic_result = build(traffic_args)
+        assert traffic_result["recommended_method"]["measured_global_plan"][
+            "arm"
+        ] == TRAFFIC_ARM
+        assert "53 NVFP4 experts, 139 Q2_K experts" in markdown(traffic_result)
         assert result["format_efficiency"]["point_estimate_pareto"] == [
             "Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0"
         ]
@@ -1242,6 +1421,7 @@ def main() -> None:
     parser.add_argument("--trusted-selection", type=Path)
     parser.add_argument("--trusted-report", type=Path, required=True)
     parser.add_argument("--full-agentic", type=Path, required=True)
+    parser.add_argument("--traffic-plan", type=Path, required=True)
     parser.add_argument("--plan", action="append", type=parse_plan, required=True)
     parser.add_argument("--analysis-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -1261,7 +1441,7 @@ def main() -> None:
               args.directional_promotion,
               args.practical_promotion,
               *([args.trusted_selection] if args.trusted_selection else []),
-              args.trusted_report,args.full_agentic,
+              args.trusted_report,args.full_agentic,args.traffic_plan,
               *(path for _,path in args.plan)]
     receipt = {
         "format": RECEIPT_FORMAT,
