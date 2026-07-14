@@ -11,6 +11,9 @@ REMOTE=${REMOTE:-bw24-research-g6e}
 REGION=${REGION:-us-east-2}
 INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
 EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
+EXPECTED_FINAL_CHAIN_COMMIT=${EXPECTED_FINAL_CHAIN_COMMIT:-67cd32ce44b32b74ce5d4421675b5dbb849e9c70}
+EXPECTED_SERVER_SHA256=${EXPECTED_SERVER_SHA256:-13a7ac6a15a5de17f0eb736ecb393a50ab9bf03145e86a878e66c86b2086f195}
+EXPECTED_HARBOR_SHA256=${EXPECTED_HARBOR_SHA256:-68084543d2b90751ee1a1bd109a10f06a594889f5d585f1ba4d6355b9d6b97d1}
 REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-layer-balanced-bridge-v1}
 REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-layer-balanced-bridge-v1/complete}
 REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/layer-balanced-bridge-directional-v1}
@@ -98,6 +101,27 @@ run_id=$(ssh "$REMOTE" "cat '$REMOTE_FULL_ROOT/_active-run-id'")
 directional_run=$(ssh "$REMOTE" "cat '$REMOTE_DIRECTIONAL_ROOT/_active-run-id'")
 practical_run=$(ssh "$REMOTE" "cat '$REMOTE_PRACTICAL_ROOT/_active-run-id'")
 trusted_run=$(ssh "$REMOTE" "cat '$REMOTE_TRUSTED_ROOT/_active-run-id'")
+trusted_config="$REMOTE_TRUSTED_ROOT/run-configs/$trusted_run.json"
+full_config="$REMOTE_FULL_ROOT/run-configs/$run_id.json"
+ssh "$REMOTE" python3 - "$trusted_config" "$full_config" \
+  "$EXPECTED_FINAL_CHAIN_COMMIT" "$EXPECTED_SERVER_SHA256" "$EXPECTED_HARBOR_SHA256" <<'PY'
+import json
+import pathlib
+import sys
+
+trusted_path, full_path = map(pathlib.Path, sys.argv[1:3])
+expected_commit, expected_server, expected_harbor = sys.argv[3:]
+trusted = json.loads(trusted_path.read_text())
+full = json.loads(full_path.read_text())
+assert trusted["format"] == "bw24-trusted-full-run-v1"
+assert full["format"] == "bw24-full-agentic-run-v1"
+for payload in (trusted, full):
+    assert payload["bw24_commit"] == expected_commit
+    assert payload["server"]["sha256"] == expected_server
+    assert payload["server"]["expected_sha256"] == expected_server
+assert full["harbor"]["sha256"] == expected_harbor
+assert full["harbor"]["expected_sha256"] == expected_harbor
+PY
 analysis_commit=$(ssh "$REMOTE" "git -C '$REMOTE_FINALIZER_ROOT' rev-parse HEAD")
 [[ "$analysis_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid remote finalizer commit"
 directional_frontier="$REMOTE_DIRECTIONAL_ROOT/layer-balanced-bridge-frontier-$directional_run.json"
