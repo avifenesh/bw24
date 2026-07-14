@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Run only the newly qualified layer-balanced candidate, then compare it with immutable reference
-# evidence from the already matched plain/compact practical run. The candidate uses the same ports
-# as the compact arm did so the strict cross-run receipt comparator can require identical base URLs.
+# evidence from the matched plain/compact practical run. Candidate generation may overlap the
+# references on isolated loopback ports; the strict comparator normalizes only that port field.
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 EXPECTED_COMMIT=${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the detached orchestration commit}
@@ -62,7 +62,7 @@ echo "$(date -u +%FT%TZ) layer-balanced100 practical transition started"
 [[ -z $(git -C "$EVAL_ROOT" status --porcelain) ]] || die "eval checkout is dirty"
 
 while [[ ! -f "$DIRECTIONAL_READY" || ! -s "$DIRECTIONAL_ROOT/_active-run-id" \
-  || ! -f "$SOURCE_READY" || ! -s "$SOURCE_ROOT/_active-run-id" ]]; do
+  || ! -s "$SOURCE_ROOT/_active-run-id" ]]; do
   sleep "$WAIT_INTERVAL_S"
 done
 DIRECTIONAL_RUN_ID=$(<"$DIRECTIONAL_ROOT/_active-run-id")
@@ -101,12 +101,6 @@ if d.get("arms",[])[:2] != ["plain_quant","traffic_nvfp4_53_q2_139"]:
     raise SystemExit("source practical references differ")
 if d["practical_lock"]["sha256"] != sha(lock_path) or d["server"]["sha256"] != server_sha:
     raise SystemExit("source practical protocol hash differs")
-expected={"swe":"http://127.0.0.1:8082/v1","terminal":"http://127.0.0.1:8083/v1"}
-for panel,base_url in expected.items():
-    receipt=root/"traffic_nvfp4_53_q2_139"/panel/run_id/"run-metadata.json"
-    row=json.loads(receipt.read_text())
-    if not row.get("completed_successfully") or row.get("base_url") != base_url:
-        raise SystemExit(f"source compact {panel} receipt is not reusable")
 PY
 
 RUN_ID="practical-layer-balanced100-v1-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -126,7 +120,7 @@ payload={
   "format":"bw24-layer-balanced100-practical-reuse-run-v1",
   "run_id":os.environ["RUN_ID"],"candidate":os.environ["ARM"],
   "candidate_selected":os.environ["selected"] == "1",
-  "protocol":"reuse immutable matched references; run candidate only on identical compact ports",
+  "protocol":"overlap candidate on isolated ports; reuse immutable matched references",
   "directional_promotion":{"path":os.environ["PROMOTION"],"sha256":sha(os.environ["PROMOTION"])},
   "directional_frontier":{"path":os.environ["FRONTIER"],"sha256":sha(os.environ["FRONTIER"])},
   "source_practical":{"run_id":os.environ["SOURCE_RUN_ID"],
@@ -145,32 +139,6 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps(payload,indent=2,sort_keys=True)
 PY
 sha256sum "$RUN_CONFIG" >"$RUN_CONFIG.sha256"
 printf '%s\n' "$RUN_ID" >"$OUT_ROOT/_active-run-id"
-
-SOURCE_INVENTORY="$OUT_ROOT/source-reference-$RUN_ID.sha256"
-find \
-  "$SOURCE_ROOT/plain_quant/swe/$SOURCE_RUN_ID" \
-  "$SOURCE_ROOT/plain_quant/terminal/$SOURCE_RUN_ID" \
-  "$SOURCE_ROOT/traffic_nvfp4_53_q2_139/swe/$SOURCE_RUN_ID" \
-  "$SOURCE_ROOT/traffic_nvfp4_53_q2_139/terminal/$SOURCE_RUN_ID" \
-  -type f -print0 | sort -z | xargs -0 sha256sum >"$SOURCE_INVENTORY"
-python3 - "$OUT_ROOT/reuse-receipt-$RUN_ID.json" "$SOURCE_ROOT" "$SOURCE_RUN_ID" \
-  "$SOURCE_CONFIG" "$PRACTICAL_LOCK" "$SOURCE_INVENTORY" <<'PY'
-import hashlib,json,pathlib,sys
-out,root,run_id,config,lock,inventory=map(pathlib.Path,sys.argv[1:])
-sha=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-refs={}
-for arm in ("plain_quant","traffic_nvfp4_53_q2_139"):
-  refs[arm]={}
-  for panel in ("swe","terminal"):
-    path=root/arm/panel/run_id/"run-metadata.json"
-    refs[arm][panel]={"path":str(path.resolve()),"sha256":sha(path)}
-payload={"format":"bw24-practical-reference-reuse-v1","source_run_id":str(run_id),
-         "source_config":{"path":str(config.resolve()),"sha256":sha(config)},
-         "practical_lock_sha256":sha(lock),
-         "source_inventory":{"path":str(inventory.resolve()),"sha256":sha(inventory)},
-         "references":refs}
-out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
-PY
 
 declare -a WORKER_PIDS=()
 cleanup_all() {
@@ -254,11 +222,50 @@ print(p["swe"]); print(p["terminal"])
 PY
 )
   [[ ${#pilots[@]} == 2 ]] || die "source pilot resolution failed"
-  run_panel swe 2 24-35 8082 "${pilots[0]}" & WORKER_PIDS+=("$!")
-  run_panel terminal 3 36-47 8083 "${pilots[1]}" & WORKER_PIDS+=("$!")
+  run_panel swe 4 48-59 8084 "${pilots[0]}" & WORKER_PIDS+=("$!")
+  run_panel terminal 5 60-71 8085 "${pilots[1]}" & WORKER_PIDS+=("$!")
   failed=0; for pid in "${WORKER_PIDS[@]}"; do wait "$pid" || failed=1; done
   ((failed == 0)) || die "candidate practical worker failed"
+fi
 
+while [[ ! -f "$SOURCE_READY" ]]; do sleep "$WAIT_INTERVAL_S"; done
+python3 - "$SOURCE_ROOT" "$SOURCE_RUN_ID" <<'PY'
+import json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); run_id=sys.argv[2]
+expected={"swe":"http://127.0.0.1:8082/v1","terminal":"http://127.0.0.1:8083/v1"}
+for panel,base_url in expected.items():
+    receipt=root/"traffic_nvfp4_53_q2_139"/panel/run_id/"run-metadata.json"
+    row=json.loads(receipt.read_text())
+    if not row.get("completed_successfully") or row.get("base_url") != base_url:
+        raise SystemExit(f"source compact {panel} receipt is not reusable")
+PY
+SOURCE_INVENTORY="$OUT_ROOT/source-reference-$RUN_ID.sha256"
+find \
+  "$SOURCE_ROOT/plain_quant/swe/$SOURCE_RUN_ID" \
+  "$SOURCE_ROOT/plain_quant/terminal/$SOURCE_RUN_ID" \
+  "$SOURCE_ROOT/traffic_nvfp4_53_q2_139/swe/$SOURCE_RUN_ID" \
+  "$SOURCE_ROOT/traffic_nvfp4_53_q2_139/terminal/$SOURCE_RUN_ID" \
+  -type f -print0 | sort -z | xargs -0 sha256sum >"$SOURCE_INVENTORY"
+python3 - "$OUT_ROOT/reuse-receipt-$RUN_ID.json" "$SOURCE_ROOT" "$SOURCE_RUN_ID" \
+  "$SOURCE_CONFIG" "$PRACTICAL_LOCK" "$SOURCE_INVENTORY" <<'PY'
+import hashlib,json,pathlib,sys
+out,root,run_id,config,lock,inventory=map(pathlib.Path,sys.argv[1:])
+sha=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+refs={}
+for arm in ("plain_quant","traffic_nvfp4_53_q2_139"):
+  refs[arm]={}
+  for panel in ("swe","terminal"):
+    path=root/arm/panel/run_id/"run-metadata.json"
+    refs[arm][panel]={"path":str(path.resolve()),"sha256":sha(path)}
+payload={"format":"bw24-practical-reference-reuse-v1","source_run_id":str(run_id),
+         "source_config":{"path":str(config.resolve()),"sha256":sha(config)},
+         "practical_lock_sha256":sha(lock),
+         "source_inventory":{"path":str(inventory.resolve()),"sha256":sha(inventory)},
+         "references":refs}
+out.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+PY
+
+if [[ "$selected" == 1 ]]; then
   for baseline in plain_quant traffic_nvfp4_53_q2_139; do
     for panel in swe terminal; do
       python3 "$SUMMARIZER" \
