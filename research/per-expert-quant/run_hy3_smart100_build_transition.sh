@@ -20,9 +20,26 @@ SCRATCH_ROOT=${SCRATCH_ROOT:-/scratch/bw24-artifacts-smart100-2605fde}
 LOG_ROOT=${LOG_ROOT:-/data/logs/smart100-build-2605fde}
 TARGET_BYTES=${TARGET_BYTES:-100000000000}
 BUILD_GPUS_CSV=${BUILD_GPUS_CSV:-}
+ARMS_CSV=${ARMS_CSV:-smart100_empirical,smart100_balanced,smart100_rescue}
+TARGET_BYTES_CSV=${TARGET_BYTES_CSV:-$TARGET_BYTES,$TARGET_BYTES,$TARGET_BYTES}
+WEIGHTS_CSV=${WEIGHTS_CSV:-0:0:0,1:1:1,0.5:2:1}
+MIP_REL_GAP=${MIP_REL_GAP:-1e-4}
+LAYER_CONSTRAINTS=${LAYER_CONSTRAINTS:-}
+SELECTION_LOCK=${SELECTION_LOCK:-}
+SELECTION_LOCK_VALIDATOR=${SELECTION_LOCK_VALIDATOR:-}
 
-arms=(smart100_empirical smart100_balanced smart100_rescue)
-weights=("0 0 0" "1 1 1" "0.5 2 1")
+IFS=, read -r -a arms <<<"$ARMS_CSV"
+IFS=, read -r -a targets <<<"$TARGET_BYTES_CSV"
+IFS=, read -r -a weight_specs <<<"$WEIGHTS_CSV"
+[[ ${#arms[@]} -gt 0 && ${#arms[@]} -eq ${#targets[@]} \
+  && ${#arms[@]} -eq ${#weight_specs[@]} ]] \
+  || { echo "arms, target bytes, and weight counts must match" >&2; exit 2; }
+weights=()
+for spec in "${weight_specs[@]}"; do
+  [[ "$spec" =~ ^[0-9.]+:[0-9.]+:[0-9.]+$ ]] \
+    || { echo "invalid retention:confidence:layer weights $spec" >&2; exit 2; }
+  weights+=("${spec//:/ }")
+done
 all_cpus=(0-11 12-23 24-35 36-47 48-59 60-71 72-83 84-95)
 if [[ -n "$BUILD_GPUS_CSV" ]]; then
   IFS=, read -r -a gpus <<<"$BUILD_GPUS_CSV"
@@ -49,11 +66,22 @@ flock -n 9 || die "another transition owns $LOG_ROOT/transition.lock"
 echo "$(date -u +%FT%TZ) smart100 build transition started" | tee -a "$LOG_ROOT/transition.log"
 [[ $(git -C "$ROOT" rev-parse HEAD) == "$EXPECTED_COMMIT" ]] || die "source commit mismatch"
 
-while [[ ! -f "$SENSITIVITY_COMPLETE" ]]; do sleep 30; done
+while [[ -n "$SENSITIVITY_COMPLETE" && ! -f "$SENSITIVITY_COMPLETE" ]]; do sleep 30; done
 for path in "$SENSITIVITY" "$RETENTION" "$CONFIDENCE" "$REFERENCE_PLAN" "$TRACE_LOCK" \
   "$SOURCE/config.json" "$SOURCE/model.safetensors.index.json"; do
   [[ -f "$path" ]] || die "missing input $path"
 done
+if [[ -n "$LAYER_CONSTRAINTS" ]]; then
+  [[ -f "$LAYER_CONSTRAINTS" ]] || die "missing layer constraints $LAYER_CONSTRAINTS"
+fi
+if [[ -n "$SELECTION_LOCK" || -n "$SELECTION_LOCK_VALIDATOR" ]]; then
+  [[ -n "$SELECTION_LOCK" && -n "$SELECTION_LOCK_VALIDATOR" ]] \
+    || die "selection lock and validator must be provided together"
+  [[ -f "$SELECTION_LOCK" && -f "$SELECTION_LOCK_VALIDATOR" ]] \
+    || die "missing selection lock or validator"
+  "$PY" "$SELECTION_LOCK_VALIDATOR" --lock "$SELECTION_LOCK" --verify-inputs \
+    | tee "$LOG_ROOT/selection-lock-validation.log"
+fi
 if [[ -n "$BUILD_GPUS_CSV" ]]; then
   echo "$(date -u +%FT%TZ) isolated build lanes GPUs=$BUILD_GPUS_CSV CPUs=$control_cpus" \
     | tee -a "$LOG_ROOT/transition.log"
@@ -93,35 +121,52 @@ fi
 
 for index in "${!arms[@]}"; do
   arm=${arms[$index]}; read -r retention_weight confidence_weight layer_weight <<<"${weights[$index]}"
+  target_bytes=${targets[$index]}
+  [[ "$target_bytes" =~ ^[1-9][0-9]+$ ]] || die "invalid target bytes for $arm: $target_bytes"
   plan="$PLAN_ROOT/$arm.json"
   if [[ -f "$plan" ]]; then
     echo "$(date -u +%FT%TZ) reusing existing frozen plan $plan" | tee -a "$LOG_ROOT/transition.log"
     continue
   fi
+  constraint_args=()
+  [[ -z "$LAYER_CONSTRAINTS" ]] || constraint_args=(--layer-constraints "$LAYER_CONSTRAINTS")
   taskset -c "$control_cpus" "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
     --retention-scores "$RETENTION" --quant-sensitivity "$SENSITIVITY" \
     --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
-    --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$TARGET_BYTES" \
+    --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$target_bytes" \
     --min-survivors-per-layer 96 --retention-weight "$retention_weight" \
     --confidence-weight "$confidence_weight" --layer-weight "$layer_weight" \
-    --time-limit-seconds 900 --mip-rel-gap 1e-4 --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
+    --time-limit-seconds 900 --mip-rel-gap "$MIP_REL_GAP" "${constraint_args[@]}" \
+    --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
 done
 
+plan_paths=()
+for arm in "${arms[@]}"; do plan_paths+=("$PLAN_ROOT/$arm.json"); done
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" \
-  "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/allocation-comparison.json" \
+  "${plan_paths[@]}" --out "$PLAN_ROOT/allocation-comparison.json" \
   --require-distinct | tee "$LOG_ROOT/allocation-comparison.log"
 "$PY" "$ROOT/tools/summarize_hy3_plan_agreement.py" \
-  "$PLAN_ROOT"/smart100_*.json --out "$PLAN_ROOT/plan-agreement.json" \
+  "${plan_paths[@]}" --out "$PLAN_ROOT/plan-agreement.json" \
   --retention-scores "$RETENTION" \
   --layer-csv "$PLAN_ROOT/plan-agreement-layers.csv" | tee "$LOG_ROOT/plan-agreement.log"
 
-"$PY" - "$PLAN_ROOT" "$TARGET_BYTES" "${arms[@]}" <<'PY'
+arm_specs=()
+for index in "${!arms[@]}"; do
+  arm_specs+=("${arms[$index]}=${targets[$index]}=${weight_specs[$index]}")
+done
+"$PY" - "$PLAN_ROOT" "${arm_specs[@]}" <<'PY'
 import json, pathlib, sys
-root, target, *arms = sys.argv[1:]
-for arm in arms:
+root, *arm_specs = sys.argv[1:]
+for arm_spec in arm_specs:
+    arm, target, weights = arm_spec.split("=", 2)
+    retention, confidence, layer = map(float, weights.split(":"))
     d=json.loads((pathlib.Path(root)/f"{arm}.json").read_text())
     assert d["calibration"]["public_eval_data_used_for_selection"] is False
+    assert d["policy"]["target_logical_bytes"] == int(target)
     assert d["policy"]["result_logical_bytes"] <= int(target)
+    assert d["policy"]["importance_weights"] == {
+        "retention": retention, "confidence": confidence, "layer": layer,
+    }
     assert d["selection"]["retained_experts"] + d["selection"]["pruned_experts"] == 79*192
     assert min(int(x["retained"]) for x in d["layer_summary"].values()) >= 96
 PY
@@ -275,6 +320,8 @@ pathlib.Path(out).write_text(json.dumps({
 PY
 evidence=("$PLAN_ROOT"/*.json "$PLAN_ROOT/plan-agreement-layers.csv" \
   "$LOG_ROOT"/heal-quality-*.json "$LOG_ROOT"/routing-audit-*.json "$LOG_ROOT/eligible-arms.json")
+[[ -z "$LAYER_CONSTRAINTS" ]] || evidence+=("$LAYER_CONSTRAINTS")
+[[ -z "$SELECTION_LOCK" ]] || evidence+=("$SELECTION_LOCK")
 for arm in "${eligible_arms[@]}"; do
   evidence+=("$HEAL_ROOT/$arm/overlay.lock.json" "$HEAL_ROOT/$arm/router-overrides.json" \
     "$ARTIFACT_ROOT/$arm/manifest.json")
