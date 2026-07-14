@@ -201,6 +201,32 @@ def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
                 for task in sorted(unhealed["task_successes"])
             },
         }
+    random_names = sorted(name for name in arms if re.fullmatch(r"random_[0-9]+", name))
+    random_control_variance = None
+    if random_names:
+        if len(random_names) != 3:
+            raise ValueError("expected exactly three random controls")
+        random_rows = [arms[name] for name in random_names]
+        random_sizes = {int(row["logical_model_bytes"]) for row in random_rows}
+        random_questions = {int(row["total_questions"]) for row in random_rows}
+        if len(random_sizes) != 1 or random_questions != total_questions:
+            raise ValueError("random controls are not size/question matched")
+        random_control_variance = {"arms": random_names}
+        for metric in ("question_weighted", "domain_macro"):
+            values = [float(row[metric]) for row in random_rows]
+            if any(not math.isfinite(value) or not 0 <= value <= 1 for value in values):
+                raise ValueError(f"invalid random-control {metric}")
+            mean = math.fsum(values) / len(values)
+            random_control_variance[metric] = {
+                "values": values,
+                "mean": mean,
+                "population_stddev": math.sqrt(
+                    math.fsum((value - mean) ** 2 for value in values) / len(values)
+                ),
+                "minimum": min(values),
+                "maximum": max(values),
+            }
+        random_control_variance["matched_logical_model_bytes"] = next(iter(random_sizes))
     return {
         "matched_logical_model_bytes": next(iter(logical_bytes)),
         "total_questions": next(iter(total_questions)),
@@ -212,7 +238,42 @@ def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
         "best_domain_macro_arm": max(
             HEALING_ARMS, key=lambda name: (rows[name]["domain_macro"], name)
         ),
+        "random_control_variance": random_control_variance,
     }
+
+
+def directional_frontier_summary(frontier: dict[str, Any]) -> dict[str, Any]:
+    if frontier.get("format") != "bw24-cross-run-expanded-capability-frontier-v1":
+        raise ValueError("wrong directional frontier format")
+    arms = frontier.get("arms")
+    pareto = frontier.get("point_estimate_pareto")
+    if not isinstance(arms, dict) or not arms or not isinstance(pareto, list):
+        raise ValueError("directional frontier is incomplete")
+    if any(name not in arms for name in pareto):
+        raise ValueError("directional Pareto arm is absent from arm evidence")
+    rows: list[dict[str, Any]] = []
+    for name, arm in arms.items():
+        size = int(arm["logical_model_bytes"])
+        question_weighted = float(arm["question_weighted"])
+        domain_macro = float(arm["domain_macro"])
+        if (
+            size <= 0 or not math.isfinite(question_weighted)
+            or not math.isfinite(domain_macro)
+            or not 0 <= question_weighted <= 1 or not 0 <= domain_macro <= 1
+        ):
+            raise ValueError(f"invalid directional arm {name}")
+        rows.append({
+            "arm": str(name),
+            "logical_model_bytes": size,
+            "question_weighted": question_weighted,
+            "domain_macro": domain_macro,
+            "point_estimate_pareto": name in pareto,
+            "tasks": arm.get("tasks", {}),
+        })
+    rows.sort(key=lambda row: (
+        row["logical_model_bytes"], -row["question_weighted"], row["arm"]
+    ))
+    return {"arms": rows, "point_estimate_pareto": pareto}
 
 
 def plan_summary(
@@ -398,6 +459,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     format_efficiency = format_efficiency_summary(effects)
     healing_ablation = healing_ablation_summary(healing_frontier)
+    directional_frontier = directional_frontier_summary(frontier)
     result = {
         "format": OUTPUT_FORMAT,
         "analysis_commit": args.analysis_commit,
@@ -449,7 +511,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "format_efficiency": format_efficiency,
         "healing_ablation": healing_ablation,
         "directional": {
-            "point_estimate_pareto": frontier["point_estimate_pareto"],
+            **directional_frontier,
             "promotion": directional,
         },
         "practical_promotion": practical,
@@ -550,6 +612,27 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Router-only repair changes total correct by {router['total_correct_delta']:+d} and "
         f"domain macro by {router['domain_macro_delta']:+.2%} versus unhealed.",
     ]
+    random_control = healing["random_control_variance"]
+    if random_control is not None:
+        lines.append(
+            "- Three matched random controls span "
+            f"{random_control['question_weighted']['minimum']:.2%}–"
+            f"{random_control['question_weighted']['maximum']:.2%} question-weighted "
+            f"(population SD {random_control['question_weighted']['population_stddev']:.2%})."
+        )
+    lines += [
+        "",
+        "## Frozen directional comparison",
+        "",
+        "| Arm | Size (GB) | Question-weighted | Domain macro | Pareto |",
+        "|---|---:|---:|---:|:---:|",
+    ]
+    for row in result["directional"]["arms"]:
+        lines.append(
+            f"| {row['arm']} | {row['logical_model_bytes']/1e9:.3f} | "
+            f"{row['question_weighted']:.2%} | {row['domain_macro']:.2%} | "
+            f"{'yes' if row['point_estimate_pareto'] else 'no'} |"
+        )
     lines += [
         "",
         "The allocation/healing map used only frozen private calibration. Public tasks were used "
@@ -713,9 +796,13 @@ def self_test() -> None:
         assert result["healing_ablation"]["deltas_vs_unhealed"][
             "prune100_router_repair"
         ]["total_correct_delta"] == -1
+        assert result["directional"]["arms"][0]["arm"] == (
+            PLAN_ARMS["layer_balanced"]
+        )
         assert "Recommended arm" in markdown(result)
         assert "Private format quality per byte" in markdown(result)
         assert "Matched healing ablation" in markdown(result)
+        assert "Frozen directional comparison" in markdown(result)
         output = write("conclusion.json", result)
         rendered = root / "conclusion.md"
         rendered.write_text(markdown(result))
