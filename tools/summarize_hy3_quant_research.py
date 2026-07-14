@@ -132,6 +132,147 @@ def format_efficiency_summary(effects: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def effect_map_summary(effects: dict[str, Any]) -> dict[str, Any]:
+    qtypes = ("Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0")
+
+    def metrics(values: dict[str, Any], context: str) -> dict[str, float]:
+        result = {
+            "weighted_mean": float(values["weighted_mean"]),
+            "maximum": float(values["maximum"]),
+        }
+        if any(not math.isfinite(value) or value < 0 for value in result.values()):
+            raise ValueError(f"invalid effect-map metric for {context}")
+        return result
+
+    projection_damage = effects.get("projection_damage")
+    if not isinstance(projection_damage, dict) or set(projection_damage) != {
+        "gate", "up", "down"
+    }:
+        raise ValueError("projection effect map is incomplete")
+    projections = []
+    for projection in ("gate", "up", "down"):
+        values = projection_damage[projection]
+        if not isinstance(values, dict) or any(qtype not in values for qtype in qtypes):
+            raise ValueError(f"projection effect map lacks formats for {projection}")
+        projections.append({
+            "projection": projection,
+            "qtypes": {
+                qtype: metrics(values[qtype], f"{projection}/{qtype}")
+                for qtype in qtypes
+            },
+        })
+
+    layer_damage = effects.get("layer_damage")
+    layer_projection_damage = effects.get("layer_projection_damage")
+    if not isinstance(layer_damage, dict) or not layer_damage:
+        raise ValueError("layer effect map is incomplete")
+    if not isinstance(layer_projection_damage, dict) or set(layer_projection_damage) != set(
+        layer_damage
+    ):
+        raise ValueError("layer-projection effect map does not match layer map")
+    q2_layers = []
+    q2_layer_projections = []
+    for layer, values in layer_damage.items():
+        layer_number = int(layer)
+        if "Q2_K" not in values:
+            raise ValueError(f"layer {layer} lacks Q2_K effects")
+        q2_layers.append({
+            "layer": layer_number,
+            **metrics(values["Q2_K"], f"layer {layer}/Q2_K"),
+        })
+        cells = layer_projection_damage[layer]
+        if not isinstance(cells, dict) or set(cells) != {"gate", "up", "down"}:
+            raise ValueError(f"layer {layer} projection effects are incomplete")
+        for projection, projection_values in cells.items():
+            if "Q2_K" not in projection_values:
+                raise ValueError(f"layer {layer}/{projection} lacks Q2_K effects")
+            q2_layer_projections.append({
+                "layer": layer_number,
+                "projection": projection,
+                **metrics(
+                    projection_values["Q2_K"],
+                    f"layer {layer}/{projection}/Q2_K",
+                ),
+            })
+    q2_layers.sort(key=lambda row: (-row["weighted_mean"], row["layer"]))
+    q2_layer_projections.sort(key=lambda row: (
+        -row["weighted_mean"], row["layer"], row["projection"]
+    ))
+
+    experts = effects.get("top_sensitive_experts")
+    functions = effects.get("top_sensitive_functions")
+    upgrades = effects.get("best_precision_upgrades")
+    if not all(isinstance(items, list) and items for items in (experts, functions, upgrades)):
+        raise ValueError("expert/function/upgrade effect map is incomplete")
+    top_experts = []
+    for item in experts[:10]:
+        row = {
+            "layer": int(item["layer"]),
+            "expert": int(item["expert"]),
+            "routed_tokens": int(item["routed_tokens"]),
+            "maximum_full_scaled_joint_squared_error": float(
+                item["maximum_full_scaled_joint_squared_error"]
+            ),
+        }
+        if row["routed_tokens"] < 0 or not math.isfinite(
+            row["maximum_full_scaled_joint_squared_error"]
+        ) or row["maximum_full_scaled_joint_squared_error"] < 0:
+            raise ValueError("invalid sensitive expert")
+        top_experts.append(row)
+    q2_functions = []
+    for item in functions:
+        if item.get("qtype") != "Q2_K":
+            continue
+        row = {
+            "layer": int(item["layer"]),
+            "expert": int(item["expert"]),
+            "projection": str(item["projection"]),
+            "routed_tokens": int(item["routed_tokens"]),
+            "normalized_mse": float(item["normalized_mse"]),
+            "full_scaled_squared_error": float(item["full_scaled_squared_error"]),
+        }
+        if row["projection"] not in {"gate", "up", "down"} or any(
+            not math.isfinite(row[key]) or row[key] < 0
+            for key in ("normalized_mse", "full_scaled_squared_error")
+        ):
+            raise ValueError("invalid sensitive function")
+        q2_functions.append(row)
+    q2_functions.sort(key=lambda row: (
+        -row["full_scaled_squared_error"], row["layer"], row["expert"],
+        row["projection"],
+    ))
+    if not q2_functions:
+        raise ValueError("effect map has no Q2_K sensitive functions")
+
+    top_upgrades = []
+    for item in upgrades[:10]:
+        row = {
+            "layer": int(item["layer"]),
+            "expert": int(item["expert"]),
+            "projection": str(item["projection"]),
+            "from_qtype": str(item["from_qtype"]),
+            "to_qtype": str(item["to_qtype"]),
+            "extra_bytes": int(item["extra_bytes"]),
+            "error_reduction": float(item["error_reduction"]),
+            "error_reduction_per_gb": float(item["error_reduction_per_gb"]),
+        }
+        if row["extra_bytes"] <= 0 or any(
+            not math.isfinite(row[key]) or row[key] < 0
+            for key in ("error_reduction", "error_reduction_per_gb")
+        ):
+            raise ValueError("invalid precision upgrade")
+        top_upgrades.append(row)
+
+    return {
+        "projection_sensitivity": projections,
+        "most_q2_sensitive_layers": q2_layers[:10],
+        "most_q2_sensitive_layer_projections": q2_layer_projections[:10],
+        "most_sensitive_experts": top_experts,
+        "most_q2_sensitive_functions": q2_functions[:10],
+        "best_precision_upgrades": top_upgrades,
+    }
+
+
 def healing_ablation_summary(frontier: dict[str, Any]) -> dict[str, Any]:
     if frontier.get("format") != "bw24-cross-run-expanded-capability-frontier-v1":
         raise ValueError("wrong healing frontier format")
@@ -479,6 +620,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         baseline["logical_model_bytes"]
     )
     format_efficiency = format_efficiency_summary(effects)
+    effect_summary = effect_map_summary(effects)
     healing_ablation = healing_ablation_summary(healing_frontier)
     directional_frontier = directional_frontier_summary(frontier)
     result = {
@@ -531,6 +673,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "best_precision_upgrades": effects["best_precision_upgrades"][:20],
         },
         "format_efficiency": format_efficiency,
+        "effect_map_summary": effect_summary,
         "healing_ablation": healing_ablation,
         "directional": {
             **directional_frontier,
@@ -611,6 +754,73 @@ def markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"- At identical bytes, `{item['winner']}` reduces measured damage by "
             f"{item['damage_reduction']:.2%} versus `{item['loser']}`."
+        )
+    effect_map = result["effect_map_summary"]
+    lines += [
+        "",
+        "## Private layer, expert, and function effect map",
+        "",
+        "### Projection sensitivity",
+        "",
+        "| Projection | Q2_K mean | IQ3_S mean | IQ4_XS mean | Q4_K mean |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for row in effect_map["projection_sensitivity"]:
+        values = row["qtypes"]
+        lines.append(
+            f"| {row['projection']} | {values['Q2_K']['weighted_mean']:.6g} | "
+            f"{values['IQ3_S']['weighted_mean']:.6g} | "
+            f"{values['IQ4_XS']['weighted_mean']:.6g} | "
+            f"{values['Q4_K']['weighted_mean']:.6g} |"
+        )
+    lines += [
+        "",
+        "### Most Q2-sensitive layers",
+        "",
+        "| Layer | Weighted mean | Maximum |",
+        "|---:|---:|---:|",
+    ]
+    for row in effect_map["most_q2_sensitive_layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['weighted_mean']:.6g} | {row['maximum']:.6g} |"
+        )
+    lines += [
+        "",
+        "### Most Q2-sensitive layer/projection cells",
+        "",
+        "| Layer | Projection | Weighted mean | Maximum |",
+        "|---:|---|---:|---:|",
+    ]
+    for row in effect_map["most_q2_sensitive_layer_projections"]:
+        lines.append(
+            f"| {row['layer']} | {row['projection']} | "
+            f"{row['weighted_mean']:.6g} | {row['maximum']:.6g} |"
+        )
+    lines += [
+        "",
+        "### Most Q2-sensitive expert functions",
+        "",
+        "| Layer | Expert | Projection | Routed tokens | Normalized MSE | Scaled error |",
+        "|---:|---:|---|---:|---:|---:|",
+    ]
+    for row in effect_map["most_q2_sensitive_functions"]:
+        lines.append(
+            f"| {row['layer']} | {row['expert']} | {row['projection']} | "
+            f"{row['routed_tokens']:,} | {row['normalized_mse']:.6g} | "
+            f"{row['full_scaled_squared_error']:.6g} |"
+        )
+    lines += [
+        "",
+        "### Best measured precision upgrades",
+        "",
+        "| Layer | Expert | Projection | Upgrade | Extra bytes | Error reduction/GB |",
+        "|---:|---:|---|---|---:|---:|",
+    ]
+    for row in effect_map["best_precision_upgrades"]:
+        lines.append(
+            f"| {row['layer']} | {row['expert']} | {row['projection']} | "
+            f"{row['from_qtype']} -> {row['to_qtype']} | {row['extra_bytes']:,} | "
+            f"{row['error_reduction_per_gb']:.6g} |"
         )
     healing = result["healing_ablation"]
     lines += [
@@ -731,13 +941,41 @@ def self_test() -> None:
             "Q4_K": {"encoded_bytes": 30, "full_scaled_squared_error": 10.0},
             "Q8_0": {"encoded_bytes": 60, "full_scaled_squared_error": 1.0},
         }
+        effect_qtypes = ("Q2_K", "IQ3_S", "IQ4_XS", "Q4_K", "Q8_0")
+        projection_damage = {
+            projection: {
+                qtype: {"weighted_mean": float(index + 1), "maximum": float(index + 2)}
+                for index, qtype in enumerate(effect_qtypes)
+            }
+            for projection in ("gate", "up", "down")
+        }
+        layer_damage = {"1": {
+            "Q2_K": {"weighted_mean": 2.0, "maximum": 3.0},
+        }}
+        layer_projection_damage = {"1": {
+            projection: {"Q2_K": {"weighted_mean": 1.0, "maximum": 2.0}}
+            for projection in ("gate", "up", "down")
+        }}
         effects = write("effects.json", {
             "format": "bw24-hy3-quant-effects-map-v1", "public_eval_data_used_for_selection": False,
             "measurement": {"qtypes": ["Q8_0","NVFP4","IQ4_XS","Q4_K","IQ3_S","Q3_K","Q2_K"]},
             "format_totals": format_totals, "format_pairwise": [], "equal_byte_pair_summary": [],
-            "projection_damage": {}, "layer_damage": [], "layer_projection_damage": [],
-            "error_concentration": {}, "top_sensitive_experts": [],
-            "top_sensitive_functions": [], "best_precision_upgrades": [],
+            "projection_damage": projection_damage, "layer_damage": layer_damage,
+            "layer_projection_damage": layer_projection_damage,
+            "error_concentration": {}, "top_sensitive_experts": [{
+                "layer": 1, "expert": 2, "routed_tokens": 3,
+                "maximum_full_scaled_joint_squared_error": 4.0,
+            }],
+            "top_sensitive_functions": [{
+                "layer": 1, "expert": 2, "projection": "down", "qtype": "Q2_K",
+                "routed_tokens": 3, "normalized_mse": .1,
+                "full_scaled_squared_error": 4.0,
+            }],
+            "best_precision_upgrades": [{
+                "layer": 1, "expert": 2, "projection": "down",
+                "from_qtype": "Q2_K", "to_qtype": "IQ3_S", "extra_bytes": 5,
+                "error_reduction": 3.0, "error_reduction_per_gb": 6.0,
+            }],
         })
         damage = write("damage.json", {"format":"bw24-hy3-quant-plan-damage-v1",
             "public_eval_data_used":False,"lowest_private_damage_plan":"pareto",
@@ -837,6 +1075,10 @@ def self_test() -> None:
         )
         assert "Recommended arm" in markdown(result)
         assert "Private format quality per byte" in markdown(result)
+        assert "Private layer, expert, and function effect map" in markdown(result)
+        assert result["effect_map_summary"]["most_q2_sensitive_layers"][0][
+            "layer"
+        ] == 1
         assert "Matched healing ablation" in markdown(result)
         assert "Frozen directional comparison" in markdown(result)
         output = write("conclusion.json", result)
