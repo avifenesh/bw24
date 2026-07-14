@@ -759,11 +759,21 @@ impl HybridModel {
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
             // windowed split per gemma variant (2026-07-12 sweeps): MoE 26B = 32 (grid-limited
             // t=1 under the raw-e4m3 sV ceiling), dense 31B = 64 (37.13 vs 36.87 at 1.7k, N=2).
-            crate::FA_SPW_DEFAULT.store(if cfg.moe.is_some() { 32 } else { 64 },
+            // DISCRIMINATOR FIX (2026-07-14): Arch::Gemma4 is in is_moe(), so cfg.moe is
+            // Some (expert_count 0) on the DENSE 31B/E4B too — `cfg.moe.is_some()` keyed
+            // every "per-variant" default to the 26B values and the dense arms of the
+            // 2026-07-12 sweeps (SPW 64, SP512 32) never actually reached the 31B. Key on
+            // expert_count instead.
+            let real_moe = cfg.moe.as_ref().is_some_and(|m| m.expert_count > 0);
+            crate::FA_SPW_DEFAULT.store(if real_moe { 32 } else { 64 },
                                         std::sync::atomic::Ordering::Relaxed);
             // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
-            crate::FA_SP512_DEFAULT.store(if cfg.moe.is_some() { 16 } else { 32 },
+            crate::FA_SP512_DEFAULT.store(if real_moe { 16 } else { 32 },
                                           std::sync::atomic::Ordering::Relaxed);
+            // fused t=1 pair/triple mr1 per variant (2026-07-14 DRAM-duty arc: dense +1.1%
+            // short / +0.6% depth on 31B; MoE 26B −1.2% — stays mr2).
+            crate::FUSED_MR1_DEFAULT.store(!real_moe,
+                                           std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).

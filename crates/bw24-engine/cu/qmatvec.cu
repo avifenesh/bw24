@@ -7267,3 +7267,49 @@ extern "C" __global__ void qmatvec_q4_0_mmvq(
     acc = warp_reduce_sum(acc);
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
 }
+
+// mr1 twins of the t=1 fused pair/triple (2026-07-14): the singles took the mr1
+// one-row-per-warp upgrade 2026-07-13 (+3.75% E4B / +0.9% 31B) but the fused t=1 kernels
+// stayed on the mr2 two-serial-rows walk — the DRAM-duty map reads fused3 at 57% and the
+// singles at 75% while fused2's bigger grid reads 86%. Per-row dot = q4_0_mmvq_row1_rp
+// VERBATIM (bit-identical per row); grid-stride retained.
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_mr1_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, long rb0, long rb1) {
+    const int rpb = (int)blockDim.y;
+    int nb0 = (out0 + rpb - 1) / rpb;
+    int nb1 = (out1 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1; vb += gridDim.x) {
+        int b = vb;
+        if (b < nb0) {
+            q4_0_mmvq_row1_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                              b * rpb + (int)threadIdx.y, 0);
+        } else {
+            b -= nb0;
+            q4_0_mmvq_row1_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                              b * rpb + (int)threadIdx.y, 0);
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_mr1_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
+    const int rpb = (int)blockDim.y;
+    int nb0 = (out0 + rpb - 1) / rpb;
+    int nb1 = (out1 + rpb - 1) / rpb;
+    int nb2 = (out2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1 + nb2; vb += gridDim.x) {
+        int b = vb;
+        const unsigned char* W; float* y; int out_f; long rb;
+        if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+        else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+        else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+        q4_0_mmvq_row1_rp(W, aq, ad, y, in_f, out_f, 1, rb,
+                          b * rpb + (int)threadIdx.y, 0);
+    }
+}

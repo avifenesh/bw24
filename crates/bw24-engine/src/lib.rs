@@ -184,6 +184,11 @@ pub static FA_SPW_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(32);
 /// Per-model hd512 (gemma globals) split default (BW24_FA_SP512 overrides): 26B measured 16
 /// (2026-07-11 N=2), dense 31B measured 32 (36.86/36.93 vs 36.73/36.73 at 1.7k, 2026-07-12).
+/// fused t=1 q4_0 pair/triple row mapping: true = mr1 (one row/warp). Per-model default
+/// (dense gemma wins +1.1% short / +0.6% depth on the 31B; MoE 26B REGRESSES −1.2% —
+/// its shared-expert fused2 shapes lose to the finer grid). BW24_Q40_MR env still wins.
+pub static FUSED_MR1_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 pub static FA_SP512_DEFAULT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(16);
 /// Per-model rms_norm block size (per-model numeric-config law: the per-thread partial-sum
@@ -740,6 +745,17 @@ impl Engine {
     /// Raw CUfunction for a PDL-attributed launch: the SAME kernels.fatbin loaded once more
     /// through the raw driver API (cudarc hides its CUfunction handles; a duplicate module
     /// of tiny glue kernels is free). Resolved lazily per name, cached process-wide.
+    /// Fused t=1 q4_0 mr policy: env BW24_Q40_MR wins (1/2); else the per-model
+    /// FUSED_MR1_DEFAULT (dense gemma = mr1, MoE = mr2 — see the static's doc).
+    fn q40_mr1_on() -> bool {
+        static Q40MR: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+        match *Q40MR.get_or_init(|| std::env::var("BW24_Q40_MR").ok()
+            .and_then(|v| v.parse().ok())) {
+            Some(v) => v == 1,
+            None => crate::FUSED_MR1_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     fn pdl_func(&self, name: &'static str) -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
         static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -4230,12 +4246,19 @@ impl Engine {
         if rp0 != rp1 || rp1 != rp2 { return Ok(None); }
         let rp = rp0;
         let rpb: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
+        // mr1 (one row/warp, 2026-07-14): follows the singles' BW24_Q40_MR default — the
+        // fused t=1 kernels were left on mr2 when the singles flipped (DRAM-duty map:
+        // fused3 57% / fused2 86%; small qkv segments starve under mr2's half grid).
+        let mr1 = rp && Self::q40_mr1_on();
+        let nb = |o: usize| if mr1 { (o as u32).div_ceil(rpb) }
+                            else { (o as u32).div_ceil(2).div_ceil(rpb) };
         let grid = nb(o0) + nb(o1) + nb(o2);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
         let mut y2 = self.alloc_uninit::<f32>(o2)?;
-        let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused3_rp" } else { "qmatvec_q4_0_mmvq_fused3" });
+        let f = self.func(if mr1 { "qmatvec_q4_0_mmvq_fused3_mr1_rp" }
+                          else if rp { "qmatvec_q4_0_mmvq_fused3_rp" }
+                          else { "qmatvec_q4_0_mmvq_fused3" });
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
@@ -4275,11 +4298,16 @@ impl Engine {
         if rp0 != rp1 { return Ok(None); }
         let rp = rp0;
         let rpb: u32 = 4;
-        let nb = |o: usize| (o as u32).div_ceil(2).div_ceil(rpb);
+        // mr1 twin — see matmul_q4_fused3.
+        let mr1 = rp && Self::q40_mr1_on();
+        let nb = |o: usize| if mr1 { (o as u32).div_ceil(rpb) }
+                            else { (o as u32).div_ceil(2).div_ceil(rpb) };
         let grid = nb(o0) + nb(o1);
         let mut y0 = self.alloc_uninit::<f32>(o0)?;
         let mut y1 = self.alloc_uninit::<f32>(o1)?;
-        let f = self.func(if rp { "qmatvec_q4_0_mmvq_fused2_rp" } else { "qmatvec_q4_0_mmvq_fused2" });
+        let f = self.func(if mr1 { "qmatvec_q4_0_mmvq_fused2_mr1_rp" }
+                          else if rp { "qmatvec_q4_0_mmvq_fused2_rp" }
+                          else { "qmatvec_q4_0_mmvq_fused2" });
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
