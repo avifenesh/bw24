@@ -8,7 +8,9 @@ TRUSTED_READY=${TRUSTED_READY:-/data/logs/trusted-full-v1/complete}
 OUT_ROOT=${OUT_ROOT:-/data/results/per-expert-quant/full-agentic-v1}
 LOG_ROOT=${LOG_ROOT:-/data/logs/full-agentic-v1}
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
+SERVER_SHA256=${SERVER_SHA256:-13a7ac6a15a5de17f0eb736ecb393a50ab9bf03145e86a878e66c86b2086f195}
 HARBOR_BIN=${HARBOR_BIN:-/data/bin/harbor-0.18.0-0a01ad6/harbor}
+HARBOR_SHA256=${HARBOR_SHA256:-68084543d2b90751ee1a1bd109a10f06a594889f5d585f1ba4d6355b9d6b97d1}
 HARBOR_HOME=${HARBOR_HOME:-/data/cache/harbor-home}
 FULL_RUNNER=${FULL_RUNNER:-$HERE/run_full_practical_evals.sh}
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_full_practical_results.py}
@@ -27,6 +29,10 @@ SERVER_HEALTH_TIMEOUT_S=${SERVER_HEALTH_TIMEOUT_S:-1800}
 die() { echo "error: $*" >&2; exit 2; }
 
 [[ -x "$SERVER_BIN" && -x "$HARBOR_BIN" ]] || die "missing server or Harbor"
+[[ $(sha256sum "$SERVER_BIN" | cut -d' ' -f1) == "$SERVER_SHA256" ]] \
+  || die "full-agentic server hash mismatch"
+[[ $(sha256sum "$HARBOR_BIN" | cut -d' ' -f1) == "$HARBOR_SHA256" ]] \
+  || die "full-agentic Harbor hash mismatch"
 [[ -x "$FULL_RUNNER" ]] || die "missing full practical runner"
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing full practical summarizer"
 [[ -f "$HERE/practical-evals.lock.json" ]] || die "missing practical lock"
@@ -101,7 +107,7 @@ for arm in "${ARMS[@]}"; do [[ -f "$(artifact_for "$arm")/manifest.json" ]] || d
 
 RUN_ID="full-agentic-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_CONFIG="$OUT_ROOT/run-configs/$RUN_ID.json"
-export RUN_ID TRUSTED_REPORT SERVER_BIN HARBOR_BIN ROOT HERE FULL_TASK_LOCK VRAM_FRAC \
+export RUN_ID TRUSTED_REPORT SERVER_BIN SERVER_SHA256 HARBOR_BIN HARBOR_SHA256 ROOT HERE FULL_TASK_LOCK VRAM_FRAC \
   FULL_MAX_TURNS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT LAYER_BALANCED_ART_ROOT
 export BRIDGE_ART_ROOT
@@ -120,8 +126,12 @@ payload = {
                        "sha256": sha(pathlib.Path(os.environ["HERE"]) / "practical-evals.lock.json")},
     "full_task_lock": {"path": os.environ["FULL_TASK_LOCK"],
                        "sha256": sha(os.environ["FULL_TASK_LOCK"])},
-    "server": {"path": os.environ["SERVER_BIN"], "sha256": sha(os.environ["SERVER_BIN"])},
-    "harbor": {"path": os.environ["HARBOR_BIN"], "sha256": sha(os.environ["HARBOR_BIN"])},
+    "server": {"path": os.environ["SERVER_BIN"],
+               "sha256": sha(os.environ["SERVER_BIN"]),
+               "expected_sha256": os.environ["SERVER_SHA256"]},
+    "harbor": {"path": os.environ["HARBOR_BIN"],
+               "sha256": sha(os.environ["HARBOR_BIN"]),
+               "expected_sha256": os.environ["HARBOR_SHA256"]},
     "bw24_commit": subprocess.check_output(["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True).strip(),
     "artifacts": {},
 }

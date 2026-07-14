@@ -8,6 +8,7 @@ PRACTICAL_READY=${PRACTICAL_READY:-/data/logs/practical-v1/complete}
 OUT_ROOT=${OUT_ROOT:-/data/results/per-expert-quant/trusted-full-v1}
 LOG_ROOT=${LOG_ROOT:-/data/logs/trusted-full-v1}
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
+SERVER_SHA256=${SERVER_SHA256:-13a7ac6a15a5de17f0eb736ecb393a50ab9bf03145e86a878e66c86b2086f195}
 FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_promoted_results.py}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 HF_HOME=${HF_HOME:-/data/cache/huggingface}
@@ -43,6 +44,8 @@ TASKS=(
 die() { echo "error: $*" >&2; exit 2; }
 
 [[ -x "$SERVER_BIN" ]] || die "missing trusted-full server"
+[[ $(sha256sum "$SERVER_BIN" | cut -d' ' -f1) == "$SERVER_SHA256" ]] \
+  || die "trusted-full server hash mismatch"
 [[ -x "$HERE/run_public_evals.sh" ]] || die "missing public-eval runner"
 [[ -x "$HERE/score_promoted_math_container.sh" ]] || die "missing trusted MATH scorer"
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing trusted-full summarizer"
@@ -143,7 +146,7 @@ HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
 ARM_COUNT=${#ARMS[@]}
 BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
-export RUN_ID PRACTICAL_PROMOTION TRUSTED_SELECTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
+export RUN_ID PRACTICAL_PROMOTION TRUSTED_SELECTION SERVER_BIN SERVER_SHA256 ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT LAYER_BALANCED_ART_ROOT
 export BRIDGE_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
@@ -182,7 +185,9 @@ payload = {
                    "sha256": sha(pathlib.Path(os.environ["HERE"]) / "suite.lock.json")},
     "dataset_cache_receipt": {"path": os.environ["DATASET_RECEIPT"],
                               "sha256": sha(os.environ["DATASET_RECEIPT"])},
-    "server": {"path": os.environ["SERVER_BIN"], "sha256": sha(os.environ["SERVER_BIN"])},
+    "server": {"path": os.environ["SERVER_BIN"],
+               "sha256": sha(os.environ["SERVER_BIN"]),
+               "expected_sha256": os.environ["SERVER_SHA256"]},
     "bw24_commit": subprocess.check_output(
         ["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True
     ).strip(),
