@@ -1478,6 +1478,10 @@ impl Engine {
     pub fn moe_router_topk_scaled(&self, logits: &CudaSlice<f32>, t: usize, n_expert: usize,
                                   n_used: usize, ex_scale: &CudaSlice<f32>)
                                   -> Result<(CudaSlice<i32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        // barrier-lean v2 twin (per-warp top-k + one-warp merge) FALSIFIED 2026-07-14:
+        // bit-identical streams but −1.4% (26B plain N=3 interleaved) — at t=1 the grid is
+        // ONE block, so the 6.6us is launch/dependency overhead, not the barrier chain;
+        // fewer barriers bought nothing and the merge structure cost. jsonl is the record.
         let f = self.func("moe_router_topk_scaled_f32");
         let mut sel_idx = self.alloc_uninit::<i32>(t * n_used)?;
         let mut sel_w = self.alloc_uninit::<f32>(t * n_used)?;
