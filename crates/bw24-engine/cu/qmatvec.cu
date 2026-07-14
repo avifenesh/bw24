@@ -6851,6 +6851,123 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+// ---- FFN SLAB (megakernel stage 1, 2026-07-14): gate|up -> gelu+q8 -> down in ONE
+// persistent launch. All workers are CO-RESIDENT (host sizes gridDim.x from the occupancy
+// API — a bigger grid would deadlock the soft barriers), segments hand off via device
+// counters. Per-row/per-quad programs are the EXACT existing kernels' (mr2_rp _bx bodies;
+// gelu_tanh_mul_q8_1's warp-per-quad grouping) — bit-identical outputs; only the
+// block->work mapping and the launch/drain boundaries change (the f2/f3 tail-fill
+// mechanism extended across DEPENDENT stages).
+__device__ __forceinline__ void slab_barrier(int* ctr, int target) {
+    __syncthreads();
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        __threadfence();
+        atomicAdd(ctr, 1);
+        while (*(volatile int*)ctr < target) {}
+    }
+    __syncthreads();
+}
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_ffn_slab_rp(
+        const unsigned char* __restrict__ Wg, const unsigned char* __restrict__ Wu,
+        const unsigned char* __restrict__ Wd,
+        const signed char* __restrict__ zq, const float* __restrict__ zd,
+        float* __restrict__ y_gate, float* __restrict__ y_up,
+        signed char* __restrict__ act_q, float* __restrict__ act_d,
+        float* __restrict__ y_down,
+        int in_f, int n_ff, int out_down, int m, int* __restrict__ ctr) {
+    const int nbg = (n_ff + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    // ---- segment A: gate rows then up rows (independent; tail-fill within the sweep) ----
+    for (int vb = blockIdx.x; vb < 2 * nbg; vb += gridDim.x) {
+        if (vb < nbg)
+            q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(vb, Wg, zq, zd, y_gate, in_f, n_ff, m, 0);
+        else
+            q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(vb - nbg, Wu, zq, zd, y_up, in_f, n_ff, m, 0);
+    }
+    slab_barrier(ctr, gridDim.x);
+    // ---- segment B: gelu(tanh)*up + q8_1 emit, gelu_tanh_mul_q8_1's exact per-quad math
+    // (independent quads: 1 warp handles 128 elems = 4 q8 blocks; amax groups = 8 lanes) ----
+    {
+        const int lane = threadIdx.x;
+        const int nblk = n_ff / 32;
+        const int qpr  = nblk / 4;                       // quads per row
+        const int total = m * qpr;
+        const int wid0 = blockIdx.x * blockDim.y + threadIdx.y;
+        const int wstride = gridDim.x * blockDim.y;
+        for (int w = wid0; w < total; w += wstride) {
+            const int row = w / qpr;
+            const int quad = w - row * qpr;
+            const float* gr = y_gate + (size_t)row * n_ff;
+            const float* ur = y_up + (size_t)row * n_ff;
+            signed char* base_q = act_q + (size_t)row * n_ff;
+            float* base_d = act_d + (size_t)row * nblk;
+            int i4 = quad * 32 + lane;
+            const float4 g4 = ((const float4*)gr)[i4];
+            const float4 u4 = ((const float4*)ur)[i4];
+            float vx[4] = {g4.x, g4.y, g4.z, g4.w};
+            float ux[4] = {u4.x, u4.y, u4.z, u4.w};
+            float o[4];
+            #pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                float x = vx[e];
+                float t = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+                o[e] = 0.5f * x * (1.0f + t) * ux[e];
+            }
+            float amax = fmaxf(fmaxf(fabsf(o[0]), fabsf(o[1])), fmaxf(fabsf(o[2]), fabsf(o[3])));
+            #pragma unroll
+            for (int off = 4; off > 0; off >>= 1)
+                amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+            float d = amax / 127.0f;
+            float id = d > 0.0f ? 1.0f / d : 0.0f;
+            char4 qv = make_char4((signed char)__float2int_rn(o[0] * id),
+                                  (signed char)__float2int_rn(o[1] * id),
+                                  (signed char)__float2int_rn(o[2] * id),
+                                  (signed char)__float2int_rn(o[3] * id));
+            ((char4*)base_q)[i4] = qv;
+            if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+        }
+    }
+    slab_barrier(ctr + 1, gridDim.x);
+    // ---- segment C: down rows over the quantized activation ----
+    const int nbd = (out_down + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    for (int vb = blockIdx.x; vb < nbd; vb += gridDim.x) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(vb, Wd, act_q, act_d, y_down, n_ff, out_down, m, 0);
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_ffn_slab_b2_rp(
+        const unsigned char* __restrict__ Wg, const unsigned char* __restrict__ Wu,
+        const unsigned char* __restrict__ Wd,
+        const signed char* __restrict__ zq, const float* __restrict__ zd,
+        float* __restrict__ y_gate, float* __restrict__ y_up,
+        signed char* __restrict__ act_q, float* __restrict__ act_d,
+        float* __restrict__ y_down,
+        int in_f, int n_ff, int out_down, int m, int* __restrict__ ctr) {
+    q4_0_ffn_slab_rp<2>(Wg, Wu, Wd, zq, zd, y_gate, y_up, act_q, act_d, y_down,
+                        in_f, n_ff, out_down, m, ctr);
+}
+extern "C" __global__ void qmatvec_q4_0_ffn_slab_b4_rp(
+        const unsigned char* __restrict__ Wg, const unsigned char* __restrict__ Wu,
+        const unsigned char* __restrict__ Wd,
+        const signed char* __restrict__ zq, const float* __restrict__ zd,
+        float* __restrict__ y_gate, float* __restrict__ y_up,
+        signed char* __restrict__ act_q, float* __restrict__ act_d,
+        float* __restrict__ y_down,
+        int in_f, int n_ff, int out_down, int m, int* __restrict__ ctr) {
+    q4_0_ffn_slab_rp<4>(Wg, Wu, Wd, zq, zd, y_gate, y_up, act_q, act_d, y_down,
+                        in_f, n_ff, out_down, m, ctr);
+}
+extern "C" __global__ void qmatvec_q4_0_ffn_slab_b8_rp(
+        const unsigned char* __restrict__ Wg, const unsigned char* __restrict__ Wu,
+        const unsigned char* __restrict__ Wd,
+        const signed char* __restrict__ zq, const float* __restrict__ zd,
+        float* __restrict__ y_gate, float* __restrict__ y_up,
+        signed char* __restrict__ act_q, float* __restrict__ act_d,
+        float* __restrict__ y_down,
+        int in_f, int n_ff, int out_down, int m, int* __restrict__ ctr) {
+    q4_0_ffn_slab_rp<8>(Wg, Wu, Wd, zq, zd, y_gate, y_up, act_q, act_d, y_down,
+                        in_f, n_ff, out_down, m, ctr);
+}
+
 // ---- Q4_0 M-SPLIT r2 twin (2026-07-13, the 31B depth-verify occupancy fix): the b8_r2_rp
 // kernel is REGISTER-CHOKED (ncu: 72 regs, occupancy capped at 7 blocks, warps 47-55%,
 // DRAM 25-45% of wall) — the acc[2][MCOLS] array is the pressure. The rpms pattern (NVFP4,

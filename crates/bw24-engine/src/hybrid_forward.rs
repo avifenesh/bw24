@@ -2615,6 +2615,27 @@ impl HybridModel {
                                        &mut zsh, n_embd, t, eps)?,
             }
             let n_ff = ffn_gate.out_features();
+            // FFN SLAB (megakernel stage 1, BW24_SLAB=1 opt-in until the depth-cell A/B):
+            // gate|up -> gelu+q8 -> down in ONE persistent launch — kills two launch/drain
+            // boundaries per layer per verify. Segments run the standalone kernels' per-row/
+            // per-quad programs verbatim (bit-identical f0); soft barriers order them.
+            if t > 1 {
+                static SLAB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let slab = *SLAB.get_or_init(|| std::env::var("BW24_SLAB").as_deref() == Ok("1"));
+                if slab {
+                    let (zq, zd) = e.quantize_q8_1(&zsh, t, n_embd)?;
+                    if let Some(f0) = e.matmul_q4_ffn_slab(ffn_gate, ffn_up, ffn_down,
+                                                           &zq, &zd, t)? {
+                        if defer_post_norm { return Ok((f0, attn_out)); }
+                        let mut sn = e.uninit(t * n_embd)?;
+                        e.rms_norm(&f0, bits.post_ffw_norm.float_data(), &mut sn,
+                                   n_embd, t, eps)?;
+                        return Ok((sn, attn_out));
+                    }
+                    // outside the slab contract (non-q4_0 / non-rp / n_ff%128) — fall
+                    // through; the duplicate quantize only costs on unsupported models.
+                }
+            }
             let (gate, up) = if t == 1 {
                 let (zq, zd) = match zpair {
                     Some(p) => p,
@@ -3828,7 +3849,14 @@ impl HybridModel {
             } else {
                 let (q0, k0, v0) = match if t == 1 {
                     e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
-                } else { None } {
+                } else {
+                    // E4B verify f3 port (2026-07-14): the 31B segmented-grid batched qkv
+                    // on E4B's real-V triple — same BW24_F2B seam, bit-identical per row.
+                    static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0")) {
+                        e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    } else { None }
+                } {
                     Some(triple) => triple,
                     None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
                              e.matmul_pre(&fa.wk, hq, hdq, h, t)?,
