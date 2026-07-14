@@ -5882,7 +5882,15 @@ impl Engine {
         // i2 twin: 2-key interleaved walk (BW24_FA_I2=0 reverts). i4 probed NEGATIVE
         // (157.3 vs 161.2 depth plain — register pressure past i2's sweet spot; jsonl).
         let i2 = head_dim == 512 && std::env::var("BW24_FA_I2").as_deref() != Ok("0");
-        let fname = if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
+        // v4-hd512 (BW24_FA_V512=1 opt-in, 2026-07-14): the v4 key-per-lane recipe on the
+        // globals lane (depth profile: i2 ~4.6x off its byte floor — the v3-class
+        // reduce-per-key latency signature). NEW NUMERIC CONFIG shared by every hd512
+        // caller (decode+verify flip together); run-gen argmax + acceptance arbitrate.
+        static V512: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let v512 = head_dim == 512
+            && *V512.get_or_init(|| std::env::var("BW24_FA_V512").as_deref() == Ok("1"));
+        let fname = if v512 { "fa_decode_vec_q_rows_v4_512" }
+                    else if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
                     else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
@@ -5901,7 +5909,15 @@ impl Engine {
                     self.func_g(if smem_rows { "fa_decode_vec_q_rows" } else { fname })
                 }
                 else { self.func(fname) };
-        let shmem = if v4 || v3 || smem_rows || fa_v2_on() {
+        let shmem = if v512 {
+            // fa_v4_smem_512 (q 4.5KB + k tile 18KB) + sV 32*512 (e4m3 module halves it)
+            let gk = Self::gkv_on();
+            let sh = (4096 + 512 + 32 * 512 + 32 * 64
+                      + 32 * head_dim * if gk { 1 } else { 2 }) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
+            sh
+        } else if v4 || v3 || smem_rows || fa_v2_on() {
             // v4: fa_v4_smem (11.5KB) + sV; v3 stages sV only; v2/smem twins stage sK+sV.
             let sh = (if v4 { 11520 + 32 * head_dim * if g { 1 } else { 2 } }
                       else if v3 { 32 * head_dim * 2 } else { 2 * 32 * head_dim * 2 }) as u32;

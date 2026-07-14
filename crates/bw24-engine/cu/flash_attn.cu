@@ -5711,3 +5711,268 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16_i2(
         partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
     }
 }
+
+// ===================== FA V4 hd512 (gemma globals, 2026-07-14) =====================
+// The globals lane (dpl16/i2) still runs the v3-class reduce-per-key walk: per key,
+// 16 serial dq chains + a 5-shfl warp reduce — the depth profile reads it ~4.6x off its
+// byte floor at t=7 (the same latency signature v4 killed on hd256). This twin is the v4
+// recipe at dpl=16: K tile int-repacked to smem, lane owns a key, the full q.k dot runs
+// chunk-serial dp4a with ZERO shuffles in the score phase; B2/B3 are the v4 bodies with
+// 16 accumulators. NEW NUMERIC CONFIG for the hd512 lane (int8-quantized q/k dot vs the
+// i2 walk's bf16 chain) — every hd512 caller shares the symbol via fa_decode_rows, so
+// decode and verify flip together; run-gen argmax + spec acceptance arbitrate.
+// smem: q 4.5KB + k tile 18KB + sV 32*512 (bf16 32KB / e4m3 16KB) = 54.5 / 38.5KB.
+struct fa_v4_smem_512 {
+    int   q_ints[8][128];           // [gqa<=8][16 chunks x 8 ints]
+    float q_d[8][16];
+    int   k_ints[FA_DEC_TILE][128];
+    float k_d[FA_DEC_TILE][16];
+    // sV [FA_DEC_TILE x 512] fa_v4_sv_t follows in dynamic smem
+};
+
+// Q quantize for dpl=16: lane holds elems [lane*16, lane*16+16); chunk c (32 elems) =
+// lanes {2c, 2c+1}. Per-chunk absmax -> int8 (d = amax/127), published to smem.
+static __device__ __forceinline__ void fa_v4_stage_q_512(
+        const float* __restrict__ Q, size_t qoff, float scale, int lane, int wy,
+        fa_v4_smem_512* sm) {
+    float x[16];
+    float amax = 0.0f;
+    #pragma unroll
+    for (int e = 0; e < 16; ++e) {
+        x[e] = Q[qoff + lane * 16 + e] * scale;
+        amax = fmaxf(amax, fabsf(x[e]));
+    }
+    // pair reduce: chunk = lane pair {2c, 2c+1}
+    amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+    const float d = amax / 127.0f;
+    const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+    #pragma unroll
+    for (int w = 0; w < 4; ++w) {
+        int packed = 0;
+        #pragma unroll
+        for (int b8 = 0; b8 < 4; ++b8) {
+            const int qv = __float2int_rn(x[w * 4 + b8] * inv);
+            packed |= (qv & 0xFF) << (8 * b8);
+        }
+        sm->q_ints[wy][lane * 4 + w] = packed;
+    }
+    if ((lane & 1) == 0) sm->q_d[wy][lane >> 1] = d;
+}
+
+static __device__ __forceinline__ void fa_v4_stage_k_512(
+        const uint8_t* __restrict__ K, int t0, int nt, int bt, int bsz,
+        int kblk0, long k_tok_bytes, fa_v4_smem_512* sm) {
+#if BW24_KV_KFMT == 1
+    // fp8-e4m3 K: cvt + per-chunk absmax requant to int8 (the hd256 KFMT arm verbatim).
+    for (int task = bt; task < nt * 16; task += bsz) {
+        int j = task >> 4, c = task & 15;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        float vals[32];
+        float amax = 0.0f;
+        #pragma unroll
+        for (int e = 0; e < 32; e++) {
+            vals[e] = (float)((const __nv_fp8_e4m3*)blk)[e];
+            amax = fmaxf(amax, fabsf(vals[e]));
+        }
+        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
+        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        sm->k_d[j][c] = kd;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            int packed = 0;
+            #pragma unroll
+            for (int b8 = 0; b8 < 4; b8++) {
+                const int e = w * 4 + b8;
+                const int q = __float2int_rn(vals[e] * inv);
+                packed |= (q & 0xFF) << (8 * b8);
+            }
+            sm->k_ints[j][c * 8 + w] = packed;
+        }
+    }
+#else
+    // q8_0 K: d half + 32 int8 — aligned-word funnelshift extraction (hd256 arm verbatim).
+    for (int task = bt; task < nt * 16; task += bsz) {
+        int j = task >> 4, c = task & 15;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        sm->k_d[j][c] = __half2float(*(const half*)blk);
+        const uint8_t* qs = blk + 2;
+        const unsigned sh8 = ((unsigned)(size_t)qs & 3u) * 8u;
+        const uint32_t* ap = (const uint32_t*)((size_t)qs & ~(size_t)3);
+        uint32_t w0 = ap[0];
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            uint32_t w1 = ap[w + 1];
+            sm->k_ints[j][c * 8 + w] = (int)__funnelshift_r(w0, w1, sh8);
+            w0 = w1;
+        }
+    }
+#endif
+}
+
+extern "C" __global__ void fa_decode_vec_q_rows_v4_512(
+        const float* __restrict__ Q, const uint8_t* __restrict__ K, const uint8_t* __restrict__ V,
+        float* __restrict__ partO, float* __restrict__ partM, float* __restrict__ partL,
+        int head_dim, int n_head, int n_head_kv, const int* __restrict__ t_kv_base_dev, int base_plus,
+        float scale, int n_splits_max, int split_keys,
+        long k_tok_bytes, long v_tok_bytes)
+{
+    const int r        = blockIdx.z;
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int kv_head  = blockIdx.x;
+    const int split    = blockIdx.y;
+    if (kv_head >= n_head_kv || split >= n_splits) return;
+    const int gqa  = n_head / n_head_kv;
+    const int wy   = threadIdx.y;
+    const int lane = threadIdx.x;
+    const int head = kv_head * gqa + min(wy, gqa - 1);
+    const int dpl  = head_dim >> 5;                     // 16
+
+    const int per  = (T_kv + n_splits - 1) / n_splits;
+    const int t_lo = split * per;
+    const int t_hi = min(T_kv, t_lo + per);
+
+    extern __shared__ unsigned char sm_raw_512[];
+    fa_v4_smem_512* sm = (fa_v4_smem_512*)sm_raw_512;
+    fa_v4_sv_t* sV = (fa_v4_sv_t*)(sm_raw_512 + sizeof(fa_v4_smem_512));
+
+    if (wy < gqa) fa_v4_stage_q_512(Q, ((size_t)r * n_head + head) * head_dim, scale, lane, wy, sm);
+    __syncthreads();
+
+    float m_i = NEG_INF, l_i = 0.0f;
+    float acc[FA_DEC_MAX_DPL16];
+    #pragma unroll
+    for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) acc[i] = 0.0f;
+
+    const int bt  = wy * WARP_SZ + lane;
+    const int bsz = WARP_SZ * (int)blockDim.y;
+    const int kblk0 = (kv_head * head_dim) >> 5;
+
+    for (int t0 = t_lo; t0 < t_hi; t0 += FA_DEC_TILE) {
+        const int nt = min(FA_DEC_TILE, t_hi - t0);
+        // stage V (all warps; the sp kernel's format arms verbatim at dpl=16)
+        for (int b = bt; b < nt * dpl * 4; b += bsz) {
+            const int sub   = b & 3;
+            const int b32   = b >> 2;
+            const int j     = b32 / dpl;
+            const int blk_i = b32 - j * dpl;
+            #if BW24_KV_VFMT == 2
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            fa_v4_sv_t* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                out[e2] = blk[e2];
+            }
+            #elif BW24_KV_VFMT == 1
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float d40 = __half2float(*(const half*)blk);
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int q40 = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                out[e2] = __float2bfloat16(d40 * (float)(q40 - 8));
+            }
+            #else
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * 24;
+            uint32_t wdm; memcpy(&wdm, blk, 4);
+            const float d = __half2float(__ushort_as_half((unsigned short)(wdm & 0xFFFFu)));
+            const float m = __half2float(__ushort_as_half((unsigned short)(wdm >> 16)));
+            uint32_t qh; memcpy(&qh, blk + 4, 4);
+            uint32_t qsw[4]; memcpy(qsw, blk + 8, 16);
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2   = sub * 8 + e0;
+                const int byte = (e2 < 16) ? e2 : e2 - 16;
+                const int nib  = (uint8_t)(qsw[byte >> 2] >> (8 * (byte & 3)));
+                const int lo   = (e2 < 16) ? (nib & 0x0F) : (nib >> 4);
+                const int q5   = lo | (int)(((qh >> e2) & 1u) << 4);
+                out[e2] = __float2bfloat16(d * (float)q5 + m);
+            }
+            #endif
+        }
+        fa_v4_stage_k_512(K, t0, nt, bt, bsz, kblk0, k_tok_bytes, sm);
+        __syncthreads();
+
+        if (wy < gqa) {
+        // ---- score: lane owns key; 16 chunks x 8 dp4a, zero shuffles ----
+        float my_score = NEG_INF;
+        if (lane < nt) {
+            float s = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < 16; c++) {
+                int sumi = 0;
+                #pragma unroll
+                for (int w = 0; w < 8; w++)
+                    sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+            }
+            my_score = s;
+        }
+        float tile_max = m_i;
+        {
+            float v = my_score;
+            #pragma unroll
+            for (int off = 16; off > 0; off >>= 1)
+                v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, off));
+            tile_max = fmaxf(tile_max, v);
+        }
+        const float m_new = tile_max;
+        const float alpha = (m_i == NEG_INF) ? 0.0f : exp2f((m_i - m_new) * LOG2E);
+        const float p_lane = (lane < nt) ? exp2f((my_score - m_new) * LOG2E) : 0.0f;
+        l_i = l_i * alpha + warp_reduce_sum(p_lane);
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) acc[i] *= alpha;
+        }
+        m_i = m_new;
+        #pragma unroll 8
+        for (int j = 0; j < nt; ++j) {
+            const float p = __shfl_sync(0xffffffffu, p_lane, j);
+            #if BW24_KV_VFMT == 2
+            const uchar2* vj2 = (const uchar2*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const uchar2 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * (float)*(const __nv_fp8_e4m3*)&vv.x;
+                    acc[2 * i2 + 1] += p * (float)*(const __nv_fp8_e4m3*)&vv.y;
+                }
+            }
+            #else
+            const __nv_bfloat162* vj2 = (const __nv_bfloat162*)(sV + (size_t)j * head_dim);
+            #pragma unroll
+            for (int i2 = 0; i2 < FA_DEC_MAX_DPL16 / 2; ++i2) {
+                if (2 * i2 < dpl) {
+                    const __nv_bfloat162 vv = vj2[lane + (i2 << 5)];
+                    acc[2 * i2]     += p * __bfloat162float(vv.x);
+                    acc[2 * i2 + 1] += p * __bfloat162float(vv.y);
+                }
+            }
+            #endif
+        }
+        }
+        __syncthreads();   // tile fully consumed before restaging
+    }
+
+    if (wy < gqa) {
+        #pragma unroll
+        for (int i = 0; i < FA_DEC_MAX_DPL16; ++i) {
+            if (i < dpl) {
+                // paired-B3 dim map (the mr lesson: acc[2*i2] holds dim 2*lane + 64*i2)
+                int d = (lane << 1) + ((i >> 1) << 6) + (i & 1);
+                partO[(((size_t)r * n_head + head) * n_splits_max + split) * head_dim + d] = acc[i];
+            }
+        }
+        if (lane == 0) {
+            partM[((size_t)r * n_head + head) * n_splits_max + split] = m_i;
+            partL[((size_t)r * n_head + head) * n_splits_max + split] = l_i;
+        }
+    }
+}
