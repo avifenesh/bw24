@@ -2615,6 +2615,11 @@ impl HybridModel {
                                        &mut zsh, n_embd, t, eps)?,
             }
             let n_ff = ffn_gate.out_features();
+            // FFN persistent slab (counter-barrier form) FALSIFIED here 2026-07-14
+            // (falsification #7, jsonl row): PDL glue already hides the launch boundaries
+            // it fused; barrier + worst-segment occupancy net −0.3% (31B depth) / −2.3%
+            // (E4B spec). Down's act dependency is all-to-all, so sentinel sync cannot
+            // rescue segment C — the megakernel front is closed for the dense tail.
             let (gate, up) = if t == 1 {
                 let (zq, zd) = match zpair {
                     Some(p) => p,
@@ -3828,7 +3833,14 @@ impl HybridModel {
             } else {
                 let (q0, k0, v0) = match if t == 1 {
                     e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
-                } else { None } {
+                } else {
+                    // E4B verify f3 port (2026-07-14): the 31B segmented-grid batched qkv
+                    // on E4B's real-V triple — same BW24_F2B seam, bit-identical per row.
+                    static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0")) {
+                        e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    } else { None }
+                } {
                     Some(triple) => triple,
                     None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
                              e.matmul_pre(&fa.wk, hq, hdq, h, t)?,

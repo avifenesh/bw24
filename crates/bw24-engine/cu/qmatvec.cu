@@ -6851,6 +6851,7 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
+
 // ---- Q4_0 M-SPLIT r2 twin (2026-07-13, the 31B depth-verify occupancy fix): the b8_r2_rp
 // kernel is REGISTER-CHOKED (ncu: 72 regs, occupancy capped at 7 blocks, warps 47-55%,
 // DRAM 25-45% of wall) — the acc[2][MCOLS] array is the pressure. The rpms pattern (NVFP4,
