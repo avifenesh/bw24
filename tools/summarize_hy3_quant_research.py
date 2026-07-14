@@ -733,7 +733,20 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Projection cells by format: {counts}",
             f"- Private additive damage: "
             f"{measured_plan['private_total_additive_damage']:.8g}",
+            "",
+            "### Projection allocation",
+            "",
+            "| Projection | Q8_0 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
+        for projection in ("gate", "up", "down"):
+            values = measured_plan["projection_qtype_counts"].get(projection, {})
+            lines.append(
+                f"| {projection} | {values.get('Q8_0', 0):,} | "
+                f"{values.get('Q4_K', 0):,} | {values.get('IQ4_XS', 0):,} | "
+                f"{values.get('IQ3_S', 0):,} | {values.get('Q3_K', 0):,} | "
+                f"{values.get('Q2_K', 0):,} |"
+            )
     lines += [
         "",
         "## Private format quality per byte",
@@ -784,6 +797,24 @@ def markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"| {row['layer']} | {row['weighted_mean']:.6g} | {row['maximum']:.6g} |"
         )
+    if measured_plan is not None:
+        lines += [
+            "",
+            "### Recommended allocation at the most Q2-sensitive layers",
+            "",
+            "| Layer | Retained | Pruned | Q8_0 | Q4_K | IQ4_XS | IQ3_S | Q3_K | Q2_K |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for row in effect_map["most_q2_sensitive_layers"]:
+            layer = str(row["layer"])
+            retention = measured_plan["layer_retention"][layer]
+            values = measured_plan["layer_qtype_projection_counts"][layer]
+            lines.append(
+                f"| {layer} | {retention['retained']:,} | {retention['pruned']:,} | "
+                f"{values.get('Q8_0', 0):,} | {values.get('Q4_K', 0):,} | "
+                f"{values.get('IQ4_XS', 0):,} | {values.get('IQ3_S', 0):,} | "
+                f"{values.get('Q3_K', 0):,} | {values.get('Q2_K', 0):,} |"
+            )
     lines += [
         "",
         "### Most Q2-sensitive layer/projection cells",
