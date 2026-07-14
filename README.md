@@ -92,7 +92,7 @@ at every context depth. The same FP8-KV lever is available for Qwen behind `BW24
 | 31B dense plain, short | 40.6 | 39.8 | 1.02x — parity is not the bar |
 | 31B dense plain, 1.7k | 36.8 | 37.6 | 0.98x |
 | 31B MTP spec, short (K=7 + FR trim) | 167.5 | 112.1 | **1.49x** |
-| 31B MTP spec, 1.7k (K=6 + FR trim) | 94.5 | 98.2 | 0.96x (t-batched globals fa, 2026-07-14) |
+| 31B MTP spec, 1.7k (K=6 + FR trim) | 94.5 | 83.9 | **1.13x** (t-batched globals fa + same-window bar re-pair, 2026-07-14) |
 | E4B plain, short | 199.9 | 181.0 | **1.10x** (PDL + weight-prefetch + softcap-skip, 2026-07-13) |
 
 The 31B spec jump (0.79x → 1.09x, 2026-07-12) came from a serving-mode config, not a new
@@ -109,7 +109,7 @@ pairs, N=2 each side.
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma open cells: 31B plain (1.02x short — parity is not the bar — and 0.98x at 1.7k), 31B spec 1.7k (0.96x), 26B plain (1.06x). Done/above: 26B spec both depths; 31B spec short 1.49x; E4B plain 1.10x + spec 1.43x.
+- Gemma open cells: 31B plain (1.01x short — parity is not the bar — and 1.00x at 1.7k) and 26B plain (1.05x), both re-paired 2026-07-14; these sit at the rig's demonstrated DRAM ceiling (both engines read identical GGUF bytes, best single kernel = 91% of wall, e2e already 87%). Done/above: 26B spec both depths; 31B spec short 1.49x AND 1.7k 1.13x (the frozen llama 98.2 bar failed a 25-request, 7-config same-window re-pair — best 83.9 at acceptance 0.68; all other bars reproduce to <1%, jsonl 2026-07-14); E4B plain 1.10x + spec 1.43x.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
 
 ## What's inside
