@@ -36,6 +36,12 @@ HEALING_ARMS = (
     "prune100_joint_heal",
 )
 TRAFFIC_ARM = "traffic_nvfp4_53_q2_139"
+METHOD_DAMAGE_ARMS = {
+    "traffic137": TRAFFIC_ARM,
+    "layer100": PLAN_ARMS["layer_balanced"],
+    "layer120": PLAN_ARMS["layer_balanced120"],
+    "layer137": PLAN_ARMS["layer_balanced137"],
+}
 
 
 def sha256(path: Path) -> str:
@@ -860,6 +866,7 @@ def traffic_plan_summary(
     by_layer: dict[int, dict[str, set[int]]] = {
         layer: {"NVFP4": set(), "Q2_K": set()} for layer in layers
     }
+
     for assignment in plan.get("assignments", []):
         layer = int(assignment["layer"])
         qtype = str(assignment["qtype"])
@@ -929,6 +936,133 @@ def traffic_plan_summary(
             "question_weighted": float(directional["question_weighted"]),
             "tasks": directional.get("tasks", {}),
         },
+    }
+
+
+def apply_method_damage(
+    report_path: Path,
+    receipt_path: Path,
+    plan_paths: dict[str, Path],
+    frontier: dict[str, Any],
+    traffic_method: dict[str, Any],
+    plans: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind traffic and layer-aware methods to one independently scored metric."""
+    report = load(report_path)
+    receipt = load(receipt_path)
+    if report.get("format") != "bw24-hy3-quant-plan-damage-v1":
+        raise ValueError("wrong four-way method-damage format")
+    if report.get("public_eval_data_used") is not False:
+        raise ValueError("four-way method damage used public eval")
+    if receipt.get("format") != "bw24-hy3-quant-plan-damage-receipt-v1":
+        raise ValueError("wrong four-way method-damage receipt format")
+    if receipt.get("public_eval_data_used") is not False or not re.fullmatch(
+        r"[0-9a-f]{40}", str(receipt.get("analysis_commit", ""))
+    ):
+        raise ValueError("invalid four-way method-damage receipt")
+    if set(report.get("plans", {})) != set(METHOD_DAMAGE_ARMS):
+        raise ValueError("four-way method damage has the wrong plan set")
+    if set(plan_paths) != set(METHOD_DAMAGE_ARMS):
+        raise ValueError("four-way method plan paths are incomplete")
+    if report.get("lowest_private_damage_plan") not in METHOD_DAMAGE_ARMS:
+        raise ValueError("four-way private-damage winner is absent")
+
+    output = receipt.get("output", {})
+    if (
+        Path(str(output.get("path", ""))).resolve() != report_path.resolve()
+        or output.get("sha256") != sha256(report_path)
+    ):
+        raise ValueError("four-way method-damage receipt binds a different output")
+    for key in ("sensitivity", "script"):
+        item = receipt.get(key, {})
+        target = Path(str(item.get("path", "")))
+        if not target.is_file() or item.get("sha256") != sha256(target):
+            raise ValueError(f"four-way method-damage {key} evidence differs")
+    if report.get("sensitivity", {}).get("sha256") != receipt["sensitivity"]["sha256"]:
+        raise ValueError("four-way method-damage sensitivity hashes differ")
+
+    receipt_plans = receipt.get("plans")
+    if not isinstance(receipt_plans, list) or len(receipt_plans) != len(
+        METHOD_DAMAGE_ARMS
+    ):
+        raise ValueError("four-way method-damage receipt has malformed plans")
+    receipt_by_name = {str(item.get("name")): item for item in receipt_plans}
+    if set(receipt_by_name) != set(METHOD_DAMAGE_ARMS):
+        raise ValueError("four-way method-damage receipt has the wrong plan names")
+
+    methods = {
+        "traffic137": traffic_method,
+        "layer100": plans["layer_balanced"],
+        "layer120": plans["layer_balanced120"],
+        "layer137": plans["layer_balanced137"],
+    }
+    traffic_size = int(traffic_method["logical_model_bytes"])
+    if receipt.get("logical_bytes_overrides") != {"traffic137": traffic_size}:
+        raise ValueError("traffic logical-byte override is absent or differs")
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, arm in METHOD_DAMAGE_ARMS.items():
+        path = plan_paths[name]
+        plan_receipt = receipt_by_name[name]
+        if (
+            Path(str(plan_receipt.get("path", ""))).resolve() != path.resolve()
+            or plan_receipt.get("sha256") != sha256(path)
+        ):
+            raise ValueError(f"four-way method damage binds a different {name} plan")
+        row = report["plans"][name]
+        method = methods[name]
+        logical_bytes = int(row["logical_bytes"])
+        if (
+            row.get("sha256") != sha256(path)
+            or logical_bytes != int(method["logical_model_bytes"])
+            or logical_bytes != int(frontier["arms"][arm]["logical_model_bytes"])
+        ):
+            raise ValueError(f"four-way method damage differs for {name}")
+        total = float(row["total_additive_damage"])
+        prune = float(row["prune_damage"])
+        retained = float(row["retained_quant_damage"])
+        projection = {
+            str(projection_name): float(value)
+            for projection_name, value in row["projection_quant_damage"].items()
+        }
+        if (
+            set(projection) != {"gate", "up", "down"}
+            or any(
+                not math.isfinite(value) or value < 0
+                for value in (total, prune, retained, *projection.values())
+            )
+            or not math.isclose(total, prune + retained, rel_tol=1e-12)
+            or not math.isclose(
+                retained, math.fsum(projection.values()), rel_tol=1e-12
+            )
+        ):
+            raise ValueError(f"four-way method damage has invalid totals for {name}")
+        method.update(
+            {
+                "private_damage_metric": "measured_additive_projection_output_damage",
+                "private_damage_source": "independent_four_way_plan_damage_receipt",
+                "private_total_additive_damage": total,
+                "private_prune_damage": prune,
+                "private_retained_quant_damage": retained,
+                "private_projection_quant_damage": projection,
+                "private_top_damage_cells": row["top_damage_cells"],
+            }
+        )
+        normalized[name] = {
+            "arm": arm,
+            "logical_model_bytes": logical_bytes,
+            "total_additive_damage": total,
+            "prune_damage": prune,
+            "retained_quant_damage": retained,
+            "projection_quant_damage": projection,
+        }
+    return {
+        "report": source(report_path),
+        "receipt": source(receipt_path),
+        "analysis_commit": receipt["analysis_commit"],
+        "lowest_private_damage_plan": report["lowest_private_damage_plan"],
+        "plans": normalized,
+        "pairwise": report["pairwise"],
     }
 
 
@@ -1103,6 +1237,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     traffic_method = traffic_plan_summary(
         args.traffic_plan, load(args.traffic_plan), frontier
     )
+    method_plan_paths = {
+        "traffic137": args.traffic_plan,
+        "layer100": plan_paths["layer_balanced"],
+        "layer120": plan_paths["layer_balanced120"],
+        "layer137": plan_paths["layer_balanced137"],
+    }
+    method_damage = apply_method_damage(
+        args.method_damage,
+        args.method_damage_receipt,
+        method_plan_paths,
+        frontier,
+        traffic_method,
+        plans,
+    )
     baseline = frontier["arms"]["plain_quant"]
     winner = frontier["arms"][finalist]
     method_candidates = [traffic_method, *plans.values()]
@@ -1158,11 +1306,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "seven_format_candidates": plans,
         "private_damage_comparison": {
             "legacy_three_plan_lowest_damage_plan": damage["lowest_private_damage_plan"],
+            "matched_four_method_lowest_damage_plan": method_damage[
+                "lowest_private_damage_plan"
+            ],
             "all_candidate_point_estimate_lowest_damage_plan": min(
                 plans,
                 key=lambda name: plans[name]["private_total_additive_damage"],
             ),
             "pairwise": damage["pairwise"],
+            "matched_four_method": method_damage,
         },
         "format_effects": {
             "format_totals": effects["format_totals"],
@@ -1221,6 +1373,26 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Logical size: {traffic['logical_model_bytes']/1e9:.3f} GB",
         "- Allocation per MoE layer: 53 NVFP4 experts, 139 Q2_K experts, zero pruned",
         "- Ranking: private router-selection traffic with ascending expert-id tie break",
+        f"- Matched private additive damage: "
+        f"{traffic['private_total_additive_damage']:.8g}",
+        "",
+        "## Matched traffic vs projection-aware private damage",
+        "",
+        "| Method | Size (GB) | Total damage | Prune damage | Quant damage | "
+        "Damage reduction vs traffic137 |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    matched_damage = result["private_damage_comparison"]["matched_four_method"]
+    traffic_damage = matched_damage["plans"]["traffic137"]["total_additive_damage"]
+    for name in ("traffic137", "layer100", "layer120", "layer137"):
+        item = matched_damage["plans"][name]
+        reduction = 1.0 - item["total_additive_damage"] / traffic_damage
+        lines.append(
+            f"| {name} | {item['logical_model_bytes']/1e9:.3f} | "
+            f"{item['total_additive_damage']:.8g} | {item['prune_damage']:.8g} | "
+            f"{item['retained_quant_damage']:.8g} | {reduction:.2%} |"
+        )
+    lines += [
         "",
         "## Seven-format candidates",
         "",
@@ -1862,12 +2034,73 @@ def self_test() -> None:
             "swe": full_panel("swe", 500, 1),
             "terminal": full_panel("terminal", 89, 0),
             "candidate_total_solved_delta":1})
+        method_paths = {
+            "traffic137": traffic_plan,
+            "layer100": plans["layer_balanced"][1],
+            "layer120": plans["layer_balanced120"][1],
+            "layer137": plans["layer_balanced137"][1],
+        }
+        method_sizes = {
+            "traffic137": 137,
+            "layer100": 97,
+            "layer120": 120,
+            "layer137": 137,
+        }
+        method_totals = {
+            "traffic137": 1000.0,
+            "layer100": 70.0,
+            "layer120": 60.0,
+            "layer137": 50.0,
+        }
+        method_damage = write("method-damage.json", {
+            "format": "bw24-hy3-quant-plan-damage-v1",
+            "sensitivity": source(effects),
+            "public_eval_data_used": False,
+            "plans": {
+                name: {
+                    "path": str(path.resolve()),
+                    "sha256": sha256(path),
+                    "logical_bytes": method_sizes[name],
+                    "retained_experts": 1,
+                    "pruned_experts": 0,
+                    "retained_projection_cells": 3,
+                    "qtype_projection_cells": {"Q2_K": 3},
+                    "total_additive_damage": method_totals[name],
+                    "prune_damage": method_totals[name] * .4,
+                    "retained_quant_damage": method_totals[name] * .6,
+                    "projection_quant_damage": {
+                        "gate": method_totals[name] * .2,
+                        "up": method_totals[name] * .2,
+                        "down": method_totals[name] * .2,
+                    },
+                    "top_damage_cells": [],
+                }
+                for name, path in method_paths.items()
+            },
+            "pairwise": {},
+            "lowest_private_damage_plan": "layer137",
+        })
+        method_damage_receipt = write("method-damage.receipt.json", {
+            "format": "bw24-hy3-quant-plan-damage-receipt-v1",
+            "analysis_commit": "b" * 40,
+            "public_eval_data_used": False,
+            "sensitivity": source(effects),
+            "plans": [
+                {"name": name, **source(path)}
+                for name, path in method_paths.items()
+            ],
+            "logical_bytes_overrides": {"traffic137": 137},
+            "script": source(Path(__file__).resolve()),
+            "output": source(method_damage),
+        })
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
             healing_frontier=healing_frontier,
             directional_promotion=directional, practical_promotion=practical,
             trusted_selection=trusted_selection,
             trusted_report=trusted, full_agentic=full,
             traffic_plan=traffic_plan,
+            method_damage=method_damage,
+            method_damage_receipt=method_damage_receipt,
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
         assert result["recommended_method"]["arm"] == PLAN_ARMS["layer_balanced"]
@@ -1877,12 +2110,16 @@ def self_test() -> None:
         assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .515) < 1e-12
         assert result["seven_format_candidates"]["layer_balanced"][
             "private_damage_source"
-        ] == "optimal_plan_selection_estimate"
+        ] == "independent_four_way_plan_damage_receipt"
         assert result["strong_compact_reference"]["qtype_projection_counts"] == {
             "NVFP4": 53 * 79 * 3,
             "Q2_K": 139 * 79 * 3,
         }
         assert result["strong_compact_reference"]["pruned_experts"] == 0
+        assert result["strong_compact_reference"]["private_total_additive_damage"] == 1000
+        assert result["private_damage_comparison"][
+            "matched_four_method_lowest_damage_plan"
+        ] == "layer137"
         assert result["strong_compact_reference"]["effect_alignment"][
             "most_q2_sensitive_function_qtype_counts"
         ] == {"NVFP4": 1}
@@ -2012,6 +2249,8 @@ def main() -> None:
     parser.add_argument("--trusted-report", type=Path, required=True)
     parser.add_argument("--full-agentic", type=Path, required=True)
     parser.add_argument("--traffic-plan", type=Path, required=True)
+    parser.add_argument("--method-damage", type=Path, required=True)
+    parser.add_argument("--method-damage-receipt", type=Path, required=True)
     parser.add_argument("--plan", action="append", type=parse_plan, required=True)
     parser.add_argument("--analysis-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -2034,6 +2273,7 @@ def main() -> None:
               *practical_comparisons,
               *([args.trusted_selection] if args.trusted_selection else []),
               args.trusted_report,args.full_agentic,args.traffic_plan,
+              args.method_damage,args.method_damage_receipt,
               *(path for _,path in args.plan)]
     receipt = {
         "format": RECEIPT_FORMAT,
