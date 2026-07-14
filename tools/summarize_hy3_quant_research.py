@@ -22,6 +22,8 @@ PLAN_ARMS = {
     "centered": "smart100_iq3_iq4_q4_centered",
     "pareto": "smart100_iq3_iq4_q4_pareto",
     "layer_balanced": "layer_balanced100",
+    "layer_balanced120": "layer_balanced120",
+    "layer_balanced137": "layer_balanced137",
 }
 PLAN_DAMAGE_KEYS = {
     "uncentered": "uncentered",
@@ -1025,7 +1027,6 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     expected_formats = (
         (damage, "bw24-hy3-quant-plan-damage-v1"),
         (frontier, "bw24-cross-run-expanded-capability-frontier-v1"),
-        (directional, "bw24-smart100-directional-promotion-v1"),
         (practical, "bw24-practical-promotion-v1"),
         (trusted, "bw24-promoted-candidate-v1"),
         (full, "bw24-full-agentic-comparison-v1"),
@@ -1033,6 +1034,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     for payload, expected in expected_formats:
         if payload.get("format") != expected:
             raise ValueError(f"expected {expected}, got {payload.get('format')}")
+    if directional.get("format") not in {
+        "bw24-smart100-directional-promotion-v1",
+        "bw24-layer-balanced-bridge-directional-promotion-v1",
+    }:
+        raise ValueError("wrong directional-promotion format")
     if trusted_selection.get("format") not in {
         "bw24-practical-promotion-v1",
         "bw24-effective-trusted-full-selection-v1",
@@ -1093,9 +1099,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     format_efficiency = format_efficiency_summary(effects)
     effect_summary = effect_map_summary(effects)
-    plans["layer_balanced"]["effect_alignment"] = effect_alignment_summary(
-        load(plan_paths["layer_balanced"]), effect_summary
-    )
+    for name in ("layer_balanced", "layer_balanced120", "layer_balanced137"):
+        plans[name]["effect_alignment"] = effect_alignment_summary(
+            load(plan_paths[name]), effect_summary
+        )
     healing_ablation = healing_ablation_summary(healing_frontier)
     directional_frontier = directional_frontier_summary(frontier)
     practical_screen = practical_screen_summary(practical)
@@ -1529,9 +1536,11 @@ def self_test() -> None:
             ("centered", PLAN_ARMS["centered"], 99),
             ("pareto", PLAN_ARMS["pareto"], 98),
             ("layer_balanced", PLAN_ARMS["layer_balanced"], 97),
+            ("layer_balanced120", PLAN_ARMS["layer_balanced120"], 120),
+            ("layer_balanced137", PLAN_ARMS["layer_balanced137"], 137),
         ):
             selection = {"retained_experts": 190, "pruned_experts": 194}
-            if name == "layer_balanced":
+            if name.startswith("layer_balanced"):
                 selection.update({
                     "estimated_absolute_output_damage": 97.0,
                     "estimated_centered_output_damage": 96.0,
@@ -1638,7 +1647,9 @@ def self_test() -> None:
                     PLAN_ARMS["uncentered"]:{"logical_model_bytes":100,"domain_macro":.7,"question_weighted":.7},
                     PLAN_ARMS["centered"]:{"logical_model_bytes":99,"domain_macro":.71,"question_weighted":.71},
                     PLAN_ARMS["pareto"]:{"logical_model_bytes":98,"domain_macro":.72,"question_weighted":.72},
-                    PLAN_ARMS["layer_balanced"]:{"logical_model_bytes":97,"domain_macro":.73,"question_weighted":.73}}
+                    PLAN_ARMS["layer_balanced"]:{"logical_model_bytes":97,"domain_macro":.73,"question_weighted":.73},
+                    PLAN_ARMS["layer_balanced120"]:{"logical_model_bytes":120,"domain_macro":.74,"question_weighted":.74},
+                    PLAN_ARMS["layer_balanced137"]:{"logical_model_bytes":137,"domain_macro":.75,"question_weighted":.75}}
         frontier = write("frontier.json", {"format":"bw24-cross-run-expanded-capability-frontier-v1",
             "arms":arm_rows,"point_estimate_pareto":["plain_quant",PLAN_ARMS["pareto"]]})
         healing_frontier = write("healing-frontier.json", {
@@ -1670,7 +1681,8 @@ def self_test() -> None:
                 },
             },
         })
-        directional = write("directional.json", {"format":"bw24-smart100-directional-promotion-v1",
+        directional = write("directional.json", {
+            "format":"bw24-layer-balanced-bridge-directional-promotion-v1",
             "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
                               PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
         practical_comparisons = {}
