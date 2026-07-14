@@ -6012,13 +6012,11 @@ impl Engine {
             std::env::var("BW24_FA_SMEM_TKV").ok().and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| FA_SMEM_TKV_DEFAULT.load(std::sync::atomic::Ordering::Relaxed))
         });
-        // MULTI-ROW v4 (2026-07-11): at gqa==1 (gemma SWA) warp = row over a widened shared
-        // k-tile — one staging per (split, tile) instead of per (row, split, tile), and t=1
-        // blocks pack t warps. Per-row tile grouping matches v4_w exactly; ONE symbol serves
-        // every t (parity structural). BW24_FA_MR=0 reverts to the per-row v4_w grid.
-        let mr = gqa == 1 && t <= 8 && fa_v4_at(window)
-            && std::env::var("BW24_FA_MR").as_deref() != Ok("0");
-
+        // MULTI-ROW v4: resurrected 2026-07-14 (the '33 tok/s collapse' was a paired-map
+        // partial-write bug, not the mechanism) and falsified HONESTLY at gqa 2: bit-exact
+        // but −1.7% on the 31B depth cell — the sp helper warp already hides staging
+        // in-block, and mr trades L2-cheap redundant bytes for serialized per-warp gqa
+        // score/B3 chains. Arm deleted; jsonl row 2026-07-14 is the record.
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         // FP8-WINDOWED (wkv): the v4 family is format-aware (2026-07-12 KFMT/VFMT staging
         // arms) — wkv rides the SAME lane logic, resolved from the kf8vf8 module. One symbol
@@ -6040,21 +6038,6 @@ impl Engine {
             b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
              .arg(&ktb).arg(&vtb).arg(&wini);
-            unsafe { b.launch(cfg)?; }
-        } else if mr {
-            let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_mr") }
-                    else { self.func("fa_decode_vec_q_rows_v4_w_mr") };
-            // fa_v4_smem_mr (fixed 39-slot k tile) + sV for (32 + t - 1) staged keys
-            let sh = (2048 + 256 + 39 * 256 + 39 * 32
-                      + (32 + t - 1) * head_dim * if wg { 1 } else { 2 }) as u32;
-            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
-            let nr = t as i32;
-            let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, 1),
-                block_dim: (32, t as u32, 1), shared_mem_bytes: sh };
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
-             .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
-             .arg(&ktb).arg(&vtb).arg(&wini).arg(&nr);
             unsafe { b.launch(cfg)?; }
         } else {
         let pick = |name: &str| if wg { self.func_g(name) } else { self.func(name) };
