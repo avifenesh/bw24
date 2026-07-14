@@ -12,6 +12,9 @@ FULL_SUMMARIZER=${FULL_SUMMARIZER:-$HERE/summarize_promoted_results.py}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 HF_HOME=${HF_HOME:-/data/cache/huggingface}
 DATASET_SNAPSHOTTER=${DATASET_SNAPSHOTTER:-$HERE/snapshot_trusted_dataset_cache.py}
+USER_TRUSTED_POLICY=${USER_TRUSTED_POLICY:-}
+DIRECTIONAL_FRONTIER=${DIRECTIONAL_FRONTIER:-}
+USER_POLICY_SELECTOR=${USER_POLICY_SELECTOR:-$HERE/select_trusted_full_user_policy.py}
 SPILL_DEPTH=${SPILL_DEPTH:-8}
 IQ4_ART_ROOT=${IQ4_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3}
 CENTERED_ART_ROOT=${CENTERED_ART_ROOT:-/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d}
@@ -44,6 +47,11 @@ die() { echo "error: $*" >&2; exit 2; }
 [[ -f "$FULL_SUMMARIZER" ]] || die "missing trusted-full summarizer"
 [[ -f "$DATASET_SNAPSHOTTER" ]] || die "missing trusted dataset snapshotter"
 [[ -f "$HERE/suite.lock.json" ]] || die "missing frozen suite lock"
+if [[ -n "$USER_TRUSTED_POLICY" || -n "$DIRECTIONAL_FRONTIER" ]]; then
+  [[ -n "$USER_TRUSTED_POLICY" && -n "$DIRECTIONAL_FRONTIER" \
+    && -f "$USER_TRUSTED_POLICY" && -f "$USER_POLICY_SELECTOR" ]] \
+    || die "user trusted policy requires policy, frontier path, and selector"
+fi
 [[ "$SPILL_DEPTH" =~ ^[1-9][0-9]*$ ]] || die "invalid spill depth"
 python3 - "$VRAM_FRAC" <<'PY'
 import sys
@@ -68,12 +76,23 @@ done
 PRACTICAL_RUN_ID=$(<"$PRACTICAL_ROOT/_active-run-id")
 PRACTICAL_PROMOTION="$PRACTICAL_ROOT/practical-promotion-$PRACTICAL_RUN_ID.json"
 while [[ ! -f "$PRACTICAL_PROMOTION" ]]; do sleep "$WAIT_INTERVAL_S"; done
+TRUSTED_SELECTION="$PRACTICAL_PROMOTION"
+if [[ -n "$USER_TRUSTED_POLICY" ]]; then
+  while [[ ! -f "$DIRECTIONAL_FRONTIER" ]]; do sleep "$WAIT_INTERVAL_S"; done
+  TRUSTED_SELECTION="$OUT_ROOT/run-configs/effective-selection-$PRACTICAL_RUN_ID.json"
+  python3 "$USER_POLICY_SELECTOR" \
+    --practical-promotion "$PRACTICAL_PROMOTION" \
+    --frontier "$DIRECTIONAL_FRONTIER" --policy "$USER_TRUSTED_POLICY" \
+    --output "$TRUSTED_SELECTION"
+fi
 
-mapfile -t ARMS < <(python3 - "$PRACTICAL_PROMOTION" <<'PY'
+mapfile -t ARMS < <(python3 - "$TRUSTED_SELECTION" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-if d.get("format") != "bw24-practical-promotion-v1":
-    raise SystemExit("wrong practical promotion format")
+if d.get("format") not in {
+    "bw24-practical-promotion-v1", "bw24-effective-trusted-full-selection-v1"
+}:
+    raise SystemExit("wrong trusted selection format")
 arms = d.get("trusted_full_arms")
 if not isinstance(arms, list) or not 2 <= len(arms) <= 3 or len(set(arms)) != len(arms):
     raise SystemExit("expected two or three unique trusted-full arms")
@@ -121,7 +140,7 @@ HOME="$HF_HOME" HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
 ARM_COUNT=${#ARMS[@]}
 BASE_LANES=$((8 / ARM_COUNT))
 EXTRA_LANES=$((8 % ARM_COUNT))
-export RUN_ID PRACTICAL_PROMOTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
+export RUN_ID PRACTICAL_PROMOTION TRUSTED_SELECTION SERVER_BIN ROOT HERE ARM_COUNT BASE_LANES EXTRA_LANES VRAM_FRAC DATASET_RECEIPT TRUSTED_MAX_GEN_TOKS \
   IQ4_ART_ROOT CENTERED_ART_ROOT PARETO_ART_ROOT LAYER_BALANCED_ART_ROOT
 python3 - "$RUN_CONFIG" "${ARMS[@]}" <<'PY'
 import hashlib, json, os, pathlib, subprocess, sys
@@ -150,6 +169,10 @@ payload = {
     "practical_promotion": {
         "path": os.environ["PRACTICAL_PROMOTION"],
         "sha256": sha(os.environ["PRACTICAL_PROMOTION"]),
+    },
+    "trusted_selection": {
+        "path": os.environ["TRUSTED_SELECTION"],
+        "sha256": sha(os.environ["TRUSTED_SELECTION"]),
     },
     "suite_lock": {"path": str(pathlib.Path(os.environ["HERE"]) / "suite.lock.json"),
                    "sha256": sha(pathlib.Path(os.environ["HERE"]) / "suite.lock.json")},
@@ -321,7 +344,8 @@ PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}" python3 "$FULL_SUMMARIZER" \
   --baseline plain_quant --expected-n all \
   --lock "$HERE/suite.lock.json" \
   --out "$OUT_ROOT/_runs/$RUN_ID/trusted-full-results.md"
-sha256sum "$RUN_CONFIG" "$PRACTICAL_PROMOTION" "$HERE/suite.lock.json" "$DATASET_RECEIPT" \
+sha256sum "$RUN_CONFIG" "$PRACTICAL_PROMOTION" "$TRUSTED_SELECTION" \
+  "$HERE/suite.lock.json" "$DATASET_RECEIPT" \
   "$OUT_ROOT/_runs/$RUN_ID/trusted-full-results.json" > "$LOG_ROOT/$RUN_ID-evidence.sha256"
 date -u +%FT%TZ | tee "$LOG_ROOT/complete"
 trap - EXIT INT TERM
