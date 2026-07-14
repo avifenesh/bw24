@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
+PY=${PY:-/data/venvs/hy3-heal/bin/python}
 LOCK=${LOCK:-$ROOT/research/per-expert-quant/layer-balanced-bridge.lock.json}
 VALIDATOR=${VALIDATOR:-$ROOT/research/per-expert-quant/validate_layer_balanced_bridge_lock.py}
+[[ -x "$PY" ]] || { echo "missing bridge build Python: $PY" >&2; exit 2; }
 
 export ARMS_CSV=layer_balanced120,layer_balanced137
 export TARGET_BYTES_CSV=120000000000,137459192320
@@ -26,5 +28,6 @@ export SCRATCH_ROOT=/scratch/bw24-artifacts-layer-balanced-bridge
 export LOG_ROOT=/data/logs/layer-balanced-bridge-build
 export SELECTION_LOCK=$LOCK
 export SELECTION_LOCK_VALIDATOR=$VALIDATOR
+export PY
 
 exec "$ROOT/research/per-expert-quant/run_hy3_smart100_build_transition.sh"
