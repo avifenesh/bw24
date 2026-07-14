@@ -28,10 +28,17 @@ MIN_IMPROVED_LAYERS=${MIN_IMPROVED_LAYERS:-40}
 LAYER_CONSTRAINTS=${LAYER_CONSTRAINTS:-}
 SELECTION_LOCK=${SELECTION_LOCK:-}
 SELECTION_LOCK_VALIDATOR=${SELECTION_LOCK_VALIDATOR:-}
+EXPECTED_PLAN_SHA256_CSV=${EXPECTED_PLAN_SHA256_CSV:-}
 
 IFS=, read -r -a arms <<<"$ARMS_CSV"
 IFS=, read -r -a targets <<<"$TARGET_BYTES_CSV"
 IFS=, read -r -a weight_specs <<<"$WEIGHTS_CSV"
+expected_plan_hashes=()
+if [[ -n "$EXPECTED_PLAN_SHA256_CSV" ]]; then
+  IFS=, read -r -a expected_plan_hashes <<<"$EXPECTED_PLAN_SHA256_CSV"
+  [[ ${#expected_plan_hashes[@]} -eq ${#arms[@]} ]] \
+    || { echo "expected plan hash count must match arms" >&2; exit 2; }
+fi
 [[ ${#arms[@]} -gt 0 && ${#arms[@]} -eq ${#targets[@]} \
   && ${#arms[@]} -eq ${#weight_specs[@]} ]] \
   || { echo "arms, target bytes, and weight counts must match" >&2; exit 2; }
@@ -144,7 +151,15 @@ for index in "${!arms[@]}"; do
 done
 
 plan_paths=()
-for arm in "${arms[@]}"; do plan_paths+=("$PLAN_ROOT/$arm.json"); done
+for index in "${!arms[@]}"; do
+  arm=${arms[$index]}; plan="$PLAN_ROOT/$arm.json"; plan_paths+=("$plan")
+  if [[ ${#expected_plan_hashes[@]} -gt 0 ]]; then
+    expected=${expected_plan_hashes[$index]}
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "invalid expected plan hash for $arm"
+    [[ $(sha256sum "$plan" | cut -d' ' -f1) == "$expected" ]] \
+      || die "frozen plan hash mismatch for $arm"
+  fi
+done
 "$PY" "$ROOT/tools/summarize_hy3_smart_allocations.py" \
   "${plan_paths[@]}" --out "$PLAN_ROOT/allocation-comparison.json" \
   --require-distinct | tee "$LOG_ROOT/allocation-comparison.log"

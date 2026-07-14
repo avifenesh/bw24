@@ -12,6 +12,7 @@ export TARGET_BYTES_CSV=120000000000,137459192320
 export WEIGHTS_CSV=0:0:0,0:0:0
 export MIP_REL_GAP=1e-6
 export MIN_IMPROVED_LAYERS=1
+export EXPECTED_PLAN_SHA256_CSV=f6cde8bc78454bcd5c8c46027e046b776e419e5543e373202775998424cad11d,ff05a8f4729a027d9dbc60528875e33ed9c2b314788f8c510f0c465585346a2d
 export SENSITIVITY_COMPLETE=/data/logs/hy3-quant-sensitivity-53de6ca/complete
 export SENSITIVITY=/data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3/seven-format-sensitivity.json
 export RETENTION=/data/calibration/hy3-100gb-5f02c37/expert-retention-scores.json
