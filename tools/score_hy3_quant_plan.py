@@ -51,7 +51,7 @@ def expand_plan(
         raise ValueError("plan does not attest private-only selection")
     expected_experts = {(layer, expert) for layer in layers for expert in range(expert_count)}
     raw_pruned = plan.get("pruned_experts")
-    if raw_pruned is None:
+    if raw_pruned is None or raw_pruned == {}:
         policy = plan.get("policy", {})
         # Frozen full-bank traffic plans encode the absence of pruning as a
         # policy invariant instead of materializing 79 empty lists.  Accept
@@ -62,7 +62,9 @@ def expand_plan(
         ):
             raw_pruned = {str(layer): [] for layer in layers}
         else:
-            raise ValueError("plan omits pruned_experts without a no-prune policy")
+            raise ValueError(
+                "plan omits or empties pruned_experts without a no-prune policy"
+            )
     if set(raw_pruned) != {str(layer) for layer in layers}:
         raise ValueError("plan pruned_experts layer coverage mismatch")
     pruned = {
@@ -281,11 +283,16 @@ def self_test() -> None:
                 {"layer": 1, "experts": [0, 1], "qtype": "Q2_K"}
             ],
         })
+        full_bank_empty_map = {
+            **full_bank_policy,
+            "pruned_experts": {},
+        }
         paths = []
         for name, payload in (
             ("pruned", pruned),
             ("retained", retained),
             ("full_bank_policy", full_bank_policy),
+            ("full_bank_empty_map", full_bank_empty_map),
         ):
             path = root / f"{name}.json"
             path.write_text(json.dumps(payload))
@@ -297,7 +304,11 @@ def self_test() -> None:
             result["plans"]["full_bank_policy"]["total_additive_damage"], 6.0
         )
         assert result["plans"]["full_bank_policy"]["pruned_experts"] == 0
-        assert result["lowest_private_damage_plan"] == "full_bank_policy"
+        assert math.isclose(
+            result["plans"]["full_bank_empty_map"]["total_additive_damage"], 6.0
+        )
+        assert result["plans"]["full_bank_empty_map"]["pruned_experts"] == 0
+        assert result["lowest_private_damage_plan"] == "full_bank_empty_map"
         invalid_path = root / "invalid-omitted-prune-map.json"
         invalid_path.write_text(json.dumps({
             **base,
@@ -308,7 +319,7 @@ def self_test() -> None:
         try:
             score_plan(sensitivity, invalid_path)
         except ValueError as error:
-            assert "omits pruned_experts" in str(error)
+            assert "omits or empties pruned_experts" in str(error)
         else:
             raise AssertionError("accepted omitted prune map without no-prune policy")
         output = root / "output.json"
