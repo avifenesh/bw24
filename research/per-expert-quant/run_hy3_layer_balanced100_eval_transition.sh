@@ -24,6 +24,7 @@ PANEL_SHA256=${PANEL_SHA256:-33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a75
 SERVER_BIN=${SERVER_BIN:-/data/build/bw24-portable-ada-fix-target/release/bw24-server}
 SERVER_SHA256=${SERVER_SHA256:-13a7ac6a15a5de17f0eb736ecb393a50ab9bf03145e86a878e66c86b2086f195}
 OUT_ROOT=${OUT_ROOT:-/data/results/per-expert-quant/layer-balanced100-directional-v1}
+NORMALIZED_OUT_ROOT=${NORMALIZED_OUT_ROOT:-/data/results/per-expert-quant/layer-balanced100-directional-normalized-v1}
 LOG_ROOT=${LOG_ROOT:-/data/logs/layer-balanced100-directional-v1}
 CACHE_DIR=${CACHE_DIR:-/data/cache/per-expert-evals}
 PRIVATE_GATE_ROOT=${PRIVATE_GATE_ROOT:-/data/logs/layer-balanced100-private-artifact-gate-3db293f}
@@ -146,6 +147,15 @@ while [[ ! -f "$BASE_DIRECTIONAL_COMPLETE" ]]; do sleep 30; done
 base_run=$(<"$BASE_DIRECTIONAL_ROOT/_active-run-id")
 base_frontier="$BASE_DIRECTIONAL_ROOT/iq3-iq4-q4-frontier-$base_run.json"
 [[ -f "$base_frontier" ]] || die "missing previous combined frontier"
+SOURCE_RUN_DIR="$OUT_ROOT/$ARM/$RUN_ID" OUT_ROOT="$NORMALIZED_OUT_ROOT" \
+  ARM="$ARM" RUN_ID="$RUN_ID" BASELINE_FRONTIER="$base_frontier" \
+  BASELINE_ARM=plain_quant PANEL_LOCK="$PANEL_LOCK" \
+  "$ROOT/research/per-expert-quant/normalize_hourish_scorer_evidence.sh"
+normalized_summary="$NORMALIZED_OUT_ROOT/layer-balanced100-summary-$RUN_ID.json"
+"$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
+  --out-root "$NORMALIZED_OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
+  --panel-lock "$PANEL_LOCK" --suite-lock "$EVAL_ROOT/research/per-expert-quant/suite.lock.json" \
+  --server-sha256 "$SERVER_SHA256" --output "$normalized_summary"
 mapfile -t base_specs < <("$PY" - "$base_frontier" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
@@ -158,7 +168,7 @@ frontier="$OUT_ROOT/layer-balanced100-frontier-$RUN_ID.json"
 frontier_args=(--panel-lock "$PANEL_LOCK" --server-sha256 "$SERVER_SHA256" \
   --compatible-bw24-commits "$BASE_EVAL_COMMIT=$EVAL_COMMIT")
 for spec in "${base_specs[@]}"; do frontier_args+=(--arm "$spec"); done
-frontier_args+=(--arm "$ARM=$OUT_ROOT::$RUN_ID" --baseline plain_quant --output "$frontier")
+frontier_args+=(--arm "$ARM=$NORMALIZED_OUT_ROOT::$RUN_ID" --baseline plain_quant --output "$frontier")
 "$PY" "$ROOT/research/per-expert-quant/summarize_cross_run_hourish.py" "${frontier_args[@]}"
 promotion="$OUT_ROOT/layer-balanced100-promotion-$RUN_ID.json"
 "$PY" "$ROOT/research/per-expert-quant/select_smart100_promotions.py" \
@@ -174,7 +184,9 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps({
     "selected_100gb_arms":d["selected_practical_candidates"],
 },indent=2,sort_keys=True)+"\n")
 PY
-sha256sum "$OUT_ROOT/run-configs/$RUN_ID.json" "$summary" "$frontier" "$promotion" \
+sha256sum "$OUT_ROOT/run-configs/$RUN_ID.json" "$summary" "$normalized_summary" \
+  "$NORMALIZED_OUT_ROOT/$ARM/$RUN_ID/scorer-normalization.evidence.sha256" \
+  "$frontier" "$promotion" \
   "$practical" "$PROMOTION_LOCK" "$PLAN" "$CONSTRAINTS" \
   "$PRIVATE_GATE_ROOT/evidence.sha256" "$BUILD_EVIDENCE" >"$LOG_ROOT/evidence-$RUN_ID.sha256"
 sha256sum -c "$LOG_ROOT/evidence-$RUN_ID.sha256"
