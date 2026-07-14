@@ -1,5 +1,16 @@
 # Verify megakernel — the last engine lever for the 31B spec-depth cell (2026-07-13)
 
+> **CLOSED 2026-07-14 (falsification #7, jsonl row):** the persistent counter-barrier
+> form was built bit-exact (FFN slab: entry-quantize -> gate|up -> gelu+q8 -> down, one
+> co-resident launch) and LOST on both dense cells (31B depth −0.3%, E4B −2.3%,
+> interleaved N=3): PDL glue launches already hide the boundaries it fuses, and it pays
+> grid-wide barrier latency + worst-segment occupancy for them. Down's activation
+> dependency is all-to-all, so the sentinel refinement cannot rescue the down segment.
+> The extractable share of the launch-tail tax was the f2/f3 independent-pair tail-fill
+> (+5%, shipped v0.33.0). Landmine for future co-resident kernels: size gridDim from
+> THAT kernel's occupancy (a shared per-process cache deadlocked the b4 width at 100%
+> GPU), and remember single-K gates cannot expose per-kernel-cache bugs.
+
 ## Why this, why now
 
 The 31B spec depth cell (0.893x, THE open goal front) is verify-wall-bound: the MTP round
