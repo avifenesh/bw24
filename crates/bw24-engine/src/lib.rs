@@ -865,6 +865,8 @@ impl Engine {
                        n_experts: usize, t: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let mut y = self.alloc_uninit::<f32>(t * n_experts)?;
+        // float4 v2 probed 2026-07-14: +0.25% but flips near-tie routing (new FP order,
+        // stream differs) — too small to justify a numeric config change; deleted.
         let f = self.func("router_gemv_f32");
         let (ne, nx, ti) = (n_embd as i32, n_experts as i32, t as i32);
         let cfg = LaunchConfig { grid_dim: (n_experts as u32, t as u32, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
