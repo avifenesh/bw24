@@ -24,6 +24,7 @@ ARMS_CSV=${ARMS_CSV:-smart100_empirical,smart100_balanced,smart100_rescue}
 TARGET_BYTES_CSV=${TARGET_BYTES_CSV:-$TARGET_BYTES,$TARGET_BYTES,$TARGET_BYTES}
 WEIGHTS_CSV=${WEIGHTS_CSV:-0:0:0,1:1:1,0.5:2:1}
 MIP_REL_GAP=${MIP_REL_GAP:-1e-4}
+MIN_IMPROVED_LAYERS=${MIN_IMPROVED_LAYERS:-40}
 LAYER_CONSTRAINTS=${LAYER_CONSTRAINTS:-}
 SELECTION_LOCK=${SELECTION_LOCK:-}
 SELECTION_LOCK_VALIDATOR=${SELECTION_LOCK_VALIDATOR:-}
@@ -34,6 +35,8 @@ IFS=, read -r -a weight_specs <<<"$WEIGHTS_CSV"
 [[ ${#arms[@]} -gt 0 && ${#arms[@]} -eq ${#targets[@]} \
   && ${#arms[@]} -eq ${#weight_specs[@]} ]] \
   || { echo "arms, target bytes, and weight counts must match" >&2; exit 2; }
+[[ "$MIN_IMPROVED_LAYERS" =~ ^[1-9][0-9]*$ && "$MIN_IMPROVED_LAYERS" -le 79 ]] \
+  || { echo "MIN_IMPROVED_LAYERS must be in 1..79" >&2; exit 2; }
 weights=()
 for spec in "${weight_specs[@]}"; do
   [[ "$spec" =~ ^[0-9.]+:[0-9.]+:[0-9.]+$ ]] \
@@ -171,7 +174,7 @@ for arm_spec in arm_specs:
     assert min(int(x["retained"]) for x in d["layer_summary"].values()) >= 96
 PY
 
-# Run all 237 layer repairs through eight fixed GPU/CPU lanes.  Candidate tasks are interleaved so
+# Run every candidate/layer repair through fixed GPU/CPU lanes. Candidate tasks are interleaved so
 # every GPU stays occupied without running multiple repairs on one device.
 heal_lane() {
   local lane=$1 ordinal=0
@@ -222,8 +225,9 @@ eligible_arms=()
 rejected_arms=()
 for arm in "${arms[@]}"; do
   "$PY" - "$HEAL_ROOT/$arm/receipts" "$LOG_ROOT/routing-audit-$arm.json" \
-    "$LOG_ROOT/heal-quality-$arm.json" <<'PY'
+    "$LOG_ROOT/heal-quality-$arm.json" "$MIN_IMPROVED_LAYERS" <<'PY'
 import json,math,pathlib,sys
+minimum_improved=int(sys.argv[4])
 receipts=[]
 for layer in range(1,80):
     p=pathlib.Path(sys.argv[1])/f"layer-{layer:03}.receipt.json"
@@ -248,10 +252,12 @@ rolled_back=sum(bool(d["selection"]["rolled_back_to_unhealed_source"]) for d in 
 result={"format":"bw24-smart100-post-requant-heal-gate-v1","layers":len(receipts),
         "mean_before_normalized_mse":before,"mean_after_pre_requantization_normalized_mse":pre,
         "mean_after_requantization_normalized_mse":after,"improved_after_requantization_layers":improved,
+        "minimum_improved_layers":minimum_improved,
         "rolled_back_non_improving_layers":rolled_back,
         "holdout_dead_active_experts":sum(int(d["after"]["dead_active_experts"]) for d in receipts),
         "full_calibration_dead_active_experts":audit["summary"]["dead_active_experts"],
-        "passed":after < before and improved >= 40 and audit["summary"]["dead_active_experts"] == 0,
+        "passed":after < before and improved >= minimum_improved
+            and audit["summary"]["dead_active_experts"] == 0,
         "public_eval_data_used":False}
 pathlib.Path(sys.argv[3]).write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
 print(json.dumps(result,sort_keys=True))

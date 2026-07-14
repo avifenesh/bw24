@@ -9,6 +9,7 @@ export ARMS_CSV=layer_balanced120,layer_balanced137
 export TARGET_BYTES_CSV=120000000000,137459192320
 export WEIGHTS_CSV=0:0:0,0:0:0
 export MIP_REL_GAP=1e-6
+export MIN_IMPROVED_LAYERS=1
 export SENSITIVITY_COMPLETE=/data/logs/hy3-quant-sensitivity-53de6ca/complete
 export SENSITIVITY=/data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3/seven-format-sensitivity.json
 export RETENTION=/data/calibration/hy3-100gb-5f02c37/expert-retention-scores.json
