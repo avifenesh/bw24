@@ -6455,7 +6455,7 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
         #pragma unroll
         for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)g * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)g * 16));
             float d4 = half_to_float(wd0[g]);
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             int sumi = 0;
@@ -6467,7 +6467,7 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
             acc0 += d4 * (float)(sumi - 8 * sums) * d8;
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)g * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)g * 16));
             float d4 = half_to_float(wd1[g]);
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             int sumi = 0;
@@ -6512,7 +6512,11 @@ __device__ __forceinline__ void q4_0_mmvq_row1_rp(
         #pragma unroll
         for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)g * 16);
+            // W plane rides STREAMING loads (__ldcs = evict-first, 2026-07-14 duty arc):
+            // decode weights are single-use per token — evict-normal W lines thrash the
+            // L2 share the activation re-reads (every warp) and KV live on. Same bytes,
+            // same values — bit-identical.
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)g * 16));
             float d4 = half_to_float(wd0[g]);
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             int sumi = 0;
@@ -6602,7 +6606,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_rp(
     #pragma unroll
     for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
     for (int blk = lane; blk < nblk; blk += 32) {
-        int4 qv = *(const int4*)(wq + (size_t)blk * 16);
+        int4 qv = __ldcs((const int4*)(wq + (size_t)blk * 16));
         float d4 = half_to_float(wd[blk]);
         int lo[4], hi[4];
         const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
@@ -6679,7 +6683,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp_bx(
     for (int blk = lane; blk < nblk; blk += 32) {
         int lo0[4], hi0[4], lo1[4], hi1[4];
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6688,7 +6692,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp_bx(
             }
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6887,7 +6891,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_ms_rp(
     for (int blk = lane; blk < nblk; blk += 32) {
         int lo0[4], hi0[4], lo1[4], hi1[4];
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6896,7 +6900,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_ms_rp(
             }
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6975,7 +6979,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_la_rp(
     for (int blk = lane; blk < nblk; blk += 32) {
         int lo0[4], hi0[4], lo1[4], hi1[4];
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6984,7 +6988,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_la_rp(
             }
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -7120,7 +7124,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_sm_rp(
         if (!row_ok || lane >= slab) continue;
         int lo0[4], hi0[4], lo1[4], hi1[4];
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -7129,7 +7133,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_sm_rp(
             }
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
