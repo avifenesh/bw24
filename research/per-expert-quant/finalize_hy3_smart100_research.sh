@@ -171,6 +171,10 @@ case "$finalist" in
     remote_artifact=/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139 ;;
   *) die "unexpected full-agentic finalist $finalist" ;;
 esac
+remote_artifact=$(ssh "$REMOTE" "realpath -e -- '$remote_artifact'") \
+  || die "cannot resolve finalist artifact"
+[[ "$remote_artifact" == /opt/dlami/nvme/* ]] \
+  || die "finalist artifact resolved outside the NVMe artifact root"
 
 ssh "$REMOTE" 'set -eu
 for f in \
