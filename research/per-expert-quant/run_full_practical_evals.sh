@@ -288,11 +288,14 @@ for trial_dir in trial_dirs:
         or model.get("name") != metadata["arm"] or model.get("provider") != "openai"
         or not isinstance(reward, (int, float)) or isinstance(reward, bool)
         or not math.isfinite(float(reward)) or not 0 <= reward <= 1
-        or (timed_out and float(reward) != 0.0)
     ):
         raise SystemExit(f"invalid full practical trial {path}")
+    raw_verifier_reward = float(reward)
+    normalized_reward = 0.0 if timed_out else raw_verifier_reward
     trials.append({
-        "task": task, "task_digest": ref, "reward": float(reward),
+        "task": task, "task_digest": ref, "reward": normalized_reward,
+        "raw_verifier_reward": raw_verifier_reward,
+        "timeout_reward_overridden": timed_out and raw_verifier_reward != 0.0,
         "timed_out": timed_out, "result_sha256": sha(path),
     })
 if len(trials) != expected or len({row["task"] for row in trials}) != expected:
@@ -317,7 +320,10 @@ metadata.update({
     "container_images_sha256": sha(root / "container-images.jsonl"),
     "harbor_result_sha256": sha(result_path), "validated_trials_sha256": sha(root / "validated-trials.json"),
     "spill_snapshot_end": end, "spill_delta": {key: end[key] - start[key] for key in keys},
-    "solved": sum(row["reward"] for row in trials), "timed_out": timeout_count,
+    "solved": sum(row["reward"] for row in trials),
+    "raw_verifier_solved": sum(row["raw_verifier_reward"] for row in trials),
+    "timeout_reward_overrides": sum(row["timeout_reward_overridden"] for row in trials),
+    "timed_out": timeout_count,
 })
 metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 PY

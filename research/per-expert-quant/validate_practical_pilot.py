@@ -82,7 +82,8 @@ def validate(
         and math.isfinite(float(reward)) and 0 <= float(reward) <= 1,
         "pilot verifier reward is invalid",
     )
-    require(not timed_out or float(reward) == 0.0, "timed-out pilot must score zero")
+    raw_verifier_reward = float(reward)
+    normalized_reward = 0.0 if timed_out else raw_verifier_reward
     require(
         stats.get("n_completed_trials") == 1
         and stats.get("n_errored_trials") == int(timed_out)
@@ -94,7 +95,9 @@ def validate(
     )
     return {
         "arm": arm, "panel": panel, "task": expected_task,
-        "reward": float(reward), "timed_out": timed_out,
+        "reward": normalized_reward, "raw_verifier_reward": raw_verifier_reward,
+        "timeout_reward_overridden": timed_out and raw_verifier_reward != 0.0,
+        "timed_out": timed_out,
     }
 
 
@@ -146,7 +149,8 @@ def self_test() -> None:
         result = validate(run_dir, lock_path, arm, panel)
         assert result == {
             "arm": arm, "panel": panel, "task": task,
-            "reward": 1.0, "timed_out": False,
+            "reward": 1.0, "raw_verifier_reward": 1.0,
+            "timeout_reward_overridden": False, "timed_out": False,
         }
         trial = json.loads((trial_dir / "result.json").read_text())
         trial["exception_info"] = {
@@ -155,13 +159,14 @@ def self_test() -> None:
             "exception_traceback": "harbor.trial.errors.AgentTimeoutError: timeout",
             "occurred_at": "now",
         }
-        trial["verifier_result"]["rewards"]["reward"] = 0.0
         (trial_dir / "result.json").write_text(json.dumps(trial))
         job_result = json.loads((job_dir / "result.json").read_text())
         job_result["stats"]["n_errored_trials"] = 1
         (job_dir / "result.json").write_text(json.dumps(job_result))
         timed_out = validate(run_dir, lock_path, arm, panel)
         assert timed_out["timed_out"] is True and timed_out["reward"] == 0.0
+        assert timed_out["raw_verifier_reward"] == 1.0
+        assert timed_out["timeout_reward_overridden"] is True
         trial["exception_info"]["exception_type"] = "RuntimeError"
         (trial_dir / "result.json").write_text(json.dumps(trial))
         try:

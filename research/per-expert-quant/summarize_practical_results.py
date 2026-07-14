@@ -180,6 +180,7 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     stats = job_result.get("stats", {})
     require(job_result.get("n_total_trials") == len(expected), f"wrong total trials: {run_dir}")
     rewards: dict[str, float] = {}
+    raw_verifier_rewards: dict[str, float] = {}
     timeouts: dict[str, bool] = {}
     trial_paths = sorted(path for path in job_dir.iterdir() if path.is_dir())
     require(len(trial_paths) == len(expected), f"wrong number of trial directories: {run_dir}")
@@ -207,14 +208,19 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         )
         reward = result.get("verifier_result", {}).get("rewards", {}).get("reward")
         require(isinstance(reward, (int, float)) and not isinstance(reward, bool) and math.isfinite(float(reward)) and 0 <= reward <= 1, f"invalid reward for {task_name}: {run_dir}")
-        require(not timed_out or float(reward) == 0.0, f"timed-out task scored nonzero: {task_name}")
         require(isinstance(result.get("started_at"), str) and isinstance(result.get("finished_at"), str), f"missing trial timestamps for {task_name}: {run_dir}")
-        rewards[task_name] = float(reward)
+        raw_verifier_rewards[task_name] = float(reward)
+        rewards[task_name] = 0.0 if timed_out else float(reward)
         timeouts[task_name] = timed_out
     require(rewards.keys() == expected.keys(), f"practical tasks differ from lock: {run_dir}")
     rewards = {task_name: rewards[task_name] for task_name in expected}
+    raw_verifier_rewards = {task_name: raw_verifier_rewards[task_name] for task_name in expected}
     timeouts = {task_name: timeouts[task_name] for task_name in expected}
     timeout_count = sum(timeouts.values())
+    timeout_reward_overrides = sum(
+        timeouts[task_name] and raw_verifier_rewards[task_name] != 0.0
+        for task_name in expected
+    )
     require(
         stats.get("n_completed_trials") == len(expected)
         and stats.get("n_errored_trials") == timeout_count
@@ -232,9 +238,12 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         "receipt": receipt,
         "normalized_config": normalized_harbor_config(config),
         "rewards": rewards,
+        "raw_verifier_rewards": raw_verifier_rewards,
         "timeouts": timeouts,
         "timeout_count": timeout_count,
+        "timeout_reward_override_count": timeout_reward_overrides,
         "mean_reward": sum(rewards.values()) / len(rewards),
+        "raw_verifier_mean_reward": sum(raw_verifier_rewards.values()) / len(raw_verifier_rewards),
         "elapsed_seconds": float(elapsed),
     }
 
@@ -264,20 +273,33 @@ def build_report(baseline_dir: Path, candidate_dir: Path, lock_path: Path, panel
             "task": task_name, "baseline_reward": base, "candidate_reward": cand,
             "delta": delta, "baseline_timed_out": baseline["timeouts"][task_name],
             "candidate_timed_out": candidate["timeouts"][task_name],
+            "baseline_raw_verifier_reward": baseline["raw_verifier_rewards"][task_name],
+            "candidate_raw_verifier_reward": candidate["raw_verifier_rewards"][task_name],
         })
     size_reduction = 1.0 - candidate["logical_model_bytes"] / baseline["logical_model_bytes"]
     return {
         "format": "bw24-practical-comparison-v1",
         "panel": panel,
         "n_tasks": len(tasks),
-        "baseline": {key: baseline[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds", "timeout_count")},
-        "candidate": {key: candidate[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds", "timeout_count")},
+        "baseline": {key: baseline[key] for key in (
+            "arm", "artifact_bytes", "logical_model_bytes", "mean_reward",
+            "raw_verifier_mean_reward", "elapsed_seconds", "timeout_count",
+            "timeout_reward_override_count",
+        )},
+        "candidate": {key: candidate[key] for key in (
+            "arm", "artifact_bytes", "logical_model_bytes", "mean_reward",
+            "raw_verifier_mean_reward", "elapsed_seconds", "timeout_count",
+            "timeout_reward_override_count",
+        )},
         "candidate_mean_delta": candidate["mean_reward"] - baseline["mean_reward"],
         "candidate_size_reduction": size_reduction,
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties,
         "exact_sign_p": exact_sign_p(wins, losses),
         "tasks": tasks,
-        "note": "Directional matched panel; not evidence of full-benchmark equivalence.",
+        "note": (
+            "Directional matched panel; not evidence of full-benchmark equivalence. "
+            "AgentTimeoutError tasks score zero; late verifier rewards remain recorded as raw provenance."
+        ),
     }
 
 
@@ -404,12 +426,16 @@ def self_test() -> None:
                 }))
             return run
 
-        baseline = make_run("plain", [0, 1], 100, {"a"}, port=8080)
+        baseline = make_run("plain", [1, 1], 100, {"a"}, port=8080)
         candidate = make_run("candidate", [1, 1], 80, port=8082)
         report = build_report(baseline, candidate, lock_path, "terminal")
         assert report["candidate_mean_delta"] == 0.5
         assert report["paired_wins"] == 1 and report["paired_losses"] == 0
         assert report["baseline"]["timeout_count"] == 1
+        assert report["baseline"]["timeout_reward_override_count"] == 1
+        assert report["baseline"]["raw_verifier_mean_reward"] == 1.0
+        assert report["tasks"][0]["baseline_raw_verifier_reward"] == 1.0
+        assert report["tasks"][0]["baseline_reward"] == 0.0
         assert "Directional matched panel" in markdown(report)
         candidate_receipt = candidate / "run-metadata.json"
         payload = json.loads(candidate_receipt.read_text())

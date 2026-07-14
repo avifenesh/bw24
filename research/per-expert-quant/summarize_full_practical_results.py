@@ -52,6 +52,7 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         receipt_paths = [run_dir / "run-metadata.json"]
     require(bool(receipt_paths), f"no full practical receipts under {run_dir}")
     rewards: dict[str, float] = {}
+    raw_verifier_rewards: dict[str, float] = {}
     digests: dict[str, str] = {}
     timeouts: dict[str, bool] = {}
     reference: dict[str, Any] | None = None
@@ -134,30 +135,56 @@ def load_run(run_dir: Path, panel: str, lock_path: Path, full_lock_path: Path) -
         shard_timeouts = 0
         for row in trials:
             task, task_digest, reward = row.get("task"), row.get("task_digest"), row.get("reward")
+            raw_verifier_reward = row.get("raw_verifier_reward")
             require(isinstance(task, str) and task not in rewards and task not in observed, f"duplicate task: {shard}")
             timed_out = row.get("timed_out")
+            timeout_reward_overridden = row.get("timeout_reward_overridden")
             require(
                 isinstance(task_digest, str) and task_digest
                 and isinstance(reward, (int, float)) and not isinstance(reward, bool)
-                and math.isfinite(reward) and isinstance(timed_out, bool)
-                and (not timed_out or float(reward) == 0.0),
+                and math.isfinite(reward)
+                and isinstance(raw_verifier_reward, (int, float))
+                and not isinstance(raw_verifier_reward, bool)
+                and math.isfinite(raw_verifier_reward)
+                and 0 <= float(raw_verifier_reward) <= 1
+                and isinstance(timed_out, bool)
+                and isinstance(timeout_reward_overridden, bool)
+                and float(reward) == (0.0 if timed_out else float(raw_verifier_reward))
+                and timeout_reward_overridden == (timed_out and float(raw_verifier_reward) != 0.0),
                 f"bad trial: {shard}",
             )
             observed[task] = task_digest
             rewards[task] = float(reward)
+            raw_verifier_rewards[task] = float(raw_verifier_reward)
             digests[task] = task_digest
             timeouts[task] = timed_out
             shard_solved += float(reward)
             shard_timeouts += int(timed_out)
         require(observed == selected, f"selected task/digest set differs: {shard}")
         require(math.isclose(shard_solved, float(receipt.get("solved")), abs_tol=1e-12), f"solved differs: {shard}")
+        require(
+            math.isclose(
+                sum(float(row["raw_verifier_reward"]) for row in trials),
+                float(receipt.get("raw_verifier_solved")), abs_tol=1e-12,
+            ),
+            f"raw verifier solved differs: {shard}",
+        )
+        require(
+            receipt.get("timeout_reward_overrides")
+            == sum(bool(row["timeout_reward_overridden"]) for row in trials),
+            f"timeout reward override count differs: {shard}",
+        )
         require(receipt.get("timed_out") == shard_timeouts, f"timeout count differs: {shard}")
     require(digests == expected_map, f"full task union differs: {run_dir}")
     assert reference is not None and artifact_bytes is not None
     return {
         "arm": reference["arm"], "artifact_bytes": artifact_bytes,
         "elapsed_seconds": elapsed_total, "rewards": rewards,
+        "raw_verifier_rewards": raw_verifier_rewards,
         "timeouts": timeouts, "timeout_count": sum(timeouts.values()),
+        "timeout_reward_override_count": sum(
+            timeouts[task] and raw_verifier_rewards[task] != 0.0 for task in rewards
+        ),
         "task_digests": digests, "receipt": reference,
     }
 
@@ -184,21 +211,30 @@ def compare(
             "task": task, "baseline_reward": base, "candidate_reward": cand,
             "delta": delta, "baseline_timed_out": baseline["timeouts"][task],
             "candidate_timed_out": candidate["timeouts"][task],
+            "baseline_raw_verifier_reward": baseline["raw_verifier_rewards"][task],
+            "candidate_raw_verifier_reward": candidate["raw_verifier_rewards"][task],
         })
     n = len(tasks)
     return {
         "format": "bw24-full-practical-comparison-v1", "panel": panel, "n_tasks": n,
         "baseline": {"arm": baseline["arm"], "solved": sum(baseline["rewards"].values()),
+                     "raw_verifier_solved": sum(baseline["raw_verifier_rewards"].values()),
                      "rate": sum(baseline["rewards"].values()) / n,
                      "artifact_bytes": baseline["artifact_bytes"], "elapsed_seconds": baseline["elapsed_seconds"],
-                     "timed_out": baseline["timeout_count"]},
+                     "timed_out": baseline["timeout_count"],
+                     "timeout_reward_overrides": baseline["timeout_reward_override_count"]},
         "candidate": {"arm": candidate["arm"], "solved": sum(candidate["rewards"].values()),
+                      "raw_verifier_solved": sum(candidate["raw_verifier_rewards"].values()),
                       "rate": sum(candidate["rewards"].values()) / n,
                       "artifact_bytes": candidate["artifact_bytes"], "elapsed_seconds": candidate["elapsed_seconds"],
-                      "timed_out": candidate["timeout_count"]},
+                      "timed_out": candidate["timeout_count"],
+                      "timeout_reward_overrides": candidate["timeout_reward_override_count"]},
         "candidate_solved_delta": sum(candidate["rewards"].values()) - sum(baseline["rewards"].values()),
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties, "tasks": tasks,
-        "note": "Complete digest-pinned Harbor suite with one attempt per task.",
+        "note": (
+            "Complete digest-pinned Harbor suite with one attempt per task. "
+            "AgentTimeoutError tasks score zero; late verifier rewards remain recorded as raw provenance."
+        ),
     }
 
 
