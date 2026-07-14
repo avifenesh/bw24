@@ -42,6 +42,21 @@ def parse_plan_spec(value: str) -> tuple[str, Path]:
     return name, Path(raw)
 
 
+def parse_logical_bytes_spec(value: str) -> tuple[str, int]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("logical bytes must be NAME=BYTES")
+    name, raw = value.split("=", 1)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise argparse.ArgumentTypeError(f"invalid plan name {name!r}")
+    try:
+        logical_bytes = int(raw)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("logical bytes must be an integer") from error
+    if logical_bytes <= 0:
+        raise argparse.ArgumentTypeError("logical bytes must be positive")
+    return name, logical_bytes
+
+
 def expand_plan(
     plan: dict[str, Any], layers: list[int], expert_count: int, qtypes: set[str]
 ) -> tuple[set[tuple[int, int]], dict[tuple[int, int, str], str]]:
@@ -105,7 +120,8 @@ def expand_plan(
 
 
 def score_plan(
-    sensitivity: dict[str, Any], plan_path: Path
+    sensitivity: dict[str, Any], plan_path: Path,
+    logical_bytes_override: int | None = None,
 ) -> dict[str, Any]:
     plan = load(plan_path)
     model = sensitivity["model"]
@@ -163,10 +179,21 @@ def score_plan(
                           "state": qtype, "damage": damage})
     cells.sort(key=lambda item: (-item["damage"], item["layer"], item["expert"],
                                 item.get("projection", "")))
+    declared_logical_bytes = plan.get("policy", {}).get("result_logical_bytes")
+    if declared_logical_bytes is None:
+        if logical_bytes_override is None:
+            raise ValueError("plan lacks result_logical_bytes and no override was supplied")
+        logical_bytes = logical_bytes_override
+    else:
+        logical_bytes = int(declared_logical_bytes)
+        if logical_bytes_override is not None and logical_bytes_override != logical_bytes:
+            raise ValueError("logical-bytes override differs from the plan declaration")
+    if logical_bytes <= 0:
+        raise ValueError("invalid logical model bytes")
     return {
         "path": str(plan_path.resolve()),
         "sha256": sha256(plan_path),
-        "logical_bytes": int(plan["policy"]["result_logical_bytes"]),
+        "logical_bytes": logical_bytes,
         "retained_experts": len(expected) - len(pruned),
         "pruned_experts": len(pruned),
         "retained_projection_cells": len(assigned),
@@ -179,7 +206,11 @@ def score_plan(
     }
 
 
-def build_output(sensitivity_path: Path, specs: list[tuple[str, Path]]) -> dict[str, Any]:
+def build_output(
+    sensitivity_path: Path,
+    specs: list[tuple[str, Path]],
+    logical_bytes_overrides: dict[str, int] | None = None,
+) -> dict[str, Any]:
     sensitivity = load(sensitivity_path)
     if sensitivity.get("format") != SENSITIVITY_FORMAT:
         raise ValueError("unsupported sensitivity format")
@@ -187,7 +218,14 @@ def build_output(sensitivity_path: Path, specs: list[tuple[str, Path]]) -> dict[
         raise ValueError("sensitivity does not attest private-only selection")
     if len(specs) < 2 or len({name for name, _ in specs}) != len(specs):
         raise ValueError("at least two uniquely named plans are required")
-    plans = {name: score_plan(sensitivity, path) for name, path in specs}
+    logical_bytes_overrides = logical_bytes_overrides or {}
+    plan_names = {name for name, _ in specs}
+    if not set(logical_bytes_overrides) <= plan_names:
+        raise ValueError("logical-bytes override names are absent from the plan set")
+    plans = {
+        name: score_plan(sensitivity, path, logical_bytes_overrides.get(name))
+        for name, path in specs
+    }
     pairwise = {}
     names = [name for name, _ in specs]
     for left_index, left in enumerate(names):
@@ -215,7 +253,7 @@ def build_output(sensitivity_path: Path, specs: list[tuple[str, Path]]) -> dict[
 
 def write_receipt(
     path: Path, output: Path, sensitivity: Path, specs: list[tuple[str, Path]],
-    analysis_commit: str,
+    analysis_commit: str, logical_bytes_overrides: dict[str, int] | None = None,
 ) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", analysis_commit):
         raise ValueError("analysis commit must be a full Git SHA")
@@ -227,6 +265,7 @@ def write_receipt(
         "sensitivity": {"path": str(sensitivity.resolve()), "sha256": sha256(sensitivity)},
         "plans": [{"name": name, "path": str(plan.resolve()), "sha256": sha256(plan)}
                   for name, plan in specs],
+        "logical_bytes_overrides": dict(sorted((logical_bytes_overrides or {}).items())),
         "script": {"path": str(script), "sha256": sha256(script)},
         "output": {"path": str(output.resolve()), "sha256": sha256(output)},
     }
@@ -309,6 +348,36 @@ def self_test() -> None:
         )
         assert result["plans"]["full_bank_empty_map"]["pruned_experts"] == 0
         assert result["lowest_private_damage_plan"] == "full_bank_empty_map"
+        legacy_full_bank = {
+            **full_bank_policy,
+            "policy": {
+                "fixed_prune_count": 0,
+                "prune_unused": False,
+            },
+        }
+        legacy_path = root / "legacy-full-bank.json"
+        legacy_path.write_text(json.dumps(legacy_full_bank))
+        legacy_result = build_output(
+            sensitivity_path,
+            [("retained", paths[1][1]), ("legacy", legacy_path)],
+            {"legacy": 101},
+        )
+        assert legacy_result["plans"]["legacy"]["logical_bytes"] == 101
+        assert math.isclose(
+            legacy_result["plans"]["legacy"]["total_additive_damage"], 6.0
+        )
+        try:
+            score_plan(sensitivity, legacy_path)
+        except ValueError as error:
+            assert "no override" in str(error)
+        else:
+            raise AssertionError("accepted legacy plan without a logical-bytes override")
+        try:
+            score_plan(sensitivity, paths[1][1], 101)
+        except ValueError as error:
+            assert "differs" in str(error)
+        else:
+            raise AssertionError("accepted a conflicting logical-bytes override")
         invalid_path = root / "invalid-omitted-prune-map.json"
         invalid_path.write_text(json.dumps({
             **base,
@@ -337,6 +406,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sensitivity", type=Path, required=True)
     parser.add_argument("--plan", action="append", type=parse_plan_spec, required=True)
+    parser.add_argument(
+        "--logical-bytes", action="append", type=parse_logical_bytes_spec, default=[]
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--analysis-commit", required=True)
@@ -344,10 +416,16 @@ def main() -> None:
     for path in (args.output, args.receipt):
         if path.exists():
             raise SystemExit(f"refusing existing output {path}")
-    result = build_output(args.sensitivity, args.plan)
+    logical_bytes_overrides = dict(args.logical_bytes)
+    if len(logical_bytes_overrides) != len(args.logical_bytes):
+        raise SystemExit("logical-bytes override names must be unique")
+    result = build_output(args.sensitivity, args.plan, logical_bytes_overrides)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    write_receipt(args.receipt, args.output, args.sensitivity, args.plan, args.analysis_commit)
+    write_receipt(
+        args.receipt, args.output, args.sensitivity, args.plan,
+        args.analysis_commit, logical_bytes_overrides,
+    )
     print(f"wrote {args.output} sha256={sha256(args.output)} best={result['lowest_private_damage_plan']}")
 
 
