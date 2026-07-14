@@ -133,6 +133,7 @@ else
   [[ -f "$summary" && -f "$OUT_ROOT/run-configs/$RUN_ID.json" ]] \
     || die "resume requires the immutable run config and strict summary"
   verify_summary=$(mktemp "$LOG_ROOT/resume-summary.XXXXXX.json")
+  rm -f "$verify_summary"
   trap 'rm -f "${verify_summary:-}"' EXIT
   "$PY" "$EVAL_ROOT/research/per-expert-quant/summarize_hourish_results.py" \
     --out-root "$OUT_ROOT" --run-id "$RUN_ID" --arms "$ARM" --baseline "$ARM" \
