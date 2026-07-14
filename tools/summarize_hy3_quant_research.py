@@ -418,6 +418,245 @@ def directional_frontier_summary(frontier: dict[str, Any]) -> dict[str, Any]:
     return {"arms": rows, "point_estimate_pareto": pareto}
 
 
+def practical_comparison_paths(practical: dict[str, Any]) -> list[Path]:
+    """Return the immutable comparison evidence referenced by the practical verdict."""
+    decisions = practical.get("decisions")
+    if not isinstance(decisions, dict) or not decisions:
+        raise ValueError("practical promotion has no candidate decisions")
+    paths: list[Path] = []
+    for candidate, decision in decisions.items():
+        panels = decision.get("panels") if isinstance(decision, dict) else None
+        if not isinstance(panels, dict) or set(panels) != {"swe", "terminal"}:
+            raise ValueError(f"practical decision for {candidate} lacks both panels")
+        for panel in ("swe", "terminal"):
+            evidence = panels[panel].get("comparison")
+            if not isinstance(evidence, dict):
+                raise ValueError(f"practical {candidate}/{panel} lacks comparison evidence")
+            path = Path(str(evidence.get("path", "")))
+            expected_sha = str(evidence.get("sha256", ""))
+            if not path.is_file() or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+                raise ValueError(f"practical {candidate}/{panel} comparison is absent")
+            if sha256(path) != expected_sha:
+                raise ValueError(f"practical {candidate}/{panel} comparison hash differs")
+            paths.append(path)
+    unique = list(dict.fromkeys(path.resolve() for path in paths))
+    if len(unique) != len(paths):
+        raise ValueError("practical promotion repeats comparison evidence")
+    return unique
+
+
+def practical_screen_summary(practical: dict[str, Any]) -> dict[str, Any]:
+    """Validate and expose the normalized SWE/Terminal promotion evidence."""
+    if practical.get("format") != "bw24-practical-promotion-v1":
+        raise ValueError("wrong practical-promotion format")
+    executed = practical.get("executed_practical_arms")
+    trusted = practical.get("trusted_full_arms")
+    promoted = practical.get("promoted_100gb_arms")
+    if (
+        not isinstance(executed, list) or len(executed) < 3
+        or not isinstance(trusted, list) or len(trusted) < 2
+        or not isinstance(promoted, list)
+        or executed[0] != "plain_quant"
+        or trusted[:2] != executed[:2]
+        or any(arm not in trusted for arm in promoted)
+    ):
+        raise ValueError("practical promotion arm sets are inconsistent")
+    strong = str(executed[1])
+    decisions = practical["decisions"]
+    rows: dict[str, Any] = {}
+    for candidate, decision in decisions.items():
+        if candidate not in executed[2:]:
+            raise ValueError(f"practical decision has unexecuted candidate {candidate}")
+        panels: dict[str, Any] = {}
+        panel_passes: list[bool] = []
+        for panel in ("swe", "terminal"):
+            verdict = decision["panels"][panel]
+            comparison_path = Path(verdict["comparison"]["path"])
+            report = load(comparison_path)
+            if (
+                report.get("format") != "bw24-practical-comparison-v1"
+                or report.get("panel") != panel
+                or int(report.get("n_tasks", 0)) != 12
+                or len(report.get("tasks", [])) != 12
+                or report.get("baseline", {}).get("arm") != strong
+                or report.get("candidate", {}).get("arm") != candidate
+            ):
+                raise ValueError(f"practical comparison contract differs for {candidate}/{panel}")
+            totals: dict[str, dict[str, Any]] = {}
+            for side in ("baseline", "candidate"):
+                reward_key = f"{side}_reward"
+                raw_key = f"{side}_raw_verifier_reward"
+                timeout_key = f"{side}_timed_out"
+                normalized = 0.0
+                raw = 0.0
+                timeout_count = 0
+                override_count = 0
+                for task in report["tasks"]:
+                    reward = float(task[reward_key])
+                    raw_reward = float(task[raw_key])
+                    timed_out = task[timeout_key]
+                    if (
+                        not isinstance(timed_out, bool)
+                        or not math.isfinite(reward) or not 0 <= reward <= 1
+                        or not math.isfinite(raw_reward) or not 0 <= raw_reward <= 1
+                        or reward != (0.0 if timed_out else raw_reward)
+                    ):
+                        raise ValueError(
+                            f"invalid normalized practical reward for {candidate}/{panel}/{side}"
+                        )
+                    normalized += reward
+                    raw += raw_reward
+                    timeout_count += int(timed_out)
+                    override_count += int(timed_out and raw_reward != 0.0)
+                aggregate = report[side]
+                if (
+                    not math.isclose(float(aggregate["mean_reward"]), normalized / 12)
+                    or not math.isclose(
+                        float(aggregate["raw_verifier_mean_reward"]), raw / 12
+                    )
+                    or int(aggregate["timeout_count"]) != timeout_count
+                    or int(aggregate["timeout_reward_override_count"]) != override_count
+                ):
+                    raise ValueError(
+                        f"practical aggregate differs for {candidate}/{panel}/{side}"
+                    )
+                totals[side] = {
+                    "arm": aggregate["arm"],
+                    "solved": normalized,
+                    "raw_verifier_solved": raw,
+                    "timeout_count": timeout_count,
+                    "timeout_reward_override_count": override_count,
+                    "logical_model_bytes": int(aggregate["logical_model_bytes"]),
+                }
+            deficit = totals["baseline"]["solved"] - totals["candidate"]["solved"]
+            passed = bool(verdict["passed"])
+            if (
+                not math.isclose(float(verdict["strong_compact_solved"]), totals["baseline"]["solved"])
+                or not math.isclose(float(verdict["candidate_solved"]), totals["candidate"]["solved"])
+                or not math.isclose(float(verdict["solved_deficit"]), deficit)
+                or passed != (deficit <= 1.0)
+            ):
+                raise ValueError(f"practical verdict differs for {candidate}/{panel}")
+            panel_passes.append(passed)
+            panels[panel] = {
+                "passed": passed,
+                "strong_compact": totals["baseline"],
+                "candidate": totals["candidate"],
+                "solved_deficit": deficit,
+                "paired_wins": int(report["paired_wins"]),
+                "paired_losses": int(report["paired_losses"]),
+                "paired_ties": int(report["paired_ties"]),
+                "exact_sign_p": float(report["exact_sign_p"]),
+                "comparison": source(comparison_path),
+            }
+        passed = all(panel_passes)
+        if bool(decision["passed"]) != passed or ((candidate in promoted) != passed):
+            raise ValueError(f"practical aggregate verdict differs for {candidate}")
+        rows[str(candidate)] = {"passed": passed, "panels": panels}
+    return {
+        "reference_arms": executed[:2],
+        "strong_compact_arm": strong,
+        "executed_arms": executed,
+        "promoted_100gb_arms": promoted,
+        "trusted_full_arms": trusted,
+        "candidates": rows,
+        "reward_policy": (
+            "AgentTimeoutError scores zero; late verifier rewards are retained only as raw provenance."
+        ),
+    }
+
+
+def trusted_full_summary(trusted: dict[str, Any]) -> dict[str, Any]:
+    arms = trusted.get("arms")
+    baseline = trusted.get("baseline")
+    paired = trusted.get("paired_vs_baseline")
+    if not isinstance(arms, dict) or baseline not in arms or not isinstance(paired, dict):
+        raise ValueError("trusted capability report lacks arm evidence")
+    rows = []
+    for arm, values in arms.items():
+        size = int(values["logical_model_bytes"])
+        macro = float(values["macro"])
+        tasks = values.get("tasks")
+        if size <= 0 or not math.isfinite(macro) or not 0 <= macro <= 1:
+            raise ValueError(f"invalid trusted capability aggregate for {arm}")
+        if not isinstance(tasks, dict) or not tasks:
+            raise ValueError(f"trusted capability tasks are absent for {arm}")
+        if sum(int(task["n"]) for task in tasks.values()) != 4746:
+            raise ValueError(f"trusted capability task count differs for {arm}")
+        rows.append({
+            "arm": arm,
+            "logical_model_bytes": size,
+            "macro": macro,
+            "tasks": tasks,
+            "paired_vs_baseline": paired.get(arm),
+        })
+    selected = str(trusted.get("selection", {}).get("selected_finalist", ""))
+    if selected not in arms or trusted.get("selection", {}).get("full_eval_arms") != [
+        baseline, selected
+    ]:
+        raise ValueError("trusted capability selection is inconsistent")
+    rows.sort(key=lambda row: (-row["macro"], row["logical_model_bytes"], row["arm"]))
+    return {"baseline": baseline, "arms": rows, "selected_finalist": selected}
+
+
+def full_agentic_summary(full: dict[str, Any]) -> dict[str, Any]:
+    baseline = str(full.get("baseline", ""))
+    candidate = str(full.get("candidate", ""))
+    panels = []
+    total_delta = 0.0
+    for panel, expected_n in (("swe", 500), ("terminal", 89)):
+        report = full.get(panel)
+        if (
+            not isinstance(report, dict)
+            or report.get("format") != "bw24-full-practical-comparison-v1"
+            or int(report.get("n_tasks", 0)) != expected_n
+            or report.get("baseline", {}).get("arm") != baseline
+            or report.get("candidate", {}).get("arm") != candidate
+            or len(report.get("tasks", [])) != expected_n
+        ):
+            raise ValueError(f"full agentic {panel} report is incomplete")
+        for side in ("baseline", "candidate"):
+            values = report[side]
+            solved = float(values["solved"])
+            raw = float(values["raw_verifier_solved"])
+            timed_out = int(values["timed_out"])
+            overrides = int(values["timeout_reward_overrides"])
+            if (
+                not math.isfinite(solved) or not 0 <= solved <= expected_n
+                or not math.isfinite(raw) or not 0 <= raw <= expected_n
+                or not 0 <= overrides <= timed_out <= expected_n
+            ):
+                raise ValueError(f"full agentic {panel}/{side} aggregate is invalid")
+        delta = float(report["candidate_solved_delta"])
+        if not math.isclose(delta, float(report["candidate"]["solved"]) - float(
+            report["baseline"]["solved"]
+        )):
+            raise ValueError(f"full agentic {panel} solved delta differs")
+        total_delta += delta
+        panels.append({
+            "panel": panel,
+            "n_tasks": expected_n,
+            "baseline": report["baseline"],
+            "candidate": report["candidate"],
+            "candidate_solved_delta": delta,
+            "paired_wins": int(report["paired_wins"]),
+            "paired_losses": int(report["paired_losses"]),
+            "paired_ties": int(report["paired_ties"]),
+        })
+    if not math.isclose(total_delta, float(full["candidate_total_solved_delta"])):
+        raise ValueError("full agentic combined solved delta differs")
+    return {
+        "baseline": baseline,
+        "candidate": candidate,
+        "total_tasks": 589,
+        "candidate_total_solved_delta": total_delta,
+        "panels": panels,
+        "reward_policy": (
+            "AgentTimeoutError scores zero; late verifier rewards are retained only as raw provenance."
+        ),
+    }
+
+
 def plan_summary(
     name: str,
     path: Path,
@@ -798,6 +1037,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     healing_ablation = healing_ablation_summary(healing_frontier)
     directional_frontier = directional_frontier_summary(frontier)
+    practical_screen = practical_screen_summary(practical)
+    trusted_summary = trusted_full_summary(trusted)
+    full_summary = full_agentic_summary(full)
     result = {
         "format": OUTPUT_FORMAT,
         "analysis_commit": args.analysis_commit,
@@ -856,14 +1098,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "promotion": directional,
         },
         "practical_promotion": practical,
+        "practical_screen": practical_screen,
         "effective_trusted_selection": trusted_selection,
         "trusted_full": {
             "documents_per_arm": trusted["documents_per_arm"],
             "arms": trusted["arms"],
             "paired_vs_baseline": trusted["paired_vs_baseline"],
             "selection": trusted["selection"],
+            "summary": trusted_summary,
         },
         "full_agentic": full,
+        "full_agentic_summary": full_summary,
     }
     return result
 
@@ -1097,6 +1342,91 @@ def markdown(result: dict[str, Any]) -> str:
             f"{row['question_weighted']:.2%} | {row['domain_macro']:.2%} | "
             f"{'yes' if row['point_estimate_pareto'] else 'no'} |"
         )
+    practical = result["practical_screen"]
+    lines += [
+        "",
+        "## Matched practical promotion gate",
+        "",
+        "| Candidate | Panel | Strong compact solved | Candidate solved | Deficit | "
+        "Timeouts strong/candidate | Late-reward overrides strong/candidate | W/L/T | Passed |",
+        "|---|---|---:|---:|---:|---:|---:|---:|:---:|",
+    ]
+    for candidate, decision in practical["candidates"].items():
+        for panel in ("swe", "terminal"):
+            row = decision["panels"][panel]
+            strong = row["strong_compact"]
+            candidate_values = row["candidate"]
+            lines.append(
+                f"| {candidate} | {panel} | {strong['solved']:.0f}/12 | "
+                f"{candidate_values['solved']:.0f}/12 | {row['solved_deficit']:+.0f} | "
+                f"{strong['timeout_count']}/{candidate_values['timeout_count']} | "
+                f"{strong['timeout_reward_override_count']}/"
+                f"{candidate_values['timeout_reward_override_count']} | "
+                f"{row['paired_wins']}/{row['paired_losses']}/{row['paired_ties']} | "
+                f"{'yes' if row['passed'] else 'no'} |"
+            )
+    lines += [
+        "",
+        f"Trusted-full arms selected by the practical gate: "
+        f"{', '.join(f'`{arm}`' for arm in practical['trusted_full_arms'])}.",
+        practical["reward_policy"],
+    ]
+    trusted = result["trusted_full"]["summary"]
+    lines += [
+        "",
+        "## Trusted full capability (4,746 documents per arm)",
+        "",
+        "| Arm | Logical size (GB) | Macro | Delta vs plain | Paired W/L | "
+        "95% paired-bootstrap CI | Exact sign p |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in trusted["arms"]:
+        pair = row["paired_vs_baseline"]
+        if pair is None:
+            delta = wins = interval = sign_p = "—"
+        else:
+            delta = f"{float(pair['macro_delta']):+.2%}"
+            wins = f"{int(pair['paired_wins'])}/{int(pair['paired_losses'])}"
+            interval = (
+                f"[{float(pair['bootstrap_ci95'][0]):+.2%}, "
+                f"{float(pair['bootstrap_ci95'][1]):+.2%}]"
+            )
+            sign_p = f"{float(pair['exact_sign_p']):.4f}"
+        lines.append(
+            f"| {row['arm']} | {row['logical_model_bytes']/1e9:.3f} | "
+            f"{row['macro']:.2%} | {delta} | {wins} | {interval} | {sign_p} |"
+        )
+    lines += [
+        "",
+        f"Trusted capability selected **`{trusted['selected_finalist']}`** for the complete "
+        "SWE/Terminal comparison.",
+    ]
+    full = result["full_agentic_summary"]
+    lines += [
+        "",
+        "## Complete SWE-Bench Verified and Terminal-Bench 2",
+        "",
+        "| Panel | Tasks | Plain solved | Candidate solved | Delta | "
+        "Timeouts plain/candidate | Late-reward overrides plain/candidate | W/L/T |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in full["panels"]:
+        baseline_values = row["baseline"]
+        candidate_values = row["candidate"]
+        lines.append(
+            f"| {row['panel']} | {row['n_tasks']} | {baseline_values['solved']:.0f} | "
+            f"{candidate_values['solved']:.0f} | {row['candidate_solved_delta']:+.0f} | "
+            f"{baseline_values['timed_out']}/{candidate_values['timed_out']} | "
+            f"{baseline_values['timeout_reward_overrides']}/"
+            f"{candidate_values['timeout_reward_overrides']} | "
+            f"{row['paired_wins']}/{row['paired_losses']}/{row['paired_ties']} |"
+        )
+    lines += [
+        "",
+        f"Across all {full['total_tasks']} agentic tasks, `{full['candidate']}` changed solved "
+        f"count by {full['candidate_total_solved_delta']:+.0f} versus `{full['baseline']}`.",
+        full["reward_policy"],
+    ]
     lines += [
         "",
         "The allocation/healing map used only frozen private calibration. Public tasks were used "
@@ -1282,25 +1612,139 @@ def self_test() -> None:
         directional = write("directional.json", {"format":"bw24-smart100-directional-promotion-v1",
             "practical_arms":["plain_quant","traffic_nvfp4_53_q2_139",
                               PLAN_ARMS["pareto"],PLAN_ARMS["layer_balanced"]]})
-        practical = write("practical.json", {"format":"bw24-practical-promotion-v1",
-            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]]})
+        practical_comparisons = {}
+        for panel in ("swe", "terminal"):
+            tasks = []
+            for index in range(12):
+                baseline_reward = float(index < 8)
+                candidate_reward = float(index < 7)
+                tasks.append({
+                    "task": f"{panel}-{index}",
+                    "baseline_reward": baseline_reward,
+                    "candidate_reward": candidate_reward,
+                    "baseline_raw_verifier_reward": baseline_reward,
+                    "candidate_raw_verifier_reward": candidate_reward,
+                    "baseline_timed_out": False,
+                    "candidate_timed_out": False,
+                })
+            practical_comparisons[panel] = write(f"practical-{panel}.json", {
+                "format": "bw24-practical-comparison-v1", "panel": panel,
+                "n_tasks": 12,
+                "baseline": {
+                    "arm": TRAFFIC_ARM, "logical_model_bytes": 137,
+                    "mean_reward": 8/12, "raw_verifier_mean_reward": 8/12,
+                    "timeout_count": 0, "timeout_reward_override_count": 0,
+                },
+                "candidate": {
+                    "arm": PLAN_ARMS["layer_balanced"], "logical_model_bytes": 97,
+                    "mean_reward": 7/12, "raw_verifier_mean_reward": 7/12,
+                    "timeout_count": 0, "timeout_reward_override_count": 0,
+                },
+                "candidate_mean_delta": -1/12, "candidate_size_reduction": 40/137,
+                "paired_wins": 0, "paired_losses": 1, "paired_ties": 11,
+                "exact_sign_p": 1.0, "tasks": tasks,
+            })
+        practical = write("practical.json", {
+            "format":"bw24-practical-promotion-v1",
+            "directional_practical_arms": [
+                "plain_quant", TRAFFIC_ARM, PLAN_ARMS["layer_balanced"]
+            ],
+            "executed_practical_arms": [
+                "plain_quant", TRAFFIC_ARM, PLAN_ARMS["layer_balanced"]
+            ],
+            "preregistered_100gb_arms": [],
+            "confirmatory_100gb_arms": [PLAN_ARMS["layer_balanced"]],
+            "decisions": {PLAN_ARMS["layer_balanced"]: {
+                "passed": True,
+                "panels": {
+                    panel: {
+                        "passed": True,
+                        "strong_compact_solved": 8.0,
+                        "candidate_solved": 7.0,
+                        "solved_deficit": 1.0,
+                        "comparison": {
+                            "path": str(path.resolve()), "sha256": sha256(path)
+                        },
+                    }
+                    for panel, path in practical_comparisons.items()
+                },
+            }},
+            "promoted_100gb_arms": [PLAN_ARMS["layer_balanced"]],
+            "trusted_full_arms": [
+                "plain_quant", TRAFFIC_ARM, PLAN_ARMS["layer_balanced"]
+            ],
+        })
         trusted_selection = write("trusted-selection.json", {
             "format":"bw24-effective-trusted-full-selection-v1",
-            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"],
+            "trusted_full_arms":["plain_quant", TRAFFIC_ARM,
                                  PLAN_ARMS["layer_balanced"]],
-            "base_trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]],
+            "base_trusted_full_arms":["plain_quant", TRAFFIC_ARM,
+                                      PLAN_ARMS["layer_balanced"]],
             "practical_promotion":{"path":str(practical.resolve()),
                                    "sha256":sha256(practical)},
             "decision":{"candidate_arm":PLAN_ARMS["layer_balanced"],
-                        "qualified_by_user_policy":True,
-                        "forced_into_trusted_full":True}})
+                        "qualified_by_user_policy":False,
+                        "forced_into_trusted_full":False}})
+        trusted_arms = {
+            "plain_quant": {
+                "logical_model_bytes": 200, "macro": .8,
+                "tasks": {"synthetic_full_suite": {
+                    "n": 4746, "successes": 3797, "rate": 3797/4746,
+                }},
+            },
+            TRAFFIC_ARM: {
+                "logical_model_bytes": 137, "macro": .75,
+                "tasks": {"synthetic_full_suite": {
+                    "n": 4746, "successes": 3560, "rate": 3560/4746,
+                }},
+            },
+            PLAN_ARMS["layer_balanced"]: {
+                "logical_model_bytes": 97, "macro": .76,
+                "tasks": {"synthetic_full_suite": {
+                    "n": 4746, "successes": 3607, "rate": 3607/4746,
+                }},
+            },
+        }
+        trusted_pairs = {
+            arm: {
+                "macro_delta": values["macro"] - trusted_arms["plain_quant"]["macro"],
+                "bootstrap_ci95": [-.06, .02], "paired_wins": 100,
+                "paired_losses": 120, "exact_sign_p": .2,
+            }
+            for arm, values in trusted_arms.items() if arm != "plain_quant"
+        }
         trusted = write("trusted.json", {"format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
-            "baseline":"plain_quant","arms":{},
-            "paired_vs_baseline":{},
-            "selection":{"selected_finalist":PLAN_ARMS["layer_balanced"]}})
+            "baseline":"plain_quant","arms":trusted_arms,
+            "paired_vs_baseline":trusted_pairs,
+            "selection":{"selected_finalist":PLAN_ARMS["layer_balanced"],
+                         "full_eval_arms":["plain_quant",PLAN_ARMS["layer_balanced"]]}})
+
+        def full_panel(
+            panel: str, n: int, delta: int,
+            candidate: str = PLAN_ARMS["layer_balanced"],
+        ) -> dict[str, Any]:
+            baseline_solved = n // 4
+            candidate_solved = baseline_solved + delta
+            return {
+                "format": "bw24-full-practical-comparison-v1", "panel": panel,
+                "n_tasks": n,
+                "baseline": {"arm": "plain_quant", "solved": baseline_solved,
+                             "raw_verifier_solved": baseline_solved,
+                             "timed_out": 0, "timeout_reward_overrides": 0},
+                "candidate": {"arm": candidate,
+                              "solved": candidate_solved,
+                              "raw_verifier_solved": candidate_solved,
+                              "timed_out": 0, "timeout_reward_overrides": 0},
+                "candidate_solved_delta": delta,
+                "paired_wins": max(delta, 0), "paired_losses": max(-delta, 0),
+                "paired_ties": n - abs(delta), "tasks": [{} for _ in range(n)],
+            }
+
         full = write("full.json", {"format":"bw24-full-agentic-comparison-v1",
             "baseline":"plain_quant","candidate":PLAN_ARMS["layer_balanced"],"total_tasks":589,
+            "swe": full_panel("swe", 500, 1),
+            "terminal": full_panel("terminal", 89, 0),
             "candidate_total_solved_delta":1})
         args = argparse.Namespace(effects=effects, damage=damage, frontier=frontier,
             healing_frontier=healing_frontier,
@@ -1311,7 +1755,7 @@ def self_test() -> None:
             plan=[(name,path) for name,(_,path,_) in plans.items()], analysis_commit="a"*40)
         result = build(args)
         assert result["recommended_method"]["arm"] == PLAN_ARMS["layer_balanced"]
-        assert result["effective_trusted_selection"]["decision"][
+        assert not result["effective_trusted_selection"]["decision"][
             "forced_into_trusted_full"
         ]
         assert abs(result["recommended_method"]["size_reduction_vs_plain_quant"] - .515) < 1e-12
@@ -1326,21 +1770,27 @@ def self_test() -> None:
         traffic_trusted = write("traffic-trusted.json", {
             "format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
-            "baseline":"plain_quant","arms":{},"paired_vs_baseline":{},
-            "selection":{"selected_finalist":TRAFFIC_ARM}})
+            "baseline":"plain_quant","arms":trusted_arms,
+            "paired_vs_baseline":trusted_pairs,
+            "selection":{"selected_finalist":TRAFFIC_ARM,
+                         "full_eval_arms":["plain_quant", TRAFFIC_ARM]}})
         traffic_full = write("traffic-full.json", {
             "format":"bw24-full-agentic-comparison-v1",
             "baseline":"plain_quant","candidate":TRAFFIC_ARM,"total_tasks":589,
+            "swe": full_panel("swe", 500, 0, TRAFFIC_ARM),
+            "terminal": full_panel("terminal", 89, 0, TRAFFIC_ARM),
             "candidate_total_solved_delta":0})
         traffic_selection = write("traffic-selection.json", {
             "format":"bw24-effective-trusted-full-selection-v1",
-            "trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"],TRAFFIC_ARM],
-            "base_trusted_full_arms":["plain_quant",PLAN_ARMS["pareto"]],
+            "trusted_full_arms":["plain_quant", TRAFFIC_ARM,
+                                 PLAN_ARMS["layer_balanced"]],
+            "base_trusted_full_arms":["plain_quant", TRAFFIC_ARM,
+                                      PLAN_ARMS["layer_balanced"]],
             "practical_promotion":{"path":str(practical.resolve()),
                                    "sha256":sha256(practical)},
             "decision":{"candidate_arm":TRAFFIC_ARM,
-                        "qualified_by_user_policy":True,
-                        "forced_into_trusted_full":True}})
+                        "qualified_by_user_policy":False,
+                        "forced_into_trusted_full":False}})
         traffic_args = argparse.Namespace(
             **{
                 **vars(args),
@@ -1373,14 +1823,19 @@ def self_test() -> None:
         assert result["directional"]["arms"][0]["arm"] == (
             PLAN_ARMS["layer_balanced"]
         )
-        assert "Recommended arm" in markdown(result)
-        assert "Private format quality per byte" in markdown(result)
-        assert "Private layer, expert, and function effect map" in markdown(result)
+        rendered_markdown = markdown(result)
+        assert "Recommended arm" in rendered_markdown
+        assert "Private format quality per byte" in rendered_markdown
+        assert "Private layer, expert, and function effect map" in rendered_markdown
         assert result["effect_map_summary"]["most_q2_sensitive_layers"][0][
             "layer"
         ] == 1
-        assert "Matched healing ablation" in markdown(result)
-        assert "Frozen directional comparison" in markdown(result)
+        assert "Matched healing ablation" in rendered_markdown
+        assert "Frozen directional comparison" in rendered_markdown
+        assert "Matched practical promotion gate" in rendered_markdown
+        assert "Trusted full capability (4,746 documents per arm)" in rendered_markdown
+        assert "Complete SWE-Bench Verified and Terminal-Bench 2" in rendered_markdown
+        assert len(practical_comparison_paths(load(practical))) == 2
         output = write("conclusion.json", result)
         rendered = root / "conclusion.md"
         rendered.write_text(markdown(result))
@@ -1437,9 +1892,11 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     args.markdown.write_text(markdown(result))
+    practical_comparisons = practical_comparison_paths(load(args.practical_promotion))
     inputs = [args.effects,args.damage,args.frontier,args.healing_frontier,
               args.directional_promotion,
               args.practical_promotion,
+              *practical_comparisons,
               *([args.trusted_selection] if args.trusted_selection else []),
               args.trusted_report,args.full_agentic,args.traffic_plan,
               *(path for _,path in args.plan)]
