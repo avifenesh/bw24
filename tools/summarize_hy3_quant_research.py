@@ -939,8 +939,12 @@ def effect_alignment_summary(
     for item in plan["assignments"]:
         layer = int(item["layer"])
         qtype = str(item["qtype"])
+        # Projection-aware plans name the affected functions explicitly.  The
+        # traffic reference assigns one format to the complete expert, so its
+        # assignment applies to all three projections.
+        projections = item.get("projections", ("gate", "up", "down"))
         for expert in item["experts"]:
-            for projection in item["projections"]:
+            for projection in projections:
                 key = (layer, int(expert), str(projection))
                 if key in assignments:
                     raise ValueError(f"duplicate plan assignment for {key}")
@@ -966,6 +970,17 @@ def effect_alignment_summary(
         return dict(sorted(counts.items()))
 
     layer_summary = plan["layer_summary"]
+    expert_count = int(plan.get("model", {}).get("expert_count", 0))
+
+    def retention(layer: int) -> tuple[int, int]:
+        row = layer_summary[str(layer)]
+        if "retained" in row:
+            return int(row["retained"]), int(row["pruned"])
+        pruned = int(row["pruned"])
+        if expert_count <= 0 or not 0 <= pruned <= expert_count:
+            raise ValueError(f"cannot derive retention for layer {layer}")
+        return expert_count - pruned, pruned
+
     sensitive_layers = {
         int(row["layer"]) for row in effect_summary["most_q2_sensitive_layers"]
     }
@@ -973,17 +988,17 @@ def effect_alignment_summary(
     if not sensitive_layers or not sensitive_layers < all_layers:
         raise ValueError("sensitive-layer set cannot be contrasted with remaining layers")
     sensitive_retained = [
-        int(layer_summary[str(layer)]["retained"]) for layer in sensitive_layers
+        retention(layer)[0] for layer in sensitive_layers
     ]
     other_retained = [
-        int(layer_summary[str(layer)]["retained"])
+        retention(layer)[0]
         for layer in all_layers - sensitive_layers
     ]
     sensitive_pruned = [
-        int(layer_summary[str(layer)]["pruned"]) for layer in sensitive_layers
+        retention(layer)[1] for layer in sensitive_layers
     ]
     other_pruned = [
-        int(layer_summary[str(layer)]["pruned"])
+        retention(layer)[1]
         for layer in all_layers - sensitive_layers
     ]
     return {
@@ -1099,7 +1114,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     format_efficiency = format_efficiency_summary(effects)
     effect_summary = effect_map_summary(effects)
-    for name in ("layer_balanced", "layer_balanced120", "layer_balanced137"):
+    traffic_method["effect_alignment"] = effect_alignment_summary(
+        load(args.traffic_plan), effect_summary
+    )
+    for name in plans:
         plans[name]["effect_alignment"] = effect_alignment_summary(
             load(plan_paths[name]), effect_summary
         )
@@ -1306,7 +1324,32 @@ def markdown(result: dict[str, Any]) -> str:
         f"The top {alignment['top_sensitive_layer_count']} Q2-sensitive layers retain "
         f"{alignment['top_sensitive_layers_mean_retained']:.1f} experts on average, versus "
         f"{alignment['other_layers_mean_retained']:.1f} across the remaining layers.",
+        "",
+        "### Cross-method alignment to measured sensitivity",
+        "",
+        "| Method | Top sensitive functions by assigned format | "
+        "Sensitive-layer retained | Other-layer retained |",
+        "|---|---|---:|---:|",
     ]
+    alignment_methods = {
+        "traffic137": traffic,
+        "layer100": result["seven_format_candidates"]["layer_balanced"],
+        "layer120": result["seven_format_candidates"]["layer_balanced120"],
+        "layer137": result["seven_format_candidates"]["layer_balanced137"],
+    }
+    for name, method in alignment_methods.items():
+        method_alignment = method["effect_alignment"]
+        assigned = ", ".join(
+            f"{qtype}={count}"
+            for qtype, count in method_alignment[
+                "most_q2_sensitive_function_qtype_counts"
+            ].items()
+        )
+        lines.append(
+            f"| {name} | {assigned} | "
+            f"{method_alignment['top_sensitive_layers_mean_retained']:.1f} | "
+            f"{method_alignment['other_layers_mean_retained']:.1f} |"
+        )
     if measured_plan is not None:
         lines += [
             "",
@@ -1840,6 +1883,14 @@ def self_test() -> None:
             "Q2_K": 139 * 79 * 3,
         }
         assert result["strong_compact_reference"]["pruned_experts"] == 0
+        assert result["strong_compact_reference"]["effect_alignment"][
+            "most_q2_sensitive_function_qtype_counts"
+        ] == {"NVFP4": 1}
+        assert all(
+            "effect_alignment" in candidate
+            for candidate in result["seven_format_candidates"].values()
+        )
+        assert "Cross-method alignment to measured sensitivity" in markdown(result)
         traffic_trusted = write("traffic-trusted.json", {
             "format":"bw24-promoted-candidate-v1",
             "n_per_task":{"synthetic_full_suite":4746},"documents_per_arm":4746,
