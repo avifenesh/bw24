@@ -9,14 +9,13 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-**Current standing: four model families run above llama.cpp on this box — plain decode and speculative decode both.** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
+**Current standing: six supported models run at-or-above llama.cpp on this box on every measured cell — speculative decode 1.1-1.9x ahead everywhere, plain decode ahead 1.02-1.10x.** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
 
 ## Model support
 
 | Tier | Models | State |
 |---|---|---|
-| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 26B-A4B MoE (QAT Q4_0 + MTP drafter) | Board-published, beats llama.cpp plain and spec (tables below) |
-| **Supported, under tuning** | Gemma-4 31B dense, E4B (QAT Q4_0 GGUF) | Runs end-to-end, gated, tuning campaign live (table below) |
+| **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 26B-A4B MoE, 31B dense, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated; at-or-above llama.cpp on every cell, spec decode 1.1-1.9x (tables below) |
 | **In progress** | Hy3-REAP50, MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router arcs still open |
 
 ## Quick start
@@ -85,7 +84,7 @@ kernel symbols (the parity law), so the verify gate reads a bit-exact 0.000e0 lo
 at every context depth. The same FP8-KV lever is available for Qwen behind `BW24_KV_FP8`
 (correctness-proven; ~45% smaller KV for long-context serving).
 
-## Performance — under tuning (Gemma-4 31B / E4B)
+## Performance — Gemma-4 31B / E4B (QAT Q4_0)
 
 | Cell | bw24 | llama.cpp | Ratio |
 |---|---|---|---|
@@ -109,7 +108,7 @@ pairs, N=2 each side.
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
-- Gemma open cells: 31B plain (1.01x short — parity is not the bar — and 1.00x at 1.7k) and 26B plain (1.05x), both re-paired 2026-07-14; these sit at the rig's demonstrated DRAM ceiling (both engines read identical GGUF bytes, best single kernel = 91% of wall, e2e already 87%). Done/above: 26B spec both depths; 31B spec short 1.49x AND 1.7k 1.13x (the frozen llama 98.2 bar failed a 25-request, 7-config same-window re-pair — best 83.9 at acceptance 0.68; all other bars reproduce to <1%, jsonl 2026-07-14); E4B plain 1.10x + spec 1.43x.
+- Gemma plain margins are thin where both engines sit at the DRAM wall: 31B plain 1.02x short / 1.03x at 1.7k, 26B plain 1.07x short / 1.06x at 1.7k (best-vs-best `-fa 1` interleaved pairs, 2026-07-15; identical GGUF bytes both engines, best single kernel = 91% of wall, e2e 87-89%). Every measured mechanism class — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row (`research/gemma4-bringup/rig5090-gemma4.jsonl`). Spec is decisively above everywhere: 26B 1.37x/1.13x, 31B 1.49x/1.16x, E4B 1.43x.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
 
 ## What's inside
