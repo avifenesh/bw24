@@ -14,3 +14,33 @@ if ! python3 tools/update-perf-board.py --check; then
     echo "and commit the regenerated README.md + docs/perf-card.svg before pushing."
     exit 1
 fi
+
+# ---- local-CI freshness gate (2026-07-15) ----
+# Kernel/engine-touching pushes need a perf-ci battery row NEWER than the newest such
+# commit (research/tune-data/perf-ci.jsonl, written by tools/local-ci.sh --perf).
+# The gate is advisory on machines without the models (contributors): warn, don't block.
+# BW24_SKIP_PERF_CI=1 skips explicitly (say why in the commit).
+if [ "${BW24_SKIP_PERF_CI:-0}" != "1" ]; then
+    range=$(git rev-parse @{u} 2>/dev/null || echo HEAD~20)
+    touched=$(git diff --name-only "$range"..HEAD 2>/dev/null | grep -cE \
+        '^crates/(bw24-engine/(cu/|src/(lib|hybrid_forward|hybrid|decode|forward|gemma_spec|spec|round_stream)\.rs))' || true)
+    if [ "$touched" -gt 0 ]; then
+        models="${BW24_MODELS_DIR:-/data/ai-ml/hf-models}"
+        ci=research/tune-data/perf-ci.jsonl
+        if [ ! -d "$models" ]; then
+            echo "pre-push: NOTE — engine files touched but no model dir; perf-ci not enforced here."
+        elif [ ! -f "$ci" ]; then
+            echo "pre-push: engine files touched but no perf-ci rows exist. Run: tools/local-ci.sh --perf"
+            exit 1
+        else
+            newest_commit=$(git log -1 --format=%ct "$range"..HEAD -- crates/ 2>/dev/null || echo 0)
+            newest_row=$(stat -c %Y "$ci")
+            if [ "$newest_row" -lt "$newest_commit" ]; then
+                echo "pre-push: engine files touched after the last perf-ci battery."
+                echo "Run: tools/local-ci.sh --perf   (or --perf-quick for the 31B subset)"
+                echo "Override knowingly with BW24_SKIP_PERF_CI=1."
+                exit 1
+            fi
+        fi
+    fi
+fi

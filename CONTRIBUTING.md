@@ -17,12 +17,35 @@ one of these is incomplete, not "mostly done" — do not open it yet.
 ### 1. Correctness gates (all three, all green)
 
 ```bash
+tools/local-ci.sh                      # one command: kernel-check + argmax gate + VERIFY-GATE + spec self-consistency
+```
+
+or individually:
+
+```bash
 ./target/release/kernel-check          # every quant kernel vs a CPU reference
 ./target/release/run-gen  ...          # prefill argmax MUST match decode argmax
 ./target/release/run-spec ...          # K=1..8 self-consistency: every K token-identical to plain decode
 ```
 
 Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
+
+### 1b. Perf regression battery (local CI)
+
+```bash
+tools/local-ci.sh --perf               # full cell battery (~15 min); --perf-quick = 31B subset
+```
+
+This is the drift detector correctness gates cannot be: it re-measures every published
+model cell (plain AND spec, short AND depth) and — critically — records **speculative
+acceptance and tokens/round** per spec cell, verdicting each against the rolling median of
+its last 5 rows (`research/tune-data/perf-ci.jsonl`). FAIL = >3% tok/s drop or >0.05
+acceptance drop. Acceptance drift is invisible to every exactness gate (decode and verify
+shift *together*, bit-consistently) and silently cost this repo half its 31B short-spec
+margin across ~40 green-gated commits in July 2026 — hence the battery. Cells whose model
+files are absent on your machine skip cleanly; set `BW24_MODELS_DIR` to your model root.
+The pre-push hook requires a battery row newer than your newest engine-touching commit
+(warn-only on machines without models; `BW24_SKIP_PERF_CI=1` overrides — say why in the PR).
 
 ### 2. Performance: prefill AND decode, both, never just one
 
