@@ -604,70 +604,60 @@ impl HybridModel {
         Ok(out)
     }
 
-    /// The CUDA-graph REPLAY loop over an already-primed cache: per step pick the t_kv
-    /// bucket, capture-on-first-sight (snapshot/rollback hygiene), replay, advance host
-    /// mirrors, read back the 4-byte token, hand it to `emit` (return Some(reason) to
-    /// stop). Callers must have synced gs.token_d (= the FIRST generated token, i.e. the
-    /// argmax of the last prime step — the loop emits it before the first replay),
-    /// gs.pos_d (= cache.pos) and every kvl.len_d (= kvl.len).
-    /// Requires event tracking OFF (the Engine default) — captures reject event waits.
+    /// The CUDA-graph EXEC-UPDATE replay loop over an already-primed cache (2026-07-15,
+    /// the E4B graph-exec pattern generalized): capture the dc step ONCE at
+    /// bucket_max = final t_kv, classify its fa nodes (`graph_update::fa_plan` — symbol
+    /// list is model-generic), then per token retune the fa split geometry to the LIVE
+    /// eager ladder (`fa_apply` keeps graph and eager in FP lockstep — bit-exact) and
+    /// replay. The previous per-bucket-key capture map recaptured on every ladder rung
+    /// (32 recaptures/256 tokens = 97 vs 128 tok/s eager; decode-bench 2026-07-15).
+    /// Callers must have synced gs.token_d (= the FIRST generated token), gs.pos_d
+    /// (= cache.pos) and every kvl.len_d (= kvl.len). Event tracking must be OFF.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn graph_decode_loop(&self, e: &Engine, gs: &mut GraphDecodeState,
                                     cache: &mut Cache, embd_gpu: &CudaSlice<u8>,
                                     qt: i32, row_bytes: usize, head_dim: usize, max_new: usize,
                                     mut emit: impl FnMut(u32) -> Option<StopReason>)
                                     -> Result<StopReason, Box<dyn std::error::Error>> {
+        let _ = head_dim;
         let n_vocab = self.output.out_features();
-        // the first generated token came from the prime logits (it is the next INPUT);
-        // emit it so the stream matches the eager loop exactly.
+        let bucket_max = cache.pos + max_new + 1;
+
+        // --- capture ONCE at bucket_max (snapshot/rollback the 3 warmup runs) ---
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        let graph = {
+            let GraphDecodeState { token_d, pos_d, .. } = gs;
+            let token_d: &mut CudaSlice<u32> = token_d;
+            let pos_d: &mut CudaSlice<i32> = pos_d;
+            let cache_ref = &mut *cache;
+            let embd_ref = embd_gpu;
+            e.capture_graph(|e| {
+                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
+                                        cache_ref, n_vocab, bucket_max)
+            })?
+        };
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(&mut gs.pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(&mut gs.token_d, tok_save)?;
+        let mut plan = crate::graph_update::fa_plan(&graph)?;
+
+        // first generated token = argmax of the last prime step (emit before replay 1).
         let first = e.dtoh_u32_one(&gs.token_d)?;
         if let Some(r) = emit(first) { return Ok(r); }
         for _ in 1..max_new {
-            // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
-            let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
-            if !gs.graphs.contains_key(&key) {
-                // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
-                let bucket_max = t_kv;
-                // --- snapshot device + host state so the 3 capture-warmup runs leave no residue ---
-                let snap = cache.snapshot(e)?;
-                let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
-                let len_save: Vec<Option<i32>> = cache.kv.iter()
-                    .map(|k| k.as_ref().map(|kvl| { e.dtoh_i32_one(&kvl.len_d).unwrap() })).collect();
-                let tok_save = e.dtoh_u32_one(&gs.token_d)?;
-
-                // capture (runs the body 3x on the REAL cache + counters).
-                let graph = {
-                    // split borrows: pull the fields out so the closure can take &mut of each.
-                    let GraphDecodeState { token_d, pos_d, .. } = gs;
-                    let token_d: &mut CudaSlice<u32> = token_d;
-                    let pos_d: &mut CudaSlice<i32> = pos_d;
-                    let cache_ref = &mut *cache;
-                    let embd_ref = embd_gpu;
-                    e.capture_graph(|e| {
-                        self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
-                                                cache_ref, n_vocab, bucket_max)
-                    })?
-                };
-
-                // --- restore the true pre-capture state (undo the 3 throwaway runs) ---
-                cache.rollback(e, &snap, 0)?;   // restores conv/ssm + sets len = snapshot len
-                e.set_i32_one(&mut gs.pos_d, pos_save)?;
-                for (il, ls) in len_save.iter().enumerate() {
-                    if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
-                        e.set_i32_one(&mut kvl.len_d, *v)?;
-                    }
-                }
-                e.set_u32_one(&mut gs.token_d, tok_save)?;
-
-                gs.graphs.insert(key, graph);
-                gs.bucket_max.insert(key, bucket_max);
-                gs.captures += 1;
-            }
-            // REPLAY: one dispatch runs the whole step; argmax wrote gs.token_d, counters advanced.
-            gs.graphs.get(&key).unwrap().launch()?;
-            // advance the HOST mirrors to match the in-graph DEVICE advance (host len/pos used only for
-            // bucket selection next step; device counters are the source of truth for the kernels).
+            // retune fa geometry to the live t_kv AFTER this replay's in-graph append.
+            crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
+                                          crate::fa_split_keys)?;
+            graph.launch()?;
             cache.pos += 1;
             for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
             // read back the [1] u32 next token (the only D2H in steady state).
