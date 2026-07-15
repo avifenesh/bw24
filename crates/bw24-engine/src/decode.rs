@@ -598,9 +598,31 @@ impl HybridModel {
         // gs.token_d now must hold the first generated INPUT token (= argmax of the last prime step).
         e.set_u32_one(&mut gs.token_d, next_in)?;
 
-        let n_vocab = self.output.out_features();
         let mut out = Vec::with_capacity(max_new);
-        for _ in 0..max_new {
+        self.graph_decode_loop(e, gs, &mut cache, &embd_gpu, qt, row_bytes, head_dim, max_new,
+                               |tok| { out.push(tok); None })?;
+        Ok(out)
+    }
+
+    /// The CUDA-graph REPLAY loop over an already-primed cache: per step pick the t_kv
+    /// bucket, capture-on-first-sight (snapshot/rollback hygiene), replay, advance host
+    /// mirrors, read back the 4-byte token, hand it to `emit` (return Some(reason) to
+    /// stop). Callers must have synced gs.token_d (= the FIRST generated token, i.e. the
+    /// argmax of the last prime step — the loop emits it before the first replay),
+    /// gs.pos_d (= cache.pos) and every kvl.len_d (= kvl.len).
+    /// Requires event tracking OFF (the Engine default) — captures reject event waits.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn graph_decode_loop(&self, e: &Engine, gs: &mut GraphDecodeState,
+                                    cache: &mut Cache, embd_gpu: &CudaSlice<u8>,
+                                    qt: i32, row_bytes: usize, head_dim: usize, max_new: usize,
+                                    mut emit: impl FnMut(u32) -> Option<StopReason>)
+                                    -> Result<StopReason, Box<dyn std::error::Error>> {
+        let n_vocab = self.output.out_features();
+        // the first generated token came from the prime logits (it is the next INPUT);
+        // emit it so the stream matches the eager loop exactly.
+        let first = e.dtoh_u32_one(&gs.token_d)?;
+        if let Some(r) = emit(first) { return Ok(r); }
+        for _ in 1..max_new {
             // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
             let t_kv = cache.pos + 1;
             let key = e.fa_bucket_key(t_kv, head_dim, self.cfg.n_head_kv as usize, crate::Engine::kv_fp8_on());
@@ -620,8 +642,8 @@ impl HybridModel {
                     let GraphDecodeState { token_d, pos_d, .. } = gs;
                     let token_d: &mut CudaSlice<u32> = token_d;
                     let pos_d: &mut CudaSlice<i32> = pos_d;
-                    let cache_ref = &mut cache;
-                    let embd_ref = &embd_gpu;
+                    let cache_ref = &mut *cache;
+                    let embd_ref = embd_gpu;
                     e.capture_graph(|e| {
                         self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
                                                 cache_ref, n_vocab, bucket_max)
@@ -650,9 +672,9 @@ impl HybridModel {
             for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
             // read back the [1] u32 next token (the only D2H in steady state).
             let tok = e.dtoh_u32_one(&gs.token_d)?;
-            out.push(tok);
+            if let Some(r) = emit(tok) { return Ok(r); }
         }
-        Ok(out)
+        Ok(StopReason::MaxNew)
     }
 
     /// Device-counter full-attention decode (CUDA-GRAPH-PLAN Phase 2): clone of `full_attn_decode`
@@ -889,6 +911,29 @@ impl HybridModel {
             }
             return Ok(out);
         }
+        // QWEN DC-EAGER route (2026-07-15, BW24_QWEN_DC=0 seam — mirror of generate_with's
+        // serving loop; see the note there. The graph route probed −11% first.)
+        static QWEN_DC2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let qwen_dc = *QWEN_DC2.get_or_init(||
+            std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
+        if qwen_dc && max_new > 0 {
+            let n_vocab = self.output.out_features();
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            let embd_gpu = self.embd_gpu.get_or_init(|| {
+                e.upload_u8(&self.embd.raw).expect("embed table upload")
+            });
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
+            for _ in 0..max_new {
+                out.push(e.dtoh_u32(&token_d)?[0]);
+                token_d = self.decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                              &mut cache, n_vocab)?;
+            }
+            return Ok(out);
+        }
         for _ in 0..max_new {
             let next = argmax(&last_logits) as u32;
             out.push(next);
@@ -1093,6 +1138,41 @@ impl HybridModel {
                     self.gemma4_decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
                                                &mut cache, n_vocab, None)?
                 };
+                next = e.dtoh_u32(&token_d)?[0];
+            }
+            return Ok(GenOutput { tokens: out, stop_reason: reason });
+        }
+        // QWEN DC-EAGER serving loop (2026-07-15, BW24_QWEN_DC=0 seam — the gemma dc-arc
+        // pattern): the eager tail dtoh'd the FULL VOCAB logits + host-argmax'd every
+        // token (the duty map's 10.3%-of-wall gap at 13% DRAM duty). decode_step_dc keeps
+        // the token id + argmax device-resident — 4B/token host traffic, same tuned eager
+        // kernels. Greedy + no-penalty only (sampling needs host logits).
+        // (The CUDA-graph route was probed first and read −11%: the replay's dc-fa family
+        // + capture rungs lag the tuned eager lanes; jsonl 2026-07-15.)
+        static QWEN_DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let qwen_dc = *QWEN_DC.get_or_init(||
+            std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
+        if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0 {
+            let n_vocab = self.output.out_features();
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            let embd_gpu = self.embd_gpu.get_or_init(|| {
+                e.upload_u8(&self.embd.raw).expect("embed table upload")
+            });
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            let mut token_d = e.stream().clone_htod(
+                &[crate::forward::argmax(&last_logits) as u32])?;
+            let mut next = e.dtoh_u32(&token_d)?[0];
+            for _ in 0..budget {
+                sampler.accept(next);
+                out.push(next);
+                if params.eos.contains(&next) { reason = StopReason::Eos; break; }
+                if !on_token(next) { reason = StopReason::Callback; break; }
+                if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+                token_d = self.decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                              &mut cache, n_vocab)?;
                 next = e.dtoh_u32(&token_d)?[0];
             }
             return Ok(GenOutput { tokens: out, stop_reason: reason });
