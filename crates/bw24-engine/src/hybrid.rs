@@ -557,8 +557,12 @@ impl HybridModel {
         // unset/dense this stays `None` and the load takes the byte-identical all-host path.
         // Disk spill is GGUF-only (needs the on-disk file mmap); src.gguf() is None for safetensors.
         let gguf: Option<&GgufFile> = src.gguf();
+        // expert_count > 0: Arch::Gemma4 carries cfg.moe = Some on its DENSE variants too
+        // (the 2026-07-14 discriminator-bug class) — a dense 31B/E4B under the spill env
+        // would otherwise probe budgets + open an expert mmap it never consumes.
         let mut spill: Option<crate::spill::SpillCtx> =
-            if cfg.moe.is_some() && crate::spill::disk_tier_enabled() && gguf.is_some() {
+            if cfg.moe.as_ref().is_some_and(|m| m.expert_count > 0)
+                && crate::spill::disk_tier_enabled() && gguf.is_some() {
                 let budget = crate::spill::MemBudget::probe(e)?;
                 let ctx = crate::spill::SpillCtx::open(gguf.unwrap(), &budget)?;
                 eprintln!("[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
