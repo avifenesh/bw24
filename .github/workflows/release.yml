@@ -37,6 +37,24 @@ jobs:
       - name: Draft changelog
         run: bash tools/changelog.sh > /tmp/notes.md && cat /tmp/notes.md
 
+      - name: Package binaries
+        run: |
+          pkg="bw24-$GITHUB_REF_NAME-linux-x86_64-sm120a"
+          mkdir -p "/tmp/$pkg"
+          cp target/release/{run-gen,run-spec,bw24-server,kernel-check} "/tmp/$pkg/"
+          {
+            echo "bw24 $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_120a fatbin)"
+            echo ""
+            echo "Requirements: NVIDIA driver with CUDA 13.x runtime support, an sm_120"
+            echo "(RTX 50-series) GPU, and the CUDA 13.1 runtime libraries (cudart, cublas)."
+            echo "Built on ubuntu-24.04 (glibc 2.39) — older distros need a source build."
+            echo ""
+            echo "Quick start: ./kernel-check   # expect: ALL GREEN: kernels match CPU reference."
+            echo "Docs: https://github.com/avifenesh/bw24"
+          } > "/tmp/$pkg/README.txt"
+          tar -C /tmp -czf "/tmp/$pkg.tar.gz" "$pkg"
+          echo "PKG=/tmp/$pkg.tar.gz" >> "$GITHUB_ENV"
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -44,4 +62,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/notes.md \
-            --verify-tag
+            --verify-tag \
+            "$PKG"

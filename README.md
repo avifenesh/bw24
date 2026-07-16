@@ -25,6 +25,8 @@ Running bw24 on your own rig — desktop 50-series, older NVIDIA, anything? A [h
 
 ## Quick start
 
+Prebuilt Linux x86_64 binaries (sm_120a) ship with each [release](https://github.com/avifenesh/bw24/releases) — or build from source:
+
 ```bash
 cargo build --release
 ./target/release/kernel-check                     # every kernel vs CPU reference
