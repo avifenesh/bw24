@@ -131,7 +131,9 @@ pairs, N=2 each side.
 
 ## Correctness discipline
 
-Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-gen` argmax gate, `run-spec` K=1..8 self-consistency. FP summation order is part of the contract — "faster" kernels that reduce in a different order get rejected when they flip argmax at tight margins (`research/tune-data/`).
+Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-gen` argmax gate, `run-spec` K=1..8 self-consistency — one command: `tools/local-ci.sh`. FP summation order is part of the contract — "faster" kernels that reduce in a different order get rejected when they flip argmax at tight margins (`research/tune-data/`).
+
+Exactness gates are structurally blind to numeric shifts where decode and verify move *together* — that class silently cost half a spec margin across ~40 green commits in July 2026. The local perf CI (`tools/local-ci.sh --perf`) closes it: every published cell re-measured per engine-touching push, speculative **acceptance and tokens/round tracked per cell** against a rolling baseline (`research/tune-data/perf-ci.jsonl`), enforced by the pre-push hook. Upstream engines are swept weekly for portable decode mechanisms (`tools/upstream-sweep.sh` → `research/upstream-sweeps.md`).
 
 ## Workspace layout
 

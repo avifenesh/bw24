@@ -2,6 +2,13 @@
 
 _Internal living document: the cold-start state for whoever (or whatever) works on bw24 next. Public readers: start with [README.md](README.md); this file assumes full project context and changes constantly._
 
+## CURRENT STATE (2026-07-16 cold-start)
+
+- **Cells (best-vs-best ruled protocol, 2026-07-15 re-audit):** qwen plain 1.06-1.08x / spec 1.1-1.9x all above; gemma 31B spec d1736 **1.16x**, E4B spec **>=1.23x** (llama 06-30 build can't serve the E4B drafter), E4B plain **1.10x**; open: 31B plain 1.02/1.03x, 26B plain 1.06/1.06x, 31B spec short 1.06x, 26B spec 0.99/1.04x. The earlier 1.37-1.54x spec margins DID NOT REPRODUCE (even through era binaries — acceptance state lost); retired, full archaeology in `research/gemma4-bringup/rig5090-gemma4.jsonl` 2026-07-15.
+- **Local CI:** `tools/local-ci.sh` (correctness) / `--perf` (9-cell battery, acceptance+tok/round tracked vs rolling median, `research/tune-data/perf-ci.jsonl`); pre-push hook enforces battery freshness on engine-touching pushes (`BW24_SKIP_PERF_CI=1` override). Serialize bench arms — co-resident engines OOM-spill and read 10x low. Pin power state per window (`gpu-full-power on|off`).
+- **Verdict ledgers:** every duty-map pocket on 26B/31B plain carries a shipped default or falsification row (matvec in-kernel x6+, launch structure, fa x9+, L2-residency family — ldcs pays ONLY on warp-exclusive weight streams, never nibble-paired k-quant), qwen launch arc concluded (eager structurally optimal; exec-update graph loop kept for decode-bench). Upstream swept to parity 2026-07-15 (weekly cron installed).
+- **Owner contracts:** published GGUF artifact FROZEN (no bytes-side levers); bars = best-config llama, interleaved; drafter/acceptance research = owner's lane.
+
 _Written 2026-07-03, standings updated 2026-07-07. bw24 = from-scratch Rust+CUDA LLM inference engine, target rig RTX 5090 Laptop (sm_120a, Blackwell consumer, 24GB, **858 GB/s measured read wall**). Box bw24-g7e RETIRED 2026-07-09: lane/w4a8v2 is its last task. All work local-only. Box-era lessons stand: kernel verdicts do not transfer across power walls (J/token law); fetch box branches via ssh remote. Repo PUBLIC: https://github.com/avifenesh/bw24. L40S/sm_89 lane CLOSED (box terminated)._
 
 ## SPEC-MULTIPLIER DIAGNOSTIC + 27B PLAIN AUDIT (owner directive 2026-07-10 late)
