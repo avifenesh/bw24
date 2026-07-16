@@ -26,7 +26,9 @@ fn first_divergence(a: &[u32], b: &[u32]) -> Option<usize> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).expect("usage: run-spec <model.gguf|hf_dir> [tok ids...]");
+    let path = std::env::args().nth(1)
+        .expect("usage: run-spec <model.gguf|hf_dir|hf:owner/repo[:file]> [tok ids...]");
+    let path = bw24_gguf::hf::resolve_arg(&path)?;
     let e = Engine::new(0)?;
     // DIRECTORY path = safetensors HF checkpoint or manifest-backed bw24 repack/overlay; file = GGUF.
     let is_dir = std::path::Path::new(&path).is_dir();

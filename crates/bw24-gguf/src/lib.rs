@@ -18,6 +18,7 @@ use memmap2::Mmap;
 pub mod dequant;
 pub mod config;
 pub mod safetensors;
+pub mod hf;
 pub mod hf_mapping;
 pub mod nvfp4_repack;
 pub mod source;

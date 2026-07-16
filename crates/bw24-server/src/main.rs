@@ -202,7 +202,15 @@ fn parse_models_config() -> Vec<(String, String)> {
         let mut out = Vec::new();
         for entry in spec.split(',').filter(|s| !s.trim().is_empty()) {
             if let Some((name, path)) = entry.split_once('=') {
-                out.push((name.trim().to_string(), path.trim().to_string()));
+                // Paths accept hf:owner/repo[:file] specs — resolved (downloaded on first
+                // use) before the worker sees them.
+                match bw24_gguf::hf::resolve_arg(path.trim()) {
+                    Ok(local) => out.push((name.trim().to_string(), local)),
+                    Err(err) => {
+                        eprintln!("[server] FATAL: model {name:?}: {err}");
+                        std::process::exit(1);
+                    }
+                }
             } else {
                 eprintln!("[server] WARN: bad BW24_MODELS entry {entry:?} (want name=/path); skipping");
             }

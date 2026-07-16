@@ -16,7 +16,8 @@ use bw24_tokenizer::Tokenizer;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
         .nth(1)
-        .expect("usage: run-gen <model.gguf|hf_dir> [tok ids...] | --prompt \"text\"");
+        .expect("usage: run-gen <model.gguf|hf_dir|hf:owner/repo[:file]> [tok ids...] | --prompt \"text\"");
+    let path = bw24_gguf::hf::resolve_arg(&path)?;
     let e = Engine::new(0)?;
     // DIRECTORY path = safetensors HF checkpoint (MiniMax-M3 first-load path) OR a bw24 repack
     // dir (Hy3 Q4_K transcode: manifest.json + tensors/ + experts/). GGUF stays the dense norm.
