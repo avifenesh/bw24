@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use memmap2::Mmap;
 
+pub mod d2t;
 pub mod dequant;
 pub mod config;
 pub mod safetensors;
