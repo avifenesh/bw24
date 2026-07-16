@@ -10,6 +10,10 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
+The headline capability is **MTP speculative decoding**: 1.1-1.9x over llama.cpp's best spec config on every supported Qwen model, with trimmed drafter heads published ready-to-use ([huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench)) — behind a drop-in OpenAI-compatible server. Exactness is the contract: speculative output is gated token-identical to plain decode, so the speedup never changes what the model says.
+
+Have a **desktop 50-series card** (5090/5080/5070)? Same sm_120 architecture, unvalidated ratios — a [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md) is the fastest way to help.
+
 **Current standing: six supported models, all fully gated. Qwen leads llama.cpp on every cell (plain 1.06-1.08x, spec 1.1-1.9x). Gemma leads decisively where llama lacks the capability or the depth (31B spec 1.7k 1.16x, E4B spec ≥1.23x, E4B plain 1.10x) and sits at 0.99-1.06x elsewhere under the strictest best-vs-best pairing (2026-07-15 re-audit).** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
 
 ## Model support
