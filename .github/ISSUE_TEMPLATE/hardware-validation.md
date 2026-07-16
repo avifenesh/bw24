@@ -1,19 +1,23 @@
 ---
 name: Hardware validation report
-about: You ran bw24 on a desktop RTX 50-series (or other sm_120) card — share the results
+about: You ran bw24 on your rig — share the results, whatever the card
 ---
 
 <!--
-bw24 is tuned on ONE machine: an RTX 5090 Laptop (82 SMs, ~847 GB/s). Every other
-sm_120 card — desktop 5090 (170 SMs, ~1792 GB/s), 5080, 5070 Ti, 5070 — shares the
-architecture, so the kernels are expected to WORK, but the tuning ratios are unvalidated
-there. These reports are how the whole 50-series gets blessed. Correctness output alone
-is already valuable; perf cells with a llama.cpp pairing are gold.
+bw24 is tuned on ONE machine: an RTX 5090 Laptop (82 SMs, ~847 GB/s). Reports from EVERY
+end-user rig are wanted:
+
+- Other sm_120 cards (desktop 5090, 5080, 5070 Ti, 5070) share the architecture — kernels
+  are expected to WORK, tuning ratios are unvalidated. These reports bless the 50-series.
+  (The 188-SM RTX PRO 6000 server die already validated binary-compat + bit-consistency.)
+- Older NVIDIA cards (Ada/Ampere): the main build targets sm_120a and an `arch/sm89-l40s`
+  branch exists for Ada — "what breaks where" reports map the compatibility floor.
+- Correctness output alone is already valuable; perf cells with a llama.cpp pairing are gold.
 -->
 
 ## Your hardware
 
-- GPU: <e.g. RTX 5090 desktop, 32 GB>
+- GPU: <exact model + VRAM, e.g. RTX 5090 desktop, 32 GB>
 - Driver / CUDA toolkit:
 - OS:
 - Power state during runs: <e.g. stock / power-limited, and whether it stayed pinned>

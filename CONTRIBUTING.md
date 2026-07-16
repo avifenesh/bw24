@@ -92,16 +92,20 @@ This is a from-scratch engine tuned for one exact machine (RTX 5090 Laptop, sm_1
 branch exists for Ada, but sm_120a is the only tuned target, and tuning choices elsewhere in the
 codebase assume this exact memory/compute ratio.
 
-## No sm_120a hardware? Validation reports are the easiest contribution
+## Validation reports from your rig are the easiest contribution
 
-bw24 is tuned on one RTX 5090 Laptop. Every desktop 50-series card (5090/5080/5070 Ti/5070)
-is the same sm_120 architecture with different SM-count/bandwidth ratios — the kernels are
-expected to work there, but nobody has blessed the numbers yet. If you own one, running the
-gates and filing a [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md)
-is genuinely useful even if you never touch the code: correctness output alone advances the
-support story, and a perf battery (`BW24_MODELS_DIR=... tools/local-ci.sh --perf`) plus an
-interleaved llama.cpp pairing (protocol: [`research/benchmarks.md`](research/benchmarks.md))
-is exactly the evidence that would move those cards from "should work" to "supported".
+bw24 is tuned on one RTX 5090 Laptop, and reports from **every end-user rig** are wanted —
+filing a [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md) is
+genuinely useful even if you never touch the code:
+
+- **Desktop 50-series (5090/5080/5070 Ti/5070):** same sm_120 architecture, different
+  SM-count/bandwidth ratios — kernels are expected to work, nobody has blessed the numbers.
+  A perf battery (`BW24_MODELS_DIR=... tools/local-ci.sh --perf`) plus an interleaved
+  llama.cpp pairing (protocol: [`research/benchmarks.md`](research/benchmarks.md)) is exactly
+  the evidence that moves those cards from "should work" to "supported".
+- **Older NVIDIA (Ada/Ampere):** the main build targets sm_120a; `arch/sm89-l40s` exists for
+  Ada. "What breaks where" reports map the compatibility floor — correctness output alone
+  advances the story.
 
 ## Where to look first
 
