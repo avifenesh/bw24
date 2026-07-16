@@ -5021,11 +5021,22 @@ extern "C" __global__ void moe_down8_fma_f32(
 // q8 dp4a twins of the _dev pair (resident-experts arc, 2026-07-06): device sel/w + pointer
 // table (like _dev) + int dp4a dots vs a q8_1 activation (like the _q8 pair). One warp per
 // (row, slot); same silu expression / slot-ordered FMA chain as every twin in this family.
+// Per-expert macro-scale fold for the DOWN projection: w[i] *= macros[2*n_expert + sel[i]],
+// applied to the device router weights once per layer (compressed-tensors NVFP4 artifacts
+// carry per-expert global scales). Every down twin consumes w verbatim, so this one launch
+// macro-folds all of them. Launched ONLY when the layer carries non-trivial macros.
+extern "C" __global__ void moe_w_scale_by_expert(
+        float* __restrict__ w, const int* __restrict__ sel,
+        const float* __restrict__ macros, int n_expert, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) w[i] *= __ldg(&macros[2 * n_expert + sel[i]]);
+}
 extern "C" __global__ void moe_gate_up_silu8_dev_q8(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5043,8 +5054,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // gemma4 GELU twin of moe_gate_up_silu8_dev_q8: identical dots/reduce, gelu_tanh epilogue
@@ -5130,7 +5141,8 @@ __device__ __forceinline__ void moe_gu_dev_q8_geom(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o0 = ((int)blockIdx.x * (int)blockDim.y + (int)threadIdx.y) * RPW;
     int j = blockIdx.y;
     if (o0 >= n_ff) return;
@@ -5157,28 +5169,31 @@ __device__ __forceinline__ void moe_gu_dev_q8_geom(
     for (int r = 0; r < RPW; r++) {
         int o = o0 + r;
         if (o >= n_ff) break;
-        float ag = warp_reduce_sum(accg[r]);
-        float au = warp_reduce_sum(accu[r]);
+        float ag = warp_reduce_sum(accg[r]) * __ldg(&macros[ex]);
+        float au = warp_reduce_sum(accu[r]) * __ldg(&macros[n_expert + ex]);
         if (lane == 0) act[(size_t)j * n_ff + o] = (ag / (1.0f + expf(-ag))) * au;
     }
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r1(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<1>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<1>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<2>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<2>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r4(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<4>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<4>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 template<int RPW>
 __device__ __forceinline__ void moe_down8_dev_q8_w8_geom(
@@ -5478,7 +5493,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5496,8 +5512,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5512,7 +5528,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5540,8 +5557,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5556,7 +5573,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5605,8 +5623,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm2(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5624,7 +5642,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
         int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
-        int n_used) {
+        int n_used,
+        const float* __restrict__ macros) {
     int tok = blockIdx.z;
     int o = blockIdx.x;
     int j = blockIdx.y;
@@ -5645,8 +5664,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // gemma4 GELU rows twin (verify t=2..K+2, one launch for all tokens): per (token, row, slot)
@@ -5753,7 +5772,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = threadIdx.y;                 // slot from block y-dim; blockDim.y == n_used
     int lane = threadIdx.x;
@@ -5771,8 +5791,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5824,7 +5844,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_sg(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     __shared__ unsigned int gsm[512];
     int lane = threadIdx.x;
     #pragma unroll
@@ -5846,8 +5867,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_sg(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // j8-geometry twin: block (32, n_used) — ONE 2KB copy (spread over all 32*n_used threads)
@@ -5856,7 +5877,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8sg(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     __shared__ unsigned int gsm[512];
     int tid = threadIdx.y * 32 + threadIdx.x;
     int nth = blockDim.y * 32;
@@ -5879,8 +5901,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8sg(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5893,7 +5915,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5912,8 +5935,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2(
     if (lane == 0) { if (which == 0) sg = acc; else su = acc; }
     __syncthreads();
     if (which == 0 && lane == 0) {
-        float g = sg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * su;
+        float g = sg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (su * __ldg(&macros[n_expert + ex]));
     }
 }
 // gate_up 4-WARP G-SPLIT (nsb==64 ONLY, i.e. in_f==2048 — the 35B expert gate/up shape): block
@@ -5926,7 +5949,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_gs4(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5950,8 +5974,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_gs4(
     }
     __syncthreads();
     if (wy == 0 && lane == 0) {
-        float gg = gu[0];
-        act[(size_t)j * n_ff + o] = (gg / (1.0f + expf(-gg))) * gu[1];
+        float gg = gu[0] * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (gg / (1.0f + expf(-gg))) * (gu[1] * __ldg(&macros[n_expert + ex]));
     }
 }
 // gate_up nsb==64 UNROLLED twin (in_f==2048 — the 35B expert gate/up shape): the base loop's two
@@ -5963,7 +5987,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_u64(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5983,8 +6008,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_u64(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // s2 with ROWS packed per block for scheduler density: block (32,2,rz), grid (n_ff/rz, n_used).
@@ -5992,7 +6017,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2z(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = (int)blockIdx.x * (int)blockDim.z + (int)threadIdx.z;
     if (o >= n_ff) return;
     int j = blockIdx.y;
@@ -6012,8 +6038,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2z(
     if (lane == 0) sgu[threadIdx.z][which] = acc;
     __syncthreads();
     if (which == 0 && lane == 0) {
-        float g = sgu[threadIdx.z][0];
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * sgu[threadIdx.z][1];
+        float g = sgu[threadIdx.z][0] * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (sgu[threadIdx.z][1] * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -6021,7 +6047,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev(
         const unsigned long long* __restrict__ table,  // [3, n_expert] slot base addresses
         const int* __restrict__ sel,                   // [n_used] this token's expert ids (device)
         const float* __restrict__ x, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;              // expert-FFN row 0..n_ff-1
     int j = blockIdx.y;              // routed-expert slot 0..n_used-1
     int tid = threadIdx.x;
@@ -6052,9 +6079,9 @@ extern "C" __global__ void moe_gate_up_silu8_dev(
         float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
         for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
         if (tid == 0) {
-            float g = g_final;
+            float g = g_final * __ldg(&macros[ex]);
             // silu_mul_f32's exact expression on the exact dot values.
-            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * v;
+            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (v * __ldg(&macros[n_expert + ex]));
         }
     }
 }

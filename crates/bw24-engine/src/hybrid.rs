@@ -111,6 +111,15 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
         // bytes = per-layer bytes x n_moe_layers (uniform layers; UD-quant variance is small and
         // the budget has 20% slack). Failure to fit => None => the SLRU spill machinery.
         let dev_exps = build_dev_exps(e, cfg, &gate_exps, &up_exps, &down_exps)?;
+        // Device macro row [3*n_expert]: gate, up, down (ones when the artifact carries none).
+        let mut macro_row = vec![1.0f32; 3 * n_expert];
+        for (slot, exps) in [(0usize, &gate_exps), (1, &up_exps), (2, &down_exps)] {
+            if let Some(ms) = exps.macros.as_ref() {
+                macro_row[slot * n_expert..(slot + 1) * n_expert].copy_from_slice(ms);
+            }
+        }
+        let has_macros = macro_row.iter().any(|&m| m != 1.0);
+        let dev_macros = e.htod(&macro_row)?;
         // e_score_correction_bias (M3 sigmoid routing): tiny [n_expert] f32, host-side.
         let exp_probs_b = src.find(&p("exp_probs_b.bias")).map(|v| {
             bw24_gguf::dequant::dequantize(v.ggml_type, &v.bytes, n_expert)
@@ -126,6 +135,8 @@ pub(crate) fn load_ffn(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig, il
             up_shexp:   load_opt(e, src, &p("ffn_up_shexp.weight"))?,
             down_shexp: load_opt(e, src, &p("ffn_down_shexp.weight"))?,
             dev_exps,
+            dev_macros,
+            has_macros,
         })
     } else {
         Ffn::Dense {
@@ -265,6 +276,13 @@ pub struct MoeWeights {
     /// None => the SLRU host-expert machinery (the spill regime, where it WINS vs llama's
     /// CPU-offload degradation). Decided at load in `load_ffn` (BW24_MOE_RESIDENT=0 forces off).
     pub dev_exps: Option<DevExps>,
+    /// Per-expert post-matmul macro-scales on DEVICE: [3*n_expert] f32 in (gate, up, down)
+    /// order — all 1.0 unless the checkpoint carries compressed-tensors NVFP4 global scales
+    /// (unsloth qwen3.6 class). The _dev gate_up epilogues multiply unconditionally (x*1.0f
+    /// is bit-exact — zero change for macro-free artifacts); the down fold is one
+    /// moe_w_scale_by_expert launch gated on `has_macros`.
+    pub dev_macros: cudarc::driver::CudaSlice<f32>,
+    pub has_macros: bool,
 }
 
 impl MoeWeights {

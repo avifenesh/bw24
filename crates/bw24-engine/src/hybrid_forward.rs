@@ -905,7 +905,9 @@ impl HybridModel {
         // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none() && no_exp_macros;
+        // macro-carrying experts are handled inside the dev path now (epilogue fold + w-scale);
+        // pairs/gdec/csr keep their macro gates until their kernels grow the fold.
+        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
         // Observation modes must route through the host-visible selection below. Otherwise a fully
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
@@ -1509,7 +1511,12 @@ impl HybridModel {
         let n_ff_exp = moe.expert_ff_length as usize;
 
         // device top-k: sel [t, n_used] i32, w [t, n_used] f32 — stays on device.
-        let (sel_d, w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
+        let (sel_d, mut w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
+        // Down-projection macro fold (compressed-tensors NVFP4 artifacts): one tiny launch,
+        // skipped entirely for macro-free experts (every k-quant GGUF).
+        if m.has_macros {
+            e.moe_w_scale_by_expert(&mut w_d, &sel_d, &m.dev_macros, n_expert, t * n_used)?;
+        }
 
         // moe_out rows are FULLY overwritten by moe_down8_fma_dev — uninit (stage-2 rule).
         let mut moe_out = e.uninit(t * n_embd)?;
@@ -1574,7 +1581,7 @@ impl HybridModel {
                     let act_r = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                                 n_embd, n_ff_exp, n_used, n_expert,
                                                                 m.gate_exps.qtype, m.up_exps.qtype,
-                                                                rbg_d, rbu_d)?;
+                                                                rbg_d, rbu_d, &m.dev_macros)?;
                     let mut out_r = e.uninit(t * n_embd)?;
                     let (aq2r, ad2r) = e.quantize_q8_1(&act_r, n_pairs, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2r, &ad2r, &mut out_r,
@@ -1625,7 +1632,7 @@ impl HybridModel {
                 let act = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                           n_embd, n_ff_exp, n_used, n_expert,
                                                           m.gate_exps.qtype, m.up_exps.qtype,
-                                                          rbg_d, rbu_d)?;
+                                                          rbg_d, rbu_d, &m.dev_macros)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
                 e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
                                             t, n_ff_exp, n_embd, n_used, n_expert,
@@ -1644,7 +1651,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev_q8(&dev.ptr_row, &selt, &zq, &zd,
                                                          n_embd, n_ff_exp, n_used, n_expert,
                                                          m.gate_exps.qtype, m.up_exps.qtype,
-                                                         rbg_d, rbu_d)?;
+                                                         rbg_d, rbu_d, &m.dev_macros)?;
                     let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8(&dev.ptr_row, &selt, &wt, &aq2, &ad2, &mut dst,
                                            n_ff_exp, n_embd, n_used, n_expert,
@@ -1653,7 +1660,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev(&dev.ptr_row, &selt, &zt, n_embd, n_ff_exp,
                                                       n_used, n_expert,
                                                       m.gate_exps.qtype, m.up_exps.qtype,
-                                                      rbg_d, rbu_d)?;
+                                                      rbg_d, rbu_d, &m.dev_macros)?;
                     e.moe_down8_fma_dev(&dev.ptr_row, &selt, &wt, &act, &mut dst,
                                         n_ff_exp, n_embd, n_used, n_expert,
                                         m.down_exps.qtype, m.down_exps.row_bytes)?;
@@ -1686,7 +1693,8 @@ impl HybridModel {
                     let act = eng.moe_gate_up_silu8_dev_q8(row, &selt, &zq, &zd,
                                                            n_embd, n_ff_exp, n_used, n_expert,
                                                            m.gate_exps.qtype, m.up_exps.qtype,
-                                                           m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                           m.gate_exps.row_bytes, m.up_exps.row_bytes,
+                                                           &m.dev_macros)?;
                     let (aq2, ad2) = eng.quantize_q8_1(&act, n_used, n_ff_exp)?;
                     eng.moe_down8_fma_dev_q8(row, &selt, &wt, &aq2, &ad2, &mut dst,
                                              n_ff_exp, n_embd, n_used, n_expert,
@@ -1695,7 +1703,8 @@ impl HybridModel {
                     let act = eng.moe_gate_up_silu8_dev(row, &selt, &zt, n_embd, n_ff_exp,
                                                         n_used, n_expert,
                                                         m.gate_exps.qtype, m.up_exps.qtype,
-                                                        m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                        m.gate_exps.row_bytes, m.up_exps.row_bytes,
+                                                        &m.dev_macros)?;
                     eng.moe_down8_fma_dev(row, &selt, &wt, &act, &mut dst,
                                           n_ff_exp, n_embd, n_used, n_expert,
                                           m.down_exps.qtype, m.down_exps.row_bytes)?;

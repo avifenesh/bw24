@@ -2109,10 +2109,26 @@ impl Engine {
         Ok(())
     }
 
+    /// Down-projection macro fold: w[i] *= macros[2*n_expert + sel[i]] on the device router
+    /// weights (one launch per MoE layer, only for macro-carrying artifacts — see MoeWeights).
+    pub fn moe_w_scale_by_expert(&self, w: &mut CudaSlice<f32>, sel: &CudaSlice<i32>,
+                                 macros: &CudaSlice<f32>, n_expert: usize, n: usize)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("moe_w_scale_by_expert");
+        let cfg = LaunchConfig { grid_dim: (n.div_ceil(64) as u32, 1, 1),
+                                 block_dim: (64, 1, 1), shared_mem_bytes: 0 };
+        let (ne, nn) = (n_expert as i32, n as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(w).arg(sel).arg(macros).arg(&ne).arg(&nn);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn moe_gate_up_silu8_dev_q8(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                     aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
                                     in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
-                                    qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                    qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize,
+                                    macros: &CudaSlice<f32>)
                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         static GU: std::sync::OnceLock<(String, u32)> = std::sync::OnceLock::new();
         let (mode, wpb) = GU.get_or_init(|| {
@@ -2187,7 +2203,7 @@ impl Engine {
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
-         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(macros);
         unsafe { b.launch(cfg)?; }
         Ok(act)
     }
@@ -2264,7 +2280,8 @@ impl Engine {
     pub fn moe_gate_up_silu8_dev_q8_rows(&self, table: &CudaSlice<u64>, sel: &CudaSlice<i32>,
                                          aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, t: usize,
                                          in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
-                                         qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                         qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize,
+                                         macros: &CudaSlice<f32>)
                                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("moe_gate_up_silu8_dev_q8_v_rows");
         let mut act = self.alloc_uninit::<f32>(t * n_used * n_ff)?;
@@ -2274,7 +2291,7 @@ impl Engine {
                                             n_used as i32, rb_g as i64, rb_u as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(aq).arg(ad).arg(&mut act)
-         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu);
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(&nu).arg(macros);
         unsafe { b.launch(cfg)?; }
         Ok(act)
     }
@@ -2390,7 +2407,8 @@ impl Engine {
     pub fn moe_gate_up_silu8_dev(&self, table: &CudaSlice<u64>, sel: &cudarc::driver::CudaView<i32>,
                                  x: &cudarc::driver::CudaView<f32>,
                                  in_f: usize, n_ff: usize, n_used: usize, n_expert: usize,
-                                 qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize)
+                                 qt_g: i32, qt_u: i32, rb_g: usize, rb_u: usize,
+                                 macros: &CudaSlice<f32>)
                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let f = self.func("moe_gate_up_silu8_dev");
         let mut act = self.alloc_uninit::<f32>(n_used * n_ff)?;  // fully overwritten
@@ -2400,7 +2418,7 @@ impl Engine {
                                         rb_g as i64, rb_u as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(table).arg(sel).arg(x).arg(&mut act)
-         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu);
+         .arg(&inf).arg(&nff).arg(&ne).arg(&qt_g).arg(&qt_u).arg(&rbg).arg(&rbu).arg(macros);
         unsafe { b.launch(cfg)?; }
         Ok(act)
     }
