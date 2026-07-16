@@ -96,6 +96,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     check2(&format!("blk.{full}.attn_q_norm.weight"), &format!("blk.{full}.attn_q_norm.weight"), tol_f32);  // +1 norm
     check2("output_norm.weight", "output_norm.weight", tol_f32);
 
+    // --- MoE tensors (qwen35moe ST class): router / shared expert / one routed expert.
+    // Cross-QUANT comparisons (ST NVFP4 vs GGUF k-quant) can't be element-tight; report
+    // cosine similarity + norm ratio instead: cos≈1 & ratio≈1 = same weights; cos≈1 &
+    // ratio≠1 = macro-scale bug; cos≈0 = layout/mapping bug.
+    if cfg.moe.is_some() {
+        println!("\n--- MoE (cross-quant: cosine + norm-ratio diagnostics) ---");
+        let moe_lin = lin; // any layer with routed experts
+        let q = |s: &str| format!("blk.{moe_lin}.{s}");
+        let diag = |name_st: &str, a: Option<(Vec<f32>, Vec<u64>)>, b: Option<(Vec<f32>, Vec<u64>)>| {
+            match (a, b) {
+                (Some((a, na)), Some((b, nb))) => {
+                    let n = a.len().min(b.len());
+                    let (mut dot, mut n2a, mut n2b) = (0f64, 0f64, 0f64);
+                    for i in 0..n {
+                        dot += a[i] as f64 * b[i] as f64;
+                        n2a += (a[i] as f64).powi(2);
+                        n2b += (b[i] as f64).powi(2);
+                    }
+                    let cos = dot / (n2a.sqrt() * n2b.sqrt()).max(1e-30);
+                    let ratio = (n2a / n2b.max(1e-30)).sqrt();
+                    println!("{:<34} st.ne={:?} gguf.ne={:?} cos={:.4} |st|/|gguf|={:.4}",
+                             name_st, na, nb, cos, ratio);
+                }
+                (sa, sb) => println!("{:<34} MISSING st={} gguf={}", name_st, sa.is_some(), sb.is_some()),
+            }
+        };
+        diag(&q("ffn_gate_inp.weight"), deq(&st, &q("ffn_gate_inp.weight")), deq(&gs, &q("ffn_gate_inp.weight")));
+        for t in ["ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight",
+                  "ffn_gate_inp_shexp.weight"] {
+            diag(&q(t), deq(&st, &q(t)), deq(&gs, &q(t)));
+        }
+        // Routed expert 0: ST is per-expert 2D; the GGUF twin stores the stacked 3D tensor —
+        // slice expert 0 out of the stack after dequant.
+        for proj in ["gate", "up", "down"] {
+            let st_t = deq(&st, &q(&format!("ffn_{proj}_exps.0.weight")));
+            let gg_t = deq(&gs, &q(&format!("ffn_{proj}_exps.weight"))).map(|(b, nb)| {
+                let per = (nb[0] * nb[1]) as usize;
+                (b[..per].to_vec(), vec![nb[0], nb[1]])
+            });
+            diag(&q(&format!("ffn_{proj}_exps.0.weight")), st_t, gg_t);
+        }
+    }
+
     println!("\n{}", if all_ok { "ALL TENSORS MATCH — SSM name-map + transforms verified vs GGUF twin" }
                      else { "MISMATCH — see FAIL rows above" });
     if !all_ok { std::process::exit(1); }

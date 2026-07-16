@@ -882,7 +882,14 @@ impl HybridModel {
         // sigmoid-router archs (M3, Hy3) must NOT enter the pairs/dev arms: those route via the
         // fused SOFTMAX device router (moe_router_topk) — silently wrong experts (the M3
         // gate-MISMATCH 74602-vs-92 lesson, 2026-07-07). Host sigmoid routing below is correct.
+        // Per-expert macro-scales (compressed-tensors NVFP4 ST class, e.g. unsloth 35B-A3B):
+        // the device-dispatch kernels (pairs/dev) do NOT fold them — those checkpoints must
+        // ride the macro-aware sequential/staged paths below or every expert output is off by
+        // its global scale (~3e4x, measured garbage 2026-07-16). GGUF experts: macros None.
+        let no_exp_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
+            && m.down_exps.macros.is_none();
         if cfg.sigmoid_router().is_none() && cfg.m3.is_none() && cfg.hy3.is_none()
+            && no_exp_macros
             && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype)
@@ -898,7 +905,7 @@ impl HybridModel {
         // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
+        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none() && no_exp_macros;
         // Observation modes must route through the host-visible selection below. Otherwise a fully
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.

@@ -579,8 +579,55 @@ impl SafetensorsSource {
     /// Direct HF-name access (zero-copy). Applies the prefix-fallback so a wrapper prefix like
     /// `model.language_model.` (qwen35 VLM) resolves against the plain `model.` namespace and vice
     /// versa (ST-MOE-PLAN §2.0). Returns a BORROWED view (no transform).
+    /// MTP-block fused stacked experts (unsloth qwen3.6-35B-A3B ST class): the checkpoint
+    /// stores `mtp.layers.{k}.mlp.experts.gate_up_proj` [E, 2*ff, in] and `...experts.down_proj`
+    /// [E, out, ff] as single 3D BF16 stacks (transformers fused-MoE layout, gate rows first);
+    /// the engine asks per-expert 2D `blk.{trunk+k}.ffn_{gate,up,down}_exps.{e}.weight`.
+    /// Row-major means every slice is contiguous: expert block e, then gate = first ff rows,
+    /// up = last ff rows. Slices re-encode BF16 -> Q8_0 (loader law: BF16 2D >= 1M elements).
+    fn mtp_fused_expert_slice(&self, ggml_name: &str) -> Option<TensorView<'_>> {
+        if self.cfg.nextn_predict_layers == 0 { return None; }
+        let n_trunk = self.cfg.n_layer - self.cfg.nextn_predict_layers;
+        let rest = ggml_name.strip_prefix("blk.")?;
+        let (il, suffix) = rest.split_once('.')?;
+        let il: u32 = il.parse().ok()?;
+        if il < n_trunk { return None; }
+        let (proj, e) = ["gate", "up", "down"].iter().find_map(|p| {
+            suffix.strip_prefix(&format!("ffn_{p}_exps."))
+                .and_then(|s| s.strip_suffix(".weight"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .map(|e| (*p, e))
+        })?;
+        let fused = if proj == "down" { "down_proj" } else { "gate_up_proj" };
+        let hf = format!("mtp.layers.{}.mlp.experts.{fused}", il - n_trunk);
+        let (info, bytes) = self.lookup(&hf)?;
+        if info.dtype != "BF16" || info.shape.len() != 3 { return None; }
+        let (n_e, out, in_f) = (info.shape[0] as usize, info.shape[1] as usize, info.shape[2] as usize);
+        if e >= n_e { return None; }
+        let block = out * in_f; // one expert's elements, contiguous
+        let (row0, rows) = match proj {
+            "gate" => (0, out / 2),
+            "up" => (out / 2, out / 2),
+            _ => (0, out),
+        };
+        let start = (e * block + row0 * in_f) * 2; // BF16 = 2 bytes
+        let slice = &bytes[start..start + rows * in_f * 2];
+        let data: Vec<f32> = slice.chunks_exact(2)
+            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+            .collect();
+        Some(TensorView {
+            bytes: Cow::Owned(crate::nvfp4_repack::f32_to_q8_0(&data)),
+            ggml_type: GgmlType::Q8_0,
+            ne: vec![in_f as u64, rows as u64],
+        })
+    }
+
     pub fn raw_hf(&self, hf_name: &str) -> Option<TensorView<'_>> {
         let (info, bytes) = self.lookup(hf_name)?;
+        // Name the tensor before st_dtype_to_ggml can panic on it — a bare "FP8 not
+        // supported" without the tensor name cost a debugging round (2026-07-16).
+        assert!(!info.dtype.starts_with("F8"),
+                "FP8 tensor {hf_name} reached the raw path (no handled weight_scale sibling)");
         Some(TensorView { bytes: Cow::Borrowed(bytes), ggml_type: info.ggml_type(), ne: info.ne() })
     }
 
@@ -639,19 +686,27 @@ impl SafetensorsSource {
                 return Some((data, vec![in_f as u64, out_f as u64]));
             }
         }
-        // FP8 E4M3 weight + scalar F32 weight_scale (NVIDIA 27B linear_attn class): dequant to
-        // f32 here so the V-reorder transforms consume it like a BF16 tensor.
+        // FP8 E4M3 weight + weight_scale sibling (per-tensor F32 scalar = NVIDIA 27B
+        // linear_attn class; per-channel [out,1] F32/BF16 = unsloth compressed-tensors
+        // mixed-precision class): dequant to f32 here so the V-reorder transforms consume
+        // it like a BF16 tensor.
         if hf_name.ends_with(".weight") {
             if let Some((info, bytes)) = self.lookup(hf_name) {
                 if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
                     let stem = hf_name.strip_suffix(".weight").unwrap_or(hf_name);
+                    let out_f = info.shape[0] as usize;
+                    let in_f = info.shape[1] as usize;
                     if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
-                        if sinfo.dtype == "F32" && sbytes.len() >= 4 {
-                            let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                        if let Some(scales) = f8_row_scales(&sinfo, sbytes, out_f) {
                             let ne = info.ne();
-                            let data: Vec<f32> = bytes.iter()
-                                .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
-                                .collect();
+                            let mut data = vec![0f32; out_f * in_f];
+                            for o in 0..out_f {
+                                let s = scales[if scales.len() > 1 { o } else { 0 }];
+                                for e in 0..in_f {
+                                    data[o * in_f + e] =
+                                        crate::nvfp4_repack::fp8_e4m3_to_f32(bytes[o * in_f + e]) * s;
+                                }
+                            }
                             return Some((data, ne));
                         }
                     }
@@ -737,6 +792,25 @@ impl SafetensorsSource {
     }
 }
 
+/// FP8 `weight_scale` sibling -> per-row f32 scales. Every observed encoding:
+/// modelopt per-tensor F32 scalar (NVIDIA 27B linear_attn), compressed-tensors
+/// per-channel `[out, 1]` in F32 or BF16 (unsloth mixed-precision FP8 class).
+/// Returns a 1-element vec (splat) or out_f elements; None = unrecognized encoding.
+fn f8_row_scales(sinfo: &crate::safetensors::StInfo, sbytes: &[u8], out_f: usize) -> Option<Vec<f32>> {
+    let n = sinfo.shape.iter().product::<u64>() as usize;
+    if n != 1 && n != out_f {
+        return None;
+    }
+    let scales: Vec<f32> = match sinfo.dtype.as_str() {
+        "F32" if sbytes.len() >= n * 4 => sbytes[..n * 4].chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+        "BF16" if sbytes.len() >= n * 2 => sbytes[..n * 2].chunks_exact(2)
+            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect(),
+        _ => return None,
+    };
+    scales.iter().all(|s| s.is_finite() && *s > 0.0).then_some(scales)
+}
+
 impl TensorSource for SafetensorsSource {
     fn config(&self) -> ModelConfig {
         self.cfg.clone()
@@ -804,6 +878,11 @@ impl TensorSource for SafetensorsSource {
     }
     fn find(&self, ggml_name: &str) -> Option<TensorView<'_>> {
         use crate::hf_mapping::{HfTarget, resolve_ggml};
+        // MTP-block fused stacked experts (qwen3.6-35B-A3B ST class): mtp.layers.{k}.mlp.
+        // experts.{gate_up,down}_proj are 3D BF16 stacks; the engine asks per-expert 2D names.
+        if let Some(tv) = self.mtp_fused_expert_slice(ggml_name) {
+            return Some(tv);
+        }
         // NVFP4 per-tensor macro-scale sibling: the engine asks for `<stem>.scale` (model.rs) and
         // expects an F32 scalar. Map `<stem>.scale` -> modelopt `<hf>.weight_scale_2` OR
         // compressed-tensors `<hf>.weight_global_scale`. Returns None for non-quantized weights
@@ -894,14 +973,21 @@ impl TensorSource for SafetensorsSource {
                     if info.dtype == "F8_E4M3" && info.shape.len() == 2 {
                         let stem = hf.strip_suffix(".weight").unwrap_or(&hf);
                         if let Some((sinfo, sbytes)) = self.lookup(&format!("{stem}.weight_scale")) {
-                            if sinfo.dtype == "F32" && sbytes.len() >= 4 {
-                                let scale = f32::from_le_bytes(sbytes[..4].try_into().unwrap());
+                            // Scale sibling: per-tensor F32 scalar (modelopt / NVIDIA) or
+                            // per-channel [out,1] F32/BF16 (unsloth compressed-tensors FP8).
+                            if let Some(scales) = f8_row_scales(&sinfo, sbytes, info.shape[0] as usize) {
                                 let ne = info.ne();
                                 assert!(bytes.len() % 32 == 0,
                                         "F8 tensor {hf} len {} not 32-aligned", bytes.len());
-                                let data: Vec<f32> = bytes.iter()
-                                    .map(|&b| crate::nvfp4_repack::fp8_e4m3_to_f32(b) * scale)
-                                    .collect();
+                                let (out_f, in_f) = (info.shape[0] as usize, info.shape[1] as usize);
+                                let mut data = vec![0f32; out_f * in_f];
+                                for o in 0..out_f {
+                                    let s = scales[if scales.len() > 1 { o } else { 0 }];
+                                    for e in 0..in_f {
+                                        data[o * in_f + e] =
+                                            crate::nvfp4_repack::fp8_e4m3_to_f32(bytes[o * in_f + e]) * s;
+                                    }
+                                }
                                 // BW24_NV_W4=1: F8 attention weights -> NVFP4 (0.56 B/w vs Q8_0's
                                 // 1.06) — decode is bandwidth-bound and these layers are 35-40% of
                                 // per-token kernel time (nsys 2026-07-07). Real e4m3->e2m1 re-quant;
