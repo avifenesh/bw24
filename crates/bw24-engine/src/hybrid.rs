@@ -525,6 +525,8 @@ pub struct HybridModel {
     pub output: GpuTensor,
     pub layers: Vec<HybridLayer>,
     pub mtp: Option<MtpHead>,        // NextN spec-decode head (None if nextn_predict_layers == 0)
+    /// Second resident draft head (BW24_MTP_DRAFT2) for per-request dispatch — see spec::pick_draft.
+    pub mtp2: Option<MtpHead>,
     /// Lazily-uploaded DEVICE copy of the raw embed table (spec/graph hot loops gather rows
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
@@ -698,6 +700,18 @@ impl HybridModel {
                 Some(MtpHead::load_draft(e, &dg, &cfg)?)
             }
             _ => mtp,
+        };
+
+        // BW24_MTP_DRAFT2=<path.gguf>: SECOND resident draft head for per-request dispatch
+        // (hqmtp frontier result: trimmed natural head wins short/greedy, distilled student
+        // wins long+sampled — spec::pick_draft routes per call). Same load path as DRAFT.
+        let mtp2 = match std::env::var("BW24_MTP_DRAFT2") {
+            Ok(path) if !path.is_empty() => {
+                eprintln!("[mtp-draft2] loading dispatch draft head: {path}");
+                let dg = GgufFile::open(&path)?;
+                Some(MtpHead::load_draft(e, &dg, &cfg)?)
+            }
+            _ => None,
         };
 
         // BW24_FRSPEC_TRIM=<frspec.gguf>: SELF-TRIMMED draft head. Reads ONLY the d2t ranked-token
@@ -904,7 +918,7 @@ impl HybridModel {
                 if nswap > 0 { eprintln!("[q4rp] split-plane IN-PLACE swap: {nswap} dense trunk tensors"); }
             }
         }
-        let model = HybridModel { cfg, embd, output_norm, output, layers, mtp,
+        let model = HybridModel { cfg, embd, output_norm, output, layers, mtp, mtp2,
                                   embd_gpu: std::sync::OnceLock::new(), gemma4_aux };
         if force_embd_gpu {
             let _ = model.embd_gpu.get_or_init(|| {
