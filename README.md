@@ -1,5 +1,6 @@
-# bw24
+# bw24 — from-scratch LLM inference for sm_120a (RTX 50-series Blackwell)
 
+[![ci](https://github.com/avifenesh/bw24/actions/workflows/ci.yml/badge.svg)](https://github.com/avifenesh/bw24/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.8%20%2F%2013.1-76B900.svg)
@@ -26,6 +27,18 @@ cargo build --release
 BW24_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
 BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
 ./target/release/bw24-server                      # OpenAI-compatible /v1
+```
+
+Expected output — `kernel-check` ends with:
+
+```
+ALL GREEN: kernels match CPU reference.
+```
+
+and `run-gen` prints its correctness gate before any generation:
+
+```
+verify-prefill argmax=N  decode argmax=N  logit maxdiff=...  MATCH
 ```
 
 Tuned paths are the defaults — no flags needed. Flags exist only for runtime parameters, machine config, and rollback seams (`docs/FLAGS.md`). `run-gen` prints a prefill/decode argmax gate before timing anything; a MISMATCH line voids the numbers after it.
@@ -113,6 +126,11 @@ loss WAS the fp8 noise pushing drafter argmaxes off the 32k set): own-generation
 ride at identical acceptance for a pure head-read win (+2-4%). Same-window interleaved
 pairs, N=2 each side.
 
+**Reproducing (both Gemma sections):** same protocol as Qwen — exact-token-id prompts and
+llama.cpp's swept-best flags in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md); every
+row's raw run (and every retired number's archaeology) in
+[`research/gemma4-bringup/rig5090-gemma4.jsonl`](research/gemma4-bringup/rig5090-gemma4.jsonl).
+
 ## Known gaps
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
@@ -154,7 +172,10 @@ Exactness gates are structurally blind to numeric shifts where decode and verify
 
 ## Limitations
 
-- Built for sm_120a only; tuning assumes this exact memory/compute ratio.
+- Built for sm_120a only; tuning assumes this exact memory/compute ratio. On any other GPU,
+  use [llama.cpp](https://github.com/ggml-org/llama.cpp) (broadest hardware coverage) or
+  [mistral.rs](https://github.com/EricLBuehler/mistral.rs) (multi-platform Rust) instead —
+  an `arch/sm89-l40s` branch exists for Ada but is untuned.
 - Single GPU, single stream; no tensor parallelism or continuous batching.
 - Moving research codebase; APIs and flags change without notice.
 

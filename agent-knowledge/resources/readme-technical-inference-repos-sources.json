@@ -1,0 +1,395 @@
+{
+  "topic": "README best practices for technical inference repositories",
+  "slug": "readme-technical-inference-repos",
+  "generated": "2026-07-16T00:00:00Z",
+  "depth": "medium",
+  "totalSources": 20,
+  "sources": [
+    {
+      "url": "https://github.com/ggerganov/llama.cpp",
+      "title": "llama.cpp README",
+      "type": "githubExample",
+      "qualityScore": 95,
+      "authority": 10,
+      "recency": 10,
+      "depth": 9,
+      "examples": 10,
+      "uniqueness": 9,
+      "keyInsights": [
+        "Hub-and-spoke pattern: README as router to specialized docs",
+        "Reproducible benchmarks with literal tool output, build hashes, and uncertainty bars",
+        "API changes surfaced before quickstart to signal breaking changes",
+        "Collapsible ecosystem sections for scalability",
+        "Explicit inclusion criteria for third-party projects with license labels"
+      ]
+    },
+    {
+      "url": "https://github.com/vllm-project/vllm",
+      "title": "vLLM README",
+      "type": "githubExample",
+      "qualityScore": 92,
+      "authority": 9,
+      "recency": 10,
+      "depth": 9,
+      "examples": 9,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Split features by user concern (performance vs usability)",
+        "Name mechanisms not metrics (PagedAttention + arXiv link)",
+        "One-command install with depth deferred to external docs",
+        "Explicit channel routing by inquiry type",
+        "Academic credibility via UC Berkeley origin disclosure"
+      ]
+    },
+    {
+      "url": "https://github.com/sgl-project/sglang",
+      "title": "SGLang README",
+      "type": "githubExample",
+      "qualityScore": 85,
+      "authority": 8,
+      "recency": 10,
+      "depth": 7,
+      "examples": 7,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Performance claims linked to versioned release blogs not inline tables",
+        "Scale as credibility (trillions of tokens, 400k+ GPUs)",
+        "Collapsible 'More' sections for news archives",
+        "Zero inline code snippets - full delegation to docs site",
+        "Adoption logos and named enterprise users for trust"
+      ]
+    },
+    {
+      "url": "https://github.com/huggingface/candle",
+      "title": "Candle README (Hugging Face)",
+      "type": "githubExample",
+      "qualityScore": 89,
+      "authority": 9,
+      "recency": 9,
+      "depth": 9,
+      "examples": 9,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Runnable example with expected output first",
+        "GPU migration shown as one-line diff",
+        "Performance framed around deployment story not benchmarks",
+        "FAQ dedicates space to build/linker errors (systems friction)",
+        "PyTorch cheatsheet as migration aid and implicit API docs"
+      ]
+    },
+    {
+      "url": "https://github.com/NVIDIA/TensorRT-LLM",
+      "title": "TensorRT-LLM README",
+      "type": "githubExample",
+      "qualityScore": 88,
+      "authority": 10,
+      "recency": 9,
+      "depth": 8,
+      "examples": 8,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Formal deprecation policy (3-month migration period) for enterprise trust",
+        "Performance in dated news items not static tables",
+        "Hardware compatibility via linked support matrix",
+        "Telemetry transparency with opt-out instructions",
+        "README as marketing/navigation hub with operational complexity externalized"
+      ]
+    },
+    {
+      "url": "https://github.com/EricLBuehler/mistral.rs",
+      "title": "mistral.rs README",
+      "type": "githubExample",
+      "qualityScore": 94,
+      "authority": 8,
+      "recency": 10,
+      "depth": 10,
+      "examples": 10,
+      "uniqueness": 9,
+      "keyInsights": [
+        "Benchmark credibility via full versioned report with commands/model IDs",
+        "Honest about losses - includes unfavorable results vs competitors",
+        "Model support generated from loader registry to prevent drift",
+        "⭐ markers for differentiating features",
+        "Support matrix with nuanced status (In Development, Partially, Slow, Not)"
+      ]
+    },
+    {
+      "url": "https://github.com/turboderp/exllamav2",
+      "title": "ExLlamaV2 README",
+      "type": "githubExample",
+      "qualityScore": 82,
+      "authority": 7,
+      "recency": 8,
+      "depth": 9,
+      "examples": 8,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Limitations disclosed inline with features",
+        "Archive notice at top redirecting to successor project",
+        "Concrete performance table with hardware, quantization, group size",
+        "Hedging language with performance claims",
+        "First-person candid tone builds trust"
+      ]
+    },
+    {
+      "url": "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes",
+      "title": "GitHub README Official Docs",
+      "type": "officialDocs",
+      "qualityScore": 90,
+      "authority": 10,
+      "recency": 9,
+      "depth": 7,
+      "examples": 8,
+      "uniqueness": 8,
+      "keyInsights": [
+        "READMEs over 500KB are truncated",
+        "Use relative links not absolute URLs - they work in clones",
+        "Headings auto-generate table of contents",
+        "README should contain only info necessary to get started",
+        "Longer documentation belongs in wikis"
+      ]
+    },
+    {
+      "url": "https://www.makeareadme.com",
+      "title": "Make a README Guide",
+      "type": "tutorial",
+      "qualityScore": 87,
+      "authority": 7,
+      "recency": 8,
+      "depth": 9,
+      "examples": 9,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Essential sections: name, description, badges, visuals, installation, usage, support, roadmap, contributing, license, status",
+        "Write README early - ideally first file in project",
+        "Too long is better than too short",
+        "Use examples liberally with expected output",
+        "Validate instructions with real novice users"
+      ]
+    },
+    {
+      "url": "https://github.com/matiassingers/awesome-readme",
+      "title": "Awesome README Examples",
+      "type": "curatedList",
+      "qualityScore": 88,
+      "authority": 8,
+      "recency": 8,
+      "depth": 8,
+      "examples": 10,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Visual proof over prose - GIFs and demos first",
+        "Table of contents for navigability",
+        "Badges signal project health",
+        "Collapsible sections keep long docs scannable",
+        "Philosophy/motivation sections answer 'why another X'"
+      ]
+    },
+    {
+      "url": "https://docs.readme.com/main/docs/best-practices",
+      "title": "ReadMe Documentation Best Practices",
+      "type": "tutorial",
+      "qualityScore": 81,
+      "authority": 7,
+      "recency": 9,
+      "depth": 7,
+      "examples": 8,
+      "uniqueness": 6,
+      "keyInsights": [
+        "Ground docs in OpenAPI spec for accuracy",
+        "Preview before publishing",
+        "Use structured components (code blocks, callouts, tabs)",
+        "Sync with GitHub for version control",
+        "Validate as you write with linters"
+      ]
+    },
+    {
+      "url": "https://github.com/pytorch/pytorch",
+      "title": "PyTorch README",
+      "type": "githubExample",
+      "qualityScore": 91,
+      "authority": 10,
+      "recency": 9,
+      "depth": 9,
+      "examples": 8,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Component table upfront for massive projects",
+        "Binaries-first with interactive selector",
+        "Progressive disclosure for source builds with time estimates",
+        "Channel routing by audience (forum/Slack/issues)",
+        "Deep TOC in README as navigation index"
+      ]
+    },
+    {
+      "url": "https://github.com/rust-lang/rust",
+      "title": "Rust Language README",
+      "type": "githubExample",
+      "qualityScore": 86,
+      "authority": 10,
+      "recency": 9,
+      "depth": 7,
+      "examples": 7,
+      "uniqueness": 8,
+      "keyInsights": [
+        "README as thin stable index - all depth delegated",
+        "Source builds explicitly discouraged in README",
+        "Technical requirements framed as user benefits",
+        "Layered on-ramps for different contribution levels",
+        "Governance files at repo root"
+      ]
+    },
+    {
+      "url": "https://github.com/influxdata/influxdb",
+      "title": "InfluxDB README",
+      "type": "githubExample",
+      "qualityScore": 87,
+      "authority": 9,
+      "recency": 9,
+      "depth": 8,
+      "examples": 8,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Performance claims tied to specific query types",
+        "Branch-per-major-version with comparison table",
+        "Architectural facts as quick-reference spec block",
+        "Docker-verified build recipes per platform",
+        "Backward compatibility explicitly stated"
+      ]
+    },
+    {
+      "url": "https://www.writethedocs.org/guide/writing/beginners-guide-to-docs/",
+      "title": "Write The Docs Beginner's Guide",
+      "type": "tutorial",
+      "qualityScore": 89,
+      "authority": 8,
+      "recency": 8,
+      "depth": 9,
+      "examples": 8,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Documentation defines what module does, not code",
+        "Writing docs improves code design",
+        "Right-size content - needed info but not too much",
+        "Plain text with version control",
+        "FAQs become outdated quickly - avoid as primary docs"
+      ]
+    },
+    {
+      "url": "https://github.com/facebookresearch/llama",
+      "title": "Meta Llama README",
+      "type": "githubExample",
+      "qualityScore": 84,
+      "authority": 10,
+      "recency": 7,
+      "depth": 8,
+      "examples": 8,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Gated access flow with expiring links documented",
+        "Layered legal docs (license, use policy, model card)",
+        "Model-parallelism table maps size to GPU count",
+        "Triaged reporting channels by issue type",
+        "Responsible AI documentation as first-class concern"
+      ]
+    },
+    {
+      "url": "https://github.com/openai/triton",
+      "title": "Triton README",
+      "type": "githubExample",
+      "qualityScore": 83,
+      "authority": 9,
+      "recency": 9,
+      "depth": 8,
+      "examples": 7,
+      "uniqueness": 7,
+      "keyInsights": [
+        "README as contributor/developer manual for compilers",
+        "Tiered install paths by complexity",
+        "Tips for hacking section cataloging debug flags",
+        "Honest about gaps (no turnkey test runner)",
+        "User-facing tutorials outsourced to docs site"
+      ]
+    },
+    {
+      "url": "https://github.com/redis/redis",
+      "title": "Redis README",
+      "type": "githubExample",
+      "qualityScore": 93,
+      "authority": 10,
+      "recency": 9,
+      "depth": 9,
+      "examples": 9,
+      "uniqueness": 8,
+      "keyInsights": [
+        "Audience-based routing with jump links",
+        "Per-OS build recipes validated against Docker images",
+        "Version pinning with rationale",
+        "Post-build smoke test with expected output",
+        "Performance claims mechanism-based not benchmark-heavy"
+      ]
+    },
+    {
+      "url": "https://github.com/RichardLitt/standard-readme",
+      "title": "Standard Readme Specification",
+      "type": "specification",
+      "qualityScore": 85,
+      "authority": 7,
+      "recency": 7,
+      "depth": 9,
+      "examples": 8,
+      "uniqueness": 7,
+      "keyInsights": [
+        "Required sections: title, description, TOC, background, install, usage, maintainers, contributing, license",
+        "Badges not required but aid adoption when present",
+        "Avoid badge clutter - reduces readability",
+        "README is first entry point to code",
+        "Standardization enables tooling (linters, generators)"
+      ]
+    },
+    {
+      "url": "https://github.com/noffle/art-of-readme",
+      "title": "Art of README",
+      "type": "essay",
+      "qualityScore": 92,
+      "authority": 8,
+      "recency": 6,
+      "depth": 10,
+      "examples": 9,
+      "uniqueness": 9,
+      "keyInsights": [
+        "README as cognitive funnel - broad to specific",
+        "Ideal README as short as possible without being shorter",
+        "Documentation defines module not code",
+        "Predictability saves cognitive cycles",
+        "Order by disqualification speed for honest evaluation"
+      ]
+    }
+  ],
+  "sourceBreakdown": {
+    "githubExamples": 14,
+    "officialDocs": 1,
+    "tutorials": 3,
+    "curatedList": 1,
+    "specification": 1,
+    "essay": 1
+  },
+  "qualityAssessment": {
+    "coverage": 9,
+    "diversity": 9,
+    "examples": 10,
+    "confidence": 9,
+    "gaps": [
+      "Limited coverage of accessibility considerations in technical docs",
+      "Minimal discussion of internationalization for global projects",
+      "Could benefit from more CI/CD integration examples for doc testing"
+    ]
+  },
+  "keyTakeaways": [
+    "README as router not manual - hub-and-spoke pattern with external delegation observed across all high-quality projects",
+    "Performance claims require hardware + methodology + reproducibility - unfalsifiable claims destroy credibility",
+    "Limitations disclosed inline build trust more than perfection claims - honesty is a competitive advantage",
+    "First screenful determines adoption - one-line value prop + runnable example + hardware scope above the fold",
+    "Examples must be copy-pasteable and show expected output - test in CI or they will bitrot"
+  ]
+}
