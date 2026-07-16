@@ -150,6 +150,9 @@ run_cell() {
 while read -r cell; do
     id=$(echo "$cell" | jq -r .id)
     if [ "$MODE" = "--perf-quick" ] && [[ "$id" != 31b-* ]]; then continue; fi
+    # BW24_CI_CELLS: extended-regex cell-id filter (e.g. "26b-|e4b-") — run a subset
+    # without touching the manifest; verdicts/rows behave exactly like a full run.
+    if [ -n "${BW24_CI_CELLS:-}" ] && ! echo "$id" | grep -qE "$BW24_CI_CELLS"; then continue; fi
     run_cell "$id" "$(echo "$cell" | jq -r .model)" "$(echo "$cell" | jq -r .mode)" \
              "$(echo "$cell" | jq -r .prompt)" "$(echo "$cell" | jq -r .ngen)" \
              "$(echo "$cell" | jq -r '.k // 0')" "$(echo "$cell" | jq -r '.draft // ""')" \
