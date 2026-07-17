@@ -103,7 +103,7 @@ def merge(args: argparse.Namespace) -> dict[str, Any]:
     manifest = dict(first)
     for key in ("fragment_layers", "tensors", "tier_summary", "artifact_bytes", "payload_bytes"):
         manifest.pop(key, None)
-    manifest["created_utc"] = dt.datetime.now(dt.UTC).isoformat()
+    manifest["created_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
     manifest["fragments"] = receipts
     manifest["tensors"] = dict(sorted(tensors.items()))
     manifest["tier_summary"] = dict(sorted(tier_summary.items()))

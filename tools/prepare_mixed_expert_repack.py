@@ -617,7 +617,7 @@ def prepare(args: argparse.Namespace) -> None:
         raise ValueError("tensor overrides are installed only while merging complete fragments")
     manifest: dict[str, Any] = {
         "format": OVERLAY_FORMAT,
-        "created_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_dir": str(fallback_dir),
         "quant_source_dir": str(source_dir),
         "quality": "unverified - pending target-machine correctness and public eval gates",
