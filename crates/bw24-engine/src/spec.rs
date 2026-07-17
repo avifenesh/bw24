@@ -1386,6 +1386,13 @@ impl HybridModel {
         r
     }
 
+    /// Is this call sampled? ONE derivation for dispatch and any future policy: the server
+    /// passes SpecSampling explicitly; the CLI/eager arm drives temperature via BW24_SPEC_TEMP.
+    fn spec_call_sampled(sampling: &Option<SpecSampling>) -> bool {
+        sampling.is_some() || std::env::var("BW24_SPEC_TEMP").ok()
+            .and_then(|v| v.parse::<f32>().ok()).map(|t| t > 0.0).unwrap_or(false)
+    }
+
     /// PER-REQUEST DRAFT DISPATCH (hqmtp frontier result): with a second head resident
     /// (BW24_MTP_DRAFT2), route each call by regime — the trimmed natural head wins short
     /// contexts and greedy decode; the distilled student wins long+sampled (its rounds are
@@ -1393,6 +1400,10 @@ impl HybridModel {
     /// affects exactness (verify arbitrates) — dispatch is purely a throughput policy.
     /// BW24_DISPATCH: unset/auto = rule below; 1 = force primary; 2 = force second.
     /// BW24_DISPATCH_CTX: context-length threshold in tokens (default 1500).
+    /// V1 SCOPE: dispatch is ONE-SHOT-call only. Session calls keep the primary head unless
+    /// the second head's KV geometry matches the session scratch (the persistent draft KV is
+    /// sized to one head's kv dims at new_session) — routing sessions to a narrower student
+    /// needs a second lazily-filled scratch, a follow-up gated on the serve-path fix.
     fn pick_draft(&self, ctx_len: usize, sampled: bool) -> Option<&crate::hybrid::MtpHead> {
         let (Some(m1), Some(m2)) = (self.mtp.as_ref(), self.mtp2.as_ref()) else {
             return self.mtp.as_ref();
@@ -1406,10 +1417,6 @@ impl HybridModel {
                 sampled && ctx_len >= thr
             }
         };
-        if std::env::var("BW24_DISPATCH_LOG").is_ok() {
-            eprintln!("[dispatch] ctx={ctx_len} sampled={sampled} -> {}",
-                      if pick2 { "draft2" } else { "draft1" });
-        }
         Some(if pick2 { m2 } else { m1 })
     }
 
@@ -1418,12 +1425,10 @@ impl HybridModel {
                            sampling: Option<SpecSampling>)
                          -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
-        // Dispatch BEFORE the session split: ctx = committed + new tokens; sampled = server
-        // param or env temp. Session calls only switch heads when the scratch geometry matches
-        // (the persistent draft KV is sized to one head's kv dims).
+        // Dispatch BEFORE the session split: ctx = committed + new tokens (see pick_draft's
+        // V1 SCOPE note for the session geometry guard below).
         let disp_ctx = prompt.len() + sess.as_ref().map(|s| s.committed.len()).unwrap_or(0);
-        let disp_sampled = sampling.is_some() || std::env::var("BW24_SPEC_TEMP").ok()
-            .and_then(|v| v.parse::<f32>().ok()).map(|t| t > 0.0).unwrap_or(false);
+        let disp_sampled = Self::spec_call_sampled(&sampling);
         let picked = self.pick_draft(disp_ctx, disp_sampled);
         let mtp = picked.expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
         let mtp = match sess.as_ref() {
@@ -1432,10 +1437,22 @@ impl HybridModel {
                 let head_kv = mtp.geom.as_ref().map(|g| g.n_head_kv)
                     .unwrap_or(self.cfg.n_head_kv as usize) * self.cfg.head_dim_k as usize;
                 if s.scratch.kv.kv_dim_k == head_kv { mtp }
-                else { self.mtp.as_ref().unwrap() }
+                else {
+                    if std::env::var("BW24_DISPATCH_LOG").is_ok() {
+                        eprintln!("[dispatch] ctx={disp_ctx} sampled={disp_sampled} -> \
+                                   draft1 (session geometry fallback)");
+                    }
+                    self.mtp.as_ref().unwrap()
+                }
             }
             None => mtp,
         };
+        // Log AFTER the geometry guard — the printed head is the head that actually runs.
+        if std::env::var("BW24_DISPATCH_LOG").is_ok() && self.mtp2.is_some() {
+            let is2 = self.mtp2.as_ref().map(|m2| std::ptr::eq(m2, mtp)).unwrap_or(false);
+            eprintln!("[dispatch] ctx={disp_ctx} sampled={disp_sampled} -> {}",
+                      if is2 { "draft2" } else { "draft1" });
+        }
         let n_vocab = self.output.out_features();
         // FR-Spec: the draft head may be TRIMMED (fewer rows than n_vocab); the draft argmax runs
         // over the draft vocab and the winning index maps through d2t to a TARGET token id.
