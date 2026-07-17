@@ -30,6 +30,12 @@ fn main() {
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1");
         }
+        // The hand-written mxf4nvf4 block-scale MMA in qmatvec_gemm.cu is an sm_120a
+        // instruction encoding. B200 (sm_100a) uses the accuracy-safe NVFP4 W4A8 int8
+        // path below instead, so omit only that unused opt-in kernel from its fatbin.
+        if cuda_arch == "100a" && src == "cu/qmatvec_gemm.cu" {
+            args.push("-DBW24_DISABLE_NATIVE_FP4=1");
+        }
         args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
             .args(args)
@@ -93,6 +99,15 @@ fn main() {
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
+            let compile_src = if cuda_arch == "100a" && mmq_src == "cu/mmq_fp4.cu" {
+                // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only. Keep its C ABI
+                // present on B200, but make accidental use fail closed; normal evaluation
+                // uses the separately compiled W4A8 launcher.
+                "cu/mmq_fp4_stub.cu"
+            } else {
+                mmq_src
+            };
+            println!("cargo:rerun-if-changed={compile_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
             let mut args: Vec<String> = vec![
@@ -106,7 +121,7 @@ fn main() {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
             }
-            args.extend(["-c".into(), mmq_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
+            args.extend(["-c".into(), compile_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
                 .args(&args)
                 .status()
