@@ -33,6 +33,7 @@ cargo build --release
 BW24_CHAT=1 ./target/release/run-gen /path/to/model.gguf --prompt "Explain KV caches."
 BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP speculative
 ./target/release/run-gen hf:owner/repo:Q4_K_M --prompt "hi"        # auto-download from HF (needs `hf` CLI)
+./target/release/frspec-owngen model.gguf trim.gguf --validate     # build + validate an FR-Spec draft trim from the model's OWN generations
 ./target/release/bw24-server                      # OpenAI-compatible /v1
 ```
 
