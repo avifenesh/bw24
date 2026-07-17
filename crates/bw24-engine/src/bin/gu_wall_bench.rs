@@ -15,8 +15,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_expert = 16usize;
     let n_used = 8usize;
     let (in_f, n_ff) = (2048usize, 512usize);
-    let rb = in_f / 256 * 110;                 // IQ3_S row bytes = 880
-    let qt = bw24_engine::QT_IQ3_S;
+    // BW24_BENCH_QT: iq3s (default) | iq4xs | nvfp4 — the 35B expert-quant candidates.
+    let (rb, qt) = match std::env::var("BW24_BENCH_QT").as_deref() {
+        Ok("iq4xs") => (in_f / 256 * 136, bw24_engine::QT_IQ4_XS),
+        Ok("nvfp4") => (in_f / 64 * 36, bw24_engine::QT_NVFP4),
+        _ => (in_f / 256 * 110, bw24_engine::QT_IQ3_S),
+    };
     let stride = rb * n_ff;
     let slab: Vec<u8> = (0..n_expert * stride).map(|i| hb(i + 7)).collect();
     let slab_d = e.htod_bytes(&slab)?;

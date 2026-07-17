@@ -65,6 +65,25 @@ pub struct Hy3Layer0Stages {
 }
 
 impl HybridModel {
+    /// Device embed table for the dc fast loops (lazy ~0.5GB upload). On OOM — tight fits
+    /// where resident experts + KV leave no headroom (35B ct-NVFP4 artifact at default
+    /// budget, 2026-07-17) — returns None and the caller stays on the host-embd eager loop
+    /// instead of panicking. Double-init race is benign (identical bytes, loser dropped).
+    fn embd_gpu_try(&self, e: &Engine) -> Option<&cudarc::driver::CudaSlice<u8>> {
+        if let Some(v) = self.embd_gpu.get() {
+            return Some(v);
+        }
+        match e.upload_u8(&self.embd.raw) {
+            Ok(buf) => Some(self.embd_gpu.get_or_init(|| buf)),
+            Err(err) => {
+                eprintln!("[embd-gpu] upload failed ({err}); dc loop disabled, host-embd eager loop serves");
+                None
+            }
+        }
+    }
+}
+
+impl HybridModel {
     /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
     pub fn decode_step(&self, e: &Engine, token: u32, cache: &mut Cache) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         Ok(self.decode_step_h(e, token, cache)?.0)
@@ -842,7 +861,8 @@ impl HybridModel {
         crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
                                  std::sync::atomic::Ordering::Relaxed);
         let mut out = Vec::with_capacity(max_new);
-        if self.cfg.gemma4.is_some() {
+        if self.cfg.gemma4.is_some()
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             // Graph serving probed FLAT vs this dc loop (2026-07-12, 1.7k N=2: 174.6/174.2 vs
             // 174.5/174.3) — the GRAPH-GATE's +2.5% is over the plain-eager loop, and the dc
             // arc already banked that; the gate (IDENTICAL at every ctx since the wkv
@@ -850,9 +870,6 @@ impl HybridModel {
             // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
             // E4B rides its own dc step (same trunk fns as its eager chain).
             let n_vocab = self.output.out_features();
-            let embd_gpu = self.embd_gpu.get_or_init(|| {
-                e.upload_u8(&self.embd.raw).expect("embed table upload")
-            });
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
@@ -906,12 +923,10 @@ impl HybridModel {
         static QWEN_DC2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC2.get_or_init(||
             std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
-        if qwen_dc && max_new > 0 {
+        if qwen_dc && max_new > 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
-            let embd_gpu = self.embd_gpu.get_or_init(|| {
-                e.upload_u8(&self.embd.raw).expect("embed table upload")
-            });
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
@@ -1082,11 +1097,9 @@ impl HybridModel {
         // device counters, argmax on device — host sees 4B/token. Stream-identical to the
         // eager chain (DC-GATE). Penalties/temp fall through to the host-logits loop.
         if self.cfg.gemma4.is_some()
-            && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
+            && sampler.is_greedy() && sampler.penalty_last_n() == 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
-            let embd_gpu = self.embd_gpu.get_or_init(|| {
-                e.upload_u8(&self.embd.raw).expect("embed table upload")
-            });
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
@@ -1142,12 +1155,10 @@ impl HybridModel {
         static QWEN_DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let qwen_dc = *QWEN_DC.get_or_init(||
             std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
-        if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0 {
+        if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
-            let embd_gpu = self.embd_gpu.get_or_init(|| {
-                e.upload_u8(&self.embd.raw).expect("embed table upload")
-            });
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }

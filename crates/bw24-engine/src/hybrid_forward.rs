@@ -112,12 +112,13 @@ fn q8_expert_supported(qt: i32) -> bool {
     let kq = *KQ.get_or_init(|| {
         std::env::var("BW24_MOE_Q8_KQ").map(|v| v != "0").unwrap_or(true)
     });
-    // NVFP4 experts (MiniMax-M3): dot body exists (expert_dot_nvfp4_g) but enabling it here
-    // broke the M3 gate (decode-vs-verify MISMATCH 3.4e1) — the q8 arms' macro handling differs
-    // between t-regimes somewhere; M3 stays on the f32 arm until that parity is proven. ALSO
-    // measured irrelevant for now: M3 decode is PCIe-staging-bound (11.9s HtoD in a 32-tok
-    // window — SLRU misses dominate), not kernel-bound. BW24_MOE_Q8_NVFP4=1 re-enables for debug.
-    let nvfp4_q8 = std::env::var("BW24_MOE_Q8_NVFP4").map(|v| v == "1").unwrap_or(false);
+    // NVFP4 experts: DEFAULT ON (2026-07-17). The M3-era "decode-vs-verify MISMATCH 3.4e1"
+    // that had this excluded was the missing per-expert macro-scale fold, fixed in the
+    // dev-kernel epilogues + moe_w_scale_by_expert; the 35B ct-NVFP4 artifact now runs the
+    // q8 arm at parity with the IQ4_XS daily (174-178 tok/s, spec K=1..8 exact). M3/Hy3
+    // never reach the q8 arms regardless (sigmoid-router cfg gates on pairs/dev/gdec).
+    // BW24_MOE_Q8_NVFP4=0 restores the f32 arm.
+    let nvfp4_q8 = std::env::var("BW24_MOE_Q8_NVFP4").map(|v| v != "0").unwrap_or(true);
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS || (nvfp4_q8 && qt == crate::QT_NVFP4)
         || (kq && (qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K))
 }
