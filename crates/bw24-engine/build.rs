@@ -9,11 +9,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
     let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
-    assert!(matches!(cuda_arch.as_str(), "120a" | "89"),
-            "BW24_CUDA_ARCH must be 120a (default) or 89 (portable eval)");
+    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "89"),
+            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), or 89 (portable eval)");
     let portable = cuda_arch == "89";
-    assert!(!(portable && std::env::var_os("BW24_CUTLASS").is_some()),
-            "BW24_CUTLASS is sm_120a-only and cannot be enabled for BW24_CUDA_ARCH=89");
+    assert!(!(cuda_arch != "120a" && std::env::var_os("BW24_CUTLASS").is_some()),
+            "BW24_CUTLASS is sm_120a-only and cannot be enabled for this CUDA architecture");
     let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
     if portable {
         println!("cargo:rustc-cfg=bw24_portable_cuda");
@@ -96,7 +96,7 @@ fn main() {
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
             let mut args: Vec<String> = vec![
-                "-gencode".into(), "arch=compute_120a,code=sm_120a".into(),
+                "-gencode".into(), gencode.clone(),
                 "-O3".into(), "-std=c++17".into(), "--expt-relaxed-constexpr".into(),
             ];
             if mmq_src.ends_with("mmq_q45k.cu") {
