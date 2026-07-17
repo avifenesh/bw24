@@ -65,3 +65,4 @@
 {"ts":"2026-07-17T00:51:46Z","git":"0ccbcd6","cell":"31b-plain-d1736","toks":37.29,"profile":"balanced","load":4.80,"window_clean":false}
 {"ts":"2026-07-17T00:51:46Z","git":"0ccbcd6","cell":"31b-spec-short","toks":96.31,"accept":0.817,"tok_round":3.20,"profile":"balanced","load":4.80,"window_clean":false}
 {"ts":"2026-07-17T00:51:46Z","git":"0ccbcd6","cell":"31b-spec-d1736","toks":92.00,"accept":0.808,"tok_round":4.13,"profile":"balanced","load":4.80,"window_clean":false}
+{"ts":"2026-07-17T06:19:38Z","git":"802a3d8","cell":"qwen9b-plain-short","toks":131.16,"profile":"performance","load":2.27,"window_clean":false}
