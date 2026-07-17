@@ -100,7 +100,7 @@ for arm in "${arms[@]}"; do
     "${fragment_args[@]}" --plan "$BOUND_ROOT/$arm.json" \
     --out-dir "$ARTIFACT_ROOT/$arm" --output "$ARTIFACT_ROOT/$arm/manifest.json"
   "$PY" "$REPO/research/per-expert-quant/validate_artifact.py" \
-    "$ARTIFACT_ROOT/$arm/manifest.json" --verify-sources
+    "$ARTIFACT_ROOT/$arm" --verify-sources
 done
 
 "$PY" - "$ROOT/receipts/matched-repack.json" "$ARTIFACT_ROOT" "${arms[@]}" <<'PY'

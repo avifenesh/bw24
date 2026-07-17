@@ -37,7 +37,7 @@ server_sha=$(jq -r .binary_sha256 "$SERVER_RECEIPT")
 [[ -x "$server_bin" && $(sha256sum "$server_bin" | awk '{print $1}') == "$server_sha" ]]
 for arm in "$BASE_ARM" "$CANDIDATE_ARM"; do
   "$PY" "$EVAL_REPO/research/per-expert-quant/validate_artifact.py" \
-    "$ARTIFACT_ROOT/$arm/manifest.json" --verify-sources
+    "$ARTIFACT_ROOT/$arm" --verify-sources
 done
 "$PY" "$EVAL_REPO/research/per-expert-quant/validate_capability_panel.py" \
   "$PANEL_LOCK" --suite-lock "$SUITE_LOCK" --print-sha
