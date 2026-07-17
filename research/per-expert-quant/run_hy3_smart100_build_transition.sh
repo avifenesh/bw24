@@ -29,10 +29,24 @@ LAYER_CONSTRAINTS=${LAYER_CONSTRAINTS:-}
 SELECTION_LOCK=${SELECTION_LOCK:-}
 SELECTION_LOCK_VALIDATOR=${SELECTION_LOCK_VALIDATOR:-}
 EXPECTED_PLAN_SHA256_CSV=${EXPECTED_PLAN_SHA256_CSV:-}
+BASE_PLAN=${BASE_PLAN:-}
+BASE_MODES_CSV=${BASE_MODES_CSV:-}
 
 IFS=, read -r -a arms <<<"$ARMS_CSV"
 IFS=, read -r -a targets <<<"$TARGET_BYTES_CSV"
 IFS=, read -r -a weight_specs <<<"$WEIGHTS_CSV"
+base_modes=()
+if [[ -n "$BASE_MODES_CSV" ]]; then
+  IFS=, read -r -a base_modes <<<"$BASE_MODES_CSV"
+  [[ -n "$BASE_PLAN" && ${#base_modes[@]} -eq ${#arms[@]} ]] \
+    || { echo "base plan and one base mode per arm are required together" >&2; exit 2; }
+  for mode in "${base_modes[@]}"; do
+    [[ "$mode" == restore-only || "$mode" == precision-only || "$mode" == hybrid ]] \
+      || { echo "invalid base mode $mode" >&2; exit 2; }
+  done
+elif [[ -n "$BASE_PLAN" ]]; then
+  echo "BASE_PLAN requires BASE_MODES_CSV" >&2; exit 2
+fi
 expected_plan_hashes=()
 if [[ -n "$EXPECTED_PLAN_SHA256_CSV" ]]; then
   IFS=, read -r -a expected_plan_hashes <<<"$EXPECTED_PLAN_SHA256_CSV"
@@ -77,10 +91,19 @@ echo "$(date -u +%FT%TZ) smart100 build transition started" | tee -a "$LOG_ROOT/
 [[ $(git -C "$ROOT" rev-parse HEAD) == "$EXPECTED_COMMIT" ]] || die "source commit mismatch"
 
 while [[ -n "$SENSITIVITY_COMPLETE" && ! -f "$SENSITIVITY_COMPLETE" ]]; do sleep 30; done
-for path in "$SENSITIVITY" "$RETENTION" "$CONFIDENCE" "$REFERENCE_PLAN" "$TRACE_LOCK" \
+for path in "$SENSITIVITY" "$RETENTION" "$REFERENCE_PLAN" "$TRACE_LOCK" \
   "$SOURCE/config.json" "$SOURCE/model.safetensors.index.json"; do
   [[ -f "$path" ]] || die "missing input $path"
 done
+if [[ -n "$CONFIDENCE" ]]; then
+  [[ -f "$CONFIDENCE" ]] || die "missing confidence plan $CONFIDENCE"
+fi
+if [[ -n "$REFERENCE_RECEIPTS" ]]; then
+  [[ -d "$REFERENCE_RECEIPTS" ]] || die "missing reference receipts $REFERENCE_RECEIPTS"
+fi
+if [[ -n "$BASE_PLAN" ]]; then
+  [[ -f "$BASE_PLAN" ]] || die "missing base plan $BASE_PLAN"
+fi
 if [[ -n "$LAYER_CONSTRAINTS" ]]; then
   [[ -f "$LAYER_CONSTRAINTS" ]] || die "missing layer constraints $LAYER_CONSTRAINTS"
 fi
@@ -140,13 +163,21 @@ for index in "${!arms[@]}"; do
   fi
   constraint_args=()
   [[ -z "$LAYER_CONSTRAINTS" ]] || constraint_args=(--layer-constraints "$LAYER_CONSTRAINTS")
+  base_args=()
+  if [[ ${#base_modes[@]} -gt 0 ]]; then
+    base_args=(--base-plan "$BASE_PLAN" --base-mode "${base_modes[$index]}")
+  fi
+  confidence_args=()
+  [[ -z "$CONFIDENCE" ]] || confidence_args=(--confidence-plan "$CONFIDENCE")
+  receipt_args=()
+  [[ -z "$REFERENCE_RECEIPTS" ]] || receipt_args=(--joint-receipts "$REFERENCE_RECEIPTS")
   taskset -c "$control_cpus" "$PY" "$ROOT/tools/build_hy3_smart_budget_plan.py" \
     --retention-scores "$RETENTION" --quant-sensitivity "$SENSITIVITY" \
-    --confidence-plan "$CONFIDENCE" --joint-receipts "$REFERENCE_RECEIPTS" \
     --reference-plan "$REFERENCE_PLAN" --target-logical-bytes "$target_bytes" \
     --min-survivors-per-layer 96 --retention-weight "$retention_weight" \
     --confidence-weight "$confidence_weight" --layer-weight "$layer_weight" \
     --time-limit-seconds 900 --mip-rel-gap "$MIP_REL_GAP" "${constraint_args[@]}" \
+    "${base_args[@]}" "${confidence_args[@]}" "${receipt_args[@]}" \
     --out "$plan" | tee "$LOG_ROOT/plan-$arm.log"
 done
 
@@ -188,6 +219,20 @@ for arm_spec in arm_specs:
     assert d["selection"]["retained_experts"] + d["selection"]["pruned_experts"] == 79*192
     assert min(int(x["retained"]) for x in d["layer_summary"].values()) >= 96
 PY
+if [[ ${#base_modes[@]} -gt 0 ]]; then
+  "$PY" - "$PLAN_ROOT" "$BASE_PLAN" "$BASE_MODES_CSV" "${arms[@]}" <<'PY'
+import hashlib,json,pathlib,sys
+root,base_path,modes,*arms=sys.argv[1:]
+base_hash=hashlib.sha256(pathlib.Path(base_path).read_bytes()).hexdigest()
+modes=modes.split(",")
+for arm,mode in zip(arms,modes,strict=True):
+    d=json.loads((pathlib.Path(root)/f"{arm}.json").read_text())
+    receipt=d["policy"]["base_preservation"]
+    assert receipt["mode"] == mode
+    assert receipt["base_plan"]["sha256"] == base_hash
+    assert receipt["retained_experts_may_be_pruned"] is False
+PY
+fi
 
 # Run every candidate/layer repair through fixed GPU/CPU lanes. Candidate tasks are interleaved so
 # every GPU stays occupied without running multiple repairs on one device.

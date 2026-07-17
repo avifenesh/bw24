@@ -50,6 +50,54 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def load_base_states(
+    payload: dict[str, Any],
+    experts: list[tuple[int, int]],
+    qtypes: tuple[str, ...],
+) -> tuple[set[tuple[int, int]], dict[tuple[int, int, str], str]]:
+    """Expand a v2 plan into exact expert/projection states for base-preserving runs."""
+    if payload.get("format") != PLAN_FORMAT:
+        raise ValueError("unsupported base plan format")
+    expert_set = set(experts)
+    pruned = {
+        (int(layer), int(expert))
+        for layer, ids in payload.get("pruned_experts", {}).items()
+        for expert in ids
+    }
+    if not pruned <= expert_set:
+        raise ValueError("base plan pruned experts do not match the model")
+    states: dict[tuple[int, int, str], str] = {}
+    for row in payload.get("assignments", []):
+        qtype = str(row["qtype"])
+        if qtype not in qtypes:
+            raise ValueError(f"base plan qtype {qtype} is absent from sensitivity")
+        layer = int(row["layer"])
+        for expert in row["experts"]:
+            key = (layer, int(expert))
+            if key not in expert_set or key in pruned:
+                raise ValueError(f"invalid retained base assignment for {key}")
+            for projection in row["projections"]:
+                if projection not in PROJECTIONS:
+                    raise ValueError(f"invalid base projection {projection}")
+                state = (*key, projection)
+                if state in states:
+                    raise ValueError(f"duplicate base assignment for {state}")
+                states[state] = qtype
+    expected = {
+        (*key, projection)
+        for key in expert_set - pruned
+        for projection in PROJECTIONS
+    }
+    if states.keys() != expected:
+        missing = sorted(expected - states.keys())
+        extra = sorted(states.keys() - expected)
+        raise ValueError(
+            f"base plan does not exactly cover retained projections: "
+            f"missing={missing[:3]} extra={extra[:3]}"
+        )
+    return pruned, states
+
+
 def projection_bytes(projection: str, hidden: int, intermediate: int, qtype: str) -> int:
     rows, cols = (
         (intermediate, hidden) if projection in ("gate", "up") else (hidden, intermediate)
@@ -106,6 +154,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     reference = load_json(args.reference_plan)
     confidence = load_json(args.confidence_plan) if args.confidence_plan else None
     layer_constraints = load_json(args.layer_constraints) if args.layer_constraints else None
+    base_plan = load_json(args.base_plan) if args.base_plan else None
+    base_mode = args.base_mode if args.base_plan else None
+    if args.base_mode and not args.base_plan:
+        raise ValueError("--base-mode requires --base-plan")
+    if args.base_plan and not args.base_mode:
+        raise ValueError("--base-plan requires --base-mode")
     if retention.get("format") != RETENTION_FORMAT:
         raise ValueError("unsupported retention score format")
     if sensitivity.get("format") != SENSITIVITY_FORMAT:
@@ -134,6 +188,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     expert_count = int(model["expert_count"])
     hidden, intermediate = int(model["hidden_size"]), int(model["intermediate_size"])
     experts = [(layer, expert) for layer in layers for expert in range(expert_count)]
+    if base_plan is not None:
+        base_pruned, base_states = load_base_states(base_plan, experts, qtypes)
+    else:
+        base_pruned, base_states = set(), {}
     layer_policy: dict[int, dict[str, int]] = {
         layer: {
             "min_survivors": args.min_survivors_per_layer,
@@ -344,6 +402,37 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         ub[quant_index[state]] = 0.0
     for key in protected:
         ub[prune_index[key]] = 0.0
+    if base_plan is not None:
+        for key in experts:
+            if key in base_pruned:
+                if base_mode == "precision-only":
+                    lb[prune_index[key]] = 1.0
+                    ub[prune_index[key]] = 1.0
+                continue
+            ub[prune_index[key]] = 0.0
+            for projection in PROJECTIONS:
+                base_qtype = base_states[(*key, projection)]
+                base_index = quant_index[(*key, projection, base_qtype)]
+                base_size = int(bytes_vector[base_index])
+                base_damage = float(objective[base_index])
+                for qtype in qtypes:
+                    index = quant_index[(*key, projection, qtype)]
+                    allowed = qtype == base_qtype
+                    if base_mode in ("precision-only", "hybrid"):
+                        tolerance = 1e-12 * max(abs(base_damage), 1.0)
+                        allowed = (
+                            int(bytes_vector[index]) >= base_size
+                            and float(objective[index]) <= base_damage + tolerance
+                        )
+                    if allowed:
+                        ub[index] = 1.0
+                    else:
+                        ub[index] = 0.0
+                if ub[base_index] == 0.0:
+                    raise ValueError(
+                        f"base-preserving constraints eliminated base state "
+                        f"{(*key, projection, base_qtype)}"
+                    )
     result = milp(
         c=objective,
         integrality=np.ones(n_variables, dtype=np.uint8),
@@ -431,6 +520,30 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "confidence": args.confidence_weight,
                 "layer": args.layer_weight,
             },
+            "base_preservation": (
+                {
+                    "mode": base_mode,
+                    "base_plan": {
+                        "path": str(args.base_plan.resolve()),
+                        "sha256": sha256(args.base_plan),
+                    },
+                    "base_retained_experts": len(experts) - len(base_pruned),
+                    "base_pruned_experts": len(base_pruned),
+                    "retained_experts_may_be_pruned": False,
+                    "retained_projection_rule": (
+                        "exact-base-qtype"
+                        if base_mode == "restore-only"
+                        else "bytes-at-least-base-and-damage-no-worse-than-base"
+                    ),
+                    "base_pruned_expert_rule": (
+                        "must-remain-pruned"
+                        if base_mode == "precision-only"
+                        else "may-be-restored"
+                    ),
+                }
+                if base_plan is not None
+                else None
+            ),
             "qtype_projection_counts": counts,
             "candidate_qtypes": list(qtypes),
             "solver": "scipy.optimize.milp/HiGHS",
@@ -552,6 +665,7 @@ def self_test() -> None:
             min_survivors_per_layer=1, retention_weight=1.0, confidence_weight=1.0,
             layer_weight=0.0, time_limit_seconds=30,
             mip_rel_gap=1e-4, layer_constraints=None,
+            base_plan=None, base_mode=None,
         )
         plan = build_plan(args)
         assert plan["policy"]["result_logical_bytes"] <= args.target_logical_bytes
@@ -596,6 +710,29 @@ def self_test() -> None:
             assert "private selection evidence" in str(error)
         else:
             raise AssertionError("public-derived layer constraints were accepted")
+        args.layer_constraints = None
+        base_plan = dict(plan)
+        paths["base_plan"] = root / "base-plan.json"
+        paths["base_plan"].write_text(json.dumps(base_plan))
+        args.base_plan = paths["base_plan"]
+        for mode in ("restore-only", "precision-only", "hybrid"):
+            args.base_mode = mode
+            preserved = build_plan(args)
+            policy = preserved["policy"]["base_preservation"]
+            assert policy["mode"] == mode
+            base_pruned = {
+                (int(layer), expert)
+                for layer, ids in base_plan["pruned_experts"].items()
+                for expert in ids
+            }
+            new_pruned = {
+                (int(layer), expert)
+                for layer, ids in preserved["pruned_experts"].items()
+                for expert in ids
+            }
+            assert new_pruned <= base_pruned
+            if mode == "precision-only":
+                assert new_pruned == base_pruned
         from prepare_mixed_expert_repack import load_assignments
         path = root / "plan.json"; path.write_text(json.dumps(plan))
         _, expanded, pruned = load_assignments(path)
@@ -611,6 +748,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer-constraints", type=Path)
     parser.add_argument("--joint-receipts", type=Path)
     parser.add_argument("--reference-plan", type=Path, required=True)
+    parser.add_argument("--base-plan", type=Path)
+    parser.add_argument(
+        "--base-mode",
+        choices=("restore-only", "precision-only", "hybrid"),
+    )
     parser.add_argument("--target-logical-bytes", type=int, default=100_000_000_000)
     parser.add_argument("--min-survivors-per-layer", type=int, default=96)
     parser.add_argument("--retention-weight", type=float, default=1.0)
