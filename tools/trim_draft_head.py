@@ -13,7 +13,12 @@ Ranks come from frspec-owngen (the model's OWN generations — rank files are
 vocab+distribution artifacts; foreign ranks measured -12 acceptance pts on the
 unsloth 27B) or frspec-rank (corpus tokenize).
 
-usage: trim_draft_head.py <draft.gguf> <ranks.txt> <out.gguf> [topN]
+usage: trim_draft_head.py <draft.gguf> <ranks.txt> <out.gguf> [topN] [--head-quant nvfp4]
+
+--head-quant nvfp4: dequantize the gathered rows and requantize them NVFP4 —
+the hqmtp order (trim FIRST, then quantize the retained rows; head-NVFP4 is
+agreement-safe per the hqmtp replay verdict, ±0.03 to 64k). Default keeps the
+source rows byte-verbatim.
 """
 import sys
 
@@ -26,8 +31,10 @@ import gguf  # noqa: E402
 def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
-    draft_path, ranks_path, out_path = sys.argv[1:4]
-    top_n = int(sys.argv[4]) if len(sys.argv) > 4 else 32768
+    args = [a for a in sys.argv[1:] if a != "--head-quant" and a != "nvfp4"]
+    head_nvfp4 = "--head-quant" in sys.argv
+    draft_path, ranks_path, out_path = args[:3]
+    top_n = int(args[3]) if len(args) > 3 else 32768
 
     ids = np.array([int(l) for l in open(ranks_path) if l.strip()][:top_n], dtype=np.int32)
     assert len(ids) == top_n, f"ranks file has {len(ids)} ids < topN {top_n}"
@@ -52,19 +59,30 @@ def main():
     assert out_t.n_bytes % n_vocab == 0, "output.weight rows not byte-aligned"
     flat = np.ascontiguousarray(out_t.data).view(np.uint8).reshape(n_vocab, row_bytes)
     trimmed = np.ascontiguousarray(flat[ids])
+    out_type = out_t.tensor_type
+    if head_nvfp4:
+        # hqmtp order: gather -> dequant the retained rows -> requant NVFP4.
+        in_f = int(out_t.shape[0]) if len(out_t.shape) > 1 else None
+        assert in_f and in_f % 64 == 0, f"head in_f {in_f} not NVFP4-blockable"
+        rows_f32 = gguf.dequantize(trimmed, out_type).reshape(top_n, in_f)
+        trimmed = gguf.quants.quantize(rows_f32.astype(np.float32),
+                                       gguf.GGMLQuantizationType.NVFP4)
+        out_type = gguf.GGMLQuantizationType.NVFP4
+        row_bytes = trimmed.nbytes // top_n
+        trimmed = trimmed.reshape(top_n, row_bytes)
     # byte shape for add_tensor_info: same per-row byte layout, top_n rows
     trimmed_shape = (top_n, out_t.data.shape[-1]) if out_t.data.ndim > 1 else (trimmed.nbytes,)
     trimmed = trimmed.reshape(trimmed_shape).astype(out_t.data.dtype, copy=False) \
         if out_t.data.ndim > 1 else trimmed.reshape(-1).view(out_t.data.dtype)
-    print(f"output.weight: {n_vocab} -> {top_n} rows ({out_t.tensor_type.name}, "
-          f"{row_bytes}B/row, {out_t.n_bytes >> 20}MB -> {trimmed.nbytes >> 20}MB)")
+    print(f"output.weight: {n_vocab} -> {top_n} rows ({out_t.tensor_type.name} -> "
+          f"{out_type.name}, {row_bytes}B/row, {out_t.n_bytes >> 20}MB -> {trimmed.nbytes >> 20}MB)")
 
     d2t = ids  # i32 [top_n]
 
     for t in reader.tensors:
         if t.name == "output.weight":
             writer.add_tensor_info(t.name, trimmed.shape, trimmed.dtype, trimmed.nbytes,
-                                   t.tensor_type)
+                                   out_type)
         else:
             writer.add_tensor_info(t.name, t.data.shape, t.data.dtype, t.data.nbytes,
                                    t.tensor_type)
