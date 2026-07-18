@@ -255,12 +255,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (trim_acc, trim_tps) = spec_eval(&e, &model2, &tok)?;
         eprintln!("[frspec-owngen] trimmed:              acceptance {:.1}% | {:.1} tok/s",
                   trim_acc * 100.0, trim_tps);
+        // Verdict metric is E2E TOK/S (owner law 2026-07-17); acceptance is the diagnostic
+        // for WHY, never the decision basis.
+        let d_tps = trim_tps / base_tps - 1.0;
         let d_acc = trim_acc - base_acc;
-        let verdict = if d_acc >= -0.02 { "GOOD — acceptance held" }
-                      else if d_acc >= -0.05 { "WARN — small acceptance cost, check coverage" }
-                      else { "BAD — trim hurts this model; widen topN or use a matched corpus" };
-        eprintln!("[frspec-owngen] verdict: {verdict} (Δacceptance {:+.1} pts, tok/s {:+.1}%)",
-                  d_acc * 100.0, (trim_tps / base_tps - 1.0) * 100.0);
+        let verdict = if d_tps >= 0.0 { "GOOD — trim wins e2e" }
+                      else if d_tps >= -0.02 { "WASH — no e2e gain; keep only if the VRAM saving matters" }
+                      else { "BAD — trim loses e2e on this model; widen topN or regenerate ranks" };
+        eprintln!("[frspec-owngen] verdict: {verdict} (e2e {:+.1}% | diagnostic: Δacceptance {:+.1} pts)",
+                  d_tps * 100.0, d_acc * 100.0);
     }
 
     println!("serve with:");
