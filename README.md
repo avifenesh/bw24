@@ -79,9 +79,16 @@ Depth is part of the contract: at 6.3k-token context every lead holds (1.02-1.09
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 292.2 / 249.6 / 275.3 | 251.9 / 221.4 / 248.9 | **1.16x** / **1.13x** / **1.11x** |
 <!-- PERF-SPEC:END -->
 
-The three columns are three prompt classes: short code / medium code (both greedy) / long agentic, sampled at temp 0.7 with distribution-exact rejection sampling. The spec edge comes from FR-Spec vocabulary trims, confidence gating, and per-content-class draft depth — mechanics in [`HANDOVER.md`](HANDOVER.md).
+The three columns are three prompt classes: short code / medium code (both greedy) / long agentic, sampled at temp 0.7 with distribution-exact rejection sampling. Every spec row uses **one trimmed draft file built by the standard regime** — the model's own-generation FR-Spec ranks, byte-verbatim MTP extraction, NVFP4 head + Q4_K_M block ([`docs/DRAFT-REGIME.md`](docs/DRAFT-REGIME.md) — the three laws and why each was paid for).
 
-**Reproducing:** trimmed draft-head GGUFs, exact prompts, and configs at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench); llama.cpp flags in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md).
+**Drafts: use ours or build your own.** Prebuilt per-model drafts (exact pipeline, exact published bytes) live at [huggingface.co/Avifenesh/bw24-bench](https://huggingface.co/Avifenesh/bw24-bench) under `drafts/<model>/` — recommended for the board models. For any other model, requant, or finetune, build one in two commands (a finetune's distribution moved, so its draft must too):
+
+```bash
+./target/release/frspec-owngen model.gguf ranks.gguf 32768        # ranks from the model's OWN generations
+tools/make-trimmed-draft.sh model.gguf ranks.gguf.txt draft.gguf  # extract + trim + quantize
+```
+
+Exact prompts and configs also in the bench repo; llama.cpp flags in [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md).
 
 ## Performance — Gemma-4 26B-A4B (QAT Q4_0)
 

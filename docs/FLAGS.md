@@ -34,7 +34,7 @@ HANDOVER.md sections from that date.
 | `BW24_SPEC_PMIN0` | off | `1` lets p-min gate slot 0 too (zero-draft rounds). Pays below ~75% base acceptance, hurts above ~90% (2026-07-08, 35B +13–23 tok/s) |
 | `BW24_SPEC_HPOST` | off | `1` feeds the MTP head POST-output_norm hidden — acceptance lever on the 27B (>100 tok/s crossing, 2026-07-06). Per-model choice |
 | `BW24_FRSPEC_TRIM` | off | `<frspec.gguf>`: self-trimmed draft lm_head — gathers top-frequency rows from the model's own output.weight via the file's d2t ranking (generic ranking transfers across same-vocab heads; specialized ones do not — 2026-07-07) |
-| `BW24_MTP_DRAFT` | off | `<draft.gguf>`: replace the MTP head with a standalone draft GGUF (exactness unaffected — verify arbitrates) |
+| `BW24_MTP_DRAFT` | off | `<draft.gguf>`: replace the MTP head with a standalone draft GGUF (exactness unaffected — verify arbitrates). The standard artifact is the regime draft (docs/DRAFT-REGIME.md): own-gen ranks + NVFP4 head + Q4_K_M block, one file, no other flags |
 | `BW24_GEMMA_DRAFT_RANKS` | off | `<ranks.txt>`: gemma FR-Spec drafter head trim — corpus-ranked vocab ids, head gathered to those rows (150→18 MB at 32k). ADOPTED for 26B serving: +2.8% short/+5.8% depth spec at IDENTICAL acceptance (2026-07-12; ranks file: `research/gemma4-bringup/gemma4-frspec-ranks-32768.txt`). Historical negative verdicts were measured through two since-fixed verify bugs |
 | `BW24_SPEC_CAPMAX` | 7 | gemma adaptive-K cap ceiling. >7 opens the b16 verify tier (t=9..16) — correct since 2026-07-12 (three host bugs fixed) but measured perf-negative (depth K8-10 283-293 vs K6 301-306); the door is a measurement, not a crash |
 
