@@ -118,6 +118,16 @@ def main() -> None:
     global_pairs: collections.Counter[tuple[int, int, int]] = collections.Counter()
     restored_experts: collections.Counter[tuple[int, int]] = collections.Counter()
     displaced_experts: collections.Counter[tuple[int, int]] = collections.Counter()
+    restored_stats: dict[tuple[int, int], dict[str, collections.Counter[str]]] = (
+        collections.defaultdict(
+            lambda: {
+                "entries": collections.Counter(),
+                "entry_weight": collections.Counter(),
+                "paired_base_exits": collections.Counter(),
+                "paired_base_exit_weight": collections.Counter(),
+            }
+        )
+    )
 
     for (ordinal, layer, _token), base_values in base.items():
         candidate_values = candidate[(ordinal, layer, _token)]
@@ -140,6 +150,10 @@ def main() -> None:
                 summary["restored_entry_weight"] += candidate_map[expert]
                 summary["restored_experts"][(layer, expert)] += 1
                 restored_experts[(layer, expert)] += 1
+                restored_stats[(layer, expert)]["entries"][stratum] += 1
+                restored_stats[(layer, expert)]["entry_weight"][stratum] += candidate_map[
+                    expert
+                ]
             else:
                 # Earlier restored-expert dispatches alter the hidden state, so
                 # later layers may change between two already-active experts.
@@ -158,6 +172,10 @@ def main() -> None:
             leaving = min(exited, key=lambda expert: abs(base_map[expert] - candidate_map[entering]))
             summary["restored_displaced_pairs"][(layer, entering, leaving)] += 1
             global_pairs[(layer, entering, leaving)] += 1
+            restored_stats[(layer, entering)]["paired_base_exits"][stratum] += 1
+            restored_stats[(layer, entering)]["paired_base_exit_weight"][stratum] += base_map[
+                leaving
+            ]
 
     rendered_strata: dict[str, Any] = {}
     for stratum, summary in sorted(strata.items()):
@@ -207,6 +225,26 @@ def main() -> None:
         "top_restored_experts": summarize_counter(restored_experts),
         "top_displaced_base_experts": summarize_counter(displaced_experts),
         "top_restored_displaced_pairs": summarize_counter(global_pairs),
+        "restored_expert_stats": [
+            {
+                "layer": layer,
+                "expert": expert,
+                "entries": sum(stats["entries"].values()),
+                "entry_weight": sum(stats["entry_weight"].values()),
+                "paired_base_exits": sum(stats["paired_base_exits"].values()),
+                "paired_base_exit_weight": sum(stats["paired_base_exit_weight"].values()),
+                "downstream_exposure": sum(stats["entries"].values()) * (80 - layer),
+                "stratum_entries": dict(sorted(stats["entries"].items())),
+                "stratum_entry_weight": dict(sorted(stats["entry_weight"].items())),
+                "stratum_paired_base_exits": dict(
+                    sorted(stats["paired_base_exits"].items())
+                ),
+                "stratum_paired_base_exit_weight": dict(
+                    sorted(stats["paired_base_exit_weight"].items())
+                ),
+            }
+            for (layer, expert), stats in sorted(restored_stats.items())
+        ],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
