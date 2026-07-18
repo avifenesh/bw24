@@ -47,6 +47,14 @@ with per-file provenance (source model, rank corpus, commands). Use ours for the
 models; build your own (commands above) for any other model, requant, or finetune —
 a finetune's distribution moved, so its draft must too (law 1).
 
+## Gemma variant
+
+Gemma drafters are already standalone byte-verbatim GGUFs (law 2 by provenance); the trim
+applies at LOAD instead of at build: `BW24_GEMMA_DRAFT_RANKS=<ranks.txt>` (the `.txt`
+sidecar frspec-owngen emits). Laws 1 and 3 apply unchanged — own-gen ranks per model,
+adopt on e2e only. Measured 2026-07-18: 26B wash (adopted for provenance), 31B +2.6-3.7%
+(adopted), E4B wash (stays untrimmed — small head, trim buys nothing).
+
 ## Regime checklist for a new supported model
 
 - [ ] own-gen ranks derived from the published artifact (`frspec-owngen`)
