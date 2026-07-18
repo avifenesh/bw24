@@ -34,6 +34,8 @@ def relocate(overlay: Path, source: Path, output: Path) -> dict[str, object]:
     fingerprints: dict[str, dict[str, object]] = {}
     for key in ("source_fingerprints", "fallback_fingerprints"):
         fingerprints.update(manifest.get(key, {}))
+    if not fingerprints:
+        raise ValueError("overlay manifest has no source fingerprints")
     for name, expected in fingerprints.items():
         path = source / name
         if not path.is_file():
