@@ -75,7 +75,7 @@ Depth is part of the contract: at 6.3k-token context every lead holds (1.02-1.09
 | Model | bw24 spec | llama.cpp spec-best | Ratio |
 |---|---|---|---|
 | Qwen3.5-9B (K=3 + native trim) | 238.9 / 210.2 / 212.0 | 123.6 / 122.6 / 119.2 | **1.93x** / **1.71x** / **1.78x** |
-| Qwen3.6-27B (K=3 + draft + code75 trim) | 107.3 / 96.9 / 103.5 | 86.3 / 91.7 / 93.4 | **1.24x** / **1.06x** / **1.11x** |
+| Qwen3.6-27B (K=3 + own-gen trimmed draft) | 116.4 / 101.2 / 86.0 | 91.7 / 93.3 / 81.5 | **1.27x** / **1.08x** / **1.06x** |
 | Qwen3.6-35B-A3B (K=3 + trim + zero-draft) | 292.2 / 249.6 / 275.3 | 251.9 / 221.4 / 248.9 | **1.16x** / **1.13x** / **1.11x** |
 <!-- PERF-SPEC:END -->
 

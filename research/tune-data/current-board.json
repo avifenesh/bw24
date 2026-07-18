@@ -1,7 +1,7 @@
 {
   "updated": "2026-07-13",
   "rig": "RTX 5090 Laptop",
-  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss",
+  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss",
   "plain_decode": {
     "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
     "rows": [
@@ -23,7 +23,7 @@
     ]
   },
   "speculative": {
-    "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt — rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
+    "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
     "rows": [
       {
         "model": "Qwen3.5-9B (K=3 + native trim)",
@@ -39,16 +39,16 @@
         ]
       },
       {
-        "model": "Qwen3.6-27B (K=3 + draft + code75 trim)",
+        "model": "Qwen3.6-27B (K=3 + own-gen trimmed draft)",
         "bw24": [
-          107.3,
-          96.9,
-          103.5
+          116.4,
+          101.2,
+          86.0
         ],
         "llama": [
-          86.3,
           91.7,
-          93.4
+          93.3,
+          81.5
         ]
       },
       {
