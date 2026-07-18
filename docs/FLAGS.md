@@ -53,7 +53,7 @@ HANDOVER.md sections from that date.
 
 | flag | default | what it does |
 |---|---|---|
-| `BW24_MODELS` | — | model list `alias=path,...` |
+| `BW24_MODELS` | — | server model list `alias=path[+draft.gguf],...` — `+draft` attaches that model's regime draft per model (docs/DRAFT-REGIME.md); paths accept `hf:` specs |
 | `BW24_ADDR` | bind default | listen address |
 | `BW24_API_KEY` | none | bearer key; setting it also defaults `BW24_COMPAT=openai` |
 | `BW24_COMPAT` | native (`openai` when API_KEY set) | response shape: `openai` = OpenAI completions SSE |
