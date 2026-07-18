@@ -1,19 +1,82 @@
 {
-  "comment": "Local-CI perf cell manifest. Paths resolve against BW24_MODELS_DIR (default /data/ai-ml/hf-models). A cell is skipped cleanly when its model file is absent (contributor machines). Spec cells record acceptance + tok/round — the drift class that went unnoticed 2026-07-13..15. Protocol: serialized arms, no co-resident GPU processes (co-residency spills experts and reads 10x low), power profile recorded per row.",
+  "comment": "Local-CI perf cell manifest. Paths resolve against BW24_MODELS_DIR (default /data/ai-ml/hf-models). A cell is skipped cleanly when its model file is absent (contributor machines). Spec cells record acceptance + tok/round \u2014 the drift class that went unnoticed 2026-07-13..15. Protocol: serialized arms, no co-resident GPU processes (co-residency spills experts and reads 10x low), power profile recorded per row.",
   "prompts": {
     "short": "research/gemma4-bringup/e4b-chat-watercycle-ids.txt",
     "d1736": "research/gemma4-bringup/depth-prompt-1736-ids.txt"
   },
   "cells": [
-    { "id": "31b-plain-short",  "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf", "mode": "plain", "prompt": "short", "ngen": 128 },
-    { "id": "31b-plain-d1736",  "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf", "mode": "plain", "prompt": "d1736", "ngen": 128 },
-    { "id": "31b-spec-short",   "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf", "mode": "spec",  "prompt": "short", "ngen": 128, "k": 3, "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf" },
-    { "id": "31b-spec-d1736",   "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf", "mode": "spec",  "prompt": "d1736", "ngen": 128, "k": 6, "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf" },
-    { "id": "26b-plain-short",  "model": "gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf", "mode": "plain", "prompt": "short", "ngen": 128 },
-    { "id": "26b-spec-d1736",   "model": "gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf", "mode": "spec",  "prompt": "d1736", "ngen": 128, "k": 6, "draft": "gemma4-26b-a4b-qat-gguf/drafter/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf", "ranks": "research/gemma4-bringup/gemma4-frspec-ranks-32768.txt" },
-    { "id": "e4b-plain-short",  "model": "gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf", "mode": "plain", "prompt": "short", "ngen": 128 },
-    { "id": "e4b-spec-short",   "model": "gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf", "mode": "spec",  "prompt": "short", "ngen": 128, "k": 6, "draft": "gemma4-e4b-qat-gguf/drafter/MTP/gemma-4-E4B-it-assistant.Q8_0.gguf" },
-    { "id": "qwen9b-plain-short", "model": "qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", "mode": "plain", "prompt": "short", "ngen": 128 }
+    {
+      "id": "31b-plain-short",
+      "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf",
+      "mode": "plain",
+      "prompt": "short",
+      "ngen": 128
+    },
+    {
+      "id": "31b-plain-d1736",
+      "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf",
+      "mode": "plain",
+      "prompt": "d1736",
+      "ngen": 128
+    },
+    {
+      "id": "31b-spec-short",
+      "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf",
+      "mode": "spec",
+      "prompt": "short",
+      "ngen": 128,
+      "k": 3,
+      "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf"
+    },
+    {
+      "id": "31b-spec-d1736",
+      "model": "gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf",
+      "mode": "spec",
+      "prompt": "d1736",
+      "ngen": 128,
+      "k": 6,
+      "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf"
+    },
+    {
+      "id": "26b-plain-short",
+      "model": "gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf",
+      "mode": "plain",
+      "prompt": "short",
+      "ngen": 128
+    },
+    {
+      "id": "26b-spec-d1736",
+      "model": "gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf",
+      "mode": "spec",
+      "prompt": "d1736",
+      "ngen": 128,
+      "k": 6,
+      "draft": "gemma4-26b-a4b-qat-gguf/drafter/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf",
+      "ranks": "research/gemma4-bringup/gemma4-26b-owngen-ranks-32768.gguf.txt"
+    },
+    {
+      "id": "e4b-plain-short",
+      "model": "gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf",
+      "mode": "plain",
+      "prompt": "short",
+      "ngen": 128
+    },
+    {
+      "id": "e4b-spec-short",
+      "model": "gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf",
+      "mode": "spec",
+      "prompt": "short",
+      "ngen": 128,
+      "k": 6,
+      "draft": "gemma4-e4b-qat-gguf/drafter/MTP/gemma-4-E4B-it-assistant.Q8_0.gguf"
+    },
+    {
+      "id": "qwen9b-plain-short",
+      "model": "qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
+      "mode": "plain",
+      "prompt": "short",
+      "ngen": 128
+    }
   ],
   "gates": {
     "cell_drop_fail_pct": 3.0,
