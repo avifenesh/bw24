@@ -15,7 +15,10 @@
 //!   flags:   --preset code|chat|agentic|mixed   built-in prompt subset (default mixed)
 //!            --ngen N     tokens generated per prompt (default 256)
 //!            --temp T     sampling temperature (default 0 = greedy, the serving class)
-//!            --raw        skip the chat template
+//!            --raw        skip the chat template. WARNING: ranks inherit the corpus
+//!                         DISTRIBUTION — if you serve chat, derive with the template ON
+//!                         (default); a --raw code/wiki corpus left the 31B chat cell with
+//!                         10.9% unproposable tokens (-15 acceptance pts, 2026-07-19)
 //!            --validate   reload with the trim applied and A/B spec acceptance (K=3)
 //!
 //! Output: <out.gguf> (d2t i32 [topN]) + <out.gguf>.txt (one id/line, rank order).

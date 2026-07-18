@@ -12,7 +12,11 @@ p1 +3.4%, p2 +2.5%, p3 +0.9% over the previous board config — 2026-07-18, json
    generations for every model and every requant of a model. Foreign ranks measured
    −12 acceptance pts on an identical tokenizer; corpus text is prompts only, never
    the counted distribution; ranks also inherit their corpus MIX (wiki-heavy ranks
-   lose ~12 pts on code prompts). Corpus floor: ≥4× topN generated tokens.
+   lose ~12 pts on code prompts). Corpus floor: ≥4× topN generated tokens. Derive with
+   the CHAT TEMPLATE ON when you serve chat (frspec-owngen's default; `--raw` is for
+   pure-continuation serving) — a raw-derived rank set left a chat cell with 10.9%
+   structurally-unproposable tokens (every one a guaranteed rejection; −15 acceptance
+   pts, 31B 2026-07-19). The rank corpus must cover every prompt CLASS you serve.
 2. **Byte-verbatim extraction.** The draft block comes out of the serving GGUF's own
    bytes (`tools/extract_mtp_draft.py`) — external draft ≡ embedded head, proven at
    acceptance parity. Never re-convert the MTP block from the HF checkpoint:
