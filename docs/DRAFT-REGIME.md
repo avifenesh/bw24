@@ -16,7 +16,12 @@ p1 +3.4%, p2 +2.5%, p3 +0.9% over the previous board config — 2026-07-18, json
    the CHAT TEMPLATE ON when you serve chat (frspec-owngen's default; `--raw` is for
    pure-continuation serving) — a raw-derived rank set left a chat cell with 10.9%
    structurally-unproposable tokens (every one a guaranteed rejection; −15 acceptance
-   pts, 31B 2026-07-19). The rank corpus must cover every prompt CLASS you serve.
+   pts, 31B 2026-07-19). The rank corpus must cover every prompt CLASS you serve —
+   coverage is the whole game: an oracle control (exact escapees injected into the
+   trim set) flipped a −17% cell to +2% at identical acceptance, so a trim wins any
+   cell whose emitted distribution it covers and loses any cell it doesn't. On very
+   large vocabs (gemma 262k) a finite own-gen corpus cannot guarantee coverage;
+   serve cells whose domain vocabulary escapes the corpus UNTRIMMED.
 2. **Byte-verbatim extraction.** The draft block comes out of the serving GGUF's own
    bytes (`tools/extract_mtp_draft.py`) — external draft ≡ embedded head, proven at
    acceptance parity. Never re-convert the MTP block from the HF checkpoint:
@@ -56,8 +61,11 @@ a finetune's distribution moved, so its draft must too (law 1).
 Gemma drafters are already standalone byte-verbatim GGUFs (law 2 by provenance); the trim
 applies at LOAD instead of at build: `BW24_GEMMA_DRAFT_RANKS=<ranks.txt>` (the `.txt`
 sidecar frspec-owngen emits). Laws 1 and 3 apply unchanged — own-gen ranks per model,
-adopt on e2e only. Measured 2026-07-18: 26B wash (adopted for provenance), 31B +2.6-3.7%
-(adopted), E4B wash (stays untrimmed — small head, trim buys nothing).
+adopt on e2e only. Measured 2026-07-18/19: 26B wash (adopted for provenance), 31B trim
+adopted on the depth cell (+2.6-3.7%) and UNTRIMMED on the chat cell (coverage law above:
+its domain vocabulary escapes every corpus tried; the oracle control proves the trim
+itself is +2% when coverage is perfect), E4B wash (stays untrimmed — small head, trim
+buys nothing).
 
 ## Regime checklist for a new supported model
 
