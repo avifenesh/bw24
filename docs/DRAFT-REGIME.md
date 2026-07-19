@@ -19,9 +19,11 @@ p1 +3.4%, p2 +2.5%, p3 +0.9% over the previous board config — 2026-07-18, json
    pts, 31B 2026-07-19). The rank corpus must cover every prompt CLASS you serve —
    coverage is the whole game: an oracle control (exact escapees injected into the
    trim set) flipped a −17% cell to +2% at identical acceptance, so a trim wins any
-   cell whose emitted distribution it covers and loses any cell it doesn't. On very
-   large vocabs (gemma 262k) a finite own-gen corpus cannot guarantee coverage;
-   serve cells whose domain vocabulary escapes the corpus UNTRIMMED.
+   cell whose emitted distribution it covers and loses any cell it doesn't. A
+   class×K sweep confirmed the sign NEVER flips with K, only with class coverage.
+   On very large vocabs (gemma 262k) a finite own-gen corpus cannot guarantee
+   coverage — the serve-time ADAPTIVE TRIM closes the gap (gemma: on by default
+   with ranks; below).
 2. **Byte-verbatim extraction.** The draft block comes out of the serving GGUF's own
    bytes (`tools/extract_mtp_draft.py`) — external draft ≡ embedded head, proven at
    acceptance parity. Never re-convert the MTP block from the HF checkpoint:
@@ -61,11 +63,17 @@ a finetune's distribution moved, so its draft must too (law 1).
 Gemma drafters are already standalone byte-verbatim GGUFs (law 2 by provenance); the trim
 applies at LOAD instead of at build: `BW24_GEMMA_DRAFT_RANKS=<ranks.txt>` (the `.txt`
 sidecar frspec-owngen emits). Laws 1 and 3 apply unchanged — own-gen ranks per model,
-adopt on e2e only. Measured 2026-07-18/19: 26B wash (adopted for provenance), 31B trim
-adopted on the depth cell (+2.6-3.7%) and UNTRIMMED on the chat cell (coverage law above:
-its domain vocabulary escapes every corpus tried; the oracle control proves the trim
-itself is +2% when coverage is perfect), E4B wash (stays untrimmed — small head, trim
-buys nothing).
+adopt on e2e only.
+
+With ranks set, the **adaptive trim** is on by default (`BW24_GEMMA_TRIM_ADAPT`,
+512 spare head slots): coverage escapes self-identify at serve time — they arrive as
+verify corrections and ride in with the prompt — so the loop writes their head rows
+into the spare slots and persists the ids to `<ranks>.learned` (pre-filled on the next
+load: first-miss cost is once per serve lifetime, not per request). This closed the
+one cell the static trim lost: 31B chat −17% → +2.5% vs untrimmed, and trim ≥
+untrimmed on every measured cell (both models, N=2 interleaved, 2026-07-19).
+Measured verdicts: 26B trim adopted, 31B trim adopted on BOTH cells (depth +5.2%,
+chat +2.5% warm), E4B stays untrimmed (small head, trim buys nothing — structural).
 
 ## Regime checklist for a new supported model
 

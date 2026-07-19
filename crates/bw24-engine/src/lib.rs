@@ -1288,6 +1288,15 @@ impl Engine {
         Ok(())
     }
 
+    /// H2D write of `src` into `dst[off..off+src.len()]` (u8). In-place row updates for the
+    /// adaptive trim head: no realloc, so captured graphs keep their baked addresses.
+    pub fn htod_u8_into(&self, dst: &mut CudaSlice<u8>, off: usize, src: &[u8])
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let mut view = dst.slice_mut(off..off + src.len());
+        self.gpu.stream.memcpy_htod(src, &mut view)?;
+        Ok(())
+    }
+
     pub fn view<'a>(&self, b: &'a CudaSlice<f32>, len: usize) -> cudarc::driver::CudaView<'a, f32> {
         b.slice(0..len)
     }
