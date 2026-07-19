@@ -26,7 +26,8 @@
       "prompt": "short",
       "ngen": 128,
       "k": 3,
-      "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf"
+      "draft": "gemma4-31b-tooluse-gguf/gemma-4-31B-it-Q4_0-MTP.gguf",
+      "ranks": "research/gemma4-bringup/gemma4-31b-owngen-ranks-32768.txt"
     },
     {
       "id": "31b-spec-d1736",

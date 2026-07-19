@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let g = bw24_gguf::GgufFile::open(&path)?;
         let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
         let dg = bw24_gguf::GgufFile::open(&dpath)?;
-        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let mut draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
         let tok = bw24_tokenizer::Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e}"))?;
         let eos = tok.eog_ids();
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&pdir)?
@@ -169,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let text = std::fs::read_to_string(f)?;
             let mut ids = tok.encode(&text, true);
             ids.truncate(768);
-            let toks_g = model.generate_spec_gemma(&e, &draft, &ids, n_new, k, &eos)?;
+            let toks_g = model.generate_spec_gemma(&e, &mut draft, &ids, n_new, k, &eos)?;
             total += toks_g.len();
             let line: Vec<String> = toks_g.iter().map(|t| t.to_string()).collect();
             writeln!(out, "{}", line.join(" "))?;
@@ -227,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let g = bw24_gguf::GgufFile::open(&path)?;
         let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
         let dg = bw24_gguf::GgufFile::open(&dpath)?;
-        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let mut draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
         let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
         println!("spec K={k} n_new={n_new} prompt={} toks", toks.len());
         // plain greedy reference + timing (BW24_SPEC_ONLY=1 skips it — profiling isolation)
@@ -240,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
         // spec run + timing
         let t1 = std::time::Instant::now();
-        let spec = model.generate_spec_gemma(&e, &draft, &toks, n_new, k, &[])?;
+        let spec = model.generate_spec_gemma(&e, &mut draft, &toks, n_new, k, &[])?;
         e.stream().synchronize()?;
         let dt_spec = t1.elapsed().as_secs_f64()
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
