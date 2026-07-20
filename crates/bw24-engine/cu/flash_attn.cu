@@ -197,8 +197,13 @@ static __device__ __forceinline__ float warp_reduce_sum(float v) {
 //  verbatim (bit-identity pinned by the gate battery).                  //
 //    -DBW24_KV_KFMT: 0 = q8_0 (34 B/32elem, default) | 1 = fp8-e4m3     //
 //                        raw cast, NO block scale (32 B/32elem)         //
+//                      | 2 = nvfp4 (e2m1 + per-16 UE4M3 sub-scales,     //
+//                        18 B/32elem — the -47% K-bytes arm)            //
 //    -DBW24_KV_VFMT: 0 = q5_1 (24 B/32elem, default) | 1 = q4_0         //
 //                        (18 B/32elem) | 2 = fp8-e4m3 raw (32 B)        //
+//                      | 3 = nvfp4 (18 B/32elem, -25% V bytes; finer    //
+//                        16-elem scaling + e4m3 scale factors vs q4_0's //
+//                        32-elem f16 — the NVIDIA NVFP4-KV recipe)      //
 //  A non-default format is a NEW NUMERIC CONFIG: own argmax baseline,   //
 //  gate battery must pass WITHIN it (exactness law binds per config).   //
 //  Kernel entry names keep the historical q8_0_q5_1 suffix in ALL      //
@@ -234,9 +239,31 @@ static __device__ __forceinline__ float dq_q4_0_elem(
     return __half2float(d) * (float)(q - 8);
 }
 
+// nvfp4 KV block (bw24 layout, 18 B/32elem): { e4m3 d0; e4m3 d1; u8 qs[16] }.
+// Two 16-elem SUB-BLOCKS (elems 0-15 scale d0, 16-31 scale d1 — NVFP4's finer
+// per-16 e4m3 scaling, the measured accuracy edge over 32-elem-f16 q4_0). qs
+// byte j: low nibble = elem j, high nibble = elem j+16 (the q4_0 packing).
+// Nibble = e2m1: sign(bit3) + monotone magnitude index {0,.5,1,1.5,2,3,4,6}.
+static __device__ __constant__ float E2M1_TAB[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+
+static __device__ __forceinline__ float dq_nvfp4_elem(
+        const uint8_t* __restrict__ P, long t, long tok_bytes, int eidx)
+{
+    const uint8_t* blk = P + (size_t)t * tok_bytes + (size_t)(eidx >> 5) * 18;
+    const int j = eidx & 31;
+    const float d = (float)((const __nv_fp8_e4m3*)blk)[j >> 4];
+    const uint8_t byte = blk[2 + (j & 15)];
+    const int nib = (j < 16) ? (byte & 0x0F) : (byte >> 4);
+    const float m = E2M1_TAB[nib & 7] * d;
+    return (nib & 8) ? -m : m;
+}
+
 #if BW24_KV_KFMT == 1
 #define K_BLK_B 32
 #define DQ_K_ELEM dq_fp8_elem
+#elif BW24_KV_KFMT == 2
+#define K_BLK_B 18
+#define DQ_K_ELEM dq_nvfp4_elem
 #else
 #define K_BLK_B 34
 #define DQ_K_ELEM dq_q8_0_elem
@@ -247,6 +274,9 @@ static __device__ __forceinline__ float dq_q4_0_elem(
 #elif BW24_KV_VFMT == 2
 #define V_BLK_B 32
 #define DQ_V_ELEM dq_fp8_elem
+#elif BW24_KV_VFMT == 3
+#define V_BLK_B 18
+#define DQ_V_ELEM dq_nvfp4_elem
 #else
 #define V_BLK_B 24
 #define DQ_V_ELEM dq_q5_1_elem
@@ -256,10 +286,22 @@ static __device__ __forceinline__ float dq_q4_0_elem(
 // 32-elem block's bytes for one token; lane owns element (block*32 + lane). The 32 lanes
 // of a warp read consecutive bytes = coalesced, same as the inlined originals. The
 // BASELINE bodies are the exact instruction sequences the validated kernels inlined.
+// nvfp4 lane twin (blk = one 18-B KV block; lane owns element `lane`).
+static __device__ __forceinline__ float dq_nvfp4_lane(const uint8_t* __restrict__ blk, int lane)
+{
+    const float d = (float)((const __nv_fp8_e4m3*)blk)[lane >> 4];
+    const uint8_t byte = blk[2 + (lane & 15)];
+    const int nib = (lane < 16) ? (byte & 0x0F) : (byte >> 4);
+    const float m = E2M1_TAB[nib & 7] * d;
+    return (nib & 8) ? -m : m;
+}
+
 static __device__ __forceinline__ float dq_K_lane(const uint8_t* __restrict__ blk, int lane)
 {
 #if BW24_KV_KFMT == 1
     return (float)((const __nv_fp8_e4m3*)blk)[lane];
+#elif BW24_KV_KFMT == 2
+    return dq_nvfp4_lane(blk, lane);
 #else
     const float d = __half2float(*(const half*)blk);
     const int8_t q = ((const int8_t*)(blk + 2))[lane];
@@ -275,6 +317,8 @@ static __device__ __forceinline__ float dq_V_lane(const uint8_t* __restrict__ bl
     return d * (float)(lo - 8);
 #elif BW24_KV_VFMT == 2
     return (float)((const __nv_fp8_e4m3*)blk)[lane];
+#elif BW24_KV_VFMT == 3
+    return dq_nvfp4_lane(blk, lane);
 #else
     const float d = __half2float(*(const half*)blk);
     const float m = __half2float(*(const half*)(blk + 2));
@@ -290,10 +334,42 @@ static __device__ __forceinline__ float dq_V_lane(const uint8_t* __restrict__ bl
 // caller zero-pads past kv_dim). `blk` = this block's cache bytes. The BASELINE bodies are
 // the validated append kernels' warp programs verbatim (rows/dc bit-identity holds because
 // all three appenders call the SAME function).
+// nvfp4 append twin: per-16-elem sub-block amax -> e4m3 scale d = amax/6 (6 = max e2m1
+// magnitude; the scale ROUND-TRIPS through e4m3 before encoding so dequant sees the same
+// d the encoder used), nibble = nearest e2m1 index. Lanes 0-15 = sub-block 0 (scale d0),
+// lanes 16-31 = sub-block 1 (d1) — half-warp reductions.
+static __device__ __forceinline__ void quant_nvfp4_block(float x, int lane, uint8_t* __restrict__ blk)
+{
+    const unsigned half_mask = (lane < 16) ? 0x0000ffffu : 0xffff0000u;
+    float amax = fabsf(x);
+    for (int off = 8; off > 0; off >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(half_mask, amax, off));
+    }
+    const __nv_fp8_e4m3 d8 = __nv_fp8_e4m3(amax / 6.0f);
+    const float d = (float)d8;                      // decoder's exact scale
+    const float id = (d != 0.0f) ? 1.0f / d : 0.0f;
+    const float ax = fabsf(x) * id;
+    // nearest e2m1 magnitude (ties-up matches ggml's best-index scan order)
+    int best = 0;
+    float berr = fabsf(ax - E2M1_TAB[0]);
+    #pragma unroll
+    for (int i = 1; i < 8; i++) {
+        const float err = fabsf(ax - E2M1_TAB[i]);
+        if (err < berr) { berr = err; best = i; }
+    }
+    const int nib = best | ((x < 0.0f) ? 8 : 0);
+    if ((lane & 15) == 0) ((__nv_fp8_e4m3*)blk)[lane >> 4] = d8;
+    // qs byte j: low nibble = elem j (lane<16), high nibble = elem j+16
+    const int partner = __shfl_sync(0xffffffffu, nib, lane + 16) & 0x0F;
+    if (lane < 16) blk[2 + lane] = (uint8_t)((nib & 0x0F) | (partner << 4));
+}
+
 static __device__ __forceinline__ void quant_K_block(float x, int lane, uint8_t* __restrict__ blk)
 {
 #if BW24_KV_KFMT == 1
     ((__nv_fp8_e4m3*)blk)[lane] = __nv_fp8_e4m3(x);   // native cvt, satfinite (clamps ±448)
+#elif BW24_KV_KFMT == 2
+    quant_nvfp4_block(x, lane, blk);
 #else
     float amax = warp_amax(x);
     float d = amax / 127.0f;
@@ -322,6 +398,8 @@ static __device__ __forceinline__ void quant_V_block(float x, int lane, uint8_t*
     if (lane < 16) qs[lane] = (uint8_t)(nib | (partner_nib << 4));
 #elif BW24_KV_VFMT == 2
     ((__nv_fp8_e4m3*)blk)[lane] = __nv_fp8_e4m3(x);
+#elif BW24_KV_VFMT == 3
+    quant_nvfp4_block(x, lane, blk);
 #else
     float mn = warp_min(x);
     float mx = warp_max(x);

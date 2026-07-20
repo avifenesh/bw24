@@ -79,6 +79,9 @@ const FLASH_FATBIN_VF8: &str = env!("BW24_FLASH_FATBIN_VF8");
 const FLASH_FATBIN_KF8: &str = env!("BW24_FLASH_FATBIN_KF8");
 const FLASH_FATBIN_KF8VQ4: &str = env!("BW24_FLASH_FATBIN_KF8VQ4");
 const FLASH_FATBIN_KF8VF8: &str = env!("BW24_FLASH_FATBIN_KF8VF8");
+const FLASH_FATBIN_KF4: &str = env!("BW24_FLASH_FATBIN_KF4");
+const FLASH_FATBIN_VF4: &str = env!("BW24_FLASH_FATBIN_VF4");
+const FLASH_FATBIN_KF4VF4: &str = env!("BW24_FLASH_FATBIN_KF4VF4");
 
 /// The (K, V) cache formats picked by env (cached; both the fatbin pick and every
 /// tok-bytes computation MUST come through here so they can never diverge).
@@ -87,14 +90,16 @@ pub fn kv_cache_formats() -> (&'static str, &'static str) {
     *F.get_or_init(|| {
         let k = match std::env::var("BW24_KV_K").as_deref() {
             Ok("fp8") => "fp8",
+            Ok("nvfp4") => "nvfp4",
             Ok("q8_0") | Ok("") | Err(_) => "q8_0",
-            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8)"),
+            Ok(o) => panic!("BW24_KV_K={o} unsupported (q8_0 | fp8 | nvfp4)"),
         };
         let v = match std::env::var("BW24_KV_V").as_deref() {
             Ok("q4_0") => "q4_0",
             Ok("fp8") => "fp8",
+            Ok("nvfp4") => "nvfp4",
             Ok("q5_1") | Ok("") | Err(_) => "q5_1",
-            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8)"),
+            Ok(o) => panic!("BW24_KV_V={o} unsupported (q5_1 | q4_0 | fp8 | nvfp4)"),
         };
         if (k, v) != ("q8_0", "q5_1") {
             eprintln!("[bw24] KV cache format: K={k} V={v} (non-default — new numeric config)");
@@ -107,8 +112,8 @@ pub fn kv_cache_formats() -> (&'static str, &'static str) {
 /// `tok_bytes = (kv_dim/32) * blk_bytes` (cache.rs, spec.rs, eagle.rs, gates, benches).
 pub fn kv_blk_bytes() -> (usize, usize) {
     let (k, v) = kv_cache_formats();
-    let kb = match k { "fp8" => 32, _ => 34 };
-    let vb = match v { "q4_0" => 18, "fp8" => 32, _ => 24 };
+    let kb = match k { "fp8" => 32, "nvfp4" => 18, _ => 34 };
+    let vb = match v { "q4_0" => 18, "fp8" => 32, "nvfp4" => 18, _ => 24 };
     (kb, vb)
 }
 
@@ -121,7 +126,12 @@ fn flash_fatbin_path() -> &'static str {
         ("fp8",  "q5_1") => FLASH_FATBIN_KF8,
         ("fp8",  "q4_0") => FLASH_FATBIN_KF8VQ4,
         ("fp8",  "fp8")  => FLASH_FATBIN_KF8VF8,
-        other => unreachable!("kv_cache_formats returned {other:?}"),
+        ("nvfp4", "q5_1")  => FLASH_FATBIN_KF4,
+        ("q8_0",  "nvfp4") => FLASH_FATBIN_VF4,
+        ("nvfp4", "nvfp4") => FLASH_FATBIN_KF4VF4,
+        other => panic!("KV format pair {other:?} has no compiled fatbin — supported pairs: \
+                         defaults, K∈{{fp8,nvfp4}} alone, V∈{{q4_0,fp8,nvfp4}} alone, \
+                         fp8/fp8-family, nvfp4/nvfp4"),
     }
 }
 
