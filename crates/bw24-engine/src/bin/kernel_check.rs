@@ -1624,12 +1624,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             else if ex == 15 && mn == 7.0 { f32::NAN }              // e4m3 NaN encoding
             else { s * (1.0 + mn / 8.0) * (2f32).powi(ex - 7) }
         };
+        // nvfp4 KV block CPU decode (18 B: 2x e4m3 sub-scales + q4_0-style nibbles, e2m1 values).
+        let e2m1_tab = [0.0f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+        let nvfp4_blk = |bytes: &[u8], out: &mut [f32]| {
+            let d = [e4m3(bytes[0]), e4m3(bytes[1])];
+            for j in 0..32 {
+                let byte = bytes[2 + (j & 15)];
+                let nib = if j < 16 { byte & 0x0F } else { byte >> 4 };
+                let m = e2m1_tab[(nib & 7) as usize] * d[j >> 4];
+                out[j] = if nib & 8 != 0 { -m } else { m };
+            }
+        };
         // ---- K round-trip (format-exact CPU dequant) ----
         let mut k_deq = vec![0f32; kv_dim_k];
         for blk in 0..nblk {
             let base = blk * kbb;
             match kfmt {
                 "fp8" => for j in 0..32 { k_deq[blk * 32 + j] = e4m3(kbytes[base + j]); },
+                "nvfp4" => nvfp4_blk(&kbytes[base..base + 18], &mut k_deq[blk * 32..blk * 32 + 32]),
                 _ => {
                     let d = f16_to_f32(&kbytes[base..base + 2]);
                     for j in 0..32 { k_deq[blk * 32 + j] = d * (kbytes[base + 2 + j] as i8) as f32; }
@@ -1640,7 +1652,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // q8_0 abs err <= d/2 (rel 5e-3 vs amax, validated); raw e4m3 rel err <= 2^-4 -> gate 7e-2.
         let kamax = kin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
         let krel = kerr / kamax;
-        let ktol = if kfmt == "fp8" { 7e-2 } else { 5e-3 };
+        // nvfp4: e2m1 grid max rel gap (between 4 and 6) = 20% of amax-normalized value;
+        // half-gap vs sub-block amax -> 1.7e-1 gate (format-exact CPU twin arbitrates shape).
+        let ktol = match kfmt { "fp8" => 7e-2, "nvfp4" => 1.7e-1, _ => 5e-3 };
         println!("kvq {kfmt} K round-trip: rel={krel:.2e} {}", if krel < ktol { "OK" } else { fails += 1; "FAIL" });
         // ---- V round-trip (format-exact CPU dequant) ----
         let mut v_deq = vec![0f32; kv_dim_v];
@@ -1648,6 +1662,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let base = blk * vbb;
             match vfmt {
                 "fp8" => for j in 0..32 { v_deq[blk * 32 + j] = e4m3(vbytes[base + j]); },
+                "nvfp4" => nvfp4_blk(&vbytes[base..base + 18], &mut v_deq[blk * 32..blk * 32 + 32]),
                 "q4_0" => {
                     let d = f16_to_f32(&vbytes[base..base + 2]);
                     let qs = &vbytes[base + 2..base + 18];
@@ -1673,7 +1688,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let vamax = vin.iter().map(|v| v.abs()).fold(0.0, f32::max).max(1e-6);
         let vrel = verr / vamax;
         // q5_1 3e-2 (validated); q4_0 half-step = amax/16 -> 7e-2; raw e4m3 -> 7e-2.
-        let vtol = if vfmt == "q5_1" { 3e-2 } else { 7e-2 };
+        let vtol = match vfmt { "q5_1" => 3e-2, "nvfp4" => 1.7e-1, _ => 7e-2 };
         println!("kvq {vfmt} V round-trip: rel={vrel:.2e} {}", if vrel < vtol { "OK" } else { fails += 1; "FAIL" });
         // explicit 5th-bit-boundary check on V block 1 (q5 sweeps 0..31) — q5_1 layout only.
         if vfmt == "q5_1" {
