@@ -3948,6 +3948,38 @@ static __device__ __forceinline__ void fa_v4_stage_k(
             sm->k_ints[j][c * 8 + w] = packed;
         }
     }
+#elif BW24_KV_KFMT == 2
+    // nvfp4 K: e2m1+2x e4m3 sub-scales -> f32 -> per-chunk absmax int8 requant (fp8 arm shape).
+    for (int task = bt; task < nt * 8; task += bsz) {
+        int j = task >> 3, c = task & 7;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        float vals[32];
+        float amax = 0.0f;
+        const float dsub[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                (float)((const __nv_fp8_e4m3*)blk)[1] };
+        #pragma unroll
+        for (int e = 0; e < 32; e++) {
+            const uint8_t byt = blk[2 + ((e < 16) ? e : e - 16)];
+            const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
+            const float mg = E2M1_TAB[nib & 7] * dsub[e >> 4];
+            vals[e] = (nib & 8) ? -mg : mg;
+            amax = fmaxf(amax, fabsf(vals[e]));
+        }
+        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
+        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        sm->k_d[j][c] = kd;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            int packed = 0;
+            #pragma unroll
+            for (int b8 = 0; b8 < 4; b8++) {
+                const int e = w * 4 + b8;
+                const int q = __float2int_rn(vals[e] * inv);
+                packed |= (q & 0xFF) << (8 * b8);
+            }
+            sm->k_ints[j][c * 8 + w] = packed;
+        }
+    }
 #else
     // task = (key j, chunk c): unpack q8_0 block (2B d + 32 int8) into aligned ints + half.
     for (int task = bt; task < nt * 8; task += bsz) {
@@ -4026,7 +4058,22 @@ extern "C" __global__ void fa_decode_vec_q_v4(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4201,7 +4248,22 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4369,7 +4431,22 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4509,7 +4586,22 @@ extern "C" __global__ void fa_decode_vec_q_v4_stage(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4627,7 +4719,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4805,7 +4912,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_dc(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -4982,7 +5104,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -5159,7 +5296,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
                 const int e2 = sub * 8 + e0;
                 out[e2] = blk[e2];   // raw e4m3 byte; cvt at use (bit-identical, half smem)
             }
-            #elif BW24_KV_VFMT == 1
+                        #elif BW24_KV_VFMT == 3
+            // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+            const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
+                                   + (size_t)(kblk0 + blk_i) * V_BLK_B;
+            const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                   (float)((const __nv_fp8_e4m3*)blk)[1] };
+            const uint8_t* qs4 = blk + 2;
+            __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+            #pragma unroll
+            for (int e0 = 0; e0 < 8; ++e0) {
+                const int e2 = sub * 8 + e0;
+                const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+                const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+                out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+            }
+#elif BW24_KV_VFMT == 1
             // q4_0 V: f16 d + nibbles (V_BLK_B = 18; x = d*(q-8)).
             const uint8_t* blk = V + (size_t)(t0 + j) * v_tok_bytes
                                    + (size_t)(kblk0 + blk_i) * V_BLK_B;
@@ -5867,6 +6019,38 @@ static __device__ __forceinline__ void fa_v4_stage_k_512(
             sm->k_ints[j][c * 8 + w] = packed;
         }
     }
+#elif BW24_KV_KFMT == 2
+    // nvfp4 K: e2m1+2x e4m3 sub-scales -> f32 -> per-chunk absmax int8 requant (fp8 arm shape).
+    for (int task = bt; task < nt * 16; task += bsz) {
+        int j = task >> 4, c = task & 15;
+        const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
+        float vals[32];
+        float amax = 0.0f;
+        const float dsub[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                                (float)((const __nv_fp8_e4m3*)blk)[1] };
+        #pragma unroll
+        for (int e = 0; e < 32; e++) {
+            const uint8_t byt = blk[2 + ((e < 16) ? e : e - 16)];
+            const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
+            const float mg = E2M1_TAB[nib & 7] * dsub[e >> 4];
+            vals[e] = (nib & 8) ? -mg : mg;
+            amax = fmaxf(amax, fabsf(vals[e]));
+        }
+        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
+        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
+        sm->k_d[j][c] = kd;
+        #pragma unroll
+        for (int w = 0; w < 8; w++) {
+            int packed = 0;
+            #pragma unroll
+            for (int b8 = 0; b8 < 4; b8++) {
+                const int e = w * 4 + b8;
+                const int q = __float2int_rn(vals[e] * inv);
+                packed |= (q & 0xFF) << (8 * b8);
+            }
+            sm->k_ints[j][c * 8 + w] = packed;
+        }
+    }
 #else
     // q8_0 K: d half + 32 int8 — aligned-word funnelshift extraction (hd256 arm verbatim).
     for (int task = bt; task < nt * 16; task += bsz) {
@@ -5941,7 +6125,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_512_tb(
             const int e2 = sub * 8 + e0;
             out[e2] = blk[e2];
         }
-        #elif BW24_KV_VFMT == 1
+                #elif BW24_KV_VFMT == 3
+        // nvfp4 V: 2x e4m3 sub-scales (per-16) + nibbles (V_BLK_B = 18; x = tab[m]*d[e>>4]).
+        const uint8_t* blk = V + (size_t)(t_lo + j) * v_tok_bytes
+                               + (size_t)(kblk0 + blk_i) * V_BLK_B;
+        const float df4[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
+                               (float)((const __nv_fp8_e4m3*)blk)[1] };
+        const uint8_t* qs4 = blk + 2;
+        __nv_bfloat16* out = sV + (size_t)j * head_dim + (blk_i << 5);
+        #pragma unroll
+        for (int e0 = 0; e0 < 8; ++e0) {
+            const int e2 = sub * 8 + e0;
+            const int nib = (e2 < 16) ? (qs4[e2] & 0x0F) : (qs4[e2 - 16] >> 4);
+            const float mg = E2M1_TAB[nib & 7] * df4[e2 >> 4];
+            out[e2] = __float2bfloat16((nib & 8) ? -mg : mg);
+        }
+#elif BW24_KV_VFMT == 1
         const uint8_t* blk = V + (size_t)(t_lo + j) * v_tok_bytes
                                + (size_t)(kblk0 + blk_i) * V_BLK_B;
         const float d40 = __half2float(*(const half*)blk);

@@ -83,6 +83,13 @@ const FLASH_FATBIN_KF4: &str = env!("BW24_FLASH_FATBIN_KF4");
 const FLASH_FATBIN_VF4: &str = env!("BW24_FLASH_FATBIN_VF4");
 const FLASH_FATBIN_KF4VF4: &str = env!("BW24_FLASH_FATBIN_KF4VF4");
 
+/// True when the ENV-selected pair is the daily default (q8_0/q5_1). The smem/v2/rows_smem
+/// fa twins hard-code the default strides+unpack (34/24-byte literals) — non-default formats
+/// must fall through to the format-aware v4/register/scalar arms (the fp8-exclusion class).
+pub fn kv_fmt_default() -> bool {
+    kv_cache_formats() == ("q8_0", "q5_1")
+}
+
 /// The (K, V) cache formats picked by env (cached; both the fatbin pick and every
 /// tok-bytes computation MUST come through here so they can never diverge).
 pub fn kv_cache_formats() -> (&'static str, &'static str) {
@@ -5806,7 +5813,7 @@ impl Engine {
                 (fv,
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
-            } else if fa_v2_on() {
+            } else if fa_v2_on() && crate::kv_fmt_default() {
                 // FAVENDOR lane: llama fattn-vec tile-batched softmax + wide-load staging on
                 // OUR smem KV broadcast. Replaces BOTH per-key twins when on; same grid/block/
                 // partials; same 32KB sK+sV tile as the smem twin.
@@ -5816,7 +5823,7 @@ impl Engine {
                  LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                      block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
             } else if smem_tkv > 0 && t_kv >= smem_tkv && !g
-                && !(head_dim == 512 && Self::gkv_on()) {
+                && !(head_dim == 512 && Self::gkv_on()) && crate::kv_fmt_default() {
                 // (fp8 exclusions: the smem twin's V-stage is q5_1-hardcoded — neither the wkv
                 // windowed layers (g) nor the gkv globals (hd512) may be forced onto it via
                 // BW24_FA_SMEM_TKV; they fall through to the format-clean register/scalar arms.)
@@ -5944,7 +5951,8 @@ impl Engine {
         });
         let v4 = fa_v4_at(base_len + t) && head_dim == 256;
         let v3 = fa_v3_active(head_dim);
-        let smem_rows = head_dim <= 256 && !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv;
+        let smem_rows = head_dim <= 256 && !v3 && !fa_v2_on() && smem_tkv > 0 && t_kv_max >= smem_tkv
+            && crate::kv_fmt_default();
         // kv_shared twin RETIRED (2026-07-11 depth run-gen gate): the wv:=wk premise fails
         // POST-cache — cached K is k-normed+roped, cached V is not; the twin fed roped keys
         // in as values. Verify/decode/stream gates were blind (both sides shared the wrong
@@ -5974,7 +5982,7 @@ impl Engine {
                     else if head_dim == 512 { "fa_decode_vec_q_rows_dpl16" }   // gemma globals (parity law)
                     else if v4 { "fa_decode_vec_q_rows_v4" }
                     else if v3 { "fa_decode_vec_q_rows_v3" }
-                    else if fa_v2_on() { "fa_decode_vec_q_rows_v2" }
+                    else if fa_v2_on() && crate::kv_fmt_default() { "fa_decode_vec_q_rows_v2" }
                     else if smem_rows { "fa_decode_vec_q_rows_smem" }
                     else { "fa_decode_vec_q_rows" };
         let f = if head_dim == 512 { self.fa_func(fname, head_dim) }
@@ -6341,7 +6349,7 @@ impl Engine {
             (fv,
              LaunchConfig { grid_dim: (n_head_kv as u32, n_splits as u32, 1),
                  block_dim: (32, gqa, 1), shared_mem_bytes: shmem })
-        } else if fa_vec && fa_v2_on() {
+        } else if fa_vec && fa_v2_on() && crate::kv_fmt_default() {
             // FAVENDOR lane: v2 _dc twin — the captured graph must run the SAME walk body as
             // eager under BW24_FA_V2=1 or graph_decode_gate's bit-identity breaks (the flag is
             // a numeric config; eager, rows-verify and graph all switch together).
