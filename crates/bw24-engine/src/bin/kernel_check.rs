@@ -1423,9 +1423,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // for q5_1 above) -> scale the gate by the measured ratio. Packing correctness is
         // pinned exactly by the round-trip gate; quality arbitration for non-default formats
         // = run-spec acceptance within the config (the kvbytes-lane protocol).
-        let kvq_tol: f32 = 6e-2 * match bw24_engine::kv_cache_formats().1 {
-            "q4_0" => 5.0, "fp8" => 2.5, _ => 1.0,
-        };
+        let (kfmt_now, vfmt_now) = bw24_engine::kv_cache_formats();
+        let vmul = match vfmt_now { "q4_0" | "nvfp4" => 5.0, "fp8" => 2.5, _ => 1.0f32 };
+        // 4-bit K adds score-phase noise on top of the V floor (uniform-random synthetic
+        // inputs, worst case): measured nvfp4/nvfp4 rel 2.0e-1 at Tkv=64 — same class as
+        // q4_0 V's 3e-1 gate. Packing correctness is the round-trip gate; quality is
+        // arbitrated end-to-end (argmax + acceptance within the config).
+        let kmul = match kfmt_now { "nvfp4" => 5.0, "fp8" => 2.5, _ => 1.0f32 };
+        let kvq_tol: f32 = 6e-2 * vmul.max(kmul);
         for tkv in [64usize, 128, 257] {
             let q: Vec<f32> = (0..hd*nh).map(|i| pr(i+1)*0.2).collect();
             let k: Vec<f32> = (0..hd*nhkv*tkv).map(|i| pr(i+7)*0.2).collect();
