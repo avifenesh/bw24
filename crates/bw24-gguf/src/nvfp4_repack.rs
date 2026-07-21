@@ -538,7 +538,6 @@ mod tests {
         let mut wscale = vec![0u8; out_f * scl_bytes];
         for (i, b) in weight.iter_mut().enumerate() { *b = ((i * 29 + 13) & 0xFF) as u8; }
         for (i, b) in wscale.iter_mut().enumerate() { *b = (0x21 + ((i * 7 + 1) % 0x50)) as u8; }
-        let row_bytes = (in_f / 64) * 36;
         let packed = repack_modelopt_to_gguf(&weight, &wscale, out_f, in_f);
         let perm = reorder_cols_nvfp4(&packed, out_f, in_f, nv, nk, hd);
         // f32 reference: dequant the row, permute the per-head column groups.

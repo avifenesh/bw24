@@ -1291,6 +1291,12 @@ impl Engine {
         crate::cpu_experts::configured().then(crate::cpu_experts::stats)
     }
 
+    /// Caller-blocked nanoseconds at CPU expert joins. Compare before/after snapshots to measure
+    /// the backend tail that resident-GPU expert work did not hide.
+    pub fn cpu_expert_exposed_wait_ns(&self) -> Option<u64> {
+        crate::cpu_experts::configured().then(crate::cpu_experts::exposed_wait_ns)
+    }
+
     /// CPU-routed expert selections grouped by how many of their three projections were already
     /// resident in HBM. This makes otherwise-stranded partial residency visible to tuning runs.
     pub fn cpu_expert_gpu_residency_stats(&self) -> Option<(u64, u64, u64)> {
@@ -2700,6 +2706,7 @@ impl Engine {
     }
 
     /// Stage-B: Q4_K weight x q8_1 activation int8 dp4a (decode). Min-offset via q8_1 sum term.
+    #[allow(non_snake_case)] // Keep GGUF qtype spelling visible at the public kernel boundary.
     pub fn qmatvec_q4_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
@@ -2714,6 +2721,7 @@ impl Engine {
     }
 
     /// Stage-B: Q6_K weight x q8_1 activation int8 dp4a (decode, symmetric).
+    #[allow(non_snake_case)] // Keep GGUF qtype spelling visible at the public kernel boundary.
     pub fn qmatvec_q6_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
@@ -2728,11 +2736,13 @@ impl Engine {
     }
 
     /// Stage-B: Q5_K weight x q8_1 activation int8 dp4a (decode). Min-offset via q8_1 sum term.
+    #[allow(non_snake_case)] // Keep GGUF qtype spelling visible at the public kernel boundary.
     pub fn qmatvec_q5_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_dp4a_named("qmatvec_q5_K_dp4a", w, x, m, in_f, out_f, row_bytes)
     }
     /// Stage-B: Q3_K weight x q8_1 activation int8 dp4a (decode, symmetric).
+    #[allow(non_snake_case)] // Keep GGUF qtype spelling visible at the public kernel boundary.
     pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                              out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_dp4a_named("qmatvec_q3_K_dp4a", w, x, m, in_f, out_f, row_bytes)
@@ -2752,6 +2762,7 @@ impl Engine {
         self.qmatvec_dp4a_named("qmatvec_nvfp4_dp4a", w, x, m, in_f, out_f, row_bytes)
     }
     /// Stage-B (optional perf): IQ4_XS codebook int8 dp4a.
+    #[allow(non_snake_case)] // Keep GGUF qtype spelling visible at the public kernel boundary.
     pub fn qmatvec_iq4_XS_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
                                out_f: usize, row_bytes: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_dp4a_named("qmatvec_iq4_XS_dp4a", w, x, m, in_f, out_f, row_bytes)
@@ -2972,7 +2983,7 @@ impl Engine {
     }
     /// Read back a device u32 buffer (the spec accept walk's [t] per-column argmax tokens).
     pub fn htod_u32_v(&self, v: &[u32]) -> Result<CudaSlice<u32>, Box<dyn std::error::Error>> {
-        Ok(self.gpu.stream.memcpy_stod(v)?)
+        Ok(self.gpu.stream.clone_htod(v)?)
     }
     pub fn dtoh_u32(&self, d: &CudaSlice<u32>) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
@@ -4923,7 +4934,7 @@ impl Engine {
     /// The variant the batched dispatch will pick for this (shape, m, mcols, layout) — exposed so
     /// gates can distinguish bit-identical variants (bit-bad==0 required) from the k-split family
     /// (deterministic but k-reduce-order-shifted: rel<1e-3 + run-to-run bit-identity required).
-    pub fn batched_variant(&self, m: usize, in_f: usize, out_f: usize, qtype: i32,
+    pub fn batched_variant(&self, _m: usize, in_f: usize, out_f: usize, qtype: i32,
                            row_bytes: usize, mcols: usize, rp: bool) -> &'static str {
         static BV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
         let bv = *BV.get_or_init(|| match std::env::var("BW24_MMVQ_BV").as_deref() {

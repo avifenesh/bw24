@@ -1,0 +1,39 @@
+F32/256: expected=-1.14908576 actual=-1.14908600 abs=2.384e-7 rel=2.075e-7
+BF16/256: expected=-1.14333558 actual=-1.14333606 abs=4.768e-7 rel=4.171e-7
+Q8_0/256: expected=437.74948120 actual=437.74905396 abs=4.272e-4 rel=9.760e-7
+Q4_0/256: expected=24.43267250 actual=24.43268394 abs=1.144e-5 rel=4.684e-7
+Q2_K/256: expected=63.87009811 actual=63.87011719 abs=1.907e-5 rel=2.986e-7
+Q3_K/256: expected=-57.55578613 actual=-57.55580139 abs=1.526e-5 rel=2.651e-7
+Q4_K/256: expected=13.66966248 actual=13.66971684 abs=5.436e-5 rel=3.977e-6
+Q5_K/256: expected=-109.46015930 actual=-109.46017456 abs=1.526e-5 rel=1.394e-7
+Q6_K/256: expected=-250.99902344 actual=-250.99867249 abs=3.510e-4 rel=1.398e-6
+IQ3_S/256: expected=450.85424805 actual=450.85430908 abs=6.104e-5 rel=1.354e-7
+IQ4_XS/256: expected=4780.17529297 actual=4780.17529297 abs=0.000e0 rel=0.000e0
+NVFP4/256: expected=110.95778656 actual=110.95776367 abs=2.289e-5 rel=2.063e-7
+F32/1536: expected=-0.30061057 actual=-0.30061024 abs=3.278e-7 rel=3.278e-7
+BF16/1536: expected=-0.30418780 actual=-0.30418831 abs=5.066e-7 rel=5.066e-7
+Q8_0/1536: expected=3165.74926758 actual=3165.75292969 abs=3.662e-3 rel=1.157e-6
+Q4_0/1536: expected=-78.19955444 actual=-78.19951630 abs=3.815e-5 rel=4.878e-7
+Q2_K/1536: expected=290.75704956 actual=290.75711060 abs=6.104e-5 rel=2.099e-7
+Q3_K/1536: expected=-144.70954895 actual=-144.70967102 abs=1.221e-4 rel=8.436e-7
+Q4_K/1536: expected=1792.14660645 actual=1792.14721680 abs=6.104e-4 rel=3.406e-7
+Q5_K/1536: expected=4653.91406250 actual=4653.91113281 abs=2.930e-3 rel=6.295e-7
+Q6_K/1536: expected=2090.44335938 actual=2090.44091797 abs=2.441e-3 rel=1.168e-6
+IQ3_S/1536: expected=-19.61167145 actual=-19.61185837 abs=1.869e-4 rel=9.531e-6
+IQ4_XS/1536: expected=2095.13159180 actual=2095.12426758 abs=7.324e-3 rel=3.496e-6
+NVFP4/1536: expected=277.00027466 actual=277.00057983 abs=3.052e-4 rel=1.102e-6
+F32/4096: expected=-1.34504557 actual=-1.34504294 abs=2.623e-6 rel=1.950e-6
+BF16/4096: expected=-1.34889233 actual=-1.34889424 abs=1.907e-6 rel=1.414e-6
+Q8_0/4096: expected=-941.41253662 actual=-941.40679932 abs=5.737e-3 rel=6.094e-6
+Q4_0/4096: expected=-148.82304382 actual=-148.82302856 abs=1.526e-5 rel=1.025e-7
+Q2_K/4096: expected=841.00531006 actual=841.00585938 abs=5.493e-4 rel=6.532e-7
+Q3_K/4096: expected=31.61844444 actual=31.61833954 abs=1.049e-4 rel=3.318e-6
+Q4_K/4096: expected=11189.36035156 actual=11189.35449219 abs=5.859e-3 rel=5.237e-7
+Q5_K/4096: expected=20850.46679688 actual=20850.44726562 abs=1.953e-2 rel=9.367e-7
+Q6_K/4096: expected=1972.00830078 actual=1972.00463867 abs=3.662e-3 rel=1.857e-6
+IQ3_S/4096: expected=2217.38330078 actual=2217.38500977 abs=1.709e-3 rel=7.707e-7
+IQ4_XS/4096: expected=4139.16601562 actual=4139.15722656 abs=8.789e-3 rel=2.123e-6
+NVFP4/4096: expected=19.18429756 actual=19.18442345 abs=1.259e-4 rel=6.562e-6
+ABI v3 symbols, batched/repeated MoE identity, and non-finite/subnormal checks: PASS
+bw24 native CPU quant check: ALL GREEN
+[bw24-cpu-profile] calls=5 prepare=0.000007s io=0.000000s insert=0.000000s compute=0.000308s read_projections=0 read_GB=0.000 batch_calls=1 batch_tokens=2 batch_items=4 batch_unique_experts=1

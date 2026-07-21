@@ -749,7 +749,7 @@ impl HybridModel {
             .unwrap_or(7);
         let k_cap = k.min(cap_max).max(1);
         // DRAFT-CHAIN GRAPHS (burst-arc step c, BW24_GEMMA_DRAFT_GRAPH=1): the whole k-step
-        // draft chain replays as ONE captured graph — pos slots fill in-graph from pos_base,
+        // draft chain replays as ONE captured graph — position slots fill in-graph,
         // the seed hidden rides the persistent g_seed buffer, KV lengths ride len_d (step b).
         // Keyed on (kr, rung, over_win): a new depth/rung/window regime captures lazily.
         let graph_on = std::env::var("BW24_GEMMA_DRAFT_GRAPH").as_deref() == Ok("1");
@@ -761,7 +761,6 @@ impl HybridModel {
             ),
         > = Default::default();
         let mut g_seed = e.zeros(n_embd)?;
-        let mut pos_base = e.htod_i32(&[0])?;
         // seed len_d before round 1 (prime went through the host-len path).
         for kvl in cache.kv.iter_mut().flatten() {
             e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
@@ -843,7 +842,7 @@ impl HybridModel {
             e.u32_set_k(&mut batch_d, last, 0)?;
             e.copy_into(&mut g_seed, 0, &h, n_embd)?;
             // the draft chain, step j: reads g_seed via the hc chain, pos from pos_slots[j]
-            // (eager: host-filled; graph: filled in-graph from pos_base).
+            // (eager: host-filled; graph: filled in-graph).
             let run_chain = |e: &Engine, d: &GemmaDraft, batch_d: &mut CudaSlice<u32>,
                              p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
                              pos_slots: &Vec<CudaSlice<i32>>|

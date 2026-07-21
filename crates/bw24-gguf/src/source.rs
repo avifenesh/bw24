@@ -1748,7 +1748,7 @@ mod compressed_tensors_roundtrip {
         let mut off = 0usize;
         let w_start = off; off += weight.len();
         let s_start = off; off += wscale.len();
-        let s2_start = off; off += s2_bytes.len();
+        let s2_start = off;
 
         let json = format!(
             concat!(

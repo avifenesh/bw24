@@ -79,22 +79,29 @@ stack.
 ## Native ABI v2 local validation
 
 The 2026-07-21 RTX 5090 target battery used only bw24's native CPU expert implementation. The
-companion SHA-256 was `c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71`;
+companion SHA-256 was `26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621`;
 `ldd` showed no llama.cpp or ggml library. The packed-row checker passed all 12 supported formats at
 widths 256, 1536, and 4096, plus non-finite input rejection and an independently composed nonzero
 MoE token. `kernel-check` reported `ALL GREEN`, `run-gen` reported argmax `40129 == 40129` and
 `MATCH` after freezing the measured CPU/GPU expert assignment, and `run-spec` produced identical
 output for K=1 through K=8.
 
-The default 128-token residency warmup measured 4.48 tok/s over one N=32 post-freeze greedy window.
+The default 128-token residency warmup measured a 4.60 tok/s median over three interleaved N=32
+post-freeze pairs with bw24's paired AVX-VNNI Q2_K kernel. Its matched pre-change median was
+4.37 tok/s with identical output and residency; median CPU compute fell from 3.237 s to 3.025 s and
+exposed CPU wait from 6.310 s to 5.956 s. This is +5.3% by arm medians and +6.9% by median paired
+delta.
 The MTP-capable default plain control measured 3.76 tok/s over N=7 before the K sweep; K=1 through
-K=8 were exact but slower for this short prompt. Both are single observations on the active desktop,
-starting at 55 C, with
+K=8 were exact but slower for this short prompt. The MTP control is a single observation; the Q2_K
+result is N=3 with both pair orders. Every Q2_K arm was cooled to a 55-56 C start on the active
+desktop, with
 eight CPU workers, a 20 GiB requested/effective host cache, a 4 GiB live-RAM reserve, and the
 generation-pinned dual-NVMe map
 `861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15`. They are not
-board-moving medians. Raw logs and the failed source-tree/map pairing check are retained under
-`evidence/local-5090-native-20260721/`; the concise receipt is `native-v2-validation.md`. The Hy3
+Qwen-board measurements. Raw logs and the failed source-tree/map pairing check are retained under
+`evidence/local-5090-native-20260721/`; the Q2_K win and exact gate are under
+`evidence/local-5090-native-next-20260721/`. The concise receipts are `native-v2-validation.md`
+and `q2k-avxvnni-pair-win.md`. The Hy3
 MTP head remains full-vocabulary in this receipt: no `BW24_FRSPEC_TRIM` artifact was supplied.
 
 The earlier 2026-07-19 release receipt used a retired external companion and does not certify native

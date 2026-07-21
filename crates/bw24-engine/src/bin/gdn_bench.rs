@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  if rel < 1e-4 { "OK" } else { "FAIL" });
     }
 
-    let mut bench = |name: &str, f: &mut dyn FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>|
+    let bench = |name: &str, f: &mut dyn FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>|
                     -> Result<f64, Box<dyn std::error::Error>> {
         for _ in 0..3 { f(&e)?; }
         e.ctx().synchronize()?;

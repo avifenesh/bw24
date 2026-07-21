@@ -102,6 +102,7 @@ static BACKEND: OnceLock<Result<CpuBackend, String>> = OnceLock::new();
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static EXPERTS: AtomicU64 = AtomicU64::new(0);
 static WALL_NS: AtomicU64 = AtomicU64::new(0);
+static EXPOSED_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 static GPU_RESIDENT_0: AtomicU64 = AtomicU64::new(0);
 static GPU_RESIDENT_1: AtomicU64 = AtomicU64::new(0);
 static GPU_RESIDENT_2: AtomicU64 = AtomicU64::new(0);
@@ -460,11 +461,18 @@ pub(crate) fn incomplete_gpu_residency_stats() -> (u64, u64, u64) {
 
 impl CpuExpertTicket {
     pub(crate) fn wait(mut self) -> Result<Vec<f32>, String> {
-        self.receiver
+        let start = std::time::Instant::now();
+        let result = self
+            .receiver
             .take()
             .expect("CPU expert ticket receiver is present until wait")
             .recv()
-            .map_err(|_| "persistent CPU expert executor dropped a result".to_string())?
+            .map_err(|_| "persistent CPU expert executor dropped a result".to_string())?;
+        EXPOSED_WAIT_NS.fetch_add(
+            start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        result
     }
 }
 
@@ -476,6 +484,10 @@ impl Drop for CpuExpertTicket {
             let _ = receiver.recv();
         }
     }
+}
+
+pub(crate) fn exposed_wait_ns() -> u64 {
+    EXPOSED_WAIT_NS.load(Ordering::Relaxed)
 }
 
 pub(crate) fn stats() -> (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) {

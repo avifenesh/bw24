@@ -3362,30 +3362,6 @@ impl HybridModel {
         }
     }
 
-    /// tail_add_nq with the POST-ATTN NORM folded into the dense tail entry (31B mining plan
-    /// item 1, 2026-07-13): `o` is the RAW attention output. Dense layers only.
-    fn gemma4_layer_tail_add_nq_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
-                                   o: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
-                                   next_norm: Option<&CudaSlice<f32>>)
-                                   -> Result<(CudaSlice<f32>, Option<(CudaSlice<i8>, CudaSlice<f32>)>), Box<dyn std::error::Error>> {
-        let n_embd = self.cfg.n_embd as usize;
-        let bits = layer.gemma4.as_ref().unwrap();
-        let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
-            e, layer, o, x, t, Some(layer.post_attn_norm.float_data()), false)?;
-        let mut xn = e.uninit(t * n_embd)?;
-        match next_norm {
-            Some(w) => {
-                let pair = e.add_scale_rms_norm_q8_1(&sn, &attn_out, bits.layer_scale, w, &mut xn,
-                                                     n_embd, t, self.cfg.rms_eps)?;
-                Ok((xn, Some(pair)))
-            }
-            None => {
-                e.add_scale(&sn, &attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
-                Ok((xn, None))
-            }
-        }
-    }
-
     /// gemma4 prefill: `last_only` = forward_last semantics (lm_head on the final row only).
     /// R4: final logits softcapped 30*tanh(l/30) on host (monotonic — argmax unaffected).
     fn gemma4_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
