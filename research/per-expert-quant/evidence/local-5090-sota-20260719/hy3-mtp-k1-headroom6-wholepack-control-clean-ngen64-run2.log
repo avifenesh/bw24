@@ -1,0 +1,80 @@
+[runner] thermal_regime=clean-swap, default system power policy, no intentional cooldown
+[runner] cpu_regime=unlimited max-weight systemd scope, 8 P-core CPU expert team
+[runner] io_regime=mirrored direct I/O across both NVMe devices; IOWeight=10000 requested
+[runner] memory_regime=requested 36-GiB CPU cache with 0-GiB MemAvailable reserve
+[runner] cgroup_memory_regime=unlimited sibling systemd scope
+[runner] measurement_N=1 generation_tokens=64
+[runner] mode=control
+[runner] fused_stages=1
+[runner] mixed_q8=0
+[runner] cache_policy=lru
+[runner] preflight_free_vram_mib=23672
+[runner] preflight_load_one=3.51
+[runner] git_head=650d45c496ecb2d5cae009e1b3e03d347e2db8ea
+733fcd0eae3a0c686fb0002b9359fc2f8e1dc1630537e778269ad9270550fdb1  /tmp/bw24-run-spec-sota-candidates
+ba7cdb64b723308a92e99f728ff5aba32089b65a9777af3ed3ed634a08c82a4a  /tmp/libbw24-cpu-experts-sota-candidates.so
+ 19:49:09 up 16 days,  5:00,  2 users,  load average: 3.51, 3.61, 3.58
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        40Gi       7.7Gi        15Gi        29Gi        20Gi
+Swap:          8.0Gi       294Mi       7.7Gi
+NAME      TYPE SIZE   USED PRIO
+/swap.img file   8G 294.9M   -1
+MemAvailable:   21546104 kB
+SwapFree:        8086600 kB
+Dirty:              8412 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 0  0 302004 8036668 113488 30401088  552  610 67032  3823 23550   16 13  5 82  0  0  0
+ 2  0 302004 8027444 113488 30403884    0    0   152    24 6590 17899  2  1 98  0  0  0
+ 2  0 302004 8036340 113508 30405664    0    0  3872    24 10997 25305  3  1 96  0  0  0
+2026/07/20 19:49:11.962, NVIDIA GeForce RTX 5090 Laptop GPU, 57, 9.69 W, 0 %, 312 MiB, 23672 MiB
+[runner-scope] pid=2764977
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/bw24-headroom6-control-2764921.scope
+[runner-scope] cpu.max=max 100000
+[runner-scope] cpu.weight=10000
+[runner-scope] io.weight=unavailable
+[runner-scope] memory.high=max
+[runner-scope] memory.max=max
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+Command exited with non-zero status 1
+	Command being timed: "env BW24_CPU_EXPERT_FUSED_STAGES=1 BW24_MOE_MIXED_Q8=0 BW24_NGEN=64 BW24_SPEC_K=1 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-sota-candidates.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_RESERVE_GB=0 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=3 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-7 /tmp/bw24-run-spec-sota-candidates /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 19.74
+	System time (seconds): 5.81
+	Percent of CPU this job got: 96%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:26.37
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 4372520
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 7410
+	Minor (reclaiming a frame) page faults: 2840572
+	Voluntary context switches: 8937
+	Involuntary context switches: 232
+	Swaps: 0
+	File system inputs: 9373120
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
+[runner] exit_status=1
+ 19:49:38 up 16 days,  5:01,  2 users,  load average: 4.20, 3.77, 3.64
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        22Gi        27Gi        11Gi        23Gi        38Gi
+Swap:          8.0Gi       7.8Gi       162Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 7.8G   -1
+MemAvailable:   40248488 kB
+SwapFree:         166208 kB
+Dirty:              7984 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 7  0 8222396 28793320  13640 24392688  553  616 67048  3829 23551   16 13  5 82  0  0  0
+ 1  0 8220660 28424900  13920 24482060 1620    0 49212    24 24405 34543  7  4 89  0  0  0
+ 3  0 8220528 28442424  13928 24479160  124    0  1012   168 22821 28562  6  1 92  0  0  0
+2026/07/20 19:49:40.399, NVIDIA GeForce RTX 5090 Laptop GPU, 80, 174.13 W, 100 %, 22400 MiB, 1585 MiB

@@ -1,0 +1,1 @@
+type=q2_K shape=1536x4096 row_bytes=504 extent=2064384 threads=8 iterations=200 ms/projection=0.4335 weight_GB/s=4.76 checksum=13.7662303

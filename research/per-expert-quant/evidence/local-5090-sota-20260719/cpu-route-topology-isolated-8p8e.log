@@ -1,0 +1,36 @@
+date=2026-07-21T12:55:14+03:00
+kernel=7.0.0-27-generic
+schedule=guided,8
+background_affinity=16-23
+config experts=4 threads=8 affinity=0-7
+iteration=0 tasks=948 layered_experts=4 weight_GB=2.556 threads=8 seconds=0.062094 weight_GB/s=41.17 expert_bound_tok/s=16.10 checksum=20.1497744 warm_checksum=20.1497744
+iteration=1 tasks=948 layered_experts=4 weight_GB=2.556 threads=8 seconds=0.075320 weight_GB/s=33.94 expert_bound_tok/s=13.28 checksum=20.1497744 warm_checksum=20.1497744
+iteration=2 tasks=948 layered_experts=4 weight_GB=2.556 threads=8 seconds=0.071199 weight_GB/s=35.90 expert_bound_tok/s=14.05 checksum=20.1497744 warm_checksum=20.1497744
+config experts=4 threads=9 affinity=0-8
+iteration=0 tasks=948 layered_experts=4 weight_GB=2.556 threads=9 seconds=0.066313 weight_GB/s=38.55 expert_bound_tok/s=15.08 checksum=20.1497744 warm_checksum=20.1497744
+iteration=1 tasks=948 layered_experts=4 weight_GB=2.556 threads=9 seconds=0.074034 weight_GB/s=34.53 expert_bound_tok/s=13.51 checksum=20.1497744 warm_checksum=20.1497744
+iteration=2 tasks=948 layered_experts=4 weight_GB=2.556 threads=9 seconds=0.066276 weight_GB/s=38.57 expert_bound_tok/s=15.09 checksum=20.1497744 warm_checksum=20.1497744
+config experts=4 threads=12 affinity=0-11
+iteration=0 tasks=948 layered_experts=4 weight_GB=2.556 threads=12 seconds=0.064043 weight_GB/s=39.91 expert_bound_tok/s=15.61 checksum=20.1497744 warm_checksum=20.1497744
+iteration=1 tasks=948 layered_experts=4 weight_GB=2.556 threads=12 seconds=0.055795 weight_GB/s=45.81 expert_bound_tok/s=17.92 checksum=20.1497744 warm_checksum=20.1497744
+iteration=2 tasks=948 layered_experts=4 weight_GB=2.556 threads=12 seconds=0.055789 weight_GB/s=45.82 expert_bound_tok/s=17.92 checksum=20.1497744 warm_checksum=20.1497744
+config experts=4 threads=16 affinity=0-15
+iteration=0 tasks=948 layered_experts=4 weight_GB=2.556 threads=16 seconds=0.088568 weight_GB/s=28.86 expert_bound_tok/s=11.29 checksum=20.1497744 warm_checksum=20.1497744
+iteration=1 tasks=948 layered_experts=4 weight_GB=2.556 threads=16 seconds=0.052421 weight_GB/s=48.76 expert_bound_tok/s=19.08 checksum=20.1497744 warm_checksum=20.1497744
+iteration=2 tasks=948 layered_experts=4 weight_GB=2.556 threads=16 seconds=0.059564 weight_GB/s=42.92 expert_bound_tok/s=16.79 checksum=20.1497744 warm_checksum=20.1497744
+config experts=5 threads=8 affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.082211 weight_GB/s=38.52 expert_bound_tok/s=12.16 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.078732 weight_GB/s=40.22 expert_bound_tok/s=12.70 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.076220 weight_GB/s=41.54 expert_bound_tok/s=13.12 checksum=-84.0951437 warm_checksum=-84.0951437
+config experts=5 threads=9 affinity=0-8
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=9 seconds=0.084913 weight_GB/s=37.29 expert_bound_tok/s=11.78 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=9 seconds=0.090073 weight_GB/s=35.15 expert_bound_tok/s=11.10 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=9 seconds=0.090264 weight_GB/s=35.08 expert_bound_tok/s=11.08 checksum=-84.0951437 warm_checksum=-84.0951437
+config experts=5 threads=12 affinity=0-11
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=12 seconds=0.084830 weight_GB/s=37.33 expert_bound_tok/s=11.79 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=12 seconds=0.092980 weight_GB/s=34.06 expert_bound_tok/s=10.75 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=12 seconds=0.095575 weight_GB/s=33.13 expert_bound_tok/s=10.46 checksum=-84.0951437 warm_checksum=-84.0951437
+config experts=5 threads=16 affinity=0-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.106564 weight_GB/s=29.71 expert_bound_tok/s=9.38 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.120498 weight_GB/s=26.28 expert_bound_tok/s=8.30 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.062170 weight_GB/s=50.93 expert_bound_tok/s=16.08 checksum=-84.0951437 warm_checksum=-84.0951437

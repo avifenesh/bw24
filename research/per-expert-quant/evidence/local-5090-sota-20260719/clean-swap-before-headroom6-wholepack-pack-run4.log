@@ -1,0 +1,24 @@
+2026-07-20T18:17:22+03:00
+ 18:17:22 up 16 days,  3:29,  2 users,  load average: 1.75, 2.03, 2.94
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        18Gi        19Gi       6.2Gi        30Gi        42Gi
+Swap:          8.0Gi       8.0Gi       1.8Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   8G   -1
+MemAvailable:   44793360 kB
+SwapTotal:       8388604 kB
+SwapFree:           1828 kB
+Dirty:              4172 kB
+Writeback:             0 kB
+2026-07-20T18:19:18+03:00
+ 18:19:18 up 16 days,  3:31,  2 users,  load average: 2.27, 2.15, 2.87
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        25Gi        12Gi        12Gi        36Gi        35Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+MemAvailable:   36899124 kB
+SwapTotal:       8388604 kB
+SwapFree:        8388604 kB
+Dirty:              7108 kB
+Writeback:             0 kB

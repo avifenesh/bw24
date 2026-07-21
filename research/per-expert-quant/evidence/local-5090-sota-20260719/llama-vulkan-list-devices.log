@@ -1,0 +1,6 @@
+ggml_vulkan: Found 2 Vulkan devices:
+ggml_vulkan: 0 = Intel(R) Graphics (ARL) (Intel open-source Mesa driver) | uma: 1 | fp16: 1 | bf16: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: none
+ggml_vulkan: 1 = NVIDIA GeForce RTX 5090 Laptop GPU (NVIDIA) | uma: 0 | fp16: 1 | bf16: 1 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: NV_coopmat2
+Available devices:
+  Vulkan0: Intel(R) Graphics (ARL) (46770 MiB, 40897 MiB free)
+  Vulkan1: NVIDIA GeForce RTX 5090 Laptop GPU (24463 MiB, 23671 MiB free)

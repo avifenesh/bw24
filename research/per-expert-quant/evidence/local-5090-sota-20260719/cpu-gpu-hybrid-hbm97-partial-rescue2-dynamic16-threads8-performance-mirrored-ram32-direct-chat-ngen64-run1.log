@@ -1,0 +1,51 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5691 slots in 5 classes, 15.04 GB / 15.04 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 32.00 GiB policy=lfu io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.181e0  MATCH
+generated 64 tokens in 18.502s = 3.46 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471, 12, 1970, 24385, 35510, 503, 356, 252, 1054, 289, 2057, 1515, 1338, 185, 12, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63]
+MoE cache DECODE-WINDOW: 5691 slots | hits=59556 misses=3 (hit-rate=100.0%) | staged 0.01 GB H2D (0.1 MB/token)
+spill worker DECODE-WINDOW: reads=3 bytes=10027008 waits=3 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=5013 experts=20595 backend_wall=15.372s RAM_hits=50698 RAM_misses=11087 RAM_fills=29.14 GB RAM_resident=34.36 GB phase_prepare=0.184s phase_io=4.498s phase_insert=0.038s phase_compute=10.637s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=19814 resident_1=781 resident_2=0
+storage DECODE-WINDOW: 29.22 GB physical reads
+OUTPUT TEXT: "Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  \nIt includes:\n\n- Full **type hints** (PEP 604 / `typing`)\n- **Docstrings** for the class and every public method\n- `insert`, `delete`, and `reverse`"
+--- generated text ---
+Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  
+It includes:
+
+- Full **type hints** (PEP 604 / `typing`)
+- **Docstrings** for the class and every public method
+- `insert`, `delete`, and `reverse`
+[spill-pread] reads=34668 bytes=96557629440 errors=0 short_reads=0 fallbacks=0 buffer_waits=10790 ring_full=748
+[bw24-cpu-profile] calls=8118 prepare=0.338874s io=10.054603s insert=0.051900s compute=16.813620s read_projections=24737 read_GB=65.484
+	Command being timed: "env BW24_NGEN=64 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=32 BW24_CPU_EXPERT_CACHE_POLICY=lfu BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_GPU_MIN_RESIDENT=2 GOMP_CPU_AFFINITY=0-7 target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 136.30
+	System time (seconds): 37.25
+	Percent of CPU this job got: 115%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:30.42
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48794196
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 27276
+	Minor (reclaiming a frame) page faults: 17893006
+	Voluntary context switches: 644536
+	Involuntary context switches: 1945
+	Swaps: 0
+	File system inputs: 325405496
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

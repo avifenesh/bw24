@@ -1,0 +1,29 @@
+{
+  "adjacent_layer_cases": 1950,
+  "decode_passes": 50,
+  "expert_count": 192,
+  "format": "bw24-hy3-route-transition-analysis-v1",
+  "layers_per_pass": 79,
+  "n_used": 8,
+  "predictor": "previous-target-set ranked by summed adjacent transition counts",
+  "test_passes": 25,
+  "trace": "research/per-expert-quant/evidence/local-5090-sota-20260719/window4-routes.trace",
+  "train_passes": 25,
+  "widths": {
+    "1": {
+      "hits": 1481,
+      "precision": 0.7594871794871795,
+      "recall": 0.09493589743589743
+    },
+    "2": {
+      "hits": 2711,
+      "precision": 0.6951282051282052,
+      "recall": 0.1737820512820513
+    },
+    "4": {
+      "hits": 4410,
+      "precision": 0.5653846153846154,
+      "recall": 0.2826923076923077
+    }
+  }
+}

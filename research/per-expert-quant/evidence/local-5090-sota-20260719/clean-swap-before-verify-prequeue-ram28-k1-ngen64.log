@@ -1,0 +1,11 @@
+2026-07-20T17:11:08+03:00
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 7.9G   -1
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        23Gi        31Gi       8.7Gi        15Gi        37Gi
+Swap:          8.0Gi          0B       8.0Gi
+ 17:11:55 up 16 days,  2:23,  2 users,  load average: 4.33, 17.85, 18.42
+TCPU 79.0C
+x86_pkg_temp 80.0C

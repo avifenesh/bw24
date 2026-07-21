@@ -1,0 +1,57 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5691 slots in 5 classes, 15.04 GB / 15.04 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-vec.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.035e0  MATCH
+[moe-cache] warming 128 discarded decode tokens before fixed residency
+[moe-cache] whole-expert pack: before=1869 complete + 38/23 one/two-projection fragments (84 stranded blocks); plan=1897 complete experts, 5691/5691 slots, route-score 48054.0; retained required MTP experts=0/0
+[moe-cache] residency frozen: 5691 slots, 5691 resident blocks; 1897 complete experts, 0 one-projection fragments, 0 two-projection fragments (0 stranded blocks)
+teacher-forced decode: 64 tokens from /home/avifenesh/.codex/worktrees/e25d/bw24/research/per-expert-quant/evidence/local-5090-sota-20260719/wholepack-control-first64.tokens
+generated 64 tokens in 9.205s = 6.95 tok/s (ST teacher-forced decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471, 12, 20424, 1970, 24621, 35510, 3236, 12, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 185, 12, 355, 4132, 607, 5661]
+MoE cache DECODE-WINDOW: 5691 slots | hits=67719 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=4952 experts=17875 backend_wall=6.801s RAM_hits=46064 RAM_misses=7561 RAM_fills=19.89 GB RAM_resident=38.65 GB phase_prepare=0.200s phase_io=2.127s phase_insert=0.016s phase_compute=4.447s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=17875 resident_1=0 resident_2=0
+storage DECODE-WINDOW: 19.89 GB physical reads
+OUTPUT TEXT: "Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  \nIt includes:\n\n- Full **type hints** (PEP 604 / `typing`)\n- Clear **docstrings**\n- `insert`, `delete`, and `reverse` operations\n- A simple `Node"
+--- generated text ---
+Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  
+It includes:
+
+- Full **type hints** (PEP 604 / `typing`)
+- Clear **docstrings**
+- `insert`, `delete`, and `reverse` operations
+- A simple `Node
+[spill-pread] reads=216786 bytes=571565457408 errors=0 short_reads=0 fallbacks=0 buffer_waits=172724 ring_full=805
+[bw24-cpu-profile] calls=21552 prepare=1.600662s io=18.422234s insert=0.112417s compute=28.476698s read_projections=60695 read_GB=159.878
+	Command being timed: "env BW24_NGEN=64 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_FORCE_TOKENS_FILE=/home/avifenesh/.codex/worktrees/e25d/bw24/research/per-expert-quant/evidence/local-5090-sota-20260719/wholepack-control-first64.tokens BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-vec.so BW24_CPU_EXPERT_VEC_SWIGLU=1 BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 BW24_CPU_EXPERT_FREEZE_PACK=1 GOMP_CPU_AFFINITY=0-7 /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 257.86
+	System time (seconds): 98.46
+	Percent of CPU this job got: 115%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 5:08.06
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 45050180
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 9743
+	Minor (reclaiming a frame) page faults: 19338692
+	Voluntary context switches: 2129838
+	Involuntary context switches: 2165
+	Swaps: 0
+	File system inputs: 1463614864
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[runner] exit_status=0

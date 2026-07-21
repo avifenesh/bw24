@@ -1,0 +1,15 @@
+2026-07-20T08:19:30+03:00
+        Current Power Limit                            : 150.00 W
+        Default Power Limit                            : 95.00 W
+        Max Power Limit                                : 175.00 W
+        Current Power Limit                            : N/A
+        Default Power Limit                            : N/A
+        Max Power Limit                                : N/A
+Changing power management limit is not supported in current scope for GPU: 00000000:02:00.0.
+All done.
+        Current Power Limit                            : 150.00 W
+        Default Power Limit                            : 95.00 W
+        Max Power Limit                                : 175.00 W
+        Current Power Limit                            : N/A
+        Default Power Limit                            : N/A
+        Max Power Limit                                : N/A

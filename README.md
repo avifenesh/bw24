@@ -146,7 +146,7 @@ pairs, N=2 each side.
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
 - Gemma 31B depth cells (plain 0.96x, spec 0.87x) and E4B are the open tuning front; 26B is done and 31B short spec is above (1.09x).
-- Hy3 spill reaches 7.60 tok/s at K=1 in the strongest completed N=64 run, below the 10 tok/s target; prompt replay remains much slower than token generation and the best 36 GiB host-cache setting needs a quiet 60 GiB machine.
+- Hy3 spill reached 7.60 tok/s at K=1 in the strongest historical N=64 bring-up run, below the 10 tok/s target. The pinned release gate on a busy 60 GiB desktop measured 5.92 tok/s with the safe 24.4 GiB effective host cache; forcing a 29.7 GiB cache increased swap pressure and fell to 5.09 tok/s. Prompt replay remains much slower than token generation, so the launcher keeps live-RAM headroom instead of treating maximum allocation as maximum throughput.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception documented below.
 
 ## What's inside

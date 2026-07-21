@@ -1,0 +1,12 @@
+date=2026-07-21T12:53:53+03:00
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        15Gi        41Gi       3.8Gi       8.0Gi        45Gi
+Swap:          8.0Gi       8.0Gi        29Mi
+Filename				Type		Size		Used		Priority
+/swap.img                               file		8388604		8358552		-1
+after_reset=2026-07-21T12:54:49+03:00
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        23Gi        33Gi       4.2Gi       9.3Gi        37Gi
+Swap:          8.0Gi       1.8Mi       8.0Gi
+Filename				Type		Size		Used		Priority
+/swap.img                               file		8388604		1832		-1

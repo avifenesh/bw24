@@ -1,0 +1,36 @@
+bytes=2064384 shape=4096x1536 qtype=13 iterations=200 resident_ms=0.0192 staged_ms=0.0973 staged_weight_GB/s=21.23 staged_slowdown=5.06x mapped_ms=1.2161 mapped_weight_GB/s=1.70 mapped_slowdown=63.24x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=159.083272
+bytes=2064384 shape=4096x1536 qtype=13 iterations=200 resident_ms=0.0194 staged_ms=0.4594 staged_weight_GB/s=4.49 staged_slowdown=23.72x mapped_ms=1.4969 mapped_weight_GB/s=1.38 mapped_slowdown=77.29x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=159.083272
+bytes=2064384 shape=4096x1536 qtype=13 iterations=200 resident_ms=0.0194 staged_ms=0.0974 staged_weight_GB/s=21.20 staged_slowdown=5.02x mapped_ms=1.2012 mapped_weight_GB/s=1.72 mapped_slowdown=61.98x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=159.083272
+bytes=2703360 shape=4096x1536 qtype=6 iterations=200 resident_ms=0.0247 staged_ms=0.1278 staged_weight_GB/s=21.16 staged_slowdown=5.18x mapped_ms=1.9670 mapped_weight_GB/s=1.37 mapped_slowdown=79.75x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=-79.9493498
+bytes=2703360 shape=4096x1536 qtype=6 iterations=200 resident_ms=0.0246 staged_ms=0.1273 staged_weight_GB/s=21.24 staged_slowdown=5.17x mapped_ms=1.9382 mapped_weight_GB/s=1.39 mapped_slowdown=78.71x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=-79.9493498
+bytes=2703360 shape=4096x1536 qtype=6 iterations=200 resident_ms=0.0248 staged_ms=0.1278 staged_weight_GB/s=21.16 staged_slowdown=5.16x mapped_ms=1.9448 mapped_weight_GB/s=1.39 mapped_slowdown=78.58x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=-79.9493498
+bytes=2064384 shape=1536x4096 qtype=13 iterations=200 resident_ms=0.0200 staged_ms=0.0973 staged_weight_GB/s=21.22 staged_slowdown=4.87x mapped_ms=1.3116 mapped_weight_GB/s=1.57 mapped_slowdown=65.72x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=40.1203733
+bytes=2064384 shape=1536x4096 qtype=13 iterations=200 resident_ms=0.0200 staged_ms=0.0973 staged_weight_GB/s=21.21 staged_slowdown=4.87x mapped_ms=1.3056 mapped_weight_GB/s=1.58 mapped_slowdown=65.34x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=40.1203733
+bytes=2064384 shape=1536x4096 qtype=13 iterations=200 resident_ms=0.0199 staged_ms=0.0972 staged_weight_GB/s=21.23 staged_slowdown=4.88x mapped_ms=1.3118 mapped_weight_GB/s=1.57 mapped_slowdown=65.78x mapped_exact=yes staged_exact=yes maxdiff=0 checksum=40.1203733
+	Command being timed: "sh -c 
+for run in 1 2 3; do /tmp/bw24-bench-mapped-qmatvec-staged /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme/experts/blk1-gate-mixed.bin 0 2064384 4096 1536 1344 13 200; done
+for run in 1 2 3; do /tmp/bw24-bench-mapped-qmatvec-staged /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme/experts/blk17-gate-mixed.bin 119734272 2703360 4096 1536 1760 6 200; done
+for run in 1 2 3; do /tmp/bw24-bench-mapped-qmatvec-staged /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme/experts/blk17-down-mixed.bin 119734272 2064384 1536 4096 504 13 200; done
+"
+	User time (seconds): 1.04
+	System time (seconds): 1.60
+	Percent of CPU this job got: 25%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:10.33
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 120608
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 15
+	Minor (reclaiming a frame) page faults: 98825
+	Voluntary context switches: 514
+	Involuntary context switches: 133
+	Swaps: 0
+	File system inputs: 41752
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

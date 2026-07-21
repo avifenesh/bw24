@@ -1,0 +1,8 @@
+[0/2] Re-checking globbed directories...
+[1/6] Performing build step for 'vulkan-shaders-gen'
+ninja: no work to do.
+[2/6] Performing install step for 'vulkan-shaders-gen'
+-- Up-to-date: /tmp/bw24-llama-vulkan-build/Release/./vulkan-shaders-gen
+[3/6] Completed 'vulkan-shaders-gen'
+[4/6] Building CXX object examples/simple/CMakeFiles/llama-simple.dir/simple.cpp.o
+[5/6] Linking CXX executable bin/llama-simple

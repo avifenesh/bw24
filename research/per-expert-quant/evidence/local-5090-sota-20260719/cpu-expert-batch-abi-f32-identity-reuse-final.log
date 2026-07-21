@@ -1,0 +1,2 @@
+ABI=1 token_rows=2 empty_rows=1 byte_identity=PASS
+[bw24-cpu-profile] calls=4 prepare=0.000012s io=0.000000s insert=0.000000s compute=0.000159s read_projections=0 read_GB=0.000 batch_calls=1 batch_tokens=2 batch_pairs=4 batch_gate_up_groups=4 batch_down_groups=2

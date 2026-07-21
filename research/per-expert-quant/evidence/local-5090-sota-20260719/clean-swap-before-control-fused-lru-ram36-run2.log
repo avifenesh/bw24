@@ -1,0 +1,60 @@
+2026-07-20T19:48:29+03:00
+[clean-swap] before
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        22Gi        34Gi        10Gi        15Gi        38Gi
+Swap:          8.0Gi       8.0Gi        19Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   8G   -1
+	Command being timed: "sudo -n swapoff /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 4.62
+	Percent of CPU this job got: 11%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:39.90
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6268
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 24
+	Minor (reclaiming a frame) page faults: 890
+	Voluntary context switches: 941458
+	Involuntary context switches: 33
+	Swaps: 0
+	File system inputs: 16059288
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+	Command being timed: "sudo -n swapon /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 43%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6540
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 29
+	Minor (reclaiming a frame) page faults: 875
+	Voluntary context switches: 88
+	Involuntary context switches: 0
+	Swaps: 0
+	File system inputs: 2888
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[clean-swap] after
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        40Gi       7.3Gi        15Gi        29Gi        19Gi
+Swap:          8.0Gi       140Ki       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 3.7M   -1
+2026-07-20T19:49:09+03:00

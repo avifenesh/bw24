@@ -73,6 +73,18 @@ uses the correctness-gated non-fused LRU winner and retains 4 GiB of live RAM he
 prints the effective host-cache size when the requested 36 GiB does not fit the current desktop
 stack.
 
+## Local release gate
+
+Commit `4641033f0fee83d0cc4fc77bbbffa0f9d3adc8d0` passed the complete RTX 5090 target
+battery with the pinned llama.cpp companion: `kernel-check` reported `ALL GREEN`, `run-gen`
+reported argmax `MATCH`, and `run-spec` reported identical output for K=1 through K=8. The safe
+launcher-equivalent profile admitted a 24.37 GiB host cache on the live desktop and measured 5.92
+tok/s over one warm 64-token window. A separate maximum-allocation probe admitted 29.71 GiB, but
+increased system swap pressure and measured only 5.09 tok/s for plain generation, so it was not
+promoted. These are single runs under different memory regimes, not an N-run board move. Raw logs,
+binary hashes, and the exact environment are under
+`evidence/local-5090-sota-20260719/release-gate-*4641033.log`.
+
 Receipt anchors:
 
 - source plan: `9606b1b96890b270534237b1143a5f5f25165245d1b5f08f515c25268d1b056c`

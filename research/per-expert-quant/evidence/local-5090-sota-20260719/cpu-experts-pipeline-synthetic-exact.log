@@ -1,0 +1,13 @@
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=45.46 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+pipeline=0 rc=0 hash=6994a0b6bc740241743553ca8e6051cb89576dd13a0914e36407985422db3ff5 first=0.0779134259 last=0.0448539667 error=
+[bw24-cpu-profile] calls=1 prepare=0.000007s io=0.000000s insert=0.000000s compute=0.000105s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=45.46 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu] pipelined down-projection I/O with gate/up compute enabled
+pipeline=1 rc=0 hash=6994a0b6bc740241743553ca8e6051cb89576dd13a0914e36407985422db3ff5 first=0.0779134259 last=0.0448539667 error=
+[bw24-cpu-profile] calls=1 prepare=0.000010s io=0.000000s insert=0.000000s compute=0.000443s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000

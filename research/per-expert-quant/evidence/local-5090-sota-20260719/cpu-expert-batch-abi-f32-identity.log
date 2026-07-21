@@ -1,0 +1,2 @@
+CPU EXPERT BATCH ABI: BIT-IDENTICAL (3 tokens x 3 experts, F32 oracle)
+[bw24-cpu-profile] calls=6 prepare=0.000012s io=0.000000s insert=0.000000s compute=0.000182s read_projections=0 read_GB=0.000

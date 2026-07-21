@@ -1,0 +1,7 @@
+[bw24-cpu] normal-RAM expert cache: 1.00 GiB policy=lru io=direct
+[bw24-cpu] transparent hugepage advice enabled
+[bw24-cpu] MADV_COLLAPSE failed at 0x7cd3fb000000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x7cd3fac00000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x7cd3fa800000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+probe_ready pid=2411436 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=0
+[bw24-cpu-profile] calls=2 prepare=0.001213s io=0.004783s insert=0.000004s compute=0.006146s read_projections=3 read_GB=0.006

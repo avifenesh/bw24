@@ -1,0 +1,20 @@
+2026-07-20T19:59:11+03:00 candidate_pid=2786532 vram_mib=802
+2026-07-20T19:59:13+03:00 candidate_pid=2786532 vram_mib=994
+2026-07-20T19:59:15+03:00 candidate_pid=2786532 vram_mib=1250
+2026-07-20T19:59:15+03:00 reservation_stopped_after_candidate_crossed_1GiB
+== final GPU state ==
+3277838, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260
+2786532, /tmp/bw24-run-spec-sota-candidates, 1250
+== guard tail ==
+[corpus] 21/191 code-047.txt +512 toks (total 10716, 72 tok/s)
+[gemma-spec] rounds=220 drafted=517 accepted=292                    accept-rate=0.565 tok/round=2.33
+[corpus] 22/191 code-048.txt +512 toks (total 11228, 71 tok/s)
+[gemma-spec] rounds=213 drafted=517 accepted=300                    accept-rate=0.580 tok/round=2.40
+[corpus] 23/191 code-049.txt +512 toks (total 11740, 70 tok/s)
+[gemma-spec] rounds=69 drafted=456 accepted=448                    accept-rate=0.982 tok/round=7.42
+[corpus] 24/191 code-050.txt +512 toks (total 12252, 70 tok/s)
+[gemma-spec] rounds=96 drafted=467 accepted=421                    accept-rate=0.901 tok/round=5.33
+[corpus] 25/191 code-051.txt +512 toks (total 12764, 71 tok/s)
+[19:57:45] OWNER ACTIVE -> kill corpus-31b (will resume)
+[19:58:30] wait: owner on GPU (corpus-31b pending)
+[19:59:00] wait: owner on GPU (corpus-31b pending)
