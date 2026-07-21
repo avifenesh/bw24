@@ -1742,7 +1742,13 @@ int bw24_cpu_moe_token_impl(
     if (n_embd <= 0 || n_ff <= 0 || n_embd % 16 != 0 || n_ff % 16 != 0) {
         throw std::runtime_error("CPU expert dimensions must be positive multiples of 16");
     }
-    std::vector<ExpertRuntime> runtime(static_cast<std::size_t>(n_experts));
+    // Per-thread scratch reuse: expert dimensions are constant per model, so the runtime
+    // vectors keep their capacity across calls and steady-state decode stops allocating.
+    // OMP regions below must only touch these through the local references — a thread_local
+    // name inside a parallel region resolves to each worker's own (empty) instance.
+    thread_local std::vector<ExpertRuntime> runtime_scratch;
+    auto & runtime = runtime_scratch;
+    runtime.resize(static_cast<std::size_t>(n_experts));
     for (int expert = 0; expert < n_experts; ++expert) {
         const auto & desc = experts[expert];
         if (desc.gate.in_features != n_embd || desc.up.in_features != n_embd
@@ -1808,7 +1814,8 @@ int bw24_cpu_moe_token_impl(
     }
 
     std::uint64_t compute_elapsed = 0;
-    QuantizedActivation input_activation;
+    thread_local QuantizedActivation input_activation_scratch;
+    auto & input_activation = input_activation_scratch;
     {
         const auto compute_start = std::chrono::steady_clock::now();
         input_activation.prepare(n_embd);
@@ -1817,9 +1824,13 @@ int bw24_cpu_moe_token_impl(
         }
         compute_elapsed += elapsed_ns(compute_start);
     }
-    std::vector<QuantizedActivation> down_activations(static_cast<std::size_t>(n_experts));
+    thread_local std::vector<QuantizedActivation> down_activations_scratch;
+    auto & down_activations = down_activations_scratch;
+    down_activations.resize(static_cast<std::size_t>(n_experts));
     for (auto & activation : down_activations) activation.prepare(n_ff);
-    std::vector<std::uint8_t> down_activation_finite(static_cast<std::size_t>(n_experts), 1);
+    thread_local std::vector<std::uint8_t> down_activation_finite_scratch;
+    auto & down_activation_finite = down_activation_finite_scratch;
+    down_activation_finite.assign(static_cast<std::size_t>(n_experts), 1);
     for (auto & work : runtime) {
         work.gate.activation_f32 = input;
         work.up.activation_f32 = input;
