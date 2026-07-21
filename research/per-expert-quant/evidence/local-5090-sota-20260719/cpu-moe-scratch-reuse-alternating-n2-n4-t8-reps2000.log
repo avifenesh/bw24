@@ -1,0 +1,41 @@
+[bench] alternating scalar ABI libraries; GOMP_CPU_AFFINITY=0-7; no intentional cooldown
+[bench] experts=2 rep=1 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.005537s io=0.000029s insert=0.000034s compute=1.429175s read_projections=0 read_GB=0.000
+experts=2 iterations=2000 ms/token=0.702808 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bench] experts=2 rep=1 arm=scratch
+[bench] experts=2 rep=2 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.004717s io=0.000029s insert=0.000029s compute=0.484719s read_projections=0 read_GB=0.000
+experts=2 iterations=2000 ms/token=0.244277 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bench] experts=2 rep=2 arm=scratch
+[bench] experts=2 rep=3 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.005063s io=0.000032s insert=0.000035s compute=1.163161s read_projections=0 read_GB=0.000
+experts=2 iterations=2000 ms/token=0.578829 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bench] experts=2 rep=3 arm=scratch
+[bench] experts=2 rep=4 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.004708s io=0.000031s insert=0.000028s compute=0.463398s read_projections=0 read_GB=0.000
+experts=2 iterations=2000 ms/token=0.231447 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bench] experts=2 rep=4 arm=scratch
+[bench] experts=2 rep=5 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.005094s io=0.000027s insert=0.000034s compute=0.886756s read_projections=0 read_GB=0.000
+experts=2 iterations=2000 ms/token=0.445984 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bench] experts=2 rep=5 arm=scratch
+[bench] experts=4 rep=1 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.010533s io=0.000047s insert=0.000039s compute=1.225386s read_projections=0 read_GB=0.000
+experts=4 iterations=2000 ms/token=0.598461 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bench] experts=4 rep=1 arm=scratch
+[bench] experts=4 rep=2 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.010776s io=0.000049s insert=0.000040s compute=1.231596s read_projections=0 read_GB=0.000
+experts=4 iterations=2000 ms/token=0.621234 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bench] experts=4 rep=2 arm=scratch
+[bench] experts=4 rep=3 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.010617s io=0.000048s insert=0.000039s compute=1.418053s read_projections=0 read_GB=0.000
+experts=4 iterations=2000 ms/token=0.714115 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bench] experts=4 rep=3 arm=scratch
+[bench] experts=4 rep=4 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.012861s io=0.000044s insert=0.000060s compute=3.410230s read_projections=0 read_GB=0.000
+experts=4 iterations=2000 ms/token=1.704590 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bench] experts=4 rep=4 arm=scratch
+[bench] experts=4 rep=5 arm=control
+[bw24-cpu-profile] calls=2008 prepare=0.014484s io=0.000051s insert=0.000083s compute=4.851836s read_projections=0 read_GB=0.000
+experts=4 iterations=2000 ms/token=2.427993 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bench] experts=4 rep=5 arm=scratch

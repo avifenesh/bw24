@@ -1,0 +1,11 @@
+2026-07-20T14:58:18+03:00
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        16Gi        41Gi       4.8Gi       9.3Gi        44Gi
+Swap:          8.0Gi       7.9Gi       136Mi
+NAME      TYPE       SIZE       USED PRIO
+/swap.img file 8589930496 8447291392   -1
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        23Gi        33Gi       8.4Gi        12Gi        37Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE       SIZE USED PRIO
+/swap.img file 8589930496    0   -1

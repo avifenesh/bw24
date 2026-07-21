@@ -5,12 +5,16 @@
 //! Activation layout: x is [n_embd, T] but we store it row-major-per-token as [T, n_embd]
 //! (token t at offset t*n_embd) so cuBLASLt linear (m=T tokens, in=n_embd) works directly.
 
-use crate::Engine;
 use crate::model::Model;
+use crate::Engine;
 
 impl Model {
     /// Run prefill over `tokens`, return logits [T, n_vocab] (host f32). positions = 0..T.
-    pub fn forward(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn forward(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let n_head = cfg.n_head as usize;
@@ -35,7 +39,7 @@ impl Model {
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             // QKV projections: q[T, n_head*head_dim], k/v[T, n_head_kv*head_dim]
-            let q_out = layer.wq.out_features();   // n_head*head_dim
+            let q_out = layer.wq.out_features(); // n_head*head_dim
             let k_out = layer.wk.out_features();
             let v_out = layer.wv.out_features();
             let mut q = e.matmul(&layer.wq, &h, t)?;
@@ -56,7 +60,14 @@ impl Model {
             }
             if let Some(kn) = &layer.k_norm {
                 let mut kn_out = e.zeros(t * k_out)?;
-                e.rms_norm(&k, kn.float_data(), &mut kn_out, head_dim, n_head_kv * t, eps)?;
+                e.rms_norm(
+                    &k,
+                    kn.float_data(),
+                    &mut kn_out,
+                    head_dim,
+                    n_head_kv * t,
+                    eps,
+                )?;
                 k = kn_out;
             }
 
@@ -66,15 +77,35 @@ impl Model {
             // n_heads and the kernel treats hr = token*n_heads + head. Our layout: token t at
             // t*(n_head*head_dim), head h at +h*head_dim. So hr index = t*n_head + h → matches
             // kernel's head=hr%n_heads, tok=hr/n_heads ONLY if hr = tok*n_head+head. Good.
-            e.rope_neox(&mut q, &pos_d, head_dim, cfg.rope_dim_count as usize, n_head, t, cfg.rope_freq_base, 1.0)?;
-            e.rope_neox(&mut k, &pos_d, head_dim, cfg.rope_dim_count as usize, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+            e.rope_neox(
+                &mut q,
+                &pos_d,
+                head_dim,
+                cfg.rope_dim_count as usize,
+                n_head,
+                t,
+                cfg.rope_freq_base,
+                1.0,
+            )?;
+            e.rope_neox(
+                &mut k,
+                &pos_d,
+                head_dim,
+                cfg.rope_dim_count as usize,
+                n_head_kv,
+                t,
+                cfg.rope_freq_base,
+                1.0,
+            )?;
 
             // SDPA: q[head_dim,n_head,T], k/v[head_dim,n_head_kv,T] (T_kv = T for prefill).
             // Our buffers are token-major [T, heads*head_dim] == [head_dim, heads, T] interpreting
             // index (d, head, tok) at tok*(heads*head_dim)+head*head_dim+d. The SDPA kernel indexes
             // Q at (qt*n_head+head)*head_dim+d — identical. Good.
             let mut attn = e.zeros(t * q_out)?;
-            e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+            e.sdpa_naive(
+                &q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true,
+            )?;
 
             // O projection: attn[T, n_head*head_dim] @ wo[n_embd, n_head*head_dim]^T
             let o = e.matmul(&layer.wo, &attn, t)?;
@@ -87,7 +118,11 @@ impl Model {
             let mut z = e.zeros(t * n_embd)?;
             e.rms_norm(&x1, layer.ffn_norm.float_data(), &mut z, n_embd, t, eps)?;
             let down = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate,
+                    ffn_up,
+                    ffn_down,
+                } => {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul(ffn_gate, &z, t)?;
                     let up = e.matmul(ffn_up, &z, t)?;
@@ -95,8 +130,9 @@ impl Model {
                     crate::hybrid::HybridModel::ffn_act(e, cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) =>
-                    crate::hybrid::HybridModel::moe_ffn(e, m, &z, t, cfg, il as u16, max_block)?,
+                crate::hybrid::Ffn::Moe(m) => {
+                    crate::hybrid::HybridModel::moe_ffn(e, m, &z, t, cfg, il as u16, max_block)?
+                }
             };
 
             // residual 2
@@ -115,7 +151,11 @@ impl Model {
     }
 
     /// Logits for just the last token (the decode-relevant row).
-    pub fn forward_last(&self, e: &Engine, tokens: &[u32]) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    pub fn forward_last(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let all = self.forward(e, tokens)?;
         let n_vocab = self.output.out_features();
         let t = tokens.len();
@@ -125,7 +165,13 @@ impl Model {
 
 /// argmax helper.
 pub fn argmax(logits: &[f32]) -> usize {
-    let mut best = 0; let mut bv = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() { if v > bv { bv = v; best = i; } }
+    let mut best = 0;
+    let mut bv = f32::NEG_INFINITY;
+    for (i, &v) in logits.iter().enumerate() {
+        if v > bv {
+            bv = v;
+            best = i;
+        }
+    }
     best
 }

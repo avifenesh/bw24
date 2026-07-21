@@ -147,8 +147,10 @@ validated lock. On Linux, harness checkout, preparation, and environment setup t
 `flock`; revision injection is atomic and becomes a read-only no-op once prepared, so parallel
 launchers can share the pinned evaluator. The supported macOS/MLX path remains single-run when
 `flock` is unavailable. Container scorers take one host-wide lock and run with the minimum
-Docker CPU share plus a one-CPU quota. The model server is stopped before an arm waits for that
-lock, freeing its GPU for queued work. Expanded scorer receipts bind the count and SHA explicitly. The
+Docker CPU share plus a one-CPU quota. Each completed HumanEval or MATH shard starts its scorer in
+the background under that lock while the same server advances to later generation shards. The arm
+waits for those scorer receipts before declaring generation complete; its final scoring pass remains
+an idempotent completeness check. Expanded scorer receipts bind the count and SHA explicitly. The
 summarizer accepts the new server binary only when every arm and shard has the same hash; pass
 `--server-sha256` to pin that hash explicitly. It records and validates each loopback endpoint but
 does not treat the port as model identity across parallel arms. It also recomputes document,

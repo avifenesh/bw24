@@ -1,0 +1,13 @@
+[bw24-cpu] normal-RAM expert cache: 1.00 GiB policy=lru io=direct
+[bw24-cpu] transparent hugepage advice enabled
+probe_ready pid=2407362 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=12
+[bw24-cpu-profile] calls=2 prepare=0.000116s io=0.001657s insert=0.000002s compute=0.002564s read_projections=3 read_GB=0.006
+ enabled
+probe_ready pid=2407362 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=12
+Rss:               12340 kB
+Pss:                9309 kB
+Private_Dirty:      7124 kB
+Anonymous:          7028 kB
+AnonHugePages:         0 kB
+Swap:                  0 kB
+probe_exit=0

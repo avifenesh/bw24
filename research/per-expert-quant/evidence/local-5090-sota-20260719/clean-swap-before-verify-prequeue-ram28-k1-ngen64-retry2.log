@@ -1,0 +1,8 @@
+2026-07-20T17:17:53+03:00
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        26Gi        20Gi       8.9Gi        23Gi        34Gi
+Swap:          8.0Gi          0B       8.0Gi
+3277838, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+2354708, /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec, 2466 MiB

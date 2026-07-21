@@ -1,0 +1,76 @@
+llama_commit=bb090d1f1dbf3c29df6778fda123aa352329514e
+llama_clean_dir=/tmp/bw24-llama-clean.FICmRR
+Preparing worktree (detached HEAD bb090d1f1)
+HEAD is now at bb090d1f1 convert: accept mixed NVFP4 + FP8 compressed-tensors config groups
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMAKE_BUILD_TYPE=Release
+-- Found Git: /home/avifenesh/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/git (found version "2.53.0")
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/cc
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Found OpenMP_C: -fopenmp (found version "4.5")
+-- Found OpenMP_CXX: -fopenmp (found version "4.5")
+-- Found OpenMP: TRUE (found version "4.5")
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- ggml version: 0.15.3
+-- ggml commit:  bb090d1f1
+-- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.5.5")
+-- Performing Test OPENSSL_VERSION_SUPPORTED
+-- Performing Test OPENSSL_VERSION_SUPPORTED - Success
+-- OpenSSL found: 3.5.5
+-- Generating embedded license file for target: llama-app
+-- Configuring done (0.8s)
+-- Generating done (0.0s)
+-- Build files have been written to: /tmp/bw24-llama-clean.FICmRR/build
+[  9%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[  9%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[  9%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[  9%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[ 18%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[ 18%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[ 27%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[ 27%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[ 27%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[ 36%] Linking CXX shared library ../../bin/libggml-base.so
+[ 36%] Built target ggml-base
+[ 36%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[ 36%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[ 45%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[ 54%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[ 54%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[ 63%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[ 63%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[ 63%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[ 72%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[ 72%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[ 81%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[ 81%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[ 81%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.o
+[ 90%] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[ 90%] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[100%] Linking CXX shared library ../../bin/libggml-cpu.so
+[100%] Built target ggml-cpu
+[100%] Built target ggml-base
+0d9ea5293ffb12bf5c67b6bcb669e156c8f6e0d0561e68d940bdfd5a458e29a9  /tmp/libbw24-cpu-experts-release.so
+c56c7d004d5a951c322274a5af3221d9c6e19588480a7a935a8871870d7a27ca  tools/bw24_cpu_experts.cpp
+0d9ea5293ffb12bf5c67b6bcb669e156c8f6e0d0561e68d940bdfd5a458e29a9  /tmp/libbw24-cpu-experts-release.so
+22385d4442d2c8aef492634dc3846e6b0ee7d22eee14e8e572cd56b98ddbf24e  /tmp/bw24-llama-clean.FICmRR/build/bin/libggml-cpu.so
+ac5ed9d037323d011257ad3e0deb0ebc015cf7e5e679644510d573b7fd0763ae  /tmp/bw24-llama-clean.FICmRR/build/bin/libggml-base.so

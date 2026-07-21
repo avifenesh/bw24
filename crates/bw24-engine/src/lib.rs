@@ -32,6 +32,7 @@ pub fn router_kernel_on() -> bool {
         on
     })
 }
+mod cpu_experts;
 pub mod moe_cache;
 pub mod spill;
 mod spill_pread;
@@ -320,9 +321,13 @@ pub struct Engine {
     /// Sampled-spec kernels (research/sampled-spec-impl-map.md piece A).
     sample: Arc<CudaModule>,
     /// EDGE-1 §B: one shared SLRU expert-residency cache, lazily built on first MoE dispatch under
-    /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
+        /// BW24_MOE_CACHE. `Mutex` makes it multi-agent safe (§E.2); the lock covers only lookup/admit/
     /// memcpy-issue (µs), NOT the GEMM, so streams still overlap. `None` => cache disabled.
     moe_cache: Mutex<Option<crate::moe_cache::MoeSlotCache>>,
+    /// Exact retained expert-block lengths collected after model load. Mixed-layout models use
+    /// this inventory to preallocate fixed-address size classes instead of sizing every slot to
+    /// the single largest block. The cache still owns every address for its full lifetime.
+    moe_cache_layout: Mutex<Option<Vec<usize>>>,
     /// CAPTURE-RETAIN mode (graph arc, 2026-07-12): while a graph capture (and its allocator
     /// warmups) runs, every Engine allocation is ALSO kept alive here — a captured graph's
     /// transient buffers must never return to the pool, or later allocations (e.g. the spec
@@ -509,7 +514,9 @@ impl Engine {
             unsafe { gpu.ctx.disable_event_tracking(); }
         }
         Ok(Self { gpu, module, hybrid, qmatvec, flash, flash_g: std::sync::OnceLock::new(), gemm, router, sample,
-                  moe_cache: Mutex::new(None), copy_stream,
+                  moe_cache: Mutex::new(None),
+                  moe_cache_layout: Mutex::new(None),
+                  copy_stream,
                   capture_keep_on: std::sync::atomic::AtomicBool::new(false),
                   verify_exact: std::sync::atomic::AtomicBool::new(false),
                   capture_keep: Mutex::new(Vec::new()),
@@ -1221,22 +1228,79 @@ impl Engine {
             *guard = Some(crate::moe_cache::MoeSlotCache::new(self, max_block_bytes)?);
         }
         let cache = guard.as_mut().unwrap();
-        f(cache, self)
+                f(cache, self)
+    }
+
+    /// Freeze the already-built MoE residency set. This never constructs a cache: callers use it
+    /// only after a real prefill has populated the machine-specific CPU/GPU working set.
+    pub fn freeze_moe_cache(&self) {
+        if let Some(cache) = self.moe_cache.lock().unwrap().as_mut() {
+            cache.freeze();
+        }
+    }
+
+    pub(crate) fn moe_cache_frozen(&self) -> bool {
+        self.moe_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(crate::moe_cache::MoeSlotCache::is_frozen)
+    }
+
+    /// A frozen heterogeneous CPU/GPU expert split cannot use Hy3's ordinary batched prefill
+    /// efficiently: T>=PRIME_MIN_T bypasses the CPU backend and transiently rereads every missing
+    /// expert through the GPU spill path. Replay the short prompt through decode after freezing,
+    /// while leaving the profiling warmup's established batched behavior untouched.
+    pub(crate) fn frozen_cpu_experts_prefer_tokenwise_prime(&self) -> bool {
+        crate::cpu_experts::configured()
+            && self.moe_cache_frozen()
+            && std::env::var("BW24_CPU_EXPERT_BATCHED_PRIME").as_deref() != Ok("1")
+    }
+
+    /// Install the loaded model's exact retained expert-block inventory before lazy cache build.
+    pub(crate) fn configure_moe_cache_layout(&self, block_bytes: Vec<usize>) {
+        assert!(
+            self.moe_cache.lock().unwrap().is_none(),
+            "MoE cache layout configured after cache construction"
+        );
+        *self.moe_cache_layout.lock().unwrap() = Some(block_bytes);
+    }
+
+    pub(crate) fn moe_cache_layout(&self) -> Option<Vec<usize>> {
+        self.moe_cache_layout.lock().unwrap().clone()
     }
 
     /// True if the MoE residency cache is enabled (BW24_MOE_CACHE set).
-    pub fn moe_cache_enabled() -> bool { std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0") }
+    pub fn moe_cache_enabled() -> bool {
+        std::env::var("BW24_MOE_CACHE").as_deref() != Ok("0")
+ }
 
     /// Snapshot the MoE cache counters (hits, misses, staged_bytes, n_slots) for the §D.4 PCIe gate.
     /// Returns None if the cache was never built (disabled or no MoE forward ran).
     pub fn moe_cache_stats(&self) -> Option<(u64, u64, u64, usize)> {
         let guard = self.moe_cache.lock().unwrap();
-        guard.as_ref().map(|c| (c.hits, c.misses, c.staged_bytes, c.n_slots()))
+        guard.as_ref()            .map(|c| (c.hits, c.misses, c.staged_bytes, c.n_slots()))
+    }
+
+    /// Experimental CPU expert backend counters: completed layer calls, experts served, and the
+    /// sum of backend wall nanoseconds. The timer includes explicit disk->RAM fills on cache misses;
+    /// callers compare a before/after snapshot around a decode window.
+    pub fn cpu_expert_stats(
+        &self,
+    ) -> Option<(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64)> {
+        crate::cpu_experts::configured().then(crate::cpu_experts::stats)
+    }
+
+    /// CPU-routed expert selections grouped by how many of their three projections were already
+    /// resident in HBM. This makes otherwise-stranded partial residency visible to tuning runs.
+    pub fn cpu_expert_gpu_residency_stats(&self) -> Option<(u64, u64, u64)> {
+        crate::cpu_experts::configured().then(crate::cpu_experts::incomplete_gpu_residency_stats)
     }
 
     /// Positioned-read proof-backend counters:
     /// `(reads, bytes, read_errors, short_reads, mmap_fallbacks, buffer_waits, ring_full)`.
     pub fn moe_pread_stats(&self) -> Option<(u64, u64, u64, u64, u64, u64, u64)> {
+
         let guard = self.moe_cache.lock().unwrap();
         guard.as_ref().and_then(|cache| cache.pread_stats()).map(|stats| (
             stats.reads,
@@ -2723,8 +2787,21 @@ impl Engine {
     }
     pub fn dtoh(&self, d: &CudaSlice<f32>) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
         let v = self.gpu.stream.clone_dtoh(d)?;
-        self.gpu.stream.synchronize()?;
+                self.gpu.stream.synchronize()?;
         Ok(v)
+    }
+    /// Queue two f32 device-to-host copies on the compute stream, then establish one host
+    /// boundary for both. Hy3's CPU/GPU expert split needs the router logits and the MoE input;
+    /// issuing them together avoids a second stream synchronization in every trunk layer.
+    pub fn dtoh_pair(
+        &self,
+        a: &CudaSlice<f32>,
+        b: &CudaSlice<f32>,
+    ) -> Result<(Vec<f32>, Vec<f32>), Box<dyn std::error::Error>> {
+        let av = self.gpu.stream.clone_dtoh(a)?;
+        let bv = self.gpu.stream.clone_dtoh(b)?;
+        self.gpu.stream.synchronize()?;
+        Ok((av, bv))
     }
     /// Device-to-host copy of an i32 buffer (fused-router sel_idx readback).
     pub fn dtoh_i32(&self, d: &CudaSlice<i32>) -> Result<Vec<i32>, Box<dyn std::error::Error>> {

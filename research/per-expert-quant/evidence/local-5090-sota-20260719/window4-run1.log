@@ -1,0 +1,38 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[spill-pread] enabled: depth=16 buffer_bytes=6684672 total_pinned_bytes=106954752 (bounded worker prefetch, caller-thread H2D, mmap error fallback)
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.062e0  MATCH
+generated 8 tokens in 7.207s = 1.11 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278]
+MoE cache DECODE-WINDOW: 1971 slots | hits=1104 misses=14064 (hit-rate=7.3%) | staged 35.99 GB H2D (4290.5 MB/token)
+spill worker DECODE-WINDOW: reads=14064 bytes=35991502848 waits=5915 ring_full=2326 fallbacks=0
+OUTPUT TEXT: "Below is a complete, self-contained implementation"
+--- generated text ---
+Below is a complete, self-contained implementation
+[spill-pread] reads=105880 bytes=271144747008 errors=0 short_reads=0 fallbacks=0 buffer_waits=44961 ring_full=14506
+	Command being timed: "target/release/run-gen /data/ai-ml/hf-models/hy3-layer103p5-bw24-runtime"
+	User time (seconds): 93.96
+	System time (seconds): 92.41
+	Percent of CPU this job got: 112%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:45.27
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 14367420
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 5417
+	Minor (reclaiming a frame) page faults: 9004420
+	Voluntary context switches: 583107
+	Involuntary context switches: 1723
+	Swaps: 0
+	File system inputs: 478200672
+	File system outputs: 440
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

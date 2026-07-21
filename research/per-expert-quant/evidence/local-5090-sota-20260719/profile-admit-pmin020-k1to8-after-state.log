@@ -1,0 +1,8 @@
+2026-07-20T06:08:42+03:00
+NVIDIA GeForce RTX 5090 Laptop GPU, 56, 9.56 W, 312 MiB, 23672 MiB, 0 %
+3277838, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        13Gi        44Gi       3.8Gi       7.9Gi        47Gi
+Swap:          8.0Gi       7.8Gi       154Mi
+NAME      TYPE       SIZE       USED PRIO
+/swap.img file 8589930496 8427708416   -1

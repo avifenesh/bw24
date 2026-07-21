@@ -1,0 +1,92 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5470 slots in 5 classes, 14.88 GB / 14.88 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-final.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=56 full_accept=28 len_hist=[2, 14, 20, 20] per_slot=[43/54=0.796 22/40=0.550 8/20=0.400] total=73/114=0.640 tok_per_round=2.304
+[spec-phase] draft=1633.3ms (1.2%) verify-issue=136536.9ms (98.8%) verify-wait=42.1ms (0.0%) commit-host=9.7ms (0.0%) rounds=56
+[moe-cache] residency frozen: 5470 slots, 5470 resident blocks
+[moe-cache] frozen MTP residency: 63 blocks, 21 complete experts
+
+[generate]   63 tok in 8.359s = 7.54 tok/s (gen-only; this run's prime 168.337s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 25, 286, 9, 4055, 1970, 4906, 42970, 3236, 9, 3727, 1970, 24621, 35510, 3236, 9, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 185, 9, 5547, 9043, 45625, 12593, 286, 1438, 6515, 185, 4140, 4277, 58035, 667, 1661, 39839, 185, 4140]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=35 full_accept=29 len_hist=[0, 35] per_slot=[29/35=0.829] total=29/35=0.829 tok_per_round=1.829
+[spec-phase] draft=142.5ms (1.8%) verify-issue=7915.6ms (97.9%) verify-wait=22.9ms (0.3%) commit-host=4.3ms (0.1%) rounds=35
+
+[generate_spec K=1] 64 tok in 8.291s = 7.60 tok/s (1.01x vs generate; this run's prime 235.662s)
+  acceptance: 29/35 = 82.9%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=30 full_accept=18 len_hist=[2, 4, 24] per_slot=[22/28=0.786 13/24=0.542] total=35/52=0.673 tok_per_round=2.167
+[spec-phase] draft=182.0ms (2.1%) verify-issue=8562.2ms (97.6%) verify-wait=20.3ms (0.2%) commit-host=4.8ms (0.1%) rounds=30
+
+[generate_spec K=2] 64 tok in 8.936s = 7.05 tok/s (0.94x vs generate; this run's prime 163.017s)
+  acceptance: 35/52 = 67.3%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=27 full_accept=10 len_hist=[0, 4, 6, 17] per_slot=[22/27=0.815 11/23=0.478 6/17=0.353] total=39/67=0.582 tok_per_round=2.444
+[spec-phase] draft=243.7ms (2.5%) verify-issue=9475.4ms (97.2%) verify-wait=19.3ms (0.2%) commit-host=5.2ms (0.1%) rounds=27
+
+[generate_spec K=3] 64 tok in 9.923s = 6.35 tok/s (0.84x vs generate; this run's prime 163.777s)
+  acceptance: 39/67 = 58.2%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=26 full_accept=8 len_hist=[0, 4, 6, 10, 6] per_slot=[21/26=0.808 12/22=0.545 6/16=0.375 1/6=0.167] total=40/70=0.571 tok_per_round=2.538
+[spec-phase] draft=270.9ms (2.7%) verify-issue=9712.9ms (97.1%) verify-wait=18.7ms (0.2%) commit-host=5.0ms (0.1%) rounds=26
+
+[generate_spec K=4] 64 tok in 10.195s = 6.18 tok/s (0.82x vs generate; this run's prime 163.728s)
+  acceptance: 40/70 = 57.1%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=26 full_accept=7 len_hist=[0, 4, 6, 10, 3, 3] per_slot=[21/26=0.808 12/22=0.545 6/16=0.375 1/6=0.167 0/3=0.000] total=40/73=0.548 tok_per_round=2.538
+[spec-phase] draft=283.1ms (2.8%) verify-issue=9754.9ms (97.0%) verify-wait=18.2ms (0.2%) commit-host=5.3ms (0.1%) rounds=26
+
+[generate_spec K=5] 64 tok in 10.270s = 6.13 tok/s (0.81x vs generate; this run's prime 164.076s)
+  acceptance: 40/73 = 54.8%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=26 full_accept=7 len_hist=[0, 4, 6, 10, 3, 2, 1] per_slot=[21/26=0.808 12/22=0.545 6/16=0.375 1/6=0.167 0/3=0.000 0/1=0.000] total=40/74=0.541 tok_per_round=2.538
+[spec-phase] draft=317.8ms (2.9%) verify-issue=10666.2ms (96.9%) verify-wait=18.2ms (0.2%) commit-host=5.3ms (0.0%) rounds=26
+
+[generate_spec K=6] 64 tok in 11.185s = 5.63 tok/s (0.75x vs generate; this run's prime 163.638s)
+  acceptance: 40/74 = 54.1%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=26 full_accept=7 len_hist=[0, 4, 6, 10, 3, 2, 0, 1] per_slot=[21/26=0.808 12/22=0.545 6/16=0.375 1/6=0.167 0/3=0.000 0/1=0.000 0/1=0.000] total=40/75=0.533 tok_per_round=2.538
+[spec-phase] draft=289.9ms (2.8%) verify-issue=10154.2ms (97.0%) verify-wait=18.5ms (0.2%) commit-host=5.3ms (0.1%) rounds=26
+
+[generate_spec K=7] 64 tok in 10.643s = 5.92 tok/s (0.79x vs generate; this run's prime 162.974s)
+  acceptance: 40/75 = 53.3%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=26 full_accept=7 len_hist=[0, 4, 6, 10, 3, 2, 0, 1, 0] per_slot=[21/26=0.808 12/22=0.545 6/16=0.375 1/6=0.167 0/3=0.000 0/1=0.000 0/1=0.000 0/0] total=40/75=0.533 tok_per_round=2.538
+[spec-phase] draft=293.9ms (2.8%) verify-issue=10223.6ms (97.0%) verify-wait=18.0ms (0.2%) commit-host=5.3ms (0.1%) rounds=26
+
+[generate_spec K=8] 64 tok in 10.723s = 5.88 tok/s (0.78x vs generate; this run's prime 162.998s)
+  acceptance: 40/75 = 53.3%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=184042 bytes=484083007488 errors=0 short_reads=0 fallbacks=0 buffer_waits=159093 ring_full=790
+[bw24-cpu-profile] calls=76540 prepare=3.211206s io=39.554862s insert=0.257872s compute=58.186063s read_projections=135810 read_GB=358.903
+	Command being timed: "env BW24_NGEN=64 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-final.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=3 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-7 target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 694.48
+	System time (seconds): 368.89
+	Percent of CPU this job got: 54%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 32:38.94
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48756244
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 87648843
+	Minor (reclaiming a frame) page faults: 20465969
+	Voluntary context switches: 92653276
+	Involuntary context switches: 5667
+	Swaps: 0
+	File system inputs: 2397154056
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

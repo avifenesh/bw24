@@ -1,0 +1,35 @@
+2026-07-21T16:42:54+03:00
+c46c0af92ef7de234c1e6ad19d8943741208ae34a23df158d92769922475a733  target/release/run-gen
+c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71  /tmp/libbw24-cpu-experts-native-v2l.so
+861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15  /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 56, 9.70 W, 180 MHz, 296 MiB, 24463 MiB
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 8 discarded decode tokens before fixed residency
+[moe-cache] size-aware fixed slots: 5285 slots in 5 classes, 13.97 GB / 13.97 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native-v2l.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=49.13 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5285 slots, 5285 resident blocks; 1724 complete experts, 39 one-projection fragments, 37 two-projection fragments (113 stranded blocks)
+post-freeze verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.532e0  MATCH
+generated 32 tokens in 7.670s = 4.17 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438, 503, 279, 1244, 16678, 47739, 4452, 289, 32215, 47739, 4452, 107669, 9875, 413, 1970, 58138, 9042, 45164, 41116, 503, 280, 244, 1970, 28462, 26367]
+MoE cache DECODE-WINDOW: 5285 slots | hits=30522 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=2446 experts=10050 backend_wall=6.772s RAM_hits=18835 RAM_misses=11315 RAM_fills=29.55 GB RAM_resident=21.47 GB phase_prepare=0.183s phase_io=2.969s phase_insert=0.022s phase_compute=3.590s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=9710 resident_1=195 resident_2=145
+storage DECODE-WINDOW: 29.55 GB physical reads
+OUTPUT TEXT: "Below is a **concrete mental model** of how CPU‑side and GPU‑side parallelism interact with **NVMe spill latency** in a **large Mi"
+--- generated text ---
+Below is a **concrete mental model** of how CPU‑side and GPU‑side parallelism interact with **NVMe spill latency** in a **large Mi
+[spill-pread] reads=45918 bytes=125267755008 errors=0 short_reads=0 fallbacks=0 buffer_waits=20132 ring_full=328
+[bw24-cpu-cache] hits=50692 misses=37577 hit_rate=57.43% read_GB=98.548 resident_GB=21.474
+[bw24-cpu-profile] calls=6690 prepare=0.480638s io=10.234070s insert=0.055470s compute=10.932811s read_projections=37577 read_GB=98.548
+64, 29.70 W, 1590 MHz, 296 MiB
+2026-07-21T16:48:25+03:00
+status=0

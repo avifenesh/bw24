@@ -1,0 +1,20 @@
+date=2026-07-21T12:50:23+03:00
+library_sha=69130fce32cc2d98bae500ded8dcdd2be4863f0f941a1da0abcc760a52b930fb
+pipeline=0
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=44.39 GiB reserve=0.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=direct
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[bw24-cpu-profile] calls=10 prepare=0.000784s io=0.054133s insert=0.000003s compute=0.012195s read_projections=120 read_GB=0.248
+[bw24-cpu-cache] hits=0 misses=120 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=2 ms/token=6.147348 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+pipeline=1
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=44.34 GiB reserve=0.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=direct
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu] pipelined down-projection I/O with gate/up compute enabled
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[bw24-cpu-profile] calls=10 prepare=0.000391s io=0.051703s insert=0.000005s compute=0.027106s read_projections=120 read_GB=0.248
+[bw24-cpu-pipeline] calls=10 down_reads=40 down_GB=0.083
+[bw24-cpu-cache] hits=0 misses=120 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=2 ms/token=6.049404 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

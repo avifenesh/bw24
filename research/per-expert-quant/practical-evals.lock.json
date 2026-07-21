@@ -1,6 +1,8 @@
 {
   "format": "bw24-practical-evals-v1",
   "generated_utc": "2026-07-11T05:56:41Z",
+  "revised_utc": "2026-07-13T04:46:00Z",
+  "revision_reason": "Keep the matched 3072-token response capacity but cap directional agents at eight turns after all three compile-compcert arms exhausted the previous 20-turn Harbor timeout; the failed run is excluded, and tasks, agent, generation, and verifier settings remain matched.",
   "protocol": {
     "purpose": "directional practical-task comparison after public capability promotion",
     "same_agent_scaffold": true,
@@ -10,6 +12,10 @@
     "container_isolation_required": true,
     "initial_trials_per_task": 1,
     "full_suite_only_after_directional_promotion": true,
+    "pilot_tasks": {
+      "swe": "swe-bench/pallets__flask-5014",
+      "terminal": "terminal-bench/db-wal-recovery"
+    },
     "agent_scaffold": {
       "harbor_version": "0.18.0",
       "agent": "terminus-2",
@@ -17,14 +23,16 @@
       "api_base": "http://127.0.0.1:8080/v1",
       "temperature": 0,
       "parser_name": "json",
-      "max_turns": 20,
+      "max_turns": 8,
       "proactive_summarization_threshold": 1024,
       "store_all_messages": true,
-      "max_input_tokens": 8192,
-      "max_output_tokens": 512,
-      "llm_call_max_tokens": 512,
+      "max_input_tokens": 5120,
+      "max_output_tokens": 3072,
+      "llm_call_max_tokens": 3072,
+      "llm_call_timeout_seconds": 7200,
       "enable_summarize": true,
       "record_terminal_session": true,
+      "agent_timeout_multiplier": 4.0,
       "n_concurrent_trials": 1,
       "n_attempts": 1,
       "max_retries": 0

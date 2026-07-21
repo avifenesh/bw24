@@ -1,0 +1,22 @@
+2026-07-21T15:59:40+03:00
+c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71  /tmp/libbw24-cpu-experts-native-v2l.so
+861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15  /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 56, 9.92 W, 195 MHz, 296 MiB, 24463 MiB
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 8 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5092 slots in 5 classes, 13.85 GB / 13.85 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native-v2l.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=46.49 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spill-pread] reads=39900 bytes=109106626560 errors=0 short_reads=0 fallbacks=0 buffer_waits=11405 ring_full=439
+Error: Custom { kind: Other, error: "CPU expert backend failed: CPU expert source inode is absent from mirror map" }
+[bw24-cpu-cache] hits=0 misses=1 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+[bw24-cpu-profile] calls=0 prepare=0.000000s io=0.000000s insert=0.000000s compute=0.000000s read_projections=0 read_GB=0.000
+57, 52.67 W, 2212 MHz, 296 MiB
+2026-07-21T16:02:48+03:00
+status=1

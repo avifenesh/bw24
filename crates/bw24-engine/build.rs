@@ -9,11 +9,11 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
     let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
-    assert!(matches!(cuda_arch.as_str(), "120a" | "89"),
-            "BW24_CUDA_ARCH must be 120a (default) or 89 (portable eval)");
+    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "89"),
+            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), or 89 (portable eval)");
     let portable = cuda_arch == "89";
-    assert!(!(portable && std::env::var_os("BW24_CUTLASS").is_some()),
-            "BW24_CUTLASS is sm_120a-only and cannot be enabled for BW24_CUDA_ARCH=89");
+    assert!(!(cuda_arch != "120a" && std::env::var_os("BW24_CUTLASS").is_some()),
+            "BW24_CUTLASS is sm_120a-only and cannot be enabled for this CUDA architecture");
     let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
     if portable {
         println!("cargo:rustc-cfg=bw24_portable_cuda");
@@ -29,6 +29,12 @@ fn main() {
         let mut args = vec!["-gencode", &gencode, "-O3", "--fatbin"];
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1");
+        }
+        // The hand-written mxf4nvf4 block-scale MMA in qmatvec_gemm.cu is an sm_120a
+        // instruction encoding. B200 (sm_100a) uses the accuracy-safe NVFP4 W4A8 int8
+        // path below instead, so omit only that unused opt-in kernel from its fatbin.
+        if cuda_arch == "100a" && src == "cu/qmatvec_gemm.cu" {
+            args.push("-DBW24_DISABLE_NATIVE_FP4=1");
         }
         args.extend(["-o", fatbin.to_str().unwrap(), src]);
         let status = Command::new(&nvcc)
@@ -93,10 +99,19 @@ fn main() {
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
+            let compile_src = if cuda_arch == "100a" && mmq_src == "cu/mmq_fp4.cu" {
+                // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only. Keep its C ABI
+                // present on B200, but make accidental use fail closed; normal evaluation
+                // uses the separately compiled W4A8 launcher.
+                "cu/mmq_fp4_stub.cu"
+            } else {
+                mmq_src
+            };
+            println!("cargo:rerun-if-changed={compile_src}");
             let stem = mmq_src.split('/').last().unwrap().trim_end_matches(".cu");
             let obj = out.join(format!("{stem}.o"));
             let mut args: Vec<String> = vec![
-                "-gencode".into(), "arch=compute_120a,code=sm_120a".into(),
+                "-gencode".into(), gencode.clone(),
                 "-O3".into(), "-std=c++17".into(), "--expt-relaxed-constexpr".into(),
             ];
             if mmq_src.ends_with("mmq_q45k.cu") {
@@ -106,7 +121,7 @@ fn main() {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
             }
-            args.extend(["-c".into(), mmq_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
+            args.extend(["-c".into(), compile_src.into(), "-o".into(), obj.to_str().unwrap().into()]);
             let status = Command::new(&nvcc)
                 .args(&args)
                 .status()

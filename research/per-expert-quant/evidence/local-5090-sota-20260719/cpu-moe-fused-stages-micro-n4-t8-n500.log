@@ -1,0 +1,35 @@
+mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002498s io=0.000007s insert=0.000008s compute=0.133234s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.231268 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000807s io=0.000006s insert=0.000007s compute=0.094596s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.187034 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002604s io=0.000007s insert=0.000009s compute=0.150755s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.301209 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000886s io=0.000007s insert=0.000010s compute=0.196708s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.372174 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002552s io=0.000007s insert=0.000012s compute=0.116742s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.233138 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000782s io=0.000007s insert=0.000008s compute=0.097275s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.192280 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002606s io=0.000006s insert=0.000008s compute=0.117308s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.234532 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000801s io=0.000007s insert=0.000008s compute=0.096965s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.191690 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002562s io=0.000006s insert=0.000008s compute=0.130298s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.260430 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000826s io=0.000007s insert=0.000008s compute=0.095668s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.189292 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

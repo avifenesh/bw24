@@ -1,0 +1,28 @@
+{
+  "format": "bw24-layer-balanced-bridge-promotion-gates-v1",
+  "frozen_at": "2026-07-14T11:12:00Z",
+  "purpose": "Select only new global size-quality Pareto points for matched practical triage before either bridge capability result exists.",
+  "panel_lock_sha256": "33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b",
+  "promotion_uses_public_directional_results": true,
+  "mapping_allocation_and_healing_used_public_eval_data": false,
+  "quality_ceiling_arm": "plain_quant",
+  "strong_compact_arm": "traffic_nvfp4_53_q2_139",
+  "fixed_practical_reference_arms": [
+    "plain_quant",
+    "traffic_nvfp4_53_q2_139",
+    "layer_balanced100"
+  ],
+  "candidate_anchors": {
+    "layer_balanced120": "layer_balanced100",
+    "layer_balanced137": "traffic_nvfp4_53_q2_139"
+  },
+  "hard_logical_byte_ceiling_by_arm": {
+    "layer_balanced120": 120000000000,
+    "layer_balanced137": 137459192320
+  },
+  "require_global_point_estimate_pareto": true,
+  "max_question_weighted_deficit_vs_anchor": 0.008695652173913044,
+  "max_single_task_rate_deficit_vs_anchor": 0.2,
+  "max_practical_candidates": 2,
+  "trusted_full_max_arms": 4
+}

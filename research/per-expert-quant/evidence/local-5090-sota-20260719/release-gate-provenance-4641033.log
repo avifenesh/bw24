@@ -1,0 +1,23 @@
+2026-07-21T14:19:33+03:00
+?? research/per-expert-quant/evidence/local-5090-sota-20260719/
+4641033f0fee83d0cc4fc77bbbffa0f9d3adc8d0
+commit 4641033f0fee83d0cc4fc77bbbffa0f9d3adc8d0
+Author:     Avi Fenesh <aviarchi1994@gmail.com>
+AuthorDate: Tue Jul 21 14:19:16 2026 +0300
+Commit:     Avi Fenesh <aviarchi1994@gmail.com>
+CommitDate: Tue Jul 21 14:19:16 2026 +0300
+
+    perf: ship Hy3 CPU-GPU spill pipeline
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+59e0b42f5f270aed6e1f58d19ec80c709b8c1481586424c1bfe1ec12810691e7  target/release/run-gen
+778854d63f7123a70bdaa3d791bc6b42286fca717bb25c4d57e4e15c43b0f3d5  target/release/run-spec
+0e607e5a5d31aba5317b7eddfef9e3bab8a769ce7559bf19afcb14051a4a2055  target/release/kernel-check
+0d9ea5293ffb12bf5c67b6bcb669e156c8f6e0d0561e68d940bdfd5a458e29a9  /tmp/libbw24-cpu-experts-release.so
+c56c7d004d5a951c322274a5af3221d9c6e19588480a7a935a8871870d7a27ca  tools/bw24_cpu_experts.cpp
+bb090d1f1dbf3c29df6778fda123aa352329514e
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 24463 MiB, [N/A]
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        31Gi        20Gi        16Gi        26Gi        29Gi
+Swap:          8.0Gi       4.1Gi       3.9Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 4.1G   -1

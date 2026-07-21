@@ -1,0 +1,32 @@
+	Command being timed: "systemd-run --user --scope --quiet --unit=bw24-headroom-build-2378369 -p CPUQuota=50% -p CPUWeight=10 -p MemoryHigh=2G -p MemoryMax=4G /usr/bin/c++ -O3 -march=native -fPIC -shared -fopenmp tools/bw24_cpu_experts.cpp -I/home/avifenesh/projects/llama.cpp/ggml/include -L/home/avifenesh/projects/llama.cpp/build/bin -Wl,-rpath,/home/avifenesh/projects/llama.cpp/build/bin -lggml-cpu -lggml-base -o /tmp/libbw24-cpu-experts-headroom-capped-verify.so"
+	User time (seconds): 0.95
+	System time (seconds): 0.09
+	Percent of CPU this job got: 50%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.08
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 214972
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 25
+	Minor (reclaiming a frame) page faults: 59403
+	Voluntary context switches: 127
+	Involuntary context switches: 29
+	Swaps: 0
+	File system inputs: 10088
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+971008fc779c4c1614d5752dd0a92aa2bcdb438c85ef4322b573f0aa3cac74c6  tools/bw24_cpu_experts.cpp
+8bf23e565f64baec94f9b40f1848d179e17e42b87784db1c1d3def5ea89fa031  /tmp/libbw24-cpu-experts-headroom-final.so
+8bf23e565f64baec94f9b40f1848d179e17e42b87784db1c1d3def5ea89fa031  /tmp/libbw24-cpu-experts-headroom-capped-verify.so
+[verify] compile_exit_status=0; wrapper_postamble_error=zsh read-only status variable
+0000000000008760 T bw24_cpu_experts_abi_version
+0000000000008770 T bw24_cpu_expert_profile_stats_v1
+000000000000ac90 T bw24_cpu_expert_cache_stats_v1
+000000000000ca70 T bw24_cpu_moe_token_v1
+000000000000e3d0 T bw24_cpu_prefetch_expert_v1

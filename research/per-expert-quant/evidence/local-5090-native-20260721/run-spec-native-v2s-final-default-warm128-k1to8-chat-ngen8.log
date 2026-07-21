@@ -1,0 +1,61 @@
+2026-07-21T17:05:31+03:00
+919d0aeae9b69e3b4f5327504c7f28fd9a701bd6a2ceecf5c1d2a6f16a15d778  target/release/run-spec
+c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71  /tmp/libbw24-cpu-experts-native-v2l.so
+861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15  /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 55, 11.38 W, 180 MHz, 296 MiB, 24463 MiB
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5080 slots in 5 classes, 13.82 GB / 13.82 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native-v2l.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=45.25 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5080 slots, 5080 resident blocks; 1663 complete experts, 45 one-projection fragments, 23 two-projection fragments (91 stranded blocks)
+[moe-cache] frozen MTP residency: 69 blocks, 23 complete experts
+
+[generate]   7 tok in 1.863s = 3.76 tok/s (gen-only; this run's prime 11.998s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=1] 8 tok in 1.876s = 3.73 tok/s (0.99x vs generate; this run's prime 11.619s)
+  acceptance: 4/4 = 100.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=2] 8 tok in 2.586s = 2.71 tok/s (0.72x vs generate; this run's prime 11.656s)
+  acceptance: 5/8 = 62.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=3] 8 tok in 2.646s = 2.65 tok/s (0.70x vs generate; this run's prime 11.784s)
+  acceptance: 6/9 = 66.7%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=4] 8 tok in 3.246s = 2.16 tok/s (0.57x vs generate; this run's prime 11.691s)
+  acceptance: 6/12 = 50.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=5] 8 tok in 3.856s = 1.82 tok/s (0.48x vs generate; this run's prime 11.940s)
+  acceptance: 6/15 = 40.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=6] 8 tok in 4.380s = 1.60 tok/s (0.43x vs generate; this run's prime 11.817s)
+  acceptance: 6/18 = 33.3%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=7] 8 tok in 4.873s = 1.44 tok/s (0.38x vs generate; this run's prime 11.747s)
+  acceptance: 6/21 = 28.6%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=8] 8 tok in 5.678s = 1.23 tok/s (0.33x vs generate; this run's prime 11.808s)
+  acceptance: 6/24 = 25.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=296201 bytes=770091958272 errors=0 short_reads=0 fallbacks=0 buffer_waits=271197 ring_full=341
+[bw24-cpu-cache] hits=528165 misses=311400 hit_rate=62.91% read_GB=819.035 resident_GB=21.474
+[bw24-cpu-profile] calls=66020 prepare=6.381467s io=83.892961s insert=0.666118s compute=117.793669s read_projections=311400 read_GB=819.035
+68, 36.97 W, 1590 MHz, 296 MiB
+2026-07-21T17:15:47+03:00
+status=0

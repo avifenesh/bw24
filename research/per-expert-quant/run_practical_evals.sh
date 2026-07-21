@@ -5,10 +5,12 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HERE="$ROOT/research/per-expert-quant"
 LOCK=${LOCK:-$HERE/practical-evals.lock.json}
 HARBOR_BIN=${HARBOR_BIN:-$(command -v harbor || true)}
+HARBOR_TASK_CACHE_ROOT=${HARBOR_TASK_CACHE_ROOT:-$HOME/.cache/harbor/tasks/packages}
 BASE_URL=${BASE_URL:-http://127.0.0.1:8080/v1}
 OUT_ROOT=${OUT_ROOT:-$HERE/results/practical}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 SERVER_BIN=${SERVER_BIN:-}
+PILOT_TASK=${PILOT_TASK:-}
 
 : "${ARM:?set ARM to the exact served model name}"
 : "${PANEL:?set PANEL to swe or terminal}"
@@ -29,6 +31,8 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_ID may contain only letters, digits, dot, underscore, and dash"
 [[ "$PANEL" == swe || "$PANEL" == terminal ]] || die "PANEL must be swe or terminal"
 [[ -x "$HARBOR_BIN" ]] || die "Harbor is required"
+[[ -d "$HARBOR_TASK_CACHE_ROOT/swe-bench" ]] || die "missing cached SWE tasks: $HARBOR_TASK_CACHE_ROOT/swe-bench"
+[[ -d "$HARBOR_TASK_CACHE_ROOT/terminal-bench" ]] || die "missing cached Terminal tasks: $HARBOR_TASK_CACHE_ROOT/terminal-bench"
 [[ -f "$LOCK" ]] || die "missing practical eval lock: $LOCK"
 [[ -x "$SERVER_BIN" ]] || die "missing executable server: $SERVER_BIN"
 [[ -f "$SERVER_LOG" ]] || die "missing server log: $SERVER_LOG"
@@ -43,7 +47,10 @@ docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
 
 HARBOR_VERSION=$($HARBOR_BIN --version)
 [[ "$HARBOR_VERSION" == 0.18.0 ]] || die "expected Harbor 0.18.0, got $HARBOR_VERSION"
-python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK"
+python3 "$HERE/validate_practical_eval_lock.py" --lock "$LOCK" \
+  --swe-harbor-root "$HARBOR_TASK_CACHE_ROOT/swe-bench" \
+  --terminal-root "$HARBOR_TASK_CACHE_ROOT/terminal-bench"
+MAX_TURNS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["protocol"]["agent_scaffold"]["max_turns"])' "$LOCK")
 
 mapfile -t selection < <(python3 - "$LOCK" "$PANEL" <<'PY'
 import json, sys
@@ -52,17 +59,23 @@ if sys.argv[2] == "swe":
     suite = lock["swe_bench_verified"]
     print(f"{suite['harbor_dataset']}@{suite['harbor_dataset_digest']}")
     for task in suite["tasks"]:
-        print(task["instance_id"])
+        print(task["harbor_task"])
 else:
     suite = lock["terminal_bench_2"]
     print(f"{suite['dataset']}@{suite['dataset_digest']}")
     for task in suite["tasks"]:
-        print(task["name"].split("/", 1)[1])
+        print(task["name"])
 PY
 )
 (( ${#selection[@]} == 13 )) || die "lock did not resolve one dataset plus 12 tasks"
 DATASET=${selection[0]}
 TASKS=("${selection[@]:1}")
+if [[ -n "$PILOT_TASK" ]]; then
+  found=0
+  for task in "${TASKS[@]}"; do [[ "$task" == "$PILOT_TASK" ]] && found=1; done
+  ((found == 1)) || die "pilot task is outside the frozen panel"
+  TASKS=("$PILOT_TASK")
+fi
 
 SERVER_ROOT=${BASE_URL%/v1}
 RUN_DIR="$OUT_ROOT/$ARM/$PANEL/$RUN_ID"
@@ -85,8 +98,8 @@ CHAT_STATUS=$(curl -sS --max-time 10 -o "$RUN_DIR/chat-route-probe.json" -w '%{h
 [[ "$CHAT_STATUS" == 400 ]] || die "chat route probe expected HTTP 400, got $CHAT_STATUS"
 
 export OPENAI_API_KEY=${BW24_API_KEY:-dummy}
-MODEL_INFO='{"max_input_tokens":8192,"max_output_tokens":512,"input_cost_per_token":0,"output_cost_per_token":0}'
-CALL_KWARGS='{"max_tokens":512}'
+MODEL_INFO='{"max_input_tokens":5120,"max_output_tokens":3072,"input_cost_per_token":0,"output_cost_per_token":0}'
+CALL_KWARGS='{"max_tokens":3072,"timeout":7200}'
 CMD=(
   "$HARBOR_BIN" run
   --dataset "$DATASET"
@@ -101,10 +114,11 @@ CMD=(
   --n-concurrent-agents 1
   --n-attempts 1
   --max-retries 0
+  --agent-timeout-multiplier 4.0
   --yes
   --agent-kwarg "api_base=$BASE_URL"
   --agent-kwarg temperature=0
-  --agent-kwarg max_turns=20
+  --agent-kwarg "max_turns=$MAX_TURNS"
   --agent-kwarg parser_name=json
   --agent-kwarg proactive_summarization_threshold=1024
   --agent-kwarg enable_summarize=true
@@ -120,7 +134,7 @@ done
 "${CMD[@]}" --print-config > "$RUN_DIR/resolved-harbor-config.json"
 STARTED_UTC=$(date -u +%FT%TZ)
 STARTED_NS=$(date +%s%N)
-export ROOT LOCK ARM PANEL RUN_ID RUN_DIR DATASET BASE_URL HARBOR_VERSION SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC
+export ROOT LOCK ARM PANEL RUN_ID RUN_DIR DATASET BASE_URL HARBOR_VERSION SERVER_BIN SERVER_LOG ARTIFACT STARTED_UTC BW24_SPILL_IO BW24_SPILL_PREAD_DEPTH BW24_SPILL_STATS BW24_SERVE_SPEC PILOT_TASK
 python3 - "$RUN_DIR/run-metadata.json" <<'PY'
 import hashlib, json, os, pathlib, re, subprocess, sys
 
@@ -153,6 +167,7 @@ payload = {
     "arm": os.environ["ARM"], "panel": os.environ["PANEL"],
     "run_id": os.environ["RUN_ID"], "dataset": os.environ["DATASET"],
     "base_url": os.environ["BASE_URL"], "harbor_version": os.environ["HARBOR_VERSION"],
+    "pilot_task": os.environ.get("PILOT_TASK") or None,
     "bw24_commit": subprocess.check_output(
         ["git", "-C", os.environ["ROOT"], "rev-parse", "HEAD"], text=True
     ).strip(),

@@ -21,7 +21,8 @@ Running bw24 on your own rig — desktop 50-series, older NVIDIA, anything? A [h
 | Tier | Models | State |
 |---|---|---|
 | **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 26B-A4B MoE, 31B dense, E4B (QAT Q4_0 + MTP drafters) | Board-published, fully gated, exactness-first; margins per model in the tables below |
-| **In progress** | Hy3-REAP50, MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router arcs still open |
+| **Supported, under tuning** | Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Runs end-to-end through bw24-native CPU/GPU serving and is correctness-gated on the RTX 5090 target |
+| **In progress** | MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router tuning remains open |
 
 ## Quick start
 
@@ -50,6 +51,57 @@ verify-prefill argmax=N  decode argmax=N  logit maxdiff=...  MATCH
 ```
 
 Tuned paths are the defaults — no flags needed. Flags exist only for runtime parameters, machine config, and rollback seams (`docs/FLAGS.md`). `run-gen` prints a prefill/decode argmax gate before timing anything; a MISMATCH line voids the numbers after it.
+
+### Hy3 spill profile on a 24 GB GPU
+
+Hy3's expert bank exceeds both VRAM and ordinary host-RAM budgets. bw24 freezes a profiled HBM
+resident set, keeps a bounded LRU projection cache in normal RAM, reads misses with positioned
+direct I/O, and can split each large read across byte-identical copies on two NVMe devices. The
+optional CPU-expert companion is also bw24 code: it implements Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
+Q6_K, IQ3_S, IQ4_XS, NVFP4, Q4_0, BF16, and F32 row dots with a bw24 Q8/16 activation format and
+AVX2/AVX-VNNI kernels. It does not compile, link, or load llama.cpp, ggml, or another inference
+runtime.
+
+```bash
+tools/build_cpu_expert_companion.sh
+BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
+  cargo run -p bw24-engine --bin cpu_native_check
+tools/run_hy3_local_5090.sh \
+  /path/to/hy3-layer103p5-dual-nvme \
+  target/release/libbw24-cpu-experts.so \
+  /path/to/expert-mirror/inode-alternates.tsv
+```
+
+The companion ABI is versioned and fails closed: the engine requires native ABI v2, so a stale
+legacy v1 library cannot be loaded accidentally. `cpu_native_check` compares every supported
+packed row dot against bw24's independent Rust dequantization oracle. `dlopen` executes library
+constructors before the ABI check, so `BW24_CPU_EXPERT_LIB` must always point to a trusted build.
+
+The mirror argument is optional. `tools/build_dual_nvme_expert_view.py` and
+`tools/build_expert_mirror_map.py` create the verified striped view and alternate-path map. The run
+must use that exact dual-NVMe view as `MODEL_DIR` when the map is enabled: ABI v2 pins both sides by
+device, inode, size, and ctime and rejects a map paired with the persistent source tree. The run
+profile requests a 20 GiB CPU cache, retains 4 GiB of live `MemAvailable` headroom, uses eight
+P-cores, profiles residency with 128 discarded tokens, and prints the effective cache cap before
+warmup; it reduces the cache instead of
+exhausting RAM when the desktop stack is too large. In the controlled native v2 Q2_K sweep, the
+two-pass means for 8 and 12 threads differed by 0.7%, while the winner reversed by about 8% between
+the individual passes; eight remains the lower-contention default while broader mixed-format
+end-to-end tuning continues. Each point used 10 warmups and 100 timed calls on the active-desktop
+powersave regime (55 C start); raw log:
+`research/per-expert-quant/evidence/local-5090-native-20260721/cpu-native-v2k-q2k-thread-sweep.log`.
+
+Earlier Hy3 throughput measurements used the retired external CPU backend and are not performance
+claims for this implementation. Native ABI v2 results are published only with their dependency,
+packed-row oracle, exactness, and raw-run evidence. On the final 2026-07-21 target-rig gate, the
+default 128-token residency warmup measured 4.48 tok/s over one N=32 post-freeze `run-gen` window;
+the MTP-capable default `run-spec` plain control measured 3.76 tok/s over N=7 before its K sweep.
+These are single observations, not board-moving medians. `kernel-check`
+was all green, the post-freeze serving assignment passed prefill/decode argmax, and K=1 through K=8
+were self-consistent. Raw logs and
+the exact thermal/memory regime are under
+`research/per-expert-quant/evidence/local-5090-native-20260721/`. Sustained 10 tok/s remains the
+target.
 
 ## Performance — Qwen (NVFP4 / IQ4_XS)
 
@@ -150,13 +202,14 @@ row's raw run (and every retired number's archaeology) in
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
 - Gemma plain margins are thin where both engines sit at the DRAM wall: 31B plain 1.02x short / 1.03x at 1.7k, 26B plain 1.07x short / 1.06x at 1.7k (best-vs-best `-fa 1` interleaved pairs, 2026-07-15; identical GGUF bytes both engines, best single kernel = 91% of wall, e2e 87-89%). Every measured mechanism class — ours plus llama/vLLM/SGLang current releases — is shipped or carries a falsification row (`research/gemma4-bringup/rig5090-gemma4.jsonl`). Spec under the 2026-07-15 best-vs-best re-audit: 31B 1.7k 1.16x and E4B ≥1.23x lead; 31B short 1.06x, 26B 0.99x/1.04x are open — the earlier 1.37-1.54x margins rode stale bars/acceptance states that no longer reproduce (era-binary-verified; jsonl).
-- Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
+- Hy3 native spill is correctness-gated at 4.48 tok/s in one N=32 post-freeze default-profile window and is still being tuned toward 10 tok/s. Results from the retired external CPU backend are intentionally excluded from native performance claims. Prompt replay remains much slower than token generation, so the launcher keeps live-RAM headroom instead of treating maximum allocation as maximum throughput.
+- Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception documented below.
 
 ## What's inside
 
 - **NVFP4 / Q4_0 decode** — split-plane repacked matvecs, warp-level dp4a, int8 W4A8 tensor-core prefill GEMM, per-shape auto-dispatch.
 - **MTP speculative decoding** — embedded draft head, one batched K+1 verify, zero-sync async rounds, adaptive draft depth; K=1..8 self-consistency gate.
-- **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, SLRU expert residency with VRAM→host→disk spill.
+- **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, frozen SLRU expert residency, bounded host LRU, and mirrored positioned reads across VRAM→RAM→NVMe.
 - **Quantized-KV attention** — fused prefill/decode FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3 KV per layer class), split-K, device-length counters for graph replay.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic.
 - **Hybrid + sigmoid-router architectures** — gated-delta-net mixes (Qwen3.6), MiniMax/DeepSeek-style routing.
@@ -183,7 +236,7 @@ Exactness gates are structurally blind to numeric shifts where decode and verify
 
 - NVIDIA Blackwell consumer GPU (sm_120a); primary target RTX 5090 Laptop.
 - CUDA 13.1 (`BW24_NVCC` overrides the nvcc path), Rust edition 2024, cudarc 0.19.
-- A model: GGUF or HF safetensors directory (pass either path).
+- A model: GGUF or HF safetensors directory (pass either path). The optional Hy3 CPU-expert path additionally needs a C++17 compiler with OpenMP to build bw24's native companion.
 
 ## Limitations
 
@@ -202,6 +255,7 @@ Exactness gates are structurally blind to numeric shifts where decode and verify
 - [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak on this box.
 - [`research/tune-data/`](research/tune-data/) + [`research/gemma4-bringup/`](research/gemma4-bringup/) — every experiment as JSONL, wins and losses both.
 - [`research/benchmarks.md`](research/benchmarks.md) — the A/B measurement protocol.
+- [`research/per-expert-quant/hy3-layer103p5-release.md`](research/per-expert-quant/hy3-layer103p5-release.md) — obtain and relocate the published Hy3 overlay.
 
 ## Contributing
 

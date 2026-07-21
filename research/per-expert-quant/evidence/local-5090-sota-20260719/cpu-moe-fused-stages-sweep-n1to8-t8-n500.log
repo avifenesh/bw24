@@ -1,0 +1,168 @@
+experts=1 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.000572s io=0.000007s insert=0.000007s compute=0.093078s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.153495 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=1 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000161s io=0.000006s insert=0.000006s compute=0.031857s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.062578 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=1 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.000559s io=0.000007s insert=0.000006s compute=0.036622s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.072764 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=1 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000177s io=0.000006s insert=0.000006s compute=0.032024s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.062955 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=1 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.000575s io=0.000006s insert=0.000006s compute=0.035740s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.070999 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=1 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000157s io=0.000006s insert=0.000006s compute=0.032665s read_projections=0 read_GB=0.000
+experts=1 iterations=500 ms/token=0.064204 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+experts=2 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.001191s io=0.000006s insert=0.000007s compute=0.057379s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.114277 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=2 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000368s io=0.000006s insert=0.000007s compute=0.053037s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.104373 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=2 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.001225s io=0.000007s insert=0.000007s compute=0.059200s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.118148 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=2 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000369s io=0.000007s insert=0.000007s compute=0.053047s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.104576 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=2 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.001239s io=0.000007s insert=0.000007s compute=0.058116s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.115758 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=2 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000368s io=0.000007s insert=0.000007s compute=0.083269s read_projections=0 read_GB=0.000
+experts=2 iterations=500 ms/token=0.165076 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+experts=3 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.001956s io=0.000008s insert=0.000011s compute=0.159543s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=0.276020 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=3 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000868s io=0.000008s insert=0.000013s compute=0.494965s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=0.989134 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=3 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002569s io=0.000008s insert=0.000015s compute=0.790368s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=1.528294 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=3 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000984s io=0.000009s insert=0.000014s compute=0.718983s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=1.380221 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=3 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.001971s io=0.000007s insert=0.000012s compute=0.203530s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=0.403133 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=3 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000535s io=0.000006s insert=0.000007s compute=0.071250s read_projections=0 read_GB=0.000
+experts=3 iterations=500 ms/token=0.140530 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+experts=4 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002586s io=0.000006s insert=0.000010s compute=0.116434s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.232744 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=4 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000833s io=0.000007s insert=0.000008s compute=0.096342s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.190388 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=4 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002592s io=0.000007s insert=0.000007s compute=0.116175s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.232242 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=4 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000815s io=0.000007s insert=0.000008s compute=0.098125s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.193942 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=4 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.002629s io=0.000007s insert=0.000008s compute=0.118049s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.235718 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=4 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000828s io=0.000007s insert=0.000008s compute=0.097192s read_projections=0 read_GB=0.000
+experts=4 iterations=500 ms/token=0.192095 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+experts=5 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.003348s io=0.000007s insert=0.000008s compute=0.172803s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.322314 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=5 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000981s io=0.000007s insert=0.000009s compute=0.124490s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.246210 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=5 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.003373s io=0.000007s insert=0.000013s compute=0.160897s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.322014 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=5 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001034s io=0.000007s insert=0.000010s compute=0.125629s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.248551 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=5 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.003375s io=0.000008s insert=0.000009s compute=0.160587s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.321073 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=5 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001019s io=0.000008s insert=0.000015s compute=0.126517s read_projections=0 read_GB=0.000
+experts=5 iterations=500 ms/token=0.250579 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+experts=6 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004246s io=0.000009s insert=0.000012s compute=0.222389s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.431079 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=6 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001325s io=0.000011s insert=0.000014s compute=0.159003s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.315037 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=6 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004158s io=0.000009s insert=0.000012s compute=0.211808s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.423612 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=6 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001298s io=0.000010s insert=0.000012s compute=0.170834s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.338215 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=6 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004152s io=0.000012s insert=0.000016s compute=0.224180s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.448543 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=6 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001330s io=0.000010s insert=0.000012s compute=0.161011s read_projections=0 read_GB=0.000
+experts=6 iterations=500 ms/token=0.319139 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+experts=7 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004924s io=0.000010s insert=0.000014s compute=0.282570s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.554629 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=7 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001644s io=0.000010s insert=0.000015s compute=0.209761s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.415851 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=7 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004963s io=0.000009s insert=0.000016s compute=0.278540s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.556417 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=7 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001643s io=0.000010s insert=0.000016s compute=0.201387s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.398714 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=7 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.004906s io=0.000010s insert=0.000017s compute=0.269493s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.538680 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=7 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001620s io=0.000010s insert=0.000016s compute=0.209398s read_projections=0 read_GB=0.000
+experts=7 iterations=500 ms/token=0.414873 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+experts=8 repeat=1 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.005706s io=0.000013s insert=0.000020s compute=0.403916s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=0.795682 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+experts=8 repeat=1 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001886s io=0.000014s insert=0.000018s compute=0.272467s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=0.539346 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+experts=8 repeat=2 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.005636s io=0.000012s insert=0.000019s compute=0.365227s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=0.728763 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+experts=8 repeat=2 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002552s io=0.000011s insert=0.000025s compute=0.999304s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=1.994902 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+experts=8 repeat=3 mode=0
+[bw24-cpu-profile] calls=508 prepare=0.005619s io=0.000012s insert=0.000019s compute=0.410091s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=0.815997 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+experts=8 repeat=3 mode=1
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002038s io=0.000012s insert=0.000019s compute=0.380198s read_projections=0 read_GB=0.000
+experts=8 iterations=500 ms/token=0.741038 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888

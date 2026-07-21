@@ -1,0 +1,51 @@
+	Command being timed: "sudo -n swapoff /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 6.06
+	Percent of CPU this job got: 12%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:49.70
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6120
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 10
+	Minor (reclaiming a frame) page faults: 878
+	Voluntary context switches: 1030218
+	Involuntary context switches: 31
+	Swaps: 0
+	File system inputs: 16362424
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+	Command being timed: "sudo -n swapon /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 41%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.01
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6612
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 14
+	Minor (reclaiming a frame) page faults: 881
+	Voluntary context switches: 36
+	Involuntary context switches: 3
+	Swaps: 0
+	File system inputs: 696
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+NAME      TYPE       SIZE   USED PRIO
+/swap.img file 8589930496 163840   -1
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        25Gi        16Gi       8.7Gi        27Gi        35Gi
+Swap:          8.0Gi       340Ki       8.0Gi

@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from summarize_directional_results import candidate_specs, exactly_one, numeric
+from summarize_hourish_results import MATH_SCORE_POLICY, MATH_SCORE_VERSIONS
 
 
 # The promoted artifacts are expert overlays for the same frozen BW24 GGUF body.
 # Keep this explicit so reports compare the finished logical model, not just the overlay.
 DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
+# The trusted full suite permits complete reasoning; directional screens remain at 256.
+TRUSTED_MAX_GEN_TOKS = 2048
 FULL_SHARED_RECEIPT_KEYS = (
     "suite",
     "base_url",
@@ -46,15 +49,30 @@ N50_SHARED_RECEIPT_KEYS = (
     "platform",
     "nvidia_smi",
 )
+# Full runs may shard one arm across several identical GPU/server lanes. Each receipt validates
+# its own copied server log below, so the source path is intentionally lane-local rather than a
+# within-arm equality key.
 FULL_WITHIN_ARM_RECEIPT_KEYS = FULL_SHARED_RECEIPT_KEYS + (
     "arm",
     "model",
     "artifact_identity_sha256",
-    "server_log_source",
 )
 SPILL_COUNTER_KEYS = (
     "reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full",
 )
+PROMOTED_MATH_TASK = "hendrycks_math500"
+PROMOTED_MATH_SCORE_FORMAT = "bw24-promoted-math-score-v1"
+PROMOTED_MATH_RECEIPT_FORMAT = "bw24-promoted-math-score-receipt-v1"
+PROMOTED_MATH_SANDBOX = {
+    "network": "none",
+    "read_only_root": True,
+    "capabilities": "all dropped",
+    "no_new_privileges": True,
+    "pids_limit": 32,
+    "memory_bytes": 1024 * 1024 * 1024,
+    "cpus": 1,
+    "cpu_shares": 2,
+}
 
 
 def sha256(path: Path) -> str:
@@ -127,6 +145,43 @@ def select_finalist(loaded: dict[str, dict[str, Any]], arms: list[str], baseline
     )
 
 
+def load_promoted_math_score(
+    run_dir: Path, expected_count: int, lock: dict[str, Any]
+) -> tuple[dict[str, Any], list[Path]]:
+    score_path = run_dir / "math-score.json"
+    receipt_path = run_dir / "math-score.receipt.json"
+    if not score_path.is_file() or not receipt_path.is_file():
+        raise ValueError(f"promoted full MATH score evidence is incomplete under {run_dir}")
+    score = json.loads(score_path.read_text())
+    receipt = json.loads(receipt_path.read_text())
+    if (
+        score.get("format") != PROMOTED_MATH_SCORE_FORMAT
+        or score.get("policy") != MATH_SCORE_POLICY
+        or score.get("versions") != MATH_SCORE_VERSIONS
+        or score.get("total") != expected_count
+        or score.get("by_task", {}).get(PROMOTED_MATH_TASK, {}).get("total") != expected_count
+        or not isinstance(score.get("passed"), int)
+        or not 0 <= score["passed"] <= expected_count
+        or not isinstance(score.get("samples"), list)
+        or len(score["samples"]) != expected_count
+    ):
+        raise ValueError(f"invalid promoted MATH score: {score_path}")
+    if (
+        receipt.get("format") != PROMOTED_MATH_RECEIPT_FORMAT
+        or Path(receipt.get("run_dir", "")).resolve() != run_dir.resolve()
+        or Path(receipt.get("output", "")).resolve() != score_path.resolve()
+        or receipt.get("output_sha256") != sha256(score_path)
+        or receipt.get("expected_sample_count") != expected_count
+        or receipt.get("suite_lock_canonical_sha256") != canonical_json_sha256(lock)
+        or receipt.get("sandbox") != PROMOTED_MATH_SANDBOX
+        or not isinstance(receipt.get("tool_sha256"), str)
+        or len(receipt["tool_sha256"]) != 64
+        or not str(receipt.get("image_id", "")).startswith("sha256:")
+    ):
+        raise ValueError(f"invalid promoted MATH score receipt: {receipt_path}")
+    return score, [score_path, receipt_path]
+
+
 def load_arm(
     out_root: Path,
     run_id: str,
@@ -178,6 +233,8 @@ def load_arm(
         for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
             if reference.get(key) is None:
                 raise ValueError(f"{arm}: full receipt missing {key}")
+        if reference.get("max_gen_toks_override") != TRUSTED_MAX_GEN_TOKS:
+            raise ValueError(f"{arm}: full receipt has wrong generation budget")
         for path, receipt in receipts:
             for key in FULL_WITHIN_ARM_RECEIPT_KEYS:
                 if receipt.get(key) != reference.get(key):
@@ -254,6 +311,7 @@ def load_arm(
         raise ValueError(f"{arm}: copied manifest does not match receipt artifact identity")
 
     expected_limit = None if full_run else float(next(iter(expected_counts.values())))
+    expected_max_gen_toks = TRUSTED_MAX_GEN_TOKS if full_run else 256
     expected_model_args = {
         "model": arm,
         "base_url": reference["base_url"],
@@ -285,7 +343,7 @@ def load_arm(
             or config.get("model") != "local-completions"
             or config.get("model_args") != expected_model_args
             or str(config.get("batch_size")) != "1"
-            or config.get("gen_kwargs") != {"max_gen_toks": 256}
+            or config.get("gen_kwargs") != {"max_gen_toks": expected_max_gen_toks}
             or config.get("random_seed") != 0
             or config.get("numpy_seed") != 1234
             or config.get("torch_seed") != 1234
@@ -317,6 +375,12 @@ def load_arm(
             task_versions[task] = versions[task]
     if set(task_hashes) != set(expected_counts):
         raise ValueError(f"{arm}: result task provenance differs from pinned suite")
+    math_score = None
+    scorer_paths: list[Path] = []
+    if full_run:
+        math_score, scorer_paths = load_promoted_math_score(
+            run_dir, expected_counts[PROMOTED_MATH_TASK], lock
+        )
     tasks = {}
     values_by_task: dict[str, dict[str, float]] = {}
     sample_paths: list[Path] = []
@@ -335,27 +399,48 @@ def load_arm(
             )
         _, results = matching_results[0]
         aggregate = results.get(spec["result_section"], {}).get(task, {})
-        aggregate_value = numeric(aggregate.get(metric_key), f"{arm}/{task} aggregate")
         sample_path = exactly_one(sorted(run_dir.rglob(spec["sample_glob"])), f"{arm}/{task} samples")
         sample_paths.append(sample_path)
         values: dict[str, float] = {}
-        with sample_path.open() as handle:
-            for line_number, line in enumerate(handle, 1):
-                row = json.loads(line)
-                if row.get("filter") != spec["filter"]:
-                    continue
-                value = numeric(row.get(spec["metric"]), f"{sample_path}:{line_number}")
-                if value not in (0.0, 1.0):
-                    raise ValueError(f"{arm}/{task}: expected binary metric, got {value}")
-                doc_hash = row.get("doc_hash")
-                prompt_hash = row.get("prompt_hash")
-                target_hash = row.get("target_hash")
-                if not all(isinstance(value, str) and value for value in (doc_hash, prompt_hash, target_hash)):
-                    raise ValueError(f"{arm}/{task}: missing sample identity")
-                identity = f"{doc_hash}:{prompt_hash}:{target_hash}"
-                if identity in values:
-                    raise ValueError(f"{arm}/{task}: duplicate sample identity {identity}")
-                values[identity] = value
+        if full_run and task == PROMOTED_MATH_TASK:
+            assert math_score is not None
+            input_files = math_score.get("input_files")
+            if (
+                not isinstance(input_files, list)
+                or len(input_files) != 1
+                or input_files[0].get("sha256") != sha256(sample_path)
+            ):
+                raise ValueError(f"{arm}/{task}: external score input does not match samples")
+            for row in math_score["samples"]:
+                if row.get("task") != task or not isinstance(row.get("doc_id"), int):
+                    raise ValueError(f"{arm}/{task}: invalid external score sample")
+                identity_fields = (row.get("doc_hash"), row.get("prompt_hash"), row.get("target_hash"))
+                if not all(isinstance(value, str) and value for value in identity_fields):
+                    raise ValueError(f"{arm}/{task}: external score sample lacks identity")
+                identity = ":".join(identity_fields)
+                if identity in values or not isinstance(row.get("passed"), bool):
+                    raise ValueError(f"{arm}/{task}: duplicate or invalid external score sample")
+                values[identity] = float(row["passed"])
+            aggregate_value = math_score["passed"] / expected_n
+        else:
+            aggregate_value = numeric(aggregate.get(metric_key), f"{arm}/{task} aggregate")
+            with sample_path.open() as handle:
+                for line_number, line in enumerate(handle, 1):
+                    row = json.loads(line)
+                    if row.get("filter") != spec["filter"]:
+                        continue
+                    value = numeric(row.get(spec["metric"]), f"{sample_path}:{line_number}")
+                    if value not in (0.0, 1.0):
+                        raise ValueError(f"{arm}/{task}: expected binary metric, got {value}")
+                    doc_hash = row.get("doc_hash")
+                    prompt_hash = row.get("prompt_hash")
+                    target_hash = row.get("target_hash")
+                    if not all(isinstance(value, str) and value for value in (doc_hash, prompt_hash, target_hash)):
+                        raise ValueError(f"{arm}/{task}: missing sample identity")
+                    identity = f"{doc_hash}:{prompt_hash}:{target_hash}"
+                    if identity in values:
+                        raise ValueError(f"{arm}/{task}: duplicate sample identity {identity}")
+                    values[identity] = value
         if len(values) != expected_n:
             raise ValueError(f"{arm}/{task}: expected N={expected_n}, found {len(values)}")
         successes = int(sum(values.values()))
@@ -375,6 +460,7 @@ def load_arm(
         "result_evidence": evidence(result_paths),
         "receipt_evidence": evidence(receipt_paths),
         "sample_evidence": evidence(sample_paths),
+        "scorer_evidence": evidence(scorer_paths),
         "server_log_evidence": evidence(server_log_paths),
         "suite_lock_evidence": evidence(lock_paths),
         "suite_lock_canonical_sha256": copied_lock_hashes.pop(),
@@ -474,11 +560,28 @@ def build_report(
         )
         if not dominated:
             pareto_arms.append(arm)
-    # Freeze the N=50 down-selection rule before looking at the result. Quality is primary; exact
-    # point-estimate ties go to the smaller finished model. The baseline is always retained for the
-    # full comparison, and the uncertainty fields remain separate so this choice cannot be read as
-    # a claim of equivalence or statistically proven superiority.
+    # Quality is primary; exact point-estimate ties go to the smaller finished model. The baseline
+    # is always retained for the subsequent agentic comparison, and uncertainty remains separate so
+    # this choice cannot be read as a claim of equivalence or statistically proven superiority.
     selected_finalist = select_finalist(loaded, arms, baseline)
+    if full_run:
+        selection_rule = (
+            "highest candidate macro point estimate on the matched 4,746-document "
+            "trusted capability suite; exact tie chooses smaller logical model"
+        )
+        selection_note = (
+            "Trusted full-capability down-selection; uncertainty is reported separately and "
+            "this is not an equivalence claim."
+        )
+    else:
+        selection_rule = (
+            "highest candidate macro point estimate on the directional screen; "
+            "exact tie chooses smaller logical model"
+        )
+        selection_note = (
+            "Directional down-selection only; uncertainty is reported separately and this is "
+            "not an equivalence claim."
+        )
     return {
         "format": "bw24-promoted-candidate-v1",
         "run_id": run_id,
@@ -490,10 +593,10 @@ def build_report(
         "paired_vs_baseline": paired,
         "point_estimate_pareto_arms": pareto_arms,
         "selection": {
-            "rule": "highest candidate macro point estimate; exact tie chooses smaller logical model",
+            "rule": selection_rule,
             "selected_finalist": selected_finalist,
             "full_eval_arms": [baseline, selected_finalist],
-            "note": "Directional down-selection only; uncertainty is reported separately and this is not an equivalence claim.",
+            "note": selection_note,
         },
         "tasks": [{"task": spec["result_task"], "label": spec["label"]} for spec in specs],
     }
@@ -684,6 +787,8 @@ def self_test(lock: dict[str, Any]) -> None:
         assert report["point_estimate_pareto_arms"] == ["plain_quant"]
         assert report["selection"]["selected_finalist"] == "candidate"
         assert report["selection"]["full_eval_arms"] == ["plain_quant", "candidate"]
+        assert "directional screen" in report["selection"]["rule"]
+        assert report["selection"]["note"].startswith("Directional down-selection")
         assert "Selected finalist" in markdown(report)
         assert "Wilson 95% CI" in markdown(report)
         report_out = root / "reports" / "promoted-results.md"
@@ -710,16 +815,92 @@ def self_test(lock: dict[str, Any]) -> None:
         candidate_result_path.write_text(json.dumps(candidate_result))
         full_lock = dict(lock)
         full_lock["eval_documents"] = {spec["result_task"]: 4 for spec in specs}
+        math_spec = next(spec for spec in specs if spec["result_task"] == PROMOTED_MATH_TASK)
         for arm in arms:
-            result_path = root / arm / "fixture" / arm / "results_fixture.json"
+            run_dir = root / arm / "fixture"
+            result_path = run_dir / arm / "results_fixture.json"
             result = json.loads(result_path.read_text())
             result["config"]["limit"] = None
+            result["config"]["gen_kwargs"] = {"max_gen_toks": TRUSTED_MAX_GEN_TOKS}
+            # The raw aggregate is deliberately poisoned. Full reporting must use only the
+            # independently rescored immutable MATH evidence below.
+            result[math_spec["result_section"]][PROMOTED_MATH_TASK][
+                f"{math_spec['metric']},{math_spec['filter']}"
+            ] = 0.123456
             result_path.write_text(json.dumps(result))
-            (root / arm / "fixture" / "suite.lock.json").write_text(json.dumps(full_lock))
+            receipt_path = run_dir / "run-metadata.json"
+            receipt = json.loads(receipt_path.read_text())
+            receipt["max_gen_toks_override"] = TRUSTED_MAX_GEN_TOKS
+            receipt_path.write_text(json.dumps(receipt))
+            (run_dir / "suite.lock.json").write_text(json.dumps(full_lock))
+            sample_path = exactly_one(
+                sorted((run_dir / arm).glob(math_spec["sample_glob"])),
+                f"{arm} fixture MATH samples",
+            )
+            raw_rows = [json.loads(line) for line in sample_path.read_text().splitlines()]
+            scored_rows = [{
+                "task": PROMOTED_MATH_TASK,
+                "doc_id": index,
+                "doc_hash": row["doc_hash"],
+                "prompt_hash": row["prompt_hash"],
+                "target_hash": row["target_hash"],
+                "answer": "fixture",
+                "normalized_answer": "fixture",
+                "passed": bool(row[math_spec["metric"]]),
+                "method": "fixture",
+            } for index, row in enumerate(raw_rows)]
+            math_score = {
+                "format": PROMOTED_MATH_SCORE_FORMAT,
+                "policy": MATH_SCORE_POLICY,
+                "versions": MATH_SCORE_VERSIONS,
+                "input_files": [{"path": str(sample_path), "sha256": sha256(sample_path)}],
+                "by_task": {PROMOTED_MATH_TASK: {
+                    "passed": sum(row["passed"] for row in scored_rows), "total": 4,
+                }},
+                "passed": sum(row["passed"] for row in scored_rows),
+                "total": 4,
+                "samples": scored_rows,
+            }
+            math_score_path = run_dir / "math-score.json"
+            math_score_path.write_text(json.dumps(math_score))
+            math_receipt = {
+                "format": PROMOTED_MATH_RECEIPT_FORMAT,
+                "run_dir": str(run_dir), "output": str(math_score_path),
+                "output_sha256": sha256(math_score_path),
+                "image": "fixture", "image_id": "sha256:fixture",
+                "tool_sha256": "f" * 64,
+                "suite_lock_sha256": "fixture",
+                "suite_lock_canonical_sha256": canonical_json_sha256(full_lock),
+                "expected_sample_count": 4,
+                "sandbox": PROMOTED_MATH_SANDBOX,
+            }
+            (run_dir / "math-score.receipt.json").write_text(json.dumps(math_receipt))
         full_report = build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
         assert full_report["documents_per_arm"] == 4 * len(specs)
         assert isinstance(full_report["n_per_task"], dict)
         assert "full pinned" in markdown(full_report)
+        candidate_receipt_path = root / "candidate" / "fixture" / "run-metadata.json"
+        candidate_receipt = json.loads(candidate_receipt_path.read_text())
+        candidate_receipt["max_gen_toks_override"] = 256
+        candidate_receipt_path.write_text(json.dumps(candidate_receipt))
+        try:
+            build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
+        except ValueError as exc:
+            assert "wrong generation budget" in str(exc)
+        else:
+            raise AssertionError("truncated trusted-full receipt was accepted")
+        candidate_receipt["max_gen_toks_override"] = TRUSTED_MAX_GEN_TOKS
+        candidate_receipt_path.write_text(json.dumps(candidate_receipt))
+        candidate_math = root / "candidate" / "fixture" / "math-score.json"
+        original_candidate_math = candidate_math.read_text()
+        candidate_math.write_text(original_candidate_math + "\n")
+        try:
+            build_report(root, "fixture", arms, "plain_quant", "all", full_lock)
+        except ValueError as exc:
+            assert "invalid promoted MATH score receipt" in str(exc)
+        else:
+            raise AssertionError("tampered promoted MATH score was accepted")
+        candidate_math.write_text(original_candidate_math)
         plain_server_log = root / "plain_quant" / "fixture" / "server.log"
         original_server_log = plain_server_log.read_text()
         plain_server_log.write_text(original_server_log + "tampered\n")
@@ -761,6 +942,7 @@ def self_test(lock: dict[str, Any]) -> None:
                 candidate_receipt,
                 tasks=[task],
                 shard_id=task,
+                server_log_source=str(shard_server_log),
                 server_log=str(shard_server_log),
                 server_log_sha256=sha256(shard_server_log),
             )

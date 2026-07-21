@@ -1,0 +1,14 @@
+{
+  "candidate_arm": "layer_balanced100",
+  "decision_scope": "trusted full evaluation coverage only",
+  "format": "bw24-user-trusted-full-directional-policy-v1",
+  "generated_utc": "2026-07-14T20:20:00Z",
+  "hard_logical_byte_ceiling": 100000000000,
+  "max_total_correct_deficit": 1,
+  "max_trusted_full_arms": 5,
+  "model_or_artifact_selection_changed": false,
+  "public_directional_results_used_for_trusted_selection": true,
+  "reason": "The owner explicitly defined 84/115 versus plain 85/115 at approximately 100 GB as an efficiency win that must proceed to a longer trusted full evaluation; the five-arm ceiling preserves that decision when up to two preregistered 120/137 GB bridge leaders also qualify.",
+  "reference_arm": "plain_quant",
+  "required_total_questions": 115
+}
