@@ -99,11 +99,16 @@ fn main() {
         for mmq_src in ["cu/mmq_fp4.cu", "cu/mmq_q45k.cu", "cu/mmq_nvfp4_w4a8.cu", "cu/mmq_iq_experts.cu",
                         "cu/mmq_q8_0.cu", "cu/fp8_prefill.cu", "cu/mmq_nvfp4_f8f4.cu"] {
             println!("cargo:rerun-if-changed={mmq_src}");
-            let compile_src = if cuda_arch == "100a" && mmq_src == "cu/mmq_fp4.cu" {
-                // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only. Keep its C ABI
-                // present on B200, but make accidental use fail closed; normal evaluation
-                // uses the separately compiled W4A8 launcher.
+            let compile_src = if cuda_arch != "120a" && mmq_src == "cu/mmq_fp4.cu" {
+                // The explicit BW24_MMQ=1 W4A4 launcher is sm_120a-only (mxf4nvf4
+                // block-scale MMA). Keep its C ABI present on B200 and portable Ada,
+                // but make accidental use fail closed; normal evaluation uses the
+                // separately compiled W4A8 launcher.
                 "cu/mmq_fp4_stub.cu"
+            } else if portable && mmq_src == "cu/mmq_nvfp4_w4a8.cu" {
+                // The W4A8/F8F4 launchers use .kind::f8f6f4 tile MMA (sm_100a+);
+                // sm_89 gets fail-closed ABI stubs.
+                "cu/mmq_nvfp4_w4a8_stub.cu"
             } else {
                 mmq_src
             };
