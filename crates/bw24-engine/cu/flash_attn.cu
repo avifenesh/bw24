@@ -246,6 +246,13 @@ static __device__ __forceinline__ float dq_q4_0_elem(
 // Nibble = e2m1: sign(bit3) + monotone magnitude index {0,.5,1,1.5,2,3,4,6}.
 static __device__ __constant__ float E2M1_TAB[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
 
+// e2m1 DOUBLED magnitudes are all integers: nibble -> signed int8 (mag*2), so nvfp4-K
+// stages dp4a-NATIVE via pure LUT — the x0.5 folds into the sub-scale (k_d = d*0.5),
+// no f32 decode, no absmax requantize (EXACT: removes the requant error the requant
+// arm added). Indexed by the full 4-bit nibble (bit3 = sign).
+static __device__ __constant__ signed char E2M1_MAG2[16] =
+    {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+
 static __device__ __forceinline__ float dq_nvfp4_elem(
         const uint8_t* __restrict__ P, long t, long tok_bytes, int eidx)
 {
@@ -3889,7 +3896,11 @@ struct fa_v4_smem {
     int   q_ints[8][64];            // [gqa<=8][64] per-warp quantized Q (8 chunks x 8 ints)
     float q_d[8][8];                // [gqa][8] per-chunk Q scales
     int   k_ints[FA_DEC_TILE][64];  // repacked K tile
+#if BW24_KV_KFMT == 2
+    float k_d[FA_DEC_TILE][16];     // per-HALF-chunk K sub-scales (nvfp4 per-16 e4m3)
+#else
     float k_d[FA_DEC_TILE][8];      // per-chunk K scales
+#endif
     // sV follows in dynamic smem (v3 layout; element type = fa_v4_sv_t below)
 };
 
@@ -3949,33 +3960,25 @@ static __device__ __forceinline__ void fa_v4_stage_k(
         }
     }
 #elif BW24_KV_KFMT == 2
-    // nvfp4 K: e2m1+2x e4m3 sub-scales -> f32 -> per-chunk absmax int8 requant (fp8 arm shape).
+    // nvfp4 K: dp4a-NATIVE LUT stage — nibble -> int8 (mag*2) verbatim, sub-scale*0.5
+    // published per HALF-chunk (k_d[2c], k_d[2c+1]). EXACT (no requant round-trip);
+    // 18B read vs q8_0's 34B. Score phase multiplies per-half-chunk (KFMT==2 branch).
     for (int task = bt; task < nt * 8; task += bsz) {
         int j = task >> 3, c = task & 7;
         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
-        float vals[32];
-        float amax = 0.0f;
-        const float dsub[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
-                                (float)((const __nv_fp8_e4m3*)blk)[1] };
-        #pragma unroll
-        for (int e = 0; e < 32; e++) {
-            const uint8_t byt = blk[2 + ((e < 16) ? e : e - 16)];
-            const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
-            const float mg = E2M1_TAB[nib & 7] * dsub[e >> 4];
-            vals[e] = (nib & 8) ? -mg : mg;
-            amax = fmaxf(amax, fabsf(vals[e]));
-        }
-        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
-        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
-        sm->k_d[j][c] = kd;
+        sm->k_d[j][2 * c]     = 0.5f * (float)((const __nv_fp8_e4m3*)blk)[0];
+        sm->k_d[j][2 * c + 1] = 0.5f * (float)((const __nv_fp8_e4m3*)blk)[1];
+        const uint8_t* qs = blk + 2;
         #pragma unroll
         for (int w = 0; w < 8; w++) {
+            // int w covers elems e = w*4 .. w*4+3; elem e: byte qs[e&15], nibble by e<16.
             int packed = 0;
             #pragma unroll
             for (int b8 = 0; b8 < 4; b8++) {
                 const int e = w * 4 + b8;
-                const int q = __float2int_rn(vals[e] * inv);
-                packed |= (q & 0xFF) << (8 * b8);
+                const uint8_t byt = qs[e & 15];
+                const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
+                packed |= ((int)E2M1_MAG2[nib] & 0xFF) << (8 * b8);
             }
             sm->k_ints[j][c * 8 + w] = packed;
         }
@@ -4115,11 +4118,23 @@ extern "C" __global__ void fa_decode_vec_q_v4(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -4305,11 +4320,23 @@ extern "C" __global__ void fa_decode_vec_q_v4_dc(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -4488,11 +4515,23 @@ extern "C" __global__ void fa_decode_vec_q_v4_noB3(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -4776,11 +4815,23 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -4969,11 +5020,23 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_dc(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -5161,11 +5224,23 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -5354,11 +5429,23 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
             float s = 0.0f;
             #pragma unroll
             for (int c = 0; c < 8; c++) {
+#if BW24_KV_KFMT == 2
+                // nvfp4: per-16 sub-scales — two 4-word dp4a halves per chunk.
+                int s0 = 0, s1 = 0;
+                #pragma unroll
+                for (int w = 0; w < 4; w++) {
+                    s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                    s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                }
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                 int sumi = 0;
                 #pragma unroll
                 for (int w = 0; w < 8; w++)
                     sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                 s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
             }
             my_score = s;
         }
@@ -5956,7 +6043,11 @@ struct fa_v4_smem_512 {
     int   q_ints[8][128];           // [gqa<=8][16 chunks x 8 ints]
     float q_d[8][16];
     int   k_ints[FA_DEC_TILE][128];
+#if BW24_KV_KFMT == 2
+    float k_d[FA_DEC_TILE][32];
+#else
     float k_d[FA_DEC_TILE][16];
+#endif
     // sV [FA_DEC_TILE x 512] fa_v4_sv_t follows in dynamic smem
 };
 
@@ -6020,33 +6111,25 @@ static __device__ __forceinline__ void fa_v4_stage_k_512(
         }
     }
 #elif BW24_KV_KFMT == 2
-    // nvfp4 K: e2m1+2x e4m3 sub-scales -> f32 -> per-chunk absmax int8 requant (fp8 arm shape).
+    // nvfp4 K: dp4a-NATIVE LUT stage — nibble -> int8 (mag*2) verbatim, sub-scale*0.5
+    // published per HALF-chunk (k_d[2c], k_d[2c+1]). EXACT (no requant round-trip);
+    // 18B read vs q8_0's 34B. Score phase multiplies per-half-chunk (KFMT==2 branch).
     for (int task = bt; task < nt * 16; task += bsz) {
         int j = task >> 4, c = task & 15;
         const uint8_t* blk = K + (size_t)(t0 + j) * k_tok_bytes + (size_t)(kblk0 + c) * K_BLK_B;
-        float vals[32];
-        float amax = 0.0f;
-        const float dsub[2] = { (float)((const __nv_fp8_e4m3*)blk)[0],
-                                (float)((const __nv_fp8_e4m3*)blk)[1] };
-        #pragma unroll
-        for (int e = 0; e < 32; e++) {
-            const uint8_t byt = blk[2 + ((e < 16) ? e : e - 16)];
-            const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
-            const float mg = E2M1_TAB[nib & 7] * dsub[e >> 4];
-            vals[e] = (nib & 8) ? -mg : mg;
-            amax = fmaxf(amax, fabsf(vals[e]));
-        }
-        const float kd = (amax > 0.0f) ? (amax / 127.0f) : 0.0f;
-        const float inv = (amax > 0.0f) ? (127.0f / amax) : 0.0f;
-        sm->k_d[j][c] = kd;
+        sm->k_d[j][2 * c]     = 0.5f * (float)((const __nv_fp8_e4m3*)blk)[0];
+        sm->k_d[j][2 * c + 1] = 0.5f * (float)((const __nv_fp8_e4m3*)blk)[1];
+        const uint8_t* qs = blk + 2;
         #pragma unroll
         for (int w = 0; w < 8; w++) {
+            // int w covers elems e = w*4 .. w*4+3; elem e: byte qs[e&15], nibble by e<16.
             int packed = 0;
             #pragma unroll
             for (int b8 = 0; b8 < 4; b8++) {
                 const int e = w * 4 + b8;
-                const int q = __float2int_rn(vals[e] * inv);
-                packed |= (q & 0xFF) << (8 * b8);
+                const uint8_t byt = qs[e & 15];
+                const int nib = (e < 16) ? (byt & 0x0F) : (byt >> 4);
+                packed |= ((int)E2M1_MAG2[nib] & 0xFF) << (8 * b8);
             }
             sm->k_ints[j][c * 8 + w] = packed;
         }
@@ -6189,11 +6272,22 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_512_tb(
                 float s = 0.0f;
                 #pragma unroll
                 for (int c = 0; c < 16; c++) {
+#if BW24_KV_KFMT == 2
+                    int s0 = 0, s1 = 0;
+                    #pragma unroll
+                    for (int w = 0; w < 4; w++) {
+                        s0 = __dp4a(sm->k_ints[lane][c * 8 + w],     sm->q_ints[wy][c * 8 + w],     s0);
+                        s1 = __dp4a(sm->k_ints[lane][c * 8 + w + 4], sm->q_ints[wy][c * 8 + w + 4], s1);
+                    }
+                    s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c],     sm->q_d[wy][c]), (float)s0, s);
+                    s = __fmaf_rn(__fmul_rn(sm->k_d[lane][2 * c + 1], sm->q_d[wy][c]), (float)s1, s);
+#else
                     int sumi = 0;
                     #pragma unroll
                     for (int w = 0; w < 8; w++)
                         sumi = __dp4a(sm->k_ints[lane][c * 8 + w], sm->q_ints[wy][c * 8 + w], sumi);
                     s = __fmaf_rn(__fmul_rn(sm->k_d[lane][c], sm->q_d[wy][c]), (float)sumi, s);
+#endif
                 }
                 my_score = s;
             }
