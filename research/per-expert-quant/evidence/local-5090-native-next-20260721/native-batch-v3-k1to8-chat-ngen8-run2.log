@@ -1,0 +1,67 @@
+2026-07-21T18:42:42+03:00
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        11Gi        16Gi       1.3Gi        35Gi        49Gi
+Swap:           31Gi        14Gi        17Gi
+NVIDIA GeForce RTX 5090 Laptop GPU, 54, 296 MiB, 23688 MiB, 9.39 W
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+loaded bw24-repack (81 layers, nextn=1)
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5080 slots in 5 classes, 13.82 GB / 13.82 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-batch-v3-final.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=43.74 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=70 full_accept=5 len_hist=[0, 0, 0, 70] per_slot=[40/70=0.571 14/70=0.200 5/70=0.071] total=59/210=0.281 tok_per_round=1.843
+[moe-cache] residency frozen: 5080 slots, 5080 resident blocks; 1648 complete experts, 60 one-projection fragments, 38 two-projection fragments (136 stranded blocks)
+[moe-cache] frozen MTP residency: 68 blocks, 22 complete experts
+
+[generate]   7 tok in 3.227s = 2.17 tok/s (gen-only; this run's prime 13.261s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 11, 1285]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=3 len_hist=[0, 4] per_slot=[3/4=0.750] total=3/4=0.750 tok_per_round=1.750
+
+[generate_spec K=1] 8 tok in 2.309s = 3.03 tok/s (1.40x vs generate; this run's prime 12.573s)
+  acceptance: 3/4 = 75.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=1 len_hist=[0, 0, 3] per_slot=[3/3=1.000 1/3=0.333] total=4/6=0.667 tok_per_round=2.333
+
+[generate_spec K=2] 8 tok in 2.254s = 3.11 tok/s (1.43x vs generate; this run's prime 12.023s)
+  acceptance: 4/6 = 66.7%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=1 len_hist=[0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333] total=4/9=0.444 tok_per_round=2.333
+
+[generate_spec K=3] 8 tok in 2.417s = 2.90 tok/s (1.34x vs generate; this run's prime 12.837s)
+  acceptance: 4/9 = 44.4%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=0 len_hist=[0, 0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333 0/3=0.000] total=4/12=0.333 tok_per_round=2.333
+
+[generate_spec K=4] 8 tok in 3.164s = 2.21 tok/s (1.02x vs generate; this run's prime 12.557s)
+  acceptance: 4/12 = 33.3%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=0 len_hist=[0, 0, 0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333 0/3=0.000 0/3=0.000] total=4/15=0.267 tok_per_round=2.333
+
+[generate_spec K=5] 8 tok in 3.649s = 1.92 tok/s (0.88x vs generate; this run's prime 12.165s)
+  acceptance: 4/15 = 26.7%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333 0/3=0.000 0/3=0.000 0/3=0.000] total=4/18=0.222 tok_per_round=2.333
+
+[generate_spec K=6] 8 tok in 4.362s = 1.60 tok/s (0.74x vs generate; this run's prime 12.288s)
+  acceptance: 4/18 = 22.2%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333 0/3=0.000 0/3=0.000 0/3=0.000 0/3=0.000] total=4/21=0.190 tok_per_round=2.333
+
+[generate_spec K=7] 8 tok in 4.911s = 1.43 tok/s (0.66x vs generate; this run's prime 12.339s)
+  acceptance: 4/21 = 19.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=3 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 0, 0, 3] per_slot=[2/3=0.667 1/3=0.333 1/3=0.333 0/3=0.000 0/3=0.000 0/3=0.000 0/3=0.000 0/3=0.000] total=4/24=0.167 tok_per_round=2.333
+
+[generate_spec K=8] 8 tok in 5.583s = 1.25 tok/s (0.58x vs generate; this run's prime 12.423s)
+  acceptance: 4/24 = 16.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=290035 bytes=754811928576 errors=0 short_reads=0 fallbacks=0 buffer_waits=261626 ring_full=480
+[bw24-cpu-cache] hits=488717 misses=310639 hit_rate=61.14% read_GB=817.986 resident_GB=21.474
+[bw24-cpu-profile] calls=65303 prepare=6.807942s io=93.708970s insert=0.757456s compute=160.951029s read_projections=310639 read_GB=817.986 batch_calls=1896 batch_tokens=9875 batch_items=38962 batch_unique_experts=27538
