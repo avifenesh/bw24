@@ -44,18 +44,34 @@ Ruled out by receipts (do not revisit without new evidence):
 hidden under compute. That needs all three of: overlap (structure), wider compute (cores),
 fewer bytes (cache + residency).
 
-## Phase 0 — close measurement gaps (offline, no GPU runs)
+## Phase 0 — RESULTS (2026-07-21, all offline: simulation + CPU microbench, no GPU)
 
-- **P0.A per-qtype compute split**: add per-qtype ns counters to the companion profile line.
-  Ranks the next kernel target (Q3_K pair? NVFP4-on-CPU?). Cheap, additive, no ABI bump.
-- **P0.B cache-size curve by simulation**: replay `window4-routes.trace` (with real per-expert
-  byte sizes) through LRU/LFU at 20/24/28/32 GiB. Yields exact io-byte reduction per GiB
-  before committing RAM.
-- **P0.C HBM budget map**: account the ~10 GB non-expert HBM (dense, KV, MTP head) →
-  quantify how many expert blocks kv-fp4 KV compression frees.
-- **P0.D safe RAM ceiling**: swap is 15 GB used on the desktop today; measure real free RAM
-  under the desktop stack before raising the 20 GiB cache. Cap so the desktop stays
-  responsive (hard rule: no uncapped saturation).
+Simulator: `simulate_expert_cache_curve.py` (route trace `window4-routes.trace`, 50 decode
+passes, real per-projection bytes from the plan manifest; calibrates against the live 20 GiB
+anchor 55% / 0.87 GB-fills per token).
+
+- **P0.B host-cache curve is FLAT — RAM lever DEMOTED.** LRU hit 46→55% and miss bytes
+  0.858→0.715 GB/token across 20→36 GiB. The cold tail (~64 GB CPU-side bank) swamps LRU;
+  doubling cache RAM buys −17% io bytes. Host cache stays 20 GiB. (Caveat: 50-pass trace
+  underestimates large-cache steady state somewhat; even 2x the benefit stays weak.)
+- **P0.C residency curve is the strong axis.** Sweeping HBM expert budget 13.97→18 GB:
+  CPU load falls ~6.5%/GB in instances AND ~5%/GB in NVMe miss bytes
+  (215.5→166.8 inst/tok, 0.858→0.711 GB/tok at +4 GB). Donors: kv-fp4 KV
+  (K q8_0 + V q5_1 ≈ 145 KiB/token/80-layers → nvfp4 ≈ −38%; ~1.8 GB at 32k ctx),
+  `BW24_MOE_VRAM_FRAC` 0.90→0.92+ (~+0.5–1 GB), and `enable_lm_head_fp32=True` in the
+  source config — if lm_head sits in HBM at f32 (~2 GB), quantizing it is a third donor
+  (verify on-GPU format at gate time).
+- **P0.A compute attribution** (per-format microbench `BW24_CPU_NATIVE_BENCH`, production
+  4-expert 4096x1536 shape, 8 P-cores, cache-hot, ms/call: Q2_K 1.06, IQ3_S 1.52,
+  Q4_K 1.97, IQ4_XS 0.74, Q8_0 0.79, NVFP4 1.90; weighted by simulated CPU instance mix):
+  **Q2_K 44% (already paired-VNNI), IQ3_S 30%, Q4_K 15%, IQ4_XS 11%.**
+  Phase 4 kernel order: IQ3_S pair-decode port first, then Q4_K.
+- **P0.D RAM ceiling**: 50 GB available, desktop RSS modest (swap 14 GB = cold pages).
+  Moot for cache (stays 20 GiB), relevant only as safety margin.
+
+Revised arithmetic: Phase 1 overlap → ~6.4; +E-cores → wall goes io-bound (~90 ms);
++kv-fp4/residency (−15–20% CPU load on both axes) → ~9.5; +IQ3_S/Q4_K kernels and prepare
+pooling → 10+.
 
 ## Phase 1 — structural overlap (the big lever)
 
