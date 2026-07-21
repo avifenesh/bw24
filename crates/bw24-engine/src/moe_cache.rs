@@ -278,29 +278,34 @@ fn size_class_plan(block_bytes: &[usize], budget_bytes: usize) -> Vec<(usize, us
         .iter()
         .map(|(&bytes, &count)| (bytes as u128 + 8) * count as u128)
         .sum();
-    let fraction = (budget_bytes as f64 / total_bytes as f64).min(1.0);
-    let mut plan: Vec<(usize, usize, f64)> = counts
+    let budget = budget_bytes as u128;
+    let mut plan: Vec<(usize, usize, u128)> = counts
         .iter()
         .map(|(&bytes, &count)| {
-            let exact = count as f64 * fraction;
-            (bytes, exact.floor() as usize, exact.fract())
+            let scaled = count as u128 * budget;
+            (
+                bytes,
+                (scaled / total_bytes).min(count as u128) as usize,
+                scaled % total_bytes,
+            )
         })
         .collect();
-    let mut used: usize = plan
+    let mut used: u128 = plan
         .iter()
-        .map(|(bytes, count, _)| (bytes + 8) * count)
+        .map(|(bytes, count, _)| (*bytes as u128 + 8) * *count as u128)
         .sum();
 
     // Hamilton-style remainder pass keeps class proportions close after flooring. There are only
     // a handful of layout classes, so one additional slot per class covers all rounding loss.
     let mut order: Vec<usize> = (0..plan.len()).collect();
-    order.sort_by(|&a, &b| plan[b].2.total_cmp(&plan[a].2).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| plan[b].2.cmp(&plan[a].2).then(a.cmp(&b)));
     for index in order {
         let (bytes, count, _) = plan[index];
         let available = counts[&bytes];
-        if count < available && used.saturating_add(bytes + 8) <= budget_bytes {
+        let required = bytes as u128 + 8;
+        if count < available && used + required <= budget {
             plan[index].1 += 1;
-            used += bytes + 8;
+            used += required;
         }
     }
     plan.into_iter()
@@ -1401,6 +1406,12 @@ mod vram_fraction_tests {
             size_class_plan(&blocks, budget),
             vec![(100, 2), (200, 1), (400, 1)]
         );
+    }
+
+    #[test]
+    fn size_class_plan_does_not_overflow_on_pathological_sizes() {
+        let plan = size_class_plan(&[usize::MAX, usize::MAX], usize::MAX);
+        assert!(plan.is_empty());
     }
 
 }

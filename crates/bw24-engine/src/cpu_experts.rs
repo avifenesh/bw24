@@ -398,7 +398,11 @@ fn execute(job: CpuExpertJob) -> Result<Vec<f32>, String> {
     CALLS.fetch_add(1, Ordering::Relaxed);
     EXPERTS.fetch_add(experts.len() as u64, Ordering::Relaxed);
     if status != 0 {
-        // SAFETY: the companion ABI always NUL-terminates this fixed-size error buffer.
+        // Defend the Rust side even if a broken companion violates the ABI contract.
+        if let Some(last) = error.last_mut() {
+            *last = 0;
+        }
+        // SAFETY: the fixed-size buffer contains at least the NUL written above.
         let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
         return Err(format!("CPU expert backend failed: {message}"));
     }
