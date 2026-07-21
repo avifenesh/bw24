@@ -51,39 +51,55 @@ uses valid empty safetensors placeholders only for expert-only shards that the o
 Build bw24 and its optional CPU-expert companion, then launch the measured local spill profile:
 
 ```bash
-cargo build --release
-git -C /path/to/llama.cpp checkout bb090d1f1dbf3c29df6778fda123aa352329514e
-cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build \
-  -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF \
-  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build /path/to/llama.cpp/build --target ggml-cpu ggml-base -j
-tools/build_cpu_expert_companion.sh /path/to/llama.cpp
+cargo build --release --bins
+tools/build_cpu_expert_companion.sh
+BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
+  target/release/cpu_native_check
 tools/run_hy3_local_5090.sh \
-  /path/to/hy3-layer103p5-runtime \
+  /path/to/hy3-layer103p5-dual-nvme \
   target/release/libbw24-cpu-experts.so \
   /path/to/expert-mirror/inode-alternates.tsv
 ```
 
-The companion is trusted native code loaded into the bw24 process. Build it from the pinned,
-reviewed checkout above (or an intentionally audited replacement).
+The companion is bw24-owned native ABI v2 code loaded into the bw24 process. It has no llama.cpp,
+ggml, or other inference-runtime dependency; `cpu_native_check` compares every supported packed
+row kernel with bw24's independent Rust dequantization oracle before serving. Because `dlopen`
+executes ELF constructors before the ABI check, `BW24_CPU_EXPERT_LIB` must point to a trusted build.
 
 The mirror map is optional but enables split reads across two byte-identical NVMe copies. Build it
 with `tools/build_dual_nvme_expert_view.py` and `tools/build_expert_mirror_map.py`. The launcher
+must receive the generated dual-NVMe view as its model directory when the map is enabled. Native
+ABI v2 pins source and alternate generations by device, inode, size, and ctime, so pairing the map
+with the persistent source tree fails closed instead of silently reading an unverified mirror. The
+launcher
 uses the correctness-gated non-fused LRU winner and retains 4 GiB of live RAM headroom; startup
-prints the effective host-cache size when the requested 36 GiB does not fit the current desktop
+prints the effective host-cache size when the requested 20 GiB does not fit the current desktop
 stack.
 
-## Local release gate
+## Native ABI v2 local validation
 
-Commit `4641033f0fee83d0cc4fc77bbbffa0f9d3adc8d0` passed the complete RTX 5090 target
-battery with the pinned llama.cpp companion: `kernel-check` reported `ALL GREEN`, `run-gen`
-reported argmax `MATCH`, and `run-spec` reported identical output for K=1 through K=8. The safe
-launcher-equivalent profile admitted a 24.37 GiB host cache on the live desktop and measured 5.92
-tok/s over one warm 64-token window. A separate maximum-allocation probe admitted 29.71 GiB, but
-increased system swap pressure and measured only 5.09 tok/s for plain generation, so it was not
-promoted. These are single runs under different memory regimes, not an N-run board move. Raw logs,
-binary hashes, and the exact environment are under
-`evidence/local-5090-sota-20260719/release-gate-*4641033.log`.
+The 2026-07-21 RTX 5090 target battery used only bw24's native CPU expert implementation. The
+companion SHA-256 was `c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71`;
+`ldd` showed no llama.cpp or ggml library. The packed-row checker passed all 12 supported formats at
+widths 256, 1536, and 4096, plus non-finite input rejection and an independently composed nonzero
+MoE token. `kernel-check` reported `ALL GREEN`, `run-gen` reported argmax `40129 == 40129` and
+`MATCH` after freezing the measured CPU/GPU expert assignment, and `run-spec` produced identical
+output for K=1 through K=8.
+
+The default 128-token residency warmup measured 4.48 tok/s over one N=32 post-freeze greedy window.
+The MTP-capable default plain control measured 3.76 tok/s over N=7 before the K sweep; K=1 through
+K=8 were exact but slower for this short prompt. Both are single observations on the active desktop,
+starting at 55 C, with
+eight CPU workers, a 20 GiB requested/effective host cache, a 4 GiB live-RAM reserve, and the
+generation-pinned dual-NVMe map
+`861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15`. They are not
+board-moving medians. Raw logs and the failed source-tree/map pairing check are retained under
+`evidence/local-5090-native-20260721/`; the concise receipt is `native-v2-validation.md`. The Hy3
+MTP head remains full-vocabulary in this receipt: no `BW24_FRSPEC_TRIM` artifact was supplied.
+
+The earlier 2026-07-19 release receipt used a retired external companion and does not certify native
+ABI v2. Its raw logs remain historical evidence under `evidence/local-5090-sota-20260719/` but its
+throughput is intentionally excluded from current native claims.
 
 Receipt anchors:
 

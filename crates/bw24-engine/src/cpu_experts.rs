@@ -1,17 +1,17 @@
 //! Opt-in native CPU backend for Hy3 routed experts.
 //!
-//! `BW24_CPU_EXPERT_LIB=/path/libbw24-cpu-experts.so` dynamically loads the stable v1 C ABI
-//! implemented by `tools/bw24_cpu_experts.cpp`. Keeping the loader dynamic is deliberate: naked
-//! bw24 builds and CI retain no llama.cpp header, library, OpenMP, or CPU-ISA dependency. The
-//! experimental backend consumes the original host-resident GGUF bytes and returns only one f32
-//! hidden-state contribution to CUDA.
+//! `BW24_CPU_EXPERT_LIB=/path/libbw24-cpu-experts.so` dynamically loads bw24's stable v2 C ABI,
+//! implemented by `tools/bw24_cpu_experts.cpp`. The companion owns its packed-format decoders,
+//! activation quantizer, AVX2/AVX-VNNI dots, cache, and positioned-I/O path; no external inference
+//! runtime is linked or loaded. It consumes original host-resident GGUF bytes and returns one f32
+//! hidden state contribution to CUDA.
 
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::io::AsRawFd as _;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::sync::OnceLock;
 
 use crate::hybrid::MoeWeights;
 use crate::model::{ExpertKeepalive, ExpertSource};
@@ -22,9 +22,9 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CpuProjectionV1 {
+struct CpuProjectionV2 {
     weights: *const u8,
-    ggml_type: i32,
+    qtype: i32,
     in_features: i32,
     out_features: i32,
     row_bytes: usize,
@@ -35,17 +35,17 @@ struct CpuProjectionV1 {
 }
 
 #[repr(C)]
-struct CpuExpertV1 {
-    gate: CpuProjectionV1,
-    up: CpuProjectionV1,
-    down: CpuProjectionV1,
+struct CpuExpertV2 {
+    gate: CpuProjectionV2,
+    up: CpuProjectionV2,
+    down: CpuProjectionV2,
     route_weight: f32,
 }
 
 #[derive(Clone)]
 struct OwnedProjection {
     weights: usize,
-    ggml_type: i32,
+    qtype: i32,
     in_features: i32,
     out_features: i32,
     row_bytes: usize,
@@ -75,7 +75,7 @@ pub(crate) struct CpuExpertJob {
 
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
 type MoeTokenFn = unsafe extern "C" fn(
-    *const CpuExpertV1,
+    *const CpuExpertV2,
     i32,
     *const f32,
     *mut f32,
@@ -87,7 +87,7 @@ type CacheStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64)
 type ProfileStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64);
 
 struct CpuBackend {
-    // Kept open for process lifetime so the function pointer and llama.cpp traits remain valid.
+    // Kept open for process lifetime so the native bw24 function pointers remain valid.
     _handle: usize,
     moe_token: MoeTokenFn,
     cache_stats: CacheStatsFn,
@@ -186,13 +186,13 @@ fn load_backend_from_path(path: &std::ffi::OsStr) -> Result<CpuBackend, String> 
     }
     let result = (|| {
         let version_symbol = load_symbol(handle, b"bw24_cpu_experts_abi_version\0")?;
-        let token_symbol = load_symbol(handle, b"bw24_cpu_moe_token_v1\0")?;
-        let stats_symbol = load_symbol(handle, b"bw24_cpu_expert_cache_stats_v1\0")?;
-        let profile_symbol = load_symbol(handle, b"bw24_cpu_expert_profile_stats_v1\0")?;
-        // SAFETY: the companion library exports these exact v1 C signatures.
+        let token_symbol = load_symbol(handle, b"bw24_cpu_moe_token_v2\0")?;
+        let stats_symbol = load_symbol(handle, b"bw24_cpu_expert_cache_stats_v2\0")?;
+        let profile_symbol = load_symbol(handle, b"bw24_cpu_expert_profile_stats_v2\0")?;
+        // SAFETY: the companion library exports these exact v2 C signatures.
         let version: AbiVersionFn = unsafe { std::mem::transmute(version_symbol) };
         let abi = unsafe { version() };
-        require_abi_v1(abi)?;
+        require_abi_v2(abi)?;
         let moe_token: MoeTokenFn = unsafe { std::mem::transmute(token_symbol) };
         let cache_stats: CacheStatsFn = unsafe { std::mem::transmute(stats_symbol) };
         let profile_stats: ProfileStatsFn = unsafe { std::mem::transmute(profile_symbol) };
@@ -217,12 +217,12 @@ fn load_backend_from_path(path: &std::ffi::OsStr) -> Result<CpuBackend, String> 
     result
 }
 
-fn require_abi_v1(abi: u32) -> Result<(), String> {
-    if abi == 1 {
+fn require_abi_v2(abi: u32) -> Result<(), String> {
+    if abi == 2 {
         Ok(())
     } else {
         Err(format!(
-            "CPU expert ABI {abi} is incompatible; bw24 requires v1"
+            "CPU expert ABI {abi} is incompatible; bw24 requires native v2"
         ))
     }
 }
@@ -240,22 +240,12 @@ fn backend() -> Result<&'static CpuBackend, String> {
     }
 }
 
-fn ggml_type(qtype: i32) -> Result<i32, String> {
+fn native_qtype(qtype: i32) -> Result<i32, String> {
     match qtype {
-        QT_F32 => Ok(0),
-        QT_Q4_0 => Ok(2),
-        QT_Q8_0 => Ok(8),
-        QT_Q2_K => Ok(10),
-        QT_Q3_K => Ok(11),
-        QT_Q4_K => Ok(12),
-        QT_Q5_K => Ok(13),
-        QT_Q6_K => Ok(14),
-        QT_IQ3_S => Ok(21),
-        QT_IQ4_XS => Ok(23),
-        QT_BF16 => Ok(30),
-        QT_NVFP4 => Ok(40),
+        QT_F32 | QT_Q4_0 | QT_Q8_0 | QT_Q2_K | QT_Q3_K | QT_Q4_K | QT_Q5_K | QT_Q6_K | QT_IQ3_S
+        | QT_IQ4_XS | QT_BF16 | QT_NVFP4 => Ok(qtype),
         other => Err(format!(
-            "CPU expert backend does not map bw24 qtype {other}"
+            "native CPU expert backend does not support bw24 qtype {other}"
         )),
     }
 }
@@ -300,7 +290,7 @@ fn projection(exps: &crate::model::HostExps, expert: usize) -> Result<OwnedProje
     };
     Ok(OwnedProjection {
         weights: bytes.as_ptr() as usize,
-        ggml_type: ggml_type(layout.qtype)?,
+        qtype: native_qtype(layout.qtype)?,
         in_features: i32::try_from(exps.in_f)
             .map_err(|_| format!("expert input width {} exceeds i32", exps.in_f))?,
         out_features: i32::try_from(exps.out_f)
@@ -356,10 +346,10 @@ pub(crate) fn prepare_job(
     })
 }
 
-fn ffi_projection(value: &OwnedProjection) -> CpuProjectionV1 {
-    CpuProjectionV1 {
+fn ffi_projection(value: &OwnedProjection) -> CpuProjectionV2 {
+    CpuProjectionV2 {
         weights: value.weights as *const u8,
-        ggml_type: value.ggml_type,
+        qtype: value.qtype,
         in_features: value.in_features,
         out_features: value.out_features,
         row_bytes: value.row_bytes,
@@ -370,8 +360,8 @@ fn ffi_projection(value: &OwnedProjection) -> CpuProjectionV1 {
     }
 }
 
-fn ffi_expert(expert: &OwnedExpert) -> CpuExpertV1 {
-    CpuExpertV1 {
+fn ffi_expert(expert: &OwnedExpert) -> CpuExpertV2 {
+    CpuExpertV2 {
         gate: ffi_projection(&expert.gate),
         up: ffi_projection(&expert.up),
         down: ffi_projection(&expert.down),
@@ -389,7 +379,7 @@ fn execute(job: CpuExpertJob) -> Result<Vec<f32>, String> {
     let start = std::time::Instant::now();
     // SAFETY: every descriptor points into immutable model-owned bytes retained until the caller
     // joins this job; all input/output/error spans have the dimensions encoded in the descriptors.
-    // SAFETY: every descriptor and span satisfies the stable v1 ABI.
+    // SAFETY: every descriptor and span satisfies the stable native v2 ABI.
     let status = unsafe {
         (backend.moe_token)(
             experts.as_ptr(),
@@ -525,13 +515,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_supported_ggml_types() {
-        assert_eq!(ggml_type(QT_Q2_K).unwrap(), 10);
-        assert_eq!(ggml_type(QT_Q3_K).unwrap(), 11);
-        assert_eq!(ggml_type(QT_Q4_K).unwrap(), 12);
-        assert_eq!(ggml_type(QT_IQ3_S).unwrap(), 21);
-        assert_eq!(ggml_type(QT_IQ4_XS).unwrap(), 23);
-        assert_eq!(ggml_type(QT_Q8_0).unwrap(), 8);
+    fn accepts_supported_native_qtypes_without_translation() {
+        for qtype in [QT_Q2_K, QT_Q3_K, QT_Q4_K, QT_IQ3_S, QT_IQ4_XS, QT_Q8_0] {
+            assert_eq!(native_qtype(qtype).unwrap(), qtype);
+        }
     }
 
     #[test]
@@ -541,9 +528,9 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("missing symbol bw24_cpu_experts_abi_version"));
-        assert!(require_abi_v1(0).is_err());
-        assert!(require_abi_v1(2).is_err());
-        assert!(require_abi_v1(1).is_ok());
+        assert!(require_abi_v2(0).is_err());
+        assert!(require_abi_v2(1).is_err());
+        assert!(require_abi_v2(2).is_ok());
     }
 
     #[test]
@@ -558,8 +545,8 @@ mod tests {
 
     #[test]
     fn dropped_ticket_joins_outstanding_worker() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         let (release, start) = std::sync::mpsc::sync_channel(0);

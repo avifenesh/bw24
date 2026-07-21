@@ -31,6 +31,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build and verify bw24-native CPU expert backend
+        run: |
+          tools/build_cpu_expert_companion.sh
+          BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
+            cargo run --release -p bw24-engine --bin cpu_native_check
+          cargo test -p bw24-engine cpu_experts --lib
+
       - name: Build (all bins, release — compiles every CUDA fatbin)
         run: cargo build --release --bins
         env:

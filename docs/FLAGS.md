@@ -29,7 +29,7 @@ HANDOVER.md sections from that date.
 
 | flag | default | what it does |
 |---|---|---|
-| `BW24_SPEC_K` | 3 | draft depth K. Per-(model,content): 27B K=3, 9B K=2–3, 35B K=2 (2026-07-05/06 sweeps) |
+| `BW24_SPEC_K` | 3 | draft depth K. Per-(model,content): 27B K=3, 9B K=2–3, 35B K=2 (2026-07-05/06 sweeps). `run_hy3_local_5090.sh` additionally accepts `all` to omit the override and run the mandatory K=1..8 battery in one model load |
 | `BW24_SPEC_HOST_EMBD` | off | `1` keeps the token-embedding table in host memory for the Hy3 spill profile, reducing HBM pressure at the cost of a host-row transfer |
 | `BW24_SPEC_PMIN` | 0.0 | p-min confidence gate — stop the draft chain when head confidence drops below it (0.15–0.3 typical) |
 | `BW24_SPEC_PMIN0` | off | `1` lets p-min gate slot 0 too (zero-draft rounds). Pays below ~75% base acceptance, hurts above ~90% (2026-07-08, 35B +13–23 tok/s) |
@@ -82,7 +82,7 @@ HANDOVER.md sections from that date.
 | `BW24_FA_VEC_MIN` | 96 (per-model) | FA vec-lane t_kv floor override (gemma model init lowers it — v4 wins at every depth there) |
 | `BW24_FA_SPLIT` | ctx-adaptive | force fixed FA split-keys. EXACTNESS: split count changes combine FP order — run-spec must re-gate (32 broke 9B self-consistency, 2026-07-03/07) |
 | `BW24_PRIME_CHUNK` | 4096 | chunked-prime chunk size in tokens (`0` = monolithic). Long-ctx OOM/transient control |
-| `BW24_MOE_VRAM_FRAC` | 0.85 | SLRU expert-cache fraction of free VRAM (sweep 2026-07-06: 0.40=25.0 → 0.85=28.5 tok/s). Lower it on rigs co-running other GPU work |
+| `BW24_MOE_VRAM_FRAC` | 0.85 | SLRU expert-cache fraction of free VRAM (sweep 2026-07-06: 0.40=25.0 → 0.85=28.5 tok/s). The measured Hy3 5090 launcher sets 0.90 for both soft and hard fractions; lower it on rigs co-running other GPU work |
 | `BW24_MOE_HARD_VRAM_FRAC` | 0.80 | machine-specific hard ceiling for the SLRU allocation (`0.10..=0.95`). Raise only after a local OOM-gated sweep. Hy3 on the 24GB RTX 5090 validated `0.85` at 21.21GiB peak framebuffer use: 2,006 slots, exact argmax/tokens, and 0.53 -> 1.03 tok/s on the warm repeat together with worker depth 16 |
 | `BW24_MOE_SLOTS` | auto | force an exact SLRU slot count (spill experiments used 64/512) |
 | `BW24_MOE_RESIDENT` | on | `0` forces the SLRU path even when experts fit VRAM (fits-VRAM resident = 169.55 vs 28.5 tok/s on the local 35B) |
@@ -97,16 +97,16 @@ HANDOVER.md sections from that date.
 | `BW24_SPILL_IO` | `mmap` | expert storage backend: `mmap` (default and fallback), `pread` (blocking positioned-read oracle), `worker` (bounded CPU positioned-read prefetch), or `direct` (the same worker pipeline with O_DIRECT for 4 KiB-aligned expert extents). Invalid values, unaligned direct extents, and backend/read failures degrade to mmap and increment fallback/error counters |
 | `BW24_SPILL_PREAD_DEPTH` | 2 | pinned-buffer count and worker-thread count for `worker` (`1..=64`; also sizes the blocking `pread` pool). Hy3 on the local RTX 5090 measured depth 16 as the knee: it matched depth 32 at 1.18 tok/s after a reverse-order repeat, used 107MB rather than 214MB of pinned RAM, and removed depth-8 ring saturation |
 | `BW24_SPILL_WORKER_EXPERT_WINDOW` | `(pread_depth-1)/3`, minimum 1 | complete experts kept in the rolling positioned-read window; each expert occupies three projection buffers |
-| `BW24_CPU_EXPERT_LIB` | off | path to the optional Hy3-only llama.cpp CPU-expert companion library. Complete frozen-cache hits stay on CUDA; experts missing any projection run wholly on CPU |
-| `BW24_CPU_EXPERT_THREADS` | 8 | OpenMP compute threads for one-token CPU expert work (`1..=256`) |
+| `BW24_CPU_EXPERT_LIB` | off | path to a trusted build of bw24's optional Hy3-only native CPU-expert companion (ABI v2; no external inference runtime). `dlopen` executes constructors before ABI validation. Complete frozen-cache hits stay on CUDA; experts missing any projection run wholly on CPU |
+| `BW24_CPU_EXPERT_THREADS` | 8 | OpenMP compute threads for one-token CPU expert work (`1..=256`); the two-pass means for 8 and 12 threads differed by 0.7%, but the winner reversed by about 8% between individual reverse-order observations (100 timed calls each), so the lower-contention value remains the local default |
 | `BW24_CPU_EXPERT_IO_THREADS` | compute thread count | positioned-read workers used by the CPU expert backend (`1..=256`) |
-| `BW24_CPU_EXPERT_CACHE_GB` | 16 | requested normal-RAM cache ceiling for CPU-routed expert projection bytes; the local Hy3 5090 lane may request 36 GiB only when the live-stack headroom gate below permits it |
+| `BW24_CPU_EXPERT_CACHE_GB` | 16 | requested normal-RAM cache ceiling for CPU-routed expert projection bytes; the measured Hy3 5090 launcher requests 20 GiB and still applies the live-stack headroom gate below |
 | `BW24_CPU_EXPERT_RESERVE_GB` | 4 | live-stack RAM headroom retained by capping `BW24_CPU_EXPERT_CACHE_GB` to `MemAvailable - reserve` when the CPU companion initializes and prints the effective budget |
 | CPU expert cache eviction | LRU | fixed winners-only policy; experimental LFU and layer-aware least-stale arms did not beat the measured LRU path and were removed |
 | `BW24_CPU_EXPERT_IO` | `buffered` | CPU expert reads: `buffered` or aligned `direct` positioned I/O |
 | `BW24_CPU_EXPERT_MIRROR_MAP` | off | tab-separated inode/alternate-path map for splitting large direct reads across byte-identical expert mirrors on two NVMe devices |
 | `BW24_CPU_EXPERT_FREEZE_CACHE` | off | `1` freezes HBM expert residency so CPU/GPU backend assignment cannot drift after warmup; required for exact repeatable Hy3 hybrid serving |
-| `BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS` | off | discarded tokens used to profile/fill HBM before freezing; `BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K` selects speculative warmup depth in run-spec |
+| `BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS` | off | discarded tokens used to profile/fill HBM before freezing; the Hy3 5090 launcher uses 128 after one same-session, identical-token N=32 pair measured 4.52 tok/s versus 4.46 at 8 tokens (single pair, not a median), and `BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K` selects speculative warmup depth in run-spec |
 | `BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT` | off | `1` lets CPU-routed warmup misses vote for HBM admission before the residency set freezes; current-token execution remains on CPU |
 | `BW24_CPU_AFFINITY` | `0-7` in `run_hy3_local_5090.sh` | CPU list used by the Hy3 launcher for `taskset` and `GOMP_CPU_AFFINITY`; wrapper-only machine topology setting |
 | `BW24_CPU_EXPERT_BATCHED_PRIME` | off | rollback seam: `1` restores batched prompt replay after Hy3 CPU/GPU expert residency freezes; the local spill path otherwise replays tokenwise to avoid transiently rereading the missing expert bank |

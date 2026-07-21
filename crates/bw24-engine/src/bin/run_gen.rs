@@ -175,45 +175,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(16);
         let max_ctx = prompt.len() + n_new.max(64) + 8;
-        let mut vcache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
-        let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
-        let n_vocab = model.output.out_features();
-        let prefill_last = &prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab];
-        let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
-        let mut dec = Vec::new();
-        for &t in &prompt {
-            dec = model.decode_step(&e, t, &mut cache)?;
-        }
-        let (ap, ad) = (argmax(prefill_last), argmax(&dec));
-        let md = prefill_last
-            .iter()
-            .zip(&dec)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        println!(
-            "verify-prefill argmax={ap}  decode argmax={ad}  logit maxdiff={md:.3e}  {}",
-            if ap == ad { "MATCH" } else { "MISMATCH" }
-        );
 
         // A heterogeneous CPU/GPU expert split needs one immutable backend assignment for exact
         // repeatability. Optionally learn a decode-hot assignment from discarded tokens, freeze it,
-        // then rebuild the prompt KV/logits under that fixed assignment before any measured output.
+        // then run both gate paths under that fixed assignment before any measured output. Skip the
+        // non-authoritative pre-freeze gate so warmup is the only input to residency selection.
         let freeze_warmup_tokens = std::env::var("BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0);
-        if freeze_warmup_tokens > 0 {
+        let gate_label = if freeze_warmup_tokens > 0 {
             println!(
                 "[moe-cache] warming {freeze_warmup_tokens} discarded decode tokens before fixed residency"
             );
             let _ = model.generate(&e, &prompt, freeze_warmup_tokens + 1)?;
             e.stream().synchronize()?;
             model.freeze_cpu_expert_residency(&e)?;
-            cache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
-            dec.clear();
-            for &token in &prompt {
-                dec = model.decode_step(&e, token, &mut cache)?;
-            }
+            "post-freeze verify-prefill"
+        } else {
+            "verify-prefill"
+        };
+
+        // Scope the batched reference cache so only one max-context GPU KV allocation is live at
+        // a time. The serving cache below is the one retained for measured generation.
+        let n_vocab = model.output.out_features();
+        let prefill_last = {
+            let mut vcache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
+            let prefill = model.decode_step_t(&e, &prompt, 0, &mut vcache)?;
+            prefill[(prompt.len() - 1) * n_vocab..prompt.len() * n_vocab].to_vec()
+        };
+        let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
+        let mut dec = Vec::new();
+        for &token in &prompt {
+            dec = model.decode_step(&e, token, &mut cache)?;
+        }
+        let (ap, ad) = (argmax(&prefill_last), argmax(&dec));
+        let md = prefill_last
+            .iter()
+            .zip(&dec)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let serving_gate_match = ap == ad;
+        println!(
+            "{gate_label} argmax={ap}  decode argmax={ad}  logit maxdiff={md:.3e}  {}",
+            if serving_gate_match { "MATCH" } else { "MISMATCH" }
+        );
+        if !serving_gate_match {
+            return Err("prefill/decode argmax gate failed for serving expert assignment".into());
         }
 
         // --- TEXT path: greedy-generate BW24_NGEN tokens on the (already primed) decode cache

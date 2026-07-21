@@ -44,6 +44,30 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def generation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_ctime_ns // 1_000_000_000,
+        stat.st_ctime_ns % 1_000_000_000,
+    )
+
+
+def format_map_row(
+    source: tuple[int, int, int, int, int],
+    alternate: tuple[int, int, int, int, int],
+    path: Path,
+) -> str:
+    if "\t" in str(path) or "\n" in str(path):
+        raise ValueError(f"mirror path cannot contain tab or newline: {path}")
+    return (
+        f"{source[0]}\t{source[1]}\t{source[2]}\t{source[3]}\t{source[4]}\t"
+        f"{alternate[0]}\t{alternate[1]}\t{alternate[2]}\t"
+        f"{alternate[3]}\t{alternate[4]}\t{path}\n"
+    )
+
+
 def copy_verified(source: Path, destination: Path) -> str:
     if destination.exists():
         if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
@@ -87,7 +111,10 @@ def main() -> int:
 
     mirror.mkdir(parents=True, exist_ok=True)
     (mirror / "experts").mkdir(exist_ok=True)
-    map_rows: dict[tuple[int, int], Path] = {}
+    map_rows: dict[
+        tuple[int, int],
+        tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int], Path],
+    ] = {}
     copied_hashes: dict[str, str] = {}
     hardlinked = 0
     copied = 0
@@ -95,7 +122,10 @@ def main() -> int:
 
     for index, name in enumerate(files, 1):
         view_path = view / name
-        source_path = contained_path(source_runtime, name)
+        # Relocated HF artifacts intentionally use expert symlinks into the immutable blob cache.
+        # `payload_name()` already rejects absolute paths and parent traversal; do not resolve this
+        # read-only source path back under the runtime directory.
+        source_path = source_runtime / name
         destination = contained_path(mirror, name)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not view_path.exists() or not source_path.is_file():
@@ -132,24 +162,22 @@ def main() -> int:
         if alternate_stat.st_dev == view_stat.st_dev:
             raise OSError(f"alternate for {name} is not on the other filesystem")
         key = (view_stat.st_dev, view_stat.st_ino)
-        prior = map_rows.setdefault(key, alternate.resolve())
-        if prior != alternate.resolve():
+        row = (generation(view_stat), generation(alternate_stat), alternate.resolve())
+        prior = map_rows.setdefault(key, row)
+        if prior[2] != row[2] or prior[0] != row[0] or prior[1] != row[1]:
             raise ValueError(f"conflicting alternate paths for inode {key}")
         total_bytes += view_stat.st_size
         if index % 20 == 0 or index == len(files):
             print(f"prepared {index}/{len(files)} mirrored expert files", flush=True)
 
     map_path = mirror / "inode-alternates.tsv"
-    for path in map_rows.values():
-        if "\t" in str(path) or "\n" in str(path):
-            raise ValueError(f"mirror path cannot contain tab or newline: {path}")
     map_text = "".join(
-        f"{device}\t{inode}\t{path}\n"
-        for (device, inode), path in sorted(map_rows.items())
+        format_map_row(source, alternate, path)
+        for _, (source, alternate, path) in sorted(map_rows.items())
     )
     map_path.write_text(map_text)
     receipt = {
-        "format": "bw24-expert-mirror-map-v1",
+        "format": "bw24-expert-mirror-map-v2",
         "dual_nvme_view": str(view),
         "mirror_root": str(mirror),
         "manifest_sha256": expected_manifest,

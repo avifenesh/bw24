@@ -48,6 +48,17 @@ class NvmeBuilderPathSafetyTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         module.contained_path(root, "experts/../../outside")
 
+    def test_mirror_map_v2_pins_both_file_generations(self) -> None:
+        module = load_tool("build_expert_mirror_map")
+        source = (11, 22, 33, 44, 55)
+        alternate = (66, 77, 33, 88, 99)
+        row = module.format_map_row(source, alternate, Path("/mirror/expert.bin"))
+        self.assertEqual(
+            row,
+            "11\t22\t33\t44\t55\t66\t77\t33\t88\t99\t/mirror/expert.bin\n",
+        )
+        self.assertEqual(len(row.rstrip("\n").split("\t")), 11)
+
 
 if __name__ == "__main__":
     unittest.main()

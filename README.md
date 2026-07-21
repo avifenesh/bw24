@@ -9,7 +9,7 @@
 
 From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 5090 Laptop (Blackwell sm_120a, 24 GB). No frameworks, no ggml — every kernel written and tuned against measured hardware limits, with llama.cpp as the benchmark to beat on the same rig.
 
-**Current standing: four model families run above llama.cpp on this box — plain decode and speculative decode both.** Every number below is a same-session, same-prompt, interleaved measurement against llama.cpp's best config; exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
+**Current standing: four model families run above llama.cpp on this box — plain decode and speculative decode both.** The generated performance boards use same-session, same-prompt, interleaved measurements against llama.cpp's best config. Bring-up observations such as Hy3 are labeled separately with their own N and thermal regime. Exactness is gated (argmax match + speculative self-consistency) on every kernel change, so speed never buys different outputs.
 
 ## Model support
 
@@ -36,36 +36,51 @@ Tuned paths are the defaults — no flags needed. Flags exist only for runtime p
 Hy3's expert bank exceeds both VRAM and ordinary host-RAM budgets. bw24 freezes a profiled HBM
 resident set, keeps a bounded LRU projection cache in normal RAM, reads misses with positioned
 direct I/O, and can split each large read across byte-identical copies on two NVMe devices. The
-core engine still has no ggml dependency; this optional Hy3 path loads a small CPU-expert companion
-built against llama.cpp's CPU shared libraries. The tested dependency is commit
-`bb090d1f1dbf3c29df6778fda123aa352329514e`:
+optional CPU-expert companion is also bw24 code: it implements Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
+Q6_K, IQ3_S, IQ4_XS, NVFP4, Q4_0, BF16, and F32 row dots with a bw24 Q8/16 activation format and
+AVX2/AVX-VNNI kernels. It does not compile, link, or load llama.cpp, ggml, or another inference
+runtime.
 
 ```bash
-git -C /path/to/llama.cpp checkout bb090d1f1dbf3c29df6778fda123aa352329514e
-cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build \
-  -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF \
-  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build /path/to/llama.cpp/build --target ggml-cpu ggml-base -j
-tools/build_cpu_expert_companion.sh /path/to/llama.cpp
+tools/build_cpu_expert_companion.sh
+BW24_CPU_EXPERT_LIB=target/release/libbw24-cpu-experts.so \
+  cargo run -p bw24-engine --bin cpu_native_check
 tools/run_hy3_local_5090.sh \
-  /path/to/hy3-layer103p5-runtime \
+  /path/to/hy3-layer103p5-dual-nvme \
   target/release/libbw24-cpu-experts.so \
   /path/to/expert-mirror/inode-alternates.tsv
 ```
 
-`BW24_CPU_EXPERT_LIB` loads native code into the bw24 process; build it from a checkout you trust.
+The companion ABI is versioned and fails closed: the engine requires native ABI v2, so a stale
+legacy v1 library cannot be loaded accidentally. `cpu_native_check` compares every supported
+packed row dot against bw24's independent Rust dequantization oracle. `dlopen` executes library
+constructors before the ABI check, so `BW24_CPU_EXPERT_LIB` must always point to a trusted build.
 
 The mirror argument is optional. `tools/build_dual_nvme_expert_view.py` and
 `tools/build_expert_mirror_map.py` create the verified striped view and alternate-path map. The run
-profile requests a 36 GiB CPU cache, retains 4 GiB of live `MemAvailable` headroom, uses eight
-P-cores, and prints the effective cache cap before warmup; it reduces the cache instead of
-exhausting RAM when the desktop stack is too large.
+must use that exact dual-NVMe view as `MODEL_DIR` when the map is enabled: ABI v2 pins both sides by
+device, inode, size, and ctime and rejects a map paired with the persistent source tree. The run
+profile requests a 20 GiB CPU cache, retains 4 GiB of live `MemAvailable` headroom, uses eight
+P-cores, profiles residency with 128 discarded tokens, and prints the effective cache cap before
+warmup; it reduces the cache instead of
+exhausting RAM when the desktop stack is too large. In the controlled native v2 Q2_K sweep, the
+two-pass means for 8 and 12 threads differed by 0.7%, while the winner reversed by about 8% between
+the individual passes; eight remains the lower-contention default while broader mixed-format
+end-to-end tuning continues. Each point used 10 warmups and 100 timed calls on the active-desktop
+powersave regime (55 C start); raw log:
+`research/per-expert-quant/evidence/local-5090-native-20260721/cpu-native-v2k-q2k-thread-sweep.log`.
 
-The strongest completed target-rig N=64 run produced 7.54 tok/s plain and 7.60 tok/s at MTP K=1,
-with K=1 through K=8 self-consistency passing. This is a single run whose thermal regime was not
-captured independently, so it is bring-up evidence rather than a generated board row. Sustained
-10 tok/s remains the next target. Raw log:
-`research/per-expert-quant/evidence/local-5090-sota-20260719/hy3-mtp-k1to8-postcleanup-maxprofile-ngen64-run1.log`.
+Earlier Hy3 throughput measurements used the retired external CPU backend and are not performance
+claims for this implementation. Native ABI v2 results are published only with their dependency,
+packed-row oracle, exactness, and raw-run evidence. On the final 2026-07-21 target-rig gate, the
+default 128-token residency warmup measured 4.48 tok/s over one N=32 post-freeze `run-gen` window;
+the MTP-capable default `run-spec` plain control measured 3.76 tok/s over N=7 before its K sweep.
+These are single observations, not board-moving medians. `kernel-check`
+was all green, the post-freeze serving assignment passed prefill/decode argmax, and K=1 through K=8
+were self-consistent. Raw logs and
+the exact thermal/memory regime are under
+`research/per-expert-quant/evidence/local-5090-native-20260721/`. Sustained 10 tok/s remains the
+target.
 
 ## Performance — Qwen (NVFP4 / IQ4_XS)
 
@@ -146,7 +161,7 @@ pairs, N=2 each side.
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
 - Gemma 31B depth cells (plain 0.96x, spec 0.87x) and E4B are the open tuning front; 26B is done and 31B short spec is above (1.09x).
-- Hy3 spill reached 7.60 tok/s at K=1 in the strongest historical N=64 bring-up run, below the 10 tok/s target. The pinned release gate on a busy 60 GiB desktop measured 5.92 tok/s with the safe 24.4 GiB effective host cache; forcing a 29.7 GiB cache increased swap pressure and fell to 5.09 tok/s. Prompt replay remains much slower than token generation, so the launcher keeps live-RAM headroom instead of treating maximum allocation as maximum throughput.
+- Hy3 native spill is correctness-gated at 4.48 tok/s in one N=32 post-freeze default-profile window and is still being tuned toward 10 tok/s. Results from the retired external CPU backend are intentionally excluded from native performance claims. Prompt replay remains much slower than token generation, so the launcher keeps live-RAM headroom instead of treating maximum allocation as maximum throughput.
 - Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception documented below.
 
 ## What's inside
@@ -178,7 +193,7 @@ Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-g
 
 - NVIDIA Blackwell consumer GPU (sm_120a); primary target RTX 5090 Laptop.
 - CUDA 13.1 (`BW24_NVCC` overrides the nvcc path), Rust edition 2024, cudarc 0.19.
-- A model: GGUF or HF safetensors directory (pass either path). The optional Hy3 CPU-expert path also needs a CPU-only shared-library build of llama.cpp.
+- A model: GGUF or HF safetensors directory (pass either path). The optional Hy3 CPU-expert path additionally needs a C++17 compiler with OpenMP to build bw24's native companion.
 
 ## Limitations
 
