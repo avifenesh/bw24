@@ -1,0 +1,146 @@
+date=2026-07-21T12:57:03+03:00
+background=0-7 cpu_expert=8-23 threads=16
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.36 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000416s io=0.000007s insert=0.000008s compute=0.058500s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=1 iterations=500 ms/token=0.085423 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.35 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000379s io=0.000007s insert=0.000008s compute=0.042621s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=1 iterations=500 ms/token=0.083910 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.37 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000411s io=0.000007s insert=0.000008s compute=0.058684s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=1 iterations=500 ms/token=0.094375 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.37 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000574s io=0.000007s insert=0.000009s compute=0.064914s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=2 iterations=500 ms/token=0.128168 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.38 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000563s io=0.000007s insert=0.000009s compute=0.063274s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=2 iterations=500 ms/token=0.125082 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.37 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000622s io=0.000008s insert=0.000009s compute=0.070673s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=2 iterations=500 ms/token=0.124524 hash=32c6c3589518bcdd first=-9.52626228 last=-3.61297894
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.36 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000939s io=0.000007s insert=0.000011s compute=0.095550s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=3 iterations=500 ms/token=0.173468 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.42 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000969s io=0.000007s insert=0.000010s compute=0.116044s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=3 iterations=500 ms/token=0.230088 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.41 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.000996s io=0.000007s insert=0.000011s compute=0.096258s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=3 iterations=500 ms/token=0.174469 hash=16a2330fdc987e99 first=-3.10080934 last=-0.779625416
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.40 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001238s io=0.000007s insert=0.000012s compute=0.179017s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.309878 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.39 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001470s io=0.000008s insert=0.000021s compute=0.435363s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.860611 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.33 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001378s io=0.000008s insert=0.000017s compute=0.317195s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.631986 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.38 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001599s io=0.000008s insert=0.000012s compute=0.163276s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=5 iterations=500 ms/token=0.324507 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.35 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001633s io=0.000007s insert=0.000013s compute=0.186198s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=5 iterations=500 ms/token=0.320052 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.35 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001596s io=0.000007s insert=0.000013s compute=0.172435s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=5 iterations=500 ms/token=0.331878 hash=68098c1ea908a0f8 first=-0.854902625 last=-1.22638726
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.35 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001844s io=0.000008s insert=0.000018s compute=0.233325s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=6 iterations=500 ms/token=0.453762 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.44 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001859s io=0.000008s insert=0.000016s compute=0.202698s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=6 iterations=500 ms/token=0.396082 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.41 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001905s io=0.000007s insert=0.000014s compute=0.174039s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=6 iterations=500 ms/token=0.345618 hash=89beae2dd4fa7059 first=-2.46957779 last=-0.990819454
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.40 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002400s io=0.000009s insert=0.000020s compute=0.231887s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=7 iterations=500 ms/token=0.445501 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.41 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002174s io=0.000007s insert=0.000021s compute=0.218003s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=7 iterations=500 ms/token=0.430221 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.38 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002206s io=0.000010s insert=0.000027s compute=0.214984s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=7 iterations=500 ms/token=0.426847 hash=dfaa309a7c7d10bb first=-0.345724106 last=-1.01690602
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.40 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002353s io=0.000007s insert=0.000029s compute=0.295434s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=8 iterations=500 ms/token=0.571031 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.36 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002439s io=0.000007s insert=0.000032s compute=0.277530s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=8 iterations=500 ms/token=0.548344 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.34 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.002509s io=0.000012s insert=0.000025s compute=0.274603s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=8 iterations=500 ms/token=0.534546 hash=1f375970e8cbbba8 first=1.34768522 last=-0.225928888

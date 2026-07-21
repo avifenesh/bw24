@@ -1,0 +1,9 @@
+2026-07-21T14:31:29+03:00
+4641033f0fee83d0cc4fc77bbbffa0f9d3adc8d0
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 24463 MiB, 296 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        26Gi        30Gi        17Gi        22Gi        34Gi
+Swap:           31Gi        11Gi        20Gi
+NAME       TYPE SIZE USED PRIO
+/swap2.img file  24G 5.4G   -1
+/swap.img  file   8G 6.4G   -1

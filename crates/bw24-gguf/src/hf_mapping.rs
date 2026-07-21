@@ -361,10 +361,54 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
                     if let Some(e) = e_part.strip_suffix(".weight") {
                         if let Ok(eid) = e.parse::<u32>() {
                             if let Ok(ilid) = il.parse::<u32>() {
-                                return Some(HfTarget::Plain(hf_expert_name(ilid, eid, proj, &cfg.arch)));
+                                // Qwen stores appended MTP blocks under a separate `mtp.layers`
+                                // namespace. Hy3 appends its MTP block to `model.layers` instead.
+                                let n_trunk = cfg.n_layer - cfg.nextn_predict_layers;
+                                if cfg.nextn_predict_layers > 0
+                                    && ilid >= n_trunk
+                                    && matches!(cfg.arch, Arch::Qwen35 | Arch::Qwen35Moe)
+                                {
+                                    let mtp_il = ilid - n_trunk;
+                                    let projection = match proj {
+                                        "gate" => "gate_proj",
+                                        "up" => "up_proj",
+                                        "down" => "down_proj",
+                                        _ => unreachable!(),
+                                    };
+                                    return Some(HfTarget::Plain(format!(
+                                        "mtp.layers.{mtp_il}.mlp.experts.{eid}.{projection}.weight"
+                                    )));
+                                }
+                                return Some(HfTarget::Plain(hf_expert_name(
+                                    ilid, eid, proj, &cfg.arch,
+                                )));
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // Hy3 appends its MTP block as model.layers.{n_trunk}, in the same namespace and tensor
+    // layout as the trunk. Only the four glue tensors need special ggml names; ordinary attention,
+    // FFN, router, shared-expert, and per-expert names continue through the standard Hy3 maps.
+    if cfg.arch.is_hy3() && cfg.nextn_predict_layers > 0 {
+        let n_trunk = cfg.n_layer - cfg.nextn_predict_layers;
+        if let Some((il, suffix)) = ggml
+            .strip_prefix("blk.")
+            .and_then(|rest| rest.split_once('.'))
+        {
+            if il.parse::<u32>().ok().is_some_and(|il| il >= n_trunk) {
+                let hf_suffix = match suffix {
+                    "nextn.enorm.weight" => Some("enorm.weight"),
+                    "nextn.hnorm.weight" => Some("hnorm.weight"),
+                    "nextn.eh_proj.weight" => Some("eh_proj.weight"),
+                    "nextn.shared_head_norm.weight" => Some("final_layernorm.weight"),
+                    _ => None,
+                };
+                if let Some(hf_suffix) = hf_suffix {
+                    return Some(HfTarget::Plain(format!("model.layers.{il}.{hf_suffix}")));
                 }
             }
         }
@@ -436,24 +480,25 @@ fn resolve_mtp_block(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
             k => HfTarget::Transform { hf: hf.into(), kind: k },
         });
     }
-    // Full transformer block tensors under mtp.layers.{k}.*
-    let (hf_suffix, plus_one): (&str, bool) = match suffix {
-        "attn_norm.weight" => ("input_layernorm.weight", true),
-        "post_attention_norm.weight" | "ffn_norm.weight" => ("post_attention_layernorm.weight", true),
-        "attn_q_norm.weight" => ("self_attn.q_norm.weight", true),
-        "attn_k_norm.weight" => ("self_attn.k_norm.weight", true),
-        "attn_q.weight" => ("self_attn.q_proj.weight", false),
-        "attn_k.weight" => ("self_attn.k_proj.weight", false),
-        "attn_v.weight" => ("self_attn.v_proj.weight", false),
-        "attn_output.weight" => ("self_attn.o_proj.weight", false),
-        "ffn_gate.weight" => ("mlp.gate_proj.weight", false),
-        "ffn_up.weight" => ("mlp.up_proj.weight", false),
-        "ffn_down.weight" => ("mlp.down_proj.weight", false),
-        _ => return None, // nextn.shared_head.weight etc: absent -> head reuses lm_head
+    // Full transformer block tensors under mtp.layers.{k}.*. Reuse the ordinary Qwen layer map so
+    // the MoE router and shared-expert tensors cannot silently remain in model.layers.{n_trunk}.
+    let hf_suffix = if suffix == "post_attention_norm.weight" {
+        "post_attention_layernorm.weight".to_string()
+    } else {
+        let ordinary = ggml_to_hf(ggml, &cfg.arch)?;
+        ordinary
+            .strip_prefix(&format!("model.layers.{il}."))?
+            .to_string()
     };
     let hf = format!("mtp.layers.{mtp_il}.{hf_suffix}");
-    Some(if plus_one { HfTarget::Transform { hf, kind: TransformKind::NormPlusOne } }
-         else { HfTarget::Plain(hf) })
+    Some(if is_plusone_norm(ggml) {
+        HfTarget::Transform {
+            hf,
+            kind: TransformKind::NormPlusOne,
+        }
+    } else {
+        HfTarget::Plain(hf)
+    })
 }
 
 /// True for the ggml norm names that get qwen35 `+1` (all norms except ssm_norm/linear_attn.norm).
@@ -583,6 +628,96 @@ mod tests {
             ggml_to_hf("blk.1.ffn_down_exps.weight", &a).unwrap(),
             "model.layers.1.mlp.switch_mlp.down_proj.weight"
         );
+    }
+
+    #[test]
+    fn hy3_appended_mtp_names_use_layer_namespace() {
+        let json = r#"{
+            "model_type":"hy_v3",
+            "num_hidden_layers":80,
+            "num_nextn_predict_layers":1,
+            "hidden_size":256,
+            "num_attention_heads":8,
+            "num_key_value_heads":2,
+            "intermediate_size":512,
+            "vocab_size":1024,
+            "max_position_embeddings":2048
+        }"#;
+        let cfg = ModelConfig::from_hf(&crate::config::HfConfig::parse(json));
+        assert_eq!(cfg.n_layer, 81);
+        for (ggml, expected) in [
+            ("blk.80.nextn.enorm.weight", "model.layers.80.enorm.weight"),
+            ("blk.80.nextn.hnorm.weight", "model.layers.80.hnorm.weight"),
+            (
+                "blk.80.nextn.eh_proj.weight",
+                "model.layers.80.eh_proj.weight",
+            ),
+            (
+                "blk.80.nextn.shared_head_norm.weight",
+                "model.layers.80.final_layernorm.weight",
+            ),
+            (
+                "blk.80.ffn_gate_exps.7.weight",
+                "model.layers.80.mlp.experts.7.gate_proj.weight",
+            ),
+            (
+                "blk.80.attn_q.weight",
+                "model.layers.80.self_attn.q_proj.weight",
+            ),
+        ] {
+            match resolve_ggml(ggml, &cfg) {
+                Some(HfTarget::Plain(hf)) => assert_eq!(hf, expected),
+                _ => panic!("Hy3 MTP tensor {ggml} did not resolve as a plain layer tensor"),
+            }
+        }
+    }
+
+    #[test]
+    fn qwen35_moe_appended_mtp_names_use_mtp_namespace() {
+        let json = r#"{
+            "model_type":"qwen3_5_moe",
+            "num_hidden_layers":2,
+            "num_nextn_predict_layers":1,
+            "hidden_size":256,
+            "num_attention_heads":8,
+            "num_key_value_heads":2,
+            "intermediate_size":512,
+            "vocab_size":1024,
+            "max_position_embeddings":2048
+        }"#;
+        let cfg = ModelConfig::from_hf(&crate::config::HfConfig::parse(json));
+        assert_eq!(cfg.n_layer, 3);
+        for (ggml, expected) in [
+            (
+                "blk.2.ffn_gate_exps.7.weight",
+                "mtp.layers.0.mlp.experts.7.gate_proj.weight",
+            ),
+            ("blk.2.ffn_gate_inp.weight", "mtp.layers.0.mlp.gate.weight"),
+            (
+                "blk.2.ffn_gate_shexp.weight",
+                "mtp.layers.0.mlp.shared_expert.gate_proj.weight",
+            ),
+            (
+                "blk.2.ffn_gate_inp_shexp.weight",
+                "mtp.layers.0.mlp.shared_expert_gate.weight",
+            ),
+            (
+                "blk.2.attn_q.weight",
+                "mtp.layers.0.self_attn.q_proj.weight",
+            ),
+        ] {
+            match resolve_ggml(ggml, &cfg) {
+                Some(HfTarget::Plain(hf)) => assert_eq!(hf, expected),
+                _ => panic!("Qwen3.5 MTP tensor {ggml} did not resolve in the mtp namespace"),
+            }
+        }
+        match resolve_ggml("blk.2.attn_norm.weight", &cfg) {
+            Some(HfTarget::Transform {
+                hf,
+                kind: TransformKind::NormPlusOne,
+            }) => assert_eq!(hf, "mtp.layers.0.input_layernorm.weight"),
+            _ => panic!("Qwen3.5 MTP input norm lost its mtp namespace or +1 transform"),
+        }
     }
 
     fn mapping_config(model_type: &str) -> ModelConfig {

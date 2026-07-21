@@ -1,0 +1,76 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5691 slots in 5 classes, 15.04 GB / 15.04 GB budget
+[spill-pread] enabled: depth=16 buffer_bytes=6684672 total_pinned_bytes=106954752 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-headroom-final.so (threads=4)
+[bw24-cpu] RAM headroom cap: requested=8.00 GiB available=39.47 GiB reserve=16.00 GiB effective=8.00 GiB
+[bw24-cpu] normal-RAM expert cache: 8.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.466e0  MATCH
+[moe-cache] warming 16 discarded decode tokens before fixed residency
+[moe-cache] residency frozen: 5691 slots, 5691 resident blocks; 1858 complete experts, 31 one-projection fragments, 43 two-projection fragments (117 stranded blocks)
+teacher-forced decode: 64 tokens from /home/avifenesh/.codex/worktrees/e25d/bw24/research/per-expert-quant/evidence/local-5090-sota-20260719/wholepack-control-first64.tokens
+generated 8 tokens in 4.025s = 1.99 tok/s (ST teacher-forced decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278]
+MoE cache DECODE-WINDOW: 5691 slots | hits=12201 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=492 experts=989 backend_wall=3.683s RAM_hits=504 RAM_misses=2463 RAM_fills=6.36 GB RAM_resident=8.59 GB phase_prepare=0.016s phase_io=1.648s phase_insert=0.004s phase_compute=2.013s
+CPU expert transition prefetch DECODE-WINDOW: submitted=0 dropped=0 useful=0 unused=0 waits=0 failures=0
+CPU expert HBM fragments DECODE-WINDOW: resident_0=935 resident_1=18 resident_2=36
+storage DECODE-WINDOW: 6.36 GB physical reads
+steady-state rep 0: generated 32 tokens in 29.882s = 1.07 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471]
+MoE cache STEADY-STATE rep 0: 5691 slots | hits=34599 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 0: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 0: calls=2417 experts=8691 backend_wall=28.631s RAM_hits=9234 RAM_misses=16839 RAM_fills=44.36 GB RAM_resident=8.59 GB phase_prepare=0.121s phase_io=11.635s phase_insert=0.026s phase_compute=16.841s
+CPU expert transition prefetch STEADY-STATE rep 0: submitted=0 dropped=0 useful=0 unused=0 waits=0 failures=0
+CPU expert HBM fragments STEADY-STATE rep 0: resident_0=8491 resident_1=98 resident_2=102
+storage STEADY-STATE rep 0: 44.36 GB physical reads
+steady-state rep 1: generated 32 tokens in 29.589s = 1.08 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471]
+MoE cache STEADY-STATE rep 1: 5691 slots | hits=34599 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 1: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 1: calls=2417 experts=8691 backend_wall=28.277s RAM_hits=9234 RAM_misses=16839 RAM_fills=44.36 GB RAM_resident=8.59 GB phase_prepare=0.119s phase_io=11.658s phase_insert=0.026s phase_compute=16.466s
+CPU expert transition prefetch STEADY-STATE rep 1: submitted=0 dropped=0 useful=0 unused=0 waits=0 failures=0
+CPU expert HBM fragments STEADY-STATE rep 1: resident_0=8491 resident_1=98 resident_2=102
+storage STEADY-STATE rep 1: 44.36 GB physical reads
+steady-state rep 2: generated 32 tokens in 29.505s = 1.08 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471]
+MoE cache STEADY-STATE rep 2: 5691 slots | hits=34599 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 2: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 2: calls=2417 experts=8691 backend_wall=28.246s RAM_hits=9234 RAM_misses=16839 RAM_fills=44.36 GB RAM_resident=8.59 GB phase_prepare=0.184s phase_io=11.634s phase_insert=0.025s phase_compute=16.395s
+CPU expert transition prefetch STEADY-STATE rep 2: submitted=0 dropped=0 useful=0 unused=0 waits=0 failures=0
+CPU expert HBM fragments STEADY-STATE rep 2: resident_0=8491 resident_1=98 resident_2=102
+storage STEADY-STATE rep 2: 44.36 GB physical reads
+steady-state MEDIAN: 32-token same-prefix window, N=3, 1.08 tok/s (warm HBM/RAM expert caches)
+OUTPUT TEXT: "Below is a complete, self-contained implementation"
+--- generated text ---
+Below is a complete, self-contained implementation
+[spill-pread] reads=111487 bytes=297704177664 errors=0 short_reads=0 fallbacks=0 buffer_waits=72673 ring_full=3364
+[bw24-cpu-profile] calls=26978 prepare=2.051928s io=140.165728s insert=0.414490s compute=200.059129s read_projections=195581 read_GB=512.791
+	Command being timed: "timeout --signal=TERM --kill-after=15s 15m env BW24_MOE_MIXED_Q8=1 BW24_NGEN=8 BW24_NMEASURE=32 BW24_NMEASURE_REPS=3 BW24_FORCE_TOKENS_FILE=/home/avifenesh/.codex/worktrees/e25d/bw24/research/per-expert-quant/evidence/local-5090-sota-20260719/wholepack-control-first64.tokens BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=16 BW24_SPILL_WORKER_EXPERT_WINDOW=5 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-headroom-final.so BW24_CPU_EXPERT_THREADS=4 BW24_CPU_EXPERT_IO_THREADS=2 BW24_CPU_EXPERT_CACHE_GB=8 BW24_CPU_EXPERT_RESERVE_GB=16 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=16 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 OMP_WAIT_POLICY=PASSIVE GOMP_SPINCOUNT=0 GOMP_CPU_AFFINITY=0-3 target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 237.50
+	System time (seconds): 92.66
+	Percent of CPU this job got: 49%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 11:09.16
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 18271116
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2044
+	Minor (reclaiming a frame) page faults: 11794385
+	Voluntary context switches: 1485408
+	Involuntary context switches: 15395
+	Swaps: 0
+	File system inputs: 1583418656
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

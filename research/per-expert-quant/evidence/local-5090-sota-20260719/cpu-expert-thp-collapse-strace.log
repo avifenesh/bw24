@@ -1,0 +1,21 @@
+2411436 madvise(0x7cd3fb000000, 2097152, MADV_HUGEPAGE) = 0
+2411436 madvise(0x7cd3fac00000, 2097152, MADV_HUGEPAGE) = 0
+2411436 madvise(0x7cd3fa800000, 2097152, MADV_HUGEPAGE) = 0
+2411436 madvise(0x7cd3f9e6f000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f966e000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f8e6d000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f866c000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f7e6b000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f766a000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3f6e69000, 4096, MADV_GUARD_INSTALL) = 0
+2411436 madvise(0x7cd3fb000000, 2097152, MADV_COLLAPSE) = -1 EINVAL (Invalid argument)
+2411436 madvise(0x7cd3fac00000, 2097152, MADV_COLLAPSE) = -1 EINVAL (Invalid argument)
+2411436 madvise(0x7cd3fa800000, 2097152, MADV_COLLAPSE) = -1 EINVAL (Invalid argument)
+2411442 +++ exited with 0 +++
+2411440 +++ exited with 0 +++
+2411438 +++ exited with 0 +++
+2411437 +++ exited with 0 +++
+2411443 +++ exited with 0 +++
+2411441 +++ exited with 0 +++
+2411439 +++ exited with 0 +++
+2411436 +++ exited with 0 +++

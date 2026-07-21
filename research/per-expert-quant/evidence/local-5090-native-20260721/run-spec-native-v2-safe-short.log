@@ -1,0 +1,25 @@
+loaded bw24-repack (81 layers, nextn=1)
+prompt tokens: [55]
+[moe-cache] warming 16 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 4808 slots in 5 classes, 13.08 GB / 13.08 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=12.00 GiB available=27.83 GiB reserve=6.00 GiB effective=12.00 GiB
+[bw24-cpu] normal-RAM expert cache: 12.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[moe-cache] residency frozen: 4808 slots, 4808 resident blocks; 1563 complete experts, 37 one-projection fragments, 41 two-projection fragments (119 stranded blocks)
+[moe-cache] frozen MTP residency: 78 blocks, 26 complete experts
+
+[generate]   7 tok in 8.625s = 0.81 tok/s (gen-only; this run's prime 2.584s)
+  tokens: [2417, 13, 15, 13, 15, 13, 15, 13]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=1] 8 tok in 14.756s = 0.47 tok/s (0.58x vs generate; this run's prime 2.365s)
+  acceptance: 0/7 = 0.0%   self-consistency: PASS (identical to generate)
+  WARNING: acceptance == 0 with identical output — MTP head is likely forwarded wrong (bonus-token masking). Speedup will be absent.
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=40668 bytes=106700783616 errors=0 short_reads=0 fallbacks=0 buffer_waits=40668 ring_full=0
+[bw24-cpu-cache] hits=26574 misses=28866 hit_rate=47.93% read_GB=75.173 resident_GB=12.882
+[bw24-cpu-profile] calls=6513 prepare=0.569171s io=8.814061s insert=0.046493s compute=99.070268s read_projections=28866 read_GB=75.173

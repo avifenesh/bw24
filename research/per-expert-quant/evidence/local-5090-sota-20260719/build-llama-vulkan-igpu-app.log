@@ -1,0 +1,26 @@
+[0/2] Re-checking globbed directories...
+[1/18] Performing build step for 'vulkan-shaders-gen'
+ninja: no work to do.
+[2/18] Performing install step for 'vulkan-shaders-gen'
+-- Up-to-date: /tmp/bw24-llama-vulkan-build/Release/./vulkan-shaders-gen
+[3/18] Completed 'vulkan-shaders-gen'
+[4/18] Building CXX object app/CMakeFiles/llama-app.dir/__/license.cpp.o
+[5/18] Building CXX object app/CMakeFiles/llama-app.dir/llama.cpp.o
+[6/18] Building CXX object tools/fit-params/CMakeFiles/llama-fit-params-impl.dir/fit-params.cpp.o
+[7/18] Linking CXX shared library bin/libllama-fit-params-impl.so
+[8/18] Building CXX object tools/batched-bench/CMakeFiles/llama-batched-bench-impl.dir/batched-bench.cpp.o
+[9/18] Building CXX object app/CMakeFiles/llama-app.dir/download.cpp.o
+[10/18] Linking CXX shared library bin/libllama-batched-bench-impl.so
+[11/18] Building CXX object tools/quantize/CMakeFiles/llama-quantize-impl.dir/quantize.cpp.o
+[12/18] Linking CXX shared library bin/libllama-quantize-impl.so
+[13/18] Building CXX object tools/completion/CMakeFiles/llama-completion-impl.dir/completion.cpp.o
+[14/18] Linking CXX shared library bin/libllama-completion-impl.so
+[15/18] Building CXX object tools/perplexity/CMakeFiles/llama-perplexity-impl.dir/perplexity.cpp.o
+[16/18] Linking CXX shared library bin/libllama-perplexity-impl.so
+[17/18] Linking CXX executable bin/llama
+FAILED: [code=1] bin/llama 
+: && /usr/bin/c++ -I/tmp/bw24-spirv-install/include -O3 -DNDEBUG -Wl,--dependency-file=app/CMakeFiles/llama-app.dir/link.d app/CMakeFiles/llama-app.dir/llama.cpp.o app/CMakeFiles/llama-app.dir/download.cpp.o app/CMakeFiles/llama-app.dir/__/license.cpp.o -o bin/llama  -Wl,-rpath,/tmp/bw24-llama-vulkan-build/bin:  -lllama-server-impl  -lllama-cli-impl  bin/libllama-completion-impl.so  bin/libllama-bench-impl.so  bin/libllama-batched-bench-impl.so  bin/libllama-fit-params-impl.so  bin/libllama-quantize-impl.so  bin/libllama-perplexity-impl.so  bin/libllama-common.so.0.0.9839  common/libllama-common-base.a  bin/libllama.so.0.0.9839  bin/libggml.so.0.15.3  bin/libggml-cpu.so.0.15.3  bin/libggml-vulkan.so.0.15.3  bin/libggml-base.so.0.15.3 && :
+/usr/bin/x86_64-linux-gnu-ld.bfd: cannot find -lllama-server-impl: No such file or directory
+/usr/bin/x86_64-linux-gnu-ld.bfd: cannot find -lllama-cli-impl: No such file or directory
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.

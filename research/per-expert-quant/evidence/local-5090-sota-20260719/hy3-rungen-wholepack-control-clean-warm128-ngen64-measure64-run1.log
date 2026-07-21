@@ -1,0 +1,62 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5691 slots in 5 classes, 15.04 GB / 15.04 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-final.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=9.243e-1  MATCH
+[moe-cache] warming 128 discarded decode tokens before fixed residency
+[moe-cache] residency frozen: 5691 slots, 5691 resident blocks; 1866 complete experts, 43 one-projection fragments, 25 two-projection fragments (93 stranded blocks)
+generated 64 tokens in 9.470s = 6.76 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177, 47, 206, 35976, 1320, 607, 12474, 277, 52471, 12, 20424, 1970, 24621, 35510, 3236, 12, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 185, 12, 355, 4132, 607, 5661]
+MoE cache DECODE-WINDOW: 5691 slots | hits=67026 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=4958 experts=18106 backend_wall=7.511s RAM_hits=46710 RAM_misses=7608 RAM_fills=20.05 GB RAM_resident=38.65 GB phase_prepare=0.239s phase_io=2.198s phase_insert=0.016s phase_compute=5.045s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=17764 resident_1=213 resident_2=129
+storage DECODE-WINDOW: 20.05 GB physical reads
+steady-state rep 0: generated 64 tokens in 29.790s = 2.15 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [63, 1054, 289, 244, 607, 64877, 59909, 88602, 63, 1054, 286, 1438, 6515, 185, 4140, 4277, 58035, 667, 1661, 39839, 286, 4140, 25274, 1661, 24708, 11, 9944, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 5454, 408, 15881, 244, 4814]
+MoE cache STEADY-STATE rep 0: 5691 slots | hits=71967 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 0: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 0: calls=4909 experts=16459 backend_wall=12.428s RAM_hits=41748 RAM_misses=7629 RAM_fills=20.25 GB RAM_resident=38.65 GB phase_prepare=0.386s phase_io=3.043s phase_insert=0.022s phase_compute=8.953s
+CPU expert HBM fragments STEADY-STATE rep 0: resident_0=16061 resident_1=251 resident_2=147
+storage STEADY-STATE rep 0: 20.25 GB physical reads
+steady-state MEDIAN: 64-token same-prefix window, N=1, 2.15 tok/s (warm HBM/RAM expert caches)
+OUTPUT TEXT: "Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  \nIt includes:\n\n- Full **type hints** (PEP 604 / `typing`)\n- Clear **docstrings**\n- `insert`, `delete`, and `reverse` operations\n- A simple `Node"
+--- generated text ---
+Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  
+It includes:
+
+- Full **type hints** (PEP 604 / `typing`)
+- Clear **docstrings**
+- `insert`, `delete`, and `reverse` operations
+- A simple `Node
+[spill-pread] reads=211405 bytes=557678641152 errors=0 short_reads=0 fallbacks=0 buffer_waits=167591 ring_full=577
+[bw24-cpu-profile] calls=34747 prepare=2.470359s io=25.935002s insert=0.160988s compute=49.272656s read_projections=82009 read_GB=216.123
+	Command being timed: "env BW24_NGEN=64 BW24_NMEASURE=64 BW24_NMEASURE_REPS=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-final.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-7 target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 362.17
+	System time (seconds): 106.39
+	Percent of CPU this job got: 128%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 6:03.43
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 45783328
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 8450
+	Minor (reclaiming a frame) page faults: 19369595
+	Voluntary context switches: 2840984
+	Involuntary context switches: 4692
+	Swaps: 0
+	File system inputs: 1546261224
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

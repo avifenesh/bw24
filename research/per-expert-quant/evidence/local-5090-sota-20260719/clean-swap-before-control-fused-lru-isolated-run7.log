@@ -1,0 +1,81 @@
+2026-07-21T12:35:45+03:00
+== before ==
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        16Gi        37Gi       1.1Gi       8.6Gi        44Gi
+Swap:          8.0Gi       6.6Gi       1.4Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 6.6G   -1
+Linux 7.0.0-27-generic (avifenesh) 	07/21/26 	_x86_64_	(24 CPU)
+
+12:35:45     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+12:35:46       0    2.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+12:35:46       1    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+12:35:46       2    2.04    0.00    2.04    0.00    0.00    0.00    0.00    0.00    0.00   95.92
+12:35:46       3    0.00    0.00    2.06    0.00    0.00    0.00    0.00    0.00    0.00   97.94
+12:35:46       4    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:35:46       5    0.99    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   97.03
+12:35:46       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:35:46       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:       0    2.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+Average:       1    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+Average:       2    2.04    0.00    2.04    0.00    0.00    0.00    0.00    0.00    0.00   95.92
+Average:       3    0.00    0.00    2.06    0.00    0.00    0.00    0.00    0.00    0.00   97.94
+Average:       4    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       5    0.99    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   97.03
+Average:       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260
+	Command being timed: "sudo -n swapoff /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 5.32
+	Percent of CPU this job got: 15%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:35.15
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6156
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 25
+	Minor (reclaiming a frame) page faults: 846
+	Voluntary context switches: 1296518
+	Involuntary context switches: 35
+	Swaps: 0
+	File system inputs: 13011760
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+== after ==
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        21Gi        32Gi       1.2Gi       8.7Gi        39Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+Linux 7.0.0-27-generic (avifenesh) 	07/21/26 	_x86_64_	(24 CPU)
+
+12:36:21     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+12:36:22       0    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+12:36:22       1    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:36:22       2    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:36:22       3    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+12:36:22       4    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+12:36:22       5    0.00    0.00    1.02    0.00    0.00    0.00    0.00    0.00    0.00   98.98
+12:36:22       6    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+12:36:22       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:       0    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+Average:       1    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       2    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:       3    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+Average:       4    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+Average:       5    0.00    0.00    1.02    0.00    0.00    0.00    0.00    0.00    0.00   98.98
+Average:       6    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+Average:       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260
+2026-07-21T12:36:22+03:00

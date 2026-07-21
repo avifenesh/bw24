@@ -278,21 +278,33 @@ impl Hy3RepackSource {
             let obj = JsonObj::parse(raw);
             let file = obj.string("file")
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing file")))?;
-            let qtype = obj.string("qtype")
+            let file = validated_manifest_file(&file).map_err(|reason| {
+                invalid_data(format!(
+                    "manifest tensor {name} has invalid file path: {reason}"
+                ))
+            })?;
+            let qtype = obj
+                .string("qtype")
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing qtype")))?;
             let ne = obj.u64_array("ne")
                 .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing ne")))?;
-            let bytes = obj.u64("bytes")
-                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing bytes")))? as usize;
-            tensors.insert(name.to_string(), RepackTensor {
-                file: PathBuf::from(file),
-                offset: obj.u64("offset").unwrap_or(0) as usize,
-                ggml_type: manifest_qtype(&qtype)
-                    .ok_or_else(|| invalid_data(format!("manifest tensor {name} unsupported qtype {qtype}")))?,
-                ne,
-                bytes,
-                expert_stride: obj.u64("expert_stride").map(|x| x as usize),
-            });
+            let bytes = obj
+                .u64("bytes")
+                .ok_or_else(|| invalid_data(format!("manifest tensor {name} missing bytes")))?
+                as usize;
+            tensors.insert(
+                name.to_string(),
+                RepackTensor {
+                    file,
+                    offset: obj.u64("offset").unwrap_or(0) as usize,
+                    ggml_type: manifest_qtype(&qtype).ok_or_else(|| {
+                        invalid_data(format!("manifest tensor {name} unsupported qtype {qtype}"))
+                    })?,
+                    ne,
+                    bytes,
+                    expert_stride: obj.u64("expert_stride").map(|x| x as usize),
+                },
+            );
         }
 
         let source_dir = top.string("source_dir").map(PathBuf::from).map(|path| {
@@ -324,7 +336,12 @@ impl Hy3RepackSource {
                 .unwrap_or_else(|| dir.join("config.json"));
             ModelConfig::from_config_json(&cfg_path)?
         };
-        apply_stripped_mtp_override(&mut cfg, &tensors);
+        // A complete repack can intentionally omit the appended MTP block. An expert overlay is
+        // sparse by definition: tensors absent from its manifest resolve through the fallback, so
+        // its highest overridden block says nothing about whether the fallback still has MTP.
+        if fallback.is_none() {
+            apply_stripped_mtp_override(&mut cfg, &tensors);
+        }
         let mut active_experts = BTreeMap::new();
         if let Some(pruned) = top.object("pruned_experts") {
             let moe = cfg.moe.as_ref().ok_or_else(|| {
@@ -537,6 +554,20 @@ fn apply_stripped_mtp_override(cfg: &mut ModelConfig, tensors: &BTreeMap<String,
 
 fn invalid_data(msg: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
+}
+
+fn validated_manifest_file(raw: &str) -> Result<PathBuf, &'static str> {
+    let path = Path::new(raw);
+    if raw.is_empty() || path.is_absolute() {
+        return Err("expected a non-empty relative path");
+    }
+    if !path
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("absolute, parent, and current-directory components are forbidden");
+    }
+    Ok(path.to_path_buf())
 }
 
 /// safetensors-backed source: an HF checkpoint (config.json + one/more .safetensors shards).
@@ -994,6 +1025,26 @@ impl TensorSource for SafetensorsSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_payload_paths_cannot_escape_artifact_root() {
+        assert_eq!(
+            validated_manifest_file("experts/layer-000.bin").unwrap(),
+            PathBuf::from("experts/layer-000.bin")
+        );
+        for unsafe_path in [
+            "",
+            "/etc/passwd",
+            "../outside",
+            "experts/../../outside",
+            "./x",
+        ] {
+            assert!(
+                validated_manifest_file(unsafe_path).is_err(),
+                "accepted unsafe path {unsafe_path:?}"
+            );
+        }
+    }
 
     #[test]
     fn expert_mmap_advice_parser_preserves_random_default() {

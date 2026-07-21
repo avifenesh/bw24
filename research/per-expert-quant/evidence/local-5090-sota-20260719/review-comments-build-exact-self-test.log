@@ -1,0 +1,25 @@
+exact budget prune plan self-test: PASS
+	Command being timed: "systemd-run --user --scope --quiet --unit=bw24-pr9-plan-selftest-2385094 -p CPUQuota=50% -p CPUWeight=10 -p MemoryHigh=1G -p MemoryMax=2G env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 python3 tools/build_exact_budget_prune_plan.py --self-test"
+	User time (seconds): 0.30
+	System time (seconds): 0.06
+	Percent of CPU this job got: 53%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.69
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 83568
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 181
+	Minor (reclaiming a frame) page faults: 13785
+	Voluntary context switches: 966
+	Involuntary context switches: 30
+	Swaps: 0
+	File system inputs: 130368
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[self-test] exit_status=0 cpu_quota=50% blas_threads=1 memory_max=2G

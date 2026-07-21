@@ -1,0 +1,47 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 64 discarded speculative tokens at K=1 before fixed residency
+[moe-cache] size-aware fixed slots: 5482 slots in 5 classes, 14.91 GB / 14.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=36 full_accept=28 len_hist=[0, 36] per_slot=[28/36=0.778] total=28/36=0.778 tok_per_round=1.778
+[moe-cache] residency frozen: 5482 slots, 5482 resident blocks
+
+[generate]   31 tok in 4.359s = 7.11 tok/s (gen-only; this run's prime 161.905s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 40297, 1970, 24621, 35510, 40297, 289, 252, 21632]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=17 full_accept=14 len_hist=[0, 17] per_slot=[14/17=0.824] total=14/17=0.824 tok_per_round=1.824
+
+[generate_spec K=1] 32 tok in 3.072s = 10.09 tok/s (1.42x vs generate; this run's prime 156.052s)
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=35205 bytes=97007468544 errors=0 short_reads=0 fallbacks=0 buffer_waits=9925 ring_full=808
+[bw24-cpu-profile] calls=10864 prepare=0.286821s io=6.879417s insert=0.019880s compute=8.671734s read_projections=22529 read_GB=59.613
+	Command being timed: "env BW24_NGEN=32 BW24_SPEC_K=1 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=64 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=1 GOMP_CPU_AFFINITY=0-7 target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 239.51
+	System time (seconds): 95.89
+	Percent of CPU this job got: 64%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 8:42.04
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48405980
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 18220244
+	Minor (reclaiming a frame) page faults: 19896987
+	Voluntary context switches: 18947755
+	Involuntary context switches: 2620
+	Swaps: 0
+	File system inputs: 499734928
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

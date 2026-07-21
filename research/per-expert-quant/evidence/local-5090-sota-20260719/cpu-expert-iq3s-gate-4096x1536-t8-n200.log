@@ -1,0 +1,1 @@
+type=iq3_s shape=4096x1536 row_bytes=1760 extent=2703360 threads=8 iterations=200 ms/projection=0.1893 weight_GB/s=14.28 checksum=78.8930224

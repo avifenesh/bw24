@@ -152,7 +152,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("score file model metadata is required")
     if int(score_model.get("expert_count", -1)) != expert_count:
         raise ValueError("score file expert_count does not match the manifest")
-    if [int(layer) for layer in score_model.get("moe_layers", [])] != layers:
+    if sorted(int(layer) for layer in score_model.get("moe_layers", [])) != layers:
         raise ValueError("score file MoE layers do not match the manifest")
     expert_bytes = np.asarray([
         sum(inventory[(layer, expert, projection)]["bytes"] for projection in PROJECTIONS)
@@ -270,7 +270,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "solver": "scipy.optimize.milp/HiGHS",
             "solver_status": int(result.status),
             "solver_message": str(result.message),
-            "mip_gap": float(getattr(result, "mip_gap", 0.0)),
+            "mip_gap": float(getattr(result, "mip_gap", None) or 0.0),
             "tie_break": "manifest order; score producer must provide deterministic composite scores",
         },
         "calibration": {
@@ -320,7 +320,7 @@ def self_test() -> None:
         scores = {
             "format": SCORE_FORMAT,
             "rank_metric": "self_test",
-            "model": {"expert_count": 4, "moe_layers": [1, 2]},
+            "model": {"expert_count": 4, "moe_layers": [2, 1]},
             "calibration": {"public_eval_data_used_for_selection": False},
             "scores": [
                 {
