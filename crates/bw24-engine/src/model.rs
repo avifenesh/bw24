@@ -1124,20 +1124,24 @@ impl HostExps {
         })
     }
 
-    pub fn load_stacked_from_source(
-        e: &Engine,
-        src: &dyn TensorSource,
-        name: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let t = src
-            .find(name)
-            .unwrap_or_else(|| panic!("missing exps tensor {name}"));
-        assert_eq!(
-            t.ne.len(),
-            3,
-            "{name} is not a 3D stacked-expert tensor (ne={:?})",
-            t.ne
-        );
+    /// Stacked per-expert macro-scale sidecar: `blk.N.ffn_{proj}_exps.scale` f32 [n_expert]
+    /// (the qwen3.6 NVFP4 converter emits one per stacked expert tensor — compressed-tensors
+    /// global scales, inverted to multipliers). Absent (every k-quant GGUF) => None.
+    /// NOTE gemma4 consumes ffn_down_exps.scale through its OWN router-fold (Gemma4MoeBits) —
+    /// its MoE forward does not read HostExps::macros, so a Some here is inert there.
+    fn stacked_macros(src: &dyn TensorSource, name: &str) -> Option<Vec<f32>> {
+        let stem = name.strip_suffix(".weight")?;
+        let sv = src.find(&format!("{stem}.scale"))?;
+        if sv.ggml_type != GgmlType::F32 { return None; }
+        let macros: Vec<f32> = sv.bytes.chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        if macros.iter().all(|&m| m == 1.0) { None } else { Some(macros) }
+    }
+
+    pub fn load_stacked_from_source(e: &Engine, src: &dyn TensorSource, name: &str)
+                                    -> Result<Self, Box<dyn std::error::Error>> {
+        let t = src.find(name).unwrap_or_else(|| panic!("missing exps tensor {name}"));
+        assert_eq!(t.ne.len(), 3, "{name} is not a 3D stacked-expert tensor (ne={:?})", t.ne);
         // MMAP-BACKED SPILL TIER (Hy3 repack dir, 2026-07-09): when the source's on-disk layout IS
         // already the engine's expert layout (one expert-axis-slowest slab file per (layer, proj),
         // the transcoder's contract), back the HostExps with `HostBuf::Mmap` directly — ZERO host
@@ -1181,21 +1185,9 @@ impl HostExps {
                 "{name} mmap len != n_expert*stride"
             );
             return Ok(HostExps {
-                bytes: HostBuf::Mmap {
-                    map,
-                    file,
-                    off,
-                    len,
-                },
-                tiers: None,
-                qtype,
-                in_f,
-                out_f,
-                n_expert,
-                row_bytes,
-                expert_stride,
-                layouts: None,
-                macros: None,
+                bytes: HostBuf::Mmap { map, file, off, len },
+                tiers: None, qtype, in_f, out_f, n_expert, row_bytes, expert_stride,
+                layouts: None, macros: Self::stacked_macros(src, name),
             });
         }
         let raw: &[u8] = &t.bytes;
@@ -1245,18 +1237,8 @@ impl HostExps {
         } else {
             HostBuf::Paged(raw.to_vec())
         };
-        Ok(HostExps {
-            bytes,
-            tiers: None,
-            qtype,
-            in_f,
-            out_f,
-            n_expert,
-            row_bytes,
-            expert_stride,
-            layouts: None,
-            macros: None,
-        })
+        Ok(HostExps { bytes, tiers: None, qtype, in_f, out_f, n_expert, row_bytes,
+                      expert_stride, layouts: None, macros: Self::stacked_macros(src, name) })
     }
 
     /// SPILLING-PLAN §1.1, §2 step 4: load a stacked 3D expert tensor with a PER-EXPERT tier split.
@@ -1321,14 +1303,8 @@ impl HostExps {
         Ok(HostExps {
             bytes: HostBuf::Paged(Vec::new()), // unused when `tiers` is Some
             tiers: Some(tiers),
-            qtype,
-            in_f,
-            out_f,
-            n_expert,
-            row_bytes,
-            expert_stride,
-            layouts: None,
-            macros: None,
+            qtype, in_f, out_f, n_expert, row_bytes, expert_stride, layouts: None,
+            macros: Self::stacked_macros(&GgufSource(g), name),
         })
     }
 

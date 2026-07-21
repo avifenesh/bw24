@@ -51,6 +51,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // BW24_E4B_GRAPH_GATE=N: E4B graph-door stream gate — generate() door OFF then ON on
+    // fresh caches; streams must be identical (the warmup-side-effect + exec-update oracle).
+    if let Ok(nn) = std::env::var("BW24_E4B_GRAPH_GATE") {
+        let n: usize = nn.parse().unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        unsafe { std::env::set_var("BW24_E4B_GRAPH", "0"); }
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let a = model.generate(&e, &toks, n)?;
+        e.stream().synchronize()?;
+        let dt_a = t0.elapsed().as_secs_f64();
+        unsafe { std::env::set_var("BW24_E4B_GRAPH", "1"); }
+        let t1 = std::time::Instant::now();
+        let b = model.generate(&e, &toks, n)?;
+        e.stream().synchronize()?;
+        let dt_b = t1.elapsed().as_secs_f64();
+        let same = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        println!("E4B-GRAPH-GATE: eager-dc {:.2} tok/s | graph {:.2} tok/s | stream {}/{} {}",
+                 a.len() as f64 / dt_a, b.len() as f64 / dt_b, same, a.len().min(b.len()),
+                 if same == a.len().min(b.len()) { "IDENTICAL" } else { "MISMATCH" });
+        if same < a.len().min(b.len()) {
+            println!("dc   : {:?}", &a[..a.len().min(same + 6)]);
+            println!("graph: {:?}", &b[..b.len().min(same + 6)]);
+        }
+        return Ok(());
+    }
     // BW24_DC_GATE=N: device-counter decode gate — the dc chain's N-token greedy stream must
     // be IDENTICAL to the eager decode_step chain; prints both throughputs.
     if let Ok(nn) = std::env::var("BW24_DC_GATE") {
@@ -121,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let g = bw24_gguf::GgufFile::open(&path)?;
         let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
         let dg = bw24_gguf::GgufFile::open(&dpath)?;
-        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let mut draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
         let tok = bw24_tokenizer::Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e}"))?;
         let eos = tok.eog_ids();
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&pdir)?
@@ -140,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let text = std::fs::read_to_string(f)?;
             let mut ids = tok.encode(&text, true);
             ids.truncate(768);
-            let toks_g = model.generate_spec_gemma(&e, &draft, &ids, n_new, k, &eos)?;
+            let toks_g = model.generate_spec_gemma(&e, &mut draft, &ids, n_new, k, &eos)?;
             total += toks_g.len();
             let line: Vec<String> = toks_g.iter().map(|t| t.to_string()).collect();
             writeln!(out, "{}", line.join(" "))?;
@@ -149,6 +178,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                       toks_g.len(), total, total as f64 / t0.elapsed().as_secs_f64());
         }
         println!("corpus done: {} prompts, {} tokens -> {}", files.len(), total, outp);
+        return Ok(());
+    }
+    // BW24_SPEC_DFLASH=<draft dir>: DFlash block-drafter round — prime, block16 draft,
+    // t=16 verify, accept. Compares the spec stream against plain greedy (exactness gate)
+    // + times both. BW24_SPEC_STATS=1 prints acceptance.
+    if let Ok(dpath) = std::env::var("BW24_SPEC_DFLASH") {
+        let n_new: usize = std::env::var("BW24_NGEN").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let draft = bw24_engine::dflash::DflashDraft::load(&e, std::path::Path::new(&dpath))?;
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        println!("dflash spec block={} n_new={n_new} prompt={} toks", draft.cfg.block_size, toks.len());
+        let spec_only = std::env::var("BW24_SPEC_ONLY").as_deref() == Ok("1");
+        e.stream().synchronize()?;
+        let t0 = std::time::Instant::now();
+        let plain = if spec_only { Vec::new() } else { model.generate(&e, &toks, n_new)? };
+        e.stream().synchronize()?;
+        let dt_plain = t0.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let t1 = std::time::Instant::now();
+        let spec = model.generate_spec_dflash(&e, &draft, &toks, n_new, &[])?;
+        e.stream().synchronize()?;
+        let dt_spec = t1.elapsed().as_secs_f64()
+            - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
+        let same = plain.iter().zip(&spec).take_while(|(a, b)| a == b).count();
+        if spec_only {
+            println!("dflash spec: {:.2} tok/s (spec-only)", spec.len() as f64 / dt_spec);
+            return Ok(());
+        }
+        println!("plain: {:.2} tok/s | dflash spec: {:.2} tok/s ({:.2}x) | stream agreement {}/{}",
+                 plain.len() as f64 / dt_plain, spec.len() as f64 / dt_spec,
+                 dt_plain / dt_spec * (spec.len() as f64 / plain.len() as f64),
+                 same, plain.len().min(spec.len()));
+        if same < plain.len().min(spec.len()) {
+            println!("plain: {:?}", &plain[..plain.len().min(24)]);
+            println!("spec : {:?}", &spec[..spec.len().min(24)]);
+        }
         return Ok(());
     }
     // BW24_SPEC=K + BW24_DRAFT=<drafter.gguf>: MTP spec loop — prime, draft K, verify, accept.
@@ -160,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let g = bw24_gguf::GgufFile::open(&path)?;
         let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
         let dg = bw24_gguf::GgufFile::open(&dpath)?;
-        let draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
+        let mut draft = bw24_engine::gemma_spec::GemmaDraft::load(&e, &dg)?;
         let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
         println!("spec K={k} n_new={n_new} prompt={} toks", toks.len());
         // plain greedy reference + timing (BW24_SPEC_ONLY=1 skips it — profiling isolation)
@@ -173,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
         // spec run + timing
         let t1 = std::time::Instant::now();
-        let spec = model.generate_spec_gemma(&e, &draft, &toks, n_new, k, &[])?;
+        let spec = model.generate_spec_gemma(&e, &mut draft, &toks, n_new, k, &[])?;
         e.stream().synchronize()?;
         let dt_spec = t1.elapsed().as_secs_f64()
             - bw24_engine::PRIME_NANOS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9;
@@ -190,6 +257,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("plain: {:?}", &plain[..plain.len().min(24)]);
             println!("spec : {:?}", &spec[..spec.len().min(24)]);
         }
+        return Ok(());
+    }
+    // BW24_VERIFY_GATE2=K: CHAINED batched-verify gate — prefix tokenwise, then TWO
+    // back-to-back decode_step_t calls of K tokens each; per-position argmax must match the
+    // tokenwise chain (the E4B spec round-2 divergence oracle: one batched verify is exact,
+    // the second sees stale state).
+    if let Ok(kk) = std::env::var("BW24_VERIFY_GATE2") {
+        let k: usize = kk.parse().unwrap_or(2);
+        let e = bw24_engine::Engine::new(0)?;
+        let g = bw24_gguf::GgufFile::open(&path)?;
+        let model = bw24_engine::hybrid::HybridModel::load(&e, &g)?;
+        let n_vocab = model.output.out_features();
+        let toks: Vec<u32> = std::env::args().skip(2).filter_map(|s| s.parse().ok()).collect();
+        assert!(toks.len() > 2 * k + 1, "prompt must exceed 2K+1");
+        let split = toks.len() - 2 * k;
+        let mut c1 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        let mut ref_am: Vec<usize> = Vec::new();
+        for (i, &tk) in toks.iter().enumerate() {
+            let l = model.decode_step(&e, tk, &mut c1)?;
+            if i >= split { ref_am.push(bw24_engine::forward::argmax(&l)); }
+        }
+        let mut c2 = bw24_engine::cache::Cache::new(&e, &model.cfg, toks.len() + 8)?;
+        for &tk in &toks[..split] { let _ = model.decode_step(&e, tk, &mut c2)?; }
+        // DEVICE-token arm (=the spec round's verify path) when BW24_VERIFY_GATE2_DEV=1.
+        let dev = std::env::var("BW24_VERIFY_GATE2_DEV").as_deref() == Ok("1");
+        let mut all_ok = true;
+        for (i, seg) in [(0usize, &toks[split..split + k]), (k, &toks[split + k..])] {
+            let ams: Vec<usize> = if dev {
+                let td = e.stream().clone_htod(seg)?;
+                let (vam_d, _vh) = model.gemma4_e4b_decode_step_t_am_dev(
+                    &e, &td, k, split + i, &mut c2)?;
+                e.dtoh_u32(&vam_d)?.iter().map(|&x| x as usize).collect()
+            } else {
+                let lv = model.decode_step_t(&e, seg, split + i, &mut c2)?;
+                (0..k).map(|j| bw24_engine::forward::argmax(&lv[j * n_vocab..(j + 1) * n_vocab]))
+                      .collect()
+            };
+            for j in 0..k {
+                let ok = ams[j] == ref_am[i + j];
+                all_ok &= ok;
+                println!("chained verify pos {}: batched={} tokenwise={} {}", i + j,
+                         ams[j], ref_am[i + j], if ok { "MATCH" } else { "MISMATCH" });
+            }
+        }
+        println!("VERIFY-GATE2 K={k} dev={dev}: {}", if all_ok { "PASS" } else { "FAIL" });
         return Ok(());
     }
     // BW24_VERIFY_GATE=K: batched-verify self-consistency — decode the prompt tokenwise

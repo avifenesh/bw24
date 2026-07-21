@@ -361,13 +361,13 @@ pub fn resolve_ggml(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
                     if let Some(e) = e_part.strip_suffix(".weight") {
                         if let Ok(eid) = e.parse::<u32>() {
                             if let Ok(ilid) = il.parse::<u32>() {
+                                let n_trunk = cfg.n_layer - cfg.nextn_predict_layers;
+                                if ilid < n_trunk {
+                                    return Some(HfTarget::Plain(hf_expert_name(ilid, eid, proj, &cfg.arch)));
+                                }
                                 // Qwen stores appended MTP blocks under a separate `mtp.layers`
                                 // namespace. Hy3 appends its MTP block to `model.layers` instead.
-                                let n_trunk = cfg.n_layer - cfg.nextn_predict_layers;
-                                if cfg.nextn_predict_layers > 0
-                                    && ilid >= n_trunk
-                                    && matches!(cfg.arch, Arch::Qwen35 | Arch::Qwen35Moe)
-                                {
+                                if matches!(cfg.arch, Arch::Qwen35 | Arch::Qwen35Moe) {
                                     let mtp_il = ilid - n_trunk;
                                     let projection = match proj {
                                         "gate" => "gate_proj",
@@ -480,18 +480,31 @@ fn resolve_mtp_block(ggml: &str, cfg: &ModelConfig) -> Option<HfTarget> {
             k => HfTarget::Transform { hf: hf.into(), kind: k },
         });
     }
-    // Full transformer block tensors under mtp.layers.{k}.*. Reuse the ordinary Qwen layer map so
-    // the MoE router and shared-expert tensors cannot silently remain in model.layers.{n_trunk}.
-    let hf_suffix = if suffix == "post_attention_norm.weight" {
-        "post_attention_layernorm.weight".to_string()
-    } else {
-        let ordinary = ggml_to_hf(ggml, &cfg.arch)?;
-        ordinary
-            .strip_prefix(&format!("model.layers.{il}."))?
-            .to_string()
+    // Full transformer block tensors under mtp.layers.{k}.*
+    let (hf_suffix, plus_one): (&str, bool) = match suffix {
+        "attn_norm.weight" => ("input_layernorm.weight", true),
+        "post_attention_norm.weight" | "ffn_norm.weight" => ("post_attention_layernorm.weight", true),
+        "attn_q_norm.weight" => ("self_attn.q_norm.weight", true),
+        "attn_k_norm.weight" => ("self_attn.k_norm.weight", true),
+        "attn_q.weight" => ("self_attn.q_proj.weight", false),
+        "attn_k.weight" => ("self_attn.k_proj.weight", false),
+        "attn_v.weight" => ("self_attn.v_proj.weight", false),
+        "attn_output.weight" => ("self_attn.o_proj.weight", false),
+        "ffn_gate.weight" => ("mlp.gate_proj.weight", false),
+        "ffn_up.weight" => ("mlp.up_proj.weight", false),
+        "ffn_down.weight" => ("mlp.down_proj.weight", false),
+        // MoE MTP block (qwen3.6-35B-A3B ST class): router + shared expert are plain 2D
+        // tensors under mtp.layers.{k}.mlp.*; the fused stacked experts
+        // (mlp.experts.{gate_up,down}_proj, 3D) are sliced source-side, not name-mapped.
+        "ffn_gate_inp.weight" => ("mlp.gate.weight", false),
+        "ffn_gate_shexp.weight" => ("mlp.shared_expert.gate_proj.weight", false),
+        "ffn_up_shexp.weight" => ("mlp.shared_expert.up_proj.weight", false),
+        "ffn_down_shexp.weight" => ("mlp.shared_expert.down_proj.weight", false),
+        "ffn_gate_inp_shexp.weight" => ("mlp.shared_expert_gate.weight", false),
+        _ => return None, // nextn.shared_head.weight etc: absent -> head reuses lm_head
     };
     let hf = format!("mtp.layers.{mtp_il}.{hf_suffix}");
-    Some(if is_plusone_norm(ggml) {
+    Some(if plus_one {
         HfTarget::Transform {
             hf,
             kind: TransformKind::NormPlusOne,

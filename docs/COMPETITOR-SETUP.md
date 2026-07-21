@@ -318,3 +318,12 @@ than the best competitor on that metric, single-stream, same protocol.
 
 The driver `tools/bench.sh` produces the bw24-vs-llama.cpp side of this table automatically; vLLM/SGLang
 are run separately (serial) via the section 2/3 commands and pasted into `research/benchmarks.md`.
+
+## Gemma-4 pairing note (2026-07-15)
+
+`llama-bench` `-fa auto` (the default) resolves flash-attention **off** for the gemma-4
+GGUFs on this build and silently costs llama ~6-11% — always pass `-fa 1` when pairing
+gemma cells (26B short reads 168 under auto vs 190 with `-fa 1`). KV-quant flags
+(`-ctk q8_0 -ctv q8_0`) LOSE on gemma (26B short 174.7): llama's best gemma config is
+plain `-fa 1` with f16 KV. Power state must be pinned per window (`gpu-full-power on|off`)
+— both profiles pair fairly but are not comparable to each other.

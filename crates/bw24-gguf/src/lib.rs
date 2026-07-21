@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use memmap2::Mmap;
 
+pub mod d2t;
 pub mod dequant;
 pub mod config;
 pub mod safetensors;
+pub mod hf;
 pub mod hf_mapping;
 pub mod nvfp4_repack;
 pub mod source;

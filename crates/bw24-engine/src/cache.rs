@@ -48,6 +48,20 @@ pub struct Cache {
     pub recur: Vec<Option<RecurLayer>>,
     pub pos: usize,
     pub max_ctx: usize,
+    /// DFlash tap sink (dflash lane, 2026-07-13): when armed, the gemma4 verify/prime
+    /// trunks copy the residual stream AFTER each tapped layer into `buf` rows
+    /// ([t, n_taps*hidden] row-major — the drafter fc input layout). None on every
+    /// non-dflash path (zero cost).
+    pub dflash_taps: Option<DflashTapSink>,
+}
+
+/// See [`Cache::dflash_taps`]. Armed per forward by the dflash round (t = that forward's
+/// row count); the trunk writes tap slot s of row r at buf[r*n_taps*hidden + s*hidden ..].
+pub struct DflashTapSink {
+    pub layer_ids: Vec<usize>,
+    pub buf: CudaSlice<f32>,
+    pub hidden: usize,
+    pub t: usize,
 }
 
 /// Snapshot of the dual cache taken BEFORE a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
@@ -181,12 +195,7 @@ impl Cache {
                 }
             }
         }
-        Ok(Cache {
-            kv,
-            recur,
-            pos: 0,
-            max_ctx,
-        })
+        Ok(Cache { kv, recur, pos: 0, max_ctx, dflash_taps: None })
     }
 
     /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).

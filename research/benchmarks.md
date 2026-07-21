@@ -15,6 +15,34 @@ Protocol rule (measured 2026-07-03): sequential cross-session numbers LIE by up 
 holds higher clocks when run alone/cold. Interleave the two engines in the same minute, N>=3 pairs,
 both orders. Prior "llama 117.8 / 5451" baselines in this file are sequential-protocol numbers.
 
+## Measurement protocol — window rules (2026-07-16, all lanes)
+
+The rules below are the standing A/B protocol referenced by CONTRIBUTING.md. Each one was
+paid for by a real false reading (the jsonl rows carry the archaeology):
+
+1. **Interleave, same session, N≥2-3 medians, both orders.** Sequential cross-session ratios
+   drift up to ~10% from clock/thermal state (rule above). A same-session-only number is not
+   evidence.
+2. **Pin the power state per window** (`gpu-full-power on|off`) and record it. Numbers from
+   different power states never pair; a profile-run arm only compares against another
+   profile-run arm.
+3. **Serialize bench arms — one engine on the GPU at a time.** A co-resident llama-server
+   (or any VRAM-heavy process) silently forces expert/weight spill to host and reads 10x low
+   (measured: 26B/31B "collapse" to 17-21 tok/s that vanished once the server was stopped).
+   `tools/local-ci.sh` refuses to run a battery in a dirty window for exactly this reason.
+   The only allowed co-resident is a small embedding server.
+4. **llama.cpp bars = llama's BEST config, per model** (owner ruling). For gemma that means
+   `-fa 1` explicitly — llama-bench's `-fa auto` resolves OFF for gemma and produces
+   fake-low bars. KV-quant flags LOSE for gemma-vs-f16 on this box; best config is `-fa 1`
+   with f16 KV. Verify the resolved config in llama's own output, don't trust the flag.
+5. **Validity-gate the window with a known cell.** After marathon benching the EC pulls boost
+   (chassis skin-temp, not die) — re-run a known-good cell and check it lands on its rolling
+   median before trusting any new number from that window.
+6. **The standing cell battery is `tools/local-ci.sh --perf`** (cells in
+   `research/tune-data/perf-cells.json`, rows in `research/tune-data/perf-ci.jsonl`).
+   It records tok/s AND speculative acceptance/tokens-per-round per spec cell — acceptance
+   drift is invisible to every exactness gate and must be tracked longitudinally.
+
 ## Baselines (measured 2026-06-26)
 
 | Engine | prefill pp64 (tok/s) | decode tg32 (tok/s) | tool |

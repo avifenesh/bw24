@@ -154,12 +154,13 @@ fn q8_expert_supported(qt: i32) -> bool {
     let kq = *KQ.get_or_init(|| {
         std::env::var("BW24_MOE_Q8_KQ").map(|v| v != "0").unwrap_or(true)
     });
-    // NVFP4 experts (MiniMax-M3): dot body exists (expert_dot_nvfp4_g) but enabling it here
-    // broke the M3 gate (decode-vs-verify MISMATCH 3.4e1) — the q8 arms' macro handling differs
-    // between t-regimes somewhere; M3 stays on the f32 arm until that parity is proven. ALSO
-    // measured irrelevant for now: M3 decode is PCIe-staging-bound (11.9s HtoD in a 32-tok
-    // window — SLRU misses dominate), not kernel-bound. BW24_MOE_Q8_NVFP4=1 re-enables for debug.
-    let nvfp4_q8 = std::env::var("BW24_MOE_Q8_NVFP4").map(|v| v == "1").unwrap_or(false);
+    // NVFP4 experts: DEFAULT ON (2026-07-17). The M3-era "decode-vs-verify MISMATCH 3.4e1"
+    // that had this excluded was the missing per-expert macro-scale fold, fixed in the
+    // dev-kernel epilogues + moe_w_scale_by_expert; the 35B ct-NVFP4 artifact now runs the
+    // q8 arm at parity with the IQ4_XS daily (174-178 tok/s, spec K=1..8 exact). M3/Hy3
+    // never reach the q8 arms regardless (sigmoid-router cfg gates on pairs/dev/gdec).
+    // BW24_MOE_Q8_NVFP4=0 restores the f32 arm.
+    let nvfp4_q8 = std::env::var("BW24_MOE_Q8_NVFP4").map(|v| v != "0").unwrap_or(true);
     qt == crate::QT_IQ3_S || qt == crate::QT_IQ4_XS || (nvfp4_q8 && qt == crate::QT_NVFP4)
         || (kq && (qt == crate::QT_Q3_K || qt == crate::QT_Q4_K || qt == crate::QT_Q6_K))
 }
@@ -1037,20 +1038,16 @@ impl HybridModel {
         // sigmoid-router archs (M3, Hy3) must NOT enter the pairs/dev arms: those route via the
         // fused SOFTMAX device router (moe_router_topk) — silently wrong experts (the M3
         // gate-MISMATCH 74602-vs-92 lesson, 2026-07-07). Host sigmoid routing below is correct.
-        // These fused paths also do not fold per-expert macro scales. Keep macro-carrying
-        // safetensors checkpoints on the scale-aware sequential/grouped paths.
-        let no_exp_macros = m.gate_exps.macros.is_none()
-            && m.up_exps.macros.is_none()
+        // Per-expert macro-scales (compressed-tensors NVFP4 ST class, e.g. unsloth 35B-A3B):
+        // the device-dispatch kernels (pairs/dev) do NOT fold them — those checkpoints must
+        // ride the macro-aware sequential/staged paths below or every expert output is off by
+        // its global scale (~3e4x, measured garbage 2026-07-16). GGUF experts: macros None.
+        let no_exp_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
             && m.down_exps.macros.is_none();
-        if cfg.sigmoid_router().is_none()
-            && cfg.m3.is_none()
-            && cfg.hy3.is_none()
+        if cfg.sigmoid_router().is_none() && cfg.m3.is_none() && cfg.hy3.is_none()
             && no_exp_macros
-            && t >= PRIME_MIN_T
-            && m.dev_exps.is_some()
-            && moe_q8_enabled()
-            && q8_expert_supported(m.gate_exps.qtype)
-            && q8_expert_supported(m.up_exps.qtype)
+            && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
+            && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
             && q8_expert_supported(m.down_exps.qtype)
             && std::env::var("BW24_MOE_PAIRS").map(|v| v != "0").unwrap_or(true)
             && std::env::var("BW24_MOE_STATS").is_err() {
@@ -1064,7 +1061,9 @@ impl HybridModel {
         // routing (M3, Hy3: +expert bias) has no device kernel yet, so those arches must NOT
         // enter the dev arms: with MOE_CACHE=1 M3 silently routed softmax = wrong experts
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
-        let dev_ok = uniform_experts && no_exp_macros && cfg.m3.is_none() && cfg.hy3.is_none();
+        // macro-carrying experts are handled inside the dev path now (epilogue fold + w-scale);
+        // pairs/gdec/csr keep their macro gates until their kernels grow the fold.
+        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
         // Observation modes must route through the host-visible selection below. Otherwise a fully
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
@@ -1992,7 +1991,12 @@ impl HybridModel {
         let n_ff_exp = moe.expert_ff_length as usize;
 
         // device top-k: sel [t, n_used] i32, w [t, n_used] f32 — stays on device.
-        let (sel_d, w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
+        let (sel_d, mut w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
+        // Down-projection macro fold (compressed-tensors NVFP4 artifacts): one tiny launch,
+        // skipped entirely for macro-free experts (every k-quant GGUF).
+        if m.has_macros {
+            e.moe_w_scale_by_expert(&mut w_d, &sel_d, &m.dev_macros, n_expert, t * n_used)?;
+        }
 
         // moe_out rows are FULLY overwritten by moe_down8_fma_dev — uninit (stage-2 rule).
         let mut moe_out = e.uninit(t * n_embd)?;
@@ -2057,7 +2061,7 @@ impl HybridModel {
                     let act_r = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                                 n_embd, n_ff_exp, n_used, n_expert,
                                                                 m.gate_exps.qtype, m.up_exps.qtype,
-                                                                rbg_d, rbu_d)?;
+                                                                rbg_d, rbu_d, &m.dev_macros)?;
                     let mut out_r = e.uninit(t * n_embd)?;
                     let (aq2r, ad2r) = e.quantize_q8_1(&act_r, n_pairs, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2r, &ad2r, &mut out_r,
@@ -2108,7 +2112,7 @@ impl HybridModel {
                 let act = e.moe_gate_up_silu8_dev_q8_rows(&dev.ptr_row, &sel_d, &zq, &zd, t,
                                                           n_embd, n_ff_exp, n_used, n_expert,
                                                           m.gate_exps.qtype, m.up_exps.qtype,
-                                                          rbg_d, rbu_d)?;
+                                                          rbg_d, rbu_d, &m.dev_macros)?;
                 let (aq2, ad2) = e.quantize_q8_1(&act, t * n_used, n_ff_exp)?;
                 e.moe_down8_fma_dev_q8_rows(&dev.ptr_row, &sel_d, &w_d, &aq2, &ad2, &mut moe_out,
                                             t, n_ff_exp, n_embd, n_used, n_expert,
@@ -2127,7 +2131,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev_q8(&dev.ptr_row, &selt, &zq, &zd,
                                                          n_embd, n_ff_exp, n_used, n_expert,
                                                          m.gate_exps.qtype, m.up_exps.qtype,
-                                                         rbg_d, rbu_d)?;
+                                                         rbg_d, rbu_d, &m.dev_macros)?;
                     let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
                     e.moe_down8_fma_dev_q8(&dev.ptr_row, &selt, &wt, &aq2, &ad2, &mut dst,
                                            n_ff_exp, n_embd, n_used, n_expert,
@@ -2136,7 +2140,7 @@ impl HybridModel {
                     let act = e.moe_gate_up_silu8_dev(&dev.ptr_row, &selt, &zt, n_embd, n_ff_exp,
                                                       n_used, n_expert,
                                                       m.gate_exps.qtype, m.up_exps.qtype,
-                                                      rbg_d, rbu_d)?;
+                                                      rbg_d, rbu_d, &m.dev_macros)?;
                     e.moe_down8_fma_dev(&dev.ptr_row, &selt, &wt, &act, &mut dst,
                                         n_ff_exp, n_embd, n_used, n_expert,
                                         m.down_exps.qtype, m.down_exps.row_bytes)?;
@@ -2169,7 +2173,8 @@ impl HybridModel {
                     let act = eng.moe_gate_up_silu8_dev_q8(row, &selt, &zq, &zd,
                                                            n_embd, n_ff_exp, n_used, n_expert,
                                                            m.gate_exps.qtype, m.up_exps.qtype,
-                                                           m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                           m.gate_exps.row_bytes, m.up_exps.row_bytes,
+                                                           &m.dev_macros)?;
                     let (aq2, ad2) = eng.quantize_q8_1(&act, n_used, n_ff_exp)?;
                     eng.moe_down8_fma_dev_q8(row, &selt, &wt, &aq2, &ad2, &mut dst,
                                              n_ff_exp, n_embd, n_used, n_expert,
@@ -2178,7 +2183,8 @@ impl HybridModel {
                     let act = eng.moe_gate_up_silu8_dev(row, &selt, &zt, n_embd, n_ff_exp,
                                                         n_used, n_expert,
                                                         m.gate_exps.qtype, m.up_exps.qtype,
-                                                        m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                                                        m.gate_exps.row_bytes, m.up_exps.row_bytes,
+                                                        &m.dev_macros)?;
                     eng.moe_down8_fma_dev(row, &selt, &wt, &act, &mut dst,
                                           n_ff_exp, n_embd, n_used, n_expert,
                                           m.down_exps.qtype, m.down_exps.row_bytes)?;
@@ -3167,6 +3173,19 @@ impl HybridModel {
     fn gemma4_layer_tail_core(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
                               cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize)
                               -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        self.gemma4_layer_tail_core_pn(e, layer, cur, x, t, None, false)
+    }
+
+    /// tail_core with an optional PRE-NORM fold (glue-fusion lane): `pre_norm = Some(wa)`
+    /// means `cur` is the RAW attention output and the dense entry runs
+    /// rms(cur, wa) + residual-add + ffn_norm as ONE launch (E4B's post-attn norm fold).
+    /// `defer_post_norm`: dense-arm exit returns RAW f0 (ffn_down output) instead of
+    /// sn = rms(f0, post_ffw) — the caller fuses the post-norm into its residual emit
+    /// (rms_pre_add_q8_1, E4B glue wave 5). MoE arm ignores it.
+    fn gemma4_layer_tail_core_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                 cur: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
+                                 pre_norm: Option<&CudaSlice<f32>>, defer_post_norm: bool)
+                                 -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let bits = layer.gemma4.as_ref().unwrap();
@@ -3178,27 +3197,72 @@ impl HybridModel {
             else { panic!("gemma4 dense layer without Dense ffn") };
             let mut attn_out = e.uninit(t * n_embd)?;
             let mut zsh = e.uninit(t * n_embd)?;
-            e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out, &mut zsh,
-                           n_embd, t, eps)?;
+            // wave-2: with the pre-norm fold active the entry ALSO emits zsh q8_1 — the
+            // t=1 fused2 gate/up consume the pair with no standalone quantize launch.
+            let mut zpair: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
+            match pre_norm {
+                Some(wa) if t == 1 => {
+                    zpair = Some(e.rms_pre_add_rms_norm_q8z(cur, wa, x,
+                                                            bits.ffn_norm.float_data(),
+                                                            &mut attn_out, &mut zsh,
+                                                            n_embd, t, eps)?);
+                }
+                Some(wa) => e.rms_pre_add_rms_norm(cur, wa, x, bits.ffn_norm.float_data(),
+                                                   &mut attn_out, &mut zsh, n_embd, t, eps)?,
+                None => e.add_rms_norm(cur, x, bits.ffn_norm.float_data(), &mut attn_out,
+                                       &mut zsh, n_embd, t, eps)?,
+            }
             let n_ff = ffn_gate.out_features();
+            // FFN persistent slab (counter-barrier form) FALSIFIED here 2026-07-14
+            // (falsification #7, jsonl row): PDL glue already hides the launch boundaries
+            // it fused; barrier + worst-segment occupancy net −0.3% (31B depth) / −2.3%
+            // (E4B spec). Down's act dependency is all-to-all, so sentinel sync cannot
+            // rescue segment C — the megakernel front is closed for the dense tail.
             let (gate, up) = if t == 1 {
-                let (zq, zd) = e.quantize_q8_1(&zsh, 1, n_embd)?;
+                let (zq, zd) = match zpair {
+                    Some(p) => p,
+                    None => e.quantize_q8_1(&zsh, 1, n_embd)?,
+                };
                 match e.matmul_q4_fused2(ffn_gate, ffn_up, &zq, &zd)? {
                     Some(p) => p,
                     None => (e.matmul_pre(ffn_gate, &zq, &zd, &zsh, 1)?,
                              e.matmul_pre(ffn_up, &zq, &zd, &zsh, 1)?),
                 }
             } else {
-                (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
+                // BATCHED FUSED2 (DEFAULT ON 2026-07-13, BW24_F2B=0 seam): one segmented
+                // launch for the verify's gate+up — the up segment's blocks fill SMs as
+                // the gate segment drains (the launch-tail mechanism behind the b-tier
+                // plateau; first positive after six falsified in-kernel variants).
+                static F2B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let f2b = *F2B.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+                let fused = if f2b {
+                    let (zq, zd) = e.quantize_q8_1(&zsh, t, n_embd)?;
+                    e.matmul_q4_fused2_batched(ffn_gate, ffn_up, &zq, &zd, t)?
+                } else { None };
+                match fused {
+                    Some(p) => p,
+                    None => (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?),
+                }
             };
             let mut act = e.uninit(t * n_ff)?;
-            e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
-            let f0 = e.matmul(ffn_down, &act, t)?;
+            // act quantize folds into the GELU epilogue (bit-identical q8_1 rounding);
+            // ffn_down rides matmul_pre — one quantize launch fewer per layer.
+            let f0 = if e.uses_q8_1_fast(ffn_down) {
+                let upv = e.view(&up, t * n_ff);
+                let up_all = upv.slice(0..t * n_ff);
+                let (aq, ad) = e.gelu_tanh_mul_q8_1(&gate, &up_all, &mut act, n_ff, t)?;
+                e.matmul_pre(ffn_down, &aq, &ad, &act, t)?
+            } else {
+                e.gelu_tanh_mul(&gate, &up, &mut act, t * n_ff)?;
+                e.matmul(ffn_down, &act, t)?
+            };
+            if defer_post_norm { return Ok((f0, attn_out)); }
             let mut sn = e.uninit(t * n_embd)?;
             e.rms_norm(&f0, bits.post_ffw_norm.float_data(), &mut sn, n_embd, t, eps)?;
             return Ok((sn, attn_out));
         };
 
+        assert!(pre_norm.is_none(), "pre-norm fold is dense-entry only");
         // MoE variant (26B): attn_out = cur + x fused with the three attn_out norms
         // (ffn_norm + router-scale + pre_ffw_norm_2): ONE launch, chains verbatim. At small t
         // (decode + verify) the zsh and moe_in outputs are EMITTED q8_1 (both consumers are
@@ -3298,6 +3362,30 @@ impl HybridModel {
         }
     }
 
+    /// tail_add_nq with the POST-ATTN NORM folded into the dense tail entry (31B mining plan
+    /// item 1, 2026-07-13): `o` is the RAW attention output. Dense layers only.
+    fn gemma4_layer_tail_add_nq_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                   o: &CudaSlice<f32>, x: &CudaSlice<f32>, t: usize,
+                                   next_norm: Option<&CudaSlice<f32>>)
+                                   -> Result<(CudaSlice<f32>, Option<(CudaSlice<i8>, CudaSlice<f32>)>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
+            e, layer, o, x, t, Some(layer.post_attn_norm.float_data()), false)?;
+        let mut xn = e.uninit(t * n_embd)?;
+        match next_norm {
+            Some(w) => {
+                let pair = e.add_scale_rms_norm_q8_1(&sn, &attn_out, bits.layer_scale, w, &mut xn,
+                                                     n_embd, t, self.cfg.rms_eps)?;
+                Ok((xn, Some(pair)))
+            }
+            None => {
+                e.add_scale(&sn, &attn_out, bits.layer_scale, &mut xn, t * n_embd)?;
+                Ok((xn, None))
+            }
+        }
+    }
+
     /// gemma4 prefill: `last_only` = forward_last semantics (lm_head on the final row only).
     /// R4: final logits softcapped 30*tanh(l/30) on host (monotonic — argmax unaffected).
     fn gemma4_forward(&self, e: &Engine, tokens: &[u32], last_only: bool)
@@ -3367,6 +3455,7 @@ impl HybridModel {
             let mut cur = e.zeros(t * n_embd)?;
             e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
             x = self.gemma4_layer_tail_add(e, layer, &cur, &x, t)?;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         cache.pos += t;
         let hiddens = e.clone_dtod(&x)?;
@@ -3569,6 +3658,10 @@ impl HybridModel {
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
+        // Weight prefetch NOT wired here (26B/31B/qwen probes 2026-07-13: 26B flat
+        // 196.6/196.0 vs 196.4/196.1 — MoE ffn dilutes wo; 31B −0.2% — dense decode sits
+        // at the DRAM wall, no idle window to front-load into). E4B keeps the arm
+        // (gemma4_e4b_attn, +0.65% valid window).
         match cap_bucket_max {
             None => {
                 // dc-EAGER: host knows the length — R6 window views EXACTLY like the eager
@@ -3840,6 +3933,7 @@ impl HybridModel {
             let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
             x = xn;
             h_carry = hn;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
@@ -3854,6 +3948,25 @@ impl HybridModel {
 
     /// Verify trunk core: returns (UN-softcapped logits device [t, n_vocab], post-output_norm
     /// hidden stack [t, n_embd]); appends KV rows + advances cache.pos.
+    /// DFlash tap write (dflash lane): copy the post-layer residual rows of `x` into the
+    /// armed sink at the tap slot for `il` (row-major [t, n_taps*hidden]). Per-row D2D
+    /// copies — t <= block_size on verify; prime pays t*n_taps once per prompt (dedicated
+    /// kernel later if it shows in the profile).
+    fn dflash_tap(&self, e: &Engine, cache: &mut Cache, il: usize, x: &CudaSlice<f32>, t: usize)
+                  -> Result<(), Box<dyn std::error::Error>> {
+        let Some(taps) = cache.dflash_taps.as_mut() else { return Ok(()) };
+        let Some(slot) = taps.layer_ids.iter().position(|&l| l == il) else { return Ok(()) };
+        let h = taps.hidden;
+        let n_taps = taps.layer_ids.len();
+        debug_assert_eq!(taps.t, t);
+        let xv = e.view(x, t * h);
+        for r in 0..t {
+            let row = xv.slice(r * h..(r + 1) * h);
+            e.copy_view_into(&mut taps.buf, r * n_taps * h + slot * h, &row, h)?;
+        }
+        Ok(())
+    }
+
     fn gemma4_verify_trunk(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
                            tok_dev: Option<&CudaSlice<u32>>)
                            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
@@ -3890,6 +4003,7 @@ impl HybridModel {
             let (xn, hn) = self.gemma4_layer_tail_add_nq(e, layer, &cur, &x, t, next_norm)?;
             x = xn;
             h_carry = hn;
+            self.dflash_tap(e, cache, il, &x, t)?;
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
@@ -3917,9 +4031,32 @@ impl HybridModel {
         let aux = self.gemma4_aux.as_ref().unwrap();
         let h0 = e.zeros(0)?;
         let h = &h0;
-        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        // BATCHED FUSED qkv (BW24_F2B=1, megakernel microcosm): swa layers fuse all three,
+        // globals fuse q,k (v := k clone). Bit-identical per row; segments tail-fill.
+        static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let f2b = *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+        let fused_qkv = if f2b {
+            if swa {
+                e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    .map(|(a, b, c)| (a, b, Some(c)))
+            } else {
+                e.matmul_q4_fused2_batched(&fa.wq, &fa.wk, hq, hdq, t)?
+                    .map(|(a, b)| (a, b, None))
+            }
+        } else { None };
+        let (q0, k0, v0) = match fused_qkv {
+            Some((a, b, cv)) => {
+                let v = match cv { Some(c) => c, None => e.clone_dtod(&b)? };
+                (a, b, v)
+            }
+            None => {
+                let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+                let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+                let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? }
+                         else { e.clone_dtod(&k0)? };
+                (q0, k0, v0)
+            }
+        };
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
@@ -3958,8 +4095,13 @@ impl HybridModel {
             // for every row.
             // NO .max(512): fa_decode_dc gates its hd512 dpl16-vs-scalar pick on bucket_max
             // (mirroring eager's fa512 floor) — forcing 512 here flipped the arm to dpl16
-            // while eager ran scalar (il=5 KV drift, the burst's 4/128).
-            let bucket = (hint + t + 2).next_power_of_two();
+            // while eager ran scalar (il=5 KV drift, the burst's 4/128). SAME LAW capped
+            // from above (2026-07-13): a regime-pinned hint near the floor (round-graph
+            // captures use f512-1) pow2-rounds PAST it — clamp under the floor, or the arm
+            // re-flips to dpl16 (the round-graph 4/64). The scalar unified self-splits, so
+            // any bucket >= the live length is exact.
+            let bucket = (hint + t + 2).next_power_of_two()
+                .min(crate::fa512_min_tkv().saturating_sub(1));
             let qv = e.view(&q, t * nh * hd);
             for i in 0..t {
                 let q_row = qv.slice(i * nh * hd..(i + 1) * nh * hd);
@@ -4000,9 +4142,32 @@ impl HybridModel {
 
         let h0 = e.zeros(0)?;
         let h = &h0;
-        let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-        let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-        let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? } else { e.clone_dtod(&k0)? };
+        // BATCHED FUSED qkv (BW24_F2B=1, megakernel microcosm): swa layers fuse all three,
+        // globals fuse q,k (v := k clone). Bit-identical per row; segments tail-fill.
+        static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let f2b = *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0"));
+        let fused_qkv = if f2b {
+            if swa {
+                e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    .map(|(a, b, c)| (a, b, Some(c)))
+            } else {
+                e.matmul_q4_fused2_batched(&fa.wq, &fa.wk, hq, hdq, t)?
+                    .map(|(a, b)| (a, b, None))
+            }
+        } else { None };
+        let (q0, k0, v0) = match fused_qkv {
+            Some((a, b, cv)) => {
+                let v = match cv { Some(c) => c, None => e.clone_dtod(&b)? };
+                (a, b, v)
+            }
+            None => {
+                let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
+                let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
+                let v0 = if swa { e.matmul_pre(&fa.wv, hq, hdq, h, t)? }
+                         else { e.clone_dtod(&k0)? };
+                (q0, k0, v0)
+            }
+        };
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
@@ -4241,21 +4406,50 @@ impl HybridModel {
         if let Some(_tgt) = share {
             let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
             q = e.uninit(t * nh * hd)?;
-            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
-            // Q-only: rope q against a throwaway k (rope_neox2 ropes both operands).
-            let mut kdummy = e.uninit(t * hd)?;
-            e.rope_neox2(&mut q, &mut kdummy, pos_d, hd, hd, nh, 1, t, base, 1.0, ff)?;
+            // Q-only through the same fused norm+rope kernel (rk = 0: the k/v segments are
+            // empty; q0 stands in for the unused k/v pointers).
+            let mut kdummy = e.uninit(1)?;
+            let mut vdummy = e.uninit(1)?;
+            e.rms_norm_qkv_rope(&q0, &q0, &q0, fa.q_norm.float_data(),
+                                fa.q_norm.float_data(), &aux.ones,
+                                &mut q, &mut kdummy, &mut vdummy, hd, nh * t, 0,
+                                pos_d, nh, 1, base, 1.0, ff, eps)?;
         } else {
-            let q0 = e.matmul_pre(&fa.wq, hq, hdq, h, t)?;
-            let k0 = e.matmul_pre(&fa.wk, hq, hdq, h, t)?;
-            let v0 = e.matmul_pre(&fa.wv, hq, hdq, h, t)?;   // E4B: real v (K != V)
+            // wave-4b: ONE concat matvec (wq|wk|wv) at t == 1 when the cat tensor exists;
+            // else the fused3 grid launch; else per-matvec. The cat output is contiguous
+            // q|k|v rows — the cat norm+rope twin consumes it directly.
+            let e4bits = self.layers[il].gemma4.as_ref().and_then(|g| g.e4b.as_ref());
+            let cat = e4bits.and_then(|e4| e4.qkv_cat.as_ref());
             q = e.uninit(t * nh * hd)?;
             let mut k = e.uninit(t * nkv * hd)?;
             let mut v = e.uninit(t * nkv * hd)?;
-            // fused q/k/v norms (the 26B kernel; R7: V = ones-rms, never roped).
-            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
-            e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+            if t == 1 && cat.is_some() {
+                let qkv0 = e.matmul_pre(cat.unwrap(), hq, hdq, h, 1)?;
+                e.rms_norm_qkv_rope_cat(&qkv0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                        &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                                        pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            } else {
+                let (q0, k0, v0) = match if t == 1 {
+                    e.matmul_q4_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)?
+                } else {
+                    // E4B verify f3 port (2026-07-14): the 31B segmented-grid batched qkv
+                    // on E4B's real-V triple — same BW24_F2B seam, bit-identical per row.
+                    static F2B_QKV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if *F2B_QKV.get_or_init(|| std::env::var("BW24_F2B").as_deref() != Ok("0")) {
+                        e.matmul_q4_fused3_batched(&fa.wq, &fa.wk, &fa.wv, hq, hdq, t)?
+                    } else { None }
+                } {
+                    Some(triple) => triple,
+                    None => (e.matmul_pre(&fa.wq, hq, hdq, h, t)?,
+                             e.matmul_pre(&fa.wk, hq, hdq, h, t)?,
+                             e.matmul_pre(&fa.wv, hq, hdq, h, t)?),   // E4B: real v (K != V)
+                };
+                // wave-3 fold: q/k/v norms + q/k rope in ONE launch (rope math verbatim on
+                // the normed rows; V ones-rms, never roped).
+                e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(),
+                                    fa.k_norm.float_data(), &aux.ones, &mut q, &mut k, &mut v,
+                                    hd, nh * t, nkv * t, pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            }
             let kvl = cache.kv[il].as_mut().unwrap();
             // class flag must match the cache dims (the g-threading sweep hardcoded `false`
             // here and the wkv default corrupted E4B: q8_0 bytes into an e4m3 cache — the
@@ -4266,11 +4460,11 @@ impl HybridModel {
                 // in-stream — replay-correct, no host len in the launch args. Host mirrors
                 // are NOT touched here (the replay loop owns them; a bump at capture-record
                 // time would double-count the capture iteration).
-                e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
-                                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
-                                              kvl.v_tok_bytes, cls)?;
                 debug_assert!(t == 1);
-                e.inc_seqlen(&mut kvl.len_d)?;
+                // wave 5c: append + len_d inc fused (one launch; single-block ordering).
+                e.append_kv_quantized_row_dc_inc(&k, &v, &mut kvl.k, &mut kvl.v,
+                                                 &mut kvl.len_d, kvl.kv_dim_k, kvl.kv_dim_v,
+                                                 kvl.k_tok_bytes, kvl.v_tok_bytes, cls)?;
             } else {
                 e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len, t,
                                            kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
@@ -4305,13 +4499,41 @@ impl HybridModel {
             // (t_kv = len_d[0], the cache.rs contract). KV-shared layers read the target's
             // counter (advanced when the target ran earlier in the stack).
             assert!(t == 1);
+            // hd512 globals: eager (kvmod) picks the SCALAR unified below the fa512 floor,
+            // and under the window every live t_kv sits below it — cap the capture bucket
+            // under the floor so fa_decode_dc bakes the same scalar symbol, or the graph
+            // rides the dpl16 twin and its numeric class diverges from the dc-eager stream
+            // (E4B-GRAPH-GATE 2/64, 2026-07-12).
+            let bucket = if hd == 512 && win <= crate::fa512_min_tkv() {
+                bucket.min(crate::fa512_min_tkv().saturating_sub(1))
+            } else { bucket };
             let k_view = e.view_u8(&kvl.k, kvl.k.len());
             let v_view = e.view_u8(&kvl.v, kvl.v.len());
+            let g = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+            // Weight prefetch (SOTA item 3, 2026-07-13): wo's decode plane prefetched into
+            // L2 across the fa window — fa reads KV only, the weight DRAM lanes are idle
+            // there (E4B valid window +0.65%: 196.8 vs 195.6). Value-free scheduling op,
+            // captured into the dc graph like any other launch. Extending the cascade to
+            // the ffn gate/up planes measured NEGATIVE (193.9 vs 195.8 — 29MB/layer floods
+            // the fill path and evicts still-hot lines); wo-only is the shipped shape.
+            // BW24_WPF=0 rollback seam.
+            if crate::Engine::wpf_level() >= 1 {
+                e.prefetch_weight_l2(&fa.wo)?;
+            }
+            // wave 5b: the combine emits the wo input q8 pair directly — the standalone
+            // quantize launch + the f32 attn round-trip fold away (t=1 fast path only).
+            if e.uses_q8_1_fast(&fa.wo) {
+                let mut oq = e.alloc_i8_uninit(nh * hd)?;
+                let mut od = e.zeros(nh * hd / 32)?;
+                e.fa_decode_dc_q8(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                  &kvl.len_d, bucket, scale,
+                                  kvl.k_tok_bytes, kvl.v_tok_bytes, g,
+                                  Some((&mut oq, &mut od)))?;
+                return Ok(e.matmul_pre(&fa.wo, &oq, &od, &attn, t)?);
+            }
             e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                            &kvl.len_d, bucket, scale,
-                           kvl.k_tok_bytes, kvl.v_tok_bytes,
-                           (!swa && crate::Engine::gkv_on())
-                               || (swa && crate::Engine::wkv_on()))?;
+                           kvl.k_tok_bytes, kvl.v_tok_bytes, g)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
@@ -4351,7 +4573,7 @@ impl HybridModel {
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl(e, tokens, &x, t)?;
-        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None)
+        self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)
     }
 
     /// Layer stack + head over prebuilt (x_scaled, inp_pl, device pos) — everything below
@@ -4359,7 +4581,7 @@ impl HybridModel {
     /// eager chain by construction: SAME functions, not twins).
     fn gemma4_e4b_trunk_core(&self, e: &Engine, x_in: CudaSlice<f32>, inp_pl: CudaSlice<f32>,
                              pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache,
-                             dc_bucket: Option<usize>)
+                             dc_bucket: Option<usize>, cap_logits: bool)
                              -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -4381,33 +4603,63 @@ impl HybridModel {
                 None => e.rms_norm_q8_1(&x, layer.attn_norm.float_data(), n_embd, t, eps)?,
             };
             let o = self.gemma4_e4b_attn(e, il, &hq, &hdq, pos_d, t, cache, dc_bucket)?;
-            let mut cur = e.uninit(t * n_embd)?;
-            e.rms_norm(&o, layer.post_attn_norm.float_data(), &mut cur, n_embd, t, eps)?;
-            // dense ffn tail (31B arm): (sn, attn_out) with sn = post_ffw_normed ffn output.
-            let (sn, attn_out) = self.gemma4_layer_tail_core(e, layer, &cur, &x, t)?;
-            let mut resid = e.uninit(t * n_embd)?;
-            e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
-            // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
+            // dense ffn tail with the post-attn norm FOLDED into its entry (one launch for
+            // rms(o, post_attn_norm) + residual add + ffn_norm — glue-fusion lane).
             let bits = layer.gemma4.as_ref().unwrap();
             let e4b = bits.e4b.as_ref().expect("e4b layer bits");
-            let g = e.matmul(&e4b.inp_gate, &resid, t)?;
-            let mut inp_this = e.uninit(t * n_epl)?;
-            e.copy_rows_strided(&inp_pl, &mut inp_this, n_epl, t, n_epl * n_layer, il * n_epl)?;
+            // glue wave 5: the tail DEFERS its post_ffw norm — the FFN exit fuses
+            // rms(f0, post_ffw) + residual add + q8 emit into ONE launch (rms_pre_add_q8_1),
+            // killing the rms_norm + add_q8_1 pair per layer. T-GENERIC since 2026-07-13:
+            // the fused single-phase reduction is NOT FP-order-identical to the unfused
+            // rms_norm+add pair (the original "bit-identical chain" claim was FALSE — the
+            // t==1 gate left the batched VERIFY on the unfused chain and split E4B verify
+            // from decode by logit maxdiff ~0.45, the greedy tie-flip at depth: gate 135/256.
+            // NOFUSE bisect: disabling ONLY this fusion -> verify maxdiff 0.000e0). With the
+            // gate dropped, decode AND verify ride the same fused chain — parity by
+            // construction, VERIFY-GATE 0.000e0.
+            let fuse_exit = e.uses_q8_1_fast(&e4b.inp_gate);
+            let (sn, attn_out) = self.gemma4_layer_tail_core_pn(
+                e, layer, &o, &x, t, Some(layer.post_attn_norm.float_data()), fuse_exit)?;
+            let mut resid = e.uninit(t * n_embd)?;
+            // per-layer-embedding tail: resid += rms(proj . (gelu(inp_gate . resid) * inp_pl[il]))
+            // wave-2: the residual add emits q8_1 alongside — inp_gate rides matmul_pre.
+            // (PLE one-block mega-fusion PROBED NEGATIVE 2026-07-13: argmax-correct but
+            // 126 vs 189 tok/s — one SM pulling 0.74MB of weights loses to the multi-block
+            // launch chain it replaced; jsonl row. Kernel deleted per doctrine.)
+            let g = if fuse_exit {
+                // sn here = RAW f0 (post_ffw deferred).
+                let (rq, rd) = e.rms_pre_add_q8_1(&sn, bits.post_ffw_norm.float_data(),
+                                                  &attn_out, &mut resid, n_embd, t,
+                                                  self.cfg.rms_eps)?;
+                e.matmul_pre(&e4b.inp_gate, &rq, &rd, &resid, t)?
+            } else {
+                e.add(&sn, &attn_out, &mut resid, t * n_embd)?;
+                e.matmul(&e4b.inp_gate, &resid, t)?
+            };
             let mut act = e.uninit(t * n_epl)?;
-            e.gelu_tanh_mul(&g, &inp_this, &mut act, t * n_epl)?;
-            let y = e.matmul(&e4b.proj, &act, t)?;
-            let mut yn = e.uninit(t * n_embd)?;
-            e.rms_norm(&y, e4b.post_norm.float_data(), &mut yn, n_embd, t, eps)?;
-            // (resid + tail) * layer_output_scale — llama order — FUSED with the next
-            // layer's attn norm + quantize (last layer: with output_norm for the head).
+            let y = if t == 1 && e.uses_q8_1_fast(&e4b.proj) {
+                let ipv = e.view(&inp_pl, n_epl * n_layer);
+                let row = ipv.slice(il * n_epl..(il + 1) * n_epl);
+                let (aq, ad) = e.gelu_tanh_mul_q8_1(&g, &row, &mut act, n_epl, 1)?;
+                e.matmul_pre(&e4b.proj, &aq, &ad, &act, t)?
+            } else {
+                let mut inp_this = e.uninit(t * n_epl)?;
+                e.copy_rows_strided(&inp_pl, &mut inp_this, n_epl, t, n_epl * n_layer,
+                                    il * n_epl)?;
+                e.gelu_tanh_mul(&g, &inp_this, &mut act, t * n_epl)?;
+                e.matmul(&e4b.proj, &act, t)?
+            };
+            // rms(y, post_norm) + (yn + resid)*layer_scale + next-layer norm+quant emit,
+            // ONE launch (glue-fusion lane; last layer emits through output_norm).
             let next_norm = if il + 1 < n_layer {
                 self.layers[il + 1].attn_norm.float_data()
             } else {
                 self.output_norm.float_data()
             };
             let mut xn = e.uninit(t * n_embd)?;
-            let pair = e.add_scale_rms_norm_q8_1(&yn, &resid, bits.layer_scale, next_norm,
-                                                 &mut xn, n_embd, t, eps)?;
+            let pair = e.rms_pre_add_scale_rms_norm_q8_1(&y, e4b.post_norm.float_data(),
+                                                         &resid, bits.layer_scale, next_norm,
+                                                         &mut xn, n_embd, t, eps)?;
             h_carry = Some(pair);
             x = xn;
         }
@@ -4415,9 +4667,63 @@ impl HybridModel {
         let (oq, odq) = h_carry.take().unwrap();
         let h0 = e.zeros(0)?;
         let mut ld = e.matmul_pre(&self.output, &oq, &odq, &h0, t)?;
-        let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
-        e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        // softcap is strictly monotonic — greedy (argmax-only) consumers skip it, matching
+        // the 26B/31B dc precedent (their dc head goes matmul -> argmax with no cap).
+        // Logit-returning callers (host logits / spec prime) keep the capped emit.
+        if cap_logits {
+            let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
+            e.softcap(&mut ld, cap, t * self.output.out_features())?;
+        }
         Ok((ld, x))
+    }
+
+    /// E4B batched VERIFY (device tokens, the spec round's t=K+1 step): t rows through the
+    /// e4b trunk (per-row causal attention; own-KV layers append t rows host-len, KV-shared
+    /// layers ride their targets), per-row device argmax + the POST-output_norm hidden
+    /// stack (the drafter's h convention). Advances cache.pos/kvl.len by t — the spec
+    /// round rolls back rejected rows (shared layers have no KvLayer, so the plain rewind
+    /// covers exactly the layers that appended).
+    pub fn gemma4_e4b_decode_step_t_am_dev(&self, e: &Engine, tok_d: &CudaSlice<u32>,
+                                                  t: usize, pos0: usize, cache: &mut Cache)
+                                                  -> Result<(CudaSlice<u32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let pos: Vec<i32> = (0..t).map(|i| (pos0 + i) as i32).collect();
+        let pos_d = e.htod_i32(&pos)?;
+        let embd_gpu = self.embd_gpu.get_or_init(|| {
+            e.upload_u8(&self.embd.raw).expect("embed table upload")
+        });
+        let (qt, rb) = self.embd.qt_and_row_bytes(n_embd);
+        let mut x = e.embed_gather_device_td(embd_gpu, tok_d, t, n_embd, qt, rb)?;
+        e.scale_inplace(&mut x, (n_embd as f32).sqrt(), t * n_embd)?;
+        let inp_pl = self.gemma4_e4b_inp_pl_dev(e, tok_d, &x, t)?;
+        let (ld, xp) = self.gemma4_e4b_trunk_core(e, x, inp_pl, &pos_d, t, cache, None, true)?;
+        // softcap is monotonic — the per-row argmax is invariant to it (the trunk's head
+        // emit is already capped, matching the eager chain bit-for-bit).
+        let n_vocab = self.output.out_features();
+        let mut vam = e.stream().alloc_zeros::<u32>(t)?;
+        for i in 0..t {
+            e.argmax_token_device_col(&ld, i, n_vocab, &mut vam, i)?;
+        }
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&xp, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        cache.pos += t;
+        Ok((vam, hn))
+    }
+
+    /// E4B verify + host logits + POST-output_norm hidden stack (the short-prompt spec
+    /// prime path — mirror of `gemma4_decode_step_t_h`).
+    pub(crate) fn gemma4_e4b_decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize,
+                                             cache: &mut Cache)
+                                             -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let t = tokens.len();
+        let (ld, xp) = self.gemma4_e4b_trunk(e, tokens, pos0, cache)?;
+        let mut hn = e.uninit(t * n_embd)?;
+        e.rms_norm(&xp, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
+        cache.pos += t;
+        Ok((e.dtoh(&ld)?, hn))
     }
 
     /// E4B GRAPH-CAPTURABLE dc step: same trunk as the dc step but token_d is updated IN
@@ -4434,7 +4740,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket))?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, Some(bucket), false)?;
         e.argmax_token_device_into(&ld, token_d, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         Ok(())
@@ -4458,7 +4764,7 @@ impl HybridModel {
         let mut x = e.embed_gather_device(embd_gpu, token_d, n_embd, embd_qt, embd_rb)?;
         e.scale_inplace(&mut x, (n_embd as f32).sqrt(), n_embd)?;
         let inp_pl = self.gemma4_e4b_inp_pl_dev(e, token_d, &x, 1)?;
-        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None)?;
+        let (ld, _x) = self.gemma4_e4b_trunk_core(e, x, inp_pl, pos_d, 1, cache, None, false)?;
         let mut tok_out = e.stream().alloc_zeros::<u32>(1)?;
         e.argmax_token_device_into(&ld, &mut tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;

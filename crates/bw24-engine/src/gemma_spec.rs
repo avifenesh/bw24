@@ -44,6 +44,10 @@ pub struct GemmaDraft {
     /// Device copy of `d2t` — the async round translates each drafted trim-idx in place
     /// (u32_map_k) before it seeds the next draft step or meets the verify argmax.
     pub d2t_dev: Option<CudaSlice<u32>>,
+    /// Adaptive trim (coverage escapes are the entire trim cost — oracle-proven +2% on the
+    /// cell the static trim lost by 17%, jsonl 2026-07-19): spare head slots learned at
+    /// serve time from the prompt's own ids and verify-correction tokens.
+    pub trim_adapt: Option<TrimAdapt>,
     pub rope_freqs: CudaSlice<f32>,
     pub ones: CudaSlice<f32>, // weightless-norm weight (max hd 512)
     pub n_embd: usize,        // 1024
@@ -53,30 +57,123 @@ pub struct GemmaDraft {
     pub sliding_window: usize,
 }
 
-fn load_t(
-    e: &Engine,
-    src: &dyn TensorSource,
-    name: &str,
-) -> Result<GpuTensor, Box<dyn std::error::Error>> {
+/// Serve-time adaptive trim (BW24_GEMMA_TRIM_ADAPT=<spare slots>): the static FR trim's whole
+/// loss is coverage escapes — tokens the base emits that the trim can't propose (guaranteed
+/// rejections; the oracle control that injected the exact escapees flipped a -17% cell to +2%
+/// at identical acceptance, jsonl 2026-07-19). Every escape self-identifies at serve time: it
+/// arrives as a verify CORRECTION token (and its cousins ride in with the prompt), so the head
+/// keeps `n_spare` extra rows and learns them — prompt ids up front, corrections as they land.
+/// First miss pays one rejected round; every recurrence after is proposable. Rows are written
+/// into the existing device buffers (no realloc — captured graphs keep their baked addresses).
+pub struct TrimAdapt {
+    /// full-vocab head rows (host copy) — the gather source for learned rows.
+    src_rows: Vec<u8>,
+    row_bytes: usize,
+    n_vocab: usize,
+    /// trim-set membership by token id (ranked + learned).
+    present: Vec<bool>,
+    /// spare slots live at [spare_base, spare_base + n_spare) in the gathered head.
+    spare_base: usize,
+    n_spare: usize,
+    used: usize,
+    logged_full: bool,
+}
+
+impl TrimAdapt {
+    /// Add `tok`'s head row to the trim set if absent and a spare slot is free.
+    fn maybe_add(&mut self, e: &Engine, tok: u32, head: &mut GpuTensor,
+                 d2t: &mut [u32], d2t_dev: &mut CudaSlice<u32>)
+                 -> Result<bool, Box<dyn std::error::Error>> {
+        let t = tok as usize;
+        if t >= self.n_vocab || self.present[t] { return Ok(false); }
+        if self.used == self.n_spare {
+            if !self.logged_full {
+                self.logged_full = true;
+                eprintln!("[trim-adapt] spare slots exhausted ({}) — later escapes stay unproposable",
+                          self.n_spare);
+            }
+            return Ok(false);
+        }
+        let slot = self.spare_base + self.used;
+        self.used += 1;
+        self.present[t] = true;
+        if let GpuTensor::Quant { bytes, .. } = head {
+            e.htod_u8_into(bytes, slot * self.row_bytes,
+                           &self.src_rows[t * self.row_bytes..(t + 1) * self.row_bytes])?;
+        }
+        d2t[slot] = tok;
+        e.u32_set_k(d2t_dev, tok, slot)?;
+        Ok(true)
+    }
+}
+
+/// Union `toks` into the adaptive trim set (no-op when the draft has no adaptive state).
+/// Split-borrow helper: the fields move together or not at all.
+fn trim_adapt_learn(e: &Engine, d: &mut GemmaDraft, toks: &[u32])
+                    -> Result<(), Box<dyn std::error::Error>> {
+    let GemmaDraft { trim_adapt, head, d2t, d2t_dev, .. } = d;
+    let (Some(ta), Some(d2t), Some(d2t_dev)) =
+        (trim_adapt.as_mut(), d2t.as_mut(), d2t_dev.as_mut()) else { return Ok(()) };
+    for &tok in toks {
+        ta.maybe_add(e, tok, head, d2t, d2t_dev)?;
+    }
+    Ok(())
+}
+
+impl GemmaDraft {
+    /// Adaptive-trim stats: (slots used, slot budget). None when adaptation is off.
+    pub fn trim_adapt_stats(&self) -> Option<(usize, usize)> {
+        self.trim_adapt.as_ref().map(|ta| (ta.used, ta.n_spare))
+    }
+
+    /// Persist the learned trim rows: append ids not yet in the sidecar to
+    /// `<ranks>.learned` (the load path pre-fills spare slots from it, so a distribution's
+    /// escapes pay their first-miss round ONCE across the serve lifetime, not per request).
+    pub fn trim_adapt_save(&self) -> std::io::Result<usize> {
+        let (Some(ta), Some(d2t), Some(path)) =
+            (self.trim_adapt.as_ref(), self.d2t.as_ref(), self.trim_learned_path()) else {
+            return Ok(0);
+        };
+        let prior: std::collections::HashSet<u32> = std::fs::read_to_string(&path)
+            .map(|t| t.lines().filter_map(|l| l.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        let fresh: Vec<u32> = d2t[ta.spare_base..ta.spare_base + ta.used].iter()
+            .copied().filter(|id| !prior.contains(id)).collect();
+        if !fresh.is_empty() {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+            for id in &fresh {
+                writeln!(f, "{id}")?;
+            }
+        }
+        Ok(fresh.len())
+    }
+
+    fn trim_learned_path(&self) -> Option<String> {
+        std::env::var("BW24_GEMMA_DRAFT_RANKS").ok().map(|p| format!("{p}.learned"))
+    }
+}
+
+fn load_t(e: &Engine, src: &dyn TensorSource, name: &str)
+          -> Result<GpuTensor, Box<dyn std::error::Error>> {
     GpuTensor::load_from_source(e, src, name)
 }
 
 impl GemmaDraft {
     pub fn load(e: &Engine, g: &GgufFile) -> Result<Self, Box<dyn std::error::Error>> {
-        assert_eq!(
-            g.arch(),
-            Some("gemma4-assistant"),
-            "not a gemma4-assistant drafter"
-        );
+        // two published spellings of the same arch: the 26B/31B drafters ship
+        // "gemma4-assistant", the E4B assistant ships "gemma4_assistant" — the metadata
+        // key prefix follows the arch string verbatim.
+        let arch = match g.arch() {
+            Some(a @ ("gemma4-assistant" | "gemma4_assistant")) => a.to_string(),
+            other => panic!("not a gemma4-assistant drafter (arch {other:?})"),
+        };
         let src = GgufSource(g);
         let meta_u = |k: &str| -> u32 {
-            g.metadata
-                .get(&format!("gemma4-assistant.{k}"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32
+            g.metadata.get(&format!("{arch}.{k}")).and_then(|v| v.as_u64()).unwrap_or(0) as u32
         };
         let meta_f = |k: &str, d: f32| -> f32 {
-            match g.metadata.get(&format!("gemma4-assistant.{k}")) {
+            match g.metadata.get(&format!("{arch}.{k}")) {
                 Some(bw24_gguf::MetaValue::F32(v)) => *v,
                 Some(bw24_gguf::MetaValue::F64(v)) => *v as f32,
                 _ => d,
@@ -84,18 +181,17 @@ impl GemmaDraft {
         };
         let n_layer = meta_u("block_count") as usize;
         let n_embd = meta_u("embedding_length") as usize;
-        let n_backbone = meta_u("embedding_length_out") as usize;
+        // 26B/31B carry the target width as embedding_length_out; the E4B assistant as
+        // n_embd_backbone.
+        let n_backbone = match meta_u("embedding_length_out") as usize {
+            0 => meta_u("n_embd_backbone") as usize,
+            v => v,
+        };
         let hd_g = meta_u("attention.key_length") as usize;
         let hd_s = meta_u("attention.key_length_swa") as usize;
-        let nh = meta_u("attention.head_count") as usize;
-        let swa_pat: Vec<bool> = match g
-            .metadata
-            .get("gemma4-assistant.attention.sliding_window_pattern")
-        {
-            Some(bw24_gguf::MetaValue::Array(a)) => a
-                .iter()
-                .filter_map(|v| v.as_u64().map(|x| x != 0))
-                .collect(),
+        let swa_pat: Vec<bool> = match g.metadata.get(&format!("{arch}.attention.sliding_window_pattern")) {
+            Some(bw24_gguf::MetaValue::Array(a)) =>
+                a.iter().filter_map(|v| v.as_u64().map(|x| x != 0)).collect(),
             _ => return Err("drafter missing sliding_window_pattern".into()),
         };
 
@@ -109,9 +205,14 @@ impl GemmaDraft {
                     .ok_or("missing layer_output_scale")?;
                 bw24_gguf::dequant::dequantize(t.ggml_type, &t.bytes, 1)[0]
             };
+            let hd = if swa { hd_s } else { hd_g };
+            let wq = load_t(e, &src, &p("attn_q.weight"))?;
+            // heads per layer from the projection shape (the E4B assistant keeps 4 heads on
+            // BOTH classes — hd differs — while 26B/31B are uniform; the shape is the truth).
+            let nh = wq.out_features() / hd;
             layers.push(GemmaDraftLayer {
                 attn_norm: load_t(e, &src, &p("attn_norm.weight"))?,
-                wq: load_t(e, &src, &p("attn_q.weight"))?,
+                wq,
                 wo: load_t(e, &src, &p("attn_output.weight"))?,
                 q_norm: load_t(e, &src, &p("attn_q_norm.weight"))?,
                 post_attn_norm: load_t(e, &src, &p("post_attention_norm.weight"))?,
@@ -122,7 +223,7 @@ impl GemmaDraft {
                 ffn_post_norm: load_t(e, &src, &p("post_ffw_norm.weight"))?,
                 out_scale,
                 swa,
-                hd: if swa { hd_s } else { hd_g },
+                hd,
                 nh,
             });
         }
@@ -139,10 +240,10 @@ impl GemmaDraft {
         // FR-Spec head trim (BW24_GEMMA_DRAFT_RANKS=<ids file, rank order>): gather the ranked
         // rows of the drafter head + d2t map. (Top-N-IDS truncation measured NEGATIVE — id
         // order is not frequency; the CORPUS-ranked gather is the real FR-Spec.)
-        let (head, d2t) = {
-            let t = src
-                .find("token_embd.weight")
-                .ok_or("drafter missing token_embd")?;
+        // BW24_GEMMA_TRIM_ADAPT=<n> (default 512 when ranks are set, 0 = off) appends n spare
+        // rows the serve loop fills from prompt ids + verify corrections (see TrimAdapt).
+        let (head, d2t, trim_adapt) = {
+            let t = src.find("token_embd.weight").ok_or("drafter missing token_embd")?;
             let in_f = t.ne[0] as usize;
             let n_vocab = t.ne[1] as usize;
             match std::env::var("BW24_GEMMA_DRAFT_RANKS").ok() {
@@ -157,54 +258,95 @@ impl GemmaDraft {
                         other => panic!("drafter head trim: unsupported head type {other:?}"),
                     };
                     let ids: Vec<u32> = std::fs::read_to_string(&path)?
-                        .lines()
-                        .filter_map(|l| l.trim().parse().ok())
-                        .filter(|&id| (id as usize) < n_vocab)
-                        .collect();
+                        .lines().filter_map(|l| l.trim().parse().ok())
+                        .filter(|&id| (id as usize) < n_vocab).collect();
+                    let n_spare: usize = std::env::var("BW24_GEMMA_TRIM_ADAPT").ok()
+                        .and_then(|v| v.parse().ok()).unwrap_or(512);
                     let row_bytes = in_f / blk_e * blk_b;
-                    let mut gathered = Vec::with_capacity(ids.len() * row_bytes);
+                    let mut gathered = Vec::with_capacity((ids.len() + n_spare) * row_bytes);
                     for &id in &ids {
                         let off = id as usize * row_bytes;
                         gathered.extend_from_slice(&t.bytes[off..off + row_bytes]);
                     }
+                    // spare slots start as copies of row ids[0] mapping to ids[0] — a real,
+                    // already-present token, so however the argmax resolves the duplicate-
+                    // logit tie, the d2t translation lands on the same token id.
+                    for _ in 0..n_spare {
+                        let off = ids[0] as usize * row_bytes;
+                        gathered.extend_from_slice(&t.bytes[off..off + row_bytes]);
+                    }
+                    eprintln!("[gemma-draft] FR head trim: {} rows + {} adaptive ({} MB vs {} MB full)",
+                              ids.len(), n_spare,
+                              (ids.len() + n_spare) * row_bytes / 1_000_000,
+                              n_vocab * row_bytes / 1_000_000);
+                    let mut trim_adapt = (n_spare > 0).then(|| {
+                        let mut present = vec![false; n_vocab];
+                        for &id in &ids { present[id as usize] = true; }
+                        TrimAdapt {
+                            src_rows: t.bytes.to_vec(),
+                            row_bytes, n_vocab, present,
+                            spare_base: ids.len(), n_spare, used: 0, logged_full: false,
+                        }
+                    });
+                    let mut d2t = ids;
+                    let spare_fill = d2t[0];
+                    d2t.extend(std::iter::repeat_n(spare_fill, n_spare));
+                    // pre-fill spare slots from the learned sidecar (trim_adapt_save):
+                    // prior serves' escapes are proposable from round 1 of THIS serve.
+                    if let Some(ta) = trim_adapt.as_mut() {
+                        let learned: Vec<u32> = std::fs::read_to_string(format!("{path}.learned"))
+                            .map(|t| t.lines().filter_map(|l| l.trim().parse().ok()).collect())
+                            .unwrap_or_default();
+                        let mut n_pre = 0usize;
+                        for id in learned {
+                            let i = id as usize;
+                            if i < n_vocab && !ta.present[i] && ta.used < ta.n_spare {
+                                let slot = ta.spare_base + ta.used;
+                                ta.used += 1;
+                                ta.present[i] = true;
+                                let off = i * row_bytes;
+                                gathered[slot * row_bytes..(slot + 1) * row_bytes]
+                                    .copy_from_slice(&t.bytes[off..off + row_bytes]);
+                                d2t[slot] = id;
+                                n_pre += 1;
+                            }
+                        }
+                        if n_pre > 0 {
+                            eprintln!("[trim-adapt] {n_pre} learned rows pre-filled from {path}.learned");
+                        }
+                    }
+                    // upload AFTER the sidecar pre-fill wrote its rows into `gathered`.
                     let bytes = e.htod_bytes(&gathered)?;
-                    eprintln!(
-                        "[gemma-draft] FR head trim: {} rows ({} MB vs {} MB full)",
-                        ids.len(),
-                        ids.len() * row_bytes / 1_000_000,
-                        n_vocab * row_bytes / 1_000_000
-                    );
-                    (
-                        GpuTensor::Quant {
-                            bytes,
-                            qtype,
-                            row_bytes,
-                            ne: vec![in_f as u64, ids.len() as u64],
-                            scale: 1.0,
-                            rp: false,
-                            #[cfg(bw24_cutlass)]
-                            cutlass: None,
-                            fp8: None,
-                            rp4: None,
-                        },
-                        Some(ids),
-                    )
+                    (GpuTensor::Quant {
+                        bytes, qtype, row_bytes,
+                        ne: vec![in_f as u64, d2t.len() as u64], scale: 1.0, rp: false,
+                        #[cfg(bw24_cutlass)]
+                        cutlass: None,
+                        fp8: None, rp4: None,
+                    }, Some(d2t), trim_adapt)
                 }
-                None => (load_t(e, &src, "token_embd.weight")?, None),
+                None => (load_t(e, &src, "token_embd.weight")?, None, None),
             }
         };
         // Q4_0 split-plane decode mirrors (BW24_Q4RP, same as the main trunk — see hybrid.rs):
         // the draft chain is 3 serial mmvq trips/round; the head alone is ~137MB/draft.
-        let (mut pre_proj, mut post_proj) = (
-            load_t(e, &src, "nextn.pre_projection.weight")?,
-            load_t(e, &src, "nextn.post_projection.weight")?,
-        );
+        // projection tensor prefix: 26B/31B "nextn.", the E4B assistant "mtp.".
+        let proj_prefix = if src.find("nextn.pre_projection.weight").is_some() { "nextn" }
+                          else { "mtp" };
+        let (mut pre_proj, mut post_proj) =
+            (load_t(e, &src, &format!("{proj_prefix}.pre_projection.weight"))?,
+             load_t(e, &src, &format!("{proj_prefix}.post_projection.weight"))?);
         let mut head = head;
         let mut layers = layers;
         if crate::Engine::q4rp_enabled() {
-            for w in [&mut pre_proj, &mut post_proj, &mut head] {
-                e.build_q4_rp4(w)?;
-            }
+            // adaptive-trim heads skip the split-plane mirror: the mmvq _rp twins read the
+            // MIRROR, so an in-place row learn on `bytes` would be invisible to the matmul.
+            let head_ws: &mut [&mut GpuTensor] = if trim_adapt.is_some() {
+                &mut [&mut pre_proj, &mut post_proj]
+            } else {
+                &mut [&mut pre_proj, &mut post_proj, &mut head]
+            };
+            for w in head_ws.iter_mut() { e.build_q4_rp4(w)?; }
             for l in layers.iter_mut() {
                 for w in [
                     &mut l.wq,
@@ -229,6 +371,7 @@ impl GemmaDraft {
             head,
             d2t,
             d2t_dev,
+            trim_adapt,
             rope_freqs,
             ones: e.htod(&[1.0f32; 512])?,
             n_embd,
@@ -241,6 +384,16 @@ impl GemmaDraft {
 }
 
 impl HybridModel {
+    /// The MAIN layer whose KV cache a drafter layer attends (llama-model.cpp:2139):
+    /// the last OWN-KV layer of the class — `boundary - 2` windowed / `boundary - 1`
+    /// global, where boundary = n_layer - shared_kv_layers. Shared across every
+    /// gemma4-assistant drafter (26B/31B: boundary = n_layer; E4B: 24).
+    pub(crate) fn gemma4_draft_kv_target(&self, swa: bool) -> usize {
+        let shared = self.cfg.gemma4.as_ref().map(|g| g.shared_kv_layers as usize).unwrap_or(0);
+        let boundary = self.layers.len() - shared;
+        boundary - if swa { 2 } else { 1 }
+    }
+
     /// One drafter step: (token, h[2816 device]) at absolute position `pos` over the FROZEN main
     /// cache. Returns (draft logits host [n_vocab], h_next [2816 device]).
     pub fn gemma4_draft_step(
@@ -311,11 +464,9 @@ impl HybridModel {
         // slots via set_i32_one (kernel-arg stores — no per-step htod/alloc) and the chain
         // becomes graph-capturable (an in-graph i32_copy_add can feed the slots later).
         let eps = self.cfg.rms_eps;
-        let nb = d.n_backbone;
         let ne = d.n_embd;
-        let n_main = self.layers.len();
 
-        // xh = concat(x, h) [5632]
+        // xh = concat(x, h) [2*n_backbone]
         let nb = d.n_backbone;
         let mut xh = e.uninit(2 * nb)?;
         e.copy_into(&mut xh, 0, xs, nb)?;
@@ -324,8 +475,11 @@ impl HybridModel {
         let mut cur = e.matmul(&d.pre_proj, &xh, 1)?; // [1024]
 
         for (_il, dl) in d.layers.iter().enumerate() {
-            // attention over the shared MAIN KV: swa -> main n-2 (windowed), global -> main n-1.
-            let main_il = if dl.swa { n_main - 2 } else { n_main - 1 };
+            // attention over the shared MAIN KV: swa -> the last OWN-KV windowed layer,
+            // global -> the last OWN-KV global layer (llama-model.cpp:2139 rule). Plain
+            // 26B/31B trunks have no shared tail, so this is n-2 / n-1 there; E4B's 18
+            // KV-shared tail layers move the boundary to 24 -> targets 22 (swa) / 23.
+            let main_il = self.gemma4_draft_kv_target(dl.swa);
             let kvl = cache.kv[main_il].as_ref().unwrap();
             let (hd, nhh) = (dl.hd, dl.nh);
             let nkv = kvl.kv_dim_k / hd;
@@ -478,24 +632,40 @@ impl HybridModel {
     /// over the frozen main cache) + (ONE batched verify) + longest-prefix accept + KV rollback.
     /// Returns generated tokens; prints acceptance stats.
     #[allow(clippy::too_many_arguments)]
-    pub fn generate_spec_gemma(
-        &self,
-        e: &Engine,
-        d: &GemmaDraft,
-        prompt: &[u32],
-        max_new: usize,
-        k: usize,
-        eos: &[u32],
-    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    pub fn generate_spec_gemma(&self, e: &Engine, d: &mut GemmaDraft, prompt: &[u32],
+                               max_new: usize, k: usize, eos: &[u32])
+                               -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let mut cache = Cache::new(e, &self.cfg, prompt.len() + max_new + k + 8)?;
+
+        // Adaptive trim, learn point 1: the PROMPT's own ids — the measured escapees are the
+        // prompt's domain content words echoed back (▁oceans, clouds, Explain...), so the
+        // prompt is the cheapest predictor of what the trim is about to miss.
+        trim_adapt_learn(e, d, prompt)?;
 
         let t_prime = std::time::Instant::now();
         // short prompts fall below prime_cache's T floor — the batched verify IS a prime.
         let (pl, h_seed) = if prompt.len() >= crate::hybrid_forward::PRIME_MIN_T {
             let (l, hs, _hh) = self.prime_cache(e, prompt, &mut cache)?;
             (l, hs)
+        } else if self.is_gemma4_e4b() {
+            // E4B short-prompt prime: TOKENWISE — the batched e4b trunk at base_len==0
+            // rides the PRIME-FA f32 arm (a different numerics class from the plain arm's
+            // tokenwise prime), and the class skew flipped near-tie streams (3/64,
+            // 2026-07-13). decode_step_h is the same chain the plain arm primes with.
+            let n_embd_ = self.cfg.n_embd as usize;
+            let mut ll = Vec::new();
+            let mut hx = e.zeros(n_embd_)?;
+            for &tok in prompt {
+                let (l, hh) = self.gemma4_e4b_decode_step_h(e, tok, &mut cache)?;
+                ll = l; hx = hh;
+            }
+            // decode_step_h returns the PRE-output_norm hidden; the short-prompt arm's
+            // h convention below is POST-norm — norm here.
+            let mut hp = e.uninit(n_embd_)?;
+            e.rms_norm(&hx, self.output_norm.float_data(), &mut hp, n_embd_, 1, eps)?;
+            (ll, hp)
         } else {
             let n_vocab = self.output.out_features();
             let (lv, hv) = self.gemma4_decode_step_t_h(e, prompt, 0, &mut cache)?;
@@ -533,8 +703,18 @@ impl HybridModel {
         };
 
         let mut last = crate::forward::argmax(&pl) as u32;
+                // BW24_PROFILE_SPEC=2: capture starts at the ROUND LOOP (prime excluded) — pair
+        // with `nsys -c cudaProfilerApi` (the qwen loop's pattern, spec.rs).
+        if std::env::var("BW24_PROFILE_SPEC").as_deref() == Ok("2") {
+            unsafe extern "C" { fn cudaProfilerStart() -> i32; }
+            unsafe { cudaProfilerStart(); }
+        }
         let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let (mut drafted, mut accepted, mut rounds) = (0usize, 0usize, 0usize);
+        // per-position accept histogram (BW24_SPEC_STATS): [attempted, accepted] per slot —
+        // the depth-K policy statistic (deep slots' marginal accept decides fixed-cap vs deep).
+        let mut pos_att = [0usize; 16];
+        let mut pos_acc = [0usize; 16];
 
         // ASYNC ROUND v2 (dc class): the whole draft chain + verify enqueue with ZERO host
         // syncs — token seeds via kernel-arg store (u32_set_k, no host-memory transfer), draft
@@ -664,10 +844,8 @@ impl HybridModel {
             e.copy_into(&mut g_seed, 0, &h, n_embd)?;
             // the draft chain, step j: reads g_seed via the hc chain, pos from pos_slots[j]
             // (eager: host-filled; graph: filled in-graph from pos_base).
-            let run_chain = |e: &Engine,
-                             batch_d: &mut CudaSlice<u32>,
-                             p_d: &mut CudaSlice<f32>,
-                             g_seed: &CudaSlice<f32>,
+            let run_chain = |e: &Engine, d: &GemmaDraft, batch_d: &mut CudaSlice<u32>,
+                             p_d: &mut CudaSlice<f32>, g_seed: &CudaSlice<f32>,
                              pos_slots: &Vec<CudaSlice<i32>>|
              -> Result<(), Box<dyn std::error::Error>> {
                 // uninit+copy (NOT clone_dtod): clone_dtod's internal alloc bypasses the
@@ -709,13 +887,175 @@ impl HybridModel {
             };
             let over_win = {
                 let win = d.sliding_window;
-                d.layers.iter().any(|dl| {
-                    dl.swa
-                        && cache.kv[self.layers.len() - 2]
-                            .as_ref()
-                            .is_some_and(|kv| kv.len > win)
-                })
+                d.layers.iter().any(|dl| dl.swa
+                    && cache.kv[self.gemma4_draft_kv_target(true)].as_ref()
+                        .is_some_and(|kv| kv.len > win))
             };
+            // ---- ROUND-GRAPH ARM ---- (BW24_GEMMA_ROUND_GRAPH=1): the WHOLE round —
+            // draft chain + stream verify + device accept/seed/rollback/commit + the
+            // device adaptive-depth update — captured ONCE per (k_cap, rung, over_win)
+            // regime and replayed as ONE graph launch per round (the llama round-cost
+            // mechanism: ~600 per-round enqueues collapse to 1). The round is SELF-FEEDING
+            // (pos_ctr/pend/brk/g_seed all advance in-graph), so the capture warmups are
+            // simply two SERVED rounds — their tokens land in the ring and drain normally
+            // (no snapshot/rollback needed, unlike the E4B token door).
+            // Adaptive K rides brk[0] via spec_adapt_k: drafts always run k_cap deep (the
+            // drafter is cheap) but the accept walk depth follows the host policy exactly.
+            let round_graph_on = std::env::var("BW24_GEMMA_ROUND_GRAPH").as_deref() == Ok("1");
+            if round_graph_on && burst_m == 0 && dc_bucket.is_some() && pmin == 0.0
+                && g4_shared == 0 && !self.is_gemma4_e4b()
+                && (cache.pos + 2 * (k_cap + 1) + k_cap + 4 < win_main || cache.pos > win_main)
+                && (cache.pos + 2 * (k_cap + 1) + k_cap + 4 < crate::fa512_min_tkv()
+                    || cache.pos + 1 >= crate::fa512_min_tkv())
+                && e.fa_rows_eligible(cache.pos, 256)
+                && cache.pos + 2 * (k_cap + 1) + k_cap + 2 <= cache.max_ctx
+            {
+                if burst_state.is_none() {
+                    // ring sized for the capture warmups (2 rounds) + the live round.
+                    let bufs = crate::round_stream::StreamBufs::new(e, k_cap, 3)?;
+                    let fill_dummy = e.zeros(n_embd)?;
+                    let ptrs = crate::round_stream::kv_len_ptr_table(e, &cache,
+                                                                     Some(&bufs.pos_ctr))?;
+                    let scr = self.verify_stream_scratch(e, k_cap + 1)?;
+                    burst_state = Some((bufs, fill_dummy, ptrs, scr));
+                }
+                let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(1);
+                // entry: `last` is the pending token (emitted at drain), h is the seed.
+                let (bufs, fill_dummy, ptrs, scr) = burst_state.as_mut().unwrap();
+                let n_rows = cache.kv.len() + 1;
+                e.set_i32_one(&mut bufs.pos_ctr, cache.pos as i32)?;
+                e.u32_set_k(&mut bufs.ring_d, 0, 0)?;
+                e.u32_set_k(&mut bufs.pend_d, last, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, (if adapt { kc } else { k_cap }) as u32, 0)?;
+                e.u32_set_k(&mut bufs.brk_d, 1, 1)?;
+                e.copy_into(&mut g_seed, 0, &h, n_embd)?;
+                // entry pend is emitted host-side (the ring only carries accepted drafts
+                // + bonuses — the burst-arm contract).
+                out.push(last);
+                if eos.contains(&last) { break 'outer; }
+                if out.len() >= max_new { break 'outer; }
+                let key = (usize::MAX - k_cap, dc_bucket.unwrap(), over_win);
+                let mut fresh_rounds = 1usize;   // rounds executed by this iteration
+                // `hint` is the verify stream's ARM-GATING upper bound — it must sit on
+                // the SAME side of every crossover as the live lengths this capture
+                // serves, INCLUDING the arms' own margins (`hint + t < f512` gates the
+                // global scalar arm; `hint + 1 >= win` gates rows_w), or the captured
+                // verify bakes a different kernel class than the eager reference
+                // (107-vs-106 / 4-64 drifts; the regime gate above guarantees the live
+                // side with the same margins).
+                let hint = if cache.pos > win_main {
+                    dc_bucket.unwrap() + k_cap + 2          // over-window: rows_w regime
+                } else if cache.pos + 1 >= crate::fa512_min_tkv() {
+                    win_main - 2                             // above f512, under window
+                } else {
+                    crate::fa512_min_tkv().saturating_sub(k_cap + 5)   // under both
+                };
+                let bufs_ptr: *mut crate::round_stream::StreamBufs = &mut *bufs;
+                let scr_ptr: *mut crate::hybrid_forward::VerifyStreamScratch = &mut *scr;
+                let cache_ptr: *mut Cache = &mut cache;
+                let batch_ptr: *mut CudaSlice<u32> = &mut batch_d;
+                let seed_ptr: *mut CudaSlice<f32> = &mut g_seed;
+                let slots_ptr: *mut Vec<CudaSlice<i32>> = &mut pos_slots;
+                let mut round_body = |e: &Engine| -> Result<(), Box<dyn std::error::Error>> {
+                    // SAFETY: single-threaded round body; the raw pointers alias the outer
+                    // &mut only within this closure (no overlapping borrows).
+                    let (bufs, scr, cache, batch_d, g_seed, pos_slots) = unsafe {
+                        (&mut *bufs_ptr, &mut *scr_ptr, &mut *cache_ptr,
+                         &mut *batch_ptr, &mut *seed_ptr, &mut *slots_ptr) };
+                    e.i32_copy_add(&bufs.pos_ctr, &mut bufs.pos_start_d, 0)?;
+                    e.u32_copy(&bufs.pend_d, batch_d)?;
+                    for (j, slot) in pos_slots.iter_mut().take(k_cap).enumerate() {
+                        e.i32_copy_add(&bufs.pos_ctr, slot, j as i32)?;
+                    }
+                    let mut hc = e.uninit(n_embd)?;
+                    e.copy_into(&mut hc, 0, g_seed, n_embd)?;
+                    for j in 0..k_cap {
+                        let tv = batch_d.slice(j..j + 1);
+                        let (hn, h_next) = self.gemma4_draft_trunk_dev(
+                            e, d, &tv, &hc, &pos_slots[j], cache, dc_bucket)?;
+                        let ld = e.matmul(&d.head, &hn, 1)?;
+                        e.argmax_token_device_col(&ld, 0, d.head.out_features(),
+                                                  batch_d, j + 1)?;
+                        if let Some(map) = &d.d2t_dev {
+                            e.u32_map_k(batch_d, map, j + 1)?;
+                        }
+                        hc = h_next;
+                    }
+                    let (vam_d, vh) = self.gemma4_verify_t_am_stream(
+                        e, batch_d, k_cap + 1, &bufs.pos_ctr, hint, cache, scr)?;
+                    e.spec_accept_greedy_dc(&vam_d, batch_d, &bufs.last_pred_d,
+                                            &bufs.brk_d, &mut bufs.acc_d)?;
+                    if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1")
+                        && std::env::var("BW24_ROUND_GRAPH_CHECK").as_deref() == Ok("1") {
+                        let vhh = e.dtoh(&vh)?;
+                        let nrm = |r: usize| vhh[r * n_embd..(r + 1) * n_embd].iter()
+                            .map(|x| x * x).sum::<f32>().sqrt();
+                        let vamh = e.dtoh_u32(&vam_d)?;
+                        eprintln!("[rg-vh] |row0|={:.3} |row1|={:.3} |row2|={:.3} vam={:?}",
+                                  nrm(0), nrm(1), nrm(2), &vamh[..(k_cap + 1).min(7)]);
+                    }
+                    e.spec_seed_gather(&vh, fill_dummy, &bufs.acc_d, g_seed, 1, n_embd)?;
+                    e.spec_rollback_stream(ptrs, &bufs.pos_start_d, &bufs.acc_d, 1, n_rows)?;
+                    e.spec_ring_commit(batch_d, &bufs.acc_d, &bufs.brk_d,
+                                       &mut bufs.ring_d, &mut bufs.pend_d)?;
+                    e.spec_adapt_k(&bufs.acc_d, &mut bufs.brk_d, adapt_floor, k_cap)?;
+                    Ok(())
+                };
+                // BW24_ROUND_GRAPH_CHECK=1: run the body EAGERLY (no capture/replay) —
+                // splits "body semantics wrong" from "replay mechanics wrong".
+                let body_check = std::env::var("BW24_ROUND_GRAPH_CHECK").as_deref() == Ok("1");
+                if body_check {
+                    round_body(e)?;
+                    if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                        let acc = e.dtoh_u32(&bufs.acc_d)?;
+                        let brk = e.dtoh_u32(&bufs.brk_d)?;
+                        let bt = e.dtoh_u32(&batch_d)?;
+                        let tgt = self.gemma4_draft_kv_target(true);
+                        let ld = e.dtoh_i32(&cache.kv[tgt].as_ref().unwrap().len_d)?[0];
+                        let gs = e.dtoh(&g_seed)?;
+                        let gn: f32 = gs.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        eprintln!("[rg-check] pos0={} batch={bt:?} n_acc={} bonus={} brk_next={:?} len_d[L{tgt}]={ld} |g_seed|={gn:.3}",
+                                  cache.pos, acc[0], acc[1], brk);
+                    }
+                } else {
+                    if !draft_graphs.contains_key(&key) {
+                        let g = e.capture_graph_retained(&mut round_body)?;
+                        draft_graphs.insert(key, g);
+                        fresh_rounds += 2;   // the capture warmups were served rounds
+                    }
+                    draft_graphs.get(&key).unwrap().0.launch()?;
+                }
+                // drain: ONE host sync per iteration (warmup rounds included on capture).
+                let toks = bufs.drain_ring(e)?;
+                let posh = e.dtoh_i32(&bufs.pos_ctr)?[0] as usize;
+                if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                    eprintln!("[round-graph] fresh={fresh_rounds} drained={} posh={posh} toks={:?}",
+                              toks.len(), &toks[..toks.len().min(12)]);
+                }
+                drafted += fresh_rounds * k_cap;
+                rounds += fresh_rounds;
+                accepted += toks.len().saturating_sub(fresh_rounds);
+                let mut ended = false;
+                for &tk in &toks[..toks.len() - 1] {
+                    out.push(tk);
+                    if eos.contains(&tk) || out.len() >= max_new { ended = true; break; }
+                }
+                last = *toks.last().unwrap();
+                cache.pos = posh;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len = posh; }
+                // NO allocation between replays: a pool alloc here can land on a baked
+                // transient address and corrupt the next replay (the draft-graph lesson).
+                // g_seed already holds the next seed (in-graph gather); copy INTO the
+                // existing h buffer for the (possible) eager-arm handoff.
+                e.copy_into(&mut h, 0, &g_seed, n_embd)?;
+                kc = k_cap;   // device brk owns the walk depth; host kc only seeds entry
+                // learn point 2 (round-graph drain): ring = accepted drafts + bonuses; only
+                // bonuses can be escapes, and the present-bitmap check skips the rest cheap.
+                trim_adapt_learn(e, d, &toks)?;
+                if ended { break 'outer; }
+                continue 'outer;
+            }
             // ---- BURST ARM ---- (gate computed at the loop top; needs dc arms too)
             if burst_ok && dc_bucket.is_some() {
                 if burst_state.is_none() {
@@ -733,7 +1073,7 @@ impl HybridModel {
                     && !draft_graphs.contains_key(&key)
                 {
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -853,9 +1193,9 @@ impl HybridModel {
                 e.copy_into(&mut hrow, 0, &g_seed, n_embd)?;
                 h = hrow;
                 kc = k_cap;
-                if ended {
-                    break 'outer;
-                }
+                // learn point 2 (burst drain): same contract as the round-graph drain.
+                trim_adapt_learn(e, d, &toks)?;
+                if ended { break 'outer; }
                 continue 'outer;
             }
             if graph_on && dc_bucket.is_some() {
@@ -865,7 +1205,7 @@ impl HybridModel {
                     // each launch, like g_seed — the in-graph copy_add fills replayed one
                     // round stale, see jsonl).
                     let g = e.capture_graph_retained(|e| {
-                        run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
+                        run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)
                     })?;
                     draft_graphs.insert(key, g);
                 }
@@ -882,7 +1222,7 @@ impl HybridModel {
                     for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                         e.set_i32_one(slot, (cache.pos + j) as i32)?;
                     }
-                    run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
+                    run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
                     let etoks = e.dtoh_u32(&batch_d)?;
                     if gtoks[..=kr] != etoks[..=kr] {
                         eprintln!(
@@ -899,7 +1239,7 @@ impl HybridModel {
                 for (j, slot) in pos_slots.iter_mut().take(kr).enumerate() {
                     e.set_i32_one(slot, (cache.pos + j) as i32)?;
                 }
-                run_chain(e, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
+                run_chain(e, d, &mut batch_d, &mut p_d, &g_seed, &pos_slots)?;
             }
             drafted += kr;
             rounds += 1;
@@ -926,27 +1266,31 @@ impl HybridModel {
                 }
                 Ok(out)
             };
-            let vam_s = if vcheck {
+            let vam_s = if vcheck && !self.is_gemma4_e4b() {
                 let mut ctr = e.htod_i32(&[pos0 as i32])?;
                 e.set_i32_one(&mut ctr, pos0 as i32)?;
                 let mut scr0 = self.verify_stream_scratch(e, kr + 1)?;
-                let (vs, _vhs) = self.gemma4_verify_t_am_stream(
-                    e,
-                    &batch_d,
-                    kr + 1,
-                    &ctr,
-                    pos0 + kr + 3,
-                    &mut cache,
-                    &mut scr0,
-                )?;
+                let (vs, vhs) = self.gemma4_verify_t_am_stream(e, &batch_d, kr + 1, &ctr,
+                                                               pos0 + kr + 3, &mut cache,
+                                                               &mut scr0)?;
                 let ss = kvsum(e, &cache)?;
-                Some((e.dtoh_u32(&vs)?, ss))
+                Some((e.dtoh_u32(&vs)?, ss, e.dtoh(&vhs)?))
+            } else { None };
+            let (vam_d, vh) = if self.is_gemma4_e4b() {
+                self.gemma4_e4b_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
             } else {
-                None
+                self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?
             };
-            let (vam_d, vh) =
-                self.gemma4_decode_step_t_am_dev(e, &batch_d, kr + 1, pos0, &mut cache)?;
-            if let Some((vs, ss)) = vam_s {
+            if let Some((vs, ss, vhs)) = vam_s {
+                let vhe = e.dtoh(&vh)?;
+                for r in 0..kr + 1 {
+                    let md = vhs[r * n_embd..(r + 1) * n_embd].iter()
+                        .zip(&vhe[r * n_embd..(r + 1) * n_embd])
+                        .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                    if md > 1e-3 {
+                        eprintln!("[vcheck-vh] round={rounds} row={r} maxdiff={md:.3e}");
+                    }
+                }
                 let se = kvsum(e, &cache)?;
                 for (il, (a, b)) in ss.iter().zip(&se).enumerate() {
                     if a != b {
@@ -981,7 +1325,18 @@ impl HybridModel {
                     break;
                 }
             }
+            if std::env::var("BW24_DEBUG_SPEC").as_deref() == Ok("1") {
+                let l0 = cache.kv.iter().flatten().next().map(|kv| kv.len).unwrap_or(0);
+                let hh = e.dtoh(&h)?;
+                let hn: f32 = hh.iter().map(|x| x * x).sum::<f32>().sqrt();
+                eprintln!("[round {rounds}] pos0={pos0} post_pos={} kv0_len={l0} last={last} dtoks={dtoks:?} vam={vam:?} m={m} |h_in|={hn:.3}",
+                          cache.pos);
+            }
             accepted += m;
+            for j in 0..k.min(16) {
+                pos_att[j] += 1;
+                if j < m { pos_acc[j] += 1; }
+            }
             // emit last + accepted drafts; the correction token comes from verify row m.
             out.push(last);
             if eos.contains(&last) {
@@ -1016,6 +1371,14 @@ impl HybridModel {
             e.copy_view_into(&mut hrow, 0, &row, n_embd)?;
             h = hrow;
             last = next;
+            // Adaptive trim, learn point 2: ALL verify argmaxes — vam[m] is the emitted
+            // correction (the only emitted token that can sit outside the trim set; accepted
+            // drafts are trim members by construction), and vam[i>m] are main-model
+            // predictions for positions never reached this round: next round usually wants
+            // exactly those tokens, so learning them here lets the draft propose them
+            // BEFORE any miss is paid (prose escapes are first-occurrence-dominated —
+            // corrections-only learning measured +0.5 acceptance pts, jsonl 2026-07-19).
+            trim_adapt_learn(e, d, &vam)?;
             if adapt {
                 let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR")
                     .ok()
@@ -1036,6 +1399,19 @@ impl HybridModel {
         eprintln!("[gemma-spec] rounds={rounds} drafted={drafted} accepted={accepted}                    accept-rate={:.3} tok/round={:.2}",
                   accepted as f64 / drafted.max(1) as f64,
                   out.len() as f64 / rounds.max(1) as f64);
+        if let Some((used, budget)) = d.trim_adapt_stats() {
+            eprintln!("[trim-adapt] {used}/{budget} spare slots learned");
+            match d.trim_adapt_save() {
+                Ok(n) if n > 0 => eprintln!("[trim-adapt] {n} new ids appended to the .learned sidecar"),
+                Ok(_) => {}
+                Err(err) => eprintln!("[trim-adapt] sidecar save failed: {err}"),
+            }
+        }
+        if std::env::var("BW24_SPEC_STATS").as_deref() == Ok("1") {
+            let hist: Vec<String> = (0..16).filter(|&j| pos_att[j] > 0)
+                .map(|j| format!("p{j}:{}/{}", pos_acc[j], pos_att[j])).collect();
+            eprintln!("[gemma-spec] per-position accept: {}", hist.join(" "));
+        }
         Ok(out)
     }
 }

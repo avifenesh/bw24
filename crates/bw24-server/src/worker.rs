@@ -147,7 +147,7 @@ struct Session {
 /// THIS thread (CUDA-context affinity), then runs the scheduler loop until the command channel
 /// closes. `models` = (name, gguf_path) pairs. Sends `ready_tx` once load completes (or the error).
 pub fn run(
-    models: Vec<(String, String)>,
+    models: Vec<(String, String, Option<String>)>,
     rx: Receiver<Cmd>,
     ready_tx: Sender<Result<Vec<String>, String>>,
 ) {
@@ -163,7 +163,7 @@ pub fn run(
 
     let mut loaded: HashMap<String, LoadedModel> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
-    for (name, path) in &models {
+    for (name, path, draft) in &models {
         eprintln!("[worker] loading model {name:?} <- {path}");
         // DIRECTORY path = safetensors HF checkpoint or a manifest-backed bw24 repack/overlay;
         // file = GGUF. Repack tokenizers live in the manifest's source_dir.
@@ -200,7 +200,7 @@ pub fn run(
                 Ok(g) => g,
                 Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
             };
-            let model = match HybridModel::load(&engine, &g) {
+            let mut model = match HybridModel::load(&engine, &g) {
                 Ok(m) => m,
                 Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
             };
@@ -210,6 +210,27 @@ pub fn run(
             };
             (model, tok)
         };
+        // Per-model regime draft (BW24_MODELS "+<draft.gguf>" syntax): replace the embedded
+        // MTP head with the standalone regime draft — same load path as BW24_MTP_DRAFT but
+        // scoped to THIS model, so a multi-model server drafts each model with its own file.
+        let model = {
+            let mut model = model;
+            if let Some(dpath) = draft {
+                let dg = match GgufFile::open(dpath) {
+                    Ok(g) => g,
+                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                };
+                match bw24_engine::hybrid::MtpHead::load_draft(&engine, &dg, &model.cfg) {
+                    Ok(head) => {
+                        eprintln!("[worker] {name}: regime draft attached ({dpath})");
+                        model.mtp = Some(head);
+                    }
+                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                }
+            }
+            model
+        };
+
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
         loaded.insert(name.clone(), LoadedModel { model, tok, eos_id });
@@ -798,7 +819,7 @@ fn finish(s: &Session, reason: StopReason) {
 
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
 /// command Sender (clone into the axum state) + the list of loaded model names.
-pub fn spawn(models: Vec<(String, String)>) -> Result<(Sender<Cmd>, Arc<Vec<String>>), String> {
+pub fn spawn(models: Vec<(String, String, Option<String>)>) -> Result<(Sender<Cmd>, Arc<Vec<String>>), String> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
     std::thread::Builder::new()

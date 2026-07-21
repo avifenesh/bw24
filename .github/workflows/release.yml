@@ -1,8 +1,10 @@
 name: release
 
-# Tag push vX.Y.Z => compile gate, auto-draft changelog from conventional commits,
-# publish the GitHub release. The exactness battery already ran on the rig before
-# the tag (docs/RELEASING.md) — CI here is the build check + the paperwork.
+# Tag push vX.Y.Z => compile gate across the target matrix, auto-draft changelog from
+# conventional commits, publish the GitHub release with prebuilt binaries attached.
+# The exactness battery already ran on the rig before the tag (docs/RELEASING.md) —
+# CI here is the build check + the paperwork. Matrix: glibc floor (ubuntu-22.04 = 2.35,
+# ubuntu-24.04 = 2.39) x CUDA arch (sm_120a primary, sm_89 portable Ada build).
 
 on:
   push:
@@ -12,30 +14,76 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        cuda_arch: ["120a", "89"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # changelog needs tag history
 
       - name: Install CUDA 13.1 (nvcc + headers)
         run: |
-          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          ubuntu=$(. /etc/os-release && echo "ubuntu${VERSION_ID/./}")
+          wget -q "https://developer.download.nvidia.com/compute/cuda/repos/$ubuntu/x86_64/cuda-keyring_1.1-1_all.deb"
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update -q
           sudo apt-get install -y -q cuda-nvcc-13-1 cuda-cudart-dev-13-1 libcublas-dev-13-1
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-sm${{ matrix.cuda_arch }}
 
       - name: Build
         run: cargo build --release --bins
         env:
           BW24_NVCC: /usr/local/cuda-13.1/bin/nvcc
+          BW24_CUDA_ARCH: ${{ matrix.cuda_arch }}
+
+      - name: Package binaries
+        run: |
+          glibc=$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')
+          pkg="bw24-$GITHUB_REF_NAME-linux-x86_64-glibc$glibc-sm${{ matrix.cuda_arch }}"
+          mkdir -p "/tmp/$pkg"
+          cp target/release/{run-gen,run-spec,bw24-server,kernel-check} "/tmp/$pkg/"
+          {
+            echo "bw24 $GITHUB_REF_NAME — prebuilt Linux x86_64 binaries (sm_${{ matrix.cuda_arch }} fatbin)"
+            echo ""
+            echo "Requirements: NVIDIA driver with CUDA 13.x runtime support, the CUDA 13.1"
+            echo "runtime libraries (cudart, cublas), and glibc >= $glibc."
+            echo "sm_120a = RTX 50-series (the tuned target); sm_89 = portable Ada build"
+            echo "(compiles and runs, NOT performance-tuned — see README Limitations)."
+            echo ""
+            echo "Quick start: ./kernel-check   # expect: ALL GREEN: kernels match CPU reference."
+            echo "Docs: https://github.com/avifenesh/bw24"
+          } > "/tmp/$pkg/README.txt"
+          tar -C /tmp -czf "/tmp/$pkg.tar.gz" "$pkg"
+          echo "PKG_NAME=$pkg" >> "$GITHUB_ENV"
+          cp "/tmp/$pkg.tar.gz" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NAME }}
+          path: ${{ env.PKG_NAME }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # changelog needs tag history
 
       - name: Draft changelog
         run: bash tools/changelog.sh > /tmp/notes.md && cat /tmp/notes.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/pkgs
+          merge-multiple: true
 
       - name: Publish release
         env:
@@ -44,4 +92,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/notes.md \
-            --verify-tag
+            --verify-tag \
+            /tmp/pkgs/*.tar.gz

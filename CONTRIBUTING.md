@@ -17,12 +17,35 @@ one of these is incomplete, not "mostly done" — do not open it yet.
 ### 1. Correctness gates (all three, all green)
 
 ```bash
+tools/local-ci.sh                      # one command: kernel-check + argmax gate + VERIFY-GATE + spec self-consistency
+```
+
+or individually:
+
+```bash
 ./target/release/kernel-check          # every quant kernel vs a CPU reference
 ./target/release/run-gen  ...          # prefill argmax MUST match decode argmax
 ./target/release/run-spec ...          # K=1..8 self-consistency: every K token-identical to plain decode
 ```
 
 Paste actual pass/fail output (or relevant tail), not "gates pass." A kernel that reduces in different floating-point order can flip an argmax at tight logit margins — has silently broken "faster" kernels before (`research/tune-data/`) — so a green run *right now, on your branch* is required, not an assumption.
+
+### 1b. Perf regression battery (local CI)
+
+```bash
+tools/local-ci.sh --perf               # full cell battery (~15 min); --perf-quick = 31B subset
+```
+
+This is the drift detector correctness gates cannot be: it re-measures every published
+model cell (plain AND spec, short AND depth) and — critically — records **speculative
+acceptance and tokens/round** per spec cell, verdicting each against the rolling median of
+its last 5 rows (`research/tune-data/perf-ci.jsonl`). FAIL = >3% tok/s drop or >0.05
+acceptance drop. Acceptance drift is invisible to every exactness gate (decode and verify
+shift *together*, bit-consistently) and silently cost this repo half its 31B short-spec
+margin across ~40 green-gated commits in July 2026 — hence the battery. Cells whose model
+files are absent on your machine skip cleanly; set `BW24_MODELS_DIR` to your model root.
+The pre-push hook requires a battery row newer than your newest engine-touching commit
+(warn-only on machines without models; `BW24_SKIP_PERF_CI=1` overrides — say why in the PR).
 
 ### 2. Performance: prefill AND decode, both, never just one
 
@@ -68,6 +91,21 @@ This is a from-scratch engine tuned for one exact machine (RTX 5090 Laptop, sm_1
 [Limitations](README.md#limitations) before proposing portability work — an `arch/sm89-l40s`
 branch exists for Ada, but sm_120a is the only tuned target, and tuning choices elsewhere in the
 codebase assume this exact memory/compute ratio.
+
+## Validation reports from your rig are the easiest contribution
+
+bw24 is tuned on one RTX 5090 Laptop, and reports from **every end-user rig** are wanted —
+filing a [hardware validation report](.github/ISSUE_TEMPLATE/hardware-validation.md) is
+genuinely useful even if you never touch the code:
+
+- **Desktop 50-series (5090/5080/5070 Ti/5070):** same sm_120 architecture, different
+  SM-count/bandwidth ratios — kernels are expected to work, nobody has blessed the numbers.
+  A perf battery (`BW24_MODELS_DIR=... tools/local-ci.sh --perf`) plus an interleaved
+  llama.cpp pairing (protocol: [`research/benchmarks.md`](research/benchmarks.md)) is exactly
+  the evidence that moves those cards from "should work" to "supported".
+- **Older NVIDIA (Ada/Ampere):** the main build targets sm_120a; `arch/sm89-l40s` exists for
+  Ada. "What breaks where" reports map the compatibility floor — correctness output alone
+  advances the story.
 
 ## Where to look first
 

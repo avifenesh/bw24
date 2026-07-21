@@ -1,0 +1,27 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded decode tokens before fixed residency
+[moe-cache] size-aware fixed slots: 5285 slots in 5 classes, 13.97 GB / 13.97 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=50.85 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5285 slots, 5285 resident blocks; 1719 complete experts, 52 one-projection fragments, 38 two-projection fragments (128 stranded blocks)
+post-freeze verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.679e0  MATCH
+generated 4 tokens in 0.962s = 4.16 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 1970]
+MoE cache DECODE-WINDOW: 5285 slots | hits=4263 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=309 experts=1107 backend_wall=0.856s RAM_hits=1857 RAM_misses=1464 RAM_fills=3.92 GB RAM_resident=21.47 GB phase_prepare=0.022s phase_io=0.390s phase_insert=0.003s phase_compute=0.441s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=1079 resident_1=19 resident_2=9
+storage DECODE-WINDOW: 3.92 GB physical reads
+OUTPUT TEXT: "Below is a **"
+--- generated text ---
+Below is a **
+[spill-pread] reads=156743 bytes=412911157248 errors=0 short_reads=0 fallbacks=0 buffer_waits=130628 ring_full=338
+[bw24-cpu-cache] hits=92410 misses=77858 hit_rate=54.27% read_GB=204.030 resident_GB=21.473
+[bw24-cpu-profile] calls=13942 prepare=1.589247s io=21.407610s insert=0.143763s compute=25.298263s read_projections=77858 read_GB=204.030

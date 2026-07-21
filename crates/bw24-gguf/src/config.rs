@@ -43,7 +43,7 @@ impl Arch {
             "qwen3" => "qwen3",
             "qwen3_moe" => "qwen3moe",
             "qwen3_5" | "qwen3_5_text" | "qwen3_next" => "qwen35",
-            "qwen3_5_moe" | "qwen3_next_moe" => "qwen35moe",
+            "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_next_moe" => "qwen35moe",
             "olmoe" => "olmoe",
             // MiniMax-M3 (incl the VL wrapper model_type; text_config flattening handles the rest)
             "minimax_m3" | "minimax_m3_vl" | "minimax_m3_text" => "minimax-m3",

@@ -35,8 +35,9 @@ HANDOVER.md sections from that date.
 | `BW24_SPEC_PMIN0` | off | `1` lets p-min gate slot 0 too (zero-draft rounds). Pays below ~75% base acceptance, hurts above ~90% (2026-07-08, 35B +13–23 tok/s) |
 | `BW24_SPEC_HPOST` | off | `1` feeds the MTP head POST-output_norm hidden — acceptance lever on the 27B (>100 tok/s crossing, 2026-07-06). Per-model choice |
 | `BW24_FRSPEC_TRIM` | off | `<frspec.gguf>`: self-trimmed draft lm_head — gathers top-frequency rows from the model's own output.weight via the file's d2t ranking (generic ranking transfers across same-vocab heads; specialized ones do not — 2026-07-07) |
-| `BW24_MTP_DRAFT` | off | `<draft.gguf>`: replace the MTP head with a standalone draft GGUF (exactness unaffected — verify arbitrates) |
+| `BW24_MTP_DRAFT` | off | `<draft.gguf>`: replace the MTP head with a standalone draft GGUF (exactness unaffected — verify arbitrates). The standard artifact is the regime draft (docs/DRAFT-REGIME.md): own-gen ranks + NVFP4 head + Q4_K_M block, one file, no other flags |
 | `BW24_GEMMA_DRAFT_RANKS` | off | `<ranks.txt>`: gemma FR-Spec drafter head trim — corpus-ranked vocab ids, head gathered to those rows (150→18 MB at 32k). ADOPTED for 26B serving: +2.8% short/+5.8% depth spec at IDENTICAL acceptance (2026-07-12; ranks file: `research/gemma4-bringup/gemma4-frspec-ranks-32768.txt`). Historical negative verdicts were measured through two since-fixed verify bugs |
+| `BW24_GEMMA_TRIM_ADAPT` | 512 | spare head slots for the serve-time adaptive trim (needs `..._DRAFT_RANKS`; `0` = static trim). Coverage escapes — tokens the trim can't propose — are the entire trim cost (oracle 2026-07-19); the loop learns them from prompt ids + verify argmaxes and persists to `<ranks>.learned`, so a distribution's escapes pay their first-miss round once per lifetime, not per request. Flipped the 31B chat cell from −17% to +2.5% and made trim ≥ untrimmed on EVERY measured cell (2026-07-19) |
 | `BW24_SPEC_CAPMAX` | 7 | gemma adaptive-K cap ceiling. >7 opens the b16 verify tier (t=9..16) — correct since 2026-07-12 (three host bugs fixed) but measured perf-negative (depth K8-10 283-293 vs K6 301-306); the door is a measurement, not a crash |
 
 ### Benchmark harness (run-gen / session-bench)
@@ -55,7 +56,7 @@ HANDOVER.md sections from that date.
 
 | flag | default | what it does |
 |---|---|---|
-| `BW24_MODELS` | — | model list `alias=path,...` |
+| `BW24_MODELS` | — | server model list `alias=path[+draft.gguf],...` — `+draft` attaches that model's regime draft per model (docs/DRAFT-REGIME.md); paths accept `hf:` specs |
 | `BW24_ADDR` | bind default | listen address |
 | `BW24_API_KEY` | none | bearer key; setting it also defaults `BW24_COMPAT=openai` |
 | `BW24_COMPAT` | native (`openai` when API_KEY set) | response shape: `openai` = OpenAI completions SSE |
@@ -76,7 +77,7 @@ HANDOVER.md sections from that date.
 | `BW24_KV_K` | `q8_0` | K-cache format arm. `fp8` FLIP-BLOCKED (2026-07-09 A/B, tag kvk-fp8-ab-9bst): e2e FLAT (+0.3-0.9% ms/tok — the −7-14% micro didn't survive; micro≠e2e) AND 9B ST spec self-consistency FAIL (acceptance 74%→20.5%, drift accumulates across K reads). q8_0 stays |
 | `BW24_KV_V` | `q5_1` | V-cache format arm: `q4_0` FLAT + quality-taxed (argmax MISMATCH in-config), `fp8` borderline (−2pt) — measured 2026-07-08; q5_1 stays |
 | `BW24_FA_SMEM_TKV` | 1024 | t_kv crossover to the smem-broadcast FA decode twin (`0` = never). Swept 2026-07-05: flat 512–2048 on real prompts; micro says lower may pay on the 35B (untested e2e arm: 96). fp8 layer classes (gemma GKV/WKV) are excluded — the smem V-stage is q5_1-hardcoded |
-| `BW24_FA_SPW` | 32 | gemma windowed-attention split width. Re-swept 2026-07-12 under the raw-e4m3 sV occupancy ceiling (t=1 decode is grid-limited): 32 wins plain (+4 at 1.7k vs 48); SPEC serving sets `64` (verify fills the grid via rows, bigger splits amortize staging — depth K6 301 vs 249 at 32). MUST be uniform across decode/verify (a t-keyed probe broke combine-order parity: stream 9/128) |
+| `BW24_FA_SPW` | 32 | gemma windowed-attention split width. Re-swept 2026-07-12 under the raw-e4m3 sV occupancy ceiling (t=1 decode is grid-limited): 32 wins plain (+4 at 1.7k vs 48); SPEC serving sets `64` (verify fills the grid via rows, bigger splits amortize staging — depth K6 301 vs 249 at 32). MUST be uniform across decode/verify (a t-keyed probe broke combine-order parity: stream 9/128). The default is tuned for the 82-SM 5090 Laptop; the optimum tracks SM count (a 188-SM RTX PRO 6000 measured +4% at `24`, 2026-07-20) — on bigger GPUs, sweep {16,24,32,48,64} |
 | `BW24_FA_SP512` | 16 | gemma global (hd512) split override — occupancy for the nkv=2 dpl16 grid (+5.7% depth spec when landed; re-swept under e4m3 2026-07-12: 16 stands) |
 | `BW24_FA512_MIN` | 512 | hd512 vec-lane crossover floor (scalar's more-blocks latency hiding wins below it) |
 | `BW24_FA_VEC_MIN` | 96 (per-model) | FA vec-lane t_kv floor override (gemma model init lowers it — v4 wins at every depth there) |
@@ -142,6 +143,9 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | flag | revert semantics | provenance |
 |---|---|---|
 | `BW24_FAST=0` | Stage-A f32-dequant matvec class — THE correctness oracle | default-on 2026-07-08 (env-law retirement) |
+| `BW24_PDL=0` | plain `cuLaunchKernel` for the six grid-dep-synced glue kernels (no programmatic stream serialization) | default-on 2026-07-13; E4B +1.0-1.2%, 26B/31B/qwen flat; SASS-audited entry syncs |
+| `BW24_WPF=0` | no wo-plane L2 prefetch across the E4B fa window | default-on 2026-07-13; +0.65% E4B; 26B/31B probed flat/negative and NOT wired |
+| `BW24_F2B=0` | separate per-tensor b-tier verify launches (no segmented-grid qkv/gate+up fusion) | default-on 2026-07-13; 31B depth +5%, short +3.9%, 26B +0.9%; bit-exact (VERIFY-GATE 0.000e0) |
 | `BW24_MMVQ=0` | dp4a matvec class (m=1 AND batched verify switch together — dispatch-parity law) | default-on 2026-07-08; parity fix 2026-07-07 |
 | `BW24_MOE_CACHE=0` | stage-every-token expert dispatch (no SLRU) | default-on 2026-07-08 |
 | `BW24_MOE_PREFETCH=1` | pipeline the next routed expert's cache misses on the copy stream | experimental; target-rig gate required |
@@ -165,9 +169,12 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_GEMMA_WKV` | gemma WINDOWED (hd256) layers: e4m3 vs q8_0/q5_1 KV. DEFAULT IS SERVING-KEYED (2026-07-12): `BW24_DRAFT` set (spec serving) → q8/q5_1, else → e4m3. Explicit `=0`/`=1` always wins | fp8-windows win depth-plain (+3%, 2026-07-12 A/B) but GUT the MTP drafter's acceptance (31B short .758→1.000 on q8/q5 = spec 88→122.7, ABOVE llama-mtp 112; 26B depth .57→.89) — the drafter's single swa attention is fragile to e4m3 KV noise. Globals (`GKV`) cost no acceptance |
 | `BW24_GEMMA_ROWS_W=0` | per-token loop instead of the parity-law rows/rows_w twins (gemma decode+verify) | rows twins = the parity-law foundation, 2026-07-10/11 |
 | `BW24_GEMMA_DRAFT_DC=0` | gemma drafter attention back to the host-len kvmod arm (default = device-len fa_decode_dc/rows_w arms riding the main layers' len_d) | burst-arc step (a/b), 2026-07-12 — required by the draft graphs + burst |
+| `BW24_E4B_GRAPH` | E4B whole-token graph-exec-update serving (`graph_update.rs`: ONE captured step, per-token fa geometry retuned to the live eager split counts). DEFAULT IS BUDGET-KEYED (2026-07-13): ON at `max_new >= 256` under the window, else eager-dc. `=1` forces, `=0` kills | steady-state replay beats eager but the ~30ms capture crosses over ~200 tokens (128tok −1.3%, 400tok +0.9%, valid-window interleaved); stream 400/400 IDENTICAL vs dc-eager |
 | `BW24_FA_SPW2=0` | disable the warp-1 staging helper on the windowed v4 kernel (gqa==1) | +0.4-0.7 marginal keep 2026-07-11 |
 | `BW24_FA_V4=0` | pre-v4 FA decode lanes (v4 = key-per-lane score phase; format-aware e4m3 arms 2026-07-12) | default-on 2026-07-10 after the 3-model battery |
 | `BW24_FA_I2=0` | single-key walk in the gemma global rows kernel (i2 = 2-key interleave) | i2 default-on 2026-07-11 (depth +3.5%; i4 was negative — register pressure) |
+| `BW24_FA_TB512=0` | per-row (grid.z) globals rows kernel instead of the t-batched shared-tile twin | tb512 default-on 2026-07-14: one block per (kv_head, split) stages its tile once and loops the verify rows — kills the x t DRAM re-read of the full-ctx globals (31B depth spec +1.4%, plain flat; fixed absolute split grid = new numeric config shared by every hd512 caller; stream identical, acceptance unshifted, spec 256/256 x3 models). The in-kernel dp4a port alone (z-form) probed FLAT — the lane was DRAM-re-read-bound, not unpack-bound |
+| `BW24_QWEN_DC=0` | qwen greedy serving falls back to the host-logits eager loop (full-vocab dtoh + host argmax per token) instead of the dc-eager loop | dc-eager default-on 2026-07-15: device argmax + device counters = 4B/token host traffic (the B=2-4 multi-model serving contract), flat single-stream, streams identical. The graph routes were measured and lost: per-bucket captures -24% (ladder-rung recapture storms), exec-update replay -4.5% (SSM copy-back ~50MB/token vs eager's pointer swap); eager's ~470 launches pipeline behind the single readback — jsonl 2026-07-15 |
 | `BW24_Q4RP=0` | GGUF-layout Q4_0 decode (default = split-plane repacked mirrors, built at load) | q4rp default-on 2026-07-10 (+1.9-6.3% all gemma cells; the 18B-stride cure) |
 | `BW24_SPEC_ADAPT=0` | fixed-K gemma draft rounds (default = adaptive k_next = accepted+1, clamp [1, cap]) | gemma adaptive default-on 2026-07-10 (+10% depth spec). NOTE: the qwen adaptive-K arm of the same name was retired 2026-07-07 — this is the gemma revival, different policy |
 | `BW24_PRIME_DEQW_DB=0` | single-buffer workspace staging (no cp.async double-buffer) | 2026-07-05 |
@@ -206,6 +213,12 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MOE_TRACE=<path>` | append (layer, step, expert ids) per decode step — routing-locality analysis (`research/scripts/moe_trace_analyze.py`, 2026-07-07 M3 measurement) |
 | `BW24_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
 | `BW24_DRAFT_GRAPH_CHECK=1` | re-run the gemma draft chain eagerly after each graph replay and diff the drafted slots (non-destructive replay-vs-eager bisect) |
+| `BW24_E4B_GRAPH_GATE=N` (gemma-gate) | E4B graph-door stream gate: `generate()` door OFF then ON on fresh caches, streams must be identical (the warmup-side-effect + exec-update oracle) |
+| `BW24_VERIFY_GATE2=K` (gemma-gate) | CHAINED batched-verify oracle: prefix tokenwise, then two back-to-back `decode_step_t` calls — per-position argmax must match the tokenwise chain. `BW24_VERIFY_GATE2_DEV=1` runs the device-token verify arm (the spec round's exact path) |
+| `BW24_ROUND_GRAPH_CHECK=1` | round-graph bisect: run the captured round body EAGERLY (no capture/replay) — splits body-semantics bugs from replay-mechanics bugs |
+| `BW24_E4B_DCG_EAGER` | E4B door bisect arm: run the dcg step eagerly per token instead of capture/replay — `1` = exact live bucket, `2` = the capture's win bucket (separates bucket-path numerics from the replay mechanism) |
+| `BW24_E4B_GRAPH_TIMING=1` | per-phase host timing of the E4B graph loop (dtoh-wait / fa_apply / launch sums) |
+| `BW24_GRAPH_NODES_DUMP=1` | dump the captured E4B graph's kernel-node inventory (symbol + grid + count) + fa update-unit count at capture |
 | `BW24_BURST_VCHECK=1` | run the gemma verify-STREAM on each eager round's batch before the eager verify and diff argmaxes + per-layer KV byte sums (the burst verify's in-place gate harness) |
 | `BW24_SPEC_STATS=1` | per-slot accept histogram + draft-length histogram |
 | `BW24_DEBUG_SPEC=1` | per-round spec decode trace |
@@ -235,13 +248,14 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FP4=1` | hand-rolled W4A4 GEMM in `matmul` (decode/mid-m band) | same accuracy class (maxdiff ~1.0 vs W4A8 0.159); explicit speed/accuracy tradeoff only |
 | `BW24_FP4_CUTLASS` (+build `BW24_CUTLASS`) | CUTLASS sm120 NVFP4 GEMM for m>=128 prefill (`BW24_FP4_CUTLASS_OTF=1` = per-call repack, no resident VRAM doubling) | same W4A4 exactness block + resident repack ~doubles NVFP4 weight VRAM (OOMs 27B/24GB) |
 | `BW24_MOE_GROUPED=1` | expert-grouped MoE prefill prototype (spill-regime 3.4–3.9x vs sequential-stage at cap64, 2026-07-04) | superseded by pairs/dev/MMA on the daily path (barely moves it, 2026-07-06); kept as the `BW24_MOE_GATE` oracle pair + seed of the specced fused-MoE-MMQ prefill arc |
-| `BW24_MOE_Q8_NVFP4=1` | NVFP4 expert dp4a dot (M3) | BLOCKED: broke the M3 decode-vs-verify gate (3.4e1); M3 stays f32 until macro-handling parity is proven. Also irrelevant while M3 is PCIe-bound |
+| `BW24_MOE_Q8_NVFP4=0` | rollback: NVFP4 expert dp4a dot -> f32 arm | DEFAULT ON since 2026-07-17 — the old M3 decode-vs-verify break was the missing per-expert macro fold (fixed); ct-NVFP4 35B runs the q8 arm at IQ4_XS parity. M3/Hy3 never reach the q8 arms (sigmoid-router gates) |
 | `BW24_KV_FP8=1` | qwen/non-gemma trunk KV in e4m3 (the gemma lever ported; hd128 rides the register g-lane; draft scratch stays q8_0/q5_1, prime forced monolithic) | MEASURED 2026-07-12: correctness green everywhere (run-gen MATCH 1.7k/4.9k/12k, run-spec K=1..6 PASS); perf +0.7-4% on the 9B scaling with depth, flat on the weight-bound 27B; KV bytes 58→32/block (~45% — the 64k-serving prize). PER-MODEL door: 9B yes at depth, 27B neutral, 35B −2% (fp8 format-gates its v3 dp4a lane off — 12k A/B 153 vs 156). Acceptance battery + serve adoption ride the NVFP4-publish re-baseline. Supersedes the 2026-07-09 `BW24_KV_K=fp8` block (verify-side plumbing, since fixed) |
 | `BW24_MOE_MMA_T=<n>` | MMA t-floor override (bisect seam; <16 puts spec verify on MMA) | verify must stay dp4a (dispatch-parity law) — measurement only |
 | `BW24_IQ_FAST` | opt-in IQ4_XS fast matvec (non-expert path) | UNCLEAR — no concluding JSONL row found; left untouched by the audit |
 | `BW24_EAGLE` / `BW24_EAGLE_ALIGN=0` | EAGLE draft lane (run-eagle bin; ALIGN=0 = un-shifted MTP-style pairing A/B) | experimental lane, not on the daily path |
 | `BW24_GEMMA_DRAFT_GRAPH=1` | gemma draft chain replays as ONE captured CUDA graph (keyed kr/rung/window-regime; pos slots + g_seed are eager-filled graph inputs) | steady-state perf ~0 (launch tax hidden at 96.7% busy) — exists as the BURST enabler; capture-retain allocator mode ships with it (2026-07-12) |
 | `BW24_GEMMA_SPEC_BURST=<M>` (+`_DRAFT_GRAPH=1`) | pre-issue M full spec rounds with ONE host sync per burst (verify-stream + device accept/seed/rollback/ring on the round_stream generics) | EXACT (stream 128/128 short+depth, 26B+31B) but PERF-NEGATIVE single-stream — no draft/verify overlap materializes on one stream and fixed-K costs the adaptive policy (26B short 304 vs 379; 31B 74 vs 88). Default 0. Stage 2 = second-stream speculative draft(N+1) under verify(N) |
+| `BW24_GEMMA_ROUND_GRAPH=1` | the WHOLE gemma spec round (draft chain + stream verify + device accept/seed/rollback/commit + `spec_adapt_k` device adaptive depth) captured once per regime, ONE graph launch per round | EXACT (26B 64/64 short + 128/128 depth, 31B 64/64) with BETTER round dynamics (tok/round 5.33 vs 4.74) but PERF-NEGATIVE at fixed shapes (−10/−11% interleaved, 2026-07-13) — the replay pays fixed k_cap drafts + fixed-width verify, not launch gaps (the enqueue-ahead law, 4th confirmation). Door kept for the exec-update-width phase 2; 31B pair pending a valid window |
 
 ---
 

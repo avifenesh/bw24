@@ -14,7 +14,8 @@
 //!   POST /v1/chat/completions    -> OpenAI chat messages rendered by the GGUF chat template;
 //!                                     OpenAI message/chunk response shapes.
 //!
-//! CONFIG: BW24_MODELS="name=/path.gguf,name2=/path2.gguf" (comma-separated name=path pairs).
+//! CONFIG: BW24_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo" (comma-separated;
+//! `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
 //! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. BW24_ADDR sets the bind addr.
 
 mod worker;
@@ -196,23 +197,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// BW24_MODELS="name=/path.gguf,name2=/path2.gguf". Falls back to the BASE-4 test pair.
-fn parse_models_config() -> Vec<(String, String)> {
+/// BW24_MODELS="name=/path.gguf[+/draft.gguf],name2=hf:owner/repo". Falls back to the
+/// BASE-4 test pair. `+<draft.gguf>` after a model path attaches that model's regime
+/// draft (docs/DRAFT-REGIME.md) — per model, not the global BW24_MTP_DRAFT env, so a
+/// multi-model server gives each model its own draft. Both parts accept hf: specs.
+fn parse_models_config() -> Vec<(String, String, Option<String>)> {
     if let Ok(spec) = std::env::var("BW24_MODELS") {
         let mut out = Vec::new();
         for entry in spec.split(',').filter(|s| !s.trim().is_empty()) {
             if let Some((name, path)) = entry.split_once('=') {
-                out.push((name.trim().to_string(), path.trim().to_string()));
+                // Paths accept hf:owner/repo[:file] specs — resolved (downloaded on first
+                // use) before the worker sees them.
+                let (mpath, dpath) = match path.trim().split_once('+') {
+                    Some((m, d)) => (m.trim(), Some(d.trim())),
+                    None => (path.trim(), None),
+                };
+                let resolve = |p: &str| bw24_gguf::hf::resolve_arg(p).unwrap_or_else(|err| {
+                    eprintln!("[server] FATAL: model {name:?}: {err}");
+                    std::process::exit(1);
+                });
+                out.push((name.trim().to_string(), resolve(mpath), dpath.map(resolve)));
             } else {
-                eprintln!("[server] WARN: bad BW24_MODELS entry {entry:?} (want name=/path); skipping");
+                eprintln!("[server] WARN: bad BW24_MODELS entry {entry:?} (want name=/path[+/draft]); skipping");
             }
         }
         if !out.is_empty() { return out; }
     }
     // Default: the BASE-4 test pair (main=27B, judge=9B).
     vec![
-        ("main".into(),  "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf".into()),
-        ("judge".into(), "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf".into()),
+        ("main".into(),  "/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf".into(), None),
+        ("judge".into(), "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf".into(), None),
     ]
 }
 

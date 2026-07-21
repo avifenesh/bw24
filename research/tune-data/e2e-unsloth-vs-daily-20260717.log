@@ -1,0 +1,67 @@
+########## ROUND 1 ##########
+=== bw24 old p1-code-short ===
+[generate_spec K=3] 256 tok in 2.219s = 114.91 tok/s (2.36x vs generate; this run's prime 0.098s)
+  acceptance: 179/228 = 78.5%   self-consistency: PASS (identical to generate)
+=== bw24 old p2-code-medium ===
+[generate_spec K=3] 256 tok in 2.581s = 98.81 tok/s (2.08x vs generate; this run's prime 1.365s)
+  acceptance: 173/249 = 69.5%   self-consistency: PASS (identical to generate)
+=== bw24 old p3-agentic-long ===
+[generate_spec K=3] 256 tok in 3.104s = 82.16 tok/s (1.76x vs generate; this run's prime 4.655s)
+  acceptance: 161/282 = 57.1%   self-consistency: PASS (identical to generate)
+=== bw24 new p1-code-short ===
+[generate_spec K=3] 256 tok in 2.223s = 114.69 tok/s (2.37x vs generate; this run's prime 0.101s)
+  acceptance: 181/225 = 80.4%   self-consistency: PASS (identical to generate)
+=== bw24 new p2-code-medium ===
+[generate_spec K=3] 256 tok in 2.961s = 86.13 tok/s (1.82x vs generate; this run's prime 1.372s)
+  acceptance: 163/282 = 57.8%   self-consistency: PASS (identical to generate)
+=== bw24 new p3-agentic-long ===
+[generate_spec K=3] 256 tok in 2.912s = 87.57 tok/s (1.88x vs generate; this run's prime 4.675s)
+  acceptance: 167/264 = 63.3%   self-consistency: PASS (identical to generate)
+=== llama old boot ===
+=== llama old p1-code-short ===
+gen: 256 tok @ 89.40 tok/s (prompt 28 @ 159)
+=== llama old p2-code-medium ===
+gen: 256 tok @ 89.87 tok/s (prompt 1845 @ 1823)
+=== llama old p3-agentic-long ===
+gen: 256 tok @ 81.04 tok/s (prompt 6257 @ 2076)
+=== llama new boot ===
+=== llama new p1-code-short ===
+gen: 256 tok @ 87.67 tok/s (prompt 28 @ 155)
+=== llama new p2-code-medium ===
+gen: 256 tok @ 89.73 tok/s (prompt 1845 @ 1776)
+=== llama new p3-agentic-long ===
+gen: 1 tok @ 1000000.00 tok/s (prompt 6257 @ 2027)
+########## ROUND 2 ##########
+=== bw24 old p1-code-short ===
+[generate_spec K=3] 256 tok in 2.235s = 114.08 tok/s (2.35x vs generate; this run's prime 0.101s)
+  acceptance: 179/228 = 78.5%   self-consistency: PASS (identical to generate)
+=== bw24 old p2-code-medium ===
+[generate_spec K=3] 256 tok in 2.579s = 98.88 tok/s (2.08x vs generate; this run's prime 1.369s)
+  acceptance: 173/249 = 69.5%   self-consistency: PASS (identical to generate)
+=== bw24 old p3-agentic-long ===
+[generate_spec K=3] 256 tok in 3.106s = 82.09 tok/s (1.76x vs generate; this run's prime 4.667s)
+  acceptance: 161/282 = 57.1%   self-consistency: PASS (identical to generate)
+=== bw24 new p1-code-short ===
+[generate_spec K=3] 256 tok in 2.236s = 114.02 tok/s (2.36x vs generate; this run's prime 0.101s)
+  acceptance: 181/225 = 80.4%   self-consistency: PASS (identical to generate)
+=== bw24 new p2-code-medium ===
+[generate_spec K=3] 256 tok in 2.964s = 86.02 tok/s (1.82x vs generate; this run's prime 1.376s)
+  acceptance: 163/282 = 57.8%   self-consistency: PASS (identical to generate)
+=== bw24 new p3-agentic-long ===
+[generate_spec K=3] 256 tok in 2.916s = 87.45 tok/s (1.88x vs generate; this run's prime 4.688s)
+  acceptance: 167/264 = 63.3%   self-consistency: PASS (identical to generate)
+=== llama old boot ===
+=== llama old p1-code-short ===
+gen: 256 tok @ 88.99 tok/s (prompt 28 @ 147)
+=== llama old p2-code-medium ===
+gen: 256 tok @ 90.29 tok/s (prompt 1845 @ 1795)
+=== llama old p3-agentic-long ===
+gen: 256 tok @ 80.90 tok/s (prompt 6257 @ 2067)
+=== llama new boot ===
+=== llama new p1-code-short ===
+gen: 256 tok @ 87.87 tok/s (prompt 28 @ 153)
+=== llama new p2-code-medium ===
+gen: 256 tok @ 89.63 tok/s (prompt 1845 @ 1789)
+=== llama new p3-agentic-long ===
+gen: 1 tok @ 1000000.00 tok/s (prompt 6257 @ 2025)
+########## DONE ##########

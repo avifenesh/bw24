@@ -24,6 +24,23 @@ extern "C" __global__ void mma_fp16_smoke(const unsigned* a_frag, const unsigned
     out[lane * 4 + 2] = c[2]; out[lane * 4 + 3] = c[3];
 }
 
+// ---- PDL micro-probe kernels (2026-07-13, SOTA item 2 falsification step) ----
+// Question: does CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION shrink the
+// dependent-launch gap on sm_120 (consumer Blackwell)? pdl_spin burns ~`spin` cycles then
+// bumps out[0]; pdl_consume grid-dep-syncs then accumulates. Chain oracle: out[0]==N pairs.
+// Both call cudaGridDependencySynchronize() first — a documented no-op under plain launch,
+// so ONE compiled body serves both arms (any numeric diff between arms = disqualifying).
+extern "C" __global__ void pdl_spin(float* out, long long spin) {
+    cudaGridDependencySynchronize();
+    long long t0 = clock64();
+    while (clock64() - t0 < spin) {}
+    if (threadIdx.x == 0 && blockIdx.x == 0) out[0] += 1.0f;
+}
+extern "C" __global__ void pdl_consume(float* out) {
+    cudaGridDependencySynchronize();
+    if (threadIdx.x == 0 && blockIdx.x == 0) out[1] += out[0];
+}
+
 // FP4 block-scale mma — the engine's headline weapon. Presence in this fatbin proves it
 // compiles+links in our real build pipeline (not just a /tmp probe).
 extern "C" __global__ void mma_fp4_blockscale_smoke(const unsigned* a_frag, const unsigned* b_frag,

@@ -56,6 +56,10 @@ name = "st-vs-gguf"
 path = "src/bin/st_vs_gguf.rs"
 
 [[bin]]
+name = "frspec-owngen"
+path = "src/bin/frspec_owngen.rs"
+
+[[bin]]
 name = "run-gen"
 path = "src/bin/run_gen.rs"
 

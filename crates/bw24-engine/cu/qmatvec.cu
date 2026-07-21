@@ -580,6 +580,8 @@ __device__ __forceinline__ void mmvq_block_reduce_write(float acc, float* __rest
 // Vectorized weight-int load: 4 int8 starting at `p` (only 2-byte aligned in Q8_0 -> uint16x2).
 // Mirrors llama.cpp get_int_b2 (vecdotq.cuh:18-25). Safe for any 2-byte-aligned source.
 __device__ __forceinline__ int get_int_b2(const void* p) {
+    // NOT streaming: only 2-byte aligned — an __ldcs pair here split the single 32-bit
+    // load and cost −0.8% on the 31B depth cell (2026-07-14 probe); b4 streams instead.
     const unsigned short* u = (const unsigned short*)p;
     return (int)u[0] | ((int)u[1] << 16);
 }
@@ -589,7 +591,7 @@ __device__ __forceinline__ int get_int_b2(const void* p) {
 // (row_bytes=(in_f/64)*36 -> mult of 4; qs=b+4; qss=qs+s*8) so the qs stream qualifies. Do NOT
 // widen to int2/LDG.E.64 there: rows are only 8-aligned when in_f%128==0 -> faults on odd in_f/64.
 __device__ __forceinline__ int get_int_b4(const void* p) {
-    return *(const int*)p;
+    return __ldcs((const int*)p);   // streaming: weight-only helper (see get_int_b2)
 }
 
 // ============================ Stage-B MMVQ (warp-per-row decode) ============================
@@ -2846,16 +2848,18 @@ __device__ __forceinline__ void q4_0_mmvq_batched(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            // int4-vectorized (2026-07-13, the L1TEX fix): same values, same dp4a order.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            const int al[4] = { a01.x, a01.y, a01.z, a01.w };
+            const int ah[4] = { a23.x, a23.y, a23.z, a23.w };
             int sumi = 0, sums = 0;
             #pragma unroll
             for (int k = 0; k < 4; k++) {
-                int a_lo = aq4[k];
-                int a_hi = aq4[4 + k];
-                sumi = dp4a(lo[k], a_lo, sumi);
-                sumi = dp4a(hi[k], a_hi, sumi);
-                sums = dp4a(0x01010101, a_lo, sums);
-                sums = dp4a(0x01010101, a_hi, sums);
+                sumi = dp4a(lo[k], al[k], sumi);
+                sumi = dp4a(hi[k], ah[k], sumi);
+                sums = dp4a(0x01010101, al[k], sums);
+                sums = dp4a(0x01010101, ah[k], sums);
             }
             acc[c] += d4 * (float)(sumi - 8 * sums) * ad[(size_t)c * nblk + blk];
         }
@@ -2913,10 +2917,12 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
-            int a[8];
-            #pragma unroll
-            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            // int4-vectorized (2026-07-13): the 8 scalar int loads were 4x the L1TEX
+            // transactions of the t=1 walk's two 16B loads — L1TEX measured 90% saturated
+            // (the b-tier limiter). Same bytes, same order per k — bit-identical.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
             int sums = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
@@ -4411,14 +4417,14 @@ __device__ __forceinline__ float expert_dot_iq4xs_g_v(const unsigned char* wrow,
     const unsigned char* b = wrow + (long)sblk * 136;
     if (((unsigned long long)b & 7ull) != 0ull)
         return expert_dot_iq4xs_g(wrow, g, aqb, d8);      // non-8-aligned slab: scalar body
-    uint2 hdr = *(const uint2*)b;                         // d(2B) | sh(2B) | sl(4B), one LDG.64
+    uint2 hdr = __ldcs((const uint2*)b);                  // d(2B) | sh(2B) | sl(4B), one LDG.64 (streaming: single-use expert bytes)
     float d_sb = half_to_float((unsigned short)(hdr.x & 0xffffu));
     unsigned short sh = (unsigned short)(hdr.x >> 16);
     // sl[ib>>1] is byte (ib>>1) of hdr.y (little-endian); fold the byte+nibble shifts.
     int ls = ((hdr.y >> (8 * (ib >> 1) + 4 * (ib & 1))) & 0xf) | (((sh >> (2 * ib)) & 3) << 4);
     int scale = ls - 32;
     const int2* qs2 = (const int2*)(b + 8 + ib * 16);     // (8 + ib*16) % 8 == 0 -> 8-aligned
-    int2 q01 = qs2[0], q23 = qs2[1];
+    int2 q01 = __ldcs(&qs2[0]), q23 = __ldcs(&qs2[1]);
     const int* aLo = (const int*)(aqb);
     const int* aHi = (const int*)(aqb + 16);
     int2 v0 = get_int_from_table_16_d(q01.x, kvalues_iq4nl_d);
@@ -4447,7 +4453,9 @@ __device__ __forceinline__ float expert_dot_q4_0_g_v(const unsigned char* wrow, 
     const unsigned char* b = wrow + (long)g * 18;
     const unsigned sh8 = ((unsigned)(size_t)b & 3u) * 8u;
     const uint32_t* ap = (const uint32_t*)((size_t)b & ~(size_t)3);
-    uint32_t w0 = ap[0], w1 = ap[1], w2 = ap[2], w3 = ap[3], w4 = ap[4], w5 = ap[5];
+    // streaming loads (2026-07-14 L2 arc): expert bytes are single-use per token
+    uint32_t w0 = __ldcs(&ap[0]), w1 = __ldcs(&ap[1]), w2 = __ldcs(&ap[2]),
+             w3 = __ldcs(&ap[3]), w4 = __ldcs(&ap[4]), w5 = __ldcs(&ap[5]);
     uint32_t s0 = __funnelshift_r(w0, w1, sh8);   // bytes b[0..3]
     uint32_t s1 = __funnelshift_r(w1, w2, sh8);   // b[4..7]
     uint32_t s2 = __funnelshift_r(w2, w3, sh8);   // b[8..11]
@@ -5013,11 +5021,22 @@ extern "C" __global__ void moe_down8_fma_f32(
 // q8 dp4a twins of the _dev pair (resident-experts arc, 2026-07-06): device sel/w + pointer
 // table (like _dev) + int dp4a dots vs a q8_1 activation (like the _q8 pair). One warp per
 // (row, slot); same silu expression / slot-ordered FMA chain as every twin in this family.
+// Per-expert macro-scale fold for the DOWN projection: w[i] *= macros[2*n_expert + sel[i]],
+// applied to the device router weights once per layer (compressed-tensors NVFP4 artifacts
+// carry per-expert global scales). Every down twin consumes w verbatim, so this one launch
+// macro-folds all of them. Launched ONLY when the layer carries non-trivial macros.
+extern "C" __global__ void moe_w_scale_by_expert(
+        float* __restrict__ w, const int* __restrict__ sel,
+        const float* __restrict__ macros, int n_expert, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) w[i] *= __ldg(&macros[2 * n_expert + sel[i]]);
+}
 extern "C" __global__ void moe_gate_up_silu8_dev_q8(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5035,8 +5054,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // gemma4 GELU twin of moe_gate_up_silu8_dev_q8: identical dots/reduce, gelu_tanh epilogue
@@ -5122,7 +5141,8 @@ __device__ __forceinline__ void moe_gu_dev_q8_geom(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o0 = ((int)blockIdx.x * (int)blockDim.y + (int)threadIdx.y) * RPW;
     int j = blockIdx.y;
     if (o0 >= n_ff) return;
@@ -5149,28 +5169,31 @@ __device__ __forceinline__ void moe_gu_dev_q8_geom(
     for (int r = 0; r < RPW; r++) {
         int o = o0 + r;
         if (o >= n_ff) break;
-        float ag = warp_reduce_sum(accg[r]);
-        float au = warp_reduce_sum(accu[r]);
+        float ag = warp_reduce_sum(accg[r]) * __ldg(&macros[ex]);
+        float au = warp_reduce_sum(accu[r]) * __ldg(&macros[n_expert + ex]);
         if (lane == 0) act[(size_t)j * n_ff + o] = (ag / (1.0f + expf(-ag))) * au;
     }
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r1(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<1>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<1>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<2>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<2>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 extern "C" __global__ void moe_gate_up_silu8_dev_q8_r4(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
-    moe_gu_dev_q8_geom<4>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u);
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
+    moe_gu_dev_q8_geom<4>(table, sel, aq, ad, act, in_f, n_ff, n_expert, qt_g, qt_u, rb_g, rb_u, macros);
 }
 template<int RPW>
 __device__ __forceinline__ void moe_down8_dev_q8_w8_geom(
@@ -5470,7 +5493,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5488,8 +5512,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5504,7 +5528,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5532,8 +5557,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5548,7 +5573,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5597,8 +5623,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_vsm2(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5616,7 +5642,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
         int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
-        int n_used) {
+        int n_used,
+        const float* __restrict__ macros) {
     int tok = blockIdx.z;
     int o = blockIdx.x;
     int j = blockIdx.y;
@@ -5637,8 +5664,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_v_rows(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[((size_t)tok * n_used + j) * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // gemma4 GELU rows twin (verify t=2..K+2, one launch for all tokens): per (token, row, slot)
@@ -5745,7 +5772,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = threadIdx.y;                 // slot from block y-dim; blockDim.y == n_used
     int lane = threadIdx.x;
@@ -5763,8 +5791,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5816,7 +5844,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_sg(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     __shared__ unsigned int gsm[512];
     int lane = threadIdx.x;
     #pragma unroll
@@ -5838,8 +5867,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_sg(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // j8-geometry twin: block (32, n_used) — ONE 2KB copy (spread over all 32*n_used threads)
@@ -5848,7 +5877,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8sg(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     __shared__ unsigned int gsm[512];
     int tid = threadIdx.y * 32 + threadIdx.x;
     int nth = blockDim.y * 32;
@@ -5871,8 +5901,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_j8sg(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -5885,7 +5915,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5904,8 +5935,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2(
     if (lane == 0) { if (which == 0) sg = acc; else su = acc; }
     __syncthreads();
     if (which == 0 && lane == 0) {
-        float g = sg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * su;
+        float g = sg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (su * __ldg(&macros[n_expert + ex]));
     }
 }
 // gate_up 4-WARP G-SPLIT (nsb==64 ONLY, i.e. in_f==2048 — the 35B expert gate/up shape): block
@@ -5918,7 +5949,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_gs4(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5942,8 +5974,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_gs4(
     }
     __syncthreads();
     if (wy == 0 && lane == 0) {
-        float gg = gu[0];
-        act[(size_t)j * n_ff + o] = (gg / (1.0f + expf(-gg))) * gu[1];
+        float gg = gu[0] * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (gg / (1.0f + expf(-gg))) * (gu[1] * __ldg(&macros[n_expert + ex]));
     }
 }
 // gate_up nsb==64 UNROLLED twin (in_f==2048 — the 35B expert gate/up shape): the base loop's two
@@ -5955,7 +5987,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_u64(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;
     int j = blockIdx.y;
     int lane = threadIdx.x;
@@ -5975,8 +6008,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_u64(
     accg = warp_reduce_sum(accg);
     accu = warp_reduce_sum(accu);
     if (lane == 0) {
-        float g = accg;
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * accu;
+        float g = accg * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (accu * __ldg(&macros[n_expert + ex]));
     }
 }
 // s2 with ROWS packed per block for scheduler density: block (32,2,rz), grid (n_ff/rz, n_used).
@@ -5984,7 +6017,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2z(
         const unsigned long long* __restrict__ table, const int* __restrict__ sel,
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = (int)blockIdx.x * (int)blockDim.z + (int)threadIdx.z;
     if (o >= n_ff) return;
     int j = blockIdx.y;
@@ -6004,8 +6038,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev_q8_s2z(
     if (lane == 0) sgu[threadIdx.z][which] = acc;
     __syncthreads();
     if (which == 0 && lane == 0) {
-        float g = sgu[threadIdx.z][0];
-        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * sgu[threadIdx.z][1];
+        float g = sgu[threadIdx.z][0] * __ldg(&macros[ex]);
+        act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (sgu[threadIdx.z][1] * __ldg(&macros[n_expert + ex]));
     }
 }
 
@@ -6013,7 +6047,8 @@ extern "C" __global__ void moe_gate_up_silu8_dev(
         const unsigned long long* __restrict__ table,  // [3, n_expert] slot base addresses
         const int* __restrict__ sel,                   // [n_used] this token's expert ids (device)
         const float* __restrict__ x, float* __restrict__ act,
-        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u) {
+        int in_f, int n_ff, int n_expert, int qt_g, int qt_u, long rb_g, long rb_u,
+        const float* __restrict__ macros) {
     int o = blockIdx.x;              // expert-FFN row 0..n_ff-1
     int j = blockIdx.y;              // routed-expert slot 0..n_used-1
     int tid = threadIdx.x;
@@ -6044,9 +6079,9 @@ extern "C" __global__ void moe_gate_up_silu8_dev(
         float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
         for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xffffffff, v, off);
         if (tid == 0) {
-            float g = g_final;
+            float g = g_final * __ldg(&macros[ex]);
             // silu_mul_f32's exact expression on the exact dot values.
-            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * v;
+            act[(size_t)j * n_ff + o] = (g / (1.0f + expf(-g))) * (v * __ldg(&macros[n_expert + ex]));
         }
     }
 }
@@ -6451,7 +6486,7 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
         #pragma unroll
         for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)g * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)g * 16));
             float d4 = half_to_float(wd0[g]);
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             int sumi = 0;
@@ -6463,7 +6498,7 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
             acc0 += d4 * (float)(sumi - 8 * sums) * d8;
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)g * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)g * 16));
             float d4 = half_to_float(wd1[g]);
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             int sumi = 0;
@@ -6481,6 +6516,58 @@ __device__ __forceinline__ void q4_0_mmvq_row2_rp(
         y[(size_t)t * out_f + o0] = acc0;
         if (two) y[(size_t)t * out_f + o0 + 1] = acc1;
     }
+}
+// mr1 split-plane twin (E4B mr2-efficiency probe, 2026-07-13): ONE row per warp — 2x the
+// blocks of mr2 for tall-input/short-output shapes (ffn_down 10240->2560 runs 69% of the
+// byte floor under mr2's 4-wave grid; more blocks = more latency hiding + finer tail).
+// Per-row dot = q4_0_mmvq_row2_rp's acc0 path VERBATIM (bit-identical per row).
+__device__ __forceinline__ void q4_0_mmvq_row1_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes, int o0, int t) {
+    (void)row_bytes;
+    if (o0 >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nsb = in_f >> 5;
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nsb;
+    float acc0 = 0.0f;
+    const unsigned char* wq0; const unsigned short* wd0;
+    q4_0_rp_planes(W, out_f, o0, nsb, &wq0, &wd0);
+    for (int g = lane; g < nsb; g += 32) {
+        const int4* aq16 = (const int4*)(arow + (size_t)g * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        float d8 = adrow[g];
+        int sums = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, aq4[k], sums);
+        {
+            // W plane rides STREAMING loads (__ldcs = evict-first, 2026-07-14 duty arc):
+            // decode weights are single-use per token — evict-normal W lines thrash the
+            // L2 share the activation re-reads (every warp) and KV live on. Same bytes,
+            // same values — bit-identical.
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)g * 16));
+            float d4 = half_to_float(wd0[g]);
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            int sumi = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                sumi = dp4a(qk[k] & 0x0F0F0F0F, aq4[k], sumi);
+                sumi = dp4a((int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu), aq4[4 + k], sumi);
+            }
+            acc0 += d4 * (float)(sumi - 8 * sums) * d8;
+        }
+    }
+    acc0 = warp_reduce_sum(acc0);
+    if (lane == 0) y[(size_t)t * out_f + o0] = acc0;
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_row1_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
+                      blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y, blockIdx.y);
 }
 extern "C" __global__ void qmatvec_q4_0_mmvq_mr2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
@@ -6550,7 +6637,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_rp(
     #pragma unroll
     for (int c = 0; c < MCOLS; c++) acc[c] = 0.0f;
     for (int blk = lane; blk < nblk; blk += 32) {
-        int4 qv = *(const int4*)(wq + (size_t)blk * 16);
+        int4 qv = __ldcs((const int4*)(wq + (size_t)blk * 16));
         float d4 = half_to_float(wd[blk]);
         int lo[4], hi[4];
         const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
@@ -6563,16 +6650,18 @@ __device__ __forceinline__ void q4_0_mmvq_batched_rp(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
+            // int4-vectorized (2026-07-13, the L1TEX fix): same values, same dp4a order.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            const int al[4] = { a01.x, a01.y, a01.z, a01.w };
+            const int ah[4] = { a23.x, a23.y, a23.z, a23.w };
             int sumi = 0, sums = 0;
             #pragma unroll
             for (int k = 0; k < 4; k++) {
-                int a_lo = aq4[k];
-                int a_hi = aq4[4 + k];
-                sumi = dp4a(lo[k], a_lo, sumi);
-                sumi = dp4a(hi[k], a_hi, sumi);
-                sums = dp4a(0x01010101, a_lo, sums);
-                sums = dp4a(0x01010101, a_hi, sums);
+                sumi = dp4a(lo[k], al[k], sumi);
+                sumi = dp4a(hi[k], ah[k], sumi);
+                sums = dp4a(0x01010101, al[k], sums);
+                sums = dp4a(0x01010101, ah[k], sums);
             }
             acc[c] += d4 * (float)(sumi - 8 * sums) * ad[(size_t)c * nblk + blk];
         }
@@ -6606,11 +6695,11 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_rp(
 // batched 2-rows-per-warp twin — body mirrors q4_0_mmvq_batched_mr2 (row-shared activation
 // int4 loads + ones-sums, per-row chains in the same order).
 template<int MCOLS>
-__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
-        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp_bx(
+        int bx, const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
-    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    int o0 = (bx * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
     if (o0 >= out_f) return;
     bool two = (o0 + 1) < out_f;
     int lane = threadIdx.x;
@@ -6625,7 +6714,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
     for (int blk = lane; blk < nblk; blk += 32) {
         int lo0[4], hi0[4], lo1[4], hi1[4];
         {
-            int4 qv = *(const int4*)(wq0 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6634,7 +6723,7 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
             }
         }
         if (two) {
-            int4 qv = *(const int4*)(wq1 + (size_t)blk * 16);
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
             const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
             #pragma unroll
             for (int k = 0; k < 4; k++) {
@@ -6648,10 +6737,12 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
         for (int c = 0; c < MCOLS; c++) {
             if (c >= m) break;
             const signed char* arow = aq + (size_t)c * in_f;
-            const int* aq4 = (const int*)(arow + (size_t)blk * 32);
-            int a[8];
-            #pragma unroll
-            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            // int4-vectorized (2026-07-13): the 8 scalar int loads were 4x the L1TEX
+            // transactions of the t=1 walk's two 16B loads — L1TEX measured 90% saturated
+            // (the b-tier limiter). Same bytes, same order per k — bit-identical.
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
             int sums = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
@@ -6685,6 +6776,98 @@ __device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
         }
     }
 }
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x, W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
+// ---- BATCHED FUSED2 (2026-07-13, the megakernel tail-fill mechanism in microcosm):
+// ONE launch covers gate rows THEN up rows via grid segmentation — the up segment's
+// blocks schedule onto SMs as the gate segment drains, filling the per-launch tail
+// waves that the 6-falsification b-tier plateau evidence points at. Bit-identical per
+// row (the exact mr2_rp program; only the block->work mapping changes).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    int nb0 = (out0 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    if ((int)blockIdx.x < nb0) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x, W0, aq, ad, y0, in_f, out0, m, row_bytes);
+    } else {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(blockIdx.x - nb0, W1, aq, ad, y1, in_f, out1, m, row_bytes);
+    }
+}
+// f3 twin: three segments (the verify qkv triple on swa layers; globals fuse q,k via f2).
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    int nb0 = (out0 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    int nb1 = (out1 + 2 * BW24_MMVQ_ROWS - 1) / (2 * BW24_MMVQ_ROWS);
+    int bx = blockIdx.x;
+    if (bx < nb0) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx, W0, aq, ad, y0, in_f, out0, m, row_bytes);
+    } else if (bx < nb0 + nb1) {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx - nb0, W1, aq, ad, y1, in_f, out1, m, row_bytes);
+    } else {
+        q4_0_mmvq_batched_mr2_rp_bx<MCOLS>(bx - nb0 - nb1, W2, aq, ad, y2, in_f, out2, m, row_bytes);
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<2>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<4>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_f3_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, int m, long row_bytes) {
+    q4_0_mmvq_batched_f3_rp<8>(W0, W1, W2, aq, ad, y0, y1, y2, in_f, out0, out1, out2, m, row_bytes);
+}
+
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<2>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<4>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_f2_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, int m, long row_bytes) {
+    q4_0_mmvq_batched_f2_rp<8>(W0, W1, aq, ad, y0, y1, in_f, out0, out1, m, row_bytes);
+}
+
 extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
@@ -6702,6 +6885,371 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2_rp(
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
     q4_0_mmvq_batched_mr2_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+
+// ---- Q4_0 M-SPLIT r2 twin (2026-07-13, the 31B depth-verify occupancy fix): the b8_r2_rp
+// kernel is REGISTER-CHOKED (ncu: 72 regs, occupancy capped at 7 blocks, warps 47-55%,
+// DRAM 25-45% of wall) — the acc[2][MCOLS] array is the pressure. The rpms pattern (NVFP4,
+// 2026-07-06) splits the M columns across a warp PAIR: both warps walk the FULL k-range of
+// the SAME 2 rows, each owning half the columns — acc drops to [2][MCOLS/2], grid.x doubles
+// (block (32,4) = 2 pairs x 2 rows), and every (token,row) dot keeps the reference per-lane
+// serial chain + warp_reduce_sum -> BIT-IDENTICAL to _r2_rp (column partition, not k-order;
+// the rpks k-order lesson). The twin warp re-reads the same weight int4s in near-lockstep ->
+// L1 serves the second copy.
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    constexpr int CH = MCOLS / 2;           // columns per warp
+    int pair = (int)threadIdx.y >> 1;       // 0..1: which 2-row group of the block
+    int kc   = (int)threadIdx.y & 1;        // 0..1: which column half
+    int o0 = (blockIdx.x * 2 + pair) * 2;
+    if (o0 >= out_f) return;
+    int c0 = kc * CH;
+    if (c0 >= m) return;                    // whole column half masked
+    bool two = (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq0; const unsigned short* wd0;
+    const unsigned char* wq1; const unsigned short* wd1;
+    q4_0_rp_planes(W, out_f, o0, nblk, &wq0, &wd0);
+    q4_0_rp_planes(W, out_f, o0 + 1, nblk, &wq1, &wd1);
+    float acc0[CH], acc1[CH];
+    #pragma unroll
+    for (int c = 0; c < CH; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo0[k] = qk[k] & 0x0F0F0F0F;
+                hi0[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo1[k] = qk[k] & 0x0F0F0F0F;
+                hi1[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(wd0[blk]);
+        float d41 = two ? half_to_float(wd1[blk]) : 0.0f;
+        #pragma unroll
+        for (int c = 0; c < CH; c++) {
+            int col = c0 + c;
+            if (col >= m) break;
+            const signed char* arow = aq + (size_t)col * in_f;
+            const int4* aq16 = (const int4*)(arow + (size_t)blk * 32);
+            int4 a01 = aq16[0], a23 = aq16[1];
+            int a[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            float d8 = ad[(size_t)col * nblk + blk];
+            int s0 = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                s0 = dp4a(lo0[k], a[k], s0);
+                s0 = dp4a(hi0[k], a[4 + k], s0);
+            }
+            acc0[c] += d40 * (float)(s0 - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) {
+                    s1 = dp4a(lo1[k], a[k], s1);
+                    s1 = dp4a(hi1[k], a[4 + k], s1);
+                }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < CH; c++) {
+        int col = c0 + c;
+        if (col >= m) break;
+        float a0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)col * out_f + o0] = a0;
+        if (two) {
+            float a1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)col * out_f + o0 + 1] = a1;
+        }
+    }
+}
+// ---- Q4_0 LOAD-AHEAD r2 twin (2026-07-13, same target as the smem-slab probe): the
+// c-loop's activation loads are serial 32B L2 dependency chains (long_scoreboard 42.5%).
+// This twin double-buffers the per-column activation int4s in registers: column c+1's
+// loads are ISSUED before column c's dp4a chain executes, so the load latency overlaps
+// compute instead of stalling it. No smem, no syncs. Math order per (row,col) unchanged
+// (bit-identical); +8 int registers.
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_la_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    if (o0 >= out_f) return;
+    bool two = (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq0; const unsigned short* wd0;
+    const unsigned char* wq1; const unsigned short* wd1;
+    q4_0_rp_planes(W, out_f, o0, nblk, &wq0, &wd0);
+    q4_0_rp_planes(W, out_f, o0 + 1, nblk, &wq1, &wd1);
+    float acc0[MCOLS], acc1[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo0[k] = qk[k] & 0x0F0F0F0F;
+                hi0[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo1[k] = qk[k] & 0x0F0F0F0F;
+                hi1[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(wd0[blk]);
+        float d41 = two ? half_to_float(wd1[blk]) : 0.0f;
+        // prime column 0's loads
+        int a_nxt[8]; float d8_nxt = 0.0f;
+        {
+            const int* aq4 = (const int*)(aq + (size_t)0 * in_f + (size_t)blk * 32);
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a_nxt[k] = aq4[k];
+            d8_nxt = ad[(size_t)0 * nblk + blk];
+        }
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            int a[8];
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a[k] = a_nxt[k];
+            float d8 = d8_nxt;
+            if (c + 1 < MCOLS && c + 1 < m) {   // issue c+1's loads BEFORE computing c
+                const int* aq4 = (const int*)(aq + (size_t)(c + 1) * in_f + (size_t)blk * 32);
+                #pragma unroll
+                for (int k = 0; k < 8; k++) a_nxt[k] = aq4[k];
+                d8_nxt = ad[(size_t)(c + 1) * nblk + blk];
+            }
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            int s0i = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                s0i = dp4a(lo0[k], a[k], s0i);
+                s0i = dp4a(hi0[k], a[4 + k], s0i);
+            }
+            acc0[c] += d40 * (float)(s0i - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) {
+                    s1 = dp4a(lo1[k], a[k], s1);
+                    s1 = dp4a(hi1[k], a[4 + k], s1);
+                }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)c * out_f + o0] = a0;
+        if (two) {
+            float a1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + 1] = a1;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2la_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_la_rp<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2la_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_la_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2la_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_la_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+// ---- Q4_0 SMEM-SLAB r2 twin (2026-07-13, the 31B depth-verify latency fix): the r2 b-tiers
+// are LATENCY-bound (ncu: long_scoreboard 42.5% of stalls, DRAM 22-45%, L2 hit 39%) — the
+// c-loop's per-column activation loads are 8 serial 32B L2 dependency chains per warp
+// iteration. This twin stages a 32-k-block SLAB of ALL columns' activations (+ q8 scales)
+// into shared memory cooperatively (one coalesced pass per block instead of per-warp chains),
+// then each lane consumes ITS k-block of the slab from smem — the inner loop's only global
+// stream left is the weight planes. BIT-IDENTITY: per-(row,col) dot chain, lane->k-block
+// mapping, and warp_reduce order are the r2_rp body's verbatim; only the activation LOAD
+// SOURCE changes (same bytes). smem = MCOLS*(1KB act + 128B scales) (+pad), single-buffered.
+template<int MCOLS>
+__device__ __forceinline__ void q4_0_mmvq_batched_mr2_sm_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    int o0 = (blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y) * 2;
+    bool row_ok = o0 < out_f;
+    bool two = row_ok && (o0 + 1) < out_f;
+    int lane = threadIdx.x;
+    int tid = (int)threadIdx.y * 32 + lane;
+    int nblk = in_f / 32;
+    const unsigned char* wq0 = nullptr; const unsigned short* wd0 = nullptr;
+    const unsigned char* wq1 = nullptr; const unsigned short* wd1 = nullptr;
+    if (row_ok) {
+        q4_0_rp_planes(W, out_f, o0, nblk, &wq0, &wd0);
+        q4_0_rp_planes(W, out_f, o0 + 1, nblk, &wq1, &wd1);
+    }
+    extern __shared__ int sm_slab[];                    // [MCOLS][32 blk][9 int] (8 + pad —
+                                                        // stride 8 = 4-way bank conflicts)
+    float* sm_d8 = (float*)(sm_slab + MCOLS * 32 * 9);  // [MCOLS][32] scales
+    float acc0[MCOLS], acc1[MCOLS];
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) { acc0[c] = 0.0f; acc1[c] = 0.0f; }
+    for (int s0 = 0; s0 < nblk; s0 += 32) {
+        int slab = min(32, nblk - s0);
+        __syncthreads();
+        // cooperative stage: MCOLS*slab*8 ints + MCOLS*slab scales, 128 threads.
+        for (int i = tid; i < MCOLS * slab * 8; i += 128) {
+            int c = i / (slab * 8);
+            int r = i - c * (slab * 8);        // blk_in_slab*8 + word
+            if (c < m) {
+                const int* arow = (const int*)(aq + (size_t)c * in_f + (size_t)s0 * 32);
+                sm_slab[(c * 32 + r / 8) * 9 + (r & 7)] = arow[r];
+            }
+        }
+        for (int i = tid; i < MCOLS * slab; i += 128) {
+            int c = i / slab;
+            int b = i - c * slab;
+            if (c < m) sm_d8[c * 32 + b] = ad[(size_t)c * nblk + s0 + b];
+        }
+        __syncthreads();
+        int blk = s0 + lane;
+        if (!row_ok || lane >= slab) continue;
+        int lo0[4], hi0[4], lo1[4], hi1[4];
+        {
+            int4 qv = __ldcs((const int4*)(wq0 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo0[k] = qk[k] & 0x0F0F0F0F;
+                hi0[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        if (two) {
+            int4 qv = __ldcs((const int4*)(wq1 + (size_t)blk * 16));
+            const int qk[4] = { qv.x, qv.y, qv.z, qv.w };
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                lo1[k] = qk[k] & 0x0F0F0F0F;
+                hi1[k] = (int)(((uint32_t)qk[k] >> 4) & 0x0F0F0F0Fu);
+            }
+        }
+        float d40 = half_to_float(wd0[blk]);
+        float d41 = two ? half_to_float(wd1[blk]) : 0.0f;
+        #pragma unroll
+        for (int c = 0; c < MCOLS; c++) {
+            if (c >= m) break;
+            const int* aq4 = &sm_slab[(c * 32 + lane) * 9];
+            int a[8];
+            #pragma unroll
+            for (int k = 0; k < 8; k++) a[k] = aq4[k];
+            int sums = 0;
+            #pragma unroll
+            for (int k = 0; k < 8; k++) sums = dp4a(0x01010101, a[k], sums);
+            float d8 = sm_d8[c * 32 + lane];
+            int s0i = 0;
+            #pragma unroll
+            for (int k = 0; k < 4; k++) {
+                s0i = dp4a(lo0[k], a[k], s0i);
+                s0i = dp4a(hi0[k], a[4 + k], s0i);
+            }
+            acc0[c] += d40 * (float)(s0i - 8 * sums) * d8;
+            if (two) {
+                int s1 = 0;
+                #pragma unroll
+                for (int k = 0; k < 4; k++) {
+                    s1 = dp4a(lo1[k], a[k], s1);
+                    s1 = dp4a(hi1[k], a[4 + k], s1);
+                }
+                acc1[c] += d41 * (float)(s1 - 8 * sums) * d8;
+            }
+        }
+    }
+    if (!row_ok) return;
+    #pragma unroll
+    for (int c = 0; c < MCOLS; c++) {
+        if (c >= m) break;
+        float a0 = warp_reduce_sum(acc0[c]);
+        if (lane == 0) y[(size_t)c * out_f + o0] = a0;
+        if (two) {
+            float a1 = warp_reduce_sum(acc1[c]);
+            if (lane == 0) y[(size_t)c * out_f + o0 + 1] = a1;
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2sm_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_sm_rp<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2sm_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_sm_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2sm_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ ad_q,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_sm_rp<8>(W, ad_q, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b2_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<2>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b4_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<4>(W, aq, ad, y, in_f, out_f, m, row_bytes);
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_b8_r2ms_rp(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    q4_0_mmvq_batched_mr2_ms_rp<8>(W, aq, ad, y, in_f, out_f, m, row_bytes);
 }
 extern "C" __global__ void qmatvec_q4_0_mmvq_b16_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
@@ -6753,4 +7301,50 @@ extern "C" __global__ void qmatvec_q4_0_mmvq(
     }
     acc = warp_reduce_sum(acc);
     if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
+// mr1 twins of the t=1 fused pair/triple (2026-07-14): the singles took the mr1
+// one-row-per-warp upgrade 2026-07-13 (+3.75% E4B / +0.9% 31B) but the fused t=1 kernels
+// stayed on the mr2 two-serial-rows walk — the DRAM-duty map reads fused3 at 57% and the
+// singles at 75% while fused2's bigger grid reads 86%. Per-row dot = q4_0_mmvq_row1_rp
+// VERBATIM (bit-identical per row); grid-stride retained.
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_mr1_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1,
+        int in_f, int out0, int out1, long rb0, long rb1) {
+    const int rpb = (int)blockDim.y;
+    int nb0 = (out0 + rpb - 1) / rpb;
+    int nb1 = (out1 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1; vb += gridDim.x) {
+        int b = vb;
+        if (b < nb0) {
+            q4_0_mmvq_row1_rp(W0, aq, ad, y0, in_f, out0, 1, rb0,
+                              b * rpb + (int)threadIdx.y, 0);
+        } else {
+            b -= nb0;
+            q4_0_mmvq_row1_rp(W1, aq, ad, y1, in_f, out1, 1, rb1,
+                              b * rpb + (int)threadIdx.y, 0);
+        }
+    }
+}
+extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_mr1_rp(
+        const unsigned char* __restrict__ W0, const unsigned char* __restrict__ W1,
+        const unsigned char* __restrict__ W2,
+        const signed char* __restrict__ aq, const float* __restrict__ ad,
+        float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
+        int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
+    const int rpb = (int)blockDim.y;
+    int nb0 = (out0 + rpb - 1) / rpb;
+    int nb1 = (out1 + rpb - 1) / rpb;
+    int nb2 = (out2 + rpb - 1) / rpb;
+    for (int vb = blockIdx.x; vb < nb0 + nb1 + nb2; vb += gridDim.x) {
+        int b = vb;
+        const unsigned char* W; float* y; int out_f; long rb;
+        if (b < nb0)            { W = W0; y = y0; out_f = out0; rb = rb0; }
+        else if (b < nb0 + nb1) { W = W1; y = y1; out_f = out1; rb = rb1; b -= nb0; }
+        else                    { W = W2; y = y2; out_f = out2; rb = rb2; b -= nb0 + nb1; }
+        q4_0_mmvq_row1_rp(W, aq, ad, y, in_f, out_f, 1, rb,
+                          b * rpb + (int)threadIdx.y, 0);
+    }
 }

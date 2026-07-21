@@ -137,6 +137,15 @@ pub(crate) fn load_ffn(
             // bytes = per-layer bytes x n_moe_layers (uniform layers; UD-quant variance is small and
             // the budget has 20% slack). Failure to fit => None => the SLRU spill machinery.
             let dev_exps = build_dev_exps(e, cfg, &gate_exps, &up_exps, &down_exps)?;
+            // Device macro row [3*n_expert]: gate, up, down (ones when the artifact carries none).
+            let mut macro_row = vec![1.0f32; 3 * n_expert];
+            for (slot, exps) in [(0usize, &gate_exps), (1, &up_exps), (2, &down_exps)] {
+                if let Some(ms) = exps.macros.as_ref() {
+                    macro_row[slot * n_expert..(slot + 1) * n_expert].copy_from_slice(ms);
+                }
+            }
+            let has_macros = macro_row.iter().any(|&m| m != 1.0);
+            let dev_macros = e.htod(&macro_row)?;
             // e_score_correction_bias (M3 sigmoid routing): tiny [n_expert] f32, host-side.
             let exp_probs_b = src
                 .find(&p("exp_probs_b.bias"))
@@ -154,6 +163,8 @@ pub(crate) fn load_ffn(
                 up_shexp: load_opt(e, src, &p("ffn_up_shexp.weight"))?,
                 down_shexp: load_opt(e, src, &p("ffn_down_shexp.weight"))?,
                 dev_exps,
+                dev_macros,
+                has_macros,
             })
         } else {
             Ffn::Dense {
@@ -161,7 +172,7 @@ pub(crate) fn load_ffn(
                 ffn_up: load_t(e, src, &p("ffn_up.weight"))?,
                 ffn_down: load_t(e, src, &p("ffn_down.weight"))?,
             }
-        },
+        }
     )
 }
 
@@ -320,6 +331,13 @@ pub struct MoeWeights {
     /// None => the SLRU host-expert machinery (the spill regime, where it WINS vs llama's
     /// CPU-offload degradation). Decided at load in `load_ffn` (BW24_MOE_RESIDENT=0 forces off).
     pub dev_exps: Option<DevExps>,
+    /// Per-expert post-matmul macro-scales on DEVICE: [3*n_expert] f32 in (gate, up, down)
+    /// order — all 1.0 unless the checkpoint carries compressed-tensors NVFP4 global scales
+    /// (unsloth qwen3.6 class). The _dev gate_up epilogues multiply unconditionally (x*1.0f
+    /// is bit-exact — zero change for macro-free artifacts); the down fold is one
+    /// moe_w_scale_by_expert launch gated on `has_macros`.
+    pub dev_macros: cudarc::driver::CudaSlice<f32>,
+    pub has_macros: bool,
 }
 
 impl MoeWeights {
@@ -384,9 +402,13 @@ pub struct Gemma4LayerBits {
 /// and the KV-share map — layers il >= n_layer-shared_kv_layers have NO own k/v projections
 /// and attend the cache of layer (n_layer-shared) - (swa ? 2 : 1) with their own Q.
 pub struct Gemma4E4bLayer {
-    pub inp_gate: GpuTensor,  // blk.N.inp_gate  [n_embd, n_epl]
-    pub proj: GpuTensor,      // blk.N.proj      [n_epl, n_embd]
-    pub post_norm: GpuTensor, // blk.N.post_norm [n_embd]
+    pub inp_gate: GpuTensor,           // blk.N.inp_gate  [n_embd, n_epl]
+    pub proj: GpuTensor,               // blk.N.proj      [n_epl, n_embd]
+    pub post_norm: GpuTensor,          // blk.N.post_norm [n_embd]
+    /// wave-4b: wq|wk|wv concatenated along OUT (one Q4_0 matvec at t=1 instead of the
+    /// fused3 3-subgrid launch). Built at the mirror hook from the GPU byte planes (rows
+    /// are independent in Q4_0, so an out-dim concat is a byte concat); own-KV layers only.
+    pub qkv_cat: Option<GpuTensor>,
     /// Some(target_layer) on KV-shared layers (wk/wv here are the TARGET layer's tensors,
     /// loaded for shape symmetry only — the forward must skip k/v compute + append and read
     /// the target's cache; TODO dedupe the duplicate weight upload ~63MB).
@@ -685,21 +707,18 @@ impl HybridModel {
         // unset/dense this stays `None` and the load takes the byte-identical all-host path.
         // Disk spill is GGUF-only (needs the on-disk file mmap); src.gguf() is None for safetensors.
         let gguf: Option<&GgufFile> = src.gguf();
-        let mut spill: Option<crate::spill::SpillCtx> = if cfg.moe.is_some()
-            && crate::spill::disk_tier_enabled()
-            && gguf.is_some()
-        {
-            let budget = crate::spill::MemBudget::probe(e)?;
-            let ctx = crate::spill::SpillCtx::open(gguf.unwrap(), &budget)?;
-            eprintln!(
-                "[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
-                budget.free_vram >> 20,
-                budget.free_pinnable_ram >> 20
-            );
-            Some(ctx)
-        } else {
-            None
-        };
+        // expert_count > 0: Arch::Gemma4 carries cfg.moe = Some on its DENSE variants too
+        // (the 2026-07-14 discriminator-bug class) — a dense 31B/E4B under the spill env
+        // would otherwise probe budgets + open an expert mmap it never consumes.
+        let mut spill: Option<crate::spill::SpillCtx> =
+            if cfg.moe.as_ref().is_some_and(|m| m.expert_count > 0)
+                && crate::spill::disk_tier_enabled() && gguf.is_some() {
+                let budget = crate::spill::MemBudget::probe(e)?;
+                let ctx = crate::spill::SpillCtx::open(gguf.unwrap(), &budget)?;
+                eprintln!("[spill] disk tier ON: free_vram={} MiB  pinnable_ram={} MiB (MemAvailable*frac)",
+                          budget.free_vram >> 20, budget.free_pinnable_ram >> 20);
+                Some(ctx)
+            } else { None };
 
         // B0 FIX: cfg.n_layer == block_count INCLUDES the MTP/NextN block(s) (41 for the 35B-MoE).
         // Running the MTP block as a trunk layer is wrong; iterate only the trunk layers.
@@ -789,6 +808,7 @@ impl HybridModel {
                             proj: load_t(e, src, &p("proj.weight"))?,
                             post_norm: load_t(e, src, &p("post_norm.weight"))?,
                             kv_share,
+                            qkv_cat: None,   // built at the mirror hook (wave 4b)
                         })
                     } else {
                         None
@@ -950,15 +970,21 @@ impl HybridModel {
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
             // windowed split per gemma variant (2026-07-12 sweeps): MoE 26B = 32 (grid-limited
             // t=1 under the raw-e4m3 sV ceiling), dense 31B = 64 (37.13 vs 36.87 at 1.7k, N=2).
-            crate::FA_SPW_DEFAULT.store(
-                if cfg.moe.is_some() { 32 } else { 64 },
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            // DISCRIMINATOR FIX (2026-07-14): Arch::Gemma4 is in is_moe(), so cfg.moe is
+            // Some (expert_count 0) on the DENSE 31B/E4B too — `cfg.moe.is_some()` keyed
+            // every "per-variant" default to the 26B values and the dense arms of the
+            // 2026-07-12 sweeps (SPW 64, SP512 32) never actually reached the 31B. Key on
+            // expert_count instead.
+            let real_moe = cfg.moe.as_ref().is_some_and(|m| m.expert_count > 0);
+            crate::FA_SPW_DEFAULT.store(if real_moe { 32 } else { 64 },
+                                        std::sync::atomic::Ordering::Relaxed);
             // hd512 global split per variant (26B=16 landed 2026-07-11; 31B=32 swept 2026-07-12).
-            crate::FA_SP512_DEFAULT.store(
-                if cfg.moe.is_some() { 16 } else { 32 },
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            crate::FA_SP512_DEFAULT.store(if real_moe { 16 } else { 32 },
+                                          std::sync::atomic::Ordering::Relaxed);
+            // fused t=1 pair/triple mr1 per variant (2026-07-14 DRAM-duty arc: dense +1.1%
+            // short / +0.6% depth on 31B; MoE 26B −1.2% — stays mr2).
+            crate::FUSED_MR1_DEFAULT.store(!real_moe,
+                                           std::sync::atomic::Ordering::Relaxed);
             // gemma4 rms_norm block 1024 (single-row 2816-col norms; battery-arbitrated per model).
             crate::RMS_BLOCK_DEFAULT.store(1024, std::sync::atomic::Ordering::Relaxed);
             // gemma4 fa split ladder (d1736 sweep; see fa_split_keys).
@@ -1048,12 +1074,19 @@ impl HybridModel {
                     }
                 }
                 if is_e4b {
-                    if let Ffn::Dense {
-                        ffn_gate,
-                        ffn_up,
-                        ffn_down,
-                    } = &mut layer.ffn
-                    {
+                    // wave-4b: own-KV layers get the wq|wk|wv OUT-concat (one matvec at t=1).
+                    let own_kv = layer.gemma4.as_ref().unwrap().e4b.as_ref()
+                        .is_some_and(|e4| e4.kv_share.is_none());
+                    if own_kv {
+                        if let Mixer::Full(fa) = &layer.mixer {
+                            if let Some(mut cat) = e.build_q4_out_concat3(&fa.wq, &fa.wk, &fa.wv)? {
+                                e.build_q4_rp4(&mut cat)?; nmir += 1;
+                                layer.gemma4.as_mut().unwrap().e4b.as_mut().unwrap()
+                                    .qkv_cat = Some(cat);
+                            }
+                        }
+                    }
+                    if let Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &mut layer.ffn {
                         for w in [ffn_gate, ffn_up, ffn_down] {
                             e.build_q4_rp4(w)?;
                             nmir += 1;

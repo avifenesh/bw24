@@ -15,8 +15,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_expert = 16usize;
     let n_used = 8usize;
     let (in_f, n_ff) = (2048usize, 512usize);
-    let rb = in_f / 256 * 110;                 // IQ3_S row bytes = 880
-    let qt = bw24_engine::QT_IQ3_S;
+    // BW24_BENCH_QT: iq3s (default) | iq4xs | nvfp4 — the 35B expert-quant candidates.
+    let (rb, qt) = match std::env::var("BW24_BENCH_QT").as_deref() {
+        Ok("iq4xs") => (in_f / 256 * 136, bw24_engine::QT_IQ4_XS),
+        Ok("nvfp4") => (in_f / 64 * 36, bw24_engine::QT_NVFP4),
+        _ => (in_f / 256 * 110, bw24_engine::QT_IQ3_S),
+    };
     let stride = rb * n_ff;
     let slab: Vec<u8> = (0..n_expert * stride).map(|i| hb(i + 7)).collect();
     let slab_d = e.htod_bytes(&slab)?;
@@ -33,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ad: Vec<f32> = (0..in_f / 32).map(|i| (pr(i) + 1.5) * 0.01).collect();
     let aq_d = e.htod_i8(&aq)?;
     let ad_d = e.htod(&ad)?;
+    let macros_d = e.htod(&vec![1.0f32; 3 * n_expert])?;
 
     let variant = std::env::var("BW24_MOE_DEVQ8_GU").unwrap_or_default();
     let bytes = (n_used * 2 * n_ff * rb / (in_f / 32) * (in_f / 32)) as f64; // 8ex*2rows*512*880
@@ -41,13 +46,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reps = 300usize;
     for _ in 0..20 {
         let _ = e.moe_gate_up_silu8_dev_q8(&table_d, &sel_d.slice(0..n_used), &aq_d, &ad_d,
-                                           in_f, n_ff, n_used, n_expert, qt, qt, rb, rb)?;
+                                           in_f, n_ff, n_used, n_expert, qt, qt, rb, rb,
+                                           &macros_d)?;
     }
     e.stream().synchronize()?;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
         let _ = e.moe_gate_up_silu8_dev_q8(&table_d, &sel_d.slice(0..n_used), &aq_d, &ad_d,
-                                           in_f, n_ff, n_used, n_expert, qt, qt, rb, rb)?;
+                                           in_f, n_ff, n_used, n_expert, qt, qt, rb, rb,
+                                           &macros_d)?;
     }
     e.stream().synchronize()?;
     let us = t0.elapsed().as_secs_f64() * 1e6 / reps as f64;

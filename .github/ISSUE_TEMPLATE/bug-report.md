@@ -1,3 +1,8 @@
+---
+name: Bug report
+about: Wrong output, crash, gate failure, or performance regression
+---
+
 <!--
 Read CONTRIBUTING.md first. This isn't red tape — bw24 has no CI on sm_120a hardware, so a
 report without the details below usually can't be reproduced or actioned at all, and will

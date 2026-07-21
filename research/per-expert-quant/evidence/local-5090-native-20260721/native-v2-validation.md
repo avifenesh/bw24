@@ -34,6 +34,27 @@ with the persistent source model root instead of the dual-NVMe view. ABI v2 reje
 miss with `CPU expert source inode is absent from mirror map`; no generation was scored. The
 corrected invocation used the exact view that produced the map and passed.
 
+### Current-main integration
+
+The native runtime was also integrated with current `main` (`e2656409` plus `31fa5d13`) and rebuilt
+in the release profile on the same RTX 5090. The merged binary passed the production warm-128
+chat-prompt argmax gate (`40129 == 40129`, `MATCH`) in
+`run-gen-main-merge-argmax-ngen4.log`. A subsequent production warm-128 K=1 through K=8 sweep
+passed self-consistency at every depth and reported aggregate `SELF-CONSISTENCY PASS`; its raw log
+is `run-spec-main-merge-k1to8-ngen4.log`.
+
+That integration sweep intentionally used the launcher's one-token raw smoke prompt and only four
+generated tokens. It therefore had zero accepted draft tokens and is correctness evidence only,
+not a speculative-quality or performance result. Nonzero acceptance remains established by the
+earlier chat-prompt N=8 full-depth sweep above. The preceding K=1-only smoke is retained in
+`run-spec-main-merge-k1-ngen4.log` for completeness.
+
+Merged release artifacts:
+
+- `run-gen` SHA-256: `4c1d274a2ba0afb9d45d74229b70c7309842f19309d9c36697ba4effe8ece74a`
+- `run-spec` SHA-256: `cb86b28087007ed0f1a96cfe4c960b80ab29c1468cd33ab2cc0898a23f446cec`
+- native companion SHA-256: `c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71`
+
 ## Performance observations
 
 These are single observations, not medians and not a performance-board move.

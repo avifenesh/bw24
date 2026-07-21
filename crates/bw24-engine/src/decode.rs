@@ -76,6 +76,25 @@ pub struct Hy3Layer0Stages {
 }
 
 impl HybridModel {
+    /// Device embed table for the dc fast loops (lazy ~0.5GB upload). On OOM — tight fits
+    /// where resident experts + KV leave no headroom (35B ct-NVFP4 artifact at default
+    /// budget, 2026-07-17) — returns None and the caller stays on the host-embd eager loop
+    /// instead of panicking. Double-init race is benign (identical bytes, loser dropped).
+    fn embd_gpu_try(&self, e: &Engine) -> Option<&cudarc::driver::CudaSlice<u8>> {
+        if let Some(v) = self.embd_gpu.get() {
+            return Some(v);
+        }
+        match e.upload_u8(&self.embd.raw) {
+            Ok(buf) => Some(self.embd_gpu.get_or_init(|| buf)),
+            Err(err) => {
+                eprintln!("[embd-gpu] upload failed ({err}); dc loop disabled, host-embd eager loop serves");
+                None
+            }
+        }
+    }
+}
+
+impl HybridModel {
     /// One decode step for `token` at cache.pos; returns logits [n_vocab] (host f32). Advances cache.
     pub fn decode_step(
         &self,
@@ -791,73 +810,75 @@ impl HybridModel {
         // gs.token_d now must hold the first generated INPUT token (= argmax of the last prime step).
         e.set_u32_one(&mut gs.token_d, next_in)?;
 
-        let n_vocab = self.output.out_features();
         let mut out = Vec::with_capacity(max_new);
-        for _ in 0..max_new {
-            // t_kv for THIS step = (cache.pos)+1 (the new token's KV length after append).
-            let t_kv = cache.pos + 1;
-            let key = e.fa_bucket_key(
-                t_kv,
-                head_dim,
-                self.cfg.n_head_kv as usize,
-                crate::Engine::kv_fp8_on(),
-            );
-            if !gs.graphs.contains_key(&key) {
-                // bucket_max = t_kv that produces this key's n_splits; t_kv itself works (same key).
-                let bucket_max = t_kv;
-                // --- snapshot device + host state so the 3 capture-warmup runs leave no residue ---
-                let snap = cache.snapshot(e)?;
-                let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
-                let len_save: Vec<Option<i32>> = cache
-                    .kv
-                    .iter()
-                    .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap()))
-                    .collect();
-                let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        self.graph_decode_loop(e, gs, &mut cache, &embd_gpu, qt, row_bytes, head_dim, max_new,
+                               |tok| { out.push(tok); None })?;
+        Ok(out)
+    }
 
-                // capture (runs the body 3x on the REAL cache + counters).
-                let graph = {
-                    // split borrows: pull the fields out so the closure can take &mut of each.
-                    let GraphDecodeState { token_d, pos_d, .. } = gs;
-                    let token_d: &mut CudaSlice<u32> = token_d;
-                    let pos_d: &mut CudaSlice<i32> = pos_d;
-                    let cache_ref = &mut cache;
-                    let embd_ref = &embd_gpu;
-                    e.capture_graph(|e| {
-                        self.decode_step_dc_cap(
-                            e, token_d, pos_d, embd_ref, qt, row_bytes, cache_ref, n_vocab,
-                            bucket_max,
-                        )
-                    })?
-                };
+    /// The CUDA-graph EXEC-UPDATE replay loop over an already-primed cache (2026-07-15,
+    /// the E4B graph-exec pattern generalized): capture the dc step ONCE at
+    /// bucket_max = final t_kv, classify its fa nodes (`graph_update::fa_plan` — symbol
+    /// list is model-generic), then per token retune the fa split geometry to the LIVE
+    /// eager ladder (`fa_apply` keeps graph and eager in FP lockstep — bit-exact) and
+    /// replay. The previous per-bucket-key capture map recaptured on every ladder rung
+    /// (32 recaptures/256 tokens = 97 vs 128 tok/s eager; decode-bench 2026-07-15).
+    /// Callers must have synced gs.token_d (= the FIRST generated token), gs.pos_d
+    /// (= cache.pos) and every kvl.len_d (= kvl.len). Event tracking must be OFF.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn graph_decode_loop(&self, e: &Engine, gs: &mut GraphDecodeState,
+                                    cache: &mut Cache, embd_gpu: &CudaSlice<u8>,
+                                    qt: i32, row_bytes: usize, head_dim: usize, max_new: usize,
+                                    mut emit: impl FnMut(u32) -> Option<StopReason>)
+                                    -> Result<StopReason, Box<dyn std::error::Error>> {
+        let _ = head_dim;
+        let n_vocab = self.output.out_features();
+        let bucket_max = cache.pos + max_new + 1;
 
-                // --- restore the true pre-capture state (undo the 3 throwaway runs) ---
-                cache.rollback(e, &snap, 0)?; // restores conv/ssm + sets len = snapshot len
-                e.set_i32_one(&mut gs.pos_d, pos_save)?;
-                for (il, ls) in len_save.iter().enumerate() {
-                    if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
-                        e.set_i32_one(&mut kvl.len_d, *v)?;
-                    }
-                }
-                e.set_u32_one(&mut gs.token_d, tok_save)?;
-
-                gs.graphs.insert(key, graph);
-                gs.bucket_max.insert(key, bucket_max);
-                gs.captures += 1;
+        // --- capture ONCE at bucket_max (snapshot/rollback the 3 warmup runs) ---
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(&gs.pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(&gs.token_d)?;
+        let graph = {
+            let GraphDecodeState { token_d, pos_d, .. } = gs;
+            let token_d: &mut CudaSlice<u32> = token_d;
+            let pos_d: &mut CudaSlice<i32> = pos_d;
+            let cache_ref = &mut *cache;
+            let embd_ref = embd_gpu;
+            e.capture_graph(|e| {
+                self.decode_step_dc_cap(e, token_d, pos_d, embd_ref, qt, row_bytes,
+                                        cache_ref, n_vocab, bucket_max)
+            })?
+        };
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(&mut gs.pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
             }
-            // REPLAY: one dispatch runs the whole step; argmax wrote gs.token_d, counters advanced.
-            gs.graphs.get(&key).unwrap().launch()?;
-            // advance the HOST mirrors to match the in-graph DEVICE advance (host len/pos used only for
-            // bucket selection next step; device counters are the source of truth for the kernels).
+        }
+        e.set_u32_one(&mut gs.token_d, tok_save)?;
+        let mut plan = crate::graph_update::fa_plan(&graph)?;
+
+        // first generated token = argmax of the last prime step (emit before replay 1).
+        let first = e.dtoh_u32_one(&gs.token_d)?;
+        if let Some(r) = emit(first) { return Ok(r); }
+        for _ in 1..max_new {
+            // retune fa geometry to the live t_kv AFTER this replay's in-graph append.
+            crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
+                                          crate::fa_split_keys)?;
+            graph.launch()?;
             cache.pos += 1;
             for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
                 kvl.len += 1;
             }
             // read back the [1] u32 next token (the only D2H in steady state).
             let tok = e.dtoh_u32_one(&gs.token_d)?;
-            out.push(tok);
+            if let Some(r) = emit(tok) { return Ok(r); }
         }
-        Ok(out)
+        Ok(StopReason::MaxNew)
     }
 
     /// Device-counter full-attention decode (CUDA-GRAPH-PLAN Phase 2): clone of `full_attn_decode`
@@ -1147,7 +1168,8 @@ impl HybridModel {
             std::sync::atomic::Ordering::Relaxed,
         );
         let mut out = Vec::with_capacity(max_new);
-        if self.cfg.gemma4.is_some() {
+        if self.cfg.gemma4.is_some()
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             // Graph serving probed FLAT vs this dc loop (2026-07-12, 1.7k N=2: 174.6/174.2 vs
             // 174.5/174.3) — the GRAPH-GATE's +2.5% is over the plain-eager loop, and the dc
             // arc already banked that; the gate (IDENTICAL at every ctx since the wkv
@@ -1155,63 +1177,40 @@ impl HybridModel {
             // DEVICE-COUNTER greedy loop (the dc arc): stream-identical to eager (DC-GATE).
             // E4B rides its own dc step (same trunk fns as its eager chain).
             let n_vocab = self.output.out_features();
-            let embd_gpu = self
-                .embd_gpu
-                .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload"));
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             let e4b = self.is_gemma4_e4b();
+            // 26B/31B WHOLE-TOKEN GRAPH SERVING door (BW24_GEMMA_GRAPH=1): measured FLAT on
+            // the 26B (jsonl 2026-07-12) but the 31B carries ~4% launch-gap share (HANDOVER
+            // graph-arc note) and was never measured — the plain-short 1.00x cell probe.
+            if !e4b && std::env::var("BW24_GEMMA_GRAPH").as_deref() == Ok("1") {
+                let first = argmax(&last_logits) as u32;
+                let (toks, _reason) = self.gemma4_generate_graph(
+                    e, cache.pos, first, &mut cache, max_new, &[], |_| true)?;
+                out.extend(toks);
+                return Ok(out);
+            }
             let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
-            // E4B GRAPH SERVING (BW24_E4B_GRAPH=1, PARKED — measured FLAT 173.5 vs 173.3
-            // in a validity-gated window, 2026-07-12: the dc-eager loop already hides launch
-            // gaps by enqueue-ahead, the 26B graph-serving lesson repeated; the remaining E4B
-            // gap is glue kernel EXECUTION time, not gaps). Stream-identical 64/64 — kept as
-            // the door for a future fewer-kernels regime.
-            let win = self
-                .cfg
-                .gemma4
-                .as_ref()
-                .map(|g| g.sliding_window as usize)
-                .unwrap_or(0);
-            if e4b
-                && cache.pos + max_new + 2 < win
-                && std::env::var("BW24_E4B_GRAPH").as_deref() == Ok("1")
-            {
-                let mut graph: Option<(
-                    usize,
-                    cudarc::driver::CudaGraph,
-                    Vec<Box<dyn std::any::Any + Send>>,
-                )> = None;
-                for _ in 0..max_new {
-                    out.push(e.dtoh_u32(&token_d)?[0]);
-                    let need = cache.pos + 2;
-                    let rung = need.next_power_of_two().max(64);
-                    if graph.as_ref().map(|g| g.0) != Some(rung) {
-                        let (g, keep) = e.capture_graph_retained(|e| {
-                            self.gemma4_e4b_decode_step_dcg(
-                                e,
-                                &mut token_d,
-                                &mut pos_d,
-                                embd_gpu,
-                                qt,
-                                rb,
-                                &mut cache,
-                                n_vocab,
-                                rung,
-                            )
-                        })?;
-                        graph = Some((rung, g, keep));
-                        // capture DOESN'T execute: run the step for real once via replay.
-                    }
-                    graph.as_ref().unwrap().1.launch()?;
-                    cache.pos += 1;
-                    for kvl in cache.kv.iter_mut().flatten() {
-                        kvl.len += 1;
-                    }
-                }
+            // E4B GRAPH-EXEC-UPDATE SERVING: one capture at bucket=win, per-token fa
+            // geometry retune, replay. The 2026-07-12 park ("flat 173.5, stream 64/64") did
+            // NOT reproduce — the capture warmups are real self-feeding steps and the old
+            // door dropped their 2 tokens (E4B-GRAPH-GATE 3/64). Snapshot/rollback (the 26B
+            // graph-loop pattern) fixes the stream; the exec-update kills the bucket-split
+            // tax (42 fa launches at 64 splits vs eager's ~ceil(t_kv/8)).
+            // DEFAULT: budget-gated ON (2026-07-13 valid-window A/B: steady-state replay
+            // beats eager but the one-time capture ~30ms crosses over near 200 tokens —
+            // 128tok −1.3%, 400tok +0.9%). BW24_E4B_GRAPH=1 forces, =0 kills.
+            let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => max_new >= 256,
+            };
+            if e4b && cache.pos + max_new + 2 < win && e4b_graph {
+                self.gemma4_e4b_graph_exec_loop(
+                    e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,
+                    max_new, usize::MAX, |tok| { out.push(tok); None })?;
                 return Ok(out);
             }
             for _ in 0..max_new {
@@ -1228,12 +1227,133 @@ impl HybridModel {
             }
             return Ok(out);
         }
+        // QWEN DC-EAGER route (2026-07-15, BW24_QWEN_DC=0 seam — mirror of generate_with's
+        // serving loop; see the note there. The graph route probed −11% first.)
+        static QWEN_DC2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let qwen_dc = *QWEN_DC2.get_or_init(||
+            std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
+        if qwen_dc && max_new > 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
+            let n_vocab = self.output.out_features();
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            let mut token_d = e.stream().clone_htod(&[argmax(&last_logits) as u32])?;
+            for _ in 0..max_new {
+                out.push(e.dtoh_u32(&token_d)?[0]);
+                token_d = self.decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                              &mut cache, n_vocab)?;
+            }
+            return Ok(out);
+        }
         for _ in 0..max_new {
             let next = argmax(&last_logits) as u32;
             out.push(next);
             last_logits = self.decode_step(e, next, &mut cache)?;
         }
         Ok(out)
+    }
+
+    /// E4B whole-token GRAPH-EXEC-UPDATE serving loop (shared by `generate` and
+    /// `generate_with`): capture ONE self-feeding dcg step at bucket=`win`, then per token
+    /// retune the fa nodes' split geometry to the live eager counts
+    /// (`graph_update::fa_apply`) before replaying the instantiated exec.
+    ///
+    /// The capture's two warmup runs are REAL executions (self-feeding: they consume two
+    /// tokens and advance KV/counters) — snapshot/rollback around the capture (the 26B
+    /// graph-loop pattern) restores device+host state, or the stream drops those tokens
+    /// (E4B-GRAPH-GATE 3/64 break, 2026-07-12). `emit` sees each token BEFORE its
+    /// successor's replay; returning `Some(reason)` stops the loop. Caller owns the
+    /// under-window gate (`cache.pos + budget + 2 < win`).
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_e4b_graph_exec_loop(
+        &self, e: &Engine, cache: &mut Cache, token_d: &mut CudaSlice<u32>,
+        pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>, qt: i32, rb: usize,
+        n_vocab: usize, win: usize, budget: usize, ctx_cap: usize,
+        mut emit: impl FnMut(u32) -> Option<StopReason>,
+    ) -> Result<StopReason, Box<dyn std::error::Error>> {
+        // BISECT ARM (BW24_E4B_DCG_EAGER=1): run the dcg step EAGERLY per token at the
+        // exact live bucket — no capture/replay/exec-update. Separates "the dc-bucket path
+        // diverges from dc-eager numerically" from "the replay/update mechanism is wrong".
+        if let Ok(m) = std::env::var("BW24_E4B_DCG_EAGER") {
+            // =1: exact live bucket per token; =2: the capture's fixed win bucket.
+            let mut reason = StopReason::MaxNew;
+            for _ in 0..budget {
+                let tok = e.dtoh_u32_one(token_d)?;
+                if let Some(r) = emit(tok) { reason = r; break; }
+                if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+                let b = if m == "2" { win } else { cache.pos + 1 };
+                self.gemma4_e4b_decode_step_dcg(e, token_d, pos_d, embd_gpu, qt, rb,
+                                                cache, n_vocab, b)?;
+                cache.pos += 1;
+                for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+            }
+            return Ok(reason);
+        }
+        // snapshot device+host state (the 2 capture-warmup runs must leave no residue).
+        let snap = cache.snapshot(e)?;
+        let pos_save = e.dtoh_i32_one(pos_d)?;
+        let len_save: Vec<Option<i32>> = cache.kv.iter()
+            .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
+        let tok_save = e.dtoh_u32_one(token_d)?;
+        let (graph, keeper) = e.capture_graph_retained(|e| {
+            self.gemma4_e4b_decode_step_dcg(e, token_d, pos_d, embd_gpu, qt, rb,
+                                            cache, n_vocab, win)
+        })?;
+        cache.rollback(e, &snap, 0)?;
+        e.set_i32_one(pos_d, pos_save)?;
+        for (il, ls) in len_save.iter().enumerate() {
+            if let (Some(kvl), Some(v)) = (cache.kv[il].as_mut(), ls) {
+                e.set_i32_one(&mut kvl.len_d, *v)?;
+            }
+        }
+        e.set_u32_one(token_d, tok_save)?;
+        let mut plan = crate::graph_update::fa_plan(&graph)?;
+        if std::env::var("BW24_GRAPH_NODES_DUMP").as_deref() == Ok("1") {
+            let nodes = crate::graph_update::kernel_nodes(&graph)?;
+            let mut counts: std::collections::BTreeMap<String, (usize, (u32, u32, u32))> =
+                std::collections::BTreeMap::new();
+            for n in &nodes {
+                counts.entry(n.name.clone())
+                    .or_insert((0, (n.params.gridDimX, n.params.gridDimY, n.params.gridDimZ)))
+                    .0 += 1;
+            }
+            eprintln!("[graph-nodes] {} kernel nodes, {} fa update units (bucket={win})",
+                      nodes.len(), plan.len());
+            for (name, (c, grid)) in &counts {
+                eprintln!("[graph-nodes]   {c:4}x {name} grid={grid:?}");
+            }
+        }
+        let mut reason = StopReason::MaxNew;
+        let timing = std::env::var("BW24_E4B_GRAPH_TIMING").as_deref() == Ok("1");
+        let (mut t_dtoh, mut t_apply, mut t_launch) =
+            (std::time::Duration::ZERO, std::time::Duration::ZERO, std::time::Duration::ZERO);
+        for _ in 0..budget {
+            let t0 = std::time::Instant::now();
+            let tok = e.dtoh_u32_one(token_d)?;
+            let t1 = std::time::Instant::now();
+            if let Some(r) = emit(tok) { reason = r; break; }
+            if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+            // live t_kv AFTER this replay's in-graph append = pos + 1.
+            crate::graph_update::fa_apply(&graph, &mut plan, cache.pos + 1,
+                                          crate::fa_split_keys)?;
+            let t2 = std::time::Instant::now();
+            graph.launch()?;
+            if timing {
+                let t3 = std::time::Instant::now();
+                t_dtoh += t1 - t0; t_apply += t2 - t1; t_launch += t3 - t2;
+            }
+            cache.pos += 1;
+            for kvl in cache.kv.iter_mut().flatten() { kvl.len += 1; }
+        }
+        if timing {
+            eprintln!("[e4b-graph timing] dtoh(sync-wait) {:?} apply {:?} launch {:?}",
+                      t_dtoh, t_apply, t_launch);
+        }
+        drop(keeper);   // capture-retained transients must outlive every replay
+        Ok(reason)
     }
 
     /// The reusable serving generation API (BASE-3). Primes the prompt, then samples up to
@@ -1303,11 +1423,10 @@ impl HybridModel {
         // gemma4 DEVICE-COUNTER greedy serving loop (the dc arc): token/pos/kv-lens live in
         // device counters, argmax on device — host sees 4B/token. Stream-identical to the
         // eager chain (DC-GATE). Penalties/temp fall through to the host-logits loop.
-        if self.cfg.gemma4.is_some() && sampler.is_greedy() && sampler.penalty_last_n() == 0 {
+        if self.cfg.gemma4.is_some()
+            && sampler.is_greedy() && sampler.penalty_last_n() == 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
             let n_vocab = self.output.out_features();
-            let embd_gpu = self
-                .embd_gpu
-                .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload"));
             let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
             for kvl in cache.kv.iter_mut().flatten() {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
@@ -1316,6 +1435,25 @@ impl HybridModel {
             let e4b = self.is_gemma4_e4b();
             let mut token_d = e.stream().clone_htod(&[first])?;
             let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            // E4B GRAPH-EXEC-UPDATE serving door (under-window regime) — mirror of the
+            // `generate` door incl the budget-gated default; run-gen/serving measure here.
+            let win = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+            let e4b_graph = match std::env::var("BW24_E4B_GRAPH").as_deref() {
+                Ok("1") => true, Ok("0") => false, _ => budget >= 256,
+            };
+            if e4b && cache.pos + budget + 2 < win && e4b_graph {
+                let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
+                let reason = self.gemma4_e4b_graph_exec_loop(
+                    e, &mut cache, &mut token_d, &mut pos_d, embd_gpu, qt, rb, n_vocab, win,
+                    budget, ctx_cap, |tok| {
+                        sampler_cell.accept(tok);
+                        out_cell.push(tok);
+                        if params.eos.contains(&tok) { return Some(StopReason::Eos); }
+                        if !on_token(tok) { return Some(StopReason::Callback); }
+                        None
+                    })?;
+                return Ok(GenOutput { tokens: out, stop_reason: reason });
+            }
             let mut next = first;
             for _ in 0..budget {
                 sampler.accept(next);
@@ -1347,6 +1485,39 @@ impl HybridModel {
                 tokens: out,
                 stop_reason: reason,
             });
+        }
+        // QWEN DC-EAGER serving loop (2026-07-15, BW24_QWEN_DC=0 seam — the gemma dc-arc
+        // pattern): the eager tail dtoh'd the FULL VOCAB logits + host-argmax'd every
+        // token (the duty map's 10.3%-of-wall gap at 13% DRAM duty). decode_step_dc keeps
+        // the token id + argmax device-resident — 4B/token host traffic, same tuned eager
+        // kernels. Greedy + no-penalty only (sampling needs host logits).
+        // (The CUDA-graph route was probed first and read −11%: the replay's dc-fa family
+        // + capture rungs lag the tuned eager lanes; jsonl 2026-07-15.)
+        static QWEN_DC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let qwen_dc = *QWEN_DC.get_or_init(||
+            std::env::var("BW24_QWEN_DC").as_deref() != Ok("0"));
+        if qwen_dc && sampler.is_greedy() && sampler.penalty_last_n() == 0 && budget > 0
+            && let Some(embd_gpu) = self.embd_gpu_try(e) {
+            let n_vocab = self.output.out_features();
+            let (qt, rb) = self.embd.qt_and_row_bytes(self.cfg.n_embd as usize);
+            for kvl in cache.kv.iter_mut().flatten() {
+                e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+            }
+            let mut pos_d = e.htod_i32(&[cache.pos as i32])?;
+            let mut token_d = e.stream().clone_htod(
+                &[crate::forward::argmax(&last_logits) as u32])?;
+            let mut next = e.dtoh_u32(&token_d)?[0];
+            for _ in 0..budget {
+                sampler.accept(next);
+                out.push(next);
+                if params.eos.contains(&next) { reason = StopReason::Eos; break; }
+                if !on_token(next) { reason = StopReason::Callback; break; }
+                if cache.pos >= ctx_cap { reason = StopReason::ContextFull; break; }
+                token_d = self.decode_step_dc(e, &token_d, &mut pos_d, embd_gpu, qt, rb,
+                                              &mut cache, n_vocab)?;
+                next = e.dtoh_u32(&token_d)?[0];
+            }
+            return Ok(GenOutput { tokens: out, stop_reason: reason });
         }
         for _ in 0..budget {
             let next = sampler.sample(&last_logits);

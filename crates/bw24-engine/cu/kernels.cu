@@ -3,6 +3,18 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+// PDL entry hook (SOTA item 2, 2026-07-13). Under a plain launch this is a documented
+// no-op (grid dependencies are complete before any block starts). Under a PROGRAMMATIC
+// graph edge (the BW24_PDL post-capture rewrite) it orders this kernel's global reads
+// after the producer kernel's writes while still letting the grid launch overlap the
+// producer's drain (~120ns/kernel on sm_120, pdl_probe). sm_90+ only; the sm_89
+// portable arm compiles it out.
+#if !defined(BW24_PORTABLE_CUDA) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#define BW24_PDL_ENTRY() cudaGridDependencySynchronize()
+#else
+#define BW24_PDL_ENTRY()
+#endif
+
 // ---- GPU-resident greedy argmax over logits[n_vocab] -> token_out[0] (u32). ----
 // CUDA-GRAPH-PLAN Phase 1: removes the per-step dtoh(logits)+synchronize host barrier (the hard
 // graph-capture blocker). Single CTA, 256 threads. Tie-break = SMALLEST index wins, bit-identical
@@ -236,6 +248,236 @@ extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = rr[i] * scale * w[i];
 }
 
+// ---- E4B glue fusion: rms(a, wa) prologue + the add_rms_norm_f32 program — folds the
+// per-layer post-attn rms_norm_f32(o) into the tail's residual-add+ffn-norm launch. ----
+extern "C" __global__ void rms_pre_add_rms_norm_f32(
+        const float* __restrict__ a, const float* __restrict__ wa,
+        const float* __restrict__ b,
+        const float* __restrict__ w, float* __restrict__ res,
+        float* __restrict__ dst, int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    __shared__ float s[128];
+    // SINGLE-PHASE (parity with the q8z twin — verify t>1 and decode t=1 must share the
+    // reduction algebra bit-for-bit; the 31B depth-spec 45/128 was this mismatch).
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
+    __syncthreads();
+    if (tid < 32) {
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
+    }
+    __syncthreads();
+    float ascale = rsqrtf(s[0] / ncols + eps);
+    float sumv2 = ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3];
+    float scale = rsqrtf(sumv2 / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float v = (ar[i] * ascale) * wa[i] + br[i];
+        rr[i] = v;
+        dr[i] = v * scale * w[i];
+    }
+}
+
+// ---- E4B glue fusion wave 2: the two tail-entry programs with the ffn-norm output zsh
+// ALSO emitted q8_1 (fused2 gate/up consume only the quantized pair at t=1; the f32 zsh
+// stays written for the off-class fallbacks). Epilogue = quantize_q8_1's program verbatim. ----
+extern "C" __global__ void rms_pre_add_rms_norm_q8z_f32(
+        const float* __restrict__ a, const float* __restrict__ wa,
+        const float* __restrict__ b,
+        const float* __restrict__ w, float* __restrict__ res,
+        float* __restrict__ dst,
+        signed char* __restrict__ out_q, float* __restrict__ out_d,
+        int ncols, float eps) {
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    float* dr = dst + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    __shared__ float s[128];
+    // SINGLE-PHASE (wave 4, same algebra as the closing emit; c == 1 here):
+    // sum(v^2) with v = a*ascale*wa + b  ==  ascale^2*S2 + 2*ascale*S3 + S4.
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
+    __syncthreads();
+    if (tid < 32) {
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
+    }
+    __syncthreads();
+    float ascale = rsqrtf(s[0] / ncols + eps);
+    float sumv2 = ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3];
+    float scale = rsqrtf(sumv2 / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        rr[i] = (ar[i] * ascale) * wa[i] + br[i];
+    }
+    __syncthreads();
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    int lane = tid & 31;
+    const float4* x4 = (const float4*)rr;
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        float4 xv = x4[i4];
+        float4 wv = w4[i4];
+        float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                               (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+        d4[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
+// ---- E4B glue fusion wave 2: a + b with the sum ALSO emitted q8_1 (resid feeds inp_gate
+// through matmul_pre; f32 resid stays written for the later residual add). ----
+// ---- E4B FFN-tail EXIT fusion (glue wave 5): resid = attn_out + rms(f0, post_ffw), ----
+// emitted f32 + q8_1 pair in ONE launch — replaces rms_norm_f32(f0 -> sn) + add_q8_1_f32(sn,
+// attn_out). BIT-IDENTITY: the rms reduction reads f0 in rms_norm_f32's exact strided order
+// (same single sum, same block reduce); the per-element value is ((f0[i]*s)*w[i]) + b[i] — the
+// identical op chain of the two-kernel pair (the f32 round-trip of sn is exact, removing it
+// changes no bits); the quantize section is add_q8_1_f32's float4-quad walk verbatim.
+extern "C" __global__ void rms_pre_add_q8_1_f32(
+        const float* __restrict__ a,   // f0 (ffn_down output)
+        const float* __restrict__ wa,  // post_ffw_norm weight
+        const float* __restrict__ b,   // attn_out (the residual carry)
+        float* __restrict__ res,       // resid f32 out
+        signed char* __restrict__ out_q, float* __restrict__ out_d,
+        int ncols, float eps) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    int nblk = ncols / 32;
+
+    // phase 1: rms_norm_f32's reduction, verbatim.
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v = ar[i]; sum += v * v; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(0xffffffff, v, o);
+        if (tid == 0) s[0] = v;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+
+    // phase 2: add_q8_1_f32's quad walk verbatim, with v = ((a*scale)*wa) + b inline.
+    int lane = tid & 31;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    const float* war = wa;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        const float4 a4 = ((const float4*)ar)[i4];
+        const float4 w4 = ((const float4*)war)[i4];
+        const float4 b4 = ((const float4*)br)[i4];
+        float4 v = make_float4(a4.x * scale * w4.x + b4.x, a4.y * scale * w4.y + b4.y,
+                               a4.z * scale * w4.z + b4.z, a4.w * scale * w4.w + b4.w);
+        ((float4*)rr)[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
+extern "C" __global__ void add_q8_1_f32(const float* __restrict__ a, const float* __restrict__ b,
+                                        float* __restrict__ res,
+                                        signed char* __restrict__ out_q, float* __restrict__ out_d,
+                                        int ncols) {
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    int lane = tid & 31;
+    int nblk = ncols / 32;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        const float4 a4 = ((const float4*)ar)[i4];
+        const float4 b4 = ((const float4*)br)[i4];
+        float4 v = make_float4(a4.x + b4.x, a4.y + b4.y, a4.z + b4.z, a4.w + b4.w);
+        ((float4*)rr)[i4] = v;
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
 // ---- RMSNorm with FUSED q8_1 quantize epilogue (decode glue-fusion lever). ----
 // Computes z = rms_norm(x)*w THEN emits z directly as q8_1 (out_q int8 + out_d f32 per-32 scale),
 // so the standalone `quantize_q8_1` launch + the f32 `z` HBM round-trip are removed. The normed
@@ -248,6 +490,7 @@ extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const f
 extern "C" __global__ void rms_norm_q8_1(const float* __restrict__ x, const float* __restrict__ w,
                                          signed char* __restrict__ out_q, float* __restrict__ out_d,
                                          int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* xr = x + (size_t)row * ncols;
@@ -533,6 +776,103 @@ extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
+// ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
+// rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
+// (rope_neox math verbatim on the normed row; barrier between store and rope read). ----
+// cat twin (wave 4b): the q|k|v input is ONE contiguous buffer (the qkv_cat matvec output),
+// so the three input segments collapse to base + row*ncols. Outputs stay separate.
+extern "C" __global__ void rms_norm_qkv_rope_cat_f32(
+        const float* __restrict__ qkv,
+        const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
+        float* __restrict__ dq, float* __restrict__ dk, float* __restrict__ dv,
+        int ncols, int rq, int rk,
+        const int* __restrict__ pos, int nh_q, int nh_k,
+        float theta_scale, float freq_scale, const float* __restrict__ ff,
+        float eps) {
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    const float* xr = qkv + (size_t)row * ncols;
+    const float* w; float* dr;
+    int seg; int seg_r;
+    if (row < rq)           { seg = 0; seg_r = row;           w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { seg = 1; seg_r = row - rq;      w = wk; dr = dk + (size_t)seg_r * ncols; }
+    else                    { seg = 2; seg_r = row - rq - rk; w = wv; dr = dv + (size_t)seg_r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+    if (seg == 2) return;
+    __syncthreads();
+    int half = ncols / 2;
+    int j = tid;
+    if (j >= half) return;
+    int tok = (seg == 0) ? seg_r / nh_q : seg_r / nh_k;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = dr[j];
+    float x1 = dr[j + half];
+    dr[j]        = x0 * c - x1 * sn;
+    dr[j + half] = x0 * sn + x1 * c;
+}
+
+extern "C" __global__ void rms_norm_qkv_rope_f32(
+        const float* __restrict__ q, const float* __restrict__ k, const float* __restrict__ v,
+        const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
+        float* __restrict__ dq, float* __restrict__ dk, float* __restrict__ dv,
+        int ncols, int rq, int rk,
+        const int* __restrict__ pos, int nh_q, int nh_k,
+        float theta_scale, float freq_scale, const float* __restrict__ ff,
+        float eps) {
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    const float* xr; const float* w; float* dr;
+    int seg; int seg_r;
+    if (row < rq)           { seg = 0; seg_r = row;           xr = q + (size_t)row * ncols;   w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { seg = 1; seg_r = row - rq;      xr = k + (size_t)seg_r * ncols; w = wk; dr = dk + (size_t)seg_r * ncols; }
+    else                    { seg = 2; seg_r = row - rq - rk; xr = v + (size_t)seg_r * ncols; w = wv; dr = dv + (size_t)seg_r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+    if (seg == 2) return;                   // V: norm only, never roped
+    __syncthreads();                        // normed row visible before the rope read
+    // rope_neox on the normed row (n_dims == ncols == head_dim here; math verbatim).
+    int half = ncols / 2;
+    int j = tid;
+    if (j >= half) return;
+    int tok = (seg == 0) ? seg_r / nh_q : seg_r / nh_k;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = dr[j];
+    float x1 = dr[j + half];
+    dr[j]        = x0 * c - x1 * sn;
+    dr[j + half] = x0 * sn + x1 * c;
+}
+
 // ---- gemma4: two rms_norms of two DIFFERENT inputs, same width, one launch
 // (post_ffw_norm_1(mlp0) + post_ffw_norm_2(moe0)). grid.x = 2*nrows; per-row verbatim. ----
 extern "C" __global__ void rms_norm2x_f32(const float* __restrict__ a, const float* __restrict__ b,
@@ -678,6 +1018,92 @@ extern "C" __global__ void add_scale_rms_norm_q8_1(const float* __restrict__ a, 
     }
     __syncthreads();
     float scale = rsqrtf(s[0] / ncols + eps);
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    int lane = tid & 31;
+    const float4* x4 = (const float4*)rr;
+    const float4* w4 = (const float4*)w;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;
+        float4 xv = x4[i4];
+        float4 wv = w4[i4];
+        float4 v = make_float4((xv.x * scale) * wv.x, (xv.y * scale) * wv.y,
+                               (xv.z * scale) * wv.z, (xv.w * scale) * wv.w);
+        float amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
+        #pragma unroll
+        for (int o = 4; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(v.x * id), (signed char)__float2int_rn(v.y * id),
+                              (signed char)__float2int_rn(v.z * id), (signed char)__float2int_rn(v.w * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
+    }
+}
+
+// ---- E4B glue fusion (2026-07-12): rms-normalize `a` FIRST (the PLE tail's post_norm of y),
+// then the add_scale_rms_norm_q8_1 program verbatim on (a_normed, b). Replaces the separate
+// rms_norm_f32(y) launch per layer. Two full-row reductions, one launch. ----
+extern "C" __global__ void rms_pre_add_scale_rms_norm_q8_1(
+        const float* __restrict__ a, const float* __restrict__ wa,
+        const float* __restrict__ b,
+        float c, const float* __restrict__ w,
+        float* __restrict__ res,
+        signed char* __restrict__ out_q, float* __restrict__ out_d,
+        int ncols, float eps) {
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    const float* ar = a + (size_t)row * ncols;
+    const float* br = b + (size_t)row * ncols;
+    float* rr = res + (size_t)row * ncols;
+    int nblk = ncols / 32;
+    __shared__ float s[128];
+    // SINGLE-PHASE reductions (wave 4): four simultaneous sums in one pass —
+    //   S1 = sum(a^2)            -> ascale
+    //   S2 = sum((a*wa)^2), S3 = sum(a*wa*b), S4 = sum(b^2)
+    // then sum(v^2) with v = (a*ascale*wa + b)*c expands ALGEBRAICALLY to
+    //   c^2 * (ascale^2*S2 + 2*ascale*S3 + S4)
+    // — one barrier round instead of two full reduction phases. FP-order differs from the
+    // sequential two-phase form (expansion rounding); the argmax/chat gates arbitrate.
+    float s1 = 0.0f, s2 = 0.0f, s3 = 0.0f, s4 = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float a0 = ar[i]; float b0 = br[i]; float awa = a0 * wa[i];
+        s1 += a0 * a0; s2 += awa * awa; s3 += awa * b0; s4 += b0 * b0;
+    }
+    for (int o = 16; o > 0; o >>= 1) {
+        s1 += __shfl_down_sync(0xffffffff, s1, o);
+        s2 += __shfl_down_sync(0xffffffff, s2, o);
+        s3 += __shfl_down_sync(0xffffffff, s3, o);
+        s4 += __shfl_down_sync(0xffffffff, s4, o);
+    }
+    int wid = tid >> 5;
+    if ((tid & 31) == 0) { s[wid] = s1; s[32 + wid] = s2; s[64 + wid] = s3; s[96 + wid] = s4; }
+    __syncthreads();
+    if (tid < 32) {
+        int nw = (blockDim.x + 31) / 32;
+        float v1 = (tid < nw) ? s[tid] : 0.0f;
+        float v2 = (tid < nw) ? s[32 + tid] : 0.0f;
+        float v3 = (tid < nw) ? s[64 + tid] : 0.0f;
+        float v4 = (tid < nw) ? s[96 + tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) {
+            v1 += __shfl_down_sync(0xffffffff, v1, o);
+            v2 += __shfl_down_sync(0xffffffff, v2, o);
+            v3 += __shfl_down_sync(0xffffffff, v3, o);
+            v4 += __shfl_down_sync(0xffffffff, v4, o);
+        }
+        if (tid == 0) { s[0] = v1; s[1] = v2; s[2] = v3; s[3] = v4; }
+    }
+    __syncthreads();
+    float ascale = rsqrtf(s[0] / ncols + eps);
+    float sumv2 = c * c * (ascale * ascale * s[1] + 2.0f * ascale * s[2] + s[3]);
+    float scale = rsqrtf(sumv2 / ncols + eps);
+    // store pass: rr written here (the reduction pass no longer writes it).
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float an = (ar[i] * ascale) * wa[i];
+        rr[i] = (an + br[i]) * c;
+    }
+    __syncthreads();
     signed char* base_q = out_q + (size_t)row * ncols;
     float* base_d = out_d + (size_t)row * nblk;
     int lane = tid & 31;
@@ -868,6 +1294,52 @@ extern "C" __global__ void gelu_tanh_mul_f32(const float* __restrict__ gate, con
         float x = gate[i];
         float t = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
         dst[i] = 0.5f * x * (1.0f + t) * up[i];
+    }
+}
+
+// ---- E4B/gemma glue fusion (2026-07-12): GELU(tanh)*up with the activation EMITTED q8_1
+// (per-32-block amax quantize, bit-identical to quantize_q8_1's rounding — the add_scale
+// emit epilogue's program). The down/proj matmul then rides matmul_pre: one launch replaces
+// gelu_tanh_mul_f32 + quantize_q8_1. Row-major [nrows, ncols]; ncols % 128 == 0. ----
+extern "C" __global__ void gelu_tanh_mul_q8_1(const float* __restrict__ gate,
+                                              const float* __restrict__ up,
+                                              float* __restrict__ act,
+                                              signed char* __restrict__ out_q,
+                                              float* __restrict__ out_d,
+                                              int ncols) {
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+    int lane = tid & 31;
+    int nblk = ncols / 32;
+    const float* gr = gate + (size_t)row * ncols;
+    const float* ur = up + (size_t)row * ncols;
+    float* arow = act + (size_t)row * ncols;
+    signed char* base_q = out_q + (size_t)row * ncols;
+    float* base_d = out_d + (size_t)row * nblk;
+    for (int quad = tid >> 5; quad < nblk / 4; quad += blockDim.x >> 5) {
+        int i4 = quad * 32 + lane;   // float4 index
+        const float4 g4 = ((const float4*)gr)[i4];
+        const float4 u4 = ((const float4*)ur)[i4];
+        float vx[4] = {g4.x, g4.y, g4.z, g4.w};
+        float ux[4] = {u4.x, u4.y, u4.z, u4.w};
+        float o[4];
+        #pragma unroll
+        for (int e = 0; e < 4; ++e) {
+            float x = vx[e];
+            float t = tanhf(0.79788456080286535587989211986876f * x * (1.0f + 0.044715f * x * x));
+            o[e] = 0.5f * x * (1.0f + t) * ux[e];
+        }
+        ((float4*)arow)[i4] = make_float4(o[0], o[1], o[2], o[3]);
+        float amax = fmaxf(fmaxf(fabsf(o[0]), fabsf(o[1])), fmaxf(fabsf(o[2]), fabsf(o[3])));
+        #pragma unroll
+        for (int off = 4; off > 0; off >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+        float d = amax / 127.0f;
+        float id = d > 0.0f ? 1.0f / d : 0.0f;
+        char4 qv = make_char4((signed char)__float2int_rn(o[0] * id), (signed char)__float2int_rn(o[1] * id),
+                              (signed char)__float2int_rn(o[2] * id), (signed char)__float2int_rn(o[3] * id));
+        ((char4*)base_q)[i4] = qv;
+        if ((lane & 7) == 0) base_d[quad * 4 + (lane >> 3)] = d;
     }
 }
 
@@ -1113,6 +1585,27 @@ extern "C" __global__ void pack_tok_p(const unsigned int* __restrict__ tok,
 extern "C" __global__ void tok_map_u32(unsigned int* __restrict__ tok,
                                        const unsigned int* __restrict__ map) {
     if (threadIdx.x == 0) tok[0] = map[tok[0]];
+}
+
+// DSpark semi-AR markov head (dflash lane, 2026-07-13): gather ONE bf16 row of
+// markov_w1 [V, rank] by a DEVICE token id into f32 (the rank-256 step vector). The
+// sequential draft chain stays on-device (no per-position dtoh).
+extern "C" __global__ void gather_row_bf16_f32(const unsigned short* __restrict__ table,
+                                               const unsigned int* __restrict__ tok, int idx,
+                                               float* __restrict__ dst, int ncols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < ncols) {
+        unsigned short h = table[(size_t)tok[idx] * ncols + i];
+        dst[i] = __uint_as_float(((unsigned int)h) << 16);
+    }
+}
+
+// bias add on ONE logits row: logits[row0*V .. +V] += bias[0..V]
+extern "C" __global__ void add_row_inplace_f32(float* __restrict__ logits,
+                                               const float* __restrict__ bias,
+                                               int n, long row_off) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) logits[row_off + i] += bias[i];
 }
 
 // LATENCY-HIDING ARC (owner angles, 2026-07-10): L2 prefetch of a byte range — issued 1-2
