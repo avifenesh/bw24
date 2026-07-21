@@ -2849,9 +2849,15 @@ impl HybridModel {
         // is exact — SWA rides fa_prefill (hd-256 stamp), the hd-512 globals stay naive.
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         if swa && t > win {
-            e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+            if hd == 256 && std::env::var("BW24_NOFA").is_err() {
+                e.fa_prefill_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+            } else {
+                e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+            }
         } else if hd == 256 && std::env::var("BW24_NOFA").is_err() {
             e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+        } else if hd == 512 && std::env::var("BW24_NOFA").is_err() {
+            e.fa_prefill_hd512(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         } else {
             e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         }

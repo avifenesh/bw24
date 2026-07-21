@@ -5612,6 +5612,72 @@ impl Engine {
         Ok(())
     }
 
+    /// Windowed FA prefill (gemma4 SWA layers past the sliding window, hd256): fa_prefill's
+    /// exact dispatch (pp default, BW24_FA_FLOOR seam) with the sliding-window mask + tile
+    /// skip in-kernel. Replaces the O(T*T_kv) scalar sdpa_naive_w on the prime path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_w(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                        o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
+                        t: usize, t_kv: usize, scale: f32, causal: bool, window: usize)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive_w(q, k, v, o, head_dim, n_head, n_head_kv,
+                                     t, t_kv, scale, causal, window);
+        }
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        debug_assert_eq!(head_dim, 256, "fa_prefill_w is stamped hd256 only");
+        let floor = std::env::var("BW24_FA_FLOOR").is_ok();
+        let f = self.func(if floor { "fa_prefill_w_f32" } else { "fa_prefill_w_f32_pp" });
+        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32, n_head_kv as i32,
+                                                t as i32, t_kv as i32, causal as i32, window as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+         .arg(&scale).arg(&cz).arg(&wi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// hd512 FA prefill (gemma4 GLOBAL layers): BLOCK_Q=32 x 2 warps, Q staged in smem,
+    /// grid.z = 2 O-halves (each CTA computes the full 512-dim scores, accumulates half the
+    /// V dims). Replaces the scalar sdpa_naive on the prime path's globals.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_hd512(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
+                            n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(bw24_portable_cuda) {
+            return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
+                                   t, t_kv, scale, causal);
+        }
+        debug_assert_eq!(head_dim, 512, "fa_prefill_hd512 is hd512 only");
+        const BLOCK_Q: usize = 32; const BK: usize = 32; const HALF: usize = 256;
+        let f = self.func("fa_prefill_f32_hd512");
+        // sQ[32][512] + sK[BK][512] + sV[BK][256] + sP[32][BK] (bf16) + sL[32] f32
+        let shmem = (2 * (BLOCK_Q * head_dim + BK * head_dim + BK * HALF + BLOCK_Q * BK)
+                   + 4 * BLOCK_Q) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 2),
+            block_dim: (32, 2, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
+                                            t as i32, t_kv as i32, causal as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+         .arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// FA prefill where K/V are QUANTIZED CudaViews into the resident byte KV cache (the T=K verify
     /// path, MTP-PLAN §D.3). Uses `fa_prefill_q` (inline-dequant during stage-to-smem). The view's
     /// base+offset pointer is honored; the kernel reads [0..t_kv*tok_bytes). Q is the T fresh query
