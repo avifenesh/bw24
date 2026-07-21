@@ -636,6 +636,9 @@ pub struct GemmaAux {
     pub rope_freqs: Option<CudaSlice<f32>>,
     /// all-ones norm weight [512] (max head_dim) — the weightless rms_norms (R7 V-norm).
     pub ones: CudaSlice<f32>,
+    /// tokenizer suppress_tokens uploaded once (None when the model ships none) — masked to
+    /// -inf on every logits row before argmax/sampling (12B QAT ships two control ids).
+    pub suppress_d: Option<(CudaSlice<i32>, usize)>,
     /// E4B per-layer-embedding model tensors (None on 26B/31B).
     pub e4b: Option<Gemma4E4bModel>,
 }
@@ -1036,9 +1039,18 @@ impl HybridModel {
                 }
                 None => None,
             };
+            let suppress_d = {
+                let sup = &cfg.gemma4.as_ref().unwrap().suppress_tokens;
+                if sup.is_empty() { None } else {
+                    let ids: Vec<i32> = sup.iter().map(|&x| x as i32).collect();
+                    eprintln!("[gemma4] suppress_tokens: {} ids masked at sampling", ids.len());
+                    Some((e.htod_i32(&ids)?, ids.len()))
+                }
+            };
             Some(GemmaAux {
                 rope_freqs,
                 ones: e.htod(&[1.0f32; 512])?,
+                suppress_d,
                 e4b,
             })
         } else {

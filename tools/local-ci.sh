@@ -80,6 +80,21 @@ if [ -f "$G31" ]; then
 else
     echo "run-gen/VERIFY-GATE/spec: SKIP (no 31B model at $G31)"
 fi
+
+# gemma-4-12B (dense, MQA globals nkv=1 — the gqa=16 hd512 lane 31B never exercises).
+G12="${BW24_G12_MODEL:-/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf}"
+if [ -f "$G12" ]; then
+    # shellcheck disable=SC2046
+    out=$(BW24_NGEN=8 target/release/run-gen "$G12" $(cat "$DEPTH") 2>&1)
+    echo "$out" | grep -q "MATCH" || { echo "run-gen argmax FAIL (12B depth)"; exit 1; }
+    echo "run-gen argmax depth: MATCH (12B)"
+    # shellcheck disable=SC2046
+    out=$(BW24_VERIFY_GATE=7 target/release/gemma-gate "$G12" $(cat "$DEPTH") 2>&1)
+    echo "$out" | grep -q "VERIFY-GATE K=7: PASS" || { echo "VERIFY-GATE FAIL (12B depth)"; exit 1; }
+    echo "VERIFY-GATE K=7 depth: PASS (12B)"
+else
+    echo "12B run-gen/VERIFY-GATE: SKIP (no 12B model at $G12)"
+fi
 echo "correctness stage: GREEN"
 [ "$MODE" = "--correctness" ] && exit 0
 

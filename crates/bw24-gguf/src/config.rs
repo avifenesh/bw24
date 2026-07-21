@@ -146,6 +146,9 @@ pub struct Gemma4Config {
     /// trailing layers WITHOUT own KV (E4B: 18); they attend an earlier layer's cache:
     /// il >= n_layer - shared_kv_layers reads layer (n_layer - shared_kv_layers) - (swa ? 2 : 1).
     pub shared_kv_layers: u32,
+    /// tokenizer.ggml.suppress_tokens — ids the model card forbids at sampling (the 12B QAT
+    /// ships two control ids); empty on 26B/31B/E4B. Masked to -inf before every argmax/sample.
+    pub suppress_tokens: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +244,11 @@ impl ModelConfig {
                     final_logit_softcapping: f("final_logit_softcapping").unwrap_or(30.0),
                     n_embd_per_layer: u("embedding_length_per_layer_input").unwrap_or(0),
                     shared_kv_layers: u("attention.shared_kv_layers").unwrap_or(0),
+                    suppress_tokens: match g.metadata.get("tokenizer.ggml.suppress_tokens") {
+                        Some(MetaValue::Array(a)) =>
+                            a.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect(),
+                        _ => Vec::new(),
+                    },
                 })
             } else { None };
 

@@ -1,0 +1,6 @@
+prefill 1736 tok in 5.5866s = 310.7 tok/s (pp1736)
+generated 128 tokens in 1.495s = 85.62 tok/s (Stage-B int8 dp4a decode, gen-only; prime 5.574s) [stop: MaxNew]
+prefill 1736 tok in 5.7542s = 301.7 tok/s (pp1736)
+generated 128 tokens in 1.492s = 85.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 5.747s) [stop: MaxNew]
+prefill 1736 tok in 5.7326s = 302.8 tok/s (pp1736)
+generated 128 tokens in 1.491s = 85.83 tok/s (Stage-B int8 dp4a decode, gen-only; prime 5.764s) [stop: MaxNew]

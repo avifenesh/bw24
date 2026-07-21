@@ -5721,10 +5721,10 @@ extern "C" __global__ void fa_decode_vec_q_rows_dpl16_i2(
 // 16 accumulators. NEW NUMERIC CONFIG for the hd512 lane (int8-quantized q/k dot vs the
 // i2 walk's bf16 chain) — every hd512 caller shares the symbol via fa_decode_rows, so
 // decode and verify flip together; run-gen argmax + spec acceptance arbitrate.
-// smem: q 4.5KB + k tile 18KB + sV 32*512 (bf16 32KB / e4m3 16KB) = 54.5 / 38.5KB.
+// smem: q 9KB + k tile 18KB + sV 32*512 (bf16 32KB / e4m3 16KB) = 59 / 43KB.
 struct fa_v4_smem_512 {
-    int   q_ints[8][128];           // [gqa<=8][16 chunks x 8 ints]
-    float q_d[8][16];
+    int   q_ints[16][128];          // [gqa<=16][16 chunks x 8 ints] — 12B globals are MQA
+    float q_d[16][16];              // (nkv=1, nh=16 -> gqa 16); 31B is 32/4 -> 8.
     int   k_ints[FA_DEC_TILE][128];
     float k_d[FA_DEC_TILE][16];
     // sV [FA_DEC_TILE x 512] fa_v4_sv_t follows in dynamic smem

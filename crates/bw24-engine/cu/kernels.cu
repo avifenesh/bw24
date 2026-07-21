@@ -914,6 +914,14 @@ extern "C" __global__ void softcap_f32(float* __restrict__ y, float cap, int n) 
     if (i < n) y[i] = cap * tanhf(y[i] / cap);
 }
 
+// ---- gemma4: suppress-token mask — y[row][ids[j]] = -inf for every logits row, so every
+// downstream consumer (host/device argmax, sampler) inherits the model card's forbidden ids. ----
+extern "C" __global__ void mask_ids_rows_f32(float* __restrict__ y, const int* __restrict__ ids,
+                                             int n_ids, int n_vocab, int t) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_ids * t) y[(size_t)(i / n_ids) * n_vocab + ids[i % n_ids]] = -INFINITY;
+}
+
 // ---- gemma4: residual add + layer scale + NEXT layer's attn_norm in one launch.
 // res = (a+b)*c (add_scale_f32 verbatim); dst = rms_norm(res, w) (rms_norm_f32 verbatim). ----
 extern "C" __global__ void add_scale_rms_norm_f32(const float* __restrict__ a, const float* __restrict__ b,

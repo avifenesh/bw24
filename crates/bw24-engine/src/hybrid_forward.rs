@@ -2795,6 +2795,17 @@ impl HybridModel {
          1.0, swa)
     }
 
+    /// Suppress-token mask over t logits rows (tokenizer.ggml.suppress_tokens; no-op when the
+    /// model ships none). NOT monotonic like softcap — must run before every argmax/sample, so
+    /// every gemma4 logits tail (forward/prime/decode/dc/verify/e4b) calls this on device ld.
+    fn gemma4_suppress(&self, e: &Engine, ld: &mut CudaSlice<f32>, t: usize)
+                       -> Result<(), Box<dyn std::error::Error>> {
+        if let Some((ids, n)) = self.gemma4_aux.as_ref().and_then(|a| a.suppress_d.as_ref()) {
+            e.mask_ids_rows(ld, ids, *n, self.output.out_features(), t)?;
+        }
+        Ok(())
+    }
+
     /// gemma4 attention (R5 geometry, R7 weightless V-norm on the RAW K projection, R9 dual rope).
     /// `cache`: Some => PRIME mode — append the T post-rope K / normed V rows into the quantized
     /// KV cache (same per-row quantize math as the decode append) and advance len. Fresh-prompt
@@ -3400,10 +3411,12 @@ impl HybridModel {
             e.copy_view_into(&mut hlast, 0, &last_row, n_embd)?;
             let mut ld = e.matmul(&self.output, &hlast, 1)?;
             e.softcap(&mut ld, cap, n_vocab)?;
+            self.gemma4_suppress(e, &mut ld, 1)?;
             e.dtoh(&ld)?
         } else {
             let mut ld = e.matmul(&self.output, &hn, t)?;
             e.softcap(&mut ld, cap, t * n_vocab)?;
+            self.gemma4_suppress(e, &mut ld, t)?;
             e.dtoh(&ld)?
         };
         Ok(logits)
@@ -3444,6 +3457,7 @@ impl HybridModel {
         let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, self.output.out_features())?;
+        self.gemma4_suppress(e, &mut ld, 1)?;
         let logits = e.dtoh(&ld)?;
         Ok((logits, h_seed, hiddens))
     }
@@ -3581,7 +3595,8 @@ impl HybridModel {
         }
         let mut hn = e.uninit(n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
-        let logits = e.matmul(&self.output, &hn, 1)?;
+        let mut logits = e.matmul(&self.output, &hn, 1)?;
+        self.gemma4_suppress(e, &mut logits, 1)?;   // cap skipped (monotonic); the mask is not
         e.argmax_token_device_into(&logits, tok_out, n_vocab)?;
         e.inc_seqlen(pos_d)?;
         if cap_bucket_max.is_none() { cache.pos += 1; }
@@ -3983,7 +3998,8 @@ impl HybridModel {
         }
         let mut hn = e.uninit(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let ld = e.matmul(&self.output, &hn, t)?;
+        let mut ld = e.matmul(&self.output, &hn, t)?;
+        self.gemma4_suppress(e, &mut ld, t)?;   // before the per-row argmax consumers
         cache.pos += t;
         Ok((ld, hn))
     }
@@ -4278,6 +4294,7 @@ impl HybridModel {
         let mut ld = e.matmul(&self.output, &hn, 1)?;
         let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
         e.softcap(&mut ld, cap, self.output.out_features())?;   // R4 on device (262k host tanh ~ms/step)
+        self.gemma4_suppress(e, &mut ld, 1)?;
         let logits = e.dtoh(&ld)?;
         cache.pos += 1;
         Ok((logits, h_seed))
@@ -4650,6 +4667,7 @@ impl HybridModel {
             let cap = self.cfg.gemma4.as_ref().unwrap().final_logit_softcapping;
             e.softcap(&mut ld, cap, t * self.output.out_features())?;
         }
+        self.gemma4_suppress(e, &mut ld, t)?;   // mask both capped and argmax-only consumers
         Ok((ld, x))
     }
 

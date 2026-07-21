@@ -3214,6 +3214,20 @@ impl Engine {
         Ok(())
     }
 
+    /// gemma4 suppress-token mask: y[row][ids[j]] = -inf over t logits rows (fixed-arg launch —
+    /// graph-capture safe; NOT monotonic like softcap, so it must run before any argmax).
+    pub fn mask_ids_rows(&self, y: &mut CudaSlice<f32>, ids: &CudaSlice<i32>, n_ids: usize,
+                         n_vocab: usize, t: usize)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("mask_ids_rows_f32");
+        let cfg = LaunchConfig::for_num_elems((n_ids * t) as u32);
+        let (ni, nv, ti) = (n_ids as i32, n_vocab as i32, t as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(y).arg(ids).arg(&ni).arg(&nv).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// gemma4: res = (a+b)*c AND dst = rms_norm(res, w) in one launch.
     #[allow(clippy::too_many_arguments)]
     pub fn add_scale_rms_norm(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
@@ -6045,7 +6059,8 @@ impl Engine {
         // sibling (in-kernel dp4a port alone) probed FLAT — hd512 was DRAM-re-read-bound,
         // not unpack-bound; jsonl 2026-07-14.
         static TB512: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let tb512 = head_dim == 512 && sp <= 32
+        // gqa <= 16 = fa_v4_smem_512's q-array capacity; past it fall to the register twins.
+        let tb512 = head_dim == 512 && sp <= 32 && n_head / n_head_kv.max(1) <= 16
             && *TB512.get_or_init(|| std::env::var("BW24_FA_TB512").as_deref() != Ok("0"));
         let fname = if tb512 { "fa_decode_vec_q_rows_v4_512_tb" }
                     else if i2 { "fa_decode_vec_q_rows_dpl16_i2" }
@@ -6068,9 +6083,9 @@ impl Engine {
                 }
                 else { self.func(fname) };
         let shmem = if tb512 {
-            // fa_v4_smem_512 (q 4.5KB + k tile 18KB) + sV 32*512 (e4m3 module halves it)
+            // fa_v4_smem_512 (q 9KB gqa<=16 + k tile 18KB) + sV 32*512 (e4m3 module halves it)
             let gk = Self::gkv_on();
-            let sh = (4096 + 512 + 32 * 512 + 32 * 64
+            let sh = (8192 + 1024 + 32 * 512 + 32 * 64
                       + 32 * head_dim * if gk { 1 } else { 2 }) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
