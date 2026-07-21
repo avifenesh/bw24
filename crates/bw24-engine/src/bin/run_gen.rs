@@ -13,6 +13,46 @@ use bw24_engine::Engine;
 use bw24_gguf::GgufFile;
 use bw24_tokenizer::Tokenizer;
 
+type CpuExpertStatsSnapshot = (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64);
+
+#[derive(Debug, PartialEq, Eq)]
+struct CpuExpertStatsDelta {
+    calls: u64,
+    experts: u64,
+    wall_ns: u64,
+    exposed_wait_ns: u64,
+    ram_hits: u64,
+    ram_misses: u64,
+    ram_reads: u64,
+    resident_bytes: u64,
+    prepare_ns: u64,
+    io_ns: u64,
+    insert_ns: u64,
+    compute_ns: u64,
+}
+
+fn cpu_expert_stats_delta(
+    before: CpuExpertStatsSnapshot,
+    after: CpuExpertStatsSnapshot,
+    wait_before: u64,
+    wait_after: u64,
+) -> CpuExpertStatsDelta {
+    CpuExpertStatsDelta {
+        calls: after.0.saturating_sub(before.0),
+        experts: after.1.saturating_sub(before.1),
+        wall_ns: after.2.saturating_sub(before.2),
+        exposed_wait_ns: wait_after.saturating_sub(wait_before),
+        ram_hits: after.3.saturating_sub(before.3),
+        ram_misses: after.4.saturating_sub(before.4),
+        ram_reads: after.5.saturating_sub(before.5),
+        resident_bytes: after.6,
+        prepare_ns: after.7.saturating_sub(before.7),
+        io_ns: after.8.saturating_sub(before.8),
+        insert_ns: after.9.saturating_sub(before.9),
+        compute_ns: after.10.saturating_sub(before.10),
+    }
+}
+
 fn process_read_bytes() -> Option<u64> {
     std::fs::read_to_string("/proc/self/io")
         .ok()?
@@ -244,6 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             e.moe_cache_reset_counters();
             let pread_before = e.moe_pread_stats();
             let cpu_before = e.cpu_expert_stats();
+            let cpu_wait_before = e.cpu_expert_exposed_wait_ns();
             let cpu_residency_before = e.cpu_expert_gpu_residency_stats();
             let disk_before = process_read_bytes();
             let t0 = std::time::Instant::now();
@@ -295,29 +336,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     after.4.saturating_sub(before.4),
                 );
             }
-            if let (Some(before), Some(after)) = (cpu_before, e.cpu_expert_stats()) {
-                let calls = after.0.saturating_sub(before.0);
-                let experts = after.1.saturating_sub(before.1);
-                let wall_ns = after.2.saturating_sub(before.2);
-                let ram_hits = after.3.saturating_sub(before.3);
-                let ram_misses = after.4.saturating_sub(before.4);
-                let ram_reads = after.5.saturating_sub(before.5);
-                let prepare_ns = after.7.saturating_sub(before.7);
-                let io_ns = after.8.saturating_sub(before.8);
-                let insert_ns = after.9.saturating_sub(before.9);
-                let compute_ns = after.10.saturating_sub(before.10);
+            if let (Some(before), Some(after), Some(wait_before), Some(wait_after)) = (
+                cpu_before,
+                e.cpu_expert_stats(),
+                cpu_wait_before,
+                e.cpu_expert_exposed_wait_ns(),
+            ) {
+                let stats = cpu_expert_stats_delta(before, after, wait_before, wait_after);
                 println!(
-                    "CPU experts DECODE-WINDOW: calls={calls} experts={experts} \
-                     backend_wall={:.3}s RAM_hits={ram_hits} RAM_misses={ram_misses} \
+                    "CPU experts DECODE-WINDOW: calls={} experts={} \
+                     backend_wall={:.3}s exposed_wait={:.3}s RAM_hits={} RAM_misses={} \
                      RAM_fills={:.2} GB RAM_resident={:.2} GB \
                      phase_prepare={:.3}s phase_io={:.3}s phase_insert={:.3}s phase_compute={:.3}s",
-                    wall_ns as f64 / 1e9,
-                    ram_reads as f64 / 1e9,
-                    after.6 as f64 / 1e9,
-                    prepare_ns as f64 / 1e9,
-                    io_ns as f64 / 1e9,
-                    insert_ns as f64 / 1e9,
-                    compute_ns as f64 / 1e9,
+                    stats.calls,
+                    stats.experts,
+                    stats.wall_ns as f64 / 1e9,
+                    stats.exposed_wait_ns as f64 / 1e9,
+                    stats.ram_hits,
+                    stats.ram_misses,
+                    stats.ram_reads as f64 / 1e9,
+                    stats.resident_bytes as f64 / 1e9,
+                    stats.prepare_ns as f64 / 1e9,
+                    stats.io_ns as f64 / 1e9,
+                    stats.insert_ns as f64 / 1e9,
+                    stats.compute_ns as f64 / 1e9,
                 );
             }
             if let (Some(before), Some(after)) =
@@ -385,6 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         e.moe_cache_reset_counters();
                         let warm_pread_before = e.moe_pread_stats();
                         let warm_cpu_before = e.cpu_expert_stats();
+                        let warm_cpu_wait_before = e.cpu_expert_exposed_wait_ns();
                         let warm_residency_before = e.cpu_expert_gpu_residency_stats();
                         let warm_disk_before = process_read_bytes();
                         let mut measured = Vec::with_capacity(n_measure);
@@ -454,30 +497,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 after.4.saturating_sub(before.4),
                             );
                         }
-                        if let (Some(before), Some(after)) = (warm_cpu_before, e.cpu_expert_stats())
-                        {
-                            let calls = after.0.saturating_sub(before.0);
-                            let experts = after.1.saturating_sub(before.1);
-                            let wall_ns = after.2.saturating_sub(before.2);
-                            let ram_hits = after.3.saturating_sub(before.3);
-                            let ram_misses = after.4.saturating_sub(before.4);
-                            let ram_reads = after.5.saturating_sub(before.5);
-                            let prepare_ns = after.7.saturating_sub(before.7);
-                            let io_ns = after.8.saturating_sub(before.8);
-                            let insert_ns = after.9.saturating_sub(before.9);
-                            let compute_ns = after.10.saturating_sub(before.10);
+                        if let (Some(before), Some(after), Some(wait_before), Some(wait_after)) = (
+                            warm_cpu_before,
+                            e.cpu_expert_stats(),
+                            warm_cpu_wait_before,
+                            e.cpu_expert_exposed_wait_ns(),
+                        ) {
+                            let stats =
+                                cpu_expert_stats_delta(before, after, wait_before, wait_after);
                             println!(
-                                "CPU experts STEADY-STATE rep {rep}: calls={calls} experts={experts} \
-                                 backend_wall={:.3}s RAM_hits={ram_hits} RAM_misses={ram_misses} \
+                                "CPU experts STEADY-STATE rep {rep}: calls={} experts={} \
+                                 backend_wall={:.3}s exposed_wait={:.3}s RAM_hits={} RAM_misses={} \
                                  RAM_fills={:.2} GB RAM_resident={:.2} GB phase_prepare={:.3}s \
                                  phase_io={:.3}s phase_insert={:.3}s phase_compute={:.3}s",
-                                wall_ns as f64 / 1e9,
-                                ram_reads as f64 / 1e9,
-                                after.6 as f64 / 1e9,
-                                prepare_ns as f64 / 1e9,
-                                io_ns as f64 / 1e9,
-                                insert_ns as f64 / 1e9,
-                                compute_ns as f64 / 1e9,
+                                stats.calls,
+                                stats.experts,
+                                stats.wall_ns as f64 / 1e9,
+                                stats.exposed_wait_ns as f64 / 1e9,
+                                stats.ram_hits,
+                                stats.ram_misses,
+                                stats.ram_reads as f64 / 1e9,
+                                stats.resident_bytes as f64 / 1e9,
+                                stats.prepare_ns as f64 / 1e9,
+                                stats.io_ns as f64 / 1e9,
+                                stats.insert_ns as f64 / 1e9,
+                                stats.compute_ns as f64 / 1e9,
                             );
                         }
                         if let (Some(before), Some(after)) =
@@ -832,4 +876,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("--- generated text ---\n{text}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_cpu_expert_stats_without_positional_drift() {
+        let before = (1, 2, 3, 4, 5, 6, 700, 8, 9, 10, 11);
+        let after = (11, 22, 33, 44, 55, 66, 7_000, 88, 99, 110, 121);
+        assert_eq!(
+            cpu_expert_stats_delta(before, after, 12, 132),
+            CpuExpertStatsDelta {
+                calls: 10,
+                experts: 20,
+                wall_ns: 30,
+                exposed_wait_ns: 120,
+                ram_hits: 40,
+                ram_misses: 50,
+                ram_reads: 60,
+                resident_bytes: 7_000,
+                prepare_ns: 80,
+                io_ns: 90,
+                insert_ns: 100,
+                compute_ns: 110,
+            }
+        );
+    }
 }

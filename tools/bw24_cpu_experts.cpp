@@ -321,6 +321,30 @@ std::int32_t dot_i8_16(__m128i weights, const Q8Block16 & input) {
     return dot_i8_16(unpacked, input.values, input.sum);
 #endif
 }
+
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+std::array<std::int32_t, 2> dot_i8_16_pair(
+        __m256i weights, const Q8Block16 & low, const Q8Block16 & high) {
+    __m256i activations = _mm256_castsi128_si256(
+        _mm_load_si128(reinterpret_cast<const __m128i *>(low.values)));
+    activations = _mm256_inserti128_si256(
+        activations,
+        _mm_load_si128(reinterpret_cast<const __m128i *>(high.values)),
+        1);
+    const __m256i biased = _mm256_xor_si256(weights, _mm256_set1_epi8(0x80));
+    const __m256i products = _mm256_dpbusd_epi32(
+        _mm256_setzero_si256(), biased, activations);
+    auto reduce = [](__m128i lanes) {
+        lanes = _mm_hadd_epi32(lanes, lanes);
+        lanes = _mm_hadd_epi32(lanes, lanes);
+        return _mm_cvtsi128_si32(lanes);
+    };
+    return {
+        reduce(_mm256_castsi256_si128(products)) - 128 * low.sum,
+        reduce(_mm256_extracti128_si256(products, 1)) - 128 * high.sum,
+    };
+}
+#endif
 #endif
 
 float dot_q2_k_row(
@@ -335,6 +359,29 @@ float dot_q2_k_row(
         const std::uint8_t * quants = block + 16;
         const float d = fp16_to_f32(read_u16(block + 80));
         const float dmin = fp16_to_f32(read_u16(block + 82));
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+        for (int half = 0; half < 2; ++half) {
+            const __m256i packed = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i *>(quants + half * 32));
+            for (int pair = 0; pair < 4; ++pair) {
+                const int group = half * 8 + pair * 2;
+                const __m256i decoded = _mm256_and_si256(
+                    _mm256_srli_epi16(packed, pair * 2), _mm256_set1_epi8(3));
+                const auto integer_dots = dot_i8_16_pair(
+                    decoded,
+                    activation.blocks[static_cast<std::size_t>(superblock * 16 + group)],
+                    activation.blocks[static_cast<std::size_t>(superblock * 16 + group + 1)]);
+                for (int lane = 0; lane < 2; ++lane) {
+                    const int current = group + lane;
+                    const auto & input = activation.blocks[
+                        static_cast<std::size_t>(superblock * 16 + current)];
+                    result += input.scale * (
+                        d * static_cast<float>(scales[current] & 15) * integer_dots[lane]
+                        - dmin * static_cast<float>(scales[current] >> 4) * input.sum);
+                }
+            }
+        }
+#else
         for (int group = 0; group < 16; ++group) {
             const int start = group * 16;
             const int half = start / 128;
@@ -360,6 +407,7 @@ float dot_q2_k_row(
                 d * static_cast<float>(scales[group] & 15) * integer_dot
                 - dmin * static_cast<float>(scales[group] >> 4) * input.sum);
         }
+#endif
     }
     return result;
 }

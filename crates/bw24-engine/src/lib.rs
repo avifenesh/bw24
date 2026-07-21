@@ -1291,6 +1291,12 @@ impl Engine {
         crate::cpu_experts::configured().then(crate::cpu_experts::stats)
     }
 
+    /// Caller-blocked nanoseconds at CPU expert joins. Compare before/after snapshots to measure
+    /// the backend tail that resident-GPU expert work did not hide.
+    pub fn cpu_expert_exposed_wait_ns(&self) -> Option<u64> {
+        crate::cpu_experts::configured().then(crate::cpu_experts::exposed_wait_ns)
+    }
+
     /// CPU-routed expert selections grouped by how many of their three projections were already
     /// resident in HBM. This makes otherwise-stranded partial residency visible to tuning runs.
     pub fn cpu_expert_gpu_residency_stats(&self) -> Option<(u64, u64, u64)> {
