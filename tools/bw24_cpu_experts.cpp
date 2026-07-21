@@ -653,6 +653,50 @@ float dot_quantized_row(
             const std::uint8_t * high = block + 66;
             const std::uint8_t * signs = block + 74;
             const std::uint8_t * scales = block + 106;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group path: decode all 32 weights of a group (8 grid lookups, 4 sign
+            // bytes) into one 256-bit vector and evaluate both 16-wide activation blocks
+            // with a single vpdpbusd. Scale terms apply sequentially in original half
+            // order, preserving floating-point accumulation order exactly.
+            for (int group = 0; group < 8; ++group) {
+                const int scale_nibble = group % 2 == 0
+                    ? scales[group / 2] & 15 : scales[group / 2] >> 4;
+                const __m256i index_bytes = _mm256_cvtepu8_epi32(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(quants + group * 8)));
+                const __m256i high_bits = _mm256_and_si256(
+                    _mm256_srlv_epi32(
+                        _mm256_set1_epi32(high[group]),
+                        _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)),
+                    _mm256_set1_epi32(1));
+                const __m256i indices = _mm256_or_si256(
+                    index_bytes, _mm256_slli_epi32(high_bits, 8));
+                const __m256i grid = _mm256_i32gather_epi32(
+                    reinterpret_cast<const int *>(BW24_IQ3S_GRID), indices, 4);
+                const __m128i signs_low = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 1]].data())));
+                const __m128i signs_high = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 2]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 3]].data())));
+                const __m256i directions = _mm256_set_m128i(signs_high, signs_low);
+                const __m256i decoded_pair = _mm256_sign_epi8(grid, directions);
+                const auto integer_dots = dot_i8_16_pair(
+                    decoded_pair,
+                    activation.blocks[block16(superblock, group * 2)],
+                    activation.blocks[block16(superblock, group * 2 + 1)]);
+                for (int lane = 0; lane < 2; ++lane) {
+                    const auto & input = activation.blocks[
+                        block16(superblock, group * 2 + lane)];
+                    result += d * (1 + 2 * scale_nibble) * input.scale
+                        * static_cast<float>(integer_dots[lane]);
+                }
+            }
+            continue;
+#endif
             for (int group = 0; group < 8; ++group) {
                 const int scale_nibble = group % 2 == 0
                     ? scales[group / 2] & 15 : scales[group / 2] >> 4;
