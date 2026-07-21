@@ -5657,9 +5657,30 @@ impl Engine {
             return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
                                    t, t_kv, scale, causal);
         }
+        // Default: pre-convert Q/K/V to bf16 once and stage int4 (8 bf16/copy) — at 1 CTA/SM the
+        // synchronous stage serializes with compute and MQA re-stages the same K/V per head CTA;
+        // pre-converting halves staged bytes and cuts stage instructions 8x. BIT-IDENTICAL to the
+        // f32-staged kernel (the converter applies the same __float2bfloat16 the stage applied;
+        // kernel_check gates the identity). BW24_FA512_STAGE=f32 = rollback to the f32 kernel.
+        static F32_STAGE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let f32_stage = *F32_STAGE.get_or_init(|| {
+            std::env::var("BW24_FA512_STAGE").as_deref() == Ok("f32")
+        });
+        self.fa_prefill_hd512_arm(q, k, v, o, head_dim, n_head, n_head_kv, t, t_kv, scale,
+                                  causal, f32_stage)
+    }
+
+    /// hd512 FA prefill with the stage arm FORCED (`f32_stage`) — the kernel_check bit-identity
+    /// gate entry (`fa_prefill_hd512` picks the arm from BW24_FA512_STAGE).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_hd512_arm(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                                o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
+                                n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
+                                f32_stage: bool)
+                                -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512, "fa_prefill_hd512 is hd512 only");
         const BLOCK_Q: usize = 32; const BK: usize = 32; const HALF: usize = 256;
-        let f = self.func("fa_prefill_f32_hd512");
+        let f = self.func(if f32_stage { "fa_prefill_f32_hd512" } else { "fa_prefill_bf16_hd512" });
         // sQ[32][512] + sK[BK][512] + sV[BK][256] + sP[32][BK] (bf16) + sL[32] f32
         let shmem = (2 * (BLOCK_Q * head_dim + BK * head_dim + BK * HALF + BLOCK_Q * BK)
                    + 4 * BLOCK_Q) as u32;
@@ -5671,11 +5692,39 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
-         .arg(&scale).arg(&cz);
-        unsafe { b.launch(cfg)?; }
+        if f32_stage {
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz);
+            unsafe { b.launch(cfg)?; }
+        } else {
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz);
+            unsafe { b.launch(cfg)?; }
+        }
         Ok(())
+    }
+
+    /// Flat f32 -> bf16 conversion into a fresh scratch buffer (2 bytes/elem). `n % 4 == 0`
+    /// (float4 in, 4x bf16 out). Feeds the bf16-staged hd512 FA prefill.
+    pub fn f32_to_bf16(&self, x: &CudaSlice<f32>, n: usize)
+                       -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(n % 4 == 0, "f32_to_bf16 requires n % 4 == 0, got {n}");
+        let mut y = self.alloc_uninit::<u8>(n * 2)?;
+        let f = self.func("f32_to_bf16_flat");
+        let n_i = n as i64;
+        let cfg = LaunchConfig {
+            grid_dim: (((n / 4) as u32).div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut y).arg(&n_i);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
     }
 
     /// FA prefill where K/V are QUANTIZED CudaViews into the resident byte KV cache (the T=K verify

@@ -1457,6 +1457,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
             println!("fa_prefill T={t} Tkv={tkv}: rel={rel:.2e} {}", if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
         }
+        // --- hd512 FA prefill (gemma4 globals, MQA nkv=1): CPU-oracle rel gate on BOTH stage
+        // arms + f32-vs-bf16-stage BIT identity (the pre-converter applies the exact
+        // __float2bfloat16 the in-kernel stage applied -> ANY nonzero diff = staging bug).
+        {
+            let (hd5, nh5, nhkv5) = (512usize, 8usize, 1usize);
+            let scale5 = 1.0f32 / (hd5 as f32).sqrt();
+            let cpu_sdpa5 = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nh5 * hd5];
+                for head in 0..nh5 { for qt in 0..t {
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nh5 + head) * hd5..][..hd5];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &k[tk * hd5..][..hd5];
+                        let mut a = 0.0; for d in 0..hd5 { a += qv[d] * kv[d]; }
+                        a *= scale5; if tk > q_pos { a = -1e30; } *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nh5 + head) * hd5..][..hd5];
+                    for d in 0..hd5 {
+                        let mut a = 0.0; for tk in 0..tkv { a += sc[tk] * v[tk * hd5 + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hd5*nh5*t).map(|i| pr(i+13)*0.2).collect();
+                let k: Vec<f32> = (0..hd5*nhkv5*tkv).map(|i| pr(i+17)*0.2).collect();
+                let v: Vec<f32> = (0..hd5*nhkv5*tkv).map(|i| pr(i+23)*0.2).collect();
+                let cpu = cpu_sdpa5(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_f32=e.zeros(hd5*nh5*t)?; let mut o_bf=e.zeros(hd5*nh5*t)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_f32,hd5,nh5,nhkv5,t,tkv,scale5,true,true)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_bf,hd5,nh5,nhkv5,t,tkv,scale5,true,false)?;
+                let gf=e.dtoh(&o_f32)?; let gb=e.dtoh(&o_bf)?;
+                let d=maxdiff(&cpu,&gf);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_hd512 T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
+                println!("fa_prefill_hd512 bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
+                         gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
         // decode cases (T=1) — K/V come from the QUANTIZED resident cache (q8_0 K / q5_1 V).
         // Quantize the f32 K/V token-by-token via the append kernel, then fa_decode dequants
         // inline. Tolerance loosened vs the f32 path: q5_1 V (5-bit affine) is the looser link.

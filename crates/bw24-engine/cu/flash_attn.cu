@@ -1218,6 +1218,229 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
         }
     }
 }
+// ===================================================================== //
+//  KERNEL 1d-bf16 : fa_prefill_bf16_hd512 — the hd512 kernel with Q/K/V //
+//  PRE-CONVERTED to bf16 (f32_to_bf16_flat below, once per layer).       //
+//  Motivation: at 1 CTA/SM (~82KB smem) the synchronous stage-to-smem    //
+//  serializes with compute, and MQA (n_head_kv=1) re-stages the same     //
+//  K/V bytes for every (head, O-half) CTA — 16x. Pre-converting halves   //
+//  the staged bytes and turns the (ld.f32 + cvt + st.b16) per-element    //
+//  loop into int4 copies (8 bf16 per instruction): 8x fewer stage        //
+//  instructions, ~4x fewer stage bytes in flight.                        //
+//  BIT-IDENTITY: the converter applies the exact __float2bfloat16        //
+//  round-to-nearest-even the in-kernel stage applied; every mma input    //
+//  bit matches fa_prefill_f32_hd512 -> O is bit-identical (gated in      //
+//  kernel_check).                                                        //
+// ===================================================================== //
+extern "C" __global__ void f32_to_bf16_flat(
+        const float* __restrict__ x, __nv_bfloat16* __restrict__ y, long n)
+{
+    // n % 4 == 0 (all hd512 Q/K/V sizes are multiples of 512). float4 in, 4x bf16 out.
+    long i = ((long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i >= n) return;
+    float4 v = *(const float4*)(x + i);
+    ushort4 o;
+    o.x = __bfloat16_as_ushort(__float2bfloat16(v.x));
+    o.y = __bfloat16_as_ushort(__float2bfloat16(v.y));
+    o.z = __bfloat16_as_ushort(__float2bfloat16(v.z));
+    o.w = __bfloat16_as_ushort(__float2bfloat16(v.w));
+    *(ushort4*)(y + i) = o;
+}
+
+extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_bf16_hd512(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    constexpr int HEAD_DIM  = 512;
+    constexpr int HD_KTILES = HEAD_DIM / K_STEP;      // 32
+    constexpr int HALF      = HEAD_DIM / 2;           // 256 V/O dims per CTA
+    constexpr int O_NBLK    = HALF / N_KEYS;          // 32 CTiles
+    const int warp = threadIdx.y;                     // 0..1
+    const int lane = threadIdx.x;
+    const int head    = blockIdx.y;
+    const int kv_head = head / (n_head / n_head_kv);
+    const int q_base  = blockIdx.x * BLOCK_Q_512;
+    const int qrow_base = q_base + warp*M_ROWS;
+    const int d_base  = blockIdx.z * HALF;            // this CTA's O half
+    if (head >= n_head || q_base >= T) return;
+    const int nqw = min(M_ROWS, T - qrow_base);
+
+    extern __shared__ char smem_raw512b[];
+    __nv_bfloat16* sQ = (__nv_bfloat16*)smem_raw512b;             // BLOCK_Q_512*HEAD_DIM
+    __nv_bfloat16* sK = sQ + BLOCK_Q_512*HEAD_DIM;                // BK*HEAD_DIM
+    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HALF
+    __nv_bfloat16* sP = sV + BK*HALF;                             // BLOCK_Q_512*BK
+    float* sL = (float*)(sP + BLOCK_Q_512*BK);                    // BLOCK_Q_512 f32
+    __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
+    float* sLw = sL + warp*M_ROWS;
+    __nv_bfloat16* sQw = sQ + warp*M_ROWS*HEAD_DIM;
+
+    const int causal_i = causal;
+    const int q_pos0w  = (T_kv - T) + qrow_base;
+    const int bt  = warp*WARP_SZ + lane;              // 0..63
+    const int bsz = N_WARPS_512*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+
+    // ---- stage the CTA's whole Q tile once: int4 = 8 bf16 per copy ----
+    constexpr int QCH = HEAD_DIM / 8;                 // int4 chunks per row
+    for (int i = bt; i < BLOCK_Q_512*QCH; i += bsz) {
+        int r = i / QCH, dc = i % QCH;
+        ((int4*)sQ)[i] = (q_base + r < T)
+            ? ((const int4*)(Q + ((size_t)(q_base + r) * n_head + head) * HEAD_DIM))[dc]
+            : zero4;
+    }
+    __syncthreads();
+
+    CTile O_acc[O_NBLK];
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=O_acc[c].x[1]=O_acc[c].x[2]=O_acc[c].x[3]=0.0f; }
+    float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q_512 - 1);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- stage K (full 512) + V (this CTA's 256 half), int4 copies ----
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            ((int4*)sK)[i] = (kk < nk)
+                ? ((const int4*)(K + ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM))[dc]
+                : zero4;
+        }
+        constexpr int VCH = HALF / 8;
+        for (int i = bt; i < BK*VCH; i += bsz) {
+            int kk = i / VCH, dc = i % VCH;
+            ((int4*)sV)[i] = (kk < nk)
+                ? ((const int4*)(V + ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM + d_base))[dc]
+                : zero4;
+        }
+        __syncthreads();
+
+        // ---- GEMM0: full-512 QK^T, Q re-ldmatrix'd from sQ per K-step ----
+        CTile Sc[BK/N_KEYS];
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C0, C1;
+            C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+            C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+            #pragma unroll 8
+            for (int kt = 0; kt < HD_KTILES; ++kt) {
+                ATile Qf, Kt;
+                ld_A(Qf, sQw + kt*K_STEP, HEAD_DIM/2);
+                ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf, Blo);
+                mma_bf16(C1, Qf, Bhi);
+            }
+            Sc[kg/N_KEYS + 0] = C0;
+            Sc[kg/N_KEYS + 1] = C1;
+        }
+
+        // ---- register softmax (pp recipe) ----
+        float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int col = g*N_KEYS + c0 + (l & 1);
+                int row = (l < 2) ? r_lo : r_hi;
+                int q_pos = q_pos0w + row;
+                float s = Sc[g].x[l] * scale;
+                if (col >= nk) s = NEG_INF;
+                if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                Sc[g].x[l] = s;
+                if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
+                else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
+            }
+        }
+        s_tile_max_lo = row_max4(s_tile_max_lo);
+        s_tile_max_hi = row_max4(s_tile_max_hi);
+        float m_new_lo = fmaxf(m_lo, s_tile_max_lo);
+        float m_new_hi = fmaxf(m_hi, s_tile_max_hi);
+        float alpha_lo = (m_lo == NEG_INF) ? 0.0f : exp2f((m_lo - m_new_lo) * LOG2E);
+        float alpha_hi = (m_hi == NEG_INF) ? 0.0f : exp2f((m_hi - m_new_hi) * LOG2E);
+        float l_part_lo = 0.0f, l_part_hi = 0.0f;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float mn = (l < 2) ? m_new_lo : m_new_hi;
+                float s  = Sc[g].x[l];
+                float p  = (s == NEG_INF) ? 0.0f : exp2f((s - mn) * LOG2E);
+                Sc[g].x[l] = p;
+                if (l < 2) l_part_lo += p; else l_part_hi += p;
+            }
+        }
+        l_part_lo = row_sum4(l_part_lo);
+        l_part_hi = row_sum4(l_part_hi);
+        l_lo = l_lo * alpha_lo + l_part_lo;
+        l_hi = l_hi * alpha_hi + l_part_hi;
+        m_lo = m_new_lo; m_hi = m_new_hi;
+
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            sPw[r_lo*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[0]);
+            sPw[r_lo*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[1]);
+            sPw[r_hi*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[2]);
+            sPw[r_hi*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[3]);
+        }
+        __syncwarp();
+
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) {
+            O_acc[c].x[0] *= alpha_lo; O_acc[c].x[1] *= alpha_lo;
+            O_acc[c].x[2] *= alpha_hi; O_acc[c].x[3] *= alpha_hi;
+        }
+
+        // ---- GEMM1: O(half) += P @ V(half) ----
+        for (int d0 = 0; d0 < HALF; d0 += 2*N_KEYS) {
+            CTile Clo, Chi;
+            Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
+            Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < BK; kk += K_STEP) {
+                ATile A; ATile Bt;
+                ld_A(A, sPw + kk, BK/2);
+                ld_A_trans(Bt, sV + kk*HALF + d0, HALF/2);
+                BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                mma_bf16(Clo, A, Blo);
+                mma_bf16(Chi, A, Bhi);
+            }
+            O_acc[(d0/N_KEYS) + 0].x[0] += Clo.x[0]; O_acc[(d0/N_KEYS) + 0].x[1] += Clo.x[1];
+            O_acc[(d0/N_KEYS) + 0].x[2] += Clo.x[2]; O_acc[(d0/N_KEYS) + 0].x[3] += Clo.x[3];
+            O_acc[(d0/N_KEYS) + 1].x[0] += Chi.x[0]; O_acc[(d0/N_KEYS) + 1].x[1] += Chi.x[1];
+            O_acc[(d0/N_KEYS) + 1].x[2] += Chi.x[2]; O_acc[(d0/N_KEYS) + 1].x[3] += Chi.x[3];
+        }
+        __syncthreads();
+    }
+
+    if (c0 == 0) { sLw[r_lo] = l_lo; sLw[r_hi] = l_hi; }
+    __syncwarp();
+
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) {
+        #pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int r = CTile::get_i(l);
+            int d = c*N_KEYS + CTile::get_j(l);
+            if (r < nqw) {
+                float linv = (sLw[r] > 0.0f) ? (1.0f / sLw[r]) : 0.0f;
+                O[((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM + d_base + d]
+                    = O_acc[c].x[l] * linv;
+            }
+        }
+    }
+}
+
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp_hd128(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
