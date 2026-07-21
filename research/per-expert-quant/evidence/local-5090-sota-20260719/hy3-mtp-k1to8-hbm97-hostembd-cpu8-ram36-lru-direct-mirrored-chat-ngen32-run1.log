@@ -1,0 +1,131 @@
+2026-07-20T03:34:20+03:00
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 50, 8.67 W, 180 MHz, 405 MHz, 312 MiB, 24463 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        20Gi        20Gi       8.0Gi        28Gi        40Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5482 slots in 5 classes, 14.91 GB / 14.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+
+[generate]   31 tok in 11.455s = 2.71 tok/s (gen-only; this run's prime 12.836s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 503, 289, 1970, 24621, 35510, 40297, 15189, 25]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=18 full_accept=14 len_hist=[0, 18] per_slot=[14/18=0.778] total=14/18=0.778 tok_per_round=1.778
+
+[generate_spec K=1] 32 tok in 4.496s = 6.89 tok/s (2.55x vs generate; this run's prime 12.219s)
+  acceptance: 14/18 = 77.8%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 20:
+    generate     [..]: [11, 413, 1970, 26223, 1932]
+    generate_spec[..]: [11, 413, 25, 286, 12]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 25, 286, 12, 4055, 1970, 4906, 42970, 3236, 12, 1970, 24621, 35510]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=15 full_accept=7 len_hist=[0, 0, 15] per_slot=[9/15=0.600 7/15=0.467] total=16/30=0.533 tok_per_round=2.067
+
+[generate_spec K=2] 32 tok in 4.852s = 6.39 tok/s (2.36x vs generate; this run's prime 11.514s)
+  acceptance: 16/30 = 53.3%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 18:
+    generate     [..]: [280, 7164, 11, 413, 1970]
+    generate_spec[..]: [280, 7164, 13, 4468, 2171]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=14 full_accept=1 len_hist=[0, 0, 0, 14] per_slot=[9/14=0.643 7/14=0.500 1/14=0.071] total=17/42=0.405 tok_per_round=2.214
+
+[generate_spec K=3] 32 tok in 5.068s = 6.12 tok/s (2.26x vs generate; this run's prime 11.871s)
+  acceptance: 17/42 = 40.5%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 18:
+    generate     [..]: [280, 7164, 11, 413, 1970]
+    generate_spec[..]: [280, 7164, 13, 4468, 2171]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=13 full_accept=0 len_hist=[0, 0, 0, 0, 13] per_slot=[9/13=0.692 8/13=0.615 1/13=0.077 0/13=0.000] total=18/52=0.346 tok_per_round=2.385
+
+[generate_spec K=4] 32 tok in 6.484s = 4.78 tok/s (1.77x vs generate; this run's prime 11.961s)
+  acceptance: 18/52 = 34.6%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 18:
+    generate     [..]: [280, 7164, 11, 413, 1970]
+    generate_spec[..]: [280, 7164, 13, 4468, 2171]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=13 full_accept=0 len_hist=[0, 0, 0, 0, 0, 13] per_slot=[9/13=0.692 8/13=0.615 1/13=0.077 0/13=0.000 0/13=0.000] total=18/65=0.277 tok_per_round=2.385
+
+[generate_spec K=5] 32 tok in 8.253s = 3.76 tok/s (1.39x vs generate; this run's prime 12.047s)
+  acceptance: 18/65 = 27.7%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 18:
+    generate     [..]: [280, 7164, 11, 413, 1970]
+    generate_spec[..]: [280, 7164, 13, 4468, 2171]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 503, 341, 5177]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=12 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 12] per_slot=[8/12=0.667 8/12=0.667 2/12=0.167 1/12=0.083 0/12=0.000 0/12=0.000] total=19/72=0.264 tok_per_round=2.583
+
+[generate_spec K=6] 32 tok in 8.848s = 3.50 tok/s (1.29x vs generate; this run's prime 12.046s)
+  acceptance: 19/72 = 26.4%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 24:
+    generate     [..]: [1932, 42970, 503, 289, 1970]
+    generate_spec[..]: [1932, 42970, 40297, 1970, 24621]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 40297, 1970, 24621, 35510, 40297, 289, 252, 21632]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=12 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 0, 12] per_slot=[8/12=0.667 8/12=0.667 2/12=0.167 1/12=0.083 0/12=0.000 0/12=0.000 0/12=0.000] total=19/84=0.226 tok_per_round=2.583
+
+[generate_spec K=7] 32 tok in 9.935s = 3.12 tok/s (1.15x vs generate; this run's prime 12.025s)
+  acceptance: 19/84 = 22.6%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 24:
+    generate     [..]: [1932, 42970, 503, 289, 1970]
+    generate_spec[..]: [1932, 42970, 40297, 1970, 24621]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 40297, 1970, 24621, 35510, 40297, 289, 252, 21632]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=14 full_accept=0 len_hist=[0, 0, 0, 0, 0, 0, 0, 0, 14] per_slot=[10/14=0.714 6/14=0.429 1/14=0.071 0/14=0.000 0/14=0.000 0/14=0.000 0/14=0.000 0/14=0.000] total=17/112=0.152 tok_per_round=2.214
+
+[generate_spec K=8] 32 tok in 14.194s = 2.18 tok/s (0.81x vs generate; this run's prime 11.952s)
+  acceptance: 17/112 = 15.2%   self-consistency: FAIL
+  FIRST DIVERGENCE at index 20:
+    generate     [..]: [11, 413, 1970, 26223, 1932]
+    generate_spec[..]: [11, 413, 25, 286, 9]
+    spec tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 25, 286, 9, 607, 13130, 63, 341, 18264, 1320, 8528, 552, 4304]
+
+=== SELF-CONSISTENCY FAIL ===
+
+thread 'main' (1629039) panicked at crates/bw24-engine/src/bin/run_spec.rs:287:5:
+generate_spec diverged from generate — greedy spec decode must be exact
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[spill-pread] reads=326435 bytes=875704270848 errors=0 short_reads=0 fallbacks=0 buffer_waits=95988 ring_full=3896
+[bw24-cpu-profile] calls=48975 prepare=1.476667s io=19.355246s insert=0.091879s compute=42.526300s read_projections=60328 read_GB=159.217
+Command exited with non-zero status 101
+	Command being timed: "env BW24_NGEN=32 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv GOMP_CPU_AFFINITY=0-7 target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 442.88
+	System time (seconds): 136.56
+	Percent of CPU this job got: 160%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 6:01.44
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48716804
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 13324
+	Minor (reclaiming a frame) page faults: 20472906
+	Voluntary context switches: 3538250
+	Involuntary context switches: 7867
+	Swaps: 0
+	File system inputs: 2038225248
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 64, 29.87 W, 1590 MHz, 14001 MHz, 312 MiB, 24463 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        13Gi        43Gi       3.8Gi       8.4Gi        47Gi
+Swap:          8.0Gi       8.0Gi       808Ki
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   8G   -1
+run_status=101

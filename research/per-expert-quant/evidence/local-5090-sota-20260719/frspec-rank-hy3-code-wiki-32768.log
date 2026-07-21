@@ -1,0 +1,4 @@
+[frspec-rank] 1527 corpus files, vocab 120818
+[frspec-rank] 8046286 tokens counted
+[frspec-rank] top 32768 covers 99.98% of corpus tokens
+[frspec-rank] wrote /data/ai-ml/hf-models/hy3-layer103p5-bw24-runtime/frspec-code-wiki-32768.gguf (32768 ids) + /data/ai-ml/hf-models/hy3-layer103p5-bw24-runtime/frspec-code-wiki-32768.gguf.txt

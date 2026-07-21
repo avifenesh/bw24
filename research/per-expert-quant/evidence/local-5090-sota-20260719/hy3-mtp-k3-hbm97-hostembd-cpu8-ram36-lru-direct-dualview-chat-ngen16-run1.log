@@ -1,0 +1,57 @@
+2026-07-20T03:28:19+03:00
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 49, 8.52 W, 180 MHz, 405 MHz, 312 MiB, 24463 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        21Gi        21Gi       8.0Gi        26Gi        39Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5482 slots in 5 classes, 14.91 GB / 14.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+
+[generate]   15 tok in 4.186s = 3.58 tok/s (gen-only; this run's prime 12.746s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=3] 16 tok in 2.132s = 7.03 tok/s (1.96x vs generate; this run's prime 12.308s)
+  acceptance: 11/15 = 73.3%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=102958 bytes=278232809472 errors=0 short_reads=0 fallbacks=0 buffer_waits=31919 ring_full=1609
+[bw24-cpu-profile] calls=2893 prepare=0.106654s io=3.217877s insert=0.005599s compute=2.554515s read_projections=8766 read_GB=23.055
+	Command being timed: "env BW24_NGEN=16 BW24_SPEC_K=3 BW24_SPEC_HOST_EMBD=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct GOMP_CPU_AFFINITY=0-7 target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 170.27
+	System time (seconds): 43.68
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 3:36.13
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 43149540
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 16779
+	Minor (reclaiming a frame) page faults: 15862796
+	Voluntary context switches: 491057
+	Involuntary context switches: 1608
+	Swaps: 0
+	File system inputs: 622324112
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 62, 29.94 W, 1597 MHz, 14001 MHz, 312 MiB, 24463 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        14Gi        27Gi       3.7Gi        23Gi        46Gi
+Swap:          8.0Gi       7.3Gi       750Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 7.3G   -1
+run_status=0

@@ -1,0 +1,1 @@
+q2_K shape=1536x4096 threads=8 iterations=200 repack_ms=1.2643 rowwise_ms=0.5341 interleaved_ms=0.5872 speedup=0.909x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07

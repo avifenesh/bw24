@@ -1,0 +1,26 @@
+{
+  "format": "bw24-smart100-promotion-gates-v1",
+  "generated_utc": "2026-07-13T06:05:00Z",
+  "purpose": "Freeze seven-format IQ3_S/IQ4_XS/Q4_K promotion gates before its public capability result exists",
+  "panel_lock_sha256": "33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b",
+  "quality_ceiling_arm": "plain_quant",
+  "strong_compact_arm": "traffic_nvfp4_53_q2_139",
+  "same_size_control_arm": "prune100_joint_heal",
+  "candidate_arms": [
+    "smart100_empirical",
+    "smart100_balanced",
+    "smart100_rescue",
+    "smart100_iq3_iq4_q4_empirical"
+  ],
+  "hard_logical_byte_ceiling": 100000000000,
+  "require_global_point_estimate_pareto": true,
+  "max_domain_macro_deficit_vs_same_size_control": 0.02,
+  "max_question_weighted_deficit_vs_same_size_control": 0.02,
+  "max_single_task_rate_deficit_vs_same_size_control": 0.20,
+  "max_practical_candidates": 1,
+  "practical_max_solved_deficit_per_panel_vs_strong_compact": 1,
+  "trusted_full_max_arms": 3,
+  "trusted_full_required_reference": "plain_quant",
+  "mapping_allocation_and_healing_used_public_eval_data": false,
+  "promotion_uses_public_directional_results": true
+}

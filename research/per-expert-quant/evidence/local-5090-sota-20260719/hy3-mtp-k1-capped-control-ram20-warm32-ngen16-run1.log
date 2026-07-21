@@ -1,0 +1,66 @@
+[runner] thermal_regime=no intentional cooldown; paired capped development run
+[runner] cpu_regime=CPUQuota 200%, CPUWeight 10; at most 2 logical CPUs aggregate
+[runner] memory_regime=20-GiB CPU expert cache, MemoryHigh 34G, MemoryMax 38G
+[runner] arm=control
+[runner] preflight_free_vram_mib=23672
+ 17:18:07 up 16 days,  2:29,  2 users,  load average: 3.06, 7.65, 13.47
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        20Gi        26Gi       7.1Gi        21Gi        40Gi
+Swap:          5.8Gi       5.8Gi          0B
+2026/07/20 17:18:07.353, NVIDIA GeForce RTX 5090 Laptop GPU, 53, 9.16 W, 0 %, 312 MiB
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 32 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5482 slots in 5 classes, 14.91 GB / 14.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-final.so (threads=4)
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=13 full_accept=5 len_hist=[0, 2, 4, 7] per_slot=[10/13=0.769 9/11=0.818 1/7=0.143] total=20/31=0.645 tok_per_round=2.538
+[spec-phase] draft=366.9ms (1.1%) verify-issue=32446.6ms (98.8%) verify-wait=11.0ms (0.0%) commit-host=3.8ms (0.0%) rounds=13
+[moe-cache] residency frozen: 5482 slots, 5482 resident blocks; 1804 complete experts, 30 one-projection fragments, 20 two-projection fragments (70 stranded blocks)
+[moe-cache] frozen MTP residency: 84 blocks, 28 complete experts
+
+[generate]   15 tok in 2.707s = 5.54 tok/s (gen-only; this run's prime 9.977s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=8 full_accept=7 len_hist=[0, 8] per_slot=[7/8=0.875] total=7/8=0.875 tok_per_round=1.875
+[spec-phase] draft=24.5ms (1.0%) verify-issue=2338.8ms (98.7%) verify-wait=5.4ms (0.2%) commit-host=0.8ms (0.0%) rounds=8
+
+[generate_spec K=1] 16 tok in 2.591s = 5.79 tok/s (1.04x vs generate; this run's prime 9.772s)
+  acceptance: 7/8 = 87.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=67584 bytes=181167685632 errors=0 short_reads=0 fallbacks=0 buffer_waits=42632 ring_full=831
+[bw24-cpu-profile] calls=12369 prepare=0.694122s io=17.520677s insert=0.081399s compute=13.265746s read_projections=59158 read_GB=154.965
+	Command being timed: "systemd-run --user --scope --quiet --unit=bw24-k1-control-2354693 -p CPUQuota=200% -p CPUWeight=10 -p MemoryHigh=34G -p MemoryMax=38G env BW24_NGEN=16 BW24_SPEC_K=1 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-final.so BW24_CPU_EXPERT_THREADS=4 BW24_CPU_EXPERT_IO_THREADS=4 BW24_CPU_EXPERT_CACHE_GB=20 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=32 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=3 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-3 /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 208.05
+	System time (seconds): 47.16
+	Percent of CPU this job got: 105%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:01.66
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 37941000
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 6095
+	Minor (reclaiming a frame) page faults: 15972941
+	Voluntary context switches: 688538
+	Involuntary context switches: 4575
+	Swaps: 0
+	File system inputs: 695452016
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[runner] exit_status=0
+ 17:22:09 up 16 days,  2:33,  2 users,  load average: 3.98, 5.49, 11.23
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        16Gi        32Gi       5.1Gi        18Gi        44Gi
+Swap:          8.0Gi       7.9Gi       125Mi
+2026/07/20 17:22:09.052, NVIDIA GeForce RTX 5090 Laptop GPU, 62, 31.93 W, 6 %, 312 MiB

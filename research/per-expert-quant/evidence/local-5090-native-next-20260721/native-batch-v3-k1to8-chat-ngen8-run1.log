@@ -1,0 +1,6 @@
+2026-07-21T18:40:04+03:00
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        10Gi        18Gi       1.3Gi        33Gi        50Gi
+Swap:           31Gi        14Gi        17Gi
+NVIDIA GeForce RTX 5090 Laptop GPU, 55, 296 MiB, 23688 MiB, 9.52 W
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB

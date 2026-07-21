@@ -1,0 +1,17 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5482 slots in 5 classes, 14.91 GB / 14.91 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 5482 slots, 5482 resident blocks
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+
+[generate]   31 tok in 6.822s = 4.54 tok/s (gen-only; this run's prime 220.513s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 1970, 26223, 1932, 42970, 40297, 1970, 24621, 35510, 40297, 289, 252, 21632]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=17 full_accept=14 len_hist=[0, 17] per_slot=[14/17=0.824] total=14/17=0.824 tok_per_round=1.824
+
+[generate_spec K=1] 32 tok in 3.176s = 9.76 tok/s (2.15x vs generate; this run's prime 226.879s)
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)

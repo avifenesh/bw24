@@ -1,0 +1,6 @@
+[bw24-cpu] RAM headroom cap: requested=16.00 GiB available=37.16 GiB reserve=4.00 GiB effective=16.00 GiB
+[bw24-cpu] normal-RAM expert cache: 16.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=13 prepare=0.000034s io=0.000000s insert=0.000001s compute=0.003953s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=5 ms/token=0.207022 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

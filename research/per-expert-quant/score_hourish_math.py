@@ -155,7 +155,7 @@ def equivalent(candidate: str, target: str) -> tuple[bool, str]:
     return False, "none"
 
 
-def score(paths: list[pathlib.Path]) -> dict[str, Any]:
+def score(paths: list[pathlib.Path], output_format: str = "bw24-hourish-math-score-v1") -> dict[str, Any]:
     if len(paths) != 1:
         raise ValueError(f"expected exactly one sample file, found {len(paths)}")
     path = paths[0]
@@ -190,7 +190,7 @@ def score(paths: list[pathlib.Path]) -> dict[str, Any]:
             )
     passed = sum(int(row["passed"]) for row in samples)
     return {
-        "format": "bw24-hourish-math-score-v1",
+        "format": output_format,
         "policy": {
             "answer_selection": "first_nonempty_line_then_same_line_answer_clause",
             "later_lines_ignored": True,
@@ -223,11 +223,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("samples", nargs="*", type=pathlib.Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--format",
+        choices=("bw24-hourish-math-score-v1", "bw24-promoted-math-score-v1"),
+        default="bw24-hourish-math-score-v1",
+    )
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return
-    print(json.dumps(score(args.samples), indent=2, sort_keys=True))
+    print(json.dumps(score(args.samples, args.format), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

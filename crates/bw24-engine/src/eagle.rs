@@ -37,35 +37,35 @@
 //!     dl  = lm_head @ RMSNorm(gsum, norm)             -> draft_logits[32000]
 //!     g_next = gsum                                   (EAGLE recurrence: pre-norm residual)
 
-use cudarc::driver::CudaSlice;
-use std::path::Path;
-use bw24_gguf::dequant;
-use bw24_gguf::safetensors::StModel;
-use crate::Engine;
-use crate::model::GpuTensor;
-use crate::hybrid::HybridModel;
 use crate::cache::{Cache, KvLayer};
 use crate::forward::argmax;
+use crate::hybrid::HybridModel;
+use crate::model::GpuTensor;
+use crate::Engine;
+use bw24_gguf::dequant;
+use bw24_gguf::safetensors::StModel;
+use cudarc::driver::CudaSlice;
+use std::path::Path;
 
 /// The EAGLE3 draft model: encoder `fc` + ONE Llama-style decoder layer + untied lm_head + d2t.
 /// All weights are bf16 -> dequant to f32 GpuTensor::Float (the draft is ~0.8 GB; the matmuls go
 /// through cuBLASLt `linear`). The draft attention is PLAIN Llama (no QK-norm, no output gate),
 /// distinct from the trunk's gated/QK-normed full-attn.
 pub struct Eagle3Draft {
-    pub fc: GpuTensor,                 // [3*n_embd, n_embd]  encoder
-    pub input_layernorm: GpuTensor,    // [n_embd]  norm of prev-token embedding
-    pub hidden_norm: GpuTensor,        // [n_embd]  norm of recurrent g
-    pub q_proj: GpuTensor,             // [2*n_embd, n_head*head_dim]
-    pub k_proj: GpuTensor,             // [2*n_embd, n_head_kv*head_dim]
-    pub v_proj: GpuTensor,             // [2*n_embd, n_head_kv*head_dim]
-    pub o_proj: GpuTensor,             // [n_head*head_dim, n_embd]
+    pub fc: GpuTensor,              // [3*n_embd, n_embd]  encoder
+    pub input_layernorm: GpuTensor, // [n_embd]  norm of prev-token embedding
+    pub hidden_norm: GpuTensor,     // [n_embd]  norm of recurrent g
+    pub q_proj: GpuTensor,          // [2*n_embd, n_head*head_dim]
+    pub k_proj: GpuTensor,          // [2*n_embd, n_head_kv*head_dim]
+    pub v_proj: GpuTensor,          // [2*n_embd, n_head_kv*head_dim]
+    pub o_proj: GpuTensor,          // [n_head*head_dim, n_embd]
     pub post_attention_layernorm: GpuTensor,
     pub gate_proj: GpuTensor,
     pub up_proj: GpuTensor,
     pub down_proj: GpuTensor,
-    pub norm: GpuTensor,               // [n_embd]  final RMSNorm before lm_head
-    pub lm_head: GpuTensor,            // [n_embd, draft_vocab]
-    pub d2t: Vec<i64>,                 // [draft_vocab]  target_id = draft_id + d2t[draft_id]
+    pub norm: GpuTensor,    // [n_embd]  final RMSNorm before lm_head
+    pub lm_head: GpuTensor, // [n_embd, draft_vocab]
+    pub d2t: Vec<i64>,      // [draft_vocab]  target_id = draft_id + d2t[draft_id]
 
     // shape / rope params (from the draft config.json, NOT the trunk cfg)
     pub n_embd: usize,
@@ -74,20 +74,29 @@ pub struct Eagle3Draft {
     pub head_dim: usize,
     pub n_ff: usize,
     pub draft_vocab: usize,
-    pub rope_dim_count: usize,         // partial_rotary_factor * head_dim  (0.25 * 256 = 64)
-    pub rope_theta: f32,               // 1e7
+    pub rope_dim_count: usize, // partial_rotary_factor * head_dim  (0.25 * 256 = 64)
+    pub rope_theta: f32,       // 1e7
     pub eps: f32,
-    pub aux_layers: Vec<usize>,        // [1, 15, 28]
+    pub aux_layers: Vec<usize>, // [1, 15, 28]
 }
 
 /// Load a single bf16 (or f32) tensor from the draft safetensors into a GpuTensor::Float.
 /// `name` is the raw HF/EAGLE name in the file (e.g. "fc.weight", "midlayer.self_attn.q_proj.weight").
-fn load_float(e: &Engine, m: &StModel, name: &str) -> Result<GpuTensor, Box<dyn std::error::Error>> {
-    let (info, bytes) = m.raw(name).ok_or_else(|| format!("EAGLE3 draft missing tensor {name}"))?;
-    let ne = info.ne();                              // inner-fastest (ne[0]=in_features for a weight)
+fn load_float(
+    e: &Engine,
+    m: &StModel,
+    name: &str,
+) -> Result<GpuTensor, Box<dyn std::error::Error>> {
+    let (info, bytes) = m
+        .raw(name)
+        .ok_or_else(|| format!("EAGLE3 draft missing tensor {name}"))?;
+    let ne = info.ne(); // inner-fastest (ne[0]=in_features for a weight)
     let n: u64 = ne.iter().product();
     let f32v = dequant::dequantize(info.ggml_type(), bytes, n as usize);
-    Ok(GpuTensor::Float { data: e.htod(&f32v)?, ne })
+    Ok(GpuTensor::Float {
+        data: e.htod(&f32v)?,
+        ne,
+    })
 }
 
 impl Eagle3Draft {
@@ -95,7 +104,11 @@ impl Eagle3Draft {
     /// direct path to the .safetensors. Reads the geometry/rope params from the sibling config.json.
     /// `aux_layers` is the trunk layer-id list from `eagle_config.eagle_aux_hidden_state_layer_ids`.
     pub fn load(e: &Engine, path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let dir = if path.is_file() { path.parent().unwrap_or(Path::new(".")) } else { path };
+        let dir = if path.is_file() {
+            path.parent().unwrap_or(Path::new("."))
+        } else {
+            path
+        };
         let cfg = EagleConfig::from_json(&dir.join("config.json"))?;
         let m = StModel::open(path)?;
 
@@ -110,7 +123,11 @@ impl Eagle3Draft {
             k_proj: load_float(e, &m, "midlayer.self_attn.k_proj.weight")?,
             v_proj: load_float(e, &m, "midlayer.self_attn.v_proj.weight")?,
             o_proj: load_float(e, &m, "midlayer.self_attn.o_proj.weight")?,
-            post_attention_layernorm: load_float(e, &m, "midlayer.post_attention_layernorm.weight")?,
+            post_attention_layernorm: load_float(
+                e,
+                &m,
+                "midlayer.post_attention_layernorm.weight",
+            )?,
             gate_proj: load_float(e, &m, "midlayer.mlp.gate_proj.weight")?,
             up_proj: load_float(e, &m, "midlayer.mlp.up_proj.weight")?,
             down_proj: load_float(e, &m, "midlayer.mlp.down_proj.weight")?,
@@ -123,17 +140,34 @@ impl Eagle3Draft {
             head_dim: cfg.head_dim,
             n_ff: cfg.intermediate_size,
             draft_vocab: cfg.draft_vocab,
-            rope_dim_count: ((cfg.partial_rotary_factor * cfg.head_dim as f32).round() as usize).max(2),
+            rope_dim_count: ((cfg.partial_rotary_factor * cfg.head_dim as f32).round() as usize)
+                .max(2),
             rope_theta: cfg.rope_theta,
             eps: cfg.rms_eps,
             aux_layers: cfg.aux_layers,
         };
         // shape sanity (catches a wrong checkpoint / mapping):
-        assert_eq!(draft.fc.in_features(), 3 * draft.n_embd, "fc in != 3*n_embd");
+        assert_eq!(
+            draft.fc.in_features(),
+            3 * draft.n_embd,
+            "fc in != 3*n_embd"
+        );
         assert_eq!(draft.fc.out_features(), draft.n_embd, "fc out != n_embd");
-        assert_eq!(draft.q_proj.in_features(), 2 * draft.n_embd, "q_proj in != 2*n_embd");
-        assert_eq!(draft.q_proj.out_features(), draft.n_head * draft.head_dim, "q_proj out");
-        assert_eq!(draft.lm_head.out_features(), draft.draft_vocab, "lm_head out != draft_vocab");
+        assert_eq!(
+            draft.q_proj.in_features(),
+            2 * draft.n_embd,
+            "q_proj in != 2*n_embd"
+        );
+        assert_eq!(
+            draft.q_proj.out_features(),
+            draft.n_head * draft.head_dim,
+            "q_proj out"
+        );
+        assert_eq!(
+            draft.lm_head.out_features(),
+            draft.draft_vocab,
+            "lm_head out != draft_vocab"
+        );
         Ok(draft)
     }
 
@@ -146,23 +180,33 @@ impl Eagle3Draft {
     /// ENCODE (once per round, EAGLE-PLAN N3): g = fc @ concat(aux0, aux1, aux2). `aux` are the 3
     /// trunk residual hiddens of the just-committed token (decode_step_aux / decode_step_t_aux),
     /// in ascending-layer order. Returns the recurrent draft hidden `g` [n_embd].
-    pub fn encode(&self, e: &Engine, aux: &[CudaSlice<f32>]) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn encode(
+        &self,
+        e: &Engine,
+        aux: &[CudaSlice<f32>],
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         assert_eq!(aux.len(), self.aux_layers.len(), "aux count != #aux layers");
         let n = self.n_embd;
         let mut cat = e.zeros(self.aux_layers.len() * n)?;
         for (i, a) in aux.iter().enumerate() {
             e.copy_into(&mut cat, i * n, a, n)?;
         }
-        e.matmul(&self.fc, &cat, 1)               // [3*n_embd] @ fc[3n_embd,n_embd] -> [n_embd]
+        e.matmul(&self.fc, &cat, 1) // [3*n_embd] @ fc[3n_embd,n_embd] -> [n_embd]
     }
 
     /// One DRAFT-token forward (EAGLE-PLAN N4, T=1). `prev_tok` = the TARGET token id to predict
     /// from (last committed or previous draft). `g` = the recurrent draft hidden (encode() output
     /// on round entry, then the previous step's g_next). Returns (draft_logits[draft_vocab] host,
     /// g_next dev). Mirrors the vLLM op-sequence documented at the top of this file.
-    pub fn draft_token(&self, e: &Engine, target: &HybridModel, prev_tok: u32, g: &CudaSlice<f32>,
-                       scratch: &mut Eagle3Scratch, pos: usize)
-                       -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    pub fn draft_token(
+        &self,
+        e: &Engine,
+        target: &HybridModel,
+        prev_tok: u32,
+        g: &CudaSlice<f32>,
+        scratch: &mut Eagle3Scratch,
+        pos: usize,
+    ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n = self.n_embd;
         let eps = self.eps;
         let pos_d = e.htod_i32(&[pos as i32])?;
@@ -171,7 +215,14 @@ impl Eagle3Draft {
         // eN = input_layernorm(e); gN = hidden_norm(g); residual = PRE-norm g (norm_after_residual).
         let e_emb = e.htod(&target.embd.gather(n, &[prev_tok]))?;
         let mut e_norm = e.zeros(n)?;
-        e.rms_norm(&e_emb, self.input_layernorm.float_data(), &mut e_norm, n, 1, eps)?;
+        e.rms_norm(
+            &e_emb,
+            self.input_layernorm.float_data(),
+            &mut e_norm,
+            n,
+            1,
+            eps,
+        )?;
         let res = e.clone_dtod(g)?;
         let mut g_norm = e.zeros(n)?;
         e.rms_norm(g, self.hidden_norm.float_data(), &mut g_norm, n, 1, eps)?;
@@ -187,7 +238,14 @@ impl Eagle3Draft {
         e.add(&attn, &res, &mut x1, n)?;
         // z = post_attention_layernorm(x1)
         let mut z = e.zeros(n)?;
-        e.rms_norm(&x1, self.post_attention_layernorm.float_data(), &mut z, n, 1, eps)?;
+        e.rms_norm(
+            &x1,
+            self.post_attention_layernorm.float_data(),
+            &mut z,
+            n,
+            1,
+            eps,
+        )?;
         // mlp = down @ (silu(gate@z) * (up@z))
         let gate = e.matmul(&self.gate_proj, &z, 1)?;
         let up = e.matmul(&self.up_proj, &z, 1)?;
@@ -208,28 +266,63 @@ impl Eagle3Draft {
     /// Plain Llama attention over the [2*n_embd] concat input, T=1, on the draft's own scratch KV.
     /// q/k/v project from 2*n_embd; partial RoPE (rope_dim_count of head_dim) at the draft theta;
     /// GQA broadcast in fa_decode; o_proj back to n_embd. No QK-norm, no output gate.
-    fn attn(&self, e: &Engine, cat: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, scratch: &mut Eagle3Scratch)
-            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    fn attn(
+        &self,
+        e: &Engine,
+        cat: &CudaSlice<f32>,
+        pos_d: &CudaSlice<i32>,
+        scratch: &mut Eagle3Scratch,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (nh, nhkv, hd) = (self.n_head, self.n_head_kv, self.head_dim);
         let scale = 1.0 / (hd as f32).sqrt();
-        let mut q = e.matmul(&self.q_proj, cat, 1)?;    // [nh*hd]
-        let mut k = e.matmul(&self.k_proj, cat, 1)?;    // [nhkv*hd]
-        let v = e.matmul(&self.v_proj, cat, 1)?;        // [nhkv*hd]
+        let mut q = e.matmul(&self.q_proj, cat, 1)?; // [nh*hd]
+        let mut k = e.matmul(&self.k_proj, cat, 1)?; // [nhkv*hd]
+        let v = e.matmul(&self.v_proj, cat, 1)?; // [nhkv*hd]
 
         // partial RoPE: rope_dim_count = partial_rotary_factor * head_dim (= 64 of 256), draft theta.
-        e.rope_neox(&mut q, pos_d, hd, self.rope_dim_count, nh, 1, self.rope_theta, 1.0)?;
-        e.rope_neox(&mut k, pos_d, hd, self.rope_dim_count, nhkv, 1, self.rope_theta, 1.0)?;
+        e.rope_neox(
+            &mut q,
+            pos_d,
+            hd,
+            self.rope_dim_count,
+            nh,
+            1,
+            self.rope_theta,
+            1.0,
+        )?;
+        e.rope_neox(
+            &mut k,
+            pos_d,
+            hd,
+            self.rope_dim_count,
+            nhkv,
+            1,
+            self.rope_theta,
+            1.0,
+        )?;
 
         let kv = &mut scratch.kv;
-        e.append_kv_quantized(&k, &v, &mut kv.k, &mut kv.v, kv.len,
-                              kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes, false)?;
+        e.append_kv_quantized(
+            &k,
+            &v,
+            &mut kv.k,
+            &mut kv.v,
+            kv.len,
+            kv.kv_dim_k,
+            kv.kv_dim_v,
+            kv.k_tok_bytes,
+            kv.v_tok_bytes,
+            false,
+        )?;
         kv.len += 1;
         let t_kv = kv.len;
         let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
         let k_view = e.view_u8(&kv.k, t_kv * ktb);
         let v_view = e.view_u8(&kv.v, t_kv * vtb);
         let mut attn = e.zeros(nh * hd)?;
-        e.fa_decode(&q, &k_view, &v_view, &mut attn, hd, nh, nhkv, t_kv, scale, ktb, vtb)?;
+        e.fa_decode(
+            &q, &k_view, &v_view, &mut attn, hd, nh, nhkv, t_kv, scale, ktb, vtb,
+        )?;
         e.matmul(&self.o_proj, &attn, 1)
     }
 }
@@ -240,21 +333,37 @@ pub struct Eagle3Scratch {
     pub kv: KvLayer,
 }
 impl Eagle3Scratch {
-    pub fn new(e: &Engine, draft: &Eagle3Draft, cap: usize) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        e: &Engine,
+        draft: &Eagle3Draft,
+        cap: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (nhkv, hd) = (draft.n_head_kv, draft.head_dim);
-        assert!(hd % 32 == 0, "KVQUANT requires head_dim%32==0 (EAGLE3 scratch)");
+        assert!(
+            hd % 32 == 0,
+            "KVQUANT requires head_dim%32==0 (EAGLE3 scratch)"
+        );
         let kv_dim_k = hd * nhkv;
         let kv_dim_v = hd * nhkv;
-        let (kbb, vbb) = crate::kv_blk_bytes();   // env-selected KV formats (default 34/24)
+        let (kbb, vbb) = crate::kv_blk_bytes(); // env-selected KV formats (default 34/24)
         let k_tok_bytes = (kv_dim_k / 32) * kbb;
         let v_tok_bytes = (kv_dim_v / 32) * vbb;
-        Ok(Eagle3Scratch { kv: KvLayer {
-            k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
-            kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
-            len_d: e.htod_i32(&[0])?,
-        } })
+        Ok(Eagle3Scratch {
+            kv: KvLayer {
+                k: e.alloc_u8(cap * k_tok_bytes)?,
+                v: e.alloc_u8(cap * v_tok_bytes)?,
+                kv_dim_k,
+                kv_dim_v,
+                k_tok_bytes,
+                v_tok_bytes,
+                len: 0,
+                len_d: e.htod_i32(&[0])?,
+            },
+        })
     }
-    pub fn reset(&mut self) { self.kv.len = 0; }
+    pub fn reset(&mut self) {
+        self.kv.len = 0;
+    }
 }
 
 impl HybridModel {
@@ -262,9 +371,14 @@ impl HybridModel {
     /// but drafts K tokens with the separate EAGLE3 draft, then verifies them in ONE batched target
     /// forward. Verify/accept/snapshot/rollback are REUSED from the MTP path (decode_step_t,
     /// cache.snapshot/rollback). Returns (tokens, total_drafted, total_accepted).
-    pub fn generate_spec_eagle(&self, e: &Engine, draft: &Eagle3Draft, prompt: &[u32],
-                               max_new: usize, k: usize)
-                               -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+    pub fn generate_spec_eagle(
+        &self,
+        e: &Engine,
+        draft: &Eagle3Draft,
+        prompt: &[u32],
+        max_new: usize,
+        k: usize,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
         assert!(!prompt.is_empty(), "prompt must be non-empty");
         let n_vocab = self.output.out_features();
@@ -279,7 +393,8 @@ impl HybridModel {
         let mut prime_aux: Vec<CudaSlice<f32>> = Vec::new();
         for &tok in prompt {
             let (l, a) = self.decode_step_aux(e, tok, &mut cache, aux)?;
-            prime_logits = l; prime_aux = a;
+            prime_logits = l;
+            prime_aux = a;
         }
 
         let mut scratch = Eagle3Scratch::new(e, draft, k + 1)?;
@@ -295,7 +410,10 @@ impl HybridModel {
         // for A/B comparison; default (1) is the EAGLE shift. The prime loop already gave us the
         // aux of the prompt's last token (= the predecessor of `last_token`), so we keep it as
         // `prev_aux` and roll it forward by one each round.
-        let shift = std::env::var("BW24_EAGLE_ALIGN").ok().map(|s| s != "0").unwrap_or(true);
+        let shift = std::env::var("BW24_EAGLE_ALIGN")
+            .ok()
+            .map(|s| s != "0")
+            .unwrap_or(true);
         let mut last_token = argmax(&prime_logits) as u32;
         out.push(last_token);
         // prev_aux = aux of the token at the position whose forward predicted `last_token`
@@ -320,7 +438,7 @@ impl HybridModel {
             for j in 0..k {
                 let (dl, g_next) = draft.draft_token(e, self, prev, &g, &mut scratch, pos + j)?;
                 let d_draft = argmax(&dl) as u32;
-                let d_target = draft.d2t_map(d_draft);   // map draft-vocab id -> target-vocab id
+                let d_target = draft.d2t_map(d_draft); // map draft-vocab id -> target-vocab id
                 draft_toks.push(d_target);
                 prev = d_target;
                 g = g_next;
@@ -331,12 +449,19 @@ impl HybridModel {
 
             // --- 4. GREEDY ACCEPT (walk prefix, stop at first mismatch). REUSED logic. ---
             let t_pred = |j: usize| -> u32 {
-                if j == 0 { argmax(&last_logits) as u32 }
-                else { argmax(&tlogits[(j - 1) * n_vocab..j * n_vocab]) as u32 }
+                if j == 0 {
+                    argmax(&last_logits) as u32
+                } else {
+                    argmax(&tlogits[(j - 1) * n_vocab..j * n_vocab]) as u32
+                }
             };
             let mut n_acc = 0usize;
             for j in 0..k {
-                if t_pred(j) == draft_toks[j] { n_acc += 1; } else { break; }
+                if t_pred(j) == draft_toks[j] {
+                    n_acc += 1;
+                } else {
+                    break;
+                }
             }
             let bonus = t_pred(n_acc);
             total_drafted += k;
@@ -344,11 +469,15 @@ impl HybridModel {
 
             // --- 5. COMMIT draft[0..n_acc] then bonus ---
             for j in 0..n_acc {
-                if out.len() >= max_new { break; }
+                if out.len() >= max_new {
+                    break;
+                }
                 out.push(draft_toks[j]);
             }
             let bonus_emitted = out.len() < max_new;
-            if bonus_emitted { out.push(bonus); }
+            if bonus_emitted {
+                out.push(bonus);
+            }
             last_token = bonus;
 
             // --- 6. ROLLBACK + advance to pos + n_acc + 1 committed tokens (REUSED from MTP). The
@@ -357,21 +486,29 @@ impl HybridModel {
             //        bonus = draft[n_acc-1] if n_acc>=1, else this round's `last_token` (its aux is
             //        the CURRENT g_aux). We always replay [committed-tail.. , bonus] aux-capturing so
             //        the predecessor's aux is the second-to-last column; this keeps both exact.
-            let pred_is_prev_round = n_acc == 0;       // bonus's predecessor = old last_token
+            let pred_is_prev_round = n_acc == 0; // bonus's predecessor = old last_token
             let old_g_aux = std::mem::take(&mut g_aux); // = aux(old last_token)
-            // Unified exact path (also covers full-accept n_acc==k): restore the pre-round snapshot
-            // then replay the committed prefix draft[0..n_acc] ++ [bonus] as ONE T=(n_acc+1) aux-
-            // capturing forward — single weight read, bit-identical to greedy (verify-all-columns
-            // math). Captures aux at the last column (bonus) and, when the predecessor of bonus is a
-            // replayed token (n_acc>=1), the second-to-last column.
+                                                        // Unified exact path (also covers full-accept n_acc==k): restore the pre-round snapshot
+                                                        // then replay the committed prefix draft[0..n_acc] ++ [bonus] as ONE T=(n_acc+1) aux-
+                                                        // capturing forward — single weight read, bit-identical to greedy (verify-all-columns
+                                                        // math). Captures aux at the last column (bonus) and, when the predecessor of bonus is a
+                                                        // replayed token (n_acc>=1), the second-to-last column.
             cache.rollback(e, &snap, 0)?;
             let mut replay: Vec<u32> = draft_toks[0..n_acc].to_vec();
             replay.push(bonus);
-            let pred_col = if pred_is_prev_round { None } else { Some(replay.len() - 2) };
+            let pred_col = if pred_is_prev_round {
+                None
+            } else {
+                Some(replay.len() - 2)
+            };
             let (rl, mut a_last, a_pred) =
                 self.decode_step_t_aux2(e, &replay, pos, &mut cache, aux, pred_col)?;
             last_logits = rl[(replay.len() - 1) * n_vocab..replay.len() * n_vocab].to_vec();
-            prev_aux = if pred_is_prev_round { old_g_aux } else { a_pred.unwrap() };
+            prev_aux = if pred_is_prev_round {
+                old_g_aux
+            } else {
+                a_pred.unwrap()
+            };
             g_aux = std::mem::take(&mut a_last);
         }
         out.truncate(max_new);
@@ -404,7 +541,9 @@ impl EagleConfig {
             let rest = &txt[i..];
             let c = rest.find(':')? + 1;
             let tail = rest[c..].trim_start();
-            let end = tail.find(|ch: char| ch == ',' || ch == '}' || ch == '\n').unwrap_or(tail.len());
+            let end = tail
+                .find(|ch: char| ch == ',' || ch == '}' || ch == '\n')
+                .unwrap_or(tail.len());
             tail[..end].trim().parse::<f64>().ok()
         };
         let aux_layers: Vec<usize> = {
@@ -415,9 +554,12 @@ impl EagleConfig {
                     let rest = &txt[i + pat.len()..];
                     let lb = rest.find('[').ok_or("no [ after aux ids")?;
                     let rb = rest.find(']').ok_or("no ] after aux ids")?;
-                    rest[lb + 1..rb].split(',').filter_map(|s| s.trim().parse::<usize>().ok()).collect()
+                    rest[lb + 1..rb]
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<usize>().ok())
+                        .collect()
                 }
-                None => vec![1, 15, 28],   // fall back to the known EAGLE3-qwen35-9b layers
+                None => vec![1, 15, 28], // fall back to the known EAGLE3-qwen35-9b layers
             }
         };
         Ok(EagleConfig {
@@ -437,12 +579,16 @@ impl EagleConfig {
 
 /// Read an i64 1-D tensor (d2t) from the draft safetensors.
 fn read_i64(m: &StModel, name: &str) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
-    let (info, bytes) = m.raw(name).ok_or_else(|| format!("EAGLE3 draft missing {name}"))?;
+    let (info, bytes) = m
+        .raw(name)
+        .ok_or_else(|| format!("EAGLE3 draft missing {name}"))?;
     assert_eq!(info.dtype, "I64", "{name} dtype != I64");
     let n = bytes.len() / 8;
     let mut v = Vec::with_capacity(n);
     for i in 0..n {
-        v.push(i64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap()));
+        v.push(i64::from_le_bytes(
+            bytes[i * 8..i * 8 + 8].try_into().unwrap(),
+        ));
     }
     Ok(v)
 }

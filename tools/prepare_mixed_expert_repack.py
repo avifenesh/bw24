@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a bw24 expert overlay with per-expert Q8_0, Q2_K, Q3_K, or NVFP4 encodings.
+"""Build a bw24 expert overlay with exact per-expert mixed GGUF encodings.
 
 The quantization source may be an indexed BF16/F16/F32 Hugging Face checkpoint or the stacked
 MLX-affine Hy3 checkpoint. Dense/router tensors resolve from --fallback-dir, which may itself be
@@ -34,6 +34,11 @@ from hy3_mlx_to_q4k import (
     sha256_file,
     trim_process_memory,
 )
+from ggml_quant_bridge import (
+    EXTERNAL_QTYPES,
+    GgmlQuantBridge,
+    load_importance_sidecar,
+)
 
 
 PLAN_FORMAT = "bw24-expert-tier-plan-v2"
@@ -45,6 +50,9 @@ QTYPES = {
     "Q2_K": (256, 84, ".q2k"),
     "Q3_K": (256, 110, ".q3k"),
     "NVFP4": (64, 36, ".nvfp4"),
+    "IQ3_S": (256, 110, ".iq3s"),
+    "IQ4_XS": (256, 136, ".iq4xs"),
+    "Q4_K": (256, 144, ".q4k"),
 }
 
 
@@ -62,6 +70,21 @@ def _layers_from_model(model: dict[str, Any]) -> list[int]:
     if len(layers) == 2 and model.get("moe_layers_are_range", False):
         return list(range(int(layers[0]), int(layers[1]) + 1))
     return [int(x) for x in layers]
+
+
+def _parse_layer_subset(raw: str | None, available: list[int]) -> list[int]:
+    if not raw:
+        return available
+    if "-" in raw:
+        lo, hi = (int(value) for value in raw.split("-", 1))
+        requested = list(range(lo, hi + 1))
+    else:
+        requested = [int(value) for value in raw.split(",") if value]
+    if not requested or len(set(requested)) != len(requested):
+        raise ValueError("--layers must select distinct layers")
+    if not set(requested).issubset(available):
+        raise ValueError(f"--layers contains values outside the plan: {requested}")
+    return requested
 
 
 def load_assignments(
@@ -162,8 +185,12 @@ def quantize_q2k_rows(rows: np.ndarray) -> bytes:
     scale = np.where(scale > 1e-30, scale, 0.0)
     d = scale.max(axis=2) / 15.0
     dmin = offset.max(axis=2) / 15.0
-    sc = np.where(d[..., None] > 0, _round(scale / d[..., None]), 0).clip(0, 15).astype(np.uint8)
-    mi = np.where(dmin[..., None] > 0, _round(offset / dmin[..., None]), 0).clip(0, 15).astype(np.uint8)
+    scale_units = np.zeros_like(scale, dtype=np.float32)
+    min_units = np.zeros_like(offset, dtype=np.float32)
+    np.divide(scale, d[..., None], out=scale_units, where=d[..., None] > 0)
+    np.divide(offset, dmin[..., None], out=min_units, where=dmin[..., None] > 0)
+    sc = _round(scale_units).clip(0, 15).astype(np.uint8)
+    mi = _round(min_units).clip(0, 15).astype(np.uint8)
     d16 = d.astype("<f2")
     dm16 = dmin.astype("<f2")
     se = d16.astype(np.float32)[..., None] * sc
@@ -282,6 +309,39 @@ QUANTIZERS = {
     "Q3_K": quantize_q3k_rows,
     "NVFP4": quantize_nvfp4_rows,
 }
+
+
+def _external_quantization_context(
+    plan: dict[str, Any], assignments: dict[tuple[int, int, str], str], args: argparse.Namespace,
+) -> tuple[GgmlQuantBridge | None, dict[str, dict[str, Any]]]:
+    external = sorted(set(assignments.values()) & set(EXTERNAL_QTYPES))
+    if not external:
+        return None, {}
+    lib = getattr(args, "ggml_lib", None)
+    lib_sha = getattr(args, "ggml_lib_sha256", None)
+    commit = getattr(args, "ggml_source_commit", None)
+    if not all((lib, lib_sha, commit)):
+        raise ValueError(f"{external} require --ggml-lib, its SHA-256, and source commit")
+    sensitivity_receipt = plan.get("calibration", {}).get("quant_sensitivity")
+    if not isinstance(sensitivity_receipt, dict):
+        raise ValueError(f"{external} require a plan-bound quant sensitivity map")
+    sensitivity_path = Path(sensitivity_receipt["path"])
+    if sha256_file(sensitivity_path) != sensitivity_receipt["sha256"]:
+        raise ValueError("plan-bound quant sensitivity map hash changed")
+    sensitivity = json.loads(sensitivity_path.read_text())
+    sidecars = sensitivity.get("importance_sidecars", {})
+    layers = {str(layer) for layer in _layers_from_model(plan["model"])}
+    if set(sidecars) != layers:
+        raise ValueError(f"{external} require one private importance sidecar per layer")
+    provenance = sensitivity.get("measurement", {}).get("exact_quantizer_implementation", {})
+    for qtype in external:
+        record = provenance.get(qtype, {}) if isinstance(provenance, dict) else {}
+        if (
+            record.get("library_sha256") != lib_sha
+            or record.get("llama_cpp_commit") != commit
+        ):
+            raise ValueError(f"{qtype} bridge differs from sensitivity provenance")
+    return GgmlQuantBridge(Path(lib), lib_sha, commit), sidecars
 
 
 def _dequant_q8_0(raw: bytes, in_f: int) -> np.ndarray:
@@ -469,12 +529,70 @@ def _write_completion_receipt(path: Path, receipt: dict[str, Any]) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _install_tensor_overrides(
+    out_dir: Path, override_path: Path | None, manifest: dict[str, Any]
+) -> None:
+    override_dir = out_dir / "overrides"
+    if override_path is None:
+        shutil.rmtree(override_dir, ignore_errors=True)
+        return
+    receipt = json.loads(override_path.read_text())
+    if receipt.get("format") != "bw24-tensor-overrides-v1":
+        raise ValueError(f"{override_path}: unsupported tensor override format")
+    blob = receipt.get("blob")
+    tensors = receipt.get("tensors")
+    if not isinstance(blob, dict) or not isinstance(tensors, dict) or not tensors:
+        raise ValueError(f"{override_path}: missing blob or tensors")
+    blob_path = Path(blob["path"])
+    if blob_path.stat().st_size != int(blob["bytes"]):
+        raise ValueError(f"{override_path}: override blob size changed")
+    if sha256_file(blob_path) != blob["sha256"]:
+        raise ValueError(f"{override_path}: override blob hash changed")
+    override_dir.mkdir(parents=True, exist_ok=True)
+    rel = Path("overrides") / f"{blob['sha256']}.bin"
+    installed = out_dir / rel
+    shutil.copyfile(blob_path, installed)
+    allowed_suffixes = (".ffn_gate_inp.weight", ".exp_probs_b.bias")
+    for name, record in sorted(tensors.items()):
+        if not name.startswith("blk.") or not name.endswith(allowed_suffixes):
+            raise ValueError(f"{override_path}: disallowed tensor override {name}")
+        if name in manifest["tensors"]:
+            raise ValueError(f"{override_path}: tensor override collision {name}")
+        if record.get("qtype") != "F32":
+            raise ValueError(f"{override_path}: {name} must remain F32")
+        ne = record.get("ne")
+        if not isinstance(ne, list) or not ne or any(int(value) <= 0 for value in ne):
+            raise ValueError(f"{override_path}: {name} has invalid ne")
+        offset = int(record["offset"])
+        size = int(record["bytes"])
+        if offset < 0 or size != int(np.prod(ne, dtype=np.int64)) * 4:
+            raise ValueError(f"{override_path}: {name} has invalid F32 extent")
+        if offset + size > installed.stat().st_size:
+            raise ValueError(f"{override_path}: {name} exceeds override blob")
+        manifest["tensors"][name] = {
+            "source": record.get("source", "healed-router"),
+            "file": str(rel),
+            "offset": offset,
+            "qtype": "F32",
+            "ne": [int(value) for value in ne],
+            "bytes": size,
+        }
+    manifest["tensor_overrides"] = {
+        "receipt_path": str(override_path.resolve()),
+        "receipt_sha256": sha256_file(override_path),
+        "blob_sha256": blob["sha256"],
+        "bytes": int(blob["bytes"]),
+        "tensor_count": len(tensors),
+    }
+
+
 def prepare(args: argparse.Namespace) -> None:
     source_dir = Path(args.source_dir).resolve()
     fallback_dir = Path(args.fallback_dir).resolve() if args.fallback_dir else source_dir
     out_dir = Path(args.out_dir).resolve()
     plan_path = Path(args.plan).resolve()
     plan, assignments, pruned = load_assignments(plan_path)
+    bridge, importance_receipts = _external_quantization_context(plan, assignments, args)
     if not (source_dir / "model.safetensors.index.json").exists():
         raise FileNotFoundError("quantization source requires model.safetensors.index.json")
     config = json.loads((source_dir / "config.json").read_text())
@@ -492,9 +610,14 @@ def prepare(args: argparse.Namespace) -> None:
     fallback_fingerprints = _fingerprint(
         fallback_dir, ("manifest.json", "config.json", "model.safetensors.index.json")
     )
+    available_layers = _layers_from_model(plan["model"])
+    layers = _parse_layer_subset(getattr(args, "layers", None), available_layers)
+    fragment_path = getattr(args, "manifest_fragment", None)
+    if fragment_path and getattr(args, "tensor_overrides", None):
+        raise ValueError("tensor overrides are installed only while merging complete fragments")
     manifest: dict[str, Any] = {
         "format": OVERLAY_FORMAT,
-        "created_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_dir": str(fallback_dir),
         "quant_source_dir": str(source_dir),
         "quality": "unverified - pending target-machine correctness and public eval gates",
@@ -507,16 +630,27 @@ def prepare(args: argparse.Namespace) -> None:
         "tensors": {},
         "tier_summary": {},
     }
-    layers = _layers_from_model(plan["model"])
+    if bridge is not None:
+        manifest["external_quantizer"] = bridge.provenance
+        manifest["importance_sidecars"] = importance_receipts
+    if fragment_path:
+        manifest["fragment_layers"] = layers
     n_expert = int(plan["model"]["expert_count"])
     try:
         for layer in layers:
             active = [ex for ex in range(n_expert) if ex not in pruned[layer]]
+            layer_importance: dict[str, np.ndarray] | None = None
             for proj in PROJECTIONS:
                 source = ProjectionSource(store, config, layer, proj, active, max_work)
                 if source.stem is not None and source.n_expert < n_expert:
                     raise ValueError(
                         f"source layer {layer}/{proj} has {source.n_expert} experts, plan expects {n_expert}"
+                    )
+                if bridge is not None and layer_importance is None:
+                    if proj != "gate":
+                        raise AssertionError("gate must initialize the layer importance sidecar")
+                    layer_importance = load_importance_sidecar(
+                        importance_receipts[str(layer)], n_expert, source.in_f, source.out_f
                     )
                 rel = Path("experts") / f"blk{layer}-{proj}-mixed.bin"
                 out_path = out_dir / rel
@@ -562,6 +696,9 @@ def prepare(args: argparse.Namespace) -> None:
                     },
                     "expected_bytes": expected,
                 }
+                if any(item["qtype"] in EXTERNAL_QTYPES for item in expert_layout):
+                    receipt["external_quantizer"] = bridge.provenance
+                    receipt["importance_sidecar"] = importance_receipts[str(layer)]
                 receipt_path = _completion_receipt_path(out_path)
                 reuse = (
                     args.resume
@@ -577,7 +714,16 @@ def prepare(args: argparse.Namespace) -> None:
 
                     def encode_expert(expert: int) -> tuple[int, bytes]:
                         qtype = assignments[layer, expert, proj]
-                        parts = [QUANTIZERS[qtype](rows) for rows in source.rows(expert)]
+                        if qtype in EXTERNAL_QTYPES:
+                            assert bridge is not None and layer_importance is not None
+                            key = "input" if proj in ("gate", "up") else "down"
+                            importance = layer_importance[key][expert]
+                            parts = [
+                                bridge.quantize(rows, qtype, importance)
+                                for rows in source.rows(expert)
+                            ]
+                        else:
+                            parts = [QUANTIZERS[qtype](rows) for rows in source.rows(expert)]
                         return expert, b"".join(parts)
 
                     if handle is not None and args.workers > 1 and source.stem is None:
@@ -650,8 +796,16 @@ def prepare(args: argparse.Namespace) -> None:
     finally:
         store.close()
 
+    raw_override = getattr(args, "tensor_overrides", None)
+    _install_tensor_overrides(
+        out_dir, Path(raw_override).resolve() if raw_override else None, manifest
+    )
     manifest["artifact_bytes"] = sum(v["bytes"] for v in manifest["tier_summary"].values())
-    manifest_path = out_dir / "manifest.json"
+    manifest["payload_bytes"] = manifest["artifact_bytes"] + int(
+        manifest.get("tensor_overrides", {}).get("bytes", 0)
+    )
+    manifest_path = Path(fragment_path).resolve() if fragment_path else out_dir / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = manifest_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     tmp.replace(manifest_path)
@@ -701,7 +855,7 @@ def self_test() -> None:
         }))
         prepare(SimpleNamespace(
             source_dir=str(source), fallback_dir=None, out_dir=str(out), plan=str(plan),
-            max_work_mb=8, resume=False, workers=1,
+            max_work_mb=8, resume=False, workers=1, tensor_overrides=None,
         ))
         manifest = json.loads((out / "manifest.json").read_text())
         assert manifest["format"] == OVERLAY_FORMAT
@@ -709,6 +863,31 @@ def self_test() -> None:
         assert manifest["plan_canonical_sha256"] == canonical_json_sha256(manifest["plan"])
         assert manifest["plan_sha256"] != manifest["plan_canonical_sha256"]
         assert len(manifest["tensors"]) == 12
+        override_blob = root / "router-overrides.bin"
+        override_values = np.arange(12, dtype="<f4")
+        override_blob.write_bytes(override_values.tobytes())
+        override_receipt = root / "router-overrides.json"
+        override_receipt.write_text(json.dumps({
+            "format": "bw24-tensor-overrides-v1",
+            "blob": {
+                "path": str(override_blob), "bytes": override_blob.stat().st_size,
+                "sha256": sha256_file(override_blob),
+            },
+            "tensors": {
+                "blk.0.ffn_gate_inp.weight": {
+                    "source": "model.layers.0.mlp.router.gate.weight",
+                    "offset": 0, "qtype": "F32", "ne": [4, 3], "bytes": 48,
+                }
+            },
+        }))
+        override_manifest = {"tensors": {}}
+        _install_tensor_overrides(out, override_receipt, override_manifest)
+        record = override_manifest["tensors"]["blk.0.ffn_gate_inp.weight"]
+        installed = out / record["file"]
+        assert installed.read_bytes() == override_blob.read_bytes()
+        assert override_manifest["tensor_overrides"]["tensor_count"] == 1
+        _install_tensor_overrides(out, None, override_manifest)
+        assert not (out / "overrides").exists()
         for proj in PROJECTIONS:
             records = [manifest["tensors"][f"blk.0.ffn_{proj}_exps.{ex}.weight"] for ex in range(4)]
             assert [r["qtype"] for r in records] == ["Q8_0", "NVFP4", "Q3_K", "Q2_K"]
@@ -778,7 +957,7 @@ def self_test() -> None:
         gate_path.write_bytes(plan_a_bytes[gate_path.name])
         _completion_receipt_path(gate_path).unlink()
         assert gate_path.read_bytes() != (fresh_b / "experts" / gate_path.name).read_bytes()
-        calls = {qtype: 0 for qtype in QTYPES}
+        calls = {qtype: 0 for qtype in QUANTIZERS}
         original_quantizers = QUANTIZERS.copy()
         for qtype, quantizer in original_quantizers.items():
             def counted(rows: np.ndarray, *, _qtype: str = qtype, _quantizer=quantizer) -> bytes:
@@ -841,6 +1020,21 @@ def main() -> int:
     prep.add_argument("--max-work-mb", type=int, default=512)
     prep.add_argument("--workers", type=int, default=1)
     prep.add_argument("--resume", action="store_true")
+    prep.add_argument("--ggml-lib", type=Path)
+    prep.add_argument("--ggml-lib-sha256")
+    prep.add_argument("--ggml-source-commit")
+    prep.add_argument(
+        "--layers",
+        help="optional comma-separated or inclusive range subset for a disjoint fragment build",
+    )
+    prep.add_argument(
+        "--manifest-fragment",
+        help="write an incomplete layer-fragment manifest here instead of OUT_DIR/manifest.json",
+    )
+    prep.add_argument(
+        "--tensor-overrides",
+        help="bw24-tensor-overrides-v1 receipt whose F32 router tensors override fallback",
+    )
     inspect = sub.add_parser("probe")
     inspect.add_argument("source_dir")
     inspect.add_argument("--layer", type=int, required=True)

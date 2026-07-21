@@ -55,6 +55,15 @@ def task_content_hash(task_dir: Path) -> str:
     return outer.hexdigest()
 
 
+def resolve_cached_task(root: Path, name: str, digest: str) -> Path:
+    task_root = root / name
+    if (task_root / "task.toml").is_file():
+        return task_root
+    digest_dir = task_root / digest.removeprefix("sha256:")
+    require(digest_dir.is_dir(), f"missing cached task directory: {digest_dir}")
+    return digest_dir
+
+
 def validate_structure(lock: dict[str, Any]) -> None:
     require(lock.get("format") == "bw24-practical-evals-v1", "wrong lock format")
     protocol = lock.get("protocol")
@@ -66,16 +75,26 @@ def validate_structure(lock: dict[str, Any]) -> None:
         require(protocol.get(key) is True, f"protocol must require {key}")
     require(protocol.get("mtp_or_speculation") is False, "MTP/speculation must be disabled")
     require(protocol.get("initial_trials_per_task") == 1, "directional screen must use one trial")
+    pilot_tasks = protocol.get("pilot_tasks")
+    require(
+        pilot_tasks == {
+            "swe": "swe-bench/pallets__flask-5014",
+            "terminal": "terminal-bench/db-wal-recovery",
+        },
+        "practical pilot tasks differ from the frozen protocol",
+    )
     scaffold = protocol.get("agent_scaffold")
     require(isinstance(scaffold, dict), "missing practical agent scaffold")
     expected_scaffold = {
         "harbor_version": "0.18.0", "agent": "terminus-2",
         "model_name_template": "openai/{arm}", "api_base": "http://127.0.0.1:8080/v1",
-        "temperature": 0, "parser_name": "json", "max_turns": 20,
+        "temperature": 0, "parser_name": "json", "max_turns": 8,
         "proactive_summarization_threshold": 1024, "store_all_messages": True,
-        "max_input_tokens": 8192, "max_output_tokens": 512,
-        "llm_call_max_tokens": 512, "enable_summarize": True,
+        "max_input_tokens": 5120, "max_output_tokens": 3072,
+        "llm_call_max_tokens": 3072, "llm_call_timeout_seconds": 7200,
+        "enable_summarize": True,
         "record_terminal_session": True,
+        "agent_timeout_multiplier": 4.0,
         "n_concurrent_trials": 1, "n_attempts": 1, "max_retries": 0,
     }
     require(scaffold == expected_scaffold, "practical agent scaffold differs from the frozen protocol")
@@ -113,6 +132,8 @@ def validate_structure(lock: dict[str, Any]) -> None:
         require(SHA256_RE.fullmatch(str(row.get("digest"))) is not None, f"bad Terminal digest: {row}")
         require(row.get("gpus") == 0, f"Terminal directional task requires GPU: {row['name']}")
         require(isinstance(row.get("agent_timeout_sec"), int) and row["agent_timeout_sec"] <= 2400, f"unbounded Terminal timeout: {row['name']}")
+    require(pilot_tasks["swe"] in {row["harbor_task"] for row in swe_tasks}, "SWE pilot is outside the panel")
+    require(pilot_tasks["terminal"] in {row["name"] for row in terminal_tasks}, "Terminal pilot is outside the panel")
 
 
 def validate_swe_source(lock: dict[str, Any], parquet: Path) -> None:
@@ -139,8 +160,7 @@ def validate_swe_source(lock: dict[str, Any], parquet: Path) -> None:
 def validate_terminal_source(lock: dict[str, Any], root: Path) -> None:
     for expected in lock["terminal_bench_2"]["tasks"]:
         short_name = expected["name"].split("/", 1)[1]
-        task_dir = root / short_name
-        require(task_dir.is_dir(), f"missing Terminal task directory: {task_dir}")
+        task_dir = resolve_cached_task(root, short_name, expected["digest"])
         config = tomllib.loads((task_dir / "task.toml").read_text())
         require(config["task"]["name"] == expected["name"], f"Terminal task name differs: {short_name}")
         require(config["metadata"]["difficulty"] == expected["difficulty"], f"Terminal difficulty differs: {short_name}")
@@ -155,8 +175,7 @@ def validate_terminal_source(lock: dict[str, Any], root: Path) -> None:
 
 def validate_swe_harbor_source(lock: dict[str, Any], root: Path) -> None:
     for expected in lock["swe_bench_verified"]["tasks"]:
-        task_dir = root / expected["instance_id"]
-        require(task_dir.is_dir(), f"missing SWE Harbor task directory: {task_dir}")
+        task_dir = resolve_cached_task(root, expected["instance_id"], expected["harbor_digest"])
         config = tomllib.loads((task_dir / "task.toml").read_text())
         require(config["task"]["name"] == expected["harbor_task"], f"SWE Harbor task name differs: {expected['instance_id']}")
         actual_digest = "sha256:" + task_content_hash(task_dir)
@@ -174,6 +193,11 @@ def self_test() -> None:
         (task / "instruction.md").write_text("do the task\n")
         second = task_content_hash(task)
         assert first != second and len(first) == 64 and len(second) == 64
+        digest = "a" * 64
+        cached = task / "cached-task" / digest
+        cached.mkdir(parents=True)
+        (cached / "task.toml").write_text("version = '1'\n")
+        assert resolve_cached_task(task, "cached-task", f"sha256:{digest}") == cached
     print("practical eval lock self-test: PASS")
 
 

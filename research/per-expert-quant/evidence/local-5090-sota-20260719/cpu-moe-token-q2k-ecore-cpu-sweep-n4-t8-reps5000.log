@@ -1,0 +1,16 @@
+[bw24-cpu] E-core expert overlap: CPU 8, min_experts=4
+[bw24-cpu-ecore] tasks=5008 worker=3.509404s
+[bw24-cpu-profile] calls=5008 prepare=0.035680s io=0.000102s insert=0.000275s compute=9.577421s read_projections=0 read_GB=0.000
+experts=4 iterations=5000 ms/token=1.923719 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] E-core expert overlap: CPU 12, min_experts=4
+[bw24-cpu-ecore] tasks=5008 worker=3.537689s
+[bw24-cpu-profile] calls=5008 prepare=0.038105s io=0.000116s insert=0.000312s compute=11.683941s read_projections=0 read_GB=0.000
+experts=4 iterations=5000 ms/token=2.345208 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] E-core expert overlap: CPU 16, min_experts=4
+[bw24-cpu-ecore] tasks=5008 worker=4.012926s
+[bw24-cpu-profile] calls=5008 prepare=0.036657s io=0.000110s insert=0.000291s compute=11.388676s read_projections=0 read_GB=0.000
+experts=4 iterations=5000 ms/token=2.286514 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] E-core expert overlap: CPU 20, min_experts=4
+[bw24-cpu-ecore] tasks=5008 worker=3.599127s
+[bw24-cpu-profile] calls=5008 prepare=0.038624s io=0.000111s insert=0.000286s compute=10.883657s read_projections=0 read_GB=0.000
+experts=4 iterations=5000 ms/token=2.185519 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

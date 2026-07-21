@@ -1,0 +1,28 @@
+3f9bdfb41cf69b0842975b107b9ceb5069c1be101035092df6c79b132ea5d4ad  /tmp/libbw24-cpu-experts-thp.so
+[rebuild] PMD-aligned THP candidate
+65b77f5a0109b056851fdd1ef4037524dacd47b62077db101ffe034c031bdd39  /tmp/libbw24-cpu-experts-thp.so
+[rebuild] PMD-aligned THP with physical padding accounting for sub-PMD Q2_K
+tools/bw24_cpu_experts.cpp: In member function ‘std::shared_ptr<{anonymous}::AlignedBytes> {anonymous}::WeightCache::find(const {anonymous}::CacheKey&)’:
+tools/bw24_cpu_experts.cpp:403:17: error: cannot convert ‘const {anonymous}::CacheKey’ to ‘std::size_t’ {aka ‘long unsigned int’} in initialization
+  403 |                 key,
+      |                 ^~~
+      |                 |
+      |                 const {anonymous}::CacheKey
+tools/bw24_cpu_experts.cpp: In member function ‘void {anonymous}::WeightCache::insert(const {anonymous}::CacheKey&, const std::shared_ptr<{anonymous}::AlignedBytes>&)’:
+tools/bw24_cpu_experts.cpp:427:9: error: too many initializers for ‘{anonymous}::WeightCache::Entry’
+  427 |         });
+      |         ^
+tools/bw24_cpu_experts.cpp:429:59: error: cannot convert ‘const {anonymous}::CacheKey’ to ‘std::size_t’ {aka ‘long unsigned int’} in initialization
+  429 |             lfu_.push(EvictionCandidate { 1, inserted_at, key });
+      |                                                           ^~~
+      |                                                           |
+      |                                                           const {anonymous}::CacheKey
+tools/bw24_cpu_experts.cpp:456:36: error: ‘struct {anonymous}::WeightCache::Entry’ has no member named ‘resident_bytes’
+  456 |             used_ -= entry->second.resident_bytes;
+      |                                    ^~~~~~~~~~~~~~
+65b77f5a0109b056851fdd1ef4037524dacd47b62077db101ffe034c031bdd39  /tmp/libbw24-cpu-experts-thp.so
+[rebuild] corrected physical-residency accounting field placement
+1a42f0021f01253ae77e952faa125795fcd8b95dea4efabe4980e8e25854ed62  /tmp/libbw24-cpu-experts-thp.so
+[rebuild] first-hit synchronous MADV_COLLAPSE
+be64b8f516b163e98633b0991c6f3485382ccb95586d1bab2a028563179f6e4f  /tmp/libbw24-cpu-experts-thp.so
+cf4c5ba8a1f19a75fd18a699dc7be3575aff98b980b89dc675b135968406f110  /tmp/libbw24-cpu-experts-thp.so

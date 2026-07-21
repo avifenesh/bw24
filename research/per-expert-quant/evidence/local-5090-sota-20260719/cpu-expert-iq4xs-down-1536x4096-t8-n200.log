@@ -1,0 +1,1 @@
+type=iq4_xs shape=1536x4096 row_bytes=816 extent=3342336 threads=8 iterations=200 ms/projection=0.0814 weight_GB/s=41.06 checksum=179.838152

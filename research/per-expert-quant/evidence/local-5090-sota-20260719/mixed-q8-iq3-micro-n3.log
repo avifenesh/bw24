@@ -1,0 +1,26 @@
+bytes=2703360 shape=4096x1536 qtype=6 iterations=500 resident_ms=0.0246 staged_ms=0.1285 staged_weight_GB/s=21.04 staged_slowdown=5.22x mapped_ms=1.9433 mapped_weight_GB/s=1.39 mapped_slowdown=78.99x mapped_exact=yes staged_exact=yes quantize_q8_ms=0.0015 q8_expert_ms=0.0058 q8_total_ms=0.0073 maxdiff=0 checksum=-79.9493498
+bytes=2703360 shape=4096x1536 qtype=6 iterations=500 resident_ms=0.0245 staged_ms=0.1280 staged_weight_GB/s=21.13 staged_slowdown=5.21x mapped_ms=1.9843 mapped_weight_GB/s=1.36 mapped_slowdown=80.84x mapped_exact=yes staged_exact=yes quantize_q8_ms=0.0015 q8_expert_ms=0.0058 q8_total_ms=0.0073 maxdiff=0 checksum=-79.9493498
+bytes=2703360 shape=4096x1536 qtype=6 iterations=500 resident_ms=0.0247 staged_ms=0.1282 staged_weight_GB/s=21.08 staged_slowdown=5.20x mapped_ms=1.9328 mapped_weight_GB/s=1.40 mapped_slowdown=78.40x mapped_exact=yes staged_exact=yes quantize_q8_ms=0.0015 q8_expert_ms=0.0058 q8_total_ms=0.0074 maxdiff=0 checksum=-79.9493498
+	Command being timed: "zsh -lc for bw24_i in 1 2 3; do /tmp/bw24-bench-mixed-q8 /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme/experts/blk17-gate-mixed.bin 119734272 2703360 4096 1536 1760 6 500; done"
+	User time (seconds): 0.91
+	System time (seconds): 0.56
+	Percent of CPU this job got: 25%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:05.69
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 120400
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 33327
+	Voluntary context switches: 216
+	Involuntary context switches: 71
+	Swaps: 0
+	File system inputs: 296
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

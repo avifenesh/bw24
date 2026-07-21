@@ -1,0 +1,63 @@
+2026-07-20T19:53:43+03:00
+[gpu-owner] temporary reservation active during swap reset
+ActiveState=active
+MainPID=2773559
+[clean-swap] before
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        22Gi        27Gi        12Gi        24Gi        38Gi
+Swap:          8.0Gi       7.7Gi       297Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 7.7G   -1
+	Command being timed: "sudo -n swapoff /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 4.33
+	Percent of CPU this job got: 10%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:41.83
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6432
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 18
+	Minor (reclaiming a frame) page faults: 868
+	Voluntary context switches: 1064118
+	Involuntary context switches: 15
+	Swaps: 0
+	File system inputs: 15633480
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+	Command being timed: "sudo -n swapon /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 0.00
+	Percent of CPU this job got: 85%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.00
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6568
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 888
+	Voluntary context switches: 9
+	Involuntary context switches: 2
+	Swaps: 0
+	File system inputs: 8
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[clean-swap] after
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        29Gi        19Gi        16Gi        29Gi        30Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+2026-07-20T19:54:25+03:00

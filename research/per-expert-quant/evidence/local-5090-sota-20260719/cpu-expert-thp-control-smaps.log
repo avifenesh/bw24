@@ -1,0 +1,11 @@
+[bw24-cpu] normal-RAM expert cache: 1.00 GiB policy=lru io=direct
+probe_ready pid=2406701 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=12
+[bw24-cpu-profile] calls=2 prepare=0.000071s io=0.001631s insert=0.000001s compute=0.000573s read_projections=3 read_GB=0.006
+21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=12
+Rss:               12164 kB
+Pss:                9224 kB
+Private_Dirty:      7100 kB
+Anonymous:          7016 kB
+AnonHugePages:         0 kB
+Swap:                  8 kB
+probe_exit=0

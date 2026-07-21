@@ -1,0 +1,30 @@
+bw24 native v2g standard-prompt start 2026-07-21T15:32:27+03:00
+f762985ae78ff01c3ef243eb7c4d4dd54f17f2669175c9c4c8403444dcb85871  /tmp/libbw24-cpu-experts-native-v2g.so
+56, 9.53 W, 180 MHz, 296 MiB
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 8 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5092 slots in 5 classes, 13.85 GB / 13.85 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native-v2g.so (threads=12)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=22.22 GiB reserve=4.00 GiB effective=18.22 GiB
+[bw24-cpu] normal-RAM expert cache: 18.22 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5092 slots, 5092 resident blocks; 1598 complete experts, 98 one-projection fragments, 100 two-projection fragments (298 stranded blocks)
+[moe-cache] frozen MTP residency: 74 blocks, 24 complete experts
+
+[generate]   15 tok in 3.925s = 3.82 tok/s (gen-only; this run's prime 12.794s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+
+[generate_spec K=1] 16 tok in 3.624s = 4.14 tok/s (1.08x vs generate; this run's prime 12.183s)
+  acceptance: 7/8 = 87.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=45387 bytes=123657928704 errors=0 short_reads=0 fallbacks=0 buffer_waits=19622 ring_full=463
+[bw24-cpu-cache] hits=70690 misses=52199 hit_rate=57.52% read_GB=136.854 resident_GB=19.565
+[bw24-cpu-profile] calls=9740 prepare=0.677003s io=15.020607s insert=0.090619s compute=18.727745s read_projections=52199 read_GB=136.854
+63, 29.51 W, 1597 MHz, 296 MiB
+bw24 native v2g standard-prompt end 2026-07-21T15:37:09+03:00 status=0

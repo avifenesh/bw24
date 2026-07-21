@@ -1,0 +1,5 @@
+[bw24-cpu] RAM headroom cap: requested=36.00 GiB available=40.84 GiB reserve=8.00 GiB effective=32.84 GiB
+[bw24-cpu] normal-RAM expert cache: 32.84 GiB policy=lru io=buffered
+abi 1
+cache_stats 0 0 0 0
+[smoke] exit_status=0 cpu_quota=25% memory_max=1G

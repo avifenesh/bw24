@@ -1,0 +1,13 @@
+{
+  "format": "bw24-hy3-heal-quality-gates-v1",
+  "expected_layers": 79,
+  "routing_safety": {
+    "max_dead_active_fraction": 0.25,
+    "max_active_load_fraction": 0.25,
+    "min_entropy_ratio_vs_before": 0.5
+  },
+  "joint_reconstruction": {
+    "require_mean_normalized_mse_improvement": true,
+    "min_improved_layer_fraction": 0.5
+  }
+}

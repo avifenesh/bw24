@@ -1,0 +1,53 @@
+[runner] thermal_regime=clean-swap, default system power policy, no intentional cooldown
+[runner] cpu_regime=unlimited max-weight systemd scope, 8 P-core CPU expert team
+[runner] io_regime=mirrored direct I/O across both NVMe devices; IOWeight=10000 requested
+[runner] memory_regime=requested 36-GiB CPU cache with 4-GiB MemAvailable reserve
+[runner] cgroup_memory_regime=unlimited sibling systemd scope
+[runner] measurement_N=1 generation_tokens=64
+[runner] mode=control
+[runner] fused_stages=1
+[runner] mixed_q8=0
+[runner] cache_policy=lru
+[runner] preflight_free_vram_mib=23689
+[runner] min_free_vram_mib=23000
+[runner] preflight_load_one=5.72
+[runner] max_load=6.0
+[runner] git_head=650d45c496ecb2d5cae009e1b3e03d347e2db8ea
+733fcd0eae3a0c686fb0002b9359fc2f8e1dc1630537e778269ad9270550fdb1  /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec
+c4994282451e7ba639e36e848f917624da9fb0722f93da26793eaaf5c3f7704c  /tmp/libbw24-cpu-experts-sota-current.so
+ 12:21:16 up 15:42,  1 user,  load average: 5.72, 4.94, 3.93
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        18Gi       4.9Gi       1.1Gi        39Gi        42Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+MemAvailable:   44549992 kB
+SwapFree:        8388604 kB
+Dirty:             25992 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 8  0      0 5120220 4481060 36823036  285  324 13090  2111 29332   23 12  8 80  0  0  0
+ 5  0      0 5191460 4481076 36761904    0    0     0  1060 48194 73127  9  9 82  0  0  0
+ 4  0      0 5173252 4481084 36783980    0    0    64 32364 66060 112237 10 11 79  0  0  0
+2026/07/21 12:21:18.436, NVIDIA GeForce RTX 5090 Laptop GPU, 55, 9.39 W, 0 %, 296 MiB, 23689 MiB
+[runner-scope] pid=2274201
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/bw24-headroom6-control-2271794.scope
+[runner-scope] cpuset.cpus.effective=unavailable
+[runner-scope] cpu.max=max 100000
+[runner-scope] cpu.weight=10000
+[runner-scope] io.weight=unavailable
+[runner-scope] memory.high=max
+[runner-scope] memory.max=max
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5477 slots in 5 classes, 14.89 GB / 14.89 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-sota-current.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=36.00 GiB available=43.69 GiB reserve=4.00 GiB effective=36.00 GiB
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu] mirrored direct I/O: 237 inode mappings

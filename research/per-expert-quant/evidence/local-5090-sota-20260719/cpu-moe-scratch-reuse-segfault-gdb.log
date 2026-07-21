@@ -1,0 +1,63 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/x86_64-linux-gnu/libthread_db.so.1".
+[New Thread 0x7fffcdc726c0 (LWP 2366289)]
+[New Thread 0x7fffcd4716c0 (LWP 2366290)]
+[New Thread 0x7fffccc706c0 (LWP 2366291)]
+[New Thread 0x7fffcc46f6c0 (LWP 2366292)]
+[New Thread 0x7fffcbc6e6c0 (LWP 2366293)]
+[New Thread 0x7fffcb46d6c0 (LWP 2366294)]
+[New Thread 0x7fffcac6c6c0 (LWP 2366295)]
+
+Thread 8 "bench-cpu-moe-t" received signal SIGSEGV, Segmentation fault.
+[Switching to Thread 0x7fffcac6c6c0 (LWP 2366295)]
+0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+
+Thread 8 (Thread 0x7fffcac6c6c0 (LWP 2366295) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 7 (Thread 0x7fffcb46d6c0 (LWP 2366294) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 6 (Thread 0x7fffcbc6e6c0 (LWP 2366293) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 5 (Thread 0x7fffcc46f6c0 (LWP 2366292) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 4 (Thread 0x7fffccc706c0 (LWP 2366291) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 3 (Thread 0x7fffcd4716c0 (LWP 2366290) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 2 (Thread 0x7fffcdc726c0 (LWP 2366289) "bench-cpu-moe-t"):
+#0  0x00007ffff7fa8b6f in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#1  0x00007ffff7f05b5f in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff78a40da in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:454
+#3  0x00007ffff79377ac in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 1 (Thread 0x7ffff7f62780 (LWP 2366280) "bench-cpu-moe-t"):
+#0  0x00007ffff7f08cc3 in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#1  0x00007ffff7f07d3d in ?? () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#2  0x00007ffff7fa8bc3 in bw24_cpu_moe_token_v1._omp_fn () from /tmp/libbw24-cpu-experts-scratch.so
+#3  0x00007ffff7efb709 in GOMP_parallel () from /usr/lib/x86_64-linux-gnu/libgomp.so.1
+#4  0x00007ffff7faf330 in bw24_cpu_moe_token_v1 () from /tmp/libbw24-cpu-experts-scratch.so
+#5  0x000055555555785c in main ()

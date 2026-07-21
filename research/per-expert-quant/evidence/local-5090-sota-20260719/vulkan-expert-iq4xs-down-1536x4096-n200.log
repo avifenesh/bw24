@@ -1,0 +1,3 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = Intel(R) Graphics (ARL) (Intel open-source Mesa driver) | uma: 1 | fp16: 1 | bf16: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: none
+type=iq4_xs shape=1536x4096 extent=3342336 iterations=200 ms/projection=1.689301 weight_GB/s=1.979 max_abs=0.0241200924 max_rel=40.6770359 cpu_checksum=76.8381524235 vulkan_checksum=77.3134886622

@@ -1,0 +1,19 @@
+[bw24-cpu] normal-RAM expert cache: 1.00 GiB policy=lru io=direct
+[bw24-cpu] transparent hugepage advice enabled
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+probe_ready pid=2409206 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=5
+[bw24-cpu-profile] calls=2 prepare=0.000170s io=0.067667s insert=0.000015s compute=0.006908s read_projections=3 read_GB=0.006
+ enabled
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed for 2097152 bytes: Invalid argument
+probe_ready pid=2409206 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=5
+Rss:               12364 kB
+Pss:                8550 kB
+Private_Dirty:      7132 kB
+Anonymous:          7032 kB
+AnonHugePages:         0 kB
+Swap:                  0 kB
+probe_exit=0

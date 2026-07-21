@@ -1,0 +1,3 @@
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 51, 8.72 W, 180 MHz, 405 MHz, 312 MiB, 24463 MiB
+3277838, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB

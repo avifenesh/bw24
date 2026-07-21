@@ -1,0 +1,33 @@
+[bw24-cpu] normal-RAM expert cache: 1.00 GiB policy=lru io=direct
+[bw24-cpu] transparent hugepage advice enabled
+[bw24-cpu] MADV_COLLAPSE failed at 0x719327200000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x719326e00000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x719326a00000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+probe_ready pid=2410876 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=10
+[bw24-cpu-profile] calls=2 prepare=0.000137s io=0.002041s insert=0.000003s compute=0.007477s read_projections=3 read_GB=0.006
+ enabled
+[bw24-cpu] MADV_COLLAPSE failed at 0x719327200000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x719326e00000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+[bw24-cpu] MADV_COLLAPSE failed at 0x719326a00000 for 2097152 bytes (PMD alignment remainder=0): Invalid argument
+probe_ready pid=2410876 hash=55f2fbeeb21f6d68 first=4.11111736 last=-2.02593589 hold_seconds=10
+[smaps-rollup]
+Rss:               12272 kB
+Pss:                8458 kB
+Private_Dirty:      7140 kB
+Anonymous:          7036 kB
+AnonHugePages:         0 kB
+Swap:                  0 kB
+[large-anonymous-vmas]
+71932319e000-7193269a5000 rw-p 00000000 00:00 0 
+Size_kB=57372 Anonymous_kB=56 AnonHugePages_kB=0 VmFlags: rd wr mr mw me gu ac sd nh 
+719326a00000-719326c00000 rw-p 00000000 00:00 0 
+Size_kB=2048 Anonymous_kB=2016 AnonHugePages_kB=0 VmFlags: rd wr mr mw me ac sd hg 
+719326c00000-719326e00000 rw-p 00000000 00:00 0 
+Size_kB=2048 Anonymous_kB=8 AnonHugePages_kB=0 VmFlags: rd wr mr mw me ac sd 
+719326e00000-719327000000 rw-p 00000000 00:00 0 
+Size_kB=2048 Anonymous_kB=2016 AnonHugePages_kB=0 VmFlags: rd wr mr mw me ac sd hg 
+719327000000-719327200000 rw-p 00000000 00:00 0 
+Size_kB=2048 Anonymous_kB=8 AnonHugePages_kB=0 VmFlags: rd wr mr mw me ac sd 
+719327200000-719327400000 rw-p 00000000 00:00 0 
+Size_kB=2048 Anonymous_kB=2016 AnonHugePages_kB=0 VmFlags: rd wr mr mw me ac sd hg 
+probe_exit=0

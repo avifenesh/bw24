@@ -252,7 +252,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "q2_k": len(layer_tiers["Q2_K"]),
         }
 
-    top_scores = [
+    expert_scores = [
         {
             "layer": layer,
             "expert": expert,
@@ -261,7 +261,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "high_easy_mass": high_mass[(layer, expert)],
             "specialization": specialization[(layer, expert)],
         }
-        for layer, expert in ranked[: min(64, len(ranked))]
+        for layer, expert in ranked
     ]
     return {
         "format": FORMAT,
@@ -303,7 +303,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             "confidence_band_counts": band_counts,
             "public_eval_data_used_for_selection": False,
         },
-        "score_diagnostics": {"top_experts": top_scores},
+        "score_diagnostics": {
+            "experts": expert_scores,
+            "top_experts": expert_scores[: min(64, len(expert_scores))],
+        },
         "pruned_experts": {},
         "assignments": assignments,
         "layer_summary": summaries,
@@ -359,6 +362,7 @@ def self_test() -> None:
         assert q8 == {(1, 2), (2, 2)}
         assert plan["policy"]["matched_total_counts"] == {"Q8_0": 2, "NVFP4": 0, "Q2_K": 4}
         assert plan["pruned_experts"] == {}
+        assert len(plan["score_diagnostics"]["experts"]) == 6
 
 
 def parse_args() -> argparse.Namespace:

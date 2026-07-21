@@ -1,0 +1,113 @@
+[runner] thermal_regime=clean-swap, default system power policy, no intentional cooldown
+[runner] cpu_regime=unlimited max-weight systemd scope, 8 P-core CPU expert team
+[runner] io_regime=mirrored direct I/O across both NVMe devices; IOWeight=10000 requested
+[runner] memory_regime=requested 36-GiB CPU cache with 4-GiB MemAvailable reserve
+[runner] cgroup_memory_regime=unlimited sibling systemd scope
+[runner] measurement_N=1 generation_tokens=64
+[runner] mode=control
+[runner] fused_stages=1
+[runner] pipeline_io=0
+[runner] mixed_q8=0
+[runner] cache_policy=lru
+[runner] preflight_free_vram_mib=23689
+[runner] min_free_vram_mib=23000
+[runner] preflight_load_one=5.85
+[runner] max_load=7.0
+[runner] git_head=650d45c496ecb2d5cae009e1b3e03d347e2db8ea
+733fcd0eae3a0c686fb0002b9359fc2f8e1dc1630537e778269ad9270550fdb1  /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec
+c4994282451e7ba639e36e848f917624da9fb0722f93da26793eaaf5c3f7704c  /tmp/libbw24-cpu-experts-sota-current.so
+ 12:27:04 up 15:48,  1 user,  load average: 5.85, 5.77, 4.63
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        17Gi        33Gi       1.3Gi        12Gi        43Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+MemAvailable:   45536168 kB
+SwapFree:        8388604 kB
+Dirty:             18220 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 6  0      0 34607212 158424 12837488  429  480 19063  2271 29648   23 12  8 80  0  0  0
+ 5  0      0 34563068 212324 12791020    0    0 57204  2512 35985 79707 12 11 77  1  0  0
+ 3  0      0 34565068 212368 12797960    0    0     4  1184 32105 67208 10  9 81  0  0  0
+2026/07/21 12:27:06.106, NVIDIA GeForce RTX 5090 Laptop GPU, 56, 9.61 W, 0 %, 296 MiB, 23689 MiB
+[runner-scope] pid=2641757
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/bw24-headroom6-control-2639174.scope
+[runner-scope] cpuset.cpus.effective=unavailable
+[runner-scope] cpu.max=max 100000
+[runner-scope] cpu.weight=10000
+[runner-scope] io.weight=unavailable
+[runner-scope] memory.high=max
+[runner-scope] memory.max=max
+[runner-scope] memory.swap.max=0
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (145 chars, chat-templated) -> 42 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5477 slots in 5 classes, 14.89 GB / 14.89 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-sota-current.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=36.00 GiB available=36.22 GiB reserve=4.00 GiB effective=32.22 GiB
+[bw24-cpu] normal-RAM expert cache: 32.22 GiB policy=lru io=direct
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=57 full_accept=26 len_hist=[2, 16, 17, 22] per_slot=[43/55=0.782 22/39=0.564 7/22=0.318] total=72/116=0.621 tok_per_round=2.263
+[spec-phase] draft=1945.1ms (1.1%) verify-issue=171854.1ms (98.9%) verify-wait=41.0ms (0.0%) commit-host=12.0ms (0.0%) rounds=57
+[moe-cache] residency frozen: 5477 slots, 5477 resident blocks; 1793 complete experts, 44 one-projection fragments, 27 two-projection fragments (98 stranded blocks)
+[moe-cache] frozen MTP residency: 63 blocks, 21 complete experts
+
+[generate]   63 tok in 11.166s = 5.64 tok/s (gen-only; this run's prime 8.608s)
+  tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 11, 413, 25, 286, 9, 4055, 1970, 4906, 42970, 3236, 9, 1970, 24621, 35510, 503, 356, 252, 1054, 289, 2057, 1515, 1338, 185, 9, 607, 13130, 3175, 607, 19392, 3175, 289, 607, 55266, 63, 6590, 185, 9, 6323, 11, 39227, 2816, 286, 1438, 6515, 185, 4140]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=36 full_accept=27 len_hist=[0, 36] per_slot=[27/36=0.750] total=27/36=0.750 tok_per_round=1.750
+[spec-phase] draft=137.1ms (1.2%) verify-issue=10857.8ms (98.5%) verify-wait=22.9ms (0.2%) commit-host=5.0ms (0.0%) rounds=36
+
+[generate_spec K=1] 64 tok in 11.214s = 5.62 tok/s (1.00x vs generate; this run's prime 8.956s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=187535 bytes=493500628992 errors=0 short_reads=0 fallbacks=0 buffer_waits=163790 ring_full=367
+[bw24-cpu-profile] calls=30823 prepare=2.157431s io=26.772056s insert=0.160766s compute=44.917482s read_projections=80284 read_GB=211.137
+[bw24-cpu-cache] hits=282455 misses=80284 hit_rate=77.87% read_GB=211.137 resident_GB=34.591
+	Command being timed: "env BW24_CPU_EXPERT_FUSED_STAGES=1 BW24_CPU_EXPERT_PIPELINE_IO=0 BW24_MOE_MIXED_Q8=0 BW24_NGEN=64 BW24_SPEC_K=1 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-sota-current.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_RESERVE_GB=4 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=3 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-7 /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 381.25
+	System time (seconds): 103.36
+	Percent of CPU this job got: 120%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 6:42.20
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 46892496
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 13972
+	Minor (reclaiming a frame) page faults: 19473374
+	Voluntary context switches: 2256287
+	Involuntary context switches: 6873
+	Swaps: 0
+	File system inputs: 1411671776
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[runner] exit_status=0
+ 12:33:48 up 15:54,  1 user,  load average: 11.45, 8.72, 6.27
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        13Gi        40Gi       801Mi       7.8Gi        47Gi
+Swap:          8.0Gi       6.7Gi       1.3Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 6.7G   -1
+MemAvailable:   49544376 kB
+SwapFree:        1410064 kB
+Dirty:             18980 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 4  0 6978540 42942520 337280 7806080  451  631 31421  2429 30228   23 12  8 80  0  0  0
+ 4  0 6978056 42683936 337324 7819604  504    0  3246  1492 45378 205697 11 11 78  0  0  0
+ 4  0 6968988 43700312 337492 7758744 2020    0 13516   388 46679 145861 12 11 77  0  0  0
+2026/07/21 12:33:50.378, NVIDIA GeForce RTX 5090 Laptop GPU, 66, 22.29 W, 0 %, 296 MiB, 23689 MiB

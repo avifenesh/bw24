@@ -82,10 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Stage-A: dequant-in-kernel qmatvec.
         let ya = e.dtoh(&e.qmatvec(&wd, &xd, m, in_f, out_f, qt, row_bytes)?)?;
         let rela = maxdiff(&cpu, &ya) / scale;
-        let okA = rela < 1e-4;
+        let ok_a = rela < 1e-4;
         println!("[{gty:?}] {tname} (in={in_f} out={out_f}) Stage-A qmatvec: rel={rela:.3e} {}",
-                 if okA { "OK" } else { fails += 1; "FAIL" });
-        if !okA { for i in 0..3 { println!("    A[{i}] cpu={} gpu={}", cpu[i], ya[i]); } }
+                 if ok_a { "OK" } else { fails += 1; "FAIL" });
+        if !ok_a { for i in 0..3 { println!("    A[{i}] cpu={} gpu={}", cpu[i], ya[i]); } }
 
         // Stage-B: int8 dp4a fast path (only where one exists).
         if sel.is_empty() {
@@ -99,10 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => unreachable!(),
             };
             let relb = maxdiff(&cpu, &yb) / scale;
-            let okB = relb < 3e-2;
+            let ok_b = relb < 3e-2;
             println!("[{gty:?}] {tname} Stage-B dp4a   : rel={relb:.3e} {}",
-                     if okB { "OK" } else { fails += 1; "FAIL" });
-            if !okB { for i in 0..3 { println!("    B[{i}] cpu={} gpu={}", cpu[i], yb[i]); } }
+                     if ok_b { "OK" } else { fails += 1; "FAIL" });
+            if !ok_b { for i in 0..3 { println!("    B[{i}] cpu={} gpu={}", cpu[i], yb[i]); } }
         }
         println!();
     }

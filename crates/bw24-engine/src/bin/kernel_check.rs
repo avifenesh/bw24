@@ -668,8 +668,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/home/ubuntu/models/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf",
             "/home/ubuntu/bw24-bench/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf",
         ].into_iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string());
-        if let Some(GGUF_9B) = gguf_9b_owned.as_deref() {
-            let g = GgufFile::open(GGUF_9B)?;
+        if let Some(gguf_9b) = gguf_9b_owned.as_deref() {
+            let g = GgufFile::open(gguf_9b)?;
             // Q5_K GEMM vs dp4a (attn_gate is Q5_K in 9B).
             if let Some(t) = g.find("blk.0.attn_gate.weight").filter(|t| t.ggml_type == GgmlType::Q5_K) {
                 let in_f = t.ne[0] as usize; let out_f = t.ne[1] as usize;

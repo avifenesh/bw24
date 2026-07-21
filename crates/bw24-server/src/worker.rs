@@ -200,7 +200,7 @@ pub fn run(
                 Ok(g) => g,
                 Err(err) => { let _ = ready_tx.send(Err(format!("open {path}: {err}"))); return; }
             };
-            let mut model = match HybridModel::load(&engine, &g) {
+            let model = match HybridModel::load(&engine, &g) {
                 Ok(m) => m,
                 Err(err) => { let _ = ready_tx.send(Err(format!("load {name}: {err}"))); return; }
             };

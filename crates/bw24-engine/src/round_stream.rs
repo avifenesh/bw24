@@ -14,9 +14,9 @@
 //! `spec_rollback_stream`, `spec_seed_gather`, `spec_assemble_verify`) are already
 //! model-generic in lib.rs; this module is the buffer/lifecycle half.
 
-use cudarc::driver::CudaSlice;
-use crate::Engine;
 use crate::cache::Cache;
+use crate::Engine;
+use cudarc::driver::CudaSlice;
 
 pub struct StreamBufs {
     /// assembled verify tokens [k+1]
@@ -68,13 +68,23 @@ impl StreamBufs {
 /// Per-layer `kvl.len_d` device-pointer table (+ the position counter appended when
 /// `pos_ctr` is given) for `spec_rollback_stream`. Pointers are stable for the cache's
 /// lifetime; 0 marks layers without KV (linear-attention / KV-shared).
-pub fn kv_len_ptr_table(e: &Engine, cache: &Cache, pos_ctr: Option<&CudaSlice<i32>>)
-                        -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
+pub fn kv_len_ptr_table(
+    e: &Engine,
+    cache: &Cache,
+    pos_ctr: Option<&CudaSlice<i32>>,
+) -> Result<CudaSlice<u64>, Box<dyn std::error::Error>> {
     use cudarc::driver::DevicePtr;
-    let mut ptrs: Vec<u64> = cache.kv.iter().map(|kv| match kv.as_ref() {
-        Some(kvl) => { let (p, _g) = kvl.len_d.device_ptr(e.stream()); p as u64 }
-        None => 0u64,
-    }).collect();
+    let mut ptrs: Vec<u64> = cache
+        .kv
+        .iter()
+        .map(|kv| match kv.as_ref() {
+            Some(kvl) => {
+                let (p, _g) = kvl.len_d.device_ptr(e.stream());
+                p as u64
+            }
+            None => 0u64,
+        })
+        .collect();
     if let Some(pc) = pos_ctr {
         let (p, _g) = pc.device_ptr(e.stream());
         ptrs.push(p as u64);

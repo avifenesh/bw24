@@ -1,0 +1,276 @@
+[0/2] Re-checking globbed directories...
+[1/516] Creating directories for 'vulkan-shaders-gen'
+[2/516] No download step for 'vulkan-shaders-gen'
+[3/516] No update step for 'vulkan-shaders-gen'
+[4/516] No patch step for 'vulkan-shaders-gen'
+[5/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[6/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[7/516] Performing configure step for 'vulkan-shaders-gen'
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Enabling coopmat glslc support
+-- Enabling coopmat2 glslc support
+-- Enabling dot glslc support
+-- Enabling bfloat16 glslc support
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /tmp/bw24-llama-vulkan-build/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-build
+[8/516] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[9/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[10/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[11/516] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[12/516] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[13/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[14/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[15/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[16/516] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[17/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[18/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[19/516] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[20/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[21/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[22/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[23/516] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[24/516] Building CXX object common/CMakeFiles/llama-common-base.dir/build-info.cpp.o
+[25/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[26/516] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[27/516] Linking CXX shared library bin/libggml-base.so.0.15.3
+[28/516] Creating library symlink bin/libggml-base.so.0 bin/libggml-base.so
+[29/516] Linking CXX static library common/libllama-common-base.a
+[30/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/llamafile/sgemm.cpp.o
+[31/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[32/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[33/516] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[34/516] Linking CXX shared library bin/libggml-cpu.so.0.15.3
+[35/516] Creating library symlink bin/libggml-cpu.so.0 bin/libggml-cpu.so
+[36/516] Performing build step for 'vulkan-shaders-gen'
+[1/2] Building CXX object CMakeFiles/vulkan-shaders-gen.dir/vulkan-shaders-gen.cpp.o
+[2/2] Linking CXX executable vulkan-shaders-gen
+[37/516] Performing install step for 'vulkan-shaders-gen'
+-- Installing: /tmp/bw24-llama-vulkan-build/Release/./vulkan-shaders-gen
+[38/516] Completed 'vulkan-shaders-gen'
+[39/516] Generate vulkan shaders header
+[40/516] Generate vulkan shaders for arange.comp
+[41/516] Generate vulkan shaders for acc.comp
+[42/516] Generate vulkan shaders for add_id.comp
+[43/516] Generate vulkan shaders for add1.comp
+[44/516] Generate vulkan shaders for argsort.comp
+[45/516] Generate vulkan shaders for argmax.comp
+[46/516] Generate vulkan shaders for add.comp
+[47/516] Generate vulkan shaders for argsort_large.comp
+[48/516] Generate vulkan shaders for conv2d_dw.comp
+[49/516] Generate vulkan shaders for col2im_1d.comp
+[50/516] Generate vulkan shaders for concat.comp
+[51/516] Generate vulkan shaders for contig_copy.comp
+[52/516] Generate vulkan shaders for copy_transpose.comp
+[53/516] Generate vulkan shaders for copy.comp
+[54/516] Generate vulkan shaders for conv_transpose_1d.comp
+[55/516] Generate vulkan shaders for conv2d_mm.comp
+[56/516] Generate vulkan shaders for conv3d_mm.comp
+[57/516] Generate vulkan shaders for copy_from_quant.comp
+[58/516] Generate vulkan shaders for cumsum_multipass2.comp
+[59/516] Generate vulkan shaders for cumsum_multipass1.comp
+[60/516] Generate vulkan shaders for count_experts.comp
+[61/516] Generate vulkan shaders for count_equal.comp
+[62/516] Generate vulkan shaders for cumsum.comp
+[63/516] Generate vulkan shaders for dequant_f32.comp
+[64/516] Generate vulkan shaders for copy_to_quant.comp
+[65/516] Generate vulkan shaders for dequant_iq1_s.comp
+[66/516] Generate vulkan shaders for dequant_iq1_m.comp
+[67/516] Generate vulkan shaders for dequant_iq2_xs.comp
+[68/516] Generate vulkan shaders for dequant_iq2_xxs.comp
+[69/516] Generate vulkan shaders for dequant_iq2_s.comp
+[70/516] Generate vulkan shaders for dequant_iq3_s.comp
+[71/516] Generate vulkan shaders for dequant_iq3_xxs.comp
+[72/516] Generate vulkan shaders for dequant_iq4_nl.comp
+[73/516] Generate vulkan shaders for dequant_iq4_xs.comp
+[74/516] Generate vulkan shaders for dequant_nvfp4.comp
+[75/516] Generate vulkan shaders for dequant_mxfp4.comp
+[76/516] Generate vulkan shaders for dequant_q1_0.comp
+[77/516] Generate vulkan shaders for dequant_q3_k.comp
+[78/516] Generate vulkan shaders for dequant_q2_k.comp
+[79/516] Generate vulkan shaders for dequant_q4_0.comp
+[80/516] Generate vulkan shaders for dequant_q4_1.comp
+[81/516] Generate vulkan shaders for dequant_q4_k.comp
+[82/516] Generate vulkan shaders for dequant_q5_1.comp
+[83/516] Generate vulkan shaders for dequant_q5_0.comp
+[84/516] Generate vulkan shaders for dequant_q6_k.comp
+[85/516] Generate vulkan shaders for dequant_q5_k.comp
+[86/516] Generate vulkan shaders for dequant_q8_0.comp
+[87/516] Generate vulkan shaders for diag_mask_inf.comp
+[88/516] Generate vulkan shaders for fill.comp
+[89/516] Generate vulkan shaders for diag.comp
+[90/516] Generate vulkan shaders for div.comp
+[91/516] Generate vulkan shaders for flash_attn_cm1.comp
+[92/516] Generate vulkan shaders for flash_attn_mask_opt.comp
+[93/516] Generate vulkan shaders for flash_attn_cm2.comp
+[94/516] Generate vulkan shaders for flash_attn_split_k_reduce.comp
+[95/516] Generate vulkan shaders for fwht.comp
+[96/516] Generate vulkan shaders for geglu_erf.comp
+[97/516] Generate vulkan shaders for gated_delta_net.comp
+[98/516] Generate vulkan shaders for geglu.comp
+[99/516] Generate vulkan shaders for geglu_quick.comp
+[100/516] Generate vulkan shaders for get_rows_back.comp
+[101/516] Generate vulkan shaders for get_rows.comp
+[102/516] Generate vulkan shaders for flash_attn.comp
+[103/516] Generate vulkan shaders for im2col.comp
+[104/516] Generate vulkan shaders for group_norm.comp
+[105/516] Generate vulkan shaders for l2_norm.comp
+[106/516] Generate vulkan shaders for log.comp
+[107/516] Generate vulkan shaders for mul_mat_split_k_reduce.comp
+[108/516] Generate vulkan shaders for im2col_3d.comp
+[109/516] Generate vulkan shaders for mul.comp
+[110/516] Generate vulkan shaders for mul_mat_vec_iq1_s.comp
+[111/516] Generate vulkan shaders for mul_mat_vec_iq2_s.comp
+[112/516] Generate vulkan shaders for mul_mat_vec_iq1_m.comp
+[113/516] Generate vulkan shaders for get_rows_quant.comp
+[114/516] Generate vulkan shaders for mul_mat_vec_iq2_xs.comp
+[115/516] Generate vulkan shaders for mul_mat_vec_nc.comp
+[116/516] Generate vulkan shaders for mul_mat_vec_iq3_xxs.comp
+[117/516] Generate vulkan shaders for mul_mat_vec_p021.comp
+[118/516] Generate vulkan shaders for mul_mat_vec_iq2_xxs.comp
+[119/516] Generate vulkan shaders for mul_mat_vec_iq3_s.comp
+[120/516] Generate vulkan shaders for mul_mat_vec_q2_k.comp
+[121/516] Generate vulkan shaders for mul_mat_vec_q4_k.comp
+[122/516] Generate vulkan shaders for mul_mat_vec_q3_k.comp
+[123/516] Generate vulkan shaders for mul_mat_vec_q5_k.comp
+[124/516] Generate vulkan shaders for mul_mat_vec_q6_k.comp
+[125/516] Generate vulkan shaders for norm.comp
+[126/516] Generate vulkan shaders for multi_add.comp
+[127/516] Generate vulkan shaders for opt_step_adamw.comp
+[128/516] Generate vulkan shaders for pad.comp
+[129/516] Generate vulkan shaders for opt_step_sgd.comp
+[130/516] Generate vulkan shaders for pool2d.comp
+[131/516] Generate vulkan shaders for mul_mat_vec.comp
+[132/516] Generate vulkan shaders for quantize_q8_1.comp
+[133/516] Generate vulkan shaders for reglu.comp
+[134/516] Generate vulkan shaders for repeat_back.comp
+[135/516] Generate vulkan shaders for repeat.comp
+[136/516] Generate vulkan shaders for rms_norm_back.comp
+[137/516] Generate vulkan shaders for mul_mmq.comp
+[138/516] Generate vulkan shaders for rms_norm_partials.comp
+[139/516] Generate vulkan shaders for rms_norm.comp
+[140/516] Generate vulkan shaders for roll.comp
+[141/516] Generate vulkan shaders for mul_mat_vecq.comp
+[142/516] Generate vulkan shaders for rope_multi.comp
+[143/516] Generate vulkan shaders for rope_neox.comp
+[144/516] Generate vulkan shaders for mul_mm_cm2.comp
+[145/516] Generate vulkan shaders for rope_norm.comp
+[146/516] Generate vulkan shaders for rope_vision.comp
+[147/516] Generate vulkan shaders for silu_back.comp
+[148/516] Generate vulkan shaders for scale.comp
+[149/516] Generate vulkan shaders for snake.comp
+[150/516] Generate vulkan shaders for soft_max_back.comp
+[151/516] Generate vulkan shaders for soft_max_large3.comp
+[152/516] Generate vulkan shaders for soft_max_large1.comp
+[153/516] Generate vulkan shaders for soft_max_large2.comp
+[154/516] Generate vulkan shaders for solve_tri.comp
+[155/516] Generate vulkan shaders for ssm_conv.comp
+[156/516] Generate vulkan shaders for sum_rows.comp
+[157/516] Generate vulkan shaders for soft_max.comp
+[158/516] Generate vulkan shaders for ssm_scan.comp
+[159/516] Generate vulkan shaders for swiglu.comp
+[160/516] Generate vulkan shaders for sub.comp
+[161/516] Generate vulkan shaders for topk_argsort.comp
+[162/516] Generate vulkan shaders for timestep_embedding.comp
+[163/516] Generate vulkan shaders for topk_moe.comp
+[164/516] Generate vulkan shaders for swiglu_oai.comp
+[165/516] Generate vulkan shaders for topk_nary_search.comp
+[166/516] Generate vulkan shaders for upscale.comp
+[167/516] Generate vulkan shaders for wkv6.comp
+[168/516] Generate vulkan shaders for wkv7.comp
+[169/516] Generate vulkan shaders for tri.comp
+[170/516] Generate vulkan shaders for unary.comp
+[171/516] Building CXX object vendor/cpp-httplib/CMakeFiles/cpp-httplib.dir/httplib.cpp.o
+[172/516] Linking CXX static library vendor/cpp-httplib/libcpp-httplib.a
+[173/516] Generate vulkan shaders for mul_mm.comp
+[174/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/add_id.comp.cpp.o
+[175/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/arange.comp.cpp.o
+[176/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/argsort.comp.cpp.o
+[177/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/acc.comp.cpp.o
+[178/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/add1.comp.cpp.o
+[179/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/add.comp.cpp.o
+[180/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/argsort_large.comp.cpp.o
+[181/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/col2im_1d.comp.cpp.o
+[182/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/concat.comp.cpp.o
+[183/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/contig_copy.comp.cpp.o
+[184/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/argmax.comp.cpp.o
+[185/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/conv2d_dw.comp.cpp.o
+[186/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/conv_transpose_1d.comp.cpp.o
+[187/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/copy.comp.cpp.o
+[188/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/copy_from_quant.comp.cpp.o
+[189/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/conv3d_mm.comp.cpp.o
+[190/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/conv2d_mm.comp.cpp.o
+[191/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/count_equal.comp.cpp.o
+[192/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/count_experts.comp.cpp.o
+[193/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/cumsum.comp.cpp.o
+[194/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/cumsum_multipass1.comp.cpp.o
+[195/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/cumsum_multipass2.comp.cpp.o
+[196/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_f32.comp.cpp.o
+[197/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq1_m.comp.cpp.o
+[198/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/copy_transpose.comp.cpp.o
+[199/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq1_s.comp.cpp.o
+[200/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq2_s.comp.cpp.o
+[201/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq2_xxs.comp.cpp.o
+[202/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/copy_to_quant.comp.cpp.o
+[203/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq3_s.comp.cpp.o
+[204/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq4_nl.comp.cpp.o
+[205/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq3_xxs.comp.cpp.o
+[206/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq4_xs.comp.cpp.o
+[207/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_mxfp4.comp.cpp.o
+[208/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_iq2_xs.comp.cpp.o
+[209/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_nvfp4.comp.cpp.o
+[210/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q1_0.comp.cpp.o
+[211/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q2_k.comp.cpp.o
+[212/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q3_k.comp.cpp.o
+[213/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q4_0.comp.cpp.o
+[214/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q4_1.comp.cpp.o
+[215/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q4_k.comp.cpp.o
+[216/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q5_0.comp.cpp.o
+[217/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q5_1.comp.cpp.o
+[218/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q6_k.comp.cpp.o
+[219/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q5_k.comp.cpp.o
+[220/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/dequant_q8_0.comp.cpp.o
+[221/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/diag_mask_inf.comp.cpp.o
+[222/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/fill.comp.cpp.o
+[223/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/div.comp.cpp.o
+[224/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/diag.comp.cpp.o
+[225/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/flash_attn_mask_opt.comp.cpp.o
+[226/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/flash_attn_split_k_reduce.comp.cpp.o
+[227/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/flash_attn_cm2.comp.cpp.o
+[228/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/fwht.comp.cpp.o
+[229/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/gated_delta_net.comp.cpp.o
+[230/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/geglu.comp.cpp.o
+[231/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/geglu_erf.comp.cpp.o
+[232/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/geglu_quick.comp.cpp.o
+[233/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/get_rows.comp.cpp.o
+[234/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/get_rows_back.comp.cpp.o
+[235/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/flash_attn_cm1.comp.cpp.o
+[236/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o
+FAILED: [code=1] ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o 
+ccache /usr/bin/c++ -DGGML_BACKEND_BUILD -DGGML_BACKEND_SHARED -DGGML_SCHED_MAX_COPIES=4 -DGGML_SHARED -DGGML_VULKAN_BFLOAT16_GLSLC_SUPPORT -DGGML_VULKAN_COOPMAT2_GLSLC_SUPPORT -DGGML_VULKAN_COOPMAT_GLSLC_SUPPORT -DGGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT -D_GNU_SOURCE -D_XOPEN_SOURCE=600 -Dggml_vulkan_EXPORTS -I/home/avifenesh/projects/llama.cpp/ggml/src/ggml-vulkan/.. -I/tmp/bw24-llama-vulkan-build/ggml/src/ggml-vulkan -I/home/avifenesh/projects/llama.cpp/ggml/src/../include -O3 -DNDEBUG -std=gnu++17 -fPIC -Wmissing-declarations -Wmissing-noreturn -Wall -Wextra -Wpedantic -Wcast-qual -Wno-unused-function -Wno-array-bounds -Wextra-semi -MD -MT ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o -MF ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o.d -o ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/ggml-vulkan.cpp.o -c /home/avifenesh/projects/llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+/home/avifenesh/projects/llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp:48:14: fatal error: spirv/unified1/spirv.hpp: No such file or directory
+   48 | #    include <spirv/unified1/spirv.hpp>
+      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~
+compilation terminated.
+[237/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/group_norm.comp.cpp.o
+[238/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/im2col_3d.comp.cpp.o
+[239/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/l2_norm.comp.cpp.o
+[240/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/log.comp.cpp.o
+[241/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/im2col.comp.cpp.o
+[242/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/flash_attn.comp.cpp.o
+[243/516] Building CXX object ggml/src/ggml-vulkan/CMakeFiles/ggml-vulkan.dir/get_rows_quant.comp.cpp.o
+ninja: build stopped: subcommand failed.

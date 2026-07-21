@@ -1,0 +1,1089 @@
+2026-07-21T19:40:40+03:00
+   Compiling bw24-engine v0.0.0 (/tmp/bw24-local5090-next.xp94gA/tree/crates/bw24-engine)
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/lib.rs:39:7
+   |
+39 | #[cfg(bw24_cutlass)]
+   |       ^^^^^^^^^^^^
+   |
+   = help: expected names are: `bw24_portable_cuda`, `docsrs`, `feature`, and `test` and 32 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:180:7
+    |
+180 | #[cfg(bw24_cutlass)]
+    |       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/model.rs:36:15
+   |
+36 |         #[cfg(bw24_cutlass)]
+   |               ^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:231:38
+    |
+231 |         let cutlass_wants_raw = cfg!(bw24_cutlass) && std::env::var("BW24_FP4_CUTLASS").is_ok();
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:255:31
+    |
+255 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:282:31
+    |
+282 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:373:23
+    |
+373 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:451:27
+    |
+451 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:569:19
+    |
+569 |             #[cfg(bw24_cutlass)]
+    |                   ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/gemma_spec.rs:323:31
+    |
+323 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:200:27
+    |
+200 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:209:23
+    |
+209 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:244:27
+    |
+244 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:351:11
+    |
+351 |     #[cfg(bw24_cutlass)]
+    |           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:527:25
+    |
+527 |                   #[cfg(bw24_cutlass)]
+    |                         ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:3554:19
+     |
+3554 |             #[cfg(bw24_cutlass)]
+     |                   ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:5207:15
+     |
+5207 |         #[cfg(bw24_cutlass)]
+     |               ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: use of deprecated method `cudarc::driver::CudaStream::memcpy_stod`: Use clone_htod
+    --> crates/bw24-engine/src/lib.rs:2981:28
+     |
+2981 |         Ok(self.gpu.stream.memcpy_stod(v)?)
+     |                            ^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `v_out`
+  --> crates/bw24-engine/src/forward.rs:44:17
+   |
+44 |             let v_out = layer.wv.out_features();
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_v_out`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `n_vocab`
+   --> crates/bw24-engine/src/forward.rs:147:13
+    |
+147 |         let n_vocab = self.output.out_features();
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_n_vocab`
+
+warning: unused variable: `k_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:100:13
+    |
+100 |         let k_tok_bytes = (kv_dim_k / 32) * kbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_k_tok_bytes`
+
+warning: unused variable: `v_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:101:13
+    |
+101 |         let v_tok_bytes = (kv_dim_v / 32) * vbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_v_tok_bytes`
+
+warning: variable does not need to be mutable
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pos_base`
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pos_base`
+
+warning: unused variable: `m`
+    --> crates/bw24-engine/src/lib.rs:4932:35
+     |
+4932 |     pub fn batched_variant(&self, m: usize, in_f: usize, out_f: usize, qtype: i32,
+     |                                   ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: method `gemma4_layer_tail_add_nq_pn` is never used
+    --> crates/bw24-engine/src/hybrid_forward.rs:3367:8
+     |
+2784 | impl HybridModel {
+     | ---------------- method in this implementation
+...
+3367 |     fn gemma4_layer_tail_add_nq_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `qmatvec_q4_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2709:12
+     |
+2709 |     pub fn qmatvec_q4_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q4_k_fast`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: method `qmatvec_q6_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2723:12
+     |
+2723 |     pub fn qmatvec_q6_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q6_k_fast`
+
+warning: method `qmatvec_q5_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2737:12
+     |
+2737 |     pub fn qmatvec_q5_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q5_k_fast`
+
+warning: method `qmatvec_q3_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2742:12
+     |
+2742 |     pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q3_k_fast`
+
+warning: method `qmatvec_iq4_XS_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2761:12
+     |
+2761 |     pub fn qmatvec_iq4_XS_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_iq4_xs_fast`
+
+warning: `bw24-engine` (lib) generated 31 warnings (run `cargo fix --lib -p bw24-engine` to apply 7 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.26s
+     Running unittests src/bin/run_gen.rs (target/debug/deps/run_gen-0d1ffd1ab6006716)
+
+running 1 test
+test tests::maps_cpu_expert_stats_without_positional_drift ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling bw24-engine v0.0.0 (/tmp/bw24-local5090-next.xp94gA/tree/crates/bw24-engine)
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/lib.rs:39:7
+   |
+39 | #[cfg(bw24_cutlass)]
+   |       ^^^^^^^^^^^^
+   |
+   = help: expected names are: `bw24_portable_cuda`, `docsrs`, `feature`, and `test` and 32 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:180:7
+    |
+180 | #[cfg(bw24_cutlass)]
+    |       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/model.rs:36:15
+   |
+36 |         #[cfg(bw24_cutlass)]
+   |               ^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:231:38
+    |
+231 |         let cutlass_wants_raw = cfg!(bw24_cutlass) && std::env::var("BW24_FP4_CUTLASS").is_ok();
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:255:31
+    |
+255 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:282:31
+    |
+282 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:373:23
+    |
+373 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:451:27
+    |
+451 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:569:19
+    |
+569 |             #[cfg(bw24_cutlass)]
+    |                   ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/gemma_spec.rs:323:31
+    |
+323 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:200:27
+    |
+200 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:209:23
+    |
+209 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:244:27
+    |
+244 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:351:11
+    |
+351 |     #[cfg(bw24_cutlass)]
+    |           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:527:25
+    |
+527 |                   #[cfg(bw24_cutlass)]
+    |                         ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:3554:19
+     |
+3554 |             #[cfg(bw24_cutlass)]
+     |                   ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:5207:15
+     |
+5207 |         #[cfg(bw24_cutlass)]
+     |               ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: use of deprecated method `cudarc::driver::CudaStream::memcpy_stod`: Use clone_htod
+    --> crates/bw24-engine/src/lib.rs:2981:28
+     |
+2981 |         Ok(self.gpu.stream.memcpy_stod(v)?)
+     |                            ^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `v_out`
+  --> crates/bw24-engine/src/forward.rs:44:17
+   |
+44 |             let v_out = layer.wv.out_features();
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_v_out`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `n_vocab`
+   --> crates/bw24-engine/src/forward.rs:147:13
+    |
+147 |         let n_vocab = self.output.out_features();
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_n_vocab`
+
+warning: unused variable: `k_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:100:13
+    |
+100 |         let k_tok_bytes = (kv_dim_k / 32) * kbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_k_tok_bytes`
+
+warning: unused variable: `v_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:101:13
+    |
+101 |         let v_tok_bytes = (kv_dim_v / 32) * vbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_v_tok_bytes`
+
+warning: variable does not need to be mutable
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pos_base`
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pos_base`
+
+warning: unused variable: `m`
+    --> crates/bw24-engine/src/lib.rs:4932:35
+     |
+4932 |     pub fn batched_variant(&self, m: usize, in_f: usize, out_f: usize, qtype: i32,
+     |                                   ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: method `gemma4_layer_tail_add_nq_pn` is never used
+    --> crates/bw24-engine/src/hybrid_forward.rs:3367:8
+     |
+2784 | impl HybridModel {
+     | ---------------- method in this implementation
+...
+3367 |     fn gemma4_layer_tail_add_nq_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `qmatvec_q4_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2709:12
+     |
+2709 |     pub fn qmatvec_q4_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q4_k_fast`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: method `qmatvec_q6_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2723:12
+     |
+2723 |     pub fn qmatvec_q6_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q6_k_fast`
+
+warning: method `qmatvec_q5_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2737:12
+     |
+2737 |     pub fn qmatvec_q5_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q5_k_fast`
+
+warning: method `qmatvec_q3_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2742:12
+     |
+2742 |     pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q3_k_fast`
+
+warning: method `qmatvec_iq4_XS_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2761:12
+     |
+2761 |     pub fn qmatvec_iq4_XS_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_iq4_xs_fast`
+
+warning: `bw24-engine` (lib test) generated 31 warnings (run `cargo fix --lib -p bw24-engine --tests` to apply 7 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.75s
+     Running unittests src/lib.rs (target/debug/deps/bw24_engine-f7df69e8211dbc75)
+
+running 4 tests
+test cpu_experts::tests::accepts_supported_native_qtypes_without_translation ... ok
+test cpu_experts::tests::validates_thread_count ... ok
+test cpu_experts::tests::rejects_missing_symbols_and_wrong_abi ... ok
+test cpu_experts::tests::dropped_ticket_joins_outstanding_worker ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s
+
+   Compiling bw24-engine v0.0.0 (/tmp/bw24-local5090-next.xp94gA/tree/crates/bw24-engine)
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/lib.rs:39:7
+   |
+39 | #[cfg(bw24_cutlass)]
+   |       ^^^^^^^^^^^^
+   |
+   = help: expected names are: `bw24_portable_cuda`, `docsrs`, `feature`, and `test` and 32 more
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:180:7
+    |
+180 | #[cfg(bw24_cutlass)]
+    |       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+  --> crates/bw24-engine/src/model.rs:36:15
+   |
+36 |         #[cfg(bw24_cutlass)]
+   |               ^^^^^^^^^^^^
+   |
+   = help: consider using a Cargo feature instead
+   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+            [lints.rust]
+            unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+   = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:231:38
+    |
+231 |         let cutlass_wants_raw = cfg!(bw24_cutlass) && std::env::var("BW24_FP4_CUTLASS").is_ok();
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:255:31
+    |
+255 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:282:31
+    |
+282 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:373:23
+    |
+373 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:451:27
+    |
+451 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/model.rs:569:19
+    |
+569 |             #[cfg(bw24_cutlass)]
+    |                   ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/gemma_spec.rs:323:31
+    |
+323 |                         #[cfg(bw24_cutlass)]
+    |                               ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:200:27
+    |
+200 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:209:23
+    |
+209 |                 #[cfg(bw24_cutlass)]
+    |                       ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/dflash.rs:244:27
+    |
+244 |                     #[cfg(bw24_cutlass)]
+    |                           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:351:11
+    |
+351 |     #[cfg(bw24_cutlass)]
+    |           ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/lib.rs:527:25
+    |
+527 |                   #[cfg(bw24_cutlass)]
+    |                         ^^^^^^^^^^^^
+    |
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:3554:19
+     |
+3554 |             #[cfg(bw24_cutlass)]
+     |                   ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+    --> crates/bw24-engine/src/lib.rs:5207:15
+     |
+5207 |         #[cfg(bw24_cutlass)]
+     |               ^^^^^^^^^^^^
+     |
+     = help: consider using a Cargo feature instead
+     = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+              [lints.rust]
+              unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+     = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: use of deprecated method `cudarc::driver::CudaStream::memcpy_stod`: Use clone_htod
+    --> crates/bw24-engine/src/lib.rs:2981:28
+     |
+2981 |         Ok(self.gpu.stream.memcpy_stod(v)?)
+     |                            ^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `v_out`
+  --> crates/bw24-engine/src/forward.rs:44:17
+   |
+44 |             let v_out = layer.wv.out_features();
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_v_out`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `n_vocab`
+   --> crates/bw24-engine/src/forward.rs:147:13
+    |
+147 |         let n_vocab = self.output.out_features();
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_n_vocab`
+
+warning: unused variable: `k_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:100:13
+    |
+100 |         let k_tok_bytes = (kv_dim_k / 32) * kbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_k_tok_bytes`
+
+warning: unused variable: `v_tok_bytes`
+   --> crates/bw24-engine/src/cache.rs:101:13
+    |
+101 |         let v_tok_bytes = (kv_dim_v / 32) * vbb;
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_v_tok_bytes`
+
+warning: variable does not need to be mutable
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pos_base`
+   --> crates/bw24-engine/src/gemma_spec.rs:764:13
+    |
+764 |         let mut pos_base = e.htod_i32(&[0])?;
+    |             ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pos_base`
+
+warning: unused variable: `m`
+    --> crates/bw24-engine/src/lib.rs:4932:35
+     |
+4932 |     pub fn batched_variant(&self, m: usize, in_f: usize, out_f: usize, qtype: i32,
+     |                                   ^ help: if this is intentional, prefix it with an underscore: `_m`
+
+warning: method `gemma4_layer_tail_add_nq_pn` is never used
+    --> crates/bw24-engine/src/hybrid_forward.rs:3367:8
+     |
+2784 | impl HybridModel {
+     | ---------------- method in this implementation
+...
+3367 |     fn gemma4_layer_tail_add_nq_pn(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `qmatvec_q4_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2709:12
+     |
+2709 |     pub fn qmatvec_q4_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q4_k_fast`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: method `qmatvec_q6_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2723:12
+     |
+2723 |     pub fn qmatvec_q6_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q6_k_fast`
+
+warning: method `qmatvec_q5_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2737:12
+     |
+2737 |     pub fn qmatvec_q5_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q5_k_fast`
+
+warning: method `qmatvec_q3_K_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2742:12
+     |
+2742 |     pub fn qmatvec_q3_K_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_q3_k_fast`
+
+warning: method `qmatvec_iq4_XS_fast` should have a snake case name
+    --> crates/bw24-engine/src/lib.rs:2761:12
+     |
+2761 |     pub fn qmatvec_iq4_XS_fast(&self, w: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize, in_f: usize,
+     |            ^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case (notice the capitalization): `qmatvec_iq4_xs_fast`
+
+warning: `bw24-engine` (lib) generated 31 warnings (run `cargo fix --lib -p bw24-engine` to apply 7 suggestions)
+warning: unexpected `cfg` condition name: `bw24_cutlass`
+   --> crates/bw24-engine/src/bin/kernel_check.rs:889:19
+    |
+889 |             #[cfg(bw24_cutlass)]
+    |                   ^^^^^^^^^^^^
+    |
+    = help: expected names are: `bw24_portable_cuda`, `docsrs`, `feature`, and `test` and 32 more
+    = help: consider using a Cargo feature instead
+    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:
+             [lints.rust]
+             unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bw24_cutlass)'] }
+    = help: or consider adding `println!("cargo::rustc-check-cfg=cfg(bw24_cutlass)");` to the top of the `build.rs`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: variable `GGUF_9B` should have a snake case name
+   --> crates/bw24-engine/src/bin/kernel_check.rs:671:21
+    |
+671 |         if let Some(GGUF_9B) = gguf_9b_owned.as_deref() {
+    |                     ^^^^^^^ help: convert the identifier to snake case: `gguf_9_b`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `bw24-engine` (bin "kernel-check") generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 12.71s
+26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621  /tmp/libbw24-cpu-experts-q2-pair-final.so
+26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621  /tmp/libbw24-cpu-experts-q2-pair-final.so
+6a290a5d5da74092a445d231d3136a0bc5d6861ad899ac1c593bf153eb4cb754  target/release/run-gen
+3bf9a86938b5c4b580706ac073523193a8e8b3b012d024f3a90b7c619311a34b  target/release/run-spec
+7569ccde6b09a71c176e28ca5082254dffa3a8597348847e3c9d9a31bd785f74  target/release/kernel-check
+3d35b20b353a0133e5785725eff7c96bc87162f0f0233fdc4ad2ad3e301b1acc  target/release/cpu_native_check
+	linux-vdso.so.1 (0x0000726e30a30000)
+	libstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x0000726e30600000)
+	libm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x0000726e308c5000)
+	libgomp.so.1 => /usr/lib/x86_64-linux-gnu/libgomp.so.1 (0x0000726e305a1000)
+	libgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x0000726e30573000)
+	libc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x0000726e30200000)
+	/lib64/ld-linux-x86-64.so.2 (0x0000726e30a32000)
+default_companion_rebuild_start=2026-07-21T20:21:29+03:00
+26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621  /tmp/bw24-local5090-next.xp94gA/tree/target/release/libbw24-cpu-experts.so
+26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621  target/release/libbw24-cpu-experts.so
+26303685576126a829933144be6af7dad6a6c19995b0b90421ca196d47c31621  /tmp/libbw24-cpu-experts-q2-pair-final.so
+	linux-vdso.so.1 (0x000070c2532a1000)
+	libstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x000070c252e00000)
+	libm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x000070c253136000)
+	libgomp.so.1 => /usr/lib/x86_64-linux-gnu/libgomp.so.1 (0x000070c2530d7000)
+	libgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000070c2530a9000)
+	libc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x000070c252a00000)
+	/lib64/ld-linux-x86-64.so.2 (0x000070c2532a3000)
+    910c:	c4 c2 35 50 c2       	{vex} vpdpbusd ymm0,ymm9,ymm10
+    91eb:	c4 c2 35 50 c2       	{vex} vpdpbusd ymm0,ymm9,ymm10
+    92e4:	c4 c2 6d 50 c2       	{vex} vpdpbusd ymm0,ymm2,ymm10
+note=prior default-companion verification command stopped after successful build/hash/objdump because grep -m closed the pipe; smoke follows
+    910c:	c4 c2 35 50 c2       	{vex} vpdpbusd ymm0,ymm9,ymm10
+    91eb:	c4 c2 35 50 c2       	{vex} vpdpbusd ymm0,ymm9,ymm10
+    92e4:	c4 c2 6d 50 c2       	{vex} vpdpbusd ymm0,ymm2,ymm10
+    93a1:	c4 e2 3d 50 c2       	{vex} vpdpbusd ymm0,ymm8,ymm2
+F32/256: expected=-1.14908576 actual=-1.14908600 abs=2.384e-7 rel=2.075e-7
+BF16/256: expected=-1.14333558 actual=-1.14333606 abs=4.768e-7 rel=4.171e-7
+Q8_0/256: expected=437.74948120 actual=437.74905396 abs=4.272e-4 rel=9.760e-7
+Q4_0/256: expected=24.43267250 actual=24.43268394 abs=1.144e-5 rel=4.684e-7
+Q2_K/256: expected=63.87009811 actual=63.87011719 abs=1.907e-5 rel=2.986e-7
+Q3_K/256: expected=-57.55578613 actual=-57.55580139 abs=1.526e-5 rel=2.651e-7
+Q4_K/256: expected=13.66966248 actual=13.66971684 abs=5.436e-5 rel=3.977e-6
+Q5_K/256: expected=-109.46015930 actual=-109.46017456 abs=1.526e-5 rel=1.394e-7
+Q6_K/256: expected=-250.99902344 actual=-250.99867249 abs=3.510e-4 rel=1.398e-6
+IQ3_S/256: expected=450.85424805 actual=450.85430908 abs=6.104e-5 rel=1.354e-7
+IQ4_XS/256: expected=4780.17529297 actual=4780.17529297 abs=0.000e0 rel=0.000e0
+NVFP4/256: expected=110.95778656 actual=110.95776367 abs=2.289e-5 rel=2.063e-7
+F32/1536: expected=-0.30061057 actual=-0.30061024 abs=3.278e-7 rel=3.278e-7
+BF16/1536: expected=-0.30418780 actual=-0.30418831 abs=5.066e-7 rel=5.066e-7
+Q8_0/1536: expected=3165.74926758 actual=3165.75292969 abs=3.662e-3 rel=1.157e-6
+Q4_0/1536: expected=-78.19955444 actual=-78.19951630 abs=3.815e-5 rel=4.878e-7
+Q2_K/1536: expected=290.75704956 actual=290.75711060 abs=6.104e-5 rel=2.099e-7
+Q3_K/1536: expected=-144.70954895 actual=-144.70967102 abs=1.221e-4 rel=8.436e-7
+Q4_K/1536: expected=1792.14660645 actual=1792.14721680 abs=6.104e-4 rel=3.406e-7
+Q5_K/1536: expected=4653.91406250 actual=4653.91113281 abs=2.930e-3 rel=6.295e-7
+Q6_K/1536: expected=2090.44335938 actual=2090.44091797 abs=2.441e-3 rel=1.168e-6
+IQ3_S/1536: expected=-19.61167145 actual=-19.61185837 abs=1.869e-4 rel=9.531e-6
+IQ4_XS/1536: expected=2095.13159180 actual=2095.12426758 abs=7.324e-3 rel=3.496e-6
+NVFP4/1536: expected=277.00027466 actual=277.00057983 abs=3.052e-4 rel=1.102e-6
+F32/4096: expected=-1.34504557 actual=-1.34504294 abs=2.623e-6 rel=1.950e-6
+BF16/4096: expected=-1.34889233 actual=-1.34889424 abs=1.907e-6 rel=1.414e-6
+Q8_0/4096: expected=-941.41253662 actual=-941.40679932 abs=5.737e-3 rel=6.094e-6
+Q4_0/4096: expected=-148.82304382 actual=-148.82302856 abs=1.526e-5 rel=1.025e-7
+Q2_K/4096: expected=841.00531006 actual=841.00585938 abs=5.493e-4 rel=6.532e-7
+Q3_K/4096: expected=31.61844444 actual=31.61833954 abs=1.049e-4 rel=3.318e-6
+Q4_K/4096: expected=11189.36035156 actual=11189.35449219 abs=5.859e-3 rel=5.237e-7
+Q5_K/4096: expected=20850.46679688 actual=20850.44726562 abs=1.953e-2 rel=9.367e-7
+Q6_K/4096: expected=1972.00830078 actual=1972.00463867 abs=3.662e-3 rel=1.857e-6
+IQ3_S/4096: expected=2217.38330078 actual=2217.38500977 abs=1.709e-3 rel=7.707e-7
+IQ4_XS/4096: expected=4139.16601562 actual=4139.15722656 abs=8.789e-3 rel=2.123e-6
+NVFP4/4096: expected=19.18429756 actual=19.18442345 abs=1.259e-4 rel=6.562e-6
+ABI v2 symbols, production MoE, and non-finite/subnormal checks: PASS
+bw24 native CPU quant check: ALL GREEN
+[bw24-cpu-profile] calls=1 prepare=0.000006s io=0.000000s insert=0.000000s compute=0.000035s read_projections=0 read_GB=0.000
+default_companion_rebuild_end=2026-07-21T20:21:58+03:00

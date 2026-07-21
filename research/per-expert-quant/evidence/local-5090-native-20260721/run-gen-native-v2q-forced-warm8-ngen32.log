@@ -1,0 +1,37 @@
+2026-07-21T16:50:40+03:00
+c46c0af92ef7de234c1e6ad19d8943741208ae34a23df158d92769922475a733  target/release/run-gen
+c6423d768bea95f8a5a63e99a370dd323590fb360d8e0bf3af52de64481afc71  /tmp/libbw24-cpu-experts-native-v2l.so
+e45e52016561f87bfb168b6369cad636c6b7b77c726fcd2b268d3e56f4f89090  research/per-expert-quant/evidence/local-5090-native-20260721/warmup-ab-forced-tokens-ngen32.txt
+861f58c5ad506f0d62242bed5cd79a97313e83a9df4412ddc4930ce1b0159a15  /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 56, 9.57 W, 180 MHz, 296 MiB, 24463 MiB
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 8 discarded decode tokens before fixed residency
+[moe-cache] size-aware fixed slots: 5285 slots in 5 classes, 13.97 GB / 13.97 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-native-v2l.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=39.91 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5285 slots, 5285 resident blocks; 1724 complete experts, 39 one-projection fragments, 37 two-projection fragments (113 stranded blocks)
+post-freeze verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.532e0  MATCH
+teacher-forced decode: 32 tokens from /home/avifenesh/.codex/worktrees/e25d/bw24/research/per-expert-quant/evidence/local-5090-native-20260721/warmup-ab-forced-tokens-ngen32.txt
+generated 32 tokens in 7.171s = 4.46 tok/s (ST teacher-forced decode)
+tokens: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+MoE cache DECODE-WINDOW: 5285 slots | hits=33021 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=2292 experts=9217 backend_wall=6.159s RAM_hits=17198 RAM_misses=10453 RAM_fills=27.29 GB RAM_resident=21.47 GB phase_prepare=0.158s phase_io=2.700s phase_insert=0.019s phase_compute=3.275s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=8932 resident_1=166 resident_2=119
+storage DECODE-WINDOW: 27.29 GB physical reads
+OUTPUT TEXT: "Below is a **practical, system‑level explanation** of how CPU‑ and GPU‑side parallelism can *hide* NVMe spill latency in a **"
+--- generated text ---
+Below is a **practical, system‑level explanation** of how CPU‑ and GPU‑side parallelism can *hide* NVMe spill latency in a **
+[spill-pread] reads=45918 bytes=125267755008 errors=0 short_reads=0 fallbacks=0 buffer_waits=19543 ring_full=310
+[bw24-cpu-cache] hits=49055 misses=36715 hit_rate=57.19% read_GB=96.286 resident_GB=21.473
+[bw24-cpu-profile] calls=6536 prepare=0.474990s io=9.977552s insert=0.051230s compute=10.405694s read_projections=36715 read_GB=96.286
+64, 31.32 W, 1590 MHz, 296 MiB
+2026-07-21T16:56:08+03:00
+status=0

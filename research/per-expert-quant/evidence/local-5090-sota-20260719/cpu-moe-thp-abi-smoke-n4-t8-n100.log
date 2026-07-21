@@ -1,0 +1,6 @@
+control
+[bw24-cpu-profile] calls=108 prepare=0.000987s io=0.000003s insert=0.000007s compute=0.322438s read_projections=0 read_GB=0.000
+experts=4 iterations=100 ms/token=2.994840 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+thp
+[bw24-cpu-profile] calls=108 prepare=0.000793s io=0.000002s insert=0.000004s compute=0.161947s read_projections=0 read_GB=0.000
+experts=4 iterations=100 ms/token=1.513986 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

@@ -1,0 +1,46 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5574 slots in 5 classes, 14.73 GB / 14.73 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-simd.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 32.00 GiB policy=lfu io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.399e0  MATCH
+generated 8 tokens in 1.600s = 5.00 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278]
+MoE cache DECODE-WINDOW: 5574 slots | hits=8493 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=621 experts=2225 backend_wall=1.341s RAM_hits=5499 RAM_misses=1176 RAM_fills=3.10 GB RAM_resident=34.36 GB phase_prepare=0.018s phase_io=0.561s phase_insert=0.004s phase_compute=0.756s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=2055 resident_1=77 resident_2=93
+storage DECODE-WINDOW: 3.10 GB physical reads
+OUTPUT TEXT: "Below is a complete, self-contained implementation"
+--- generated text ---
+Below is a complete, self-contained implementation
+[spill-pread] reads=34837 bytes=96415481856 errors=0 short_reads=0 fallbacks=0 buffer_waits=10583 ring_full=664
+[bw24-cpu-profile] calls=3790 prepare=0.169647s io=6.503728s insert=0.017582s compute=6.305790s read_projections=15249 read_GB=40.529
+	Command being timed: "env BW24_NGEN=8 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.95 BW24_MOE_HARD_VRAM_FRAC=0.95 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-simd.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=32 BW24_CPU_EXPERT_CACHE_POLICY=lfu BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv GOMP_CPU_AFFINITY=0-7 target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 111.85
+	System time (seconds): 31.31
+	Percent of CPU this job got: 107%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:13.68
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 46140780
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 18033
+	Minor (reclaiming a frame) page faults: 17627012
+	Voluntary context switches: 374265
+	Involuntary context switches: 1165
+	Swaps: 0
+	File system inputs: 280651224
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

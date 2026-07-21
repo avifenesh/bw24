@@ -1,0 +1,5 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13]
+[moe-cache] size-aware fixed slots: 5574 slots in 5 classes, 14.73 GB / 14.73 GB budget
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)

@@ -1,0 +1,77 @@
+{
+  "format": "bw24-hy3-layer-balanced-bridge-lock-v1",
+  "frozen_at": "2026-07-14T11:03:00Z",
+  "purpose": "Test whether the current traffic-ranked 137 GB mix is the final compact recipe by comparing two privately allocated layer-balanced bridge budgets.",
+  "selection_boundary": "Frozen after Layer100 directional evidence and before generation from either bridge artifact. Traffic137 supplies only the exact size-matched byte target; no public score selects experts, qtypes, layer limits, or healing updates.",
+  "public_eval_data_used_for_selection": false,
+  "arms": {
+    "layer_balanced120": {
+      "target_logical_bytes": 120000000000
+    },
+    "layer_balanced137": {
+      "target_logical_bytes": 137459192320
+    }
+  },
+  "allocator": {
+    "candidate_qtypes": [
+      "Q8_0",
+      "NVFP4",
+      "Q3_K",
+      "Q2_K",
+      "IQ3_S",
+      "IQ4_XS",
+      "Q4_K"
+    ],
+    "importance_weights": {
+      "retention": 0.0,
+      "confidence": 0.0,
+      "layer": 0.0
+    },
+    "min_survivors_per_layer": 96,
+    "mip_relative_gap": 0.000001,
+    "healing": "joint_quantization_aware_private_holdout_monotonic"
+  },
+  "inputs": {
+    "retention_scores": {
+      "path": "/data/calibration/hy3-100gb-5f02c37/expert-retention-scores.json",
+      "sha256": "d3bec07ab20617b64b50d6c34dc8a83a4e6467ba631e0b1295121d3ea39a7d7f"
+    },
+    "confidence_plan": {
+      "path": "/data/calibration/hy3-100gb-5f02c37/confidence-expert-scores-13a4d92.json",
+      "sha256": "1dc641fcfa1798aa255e85bf213a30594c198b8a11eed68181f41f4e4f4bcb12"
+    },
+    "quant_sensitivity": {
+      "path": "/data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3/seven-format-sensitivity.json",
+      "sha256": "662734b99518e18dc43e7a8f11b19e1408f943961e64e702d5789061b1f1dfaa"
+    },
+    "layer_constraints": {
+      "path": "/data/plans/per-expert-quant-layer-balanced100-3db293f/layer-balanced100.constraints.json",
+      "sha256": "f08d5fe850398cadb337cf834364ad525694644062a6faf2acd052884ef09f0a"
+    },
+    "reference_plan": {
+      "path": "/data/plans/per-expert-quant-100gb-5f02c37/traffic-nvfp4-53-q2-139-exact100gb.json",
+      "sha256": "206d7b56b687c314658100a121c630933190245f6cbd54d35ededaf8cf9a72e5"
+    },
+    "trace_lock": {
+      "path": "/data/calibration/hy3-100gb-5f02c37/moe-inputs.lock.json",
+      "sha256": "23602a5971e4eb9a97ca1a8028029dca2f836bb19777f313a529a345b8874de5"
+    },
+    "layer100_plan": {
+      "path": "/data/plans/per-expert-quant-layer-balanced100-3db293f/layer-balanced100.plan.json",
+      "sha256": "a58f9ca94550efbbd1f56f85c2de62b3f27f9d0ba8f167cc0b4291712d957dce"
+    },
+    "source_config": {
+      "path": "/opt/dlami/nvme/models/hy3-source/config.json",
+      "sha256": "663036ceca3d8a178cd772739566c262caffdecebaed6c1d76b464d729bb2951"
+    },
+    "source_index": {
+      "path": "/opt/dlami/nvme/models/hy3-source/model.safetensors.index.json",
+      "sha256": "9594f1a9419e62ca7afca51bb644f38ef19039374f7812449381ccf42f0ef79b"
+    }
+  },
+  "joint_receipts": {
+    "path": "/data/heal/per-expert-quant-iq3-iq4-q4-pareto-6c5c5ea/smart100_iq3_iq4_q4_pareto/receipts",
+    "count": 79,
+    "inventory_sha256": "43284671b5a4d1387a5783f8e49520cc07203a1be395f3cef7611d490fb0fdf5"
+  }
+}

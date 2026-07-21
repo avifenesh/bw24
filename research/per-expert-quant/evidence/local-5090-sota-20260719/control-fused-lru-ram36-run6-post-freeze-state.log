@@ -1,0 +1,32 @@
+2026-07-21T12:33:24+03:00
+== post-freeze pre-score state ==
+VmRSS:	42312844 kB
+VmSwap:	       0 kB
+Threads:	45
+-- memory.current
+43138920448
+-- memory.peak
+47819493376
+-- memory.swap.current
+0
+-- memory.swap.max
+0
+-- memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        53Gi       1.0Gi       801Mi       7.8Gi       7.3Gi
+Swap:          8.0Gi       6.9Gi       1.1Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 6.9G   -1
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+12  0 7267932 1060548 340928 7819964  451  631 30507  2430 30206   23 12  8 80  0  0  0
+11  0 7267860 1008764 340952 7781024   16    0 1752956  2628 68004 191741 26 12 59  3  0  0
+ 8  0 7267820 970616 340980 7784544   40    0 2084032   724 99487 271045 26 13 57  4  0  0
+2026/07/21 12:33:26.329, 70, 85.58 W, 20 %, 23503 MiB, 481 MiB

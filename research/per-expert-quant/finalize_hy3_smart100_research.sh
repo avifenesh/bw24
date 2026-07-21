@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE=${1:---dry-run}
+[[ "$MODE" == --dry-run || "$MODE" == --execute ]] || {
+  echo "usage: $0 [--dry-run|--execute]" >&2
+  exit 2
+}
+
+REMOTE=${REMOTE:-bw24-research-g6e}
+REGION=${REGION:-us-east-2}
+INSTANCE_ID=${INSTANCE_ID:-i-09082605f120e88f0}
+EXPECTED_ACCOUNT=${EXPECTED_ACCOUNT:-507286591552}
+EXPECTED_FINAL_CHAIN_COMMIT=${EXPECTED_FINAL_CHAIN_COMMIT:-4c96413bbae7dbc7fe4c92bb87cb169518f96de8}
+EXPECTED_SERVER_SHA256=${EXPECTED_SERVER_SHA256:-13a7ac6a15a5de17f0eb736ecb393a50ab9bf03145e86a878e66c86b2086f195}
+EXPECTED_HARBOR_SHA256=${EXPECTED_HARBOR_SHA256:-68084543d2b90751ee1a1bd109a10f06a594889f5d585f1ba4d6355b9d6b97d1}
+REMOTE_FULL_ROOT=${REMOTE_FULL_ROOT:-/data/results/per-expert-quant/full-agentic-layer-balanced-bridge-v1}
+REMOTE_FULL_READY=${REMOTE_FULL_READY:-/data/logs/full-agentic-layer-balanced-bridge-v1/complete}
+REMOTE_DIRECTIONAL_ROOT=${REMOTE_DIRECTIONAL_ROOT:-/data/results/per-expert-quant/layer-balanced-bridge-directional-v1}
+REMOTE_PRACTICAL_ROOT=${REMOTE_PRACTICAL_ROOT:-/data/results/per-expert-quant/practical-layer-balanced-bridge-v1}
+REMOTE_TRUSTED_ROOT=${REMOTE_TRUSTED_ROOT:-/data/results/per-expert-quant/trusted-full-layer-balanced-bridge-v1}
+REMOTE_FINALIZER_ROOT=${REMOTE_FINALIZER_ROOT:-/data/src/bw24-finalizer-conclusion-bridge}
+REMOTE_CONCLUSION_ROOT=${REMOTE_CONCLUSION_ROOT:-/data/analysis/per-expert-quant-final-conclusion-bridge-v1}
+LOCAL_ROOT=${LOCAL_ROOT:-/home/avifenesh/projects/bw24-research-archive/layer-balanced-bridge-final}
+BASELINE_ALLOCATION_ANALYSIS=${BASELINE_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-smart100-1a97cb3}
+IQ4_ALLOCATION_ANALYSIS=${IQ4_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-uncentered-c91898f}
+CENTERED_ALLOCATION_ANALYSIS=${CENTERED_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-centered-a7200c0}
+PARETO_ALLOCATION_ANALYSIS=${PARETO_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-iq3-iq4-q4-dominance-6c5c5ea}
+PAIR_ALLOCATION_ANALYSIS=${PAIR_ALLOCATION_ANALYSIS:-/data/analysis/per-expert-quant-prune-vs-smart100-9a1c92c}
+BASE_EFFECT_ANALYSIS=${BASE_EFFECT_ANALYSIS:-/data/analysis/per-expert-quant-effects-38af56e}
+IQ4_EFFECT_ANALYSIS=${IQ4_EFFECT_ANALYSIS:-/data/calibration/hy3-quant-iq3-iq4-q4-pareto-6c5c5ea}
+IQ4_EFFECT_EVIDENCE=${IQ4_EFFECT_EVIDENCE:-/data/logs/iq3-iq4-q4-pareto-6c5c5ea/build/evidence.sha256}
+PRIVATE_DAMAGE=${PRIVATE_DAMAGE:-$PARETO_ALLOCATION_ANALYSIS/private-damage-three-way.json}
+HEALING_FRONTIER=${HEALING_FRONTIER:-/data/results/per-expert-quant/100gb-heal-v1/cross-run-frontier.json}
+METHOD_DAMAGE=${METHOD_DAMAGE:-/data/analysis/per-expert-quant-traffic-vs-layer-d5735bf/private-damage-four-way.json}
+METHOD_DAMAGE_RECEIPT=${METHOD_DAMAGE_RECEIPT:-/data/analysis/per-expert-quant-traffic-vs-layer-d5735bf/private-damage-four-way.receipt.json}
+UNCENTERED_PLAN=${UNCENTERED_PLAN:-/data/plans/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical.json}
+CENTERED_PLAN=${CENTERED_PLAN:-$CENTERED_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_centered.json}
+PARETO_PLAN=${PARETO_PLAN:-$PARETO_ALLOCATION_ANALYSIS/smart100_iq3_iq4_q4_pareto.json}
+LAYER_BALANCED_PLAN=${LAYER_BALANCED_PLAN:-/data/plans/per-expert-quant-layer-balanced100-3db293f/layer_balanced100.json}
+LAYER_BALANCED120_PLAN=${LAYER_BALANCED120_PLAN:-/data/plans/per-expert-quant-layer-balanced-bridge/layer_balanced120.json}
+LAYER_BALANCED137_PLAN=${LAYER_BALANCED137_PLAN:-/data/plans/per-expert-quant-layer-balanced-bridge/layer_balanced137.json}
+TRAFFIC_PLAN=${TRAFFIC_PLAN:-/data/plans/per-expert-quant-expanded-controls-2591961/traffic-nvfp4-53-q2-139-no-prune.json}
+
+EVIDENCE_ROOTS=(
+  /data/results/per-expert-quant
+  /data/logs
+  /data/plans
+  /data/calibration/hy3-routing-v1
+  /data/calibration/hy3-confidence-v1
+  /data/calibration/hy3-100gb-5f02c37
+  /data/calibration/hy3-quant-sensitivity-53de6ca
+  /data/calibration/hy3-quant-iq3-iq4-q4-99f3dc3
+  "$BASELINE_ALLOCATION_ANALYSIS"
+  "$IQ4_ALLOCATION_ANALYSIS"
+  "$CENTERED_ALLOCATION_ANALYSIS"
+  "$PARETO_ALLOCATION_ANALYSIS"
+  "$PAIR_ALLOCATION_ANALYSIS"
+  "$BASE_EFFECT_ANALYSIS"
+  "$IQ4_EFFECT_ANALYSIS"
+  /data/analysis/per-expert-quant-traffic-vs-layer-d5735bf
+  /data/plans/per-expert-quant-layer-balanced100-3db293f
+  /data/logs/layer-balanced100-3db293f
+  /data/logs/layer-balanced100-directional-v1
+  /data/logs/practical-layer-balanced100-v1
+  /data/plans/per-expert-quant-layer-balanced-bridge
+  /data/logs/layer-balanced-bridge-build
+  /data/logs/layer-balanced-bridge-directional-v1
+  /data/logs/practical-layer-balanced-bridge-v1
+  /data/logs/trusted-full-layer-balanced-bridge-v1
+  /data/logs/full-agentic-layer-balanced-bridge-v1
+  "$REMOTE_CONCLUSION_ROOT"
+  /data/heal/per-expert-quant-100gb-5f02c37/router/receipts
+  /data/heal/per-expert-quant-100gb-5f02c37/joint/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_empirical/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_balanced/receipts
+  /data/heal/per-expert-quant-smart100-2605fde/smart100_rescue/receipts
+  /data/heal/per-expert-quant-iq3-iq4-q4-99f3dc3/smart100_iq3_iq4_q4_empirical/receipts
+  /data/heal/per-expert-quant-iq3-iq4-q4-pareto-6c5c5ea/smart100_iq3_iq4_q4_pareto/receipts
+  /data/heal/per-expert-quant-layer-balanced100-3db293f/layer_balanced100/receipts
+  /data/heal/per-expert-quant-layer-balanced-bridge/layer_balanced120/receipts
+  /data/heal/per-expert-quant-layer-balanced-bridge/layer_balanced137/receipts
+)
+
+die() { echo "smart100 finalizer: $*" >&2; exit 1; }
+command -v aws >/dev/null || die "aws CLI is required"
+command -v rsync >/dev/null || die "rsync is required"
+mkdir -p "$LOCAL_ROOT"
+exec 9>"$LOCAL_ROOT/finalizer.lock"
+flock -n 9 || die "another finalizer owns $LOCAL_ROOT/finalizer.lock"
+
+account=$(aws sts get-caller-identity --query Account --output text)
+[[ "$account" == "$EXPECTED_ACCOUNT" ]] || die "AWS account mismatch: $account"
+state=$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].State.Name' --output text)
+[[ "$state" == running ]] || die "instance state is $state, expected running"
+ssh "$REMOTE" "test -f '$REMOTE_FULL_READY'" \
+  || die "complete smart100 agentic evidence is not ready"
+
+run_id=$(ssh "$REMOTE" "cat '$REMOTE_FULL_ROOT/_active-run-id'")
+directional_run=$(ssh "$REMOTE" "cat '$REMOTE_DIRECTIONAL_ROOT/_active-run-id'")
+practical_run=$(ssh "$REMOTE" "cat '$REMOTE_PRACTICAL_ROOT/_active-run-id'")
+trusted_run=$(ssh "$REMOTE" "cat '$REMOTE_TRUSTED_ROOT/_active-run-id'")
+trusted_config="$REMOTE_TRUSTED_ROOT/run-configs/$trusted_run.json"
+full_config="$REMOTE_FULL_ROOT/run-configs/$run_id.json"
+ssh "$REMOTE" python3 - "$trusted_config" "$full_config" \
+  "$EXPECTED_FINAL_CHAIN_COMMIT" "$EXPECTED_SERVER_SHA256" "$EXPECTED_HARBOR_SHA256" <<'PY'
+import json
+import pathlib
+import sys
+
+trusted_path, full_path = map(pathlib.Path, sys.argv[1:3])
+expected_commit, expected_server, expected_harbor = sys.argv[3:]
+trusted = json.loads(trusted_path.read_text())
+full = json.loads(full_path.read_text())
+assert trusted["format"] == "bw24-trusted-full-run-v1"
+assert full["format"] == "bw24-full-agentic-run-v1"
+for payload in (trusted, full):
+    assert payload["bw24_commit"] == expected_commit
+    assert payload["server"]["sha256"] == expected_server
+    assert payload["server"]["expected_sha256"] == expected_server
+assert full["harbor"]["sha256"] == expected_harbor
+assert full["harbor"]["expected_sha256"] == expected_harbor
+PY
+analysis_commit=$(ssh "$REMOTE" "git -C '$REMOTE_FINALIZER_ROOT' rev-parse HEAD")
+[[ "$analysis_commit" =~ ^[0-9a-f]{40}$ ]] || die "invalid remote finalizer commit"
+directional_frontier="$REMOTE_DIRECTIONAL_ROOT/layer-balanced-bridge-frontier-$directional_run.json"
+directional_promotion="$REMOTE_DIRECTIONAL_ROOT/layer-balanced-bridge-promotion-$directional_run.json"
+practical_promotion="$REMOTE_PRACTICAL_ROOT/practical-promotion-$practical_run.json"
+trusted_report="$REMOTE_TRUSTED_ROOT/_runs/$trusted_run/trusted-full-results.json"
+combined="$REMOTE_FULL_ROOT/comparisons/$run_id/combined.json"
+
+ssh "$REMOTE" bash -s -- \
+  "$REMOTE_FINALIZER_ROOT" "$analysis_commit" "$REMOTE_CONCLUSION_ROOT" \
+  "$IQ4_EFFECT_ANALYSIS/seven-format-effects-map.json" "$PRIVATE_DAMAGE" "$HEALING_FRONTIER" \
+  "$METHOD_DAMAGE" "$METHOD_DAMAGE_RECEIPT" \
+  "$directional_frontier" "$directional_promotion" "$practical_promotion" \
+  "$trusted_report" "$combined" "$UNCENTERED_PLAN" "$CENTERED_PLAN" "$PARETO_PLAN" \
+  "$LAYER_BALANCED_PLAN" "$LAYER_BALANCED120_PLAN" "$LAYER_BALANCED137_PLAN" \
+  "$TRAFFIC_PLAN" <<'SH'
+set -euo pipefail
+root=$1
+commit=$2
+out_root=$3
+effects=$4
+damage=$5
+healing_frontier=$6
+method_damage=$7
+method_damage_receipt=$8
+frontier=$9
+directional=${10}
+practical=${11}
+trusted=${12}
+full=${13}
+uncentered=${14}
+centered=${15}
+pareto=${16}
+layer_balanced=${17}
+layer_balanced120=${18}
+layer_balanced137=${19}
+traffic=${20}
+tool="$root/tools/summarize_hy3_quant_research.py"
+output="$out_root/conclusion.json"
+markdown="$out_root/conclusion.md"
+receipt="$out_root/receipt.json"
+evidence="$out_root/evidence.sha256"
+[[ $(git -C "$root" rev-parse HEAD) == "$commit" ]]
+[[ -z $(git -C "$root" symbolic-ref -q HEAD || true) ]]
+for path in "$tool" "$effects" "$damage" "$healing_frontier" "$method_damage" \
+  "$method_damage_receipt" "$frontier" "$directional" "$practical" \
+  "$trusted" "$full" "$uncentered" "$centered" "$pareto" "$layer_balanced" \
+  "$layer_balanced120" "$layer_balanced137" "$traffic"; do
+  [[ -f "$path" ]]
+done
+if [[ ! -f "$receipt" ]]; then
+  mkdir -p "$out_root"
+  python3 "$tool" --effects "$effects" --damage "$damage" --frontier "$frontier" \
+    --healing-frontier "$healing_frontier" \
+    --method-damage "$method_damage" --method-damage-receipt "$method_damage_receipt" \
+    --directional-promotion "$directional" --practical-promotion "$practical" \
+    --trusted-report "$trusted" --full-agentic "$full" \
+    --traffic-plan "$traffic" \
+    --plan "uncentered=$uncentered" --plan "centered=$centered" --plan "pareto=$pareto" \
+    --plan "layer_balanced=$layer_balanced" \
+    --plan "layer_balanced120=$layer_balanced120" \
+    --plan "layer_balanced137=$layer_balanced137" \
+    --analysis-commit "$commit" --output "$output" --markdown "$markdown" \
+    --receipt "$receipt"
+  sha256sum "$output" "$markdown" "$receipt" "$tool" >"$evidence"
+fi
+python3 "$tool" --verify-receipt "$receipt"
+sha256sum -c "$evidence"
+SH
+
+finalist=$(ssh "$REMOTE" "python3 - '$combined'" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["format"] == "bw24-full-agentic-comparison-v1"
+assert d["baseline"] == "plain_quant" and d["total_tasks"] == 589
+print(d["candidate"])
+PY
+)
+case "$finalist" in
+  smart100_empirical|smart100_balanced|smart100_rescue)
+    remote_artifact="/scratch/bw24-artifacts-smart100-2605fde/$finalist" ;;
+  smart100_iq3_iq4_q4_empirical)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-99f3dc3/$finalist" ;;
+  smart100_iq3_iq4_q4_centered)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-centered-0f98d7d/$finalist" ;;
+  smart100_iq3_iq4_q4_pareto)
+    remote_artifact="/scratch/bw24-artifacts-iq3-iq4-q4-pareto-6c5c5ea/$finalist" ;;
+  layer_balanced100)
+    remote_artifact="/scratch/bw24-artifacts-layer-balanced100-3db293f/$finalist" ;;
+  layer_balanced120|layer_balanced137)
+    remote_artifact="/scratch/bw24-artifacts-layer-balanced-bridge/$finalist" ;;
+  prune100_joint_heal)
+    remote_artifact="/scratch/bw24-artifacts-100gb-5f02c37/$finalist" ;;
+  traffic_nvfp4_53_q2_139)
+    remote_artifact=/scratch/bw24-artifacts/traffic-nvfp4-53-q2-139 ;;
+  *) die "unexpected full-agentic finalist $finalist" ;;
+esac
+remote_artifact=$(ssh "$REMOTE" "realpath -e -- '$remote_artifact'") \
+  || die "cannot resolve finalist artifact"
+[[ "$remote_artifact" == /opt/dlami/nvme/* ]] \
+  || die "finalist artifact resolved outside the NVMe artifact root"
+
+ssh "$REMOTE" 'set -eu
+for f in \
+  /data/logs/practical-v1/complete \
+  /data/logs/hy3-quant-sensitivity-53de6ca/complete \
+  /data/logs/smart100-build-2605fde/complete \
+  /data/logs/smart100-directional-v1/complete \
+  /data/logs/iq3-iq4-q4-extension-99f3dc3/complete \
+  /data/logs/iq3-iq4-q4-directional-v1/complete \
+  /data/logs/iq3-iq4-q4-pareto-6c5c5ea/complete \
+  /data/logs/iq3-iq4-q4-pareto-directional-v1/complete \
+  /data/logs/practical-iq3-iq4-q4-pareto-v1/complete \
+  /data/logs/layer-balanced100-3db293f/complete \
+  /data/logs/layer-balanced100-directional-v1/complete \
+  /data/logs/practical-layer-balanced100-v1/complete \
+  /data/logs/layer-balanced-bridge-build/complete \
+  /data/logs/layer-balanced-bridge-directional-v1/complete \
+  /data/logs/practical-layer-balanced-bridge-v1/complete \
+  /data/logs/trusted-full-layer-balanced-bridge-v1/complete \
+  /data/logs/full-agentic-layer-balanced-bridge-v1/complete \
+  /data/logs/full-agentic-layer-balanced-bridge-v1/chain-complete; do test -f "$f"; done
+test -z "$(pgrep -x bw24-server || true)"
+test -z "$(pgrep -af "[/]harbor run " || true)"
+test -z "$(docker ps -q)"
+' || die "remote completion or idle-process gate failed"
+
+ALLOCATION_RECEIPTS=(
+  "$BASELINE_ALLOCATION_ANALYSIS/receipt.json"
+  "$IQ4_ALLOCATION_ANALYSIS/receipt.json"
+  "$CENTERED_ALLOCATION_ANALYSIS/allocation-comparison.receipt.json"
+  "$PARETO_ALLOCATION_ANALYSIS/allocation-comparison.receipt.json"
+  "$PAIR_ALLOCATION_ANALYSIS/receipt.json"
+)
+for receipt_path in "${ALLOCATION_RECEIPTS[@]}"; do
+  ssh "$REMOTE" "python3 - '$receipt_path'" <<'PY'
+import hashlib,json,pathlib,re,sys
+
+def sha256(path):
+    digest=hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda:handle.read(1<<20),b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+path=pathlib.Path(sys.argv[1])
+receipt=json.loads(path.read_text())
+assert receipt["format"] == "bw24-hy3-allocation-analysis-receipt-v1"
+assert re.fullmatch(r"[0-9a-f]{40}", receipt["analysis_commit"])
+assert receipt["public_eval_data_used"] is False
+assert receipt["inputs"]
+for item in [*receipt["inputs"], receipt["output"], receipt["script"]]:
+    target=pathlib.Path(item["path"])
+    assert target.is_file()
+    assert sha256(target) == item["sha256"]
+PY
+done
+ssh "$REMOTE" "test -f '$CENTERED_ALLOCATION_ANALYSIS/complete' && \
+  test -s '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256' && \
+  sha256sum -c '$CENTERED_ALLOCATION_ANALYSIS/evidence.sha256'" \
+  >/dev/null || die "centered allocation evidence validation failed"
+ssh "$REMOTE" "test -f '$PARETO_ALLOCATION_ANALYSIS/complete'" \
+  >/dev/null || die "Pareto allocation evidence validation failed"
+
+ssh "$REMOTE" "test -s '$BASE_EFFECT_ANALYSIS/evidence.sha256' && \
+  sha256sum -c '$BASE_EFFECT_ANALYSIS/evidence.sha256'" \
+  >/dev/null || die "base quant effects evidence validation failed"
+ssh "$REMOTE" "test -s '$IQ4_EFFECT_EVIDENCE' && sha256sum -c '$IQ4_EFFECT_EVIDENCE'" \
+  >/dev/null || die "seven-format quant effects evidence validation failed"
+
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  ssh "$REMOTE" "test -e '$root'" || die "missing remote evidence root $root"
+done
+ssh "$REMOTE" "test -f '$remote_artifact/manifest.json'" \
+  || die "missing finalist manifest"
+
+quoted_roots=$(printf ' %q' "${EVIDENCE_ROOTS[@]}" "$remote_artifact")
+remote_bytes=$(ssh "$REMOTE" "du -sb$quoted_roots | awk '{sum += \$1} END {print sum}'")
+[[ "$remote_bytes" =~ ^[1-9][0-9]*$ ]] || die "invalid remote archive size"
+available_bytes=$(df -B1 --output=avail "$LOCAL_ROOT" | tail -1 | tr -d ' ')
+required_bytes=$((remote_bytes + remote_bytes / 10))
+((available_bytes >= required_bytes)) \
+  || die "archive needs $required_bytes bytes with headroom; $available_bytes available"
+
+if [[ "$MODE" == --dry-run ]]; then
+  echo "smart100 finalizer dry-run: ready finalist=$finalist bytes=$remote_bytes required=$required_bytes"
+  exit 0
+fi
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+dest="$LOCAL_ROOT/$stamp"
+mkdir "$dest" "$dest/evidence-root" "$dest/finalist" "$dest/inventories"
+
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  # Preserve each absolute subtree below evidence-root so the per-root verifier addresses the
+  # same path locally (for example, /data/logs -> evidence-root/data/logs).
+  rsync -aR --partial --append-verify "$REMOTE:/./${root#/}/" "$dest/evidence-root/"
+done
+rsync -a --partial --append-verify "$REMOTE:$remote_artifact/" "$dest/finalist/"
+
+verify_tree() {
+  local label=$1 remote_root=$2 local_root=$3
+  local remote_out="$dest/inventories/$label.remote.sha256"
+  local local_out="$dest/inventories/$label.local.sha256"
+  ssh "$REMOTE" "cd '$remote_root' && find . -type f -print0 | sort -z | xargs -0 sha256sum" \
+    >"$remote_out"
+  (cd "$local_root" && find . -type f -print0 | sort -z | xargs -0 sha256sum) \
+    >"$local_out"
+  cmp "$remote_out" "$local_out" || die "$label inventory differs"
+}
+
+index=0
+for root in "${EVIDENCE_ROOTS[@]}"; do
+  verify_tree "evidence-$index" "$root" "$dest/evidence-root$root"
+  index=$((index + 1))
+done
+verify_tree finalist "$remote_artifact" "$dest/finalist"
+
+python3 - "$dest/finalization-receipt.json" "$run_id" "$finalist" "$INSTANCE_ID" \
+  "$REGION" "$remote_bytes" "$dest/inventories" <<'PY'
+import datetime,hashlib,json,pathlib,sys
+out,run_id,finalist,instance,region,remote_bytes,inventory_root=sys.argv[1:]
+root=pathlib.Path(inventory_root)
+inventories={p.name:hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(root.glob("*.remote.sha256"))}
+pathlib.Path(out).write_text(json.dumps({
+ "format":"bw24-smart100-local-finalization-v2",
+ "synced_and_verified_utc":datetime.datetime.now(datetime.UTC).isoformat(),
+ "full_agentic_run_id":run_id,"finalist":finalist,"instance_id":instance,"region":region,
+ "remote_synced_bytes":int(remote_bytes),"remote_inventory_sha256":inventories,
+ "remote_instance_action":"terminate-after-complete-inventory-verification"
+},indent=2,sort_keys=True)+"\n")
+PY
+
+aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+  >"$dest/terminate-response.json"
+aws ec2 wait instance-terminated --region "$REGION" --instance-ids "$INSTANCE_ID"
+final_state=$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].State.Name' --output text)
+[[ "$final_state" == terminated ]] || die "final instance state is $final_state"
+printf '%s\n' "$final_state" >"$dest/instance-final-state.txt"
+echo "smart100 research finalized: finalist=$finalist archive=$dest instance=$final_state"

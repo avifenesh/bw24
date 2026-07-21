@@ -1,0 +1,43 @@
+{
+  "format": "bw24-surprise-practical-confirmation-v1",
+  "generated_utc": "2026-07-12T16:59:53Z",
+  "purpose": "Confirm the unexpectedly strong router-repair ablation on the previously frozen SWE and Terminal panels without rewriting the preregistered directional gate",
+  "selection_boundary": "Frozen after all three HumanEval scores and router-repair MMLU-Pro other were visible, before any practical-panel result",
+  "observed_directional_evidence": {
+    "panel_lock_sha256": "33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b",
+    "human_eval": {
+      "prune100_unhealed": {
+        "score": "27/32",
+        "score_sha256": "a3d46db1d9cff340741b76d5316660fbee0de3b0b5e68cad1496787d6a140fc1"
+      },
+      "prune100_router_repair": {
+        "score": "29/32",
+        "score_sha256": "3d169652a3c2e490b25ebe77cd62d5a4f3cdb57ee5ddf35dfedfa3b202736a88"
+      },
+      "prune100_joint_heal": {
+        "score": "28/32",
+        "score_sha256": "287e5932800722c1bf4d8309fa9c6e85b24480ed7833e64789a92e504caac3e5"
+      }
+    },
+    "router_repair_mmlu_pro_other": {
+      "score": "13/17",
+      "result_sha256": "022bf3ac07544e7436647efa7379cd0169366bb690a40d38750462202c677ef3"
+    }
+  },
+  "candidate_arms": [
+    "prune100_router_repair"
+  ],
+  "max_confirmatory_arms": 1,
+  "strong_compact_arm": "traffic_nvfp4_53_q2_139",
+  "max_solved_deficit_per_panel_vs_strong_compact": 1,
+  "max_100gb_finalists": 1,
+  "ranking": [
+    "practical_total_solved_desc",
+    "practical_worst_panel_solved_desc",
+    "directional_domain_macro_desc",
+    "directional_question_weighted_desc",
+    "logical_model_bytes_asc",
+    "arm_name_asc"
+  ],
+  "public_eval_data_changed_expert_selection_or_model_bytes": false
+}

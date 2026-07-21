@@ -1,0 +1,39 @@
+2026-07-21T12:20:38+03:00
+== before ==
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        15Gi       8.1Gi       592Mi        39Gi        45Gi
+Swap:          8.0Gi       3.9Gi       4.1Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 3.9G   -1
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260
+	Command being timed: "sudo -n swapoff /swap.img"
+	User time (seconds): 0.00
+	System time (seconds): 2.58
+	Percent of CPU this job got: 11%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:23.43
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 6304
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2
+	Minor (reclaiming a frame) page faults: 867
+	Voluntary context switches: 613998
+	Involuntary context switches: 14
+	Swaps: 0
+	File system inputs: 6611592
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+== after ==
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        18Gi       4.9Gi       1.0Gi        39Gi        42Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+541086, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260
+2026-07-21T12:21:01+03:00

@@ -1,0 +1,28 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5080 slots in 5 classes, 13.82 GB / 13.82 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts-batch-v3.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=46.15 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=70 full_accept=3 len_hist=[0, 0, 0, 70] per_slot=[43/70=0.614 12/70=0.171 3/70=0.043] total=58/210=0.276 tok_per_round=1.829
+[spec-phase] draft=1417.8ms (2.0%) verify-issue=68918.4ms (97.9%) verify-wait=45.2ms (0.1%) commit-host=19.7ms (0.0%) rounds=70
+[moe-cache] residency frozen: 5080 slots, 5080 resident blocks; 1623 complete experts, 77 one-projection fragments, 67 two-projection fragments (211 stranded blocks)
+
+[generate]   31 tok in 8.364s = 3.71 tok/s (gen-only; this run's prime 10.692s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=20 full_accept=11 len_hist=[0, 20] per_slot=[11/20=0.550] total=11/20=0.550 tok_per_round=1.550
+[spec-phase] draft=138.3ms (1.4%) verify-issue=9394.5ms (98.4%) verify-wait=12.6ms (0.1%) commit-host=4.0ms (0.0%) rounds=20
+
+[generate_spec K=1] 32 tok in 9.848s = 3.15 tok/s (0.85x vs generate; this run's prime 10.736s)
+  acceptance: 11/20 = 55.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=39922 bytes=109219135488 errors=0 short_reads=0 fallbacks=0 buffer_waits=15516 ring_full=276
+[bw24-cpu-cache] hits=298123 misses=154166 hit_rate=65.91% read_GB=405.721 resident_GB=21.474
+[bw24-cpu-profile] calls=34857 prepare=2.581707s io=40.842475s insert=0.316987s compute=56.462632s read_projections=154166 read_GB=405.721 batch_calls=1500 batch_tokens=3000 batch_items=12802 batch_unique_experts=11580

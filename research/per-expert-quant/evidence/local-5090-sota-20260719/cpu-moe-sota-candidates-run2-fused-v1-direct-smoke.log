@@ -1,0 +1,5 @@
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=direct
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=9 prepare=0.000021s io=0.000000s insert=0.000000s compute=0.004164s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=1 iterations=1 ms/token=0.105484 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116

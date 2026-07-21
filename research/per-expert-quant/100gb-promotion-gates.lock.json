@@ -1,0 +1,58 @@
+{
+  "format": "bw24-100gb-promotion-gates-v1",
+  "generated_utc": "2026-07-12T10:11:00Z",
+  "purpose": "Freeze directional and practical promotion gates before any exact-100GB capability result exists",
+  "panel_lock_sha256": "33ca7c2a86ed52ab3ee06ec408ceda890e50447e5cc4a204a755afcd3368c64b",
+  "directional": {
+    "reference_arm": "traffic_q8_q2_no_prune",
+    "quality_ceiling_arm": "plain_quant",
+    "strong_compact_arm": "traffic_nvfp4_53_q2_139",
+    "candidate_arms": [
+      "prune100_unhealed",
+      "prune100_router_repair",
+      "prune100_joint_heal"
+    ],
+    "hard_logical_byte_ceiling": 100000000000,
+    "require_global_point_estimate_pareto": true,
+    "max_domain_macro_deficit_vs_reference": 0.05,
+    "max_question_weighted_deficit_vs_reference": 0.05,
+    "max_single_task_rate_deficit_vs_reference": 0.20
+  },
+  "healing": {
+    "unhealed_arm": "prune100_unhealed",
+    "router_ablation_arm": "prune100_router_repair",
+    "joint_arm": "prune100_joint_heal",
+    "joint_requires_positive_domain_macro_delta": true,
+    "joint_requires_nonnegative_question_weighted_delta": true,
+    "joint_requires_more_paired_wins_than_losses": true,
+    "max_single_task_rate_deficit_vs_unhealed": 0.10,
+    "router_ablation_is_not_promoted": true
+  },
+  "practical": {
+    "fixed_reference_arms": [
+      "plain_quant",
+      "traffic_nvfp4_53_q2_139"
+    ],
+    "max_100gb_arms": 1,
+    "select_100gb_by": [
+      "domain_macro_desc",
+      "question_weighted_desc",
+      "logical_model_bytes_asc"
+    ],
+    "swe_directional_tasks": 12,
+    "terminal_directional_tasks": 12,
+    "max_solved_deficit_per_panel_vs_strong_compact": 1
+  },
+  "trusted_full": {
+    "max_arms": 3,
+    "required_reference_arm": "plain_quant",
+    "require_directional_pareto": true,
+    "require_practical_gate": true,
+    "candidate_documents_per_arm": 4746,
+    "math_requires_external_networkless_rescore": true,
+    "raw_lm_eval_math_is_forbidden_for_promotion": true,
+    "complete_swe_bench_verified_tasks": 500,
+    "complete_terminal_bench_2_tasks": 89
+  },
+  "public_eval_data_used_for_selection_or_healing": false
+}

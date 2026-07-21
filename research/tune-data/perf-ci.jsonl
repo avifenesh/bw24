@@ -79,3 +79,11 @@
 {"ts":"2026-07-19T08:08:10Z","git":"af714d1","cell":"31b-plain-d1736","toks":38.71,"profile":"performance","load":5.43,"window_clean":true}
 {"ts":"2026-07-19T08:08:10Z","git":"af714d1","cell":"31b-spec-short","toks":104.29,"accept":0.817,"tok_round":3.20,"profile":"performance","load":5.43,"window_clean":true}
 {"ts":"2026-07-19T08:08:10Z","git":"af714d1","cell":"31b-spec-d1736","toks":102.46,"accept":0.817,"tok_round":4.27,"profile":"performance","load":5.43,"window_clean":true}
+{"ts":"2026-07-21T17:44:41Z","git":"95bd8cb","cell":"31b-plain-short","toks":41.01,"profile":"performance","load":6.34,"window_clean":true}
+{"ts":"2026-07-21T17:44:41Z","git":"95bd8cb","cell":"31b-plain-d1736","toks":38.56,"profile":"performance","load":6.34,"window_clean":true}
+{"ts":"2026-07-21T17:44:41Z","git":"95bd8cb","cell":"31b-spec-short","toks":103.65,"accept":0.817,"tok_round":3.20,"profile":"performance","load":6.34,"window_clean":true}
+{"ts":"2026-07-21T17:44:41Z","git":"95bd8cb","cell":"31b-spec-d1736","toks":101.96,"accept":0.817,"tok_round":4.27,"profile":"performance","load":6.34,"window_clean":true}
+{"ts":"2026-07-21T17:53:24Z","git":"95bd8cb","cell":"31b-plain-short","toks":41.02,"profile":"performance","load":6.86,"window_clean":true}
+{"ts":"2026-07-21T17:53:24Z","git":"95bd8cb","cell":"31b-plain-d1736","toks":38.64,"profile":"performance","load":6.86,"window_clean":true}
+{"ts":"2026-07-21T17:53:24Z","git":"95bd8cb","cell":"31b-spec-short","toks":103.97,"accept":0.817,"tok_round":3.20,"profile":"performance","load":6.86,"window_clean":true}
+{"ts":"2026-07-21T17:53:24Z","git":"95bd8cb","cell":"31b-spec-d1736","toks":102.43,"accept":0.817,"tok_round":4.27,"profile":"performance","load":6.86,"window_clean":true}

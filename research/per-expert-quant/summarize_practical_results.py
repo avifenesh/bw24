@@ -11,12 +11,13 @@ import math
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_SHARED_MODEL_BYTES = 24_999_514_624
 SPILL_KEYS = ("reads", "bytes", "errors", "short_reads", "fallbacks", "buffer_waits", "ring_full")
 SHARED_RECEIPT_KEYS = (
-    "panel", "dataset", "base_url", "harbor_version", "bw24_commit",
+    "panel", "dataset", "harbor_version", "bw24_commit",
     "server_binary_sha256", "declared_spill_io", "declared_spill_pread_depth",
     "declared_spill_stats", "declared_serve_spec", "lock_sha256",
 )
@@ -25,6 +26,18 @@ SHARED_RECEIPT_KEYS = (
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def is_agent_timeout(exception: object) -> bool:
+    return (
+        isinstance(exception, dict)
+        and exception.get("exception_type") == "AgentTimeoutError"
+        and isinstance(exception.get("exception_message"), str)
+        and exception["exception_message"].startswith("Agent execution timed out after ")
+        and exception["exception_message"].endswith(" seconds")
+        and "harbor.trial.errors.AgentTimeoutError" in exception.get("exception_traceback", "")
+        and isinstance(exception.get("occurred_at"), str)
+    )
 
 
 def sha256(path: Path) -> str:
@@ -49,6 +62,24 @@ def expected_tasks(lock: dict[str, Any], panel: str) -> dict[str, str]:
     return {row["name"]: row["digest"] for row in lock["terminal_bench_2"]["tasks"]}
 
 
+def normalized_loopback_api_base(value: object) -> str:
+    require(isinstance(value, str), "practical API base is not a string")
+    parsed = urlsplit(value)
+    require(
+        parsed.scheme == "http"
+        and parsed.hostname == "127.0.0.1"
+        and parsed.port is not None
+        and 1 <= parsed.port <= 65535
+        and parsed.path == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+        and parsed.password is None,
+        f"practical API base is not an isolated loopback /v1 endpoint: {value!r}",
+    )
+    return "http://127.0.0.1:{port}/v1"
+
+
 def normalized_harbor_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = copy.deepcopy(config)
     normalized.pop("job_name", None)
@@ -56,6 +87,9 @@ def normalized_harbor_config(config: dict[str, Any]) -> dict[str, Any]:
     agents = normalized.get("agents")
     if isinstance(agents, list) and len(agents) == 1:
         agents[0]["model_name"] = "openai/{arm}"
+        kwargs = agents[0].get("kwargs")
+        if isinstance(kwargs, dict):
+            kwargs["api_base"] = normalized_loopback_api_base(kwargs.get("api_base"))
     return normalized
 
 
@@ -72,6 +106,8 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text())
     require(receipt.get("format") == "bw24-practical-run-v1", f"bad receipt format: {run_dir}")
     require(receipt.get("panel") == panel, f"wrong panel in {run_dir}")
+    actual_api_base = receipt.get("base_url")
+    normalized_loopback_api_base(actual_api_base)
     elapsed = receipt.get("elapsed_seconds")
     require(
         receipt.get("completed_successfully") is True
@@ -104,9 +140,11 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     agent = agents[0]
     require(agent.get("name") == "terminus-2" and agent.get("model_name") == f"openai/{arm}", f"wrong practical agent/model: {run_dir}")
     require(config.get("n_concurrent_trials") == 1, f"wrong Harbor concurrency: {run_dir}")
+    require(config.get("agent_timeout_multiplier") == 4.0, f"wrong Harbor agent timeout multiplier: {run_dir}")
     scaffold = lock["protocol"]["agent_scaffold"]
+    normalized_loopback_api_base(scaffold["api_base"])
     expected_kwargs = {
-        "api_base": scaffold["api_base"], "temperature": scaffold["temperature"],
+        "api_base": actual_api_base, "temperature": scaffold["temperature"],
         "max_turns": scaffold["max_turns"], "parser_name": scaffold["parser_name"],
         "proactive_summarization_threshold": scaffold["proactive_summarization_threshold"],
         "enable_summarize": scaffold["enable_summarize"],
@@ -117,7 +155,10 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
             "max_output_tokens": scaffold["max_output_tokens"],
             "input_cost_per_token": 0, "output_cost_per_token": 0,
         },
-        "llm_call_kwargs": {"max_tokens": scaffold["llm_call_max_tokens"]},
+        "llm_call_kwargs": {
+            "max_tokens": scaffold["llm_call_max_tokens"],
+            "timeout": scaffold["llm_call_timeout_seconds"],
+        },
     }
     require(agent.get("kwargs") == expected_kwargs, f"Harbor agent kwargs differ from lock: {run_dir}")
 
@@ -126,8 +167,7 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     require(isinstance(datasets, list) and len(datasets) == 1, f"expected one Harbor dataset: {run_dir}")
     task_names = datasets[0].get("task_names")
     require(isinstance(task_names, list) and len(task_names) == len(expected), f"wrong task count in Harbor config: {run_dir}")
-    expected_short = [name.split("/", 1)[1] for name in expected]
-    require(task_names == expected_short, f"Harbor task order differs from lock: {run_dir}")
+    require(task_names == list(expected), f"Harbor task order differs from lock: {run_dir}")
     suite = lock["swe_bench_verified"] if panel == "swe" else lock["terminal_bench_2"]
     expected_dataset_name = suite["harbor_dataset"] if panel == "swe" else suite["dataset"]
     expected_dataset_ref = suite["harbor_dataset_digest"] if panel == "swe" else suite["dataset_digest"]
@@ -139,17 +179,9 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
     job_result = json.loads(job_result_path.read_text())
     stats = job_result.get("stats", {})
     require(job_result.get("n_total_trials") == len(expected), f"wrong total trials: {run_dir}")
-    require(
-        stats.get("n_completed_trials") == len(expected)
-        and stats.get("n_errored_trials") == 0
-        and stats.get("n_cancelled_trials") == 0
-        and stats.get("n_running_trials", 0) == 0
-        and stats.get("n_pending_trials", 0) == 0
-        and stats.get("n_retries") == 0,
-        f"Harbor job has incomplete/error/retry trials: {run_dir}",
-    )
-
     rewards: dict[str, float] = {}
+    raw_verifier_rewards: dict[str, float] = {}
+    timeouts: dict[str, bool] = {}
     trial_paths = sorted(path for path in job_dir.iterdir() if path.is_dir())
     require(len(trial_paths) == len(expected), f"wrong number of trial directories: {run_dir}")
     for trial_dir in trial_paths:
@@ -161,16 +193,43 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         require(task_name not in rewards, f"duplicate practical task {task_name}: {run_dir}")
         task_id = result.get("task_id", {})
         require(task_id.get("ref") == expected[task_name], f"task digest differs for {task_name}: {run_dir}")
-        require(result.get("exception_info") is None, f"trial exception for {task_name}: {run_dir}")
+        exception = result.get("exception_info")
+        timed_out = is_agent_timeout(exception)
+        require(
+            exception is None or timed_out,
+            f"non-timeout trial exception for {task_name}: {run_dir}",
+        )
         agent_info = result.get("agent_info", {})
         require(agent_info.get("name") == "terminus-2", f"wrong trial agent for {task_name}: {run_dir}")
-        require(agent_info.get("model_info", {}).get("name") == f"openai/{arm}", f"wrong trial model for {task_name}: {run_dir}")
+        trial_model = agent_info.get("model_info", {})
+        require(
+            trial_model.get("name") == arm and trial_model.get("provider") == "openai",
+            f"wrong trial model for {task_name}: {run_dir}",
+        )
         reward = result.get("verifier_result", {}).get("rewards", {}).get("reward")
         require(isinstance(reward, (int, float)) and not isinstance(reward, bool) and math.isfinite(float(reward)) and 0 <= reward <= 1, f"invalid reward for {task_name}: {run_dir}")
         require(isinstance(result.get("started_at"), str) and isinstance(result.get("finished_at"), str), f"missing trial timestamps for {task_name}: {run_dir}")
-        rewards[task_name] = float(reward)
+        raw_verifier_rewards[task_name] = float(reward)
+        rewards[task_name] = 0.0 if timed_out else float(reward)
+        timeouts[task_name] = timed_out
     require(rewards.keys() == expected.keys(), f"practical tasks differ from lock: {run_dir}")
     rewards = {task_name: rewards[task_name] for task_name in expected}
+    raw_verifier_rewards = {task_name: raw_verifier_rewards[task_name] for task_name in expected}
+    timeouts = {task_name: timeouts[task_name] for task_name in expected}
+    timeout_count = sum(timeouts.values())
+    timeout_reward_overrides = sum(
+        timeouts[task_name] and raw_verifier_rewards[task_name] != 0.0
+        for task_name in expected
+    )
+    require(
+        stats.get("n_completed_trials") == len(expected)
+        and stats.get("n_errored_trials") == timeout_count
+        and stats.get("n_cancelled_trials") == 0
+        and stats.get("n_running_trials", 0) == 0
+        and stats.get("n_pending_trials", 0) == 0
+        and stats.get("n_retries") == 0,
+        f"Harbor job completion/error accounting differs: {run_dir}",
+    )
 
     return {
         "arm": arm,
@@ -179,7 +238,12 @@ def load_run(run_dir: Path, lock: dict[str, Any], panel: str) -> dict[str, Any]:
         "receipt": receipt,
         "normalized_config": normalized_harbor_config(config),
         "rewards": rewards,
+        "raw_verifier_rewards": raw_verifier_rewards,
+        "timeouts": timeouts,
+        "timeout_count": timeout_count,
+        "timeout_reward_override_count": timeout_reward_overrides,
         "mean_reward": sum(rewards.values()) / len(rewards),
+        "raw_verifier_mean_reward": sum(raw_verifier_rewards.values()) / len(raw_verifier_rewards),
         "elapsed_seconds": float(elapsed),
     }
 
@@ -205,20 +269,37 @@ def build_report(baseline_dir: Path, candidate_dir: Path, lock_path: Path, panel
             losses += 1
         else:
             ties += 1
-        tasks.append({"task": task_name, "baseline_reward": base, "candidate_reward": cand, "delta": delta})
+        tasks.append({
+            "task": task_name, "baseline_reward": base, "candidate_reward": cand,
+            "delta": delta, "baseline_timed_out": baseline["timeouts"][task_name],
+            "candidate_timed_out": candidate["timeouts"][task_name],
+            "baseline_raw_verifier_reward": baseline["raw_verifier_rewards"][task_name],
+            "candidate_raw_verifier_reward": candidate["raw_verifier_rewards"][task_name],
+        })
     size_reduction = 1.0 - candidate["logical_model_bytes"] / baseline["logical_model_bytes"]
     return {
         "format": "bw24-practical-comparison-v1",
         "panel": panel,
         "n_tasks": len(tasks),
-        "baseline": {key: baseline[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds")},
-        "candidate": {key: candidate[key] for key in ("arm", "artifact_bytes", "logical_model_bytes", "mean_reward", "elapsed_seconds")},
+        "baseline": {key: baseline[key] for key in (
+            "arm", "artifact_bytes", "logical_model_bytes", "mean_reward",
+            "raw_verifier_mean_reward", "elapsed_seconds", "timeout_count",
+            "timeout_reward_override_count",
+        )},
+        "candidate": {key: candidate[key] for key in (
+            "arm", "artifact_bytes", "logical_model_bytes", "mean_reward",
+            "raw_verifier_mean_reward", "elapsed_seconds", "timeout_count",
+            "timeout_reward_override_count",
+        )},
         "candidate_mean_delta": candidate["mean_reward"] - baseline["mean_reward"],
         "candidate_size_reduction": size_reduction,
         "paired_wins": wins, "paired_losses": losses, "paired_ties": ties,
         "exact_sign_p": exact_sign_p(wins, losses),
         "tasks": tasks,
-        "note": "Directional matched panel; not evidence of full-benchmark equivalence.",
+        "note": (
+            "Directional matched panel; not evidence of full-benchmark equivalence. "
+            "AgentTimeoutError tasks score zero; late verifier rewards remain recorded as raw provenance."
+        ),
     }
 
 
@@ -227,10 +308,10 @@ def markdown(report: dict[str, Any]) -> str:
     lines = [
         f"# Practical {report['panel']} comparison",
         "",
-        "| Arm | Logical bytes | Mean reward | Wall hours |",
-        "|---|---:|---:|---:|",
-        f"| {base['arm']} | {base['logical_model_bytes']:,} | {base['mean_reward']:.3f} | {base['elapsed_seconds']/3600:.2f} |",
-        f"| {cand['arm']} | {cand['logical_model_bytes']:,} | {cand['mean_reward']:.3f} | {cand['elapsed_seconds']/3600:.2f} |",
+        "| Arm | Logical bytes | Mean reward | Timeouts | Wall hours |",
+        "|---|---:|---:|---:|---:|",
+        f"| {base['arm']} | {base['logical_model_bytes']:,} | {base['mean_reward']:.3f} | {base['timeout_count']} | {base['elapsed_seconds']/3600:.2f} |",
+        f"| {cand['arm']} | {cand['logical_model_bytes']:,} | {cand['mean_reward']:.3f} | {cand['timeout_count']} | {cand['elapsed_seconds']/3600:.2f} |",
         "",
         f"Candidate delta: **{report['candidate_mean_delta']:+.3f}**; size reduction: **{report['candidate_size_reduction']:.2%}**; paired W/L/T: **{report['paired_wins']}/{report['paired_losses']}/{report['paired_ties']}**; exact sign p={report['exact_sign_p']:.4f}.",
         "",
@@ -257,11 +338,12 @@ def self_test() -> None:
         root = Path(tmp)
         lock = {
             "protocol": {"agent_scaffold": {
-                "api_base": "http://server/v1", "temperature": 0, "max_turns": 2,
+                "api_base": "http://127.0.0.1:8080/v1", "temperature": 0, "max_turns": 2,
                 "parser_name": "json", "proactive_summarization_threshold": 1,
                 "enable_summarize": True, "store_all_messages": True,
                 "record_terminal_session": True, "max_input_tokens": 8,
                 "max_output_tokens": 2, "llm_call_max_tokens": 2,
+                "llm_call_timeout_seconds": 7200,
             }},
             "terminal_bench_2": {"dataset": "terminal", "dataset_digest": "digest", "tasks": [
                 {"name": "terminal-bench/a", "digest": "sha256:a"},
@@ -271,13 +353,17 @@ def self_test() -> None:
         lock_path = root / "lock.json"
         lock_path.write_text(json.dumps(lock))
 
-        def make_run(arm: str, rewards: list[float], artifact_bytes: int) -> Path:
+        def make_run(
+            arm: str, rewards: list[float], artifact_bytes: int,
+            timed_out: set[str] | None = None, port: int = 8080,
+        ) -> Path:
+            timed_out = timed_out or set()
             run = root / arm
             job = run / "jobs" / "run"
             job.mkdir(parents=True)
             receipt = {
                 "format": "bw24-practical-run-v1", "arm": arm, "panel": "terminal",
-                "dataset": "terminal@digest", "base_url": "http://server/v1",
+                "dataset": "terminal@digest", "base_url": f"http://127.0.0.1:{port}/v1",
                 "harbor_version": "0.18.0", "bw24_commit": "commit",
                 "server_binary_sha256": "server", "declared_spill_io": "worker",
                 "declared_spill_pread_depth": "16", "declared_spill_stats": "1",
@@ -302,20 +388,23 @@ def self_test() -> None:
             (run / "run-metadata.json").write_text(json.dumps(receipt))
             config = {
                 "n_concurrent_trials": 1,
+                "agent_timeout_multiplier": 4.0,
                 "agents": [{"name": "terminus-2", "model_name": f"openai/{arm}", "kwargs": {
-                    "api_base": "http://server/v1", "temperature": 0, "max_turns": 2,
+                    "api_base": f"http://127.0.0.1:{port}/v1", "temperature": 0, "max_turns": 2,
                     "parser_name": "json", "proactive_summarization_threshold": 1,
                     "enable_summarize": True, "store_all_messages": True,
                     "record_terminal_session": True,
                     "model_info": {"max_input_tokens": 8, "max_output_tokens": 2,
                                    "input_cost_per_token": 0, "output_cost_per_token": 0},
-                    "llm_call_kwargs": {"max_tokens": 2},
+                    "llm_call_kwargs": {"max_tokens": 2, "timeout": 7200},
                 }}],
-                "datasets": [{"name": "terminal", "ref": "digest", "task_names": ["a", "b"]}],
+                "datasets": [{"name": "terminal", "ref": "digest", "task_names": [
+                    "terminal-bench/a", "terminal-bench/b"
+                ]}],
             }
             (run / "resolved-harbor-config.json").write_text(json.dumps(config))
             (job / "result.json").write_text(json.dumps({
-                "n_total_trials": 2, "stats": {"n_completed_trials": 2, "n_errored_trials": 0,
+                "n_total_trials": 2, "stats": {"n_completed_trials": 2, "n_errored_trials": len(timed_out),
                 "n_cancelled_trials": 0, "n_retries": 0},
             }))
             for name, digest, reward in zip(("a", "b"), ("sha256:a", "sha256:b"), rewards):
@@ -323,18 +412,41 @@ def self_test() -> None:
                 trial.mkdir()
                 (trial / "result.json").write_text(json.dumps({
                     "task_name": f"terminal-bench/{name}", "task_id": {"ref": digest},
-                    "exception_info": None, "agent_info": {"name": "terminus-2", "model_info": {"name": f"openai/{arm}"}},
+                    "exception_info": ({
+                        "exception_type": "AgentTimeoutError",
+                        "exception_message": "Agent execution timed out after 60.0 seconds",
+                        "exception_traceback": "harbor.trial.errors.AgentTimeoutError: timeout",
+                        "occurred_at": "now",
+                    } if name in timed_out else None),
+                    "agent_info": {"name": "terminus-2", "model_info": {
+                        "name": arm, "provider": "openai",
+                    }},
                     "verifier_result": {"rewards": {"reward": reward}},
                     "started_at": "start", "finished_at": "finish",
                 }))
             return run
 
-        baseline = make_run("plain", [0, 1], 100)
-        candidate = make_run("candidate", [1, 1], 80)
+        baseline = make_run("plain", [1, 1], 100, {"a"}, port=8080)
+        candidate = make_run("candidate", [1, 1], 80, port=8082)
         report = build_report(baseline, candidate, lock_path, "terminal")
         assert report["candidate_mean_delta"] == 0.5
         assert report["paired_wins"] == 1 and report["paired_losses"] == 0
+        assert report["baseline"]["timeout_count"] == 1
+        assert report["baseline"]["timeout_reward_override_count"] == 1
+        assert report["baseline"]["raw_verifier_mean_reward"] == 1.0
+        assert report["tasks"][0]["baseline_raw_verifier_reward"] == 1.0
+        assert report["tasks"][0]["baseline_reward"] == 0.0
         assert "Directional matched panel" in markdown(report)
+        candidate_receipt = candidate / "run-metadata.json"
+        payload = json.loads(candidate_receipt.read_text())
+        payload["base_url"] = "http://example.com/v1"
+        candidate_receipt.write_text(json.dumps(payload))
+        try:
+            build_report(baseline, candidate, lock_path, "terminal")
+        except ValueError as exc:
+            assert "isolated loopback" in str(exc)
+        else:
+            raise AssertionError("non-loopback practical endpoint was accepted")
     print("practical result summarizer self-test: PASS")
 
 

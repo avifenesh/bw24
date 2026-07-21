@@ -1,0 +1,25 @@
+	Command being timed: "/usr/bin/c++ -O3 -march=native -fPIC -shared -fopenmp tools/bw24_cpu_experts.cpp -I/home/avifenesh/projects/llama.cpp/ggml/include -L/home/avifenesh/projects/llama.cpp/build/bin -Wl,-rpath,/home/avifenesh/projects/llama.cpp/build/bin -lggml-cpu -lggml-base -o /tmp/libbw24-cpu-experts-winner.so"
+	User time (seconds): 1.15
+	System time (seconds): 0.11
+	Percent of CPU this job got: 92%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:01.37
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 205200
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 171
+	Minor (reclaiming a frame) page faults: 57408
+	Voluntary context switches: 653
+	Involuntary context switches: 16
+	Swaps: 0
+	File system inputs: 102208
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+c50856cb6df70520f2b3fa05a953a539fed9e3d8e20b17b498f7e3785ae11265  tools/bw24_cpu_experts.cpp
+a850c57f94ec7d0ba5656c3ae860dd02edc3e1b801e43df529ecad48f18981e1  /tmp/libbw24-cpu-experts-winner.so

@@ -1,0 +1,5 @@
+q2_K shape=1536x4096 threads=1 iterations=200 repack_ms=1.2706 rowwise_ms=0.0910 interleaved_ms=0.1101 speedup=0.826x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07
+q2_K shape=1536x4096 threads=2 iterations=200 repack_ms=1.1014 rowwise_ms=0.0502 interleaved_ms=0.0592 speedup=0.848x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07
+q2_K shape=1536x4096 threads=4 iterations=200 repack_ms=1.1107 rowwise_ms=0.0287 interleaved_ms=0.0310 speedup=0.925x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07
+q2_K shape=1536x4096 threads=6 iterations=200 repack_ms=1.2414 rowwise_ms=0.0217 interleaved_ms=0.0235 speedup=0.925x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07
+q2_K shape=1536x4096 threads=8 iterations=200 repack_ms=1.2497 rowwise_ms=0.0189 interleaved_ms=0.0200 speedup=0.941x bit_equal=506/4096 max_abs=1.90734863e-06 mean_abs=3.1968375e-07

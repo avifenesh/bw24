@@ -8,11 +8,11 @@
 //! Cache snapshot/rollback lives in cache.rs (§D.4). The MTP head uses its OWN scratch KV (§D.6),
 //! PERSISTENT over the committed sequence (see `MtpScratch`).
 
-use cudarc::driver::CudaSlice;
-use crate::Engine;
-use crate::hybrid::{HybridModel, Mixer, FullAttnLayer, LinearAttnLayer, MtpHead};
 use crate::cache::{Cache, KvLayer};
 use crate::forward::argmax;
+use crate::hybrid::{FullAttnLayer, HybridModel, LinearAttnLayer, Mixer, MtpHead};
+use crate::Engine;
+use cudarc::driver::CudaSlice;
 
 /// H-SEED CONVENTION (BW24_SPEC_HPOST=1): feed the MTP head the POST-norm hidden — trunk rows
 /// hand over `output_norm(x)` and the draft chain recurrence hands over `shared_head_norm(h_nextn)`
@@ -23,7 +23,11 @@ use crate::forward::argmax;
 /// the verify's job either way; acceptance arbitrates. OnceLock: read once, hot-loop safe.
 pub(crate) fn spec_hpost() -> bool {
     static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *H.get_or_init(|| std::env::var("BW24_SPEC_HPOST").map(|v| v != "0").unwrap_or(false))
+    *H.get_or_init(|| {
+        std::env::var("BW24_SPEC_HPOST")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
 }
 
 /// LEAN VERIFY (default ON since 2026-07-08; BW24_SPEC_LEAN=0 reverts — close35 lane): the verify m-scaling
@@ -40,7 +44,11 @@ pub(crate) fn spec_lean() -> bool {
     // DEFAULT ON since 2026-07-08 (BW24_SPEC_LEAN=0 reverts): bit-identical (buffers fully
     // overwritten; gates green incl maxdiff-identical run-gen) and measured +2.4% e2e p3 /
     // +1.5% p2 at the daily 35B config. m=1 verify now costs eager-decode parity.
-    *L.get_or_init(|| std::env::var("BW24_SPEC_LEAN").map(|v| v != "0").unwrap_or(true))
+    *L.get_or_init(|| {
+        std::env::var("BW24_SPEC_LEAN")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 
 /// SMALL-M BATCHED VERIFY (default ON since 2026-07-09; BW24_SPEC_M2=0 reverts — lane/spec-m2): extend the
@@ -61,7 +69,11 @@ pub(crate) fn spec_m2() -> bool {
     // batched linear arm (ring-roll copies, zero new FP order) + MoE dev-rows kernels
     // (grid.z=token, 4 launches/layer at any verify t). Acceptance bit-identical at every K;
     // 35B p2 +3.4% / p3 +3.6%; the profitable-K plateau widens (new optimum K=3 at 223).
-    *M.get_or_init(|| std::env::var("BW24_SPEC_M2").map(|v| v != "0").unwrap_or(true))
+    *M.get_or_init(|| {
+        std::env::var("BW24_SPEC_M2")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 pub(crate) fn spec_stream() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -69,12 +81,25 @@ pub(crate) fn spec_stream() -> bool {
 }
 pub(crate) fn spec_stream_m() -> usize {
     static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *M.get_or_init(|| std::env::var("BW24_SPEC_STREAM_M").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(4))
+    *M.get_or_init(|| {
+        std::env::var("BW24_SPEC_STREAM_M")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4)
+    })
 }
 pub(crate) fn spec_devacc() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("BW24_SPEC_DEVACC").as_deref() == Ok("1"))
+}
+
+/// Keep the full token-embedding table in host memory and upload only the rows needed by each
+/// MTP/verify step. This is an exact memory-capacity seam for very large BF16 vocab tables: host
+/// gather expands the same source bits to f32, and only O(T*n_embd) bytes cross PCIe per step.
+/// CUDA-graph/round-stream draft paths require device token ids and therefore stay disabled.
+pub(crate) fn spec_host_embd() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_SPEC_HOST_EMBD").as_deref() == Ok("1"))
 }
 
 /// VERIFY-TIER TRUNK LAUNCH-FUSION (default ON since 2026-07-09; BW24_SPEC_FUSED_T=0 reverts — lane/close35b): extend
@@ -90,13 +115,21 @@ pub(crate) fn spec_fused_t() -> bool {
     // DEFAULT ON since 2026-07-09 (BW24_SPEC_FUSED_T=0 reverts): verify t=2-4 trunk launch-fusion
     // (fused2/fused3 Q8_0 batched twins, bit-identical by construction — m=1 block-offset split on
     // the batched body). m=2 marginal token 2117->1762us; 35B daily: p3 +3.7% (crosses llama), p2 +5%.
-    *F.get_or_init(|| std::env::var("BW24_SPEC_FUSED_T").map(|v| v != "0").unwrap_or(true))
+    *F.get_or_init(|| {
+        std::env::var("BW24_SPEC_FUSED_T")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 
 /// zeros/uninit switch for verify-path buffers that are FULLY OVERWRITTEN before any read.
 /// Only call this on such buffers — the lean contract is "identical bytes by construction".
 fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-    if spec_lean() { e.uninit(n) } else { e.zeros(n) }
+    if spec_lean() {
+        e.uninit(n)
+    } else {
+        e.zeros(n)
+    }
 }
 
 /// Scratch KV for the MTP block (one full-attn layer).
@@ -122,9 +155,9 @@ fn vbuf(e: &Engine, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Erro
 pub struct SpecSampling {
     pub temp: f32,
     pub seed: u64,
-    pub top_k: i32,        // 0 = off
-    pub top_p: f32,        // 1.0 = off
-    pub min_p: f32,        // 0.0 = off
+    pub top_k: i32,            // 0 = off
+    pub top_p: f32,            // 1.0 = off
+    pub min_p: f32,            // 0.0 = off
     pub penalty_last_n: usize, // 0 = penalties off
     pub penalty_repeat: f32,
     pub penalty_freq: f32,
@@ -151,7 +184,9 @@ pub struct SpecSession {
 }
 impl SpecSession {
     /// Context capacity of the session's caches (the server's ContextFull guard).
-    pub fn cache_max_ctx(&self) -> usize { self.cache.max_ctx }
+    pub fn cache_max_ctx(&self) -> usize {
+        self.cache.max_ctx
+    }
 }
 
 pub(crate) struct MtpScratch {
@@ -164,15 +199,20 @@ pub(crate) struct MtpScratch {
     cap: usize,
 }
 impl MtpScratch {
-    fn new(e: &Engine, cfg: &bw24_gguf::config::ModelConfig, cap: usize,
-           geom: Option<&crate::hybrid::DraftGeom>)
-           -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(
+        e: &Engine,
+        cfg: &bw24_gguf::config::ModelConfig,
+        cap: usize,
+        geom: Option<&crate::hybrid::DraftGeom>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // student draft heads carry fewer KV heads (head_dim unchanged) -> smaller scratch rows.
         let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
         let head_dim_k = cfg.head_dim_k as usize;
         let head_dim_v = cfg.head_dim_v as usize;
-        assert!(head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
-                "KVQUANT requires head_dim%32==0 (MTP scratch)");
+        assert!(
+            head_dim_k % 32 == 0 && head_dim_v % 32 == 0,
+            "KVQUANT requires head_dim%32==0 (MTP scratch)"
+        );
         let kv_dim_k = head_dim_k * n_head_kv;
         let kv_dim_v = head_dim_v * n_head_kv;
         // env-selected KV formats (default 34/24). The fp8-KV arm (BW24_KV_FP8) deliberately
@@ -182,11 +222,19 @@ impl MtpScratch {
         let (kbb, vbb) = crate::kv_blk_bytes();
         let k_tok_bytes = (kv_dim_k / 32) * kbb;
         let v_tok_bytes = (kv_dim_v / 32) * vbb;
-        Ok(MtpScratch { kv: KvLayer {
-            k: e.alloc_u8(cap * k_tok_bytes)?, v: e.alloc_u8(cap * v_tok_bytes)?,
-            kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
-            len_d: e.htod_i32(&[0])?,
-        }, cap })
+        Ok(MtpScratch {
+            kv: KvLayer {
+                k: e.alloc_u8(cap * k_tok_bytes)?,
+                v: e.alloc_u8(cap * v_tok_bytes)?,
+                kv_dim_k,
+                kv_dim_v,
+                k_tok_bytes,
+                v_tok_bytes,
+                len: 0,
+                len_d: e.htod_i32(&[0])?,
+            },
+            cap,
+        })
     }
     /// Set BOTH length counters: the host mirror AND the device len_d the captured append/fa read
     /// (a 4-byte in-place htod — the counter pointer is baked into the graph, never realloc'd).
@@ -213,18 +261,23 @@ impl MtpScratch {
 /// Full-attn layers need nothing: their verify KV rows are bit-identical to eager's (the
 /// decode-exact contract; verify-probe pins it), so rollback = len truncation.
 struct GdnStash {
-    qkv_mixed: CudaSlice<f32>,                     // [t, conv_dim] token-major (conv input)
-    q_l2: CudaSlice<f32>, k_l2: CudaSlice<f32>, v_g: CudaSlice<f32>,  // [t, num_v, d_state]
-    g_log: CudaSlice<f32>, beta: CudaSlice<f32>,   // [t, num_v]
+    qkv_mixed: CudaSlice<f32>, // [t, conv_dim] token-major (conv input)
+    q_l2: CudaSlice<f32>,
+    k_l2: CudaSlice<f32>,
+    v_g: CudaSlice<f32>, // [t, num_v, d_state]
+    g_log: CudaSlice<f32>,
+    beta: CudaSlice<f32>, // [t, num_v]
 }
 struct VerifyCkpt {
-    gdn: Vec<Option<GdnStash>>,                    // [n_layer], Some iff batched linear path ran
+    gdn: Vec<Option<GdnStash>>, // [n_layer], Some iff batched linear path ran
     cols: Vec<Option<Vec<(CudaSlice<f32>, CudaSlice<f32>)>>>, // [n_layer][col] = (conv, ssm) after col
 }
 impl VerifyCkpt {
     fn new(n_layer: usize) -> Self {
-        VerifyCkpt { gdn: (0..n_layer).map(|_| None).collect(),
-                     cols: (0..n_layer).map(|_| None).collect() }
+        VerifyCkpt {
+            gdn: (0..n_layer).map(|_| None).collect(),
+            cols: (0..n_layer).map(|_| None).collect(),
+        }
     }
 }
 
@@ -238,10 +291,16 @@ impl HybridModel {
     /// loop only needs argmax — paired with `argmax_token_device` this cuts the ~600KB logits
     /// transfer + host argmax per draft token from the K-token draft chain.
     #[allow(clippy::too_many_arguments)]
-    fn mtp_head_forward_dev(&self, e: &Engine, mtp: &MtpHead, e_tok: u32, h_seed: &CudaSlice<f32>,
-                            scratch: &mut MtpScratch, mtp_pos: usize,
-                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize)
-                            -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    fn mtp_head_forward_dev(
+        &self,
+        e: &Engine,
+        mtp: &MtpHead,
+        e_tok: u32,
+        h_seed: &CudaSlice<f32>,
+        scratch: &mut MtpScratch,
+        mtp_pos: usize,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+    ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         // Distilled-student geometry: the block runs at the INNER width `di` (eh_proj out /
@@ -250,9 +309,12 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let pos_d = e.htod_i32(&[mtp_pos as i32])?;
 
-        // op A: embed the predict-from token ON DEVICE (was host dequant + 14-20KB htod per draft
-        // token — with the resident table the transfer is one 4B token id).
-        let e_emb = e.embed_gather_device_t(embd_gpu, &[e_tok], n_embd, embd_qt, embd_rb)?;
+        // op A: a resident table transfers one 4B token id. The exact host-row capacity path
+        // expands this one row on CPU and transfers n_embd f32 values instead.
+        let e_emb = match embd_dev {
+            Some((g, qt, rb)) => e.embed_gather_device_t(g, &[e_tok], n_embd, qt, rb)?,
+            None => e.htod(&self.embd.gather(n_embd, &[e_tok]))?,
+        };
 
         // op 1/2: e_norm = RMSNorm(e, enorm); h_norm = RMSNorm(h_seed, hnorm)
         let mut e_norm = e.zeros(n_embd)?;
@@ -278,12 +340,14 @@ impl HybridModel {
         // advances only the device counter).
         let attn_out = match &mtp.mixer {
             Mixer::Full(fa) => {
-                let out = self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch,
-                                                mtp.geom.as_ref())?;
+                let out =
+                    self.mtp_full_attn_dc(e, fa, &a_norm, &pos_d, scratch, mtp.geom.as_ref())?;
                 scratch.kv.len += 1;
                 out
             }
-            Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
+            Mixer::Linear(_) => {
+                panic!("MTP block is full-attn in qwen35; linear MTP not supported")
+            }
         };
 
         // op 7: x1 = inpSA + attn_out
@@ -296,11 +360,18 @@ impl HybridModel {
 
         // op 9: FFN (Dense or MoE) — same as the trunk decode FFN
         let ffn_out = match &mtp.ffn {
-            crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+            crate::hybrid::Ffn::Dense {
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+            } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
                     let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
-                    (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
+                    (
+                        e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?,
+                        e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?,
+                    )
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
@@ -327,7 +398,14 @@ impl HybridModel {
         // op 11: final = RMSNorm(h_nextn, shared_head_norm OR output_norm)
         let final_norm = mtp.shared_head_norm.as_ref().unwrap_or(&self.output_norm);
         let mut final_h = e.zeros(n_embd)?;
-        e.rms_norm(&h_nextn, final_norm.float_data(), &mut final_h, n_embd, 1, eps)?;
+        e.rms_norm(
+            &h_nextn,
+            final_norm.float_data(),
+            &mut final_h,
+            n_embd,
+            1,
+            eps,
+        )?;
 
         // op 12: draft_logits = (shared_head_head OR output) @ final — stays ON DEVICE.
         let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
@@ -346,10 +424,15 @@ impl HybridModel {
     /// (fa_decode_dc bit-correct-for-any-t_kv<=bucket_max contract). The eager path uses the SAME
     /// launcher with the SAME bucket_max -> identical dispatch -> bit-identical draft tokens (the
     /// graph-vs-eager parity gate). Host len is NOT advanced here (graph contract); callers mirror.
-    fn mtp_full_attn_dc(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                        pos_d: &CudaSlice<i32>, scratch: &mut MtpScratch,
-                        geom: Option<&crate::hybrid::DraftGeom>)
-                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    fn mtp_full_attn_dc(
+        &self,
+        e: &Engine,
+        fa: &FullAttnLayer,
+        h: &CudaSlice<f32>,
+        pos_d: &CudaSlice<i32>,
+        scratch: &mut MtpScratch,
+        geom: Option<&crate::hybrid::DraftGeom>,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = geom.map(|g| g.n_head).unwrap_or(cfg.n_head as usize);
         let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
@@ -357,14 +440,23 @@ impl HybridModel {
         let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
         let n_embd = geom.map(|g| g.d_inner).unwrap_or(cfg.n_embd as usize);
-        let bucket_max = scratch.cap;   // < 96 guaranteed by the graph_draft eligibility gate
+        let bucket_max = scratch.cap; // < 96 guaranteed by the graph_draft eligibility gate
 
-        let (qf, mut k, v) = if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
-            let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
-            (e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?, e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?)
-        } else {
-            (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?, e.matmul(&fa.wv, h, 1)?)
-        };
+        let (qf, mut k, v) =
+            if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+                let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
+                (
+                    e.matmul_pre(&fa.wq, &hq, &hd, h, 1)?,
+                    e.matmul_pre(&fa.wk, &hq, &hd, h, 1)?,
+                    e.matmul_pre(&fa.wv, &hq, &hd, h, 1)?,
+                )
+            } else {
+                (
+                    e.matmul(&fa.wq, h, 1)?,
+                    e.matmul(&fa.wk, h, 1)?,
+                    e.matmul(&fa.wv, h, 1)?,
+                )
+            };
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
         let gated = self.cfg.attn_out_gate();
         let (mut q, gate) = if gated {
@@ -372,23 +464,59 @@ impl HybridModel {
             let mut gate = e.zeros(n_head * head_dim)?;
             e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, 1)?;
             (q, Some(gate))
-        } else { (qf, None) };
+        } else {
+            (qf, None)
+        };
 
         let mut qn = e.zeros(n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head, eps)?;
         q = qn;
         let mut kn = e.zeros(n_head_kv * head_dim)?;
-        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv, eps)?;
+        e.rms_norm(
+            &k,
+            fa.k_norm.float_data(),
+            &mut kn,
+            head_dim,
+            n_head_kv,
+            eps,
+        )?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, 1, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, 1, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(
+            &mut q,
+            pos_d,
+            head_dim,
+            rope_dims,
+            n_head,
+            1,
+            cfg.rope_freq_base,
+            1.0,
+        )?;
+        e.rope_neox(
+            &mut k,
+            pos_d,
+            head_dim,
+            rope_dims,
+            n_head_kv,
+            1,
+            cfg.rope_freq_base,
+            1.0,
+        )?;
 
         let kv = &mut scratch.kv;
         // append at the DEVICE slot (kv.len_d == old len), then advance the counter in-graph.
-        e.append_kv_quantized_dc(&k, &v, &mut kv.k, &mut kv.v, &kv.len_d,
-                                 kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
-                                 false)?;
+        e.append_kv_quantized_dc(
+            &k,
+            &v,
+            &mut kv.k,
+            &mut kv.v,
+            &kv.len_d,
+            kv.kv_dim_k,
+            kv.kv_dim_v,
+            kv.k_tok_bytes,
+            kv.v_tok_bytes,
+            false,
+        )?;
         e.inc_seqlen(&mut kv.len_d)?;
         // full-buffer views (any in-round t_kv stays in range on replay); the kernel bounds the
         // key range from the device counter.
@@ -396,8 +524,10 @@ impl HybridModel {
         let v_view = e.view_u8(&kv.v, kv.v.len());
         let (ktb, vtb) = (kv.k_tok_bytes, kv.v_tok_bytes);
         let mut attn = e.zeros(n_head * head_dim)?;
-        e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                       &kv.len_d, bucket_max, scale, ktb, vtb, false)?;
+        e.fa_decode_dc(
+            &q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv, &kv.len_d, bucket_max,
+            scale, ktb, vtb, false,
+        )?;
 
         let attn_g = match &gate {
             Some(gate) => {
@@ -421,10 +551,16 @@ impl HybridModel {
     /// rope(token@p) = p+1. Runs at round boundaries OUTSIDE the captured graph in BOTH draft
     /// modes -> draft parity by construction. Caller must have scratch.kv.len == pos0.
     #[allow(clippy::too_many_arguments)]
-    fn mtp_kv_fill(&self, e: &Engine, mtp: &MtpHead, tokens: &[u32], h: &CudaSlice<f32>,
-                   pos0: usize, scratch: &mut MtpScratch,
-                   embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize)
-                   -> Result<(), Box<dyn std::error::Error>> {
+    fn mtp_kv_fill(
+        &self,
+        e: &Engine,
+        mtp: &MtpHead,
+        tokens: &[u32],
+        h: &CudaSlice<f32>,
+        pos0: usize,
+        scratch: &mut MtpScratch,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -438,7 +574,10 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos_vec)?;
 
         // ops A/1/2: embed + the two input norms, T-wide.
-        let e_emb = e.embed_gather_device_t(embd_gpu, tokens, n_embd, embd_qt, embd_rb)?;
+        let e_emb = match embd_dev {
+            Some((g, qt, rb)) => e.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
+            None => e.htod(&self.embd.gather(n_embd, tokens))?,
+        };
         let mut e_norm = e.zeros(t * n_embd)?;
         e.rms_norm(&e_emb, mtp.enorm.float_data(), &mut e_norm, n_embd, t, eps)?;
         let mut h_norm = e.zeros(t * n_embd)?;
@@ -447,10 +586,18 @@ impl HybridModel {
         // op 3: per-row [e_norm ; h_norm] concat, token-major [T, 2*n_embd].
         let mut concat = e.zeros(t * 2 * n_embd)?;
         for i in 0..t {
-            e.copy_view_into(&mut concat, i * 2 * n_embd,
-                             &e_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
-            e.copy_view_into(&mut concat, i * 2 * n_embd + n_embd,
-                             &h_norm.slice(i * n_embd..(i + 1) * n_embd), n_embd)?;
+            e.copy_view_into(
+                &mut concat,
+                i * 2 * n_embd,
+                &e_norm.slice(i * n_embd..(i + 1) * n_embd),
+                n_embd,
+            )?;
+            e.copy_view_into(
+                &mut concat,
+                i * 2 * n_embd + n_embd,
+                &h_norm.slice(i * n_embd..(i + 1) * n_embd),
+                n_embd,
+            )?;
         }
 
         // ops 4/5: eh_proj + attn_norm, T-wide (at the student inner width when geom is set).
@@ -461,24 +608,52 @@ impl HybridModel {
 
         // op 6 (K/V half): wk/wv + k_norm + rope + per-row quantized append. No wq/attention —
         // the fill only has to leave correct K/V rows behind for later chains to attend over.
-        let n_head_kv = mtp.geom.as_ref().map(|g| g.n_head_kv)
+        let n_head_kv = mtp
+            .geom
+            .as_ref()
+            .map(|g| g.n_head_kv)
             .unwrap_or(cfg.n_head_kv as usize);
         let head_dim = cfg.head_dim_k as usize;
         let mut k = e.matmul(&fa.wk, &a_norm, t)?;
         let v = e.matmul(&fa.wv, &a_norm, t)?;
         let mut kn = e.zeros(t * n_head_kv * head_dim)?;
-        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
+        e.rms_norm(
+            &k,
+            fa.k_norm.float_data(),
+            &mut kn,
+            head_dim,
+            n_head_kv * t,
+            eps,
+        )?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(
+            &mut k,
+            &pos_d,
+            head_dim,
+            rope_dims,
+            n_head_kv,
+            t,
+            cfg.rope_freq_base,
+            1.0,
+        )?;
 
         let kv = &mut scratch.kv;
         for i in 0..t {
             let k_row = k.slice(i * kv.kv_dim_k..(i + 1) * kv.kv_dim_k);
             let v_row = v.slice(i * kv.kv_dim_v..(i + 1) * kv.kv_dim_v);
-            e.append_kv_quantized_view(&k_row, &v_row, &mut kv.k, &mut kv.v, kv.len + i,
-                                       kv.kv_dim_k, kv.kv_dim_v, kv.k_tok_bytes, kv.v_tok_bytes,
-                                       false)?;
+            e.append_kv_quantized_view(
+                &k_row,
+                &v_row,
+                &mut kv.k,
+                &mut kv.v,
+                kv.len + i,
+                kv.kv_dim_k,
+                kv.kv_dim_v,
+                kv.k_tok_bytes,
+                kv.v_tok_bytes,
+                false,
+            )?;
         }
         kv.len += t;
         e.set_i32_one(&mut kv.len_d, kv.len as i32)?;
@@ -506,15 +681,30 @@ impl HybridModel {
     /// replay, bit-identical to the eager arm's gumbel_perturb at the same (seed, sctr, temp).
     /// seed/temp are capture-time constants (fixed per generate call, like p_min).
     #[allow(clippy::too_many_arguments)]
-    fn mtp_head_forward_cap(&self, e: &Engine, mtp: &MtpHead,
-                            tok_d: &mut CudaSlice<u32>, pos_d: &mut CudaSlice<i32>,
-                            h_seed_d: &mut CudaSlice<f32>, p_d: &mut CudaSlice<f32>,
-                            scratch: &mut MtpScratch, with_prob: bool, with_head: bool,
-                            embd_gpu: &CudaSlice<u8>, embd_qt: i32, embd_rb: usize, d_vocab: usize,
-                            sampled_cap: Option<(&mut CudaSlice<u32>, &mut CudaSlice<f32>,
-                                                 &mut CudaSlice<f32>, u64, f32)>,
-                            stream_pack: Option<(&mut CudaSlice<u32>, usize, Option<&CudaSlice<u32>>)>)
-                            -> Result<(), Box<dyn std::error::Error>> {
+    fn mtp_head_forward_cap(
+        &self,
+        e: &Engine,
+        mtp: &MtpHead,
+        tok_d: &mut CudaSlice<u32>,
+        pos_d: &mut CudaSlice<i32>,
+        h_seed_d: &mut CudaSlice<f32>,
+        p_d: &mut CudaSlice<f32>,
+        scratch: &mut MtpScratch,
+        with_prob: bool,
+        with_head: bool,
+        embd_gpu: &CudaSlice<u8>,
+        embd_qt: i32,
+        embd_rb: usize,
+        d_vocab: usize,
+        sampled_cap: Option<(
+            &mut CudaSlice<u32>,
+            &mut CudaSlice<f32>,
+            &mut CudaSlice<f32>,
+            u64,
+            f32,
+        )>,
+        stream_pack: Option<(&mut CudaSlice<u32>, usize, Option<&CudaSlice<u32>>)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         // student inner width (see mtp_head_forward_dev) — interface dims stay n_embd.
@@ -524,7 +714,14 @@ impl HybridModel {
         let mut e_norm = e.zeros(n_embd)?;
         e.rms_norm(&e_emb, mtp.enorm.float_data(), &mut e_norm, n_embd, 1, eps)?;
         let mut h_norm = e.zeros(n_embd)?;
-        e.rms_norm(&*h_seed_d, mtp.hnorm.float_data(), &mut h_norm, n_embd, 1, eps)?;
+        e.rms_norm(
+            &*h_seed_d,
+            mtp.hnorm.float_data(),
+            &mut h_norm,
+            n_embd,
+            1,
+            eps,
+        )?;
         let mut concat = e.zeros(2 * n_embd)?;
         e.copy_into(&mut concat, 0, &e_norm, n_embd)?;
         e.copy_into(&mut concat, n_embd, &h_norm, n_embd)?;
@@ -532,20 +729,30 @@ impl HybridModel {
         let mut a_norm = e.zeros(di)?;
         e.rms_norm(&inp_sa, mtp.attn_norm.float_data(), &mut a_norm, di, 1, eps)?;
         let attn_out = match &mtp.mixer {
-            Mixer::Full(fa) => self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch,
-                                                     mtp.geom.as_ref())?,
-            Mixer::Linear(_) => panic!("MTP block is full-attn in qwen35; linear MTP not supported"),
+            Mixer::Full(fa) => {
+                self.mtp_full_attn_dc(e, fa, &a_norm, pos_d, scratch, mtp.geom.as_ref())?
+            }
+            Mixer::Linear(_) => {
+                panic!("MTP block is full-attn in qwen35; linear MTP not supported")
+            }
         };
         let mut x1 = e.zeros(di)?;
         e.add(&inp_sa, &attn_out, &mut x1, di)?;
         let mut z = e.zeros(di)?;
         e.rms_norm(&x1, mtp.post_attn_norm.float_data(), &mut z, di, 1, eps)?;
         let ffn_out = match &mtp.ffn {
-            crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+            crate::hybrid::Ffn::Dense {
+                ffn_gate,
+                ffn_up,
+                ffn_down,
+            } => {
                 let n_ff = ffn_gate.out_features();
                 let (gate, up) = if e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up) {
                     let (zq, zd) = e.quantize_q8_1(&z, 1, di)?;
-                    (e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?, e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?)
+                    (
+                        e.matmul_pre(ffn_gate, &zq, &zd, &z, 1)?,
+                        e.matmul_pre(ffn_up, &zq, &zd, &z, 1)?,
+                    )
                 } else {
                     (e.matmul(ffn_gate, &z, 1)?, e.matmul(ffn_up, &z, 1)?)
                 };
@@ -560,7 +767,9 @@ impl HybridModel {
             crate::hybrid::Ffn::Moe(m) if m.dev_exps.is_some() => {
                 self.moe_ffn_il(e, m, &z, 1, u16::MAX)?
             }
-            crate::hybrid::Ffn::Moe(_) => return Err("graph draft requires a Dense (or resident-MoE) MTP FFN".into()),
+            crate::hybrid::Ffn::Moe(_) => {
+                return Err("graph draft requires a Dense (or resident-MoE) MTP FFN".into())
+            }
         };
         let mut h_inner = e.zeros(di)?;
         e.add(&x1, &ffn_out, &mut h_inner, di)?;
@@ -575,7 +784,9 @@ impl HybridModel {
             let mut fh = e.zeros(n_embd)?;
             e.rms_norm(&h_nextn, final_norm.float_data(), &mut fh, n_embd, 1, eps)?;
             Some(fh)
-        } else { None };
+        } else {
+            None
+        };
         if with_head {
             let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output);
             let logits = e.matmul(head, final_h.as_ref().unwrap(), 1)?;
@@ -590,18 +801,24 @@ impl HybridModel {
                 e.argmax_token_device_into(perturb_d, tok_d, d_vocab)?;
                 // p-min prob = the head's RAW softmax confidence in the SAMPLED pick — same
                 // semantics as the eager sampled arm's prob_of_token_device(dl_d, tok_d).
-                if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+                if with_prob {
+                    e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?;
+                }
             } else {
                 // draft token -> persistent tok_d (next replay's embed reads it; host reads the 4 bytes).
                 e.argmax_token_device_into(&logits, tok_d, d_vocab)?;
-                if with_prob { e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?; }
+                if with_prob {
+                    e.prob_of_token_device_into(&logits, tok_d, p_d, d_vocab)?;
+                }
             }
         }
         // ROUND-STREAM K-chain: pack (tok, p) into slot j, then remap tok through d2t so the
         // NEXT chained body's embed reads the TARGET id — zero host involvement per step.
         if let Some((out, slot, d2t)) = stream_pack {
             e.pack_tok_p(tok_d, p_d, out, slot)?;
-            if let Some(map) = d2t { e.tok_map_u32(tok_d, map)?; }
+            if let Some(map) = d2t {
+                e.tok_map_u32(tok_d, map)?;
+            }
         }
         // Next draft step's h_seed: pre-norm h_nextn (default) or post-norm final_h (HPOST).
         if spec_hpost() {
@@ -633,16 +850,26 @@ impl HybridModel {
     /// the next draft round). This lets partial-accept replay run as ONE batched T=(n_acc+1) forward
     /// (single weight read) instead of n_acc+1 separate T=1 decode_steps (n_acc+1 weight reads).
     /// At batch=1 decode is bandwidth-bound, so batching the replay is THE MTP profitability lever.
-    pub fn decode_step_t_h(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache)
-                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    pub fn decode_step_t_h(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+    ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         self.decode_step_t_h_emb(e, tokens, pos0, cache, None)
     }
 
     /// Like `decode_step_t_h` with an optional RESIDENT embed table (spec hot loop): device
     /// gather instead of host dequant + [T, n_embd] f32 htod. Bit-identical rows.
-    pub fn decode_step_t_h_emb(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
-                               embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
-                         -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    pub fn decode_step_t_h_emb(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+    ) -> Result<(Vec<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let (logits_d, h_seed) = self.decode_step_t_h_emb_dev(e, tokens, pos0, cache, embd_dev)?;
         Ok((e.dtoh(&logits_d)?, h_seed))
     }
@@ -652,14 +879,19 @@ impl HybridModel {
     /// argmaxes each column on-device and reads back ONE [T] u32 instead of dtoh'ing the full
     /// T x n_vocab f32 block (~1-4 MB + T host argmaxes, every round). Kernel dispatch is
     /// UNCHANGED (same decode-exact kernels); only the post-logits transfer moves.
-    pub fn decode_step_t_h_emb_dev(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
-                               embd_dev: Option<(&CudaSlice<u8>, i32, usize)>)
-                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    pub fn decode_step_t_h_emb_dev(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+    ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
         let (logits, x) = self.decode_step_t_core(e, tokens, pos0, cache, embd_dev, None)?;
         // h_seed for the next round = LAST column's pre-output_norm hidden ([n_embd]).
-        let mut hs = vbuf(e, n_embd)?;   // fully written by copy_view_into below
+        let mut hs = vbuf(e, n_embd)?; // fully written by copy_view_into below
         e.copy_view_into(&mut hs, 0, &x.slice((t - 1) * n_embd..t * n_embd), n_embd)?;
         Ok((logits, hs))
     }
@@ -669,10 +901,15 @@ impl HybridModel {
     /// filling a `VerifyCkpt` (retained per-layer state-rebuild inputs) for the REPLAY-FREE
     /// partial accept. `ckpt: None` => byte-for-byte the old behavior (the ckpt writes are pure
     /// retains/copies — they never change what any kernel computes).
-    fn decode_step_t_core(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
-                          embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
-                          mut ckpt: Option<&mut VerifyCkpt>)
-                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    fn decode_step_t_core(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+        mut ckpt: Option<&mut VerifyCkpt>,
+    ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         self.decode_step_t_core_stream(e, tokens, pos0, cache, embd_dev, ckpt.take(), None)
     }
 
@@ -682,11 +919,16 @@ impl HybridModel {
     /// SAME counter (every layer's kvl.len == cache.pos, one counter drives all three). The
     /// host `tokens`/`pos0` args still size buffers (t is FIXED K+1 in stream mode).
     #[allow(clippy::too_many_arguments)]
-    fn decode_step_t_core_stream(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
-                          embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
-                          mut ckpt: Option<&mut VerifyCkpt>,
-                          stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>)
-                         -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+    fn decode_step_t_core_stream(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        embd_dev: Option<(&CudaSlice<u8>, i32, usize)>,
+        mut ckpt: Option<&mut VerifyCkpt>,
+        stream: Option<(&CudaSlice<u32>, &CudaSlice<i32>)>,
+    ) -> Result<(CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -705,7 +947,9 @@ impl HybridModel {
 
         // embed T tokens -> [T, n_embd] token-major (device gather on the spec hot loop)
         let mut x = match (stream, embd_dev) {
-            (Some((vtok, _)), Some((g, qt, rb))) => e.embed_gather_device_td(g, vtok, t, n_embd, qt, rb)?,
+            (Some((vtok, _)), Some((g, qt, rb))) => {
+                e.embed_gather_device_td(g, vtok, t, n_embd, qt, rb)?
+            }
             (None, Some((g, qt, rb))) => e.embed_gather_device_t(g, tokens, n_embd, qt, rb)?,
             _ => e.htod(&self.embd.gather(n_embd, tokens))?,
         };
@@ -720,7 +964,7 @@ impl HybridModel {
             // 2.3e-1 logit maxdiff at the head -> K=1..8 divergence at a 0.03-margin token).
             let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
             let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
-            let mut h = vbuf(e, t * n_embd)?;   // fully written by either rms_norm arm
+            let mut h = vbuf(e, t * n_embd)?; // fully written by either rms_norm arm
             if norm_fused {
                 e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             } else {
@@ -728,8 +972,9 @@ impl HybridModel {
             }
 
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il,
-                                                          stream.map(|(_, c)| c))?,
+                Mixer::Full(fa) => {
+                    self.full_attn_verify(e, fa, &h, &pos_d, t, cache, il, stream.map(|(_, c)| c))?
+                }
                 Mixer::Linear(la) => {
                     // BATCHED linear verify (2026-07-03, the MTP-profit lever): one T-token pass —
                     // batched projections (weight read ONCE, hits the m=2-4 weight-resident matvec),
@@ -742,19 +987,27 @@ impl HybridModel {
                     // GEMV), so mixed-dtype layers stay on the eager-identical per-column chain.
                     // BW24_SPEC_M2 (lane/spec-m2): the t==2 batch rides the same arm — the conv
                     // wrapper handles t<pad with a pure-copy ring rebuild; see spec_m2() header.
-                    if (t >= 3 || (t == 2 && spec_m2())) && mixer_fast && e.uses_q8_1_fast(&la.ssm_out) {
+                    if (t >= 3 || (t == 2 && spec_m2()))
+                        && mixer_fast
+                        && e.uses_q8_1_fast(&la.ssm_out)
+                    {
                         let want = ckpt.is_some();
-                        let (out, stash) = self.linear_attn_verify_t(e, la, &h, t, cache, il, want)?;
+                        let (out, stash) =
+                            self.linear_attn_verify_t(e, la, &h, t, cache, il, want)?;
                         if let (Some(ck), Some(st)) = (ckpt.as_deref_mut(), stash) {
                             ck.gdn[il] = Some(st);
                         }
                         out
                     } else {
-                        let mut out = vbuf(e, t * n_embd)?;   // every col written by copy_into
+                        let mut out = vbuf(e, t * n_embd)?; // every col written by copy_into
                         let mut col_states: Option<Vec<(CudaSlice<f32>, CudaSlice<f32>)>> =
-                            if ckpt.is_some() && t >= 2 { Some(Vec::with_capacity(t - 1)) } else { None };
+                            if ckpt.is_some() && t >= 2 {
+                                Some(Vec::with_capacity(t - 1))
+                            } else {
+                                None
+                            };
                         for col in 0..t {
-                            let mut h_col = vbuf(e, n_embd)?;   // fully written by copy_view_into
+                            let mut h_col = vbuf(e, n_embd)?; // fully written by copy_view_into
                             let src = h.slice(col * n_embd..(col + 1) * n_embd);
                             e.copy_view_into(&mut h_col, 0, &src, n_embd)?;
                             let m_col = self.linear_attn_decode(e, la, &h_col, cache, il)?;
@@ -765,8 +1018,10 @@ impl HybridModel {
                             if let Some(cs) = col_states.as_mut() {
                                 if col + 1 < t {
                                     let rl = cache.recur[il].as_ref().unwrap();
-                                    cs.push((e.clone_dtod(&rl.conv_state)?,
-                                             e.clone_dtod(&rl.ssm_state)?));
+                                    cs.push((
+                                        e.clone_dtod(&rl.conv_state)?,
+                                        e.clone_dtod(&rl.ssm_state)?,
+                                    ));
                                 }
                             }
                         }
@@ -782,44 +1037,69 @@ impl HybridModel {
             // (1024-thread add_rms_norm_q8_1) only for Dense FFNs whose gate+up are q8_1-fast;
             // otherwise (and for MoE) it runs the 256-thread fused add_rms_norm. Mirror per layer.
             let ffn_fuse = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, .. } =>
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate, ffn_up, ..
+                } => {
                     std::env::var("BW24_NO_FUSE_NORMQ").is_err()
-                        && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
+                        && e.uses_q8_1_fast(ffn_gate)
+                        && e.uses_q8_1_fast(ffn_up)
+                }
                 crate::hybrid::Ffn::Moe(_) => false,
             };
-            let mut x1 = vbuf(e, t * n_embd)?;   // fully written by add / add_rms_norm
-            let mut z = vbuf(e, t * n_embd)?;    // fully written by rms_norm_decode / add_rms_norm
+            let mut x1 = vbuf(e, t * n_embd)?; // fully written by add / add_rms_norm
+            let mut z = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode / add_rms_norm
             if ffn_fuse {
                 e.add(&x, &mixed, &mut x1, t * n_embd)?;
-                e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+                e.rms_norm_decode(
+                    &x1,
+                    layer.post_attn_norm.float_data(),
+                    &mut z,
+                    n_embd,
+                    t,
+                    eps,
+                )?;
             } else {
-                e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z,
-                               n_embd, t, eps)?;
+                e.add_rms_norm(
+                    &x,
+                    &mixed,
+                    layer.post_attn_norm.float_data(),
+                    &mut x1,
+                    &mut z,
+                    n_embd,
+                    t,
+                    eps,
+                )?;
             }
             // DECODE-EXACT FFN projections: force MMVQ for gate/up/down at any T to match the
             // T=1 decode FP accumulation order. At T>=5 the generic matmul/matmul_pre falls to dp4a
             // (128-thread, different FP sum order). At T=2-4 the batched MMVQ is already bit-identical.
             let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate,
+                    ffn_up,
+                    ffn_down,
+                } => {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
-                    let mut act = vbuf(e, t * n_ff)?;   // fully written by ffn_act
+                    let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = vbuf(e, t * n_embd)?;   // fully written by add
+            let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             x = x2;
         }
 
-        let mut hn = vbuf(e, t * n_embd)?;   // fully written by rms_norm_decode
+        let mut hn = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         // stream: the device pos counter owns position; host mirror reconciles at drain.
-        if stream.is_none() { cache.pos += t; }
+        if stream.is_none() {
+            cache.pos += t;
+        }
         // Hidden stack for seeds/refresh-fills: pre-norm x (default) or post-norm hn (HPOST).
         Ok((logits, if spec_hpost() { hn } else { x }))
     }
@@ -832,9 +1112,16 @@ impl HybridModel {
     /// ssm state exactly like T sequential decode steps.
     /// `want_stash`: additionally RETAIN the gdn-scan inputs (pure buffer keep-alives, zero extra
     /// kernels) so a partial accept can rebuild the state after any column prefix (REPLAY-FREE).
-    fn linear_attn_verify_t(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
-                            cache: &mut Cache, il: usize, want_stash: bool)
-                            -> Result<(CudaSlice<f32>, Option<GdnStash>), Box<dyn std::error::Error>> {
+    fn linear_attn_verify_t(
+        &self,
+        e: &Engine,
+        la: &LinearAttnLayer,
+        h: &CudaSlice<f32>,
+        t: usize,
+        cache: &mut Cache,
+        il: usize,
+        want_stash: bool,
+    ) -> Result<(CudaSlice<f32>, Option<GdnStash>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;
@@ -857,11 +1144,15 @@ impl HybridModel {
         // ssm_beta+ssm_alpha) — each fused2 batched launch then replaces two decode-exact
         // calls (each of which re-quantizes the same h + runs its own _b2/_b4 launch).
         // Bit-identical per (tensor,token,row) — see spec_fused_t().
-        let h_q8_t = if spec_fused_t() && (2..=4).contains(&t)
+        let h_q8_t = if spec_fused_t()
+            && (2..=4).contains(&t)
             && ((e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate))
-                || (e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha))) {
+                || (e.uses_q8_1_fast(&la.ssm_beta) && e.uses_q8_1_fast(&la.ssm_alpha)))
+        {
             Some(e.quantize_q8_1(h, t, cfg.n_embd as usize)?)
-        } else { None };
+        } else {
+            None
+        };
         let (qkv_mixed, z) = {
             let mut fused = None;
             if t == 1 && e.uses_q8_1_fast(&la.wqkv) && e.uses_q8_1_fast(&la.wqkv_gate) {
@@ -872,8 +1163,10 @@ impl HybridModel {
             }
             match fused {
                 Some(pair) => pair,
-                None => (e.matmul_decode_exact(&la.wqkv, h, t)?,
-                         e.matmul_decode_exact(&la.wqkv_gate, h, t)?),
+                None => (
+                    e.matmul_decode_exact(&la.wqkv, h, t)?,
+                    e.matmul_decode_exact(&la.wqkv_gate, h, t)?,
+                ),
             }
         };
         // beta+alpha DUAL at T=1 (75% of p3 rounds run T=1 verify — p-min chain cuts): the dual
@@ -884,8 +1177,12 @@ impl HybridModel {
             let (hq, hd) = e.quantize_q8_1(h, 1, cfg.n_embd as usize)?;
             match e.matmul_pre_dual_noscale(&la.ssm_beta, &la.ssm_alpha, &hq, &hd, 1)? {
                 Some(((mut b, bs), (mut a, as_))) => {
-                    if bs != 1.0 { e.scale_inplace(&mut b, bs, la.ssm_beta.out_features())?; }
-                    if as_ != 1.0 { e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?; }
+                    if bs != 1.0 {
+                        e.scale_inplace(&mut b, bs, la.ssm_beta.out_features())?;
+                    }
+                    if as_ != 1.0 {
+                        e.scale_inplace(&mut a, as_, la.ssm_alpha.out_features())?;
+                    }
                     (b, a)
                 }
                 // Q8_0 fused2 twin (9B stores beta/alpha as Q8_0): DISPATCH-MIRRORS the eager
@@ -893,8 +1190,10 @@ impl HybridModel {
                 // bit-identical per row (kernel-check rel=0.00e0 gate), so decode==verify holds.
                 None => match e.matmul_q8_fused2(&la.ssm_beta, &la.ssm_alpha, &hq, &hd)? {
                     Some((b, a)) => (b, a),
-                    None => (e.matmul_decode_exact(&la.ssm_beta, h, 1)?,
-                             e.matmul_decode_exact(&la.ssm_alpha, h, 1)?),
+                    None => (
+                        e.matmul_decode_exact(&la.ssm_beta, h, 1)?,
+                        e.matmul_decode_exact(&la.ssm_alpha, h, 1)?,
+                    ),
                 },
             }
         } else {
@@ -906,8 +1205,10 @@ impl HybridModel {
             }
             match fused {
                 Some(pair) => pair,
-                None => (e.matmul_decode_exact(&la.ssm_beta, h, t)?,
-                         e.matmul_decode_exact(&la.ssm_alpha, h, t)?),
+                None => (
+                    e.matmul_decode_exact(&la.ssm_beta, h, t)?,
+                    e.matmul_decode_exact(&la.ssm_alpha, h, t)?,
+                ),
             }
         };
 
@@ -915,14 +1216,23 @@ impl HybridModel {
         // T < pad — the BW24_SPEC_M2 t=2 arm — rolls via the pure-copy ring rebuild).
         let rl = cache.recur[il].as_mut().unwrap();
         let mut conv_out = e.uninit(conv_dim * t)?;
-        e.ssm_conv1d_tm_state(&qkv_mixed, &mut rl.conv_state, la.ssm_conv1d.float_data(),
-                              &mut conv_out, conv_dim, t, d_conv)?;
+        e.ssm_conv1d_tm_state(
+            &qkv_mixed,
+            &mut rl.conv_state,
+            la.ssm_conv1d.float_data(),
+            &mut conv_out,
+            conv_dim,
+            t,
+            d_conv,
+        )?;
 
         // GDN prep via the prefill kernels (repack + L2 + sigmoid + glog), T-wide.
         let mut q_g = e.uninit(d_state * num_v * t)?;
         let mut k_g = e.uninit(d_state * num_v * t)?;
         let mut v_g = e.uninit(d_state * num_v * t)?;
-        e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
+        e.qkv_to_gdn_repack(
+            &conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t,
+        )?;
         let mut q_l2 = e.uninit(d_state * num_v * t)?;
         e.l2_norm_decode(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v * t)?;
@@ -930,26 +1240,66 @@ impl HybridModel {
         let mut beta = e.uninit(t * num_v)?;
         e.sigmoid(&beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;
-        e.gdn_glog(&alpha, la.ssm_dt.float_data(), la.ssm_a.float_data(), &mut g_log, num_v, t)?;
+        e.gdn_glog(
+            &alpha,
+            la.ssm_dt.float_data(),
+            la.ssm_a.float_data(),
+            &mut g_log,
+            num_v,
+            t,
+        )?;
 
         // ONE gdn_scan over T tokens from the carried state (internal sequential loop ==
         // T chained T=1 steps). Ping-pong the resident buffers like eager decode.
         let mut o = e.uninit(d_state * num_v * t)?;
         {
-            let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
-            e.gdn_scan_s128(&q_l2, &k_l2, &v_g, &g_log, &beta, ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+            let crate::cache::RecurLayer {
+                ssm_state,
+                ssm_state_alt,
+                ..
+            } = rl;
+            e.gdn_scan_s128(
+                &q_l2,
+                &k_l2,
+                &v_g,
+                &g_log,
+                &beta,
+                ssm_state,
+                ssm_state_alt,
+                &mut o,
+                num_v,
+                t,
+                scale,
+            )?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
         // gated RMSNorm + out projection, T-wide.
         let mut gn = e.uninit(d_state * num_v * t)?;
-        e.gated_rmsnorm(&o, la.ssm_norm.float_data(), &z, &mut gn, d_state, num_v * t, eps)?;
+        e.gated_rmsnorm(
+            &o,
+            la.ssm_norm.float_data(),
+            &z,
+            &mut gn,
+            d_state,
+            num_v * t,
+            eps,
+        )?;
         // DECODE-EXACT out-projection: same MMVQ path as the T=1 decode (ssm_out at m>=5 would
         // fall to dp4a with a different FP reduction order — same class of bug as the input projs).
         let out = e.matmul_decode_exact(&la.ssm_out, &gn, t)?;
         let stash = if want_stash {
-            Some(GdnStash { qkv_mixed, q_l2, k_l2, v_g, g_log, beta })
-        } else { None };
+            Some(GdnStash {
+                qkv_mixed,
+                q_l2,
+                k_l2,
+                v_g,
+                g_log,
+                beta,
+            })
+        } else {
+            None
+        };
         Ok((out, stash))
     }
 
@@ -965,11 +1315,16 @@ impl HybridModel {
     ///   bit-identical to the verify's own state after j tokens == the eager chain state.
     /// - Linear layers, per-column path: restore the cloned actual state after column j-1.
     /// Caller guarantees 1 <= j <= t-1 (j==0 rounds take the legacy rollback; j==t is full accept).
-    fn commit_verified_prefix(&self, e: &Engine, cache: &mut Cache,
-                              snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt, j: usize,
-                              kv_lens_done: bool,
-                              dev_j: Option<(&CudaSlice<u32>, usize, usize)>)
-                              -> Result<(), Box<dyn std::error::Error>> {
+    fn commit_verified_prefix(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        snap: &crate::cache::CacheSnapshot,
+        ckpt: &VerifyCkpt,
+        j: usize,
+        kv_lens_done: bool,
+        dev_j: Option<(&CudaSlice<u32>, usize, usize)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;
@@ -982,7 +1337,9 @@ impl HybridModel {
             if let (Some(kvl), Some(saved)) = (cache.kv[il].as_mut(), snap.kv_len[il]) {
                 kvl.len = saved + j;
                 // devacc 3a: spec_rollback_kv already wrote len_d on-device (same value).
-                if !kv_lens_done { e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?; }
+                if !kv_lens_done {
+                    e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+                }
             }
             if let Some(rl) = cache.recur[il].as_mut() {
                 if let Some(st) = &ckpt.gdn[il] {
@@ -990,25 +1347,64 @@ impl HybridModel {
                     let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
                     if let Some((acc, base, t_v)) = dev_j {
                         // 3b: j read on-device (_dc twins, same bodies; full accept early-exits).
-                        e.ssm_conv_ring_rebuild_dc(&st.qkv_mixed, ring_old, &mut rl.conv_state,
-                                                   conv_dim, acc, base, t_v, d_conv)?;
+                        e.ssm_conv_ring_rebuild_dc(
+                            &st.qkv_mixed,
+                            ring_old,
+                            &mut rl.conv_state,
+                            conv_dim,
+                            acc,
+                            base,
+                            t_v,
+                            d_conv,
+                        )?;
                         let mut o = e.uninit(d_state * num_v * j.max(1))?;
-                        e.gdn_scan_s128_dc(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
-                                           state_in, &mut rl.ssm_state, &mut o, num_v,
-                                           acc, base, t_v, scale)?;
+                        e.gdn_scan_s128_dc(
+                            &st.q_l2,
+                            &st.k_l2,
+                            &st.v_g,
+                            &st.g_log,
+                            &st.beta,
+                            state_in,
+                            &mut rl.ssm_state,
+                            &mut o,
+                            num_v,
+                            acc,
+                            base,
+                            t_v,
+                            scale,
+                        )?;
                     } else {
-                    e.ssm_conv_ring_rebuild(&st.qkv_mixed, ring_old, &mut rl.conv_state,
-                                            conv_dim, j, d_conv)?;
-                    let mut o = e.uninit(d_state * num_v * j)?;   // scan output, discarded
-                    e.gdn_scan_s128(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
-                                    state_in, &mut rl.ssm_state, &mut o, num_v, j, scale)?;
+                        e.ssm_conv_ring_rebuild(
+                            &st.qkv_mixed,
+                            ring_old,
+                            &mut rl.conv_state,
+                            conv_dim,
+                            j,
+                            d_conv,
+                        )?;
+                        let mut o = e.uninit(d_state * num_v * j)?; // scan output, discarded
+                        e.gdn_scan_s128(
+                            &st.q_l2,
+                            &st.k_l2,
+                            &st.v_g,
+                            &st.g_log,
+                            &st.beta,
+                            state_in,
+                            &mut rl.ssm_state,
+                            &mut o,
+                            num_v,
+                            j,
+                            scale,
+                        )?;
                     }
                 } else if let Some(cols) = &ckpt.cols[il] {
                     let (c, s) = &cols[j - 1];
                     e.copy_into(&mut rl.conv_state, 0, c, c.len())?;
                     e.copy_into(&mut rl.ssm_state, 0, s, s.len())?;
                 } else {
-                    return Err("commit_verified_prefix: verify ckpt missing for linear layer".into());
+                    return Err(
+                        "commit_verified_prefix: verify ckpt missing for linear layer".into(),
+                    );
                 }
             }
         }
@@ -1018,10 +1414,16 @@ impl HybridModel {
 
     /// ROUND-STREAM: recur restore with device-j (the _dc twins; full accept early-exits
     /// in-kernel). Requires the batched-linear stash on every linear layer (stream gate).
-    fn commit_verified_prefix_stream(&self, e: &Engine, cache: &mut Cache,
-                                     snap: &crate::cache::CacheSnapshot, ckpt: &VerifyCkpt,
-                                     acc: &CudaSlice<u32>, base: usize, t_v: usize)
-                                     -> Result<(), Box<dyn std::error::Error>> {
+    fn commit_verified_prefix_stream(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        snap: &crate::cache::CacheSnapshot,
+        ckpt: &VerifyCkpt,
+        acc: &CudaSlice<u32>,
+        base: usize,
+        t_v: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;
@@ -1032,16 +1434,37 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
         for il in 0..self.layers.len() {
             if let Some(rl) = cache.recur[il].as_mut() {
-                let st = ckpt.gdn[il].as_ref()
+                let st = ckpt.gdn[il]
+                    .as_ref()
                     .ok_or("stream restore: batched-linear stash missing")?;
                 let ring_old = snap.conv[il].as_ref().expect("snapshot missing conv");
                 let state_in = snap.ssm[il].as_ref().expect("snapshot missing ssm");
-                e.ssm_conv_ring_rebuild_dc(&st.qkv_mixed, ring_old, &mut rl.conv_state,
-                                           conv_dim, acc, base, t_v, d_conv)?;
+                e.ssm_conv_ring_rebuild_dc(
+                    &st.qkv_mixed,
+                    ring_old,
+                    &mut rl.conv_state,
+                    conv_dim,
+                    acc,
+                    base,
+                    t_v,
+                    d_conv,
+                )?;
                 let mut o = e.uninit(d_state * num_v * t_v)?;
-                e.gdn_scan_s128_dc(&st.q_l2, &st.k_l2, &st.v_g, &st.g_log, &st.beta,
-                                   state_in, &mut rl.ssm_state, &mut o, num_v,
-                                   acc, base, t_v, scale)?;
+                e.gdn_scan_s128_dc(
+                    &st.q_l2,
+                    &st.k_l2,
+                    &st.v_g,
+                    &st.g_log,
+                    &st.beta,
+                    state_in,
+                    &mut rl.ssm_state,
+                    &mut o,
+                    num_v,
+                    acc,
+                    base,
+                    t_v,
+                    scale,
+                )?;
             }
         }
         Ok(())
@@ -1052,10 +1475,18 @@ impl HybridModel {
     /// stream hiddens (blocks in `aux_layers`) for TWO columns: the LAST column (always) and the
     /// optional `pred_col` (the EAGLE seed = bonus's predecessor). Returns
     /// (all_T_logits host, last_col_aux, pred_col_aux?). Used by the EAGLE3 orchestrator's commit.
-    pub fn decode_step_t_aux2(&self, e: &Engine, tokens: &[u32], pos0: usize, cache: &mut Cache,
-                              aux_layers: &[usize], pred_col: Option<usize>)
-        -> Result<(Vec<f32>, Vec<CudaSlice<f32>>, Option<Vec<CudaSlice<f32>>>), Box<dyn std::error::Error>>
-    {
+    pub fn decode_step_t_aux2(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        pos0: usize,
+        cache: &mut Cache,
+        aux_layers: &[usize],
+        pred_col: Option<usize>,
+    ) -> Result<
+        (Vec<f32>, Vec<CudaSlice<f32>>, Option<Vec<CudaSlice<f32>>>),
+        Box<dyn std::error::Error>,
+    > {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
@@ -1071,7 +1502,7 @@ impl HybridModel {
             // DISPATCH-MIRRORED norms (FP-order lesson #8) — see decode_step_t_h_emb.
             let mixer_fast = self.mixer_in_q8_1_fast(e, &layer.mixer);
             let norm_fused = std::env::var("BW24_NO_FUSE_NORMQ").is_err() && mixer_fast;
-            let mut h = vbuf(e, t * n_embd)?;   // fully written by either rms_norm arm
+            let mut h = vbuf(e, t * n_embd)?; // fully written by either rms_norm arm
             if norm_fused {
                 e.rms_norm_decode(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             } else {
@@ -1092,32 +1523,55 @@ impl HybridModel {
                 }
             };
             let ffn_fuse = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, .. } =>
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate, ffn_up, ..
+                } => {
                     std::env::var("BW24_NO_FUSE_NORMQ").is_err()
-                        && e.uses_q8_1_fast(ffn_gate) && e.uses_q8_1_fast(ffn_up),
+                        && e.uses_q8_1_fast(ffn_gate)
+                        && e.uses_q8_1_fast(ffn_up)
+                }
                 crate::hybrid::Ffn::Moe(_) => false,
             };
-            let mut x1 = vbuf(e, t * n_embd)?;   // fully written by add / add_rms_norm
-            let mut z = vbuf(e, t * n_embd)?;    // fully written by rms_norm_decode / add_rms_norm
+            let mut x1 = vbuf(e, t * n_embd)?; // fully written by add / add_rms_norm
+            let mut z = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode / add_rms_norm
             if ffn_fuse {
                 e.add(&x, &mixed, &mut x1, t * n_embd)?;
-                e.rms_norm_decode(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+                e.rms_norm_decode(
+                    &x1,
+                    layer.post_attn_norm.float_data(),
+                    &mut z,
+                    n_embd,
+                    t,
+                    eps,
+                )?;
             } else {
-                e.add_rms_norm(&x, &mixed, layer.post_attn_norm.float_data(), &mut x1, &mut z,
-                               n_embd, t, eps)?;
+                e.add_rms_norm(
+                    &x,
+                    &mixed,
+                    layer.post_attn_norm.float_data(),
+                    &mut x1,
+                    &mut z,
+                    n_embd,
+                    t,
+                    eps,
+                )?;
             }
             let ffn_out = match &layer.ffn {
-                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                crate::hybrid::Ffn::Dense {
+                    ffn_gate,
+                    ffn_up,
+                    ffn_down,
+                } => {
                     let n_ff = ffn_gate.out_features();
                     let gate = e.matmul_decode_exact(ffn_gate, &z, t)?;
                     let up = e.matmul_decode_exact(ffn_up, &z, t)?;
-                    let mut act = vbuf(e, t * n_ff)?;   // fully written by ffn_act
+                    let mut act = vbuf(e, t * n_ff)?; // fully written by ffn_act
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul_decode_exact(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
             };
-            let mut x2 = vbuf(e, t * n_embd)?;   // fully written by add
+            let mut x2 = vbuf(e, t * n_embd)?; // fully written by add
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
             if aux_layers.contains(&il) {
                 let mut a = e.zeros(n_embd)?;
@@ -1125,27 +1579,43 @@ impl HybridModel {
                 aux_last.push(a);
                 if let Some(pc) = pred_col {
                     let mut ap = e.zeros(n_embd)?;
-                    e.copy_view_into(&mut ap, 0, &x2.slice(pc * n_embd..(pc + 1) * n_embd), n_embd)?;
+                    e.copy_view_into(
+                        &mut ap,
+                        0,
+                        &x2.slice(pc * n_embd..(pc + 1) * n_embd),
+                        n_embd,
+                    )?;
                     aux_pred.push(ap);
                 }
             }
             x = x2;
         }
-        let mut hn = vbuf(e, t * n_embd)?;   // fully written by rms_norm_decode
+        let mut hn = vbuf(e, t * n_embd)?; // fully written by rms_norm_decode
         e.rms_norm_decode(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
         let logits = e.matmul_decode_exact(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         cache.pos += t;
-        Ok((host, aux_last, if want_pred { Some(aux_pred) } else { None }))
+        Ok((
+            host,
+            aux_last,
+            if want_pred { Some(aux_pred) } else { None },
+        ))
     }
 
     /// Full-attention mixer over T query tokens with a GROWING resident KV (verify path, §D.3).
     /// Appends the T new K/V columns to cache.kv[il] then attends causally over [0..len) via
     /// fa_prefill. Token-major [T, kv_dim] projection layout == cache row layout (single copy).
-    fn full_attn_verify(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
-                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize,
-                        stream_ctr: Option<&CudaSlice<i32>>)
-                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    fn full_attn_verify(
+        &self,
+        e: &Engine,
+        fa: &FullAttnLayer,
+        h: &CudaSlice<f32>,
+        pos_d: &CudaSlice<i32>,
+        t: usize,
+        cache: &mut Cache,
+        il: usize,
+        stream_ctr: Option<&CudaSlice<i32>>,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -1160,12 +1630,19 @@ impl HybridModel {
         // Q8 TRUNK-FUSION at T=1: DISPATCH-MIRRORS the eager decode's fused3 (bit-identical body).
         let (qf, mut k, v) = {
             let mut fused = None;
-            if t == 1 && e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
-                && e.uses_q8_1_fast(&fa.wv) {
+            if t == 1
+                && e.uses_q8_1_fast(&fa.wq)
+                && e.uses_q8_1_fast(&fa.wk)
+                && e.uses_q8_1_fast(&fa.wv)
+            {
                 let (hq, hd) = e.quantize_q8_1(h, 1, n_embd)?;
                 fused = e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hd)?;
-            } else if spec_fused_t() && (2..=4).contains(&t) && e.uses_q8_1_fast(&fa.wq)
-                && e.uses_q8_1_fast(&fa.wk) && e.uses_q8_1_fast(&fa.wv) {
+            } else if spec_fused_t()
+                && (2..=4).contains(&t)
+                && e.uses_q8_1_fast(&fa.wq)
+                && e.uses_q8_1_fast(&fa.wk)
+                && e.uses_q8_1_fast(&fa.wv)
+            {
                 // VERIFY-TIER TRUNK FUSION (BW24_SPEC_FUSED_T): one shared quantize + one
                 // fused3 batched launch replaces three decode-exact calls (3 re-quantizes of
                 // the same h + 3 _b2/_b4 launches). Bit-identical per (tensor,token,row).
@@ -1174,50 +1651,106 @@ impl HybridModel {
             }
             match fused {
                 Some(triple) => triple,
-                None => (e.matmul_decode_exact(&fa.wq, h, t)?,
-                         e.matmul_decode_exact(&fa.wk, h, t)?,
-                         e.matmul_decode_exact(&fa.wv, h, t)?),
+                None => (
+                    e.matmul_decode_exact(&fa.wq, h, t)?,
+                    e.matmul_decode_exact(&fa.wk, h, t)?,
+                    e.matmul_decode_exact(&fa.wv, h, t)?,
+                ),
             }
         };
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
         let gated = self.cfg.attn_out_gate();
         let (mut q, gate) = if gated {
-            let mut q = vbuf(e, t * n_head * head_dim)?;      // fully written by q_gate_split
-            let mut gate = vbuf(e, t * n_head * head_dim)?;   // fully written by q_gate_split
+            let mut q = vbuf(e, t * n_head * head_dim)?; // fully written by q_gate_split
+            let mut gate = vbuf(e, t * n_head * head_dim)?; // fully written by q_gate_split
             e.q_gate_split(&qf, &mut q, &mut gate, head_dim, n_head, t)?;
             (q, Some(gate))
-        } else { (qf, None) };
+        } else {
+            (qf, None)
+        };
 
-        let mut qn = vbuf(e, t * n_head * head_dim)?;   // fully written by rms_norm
-        e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
+        let mut qn = vbuf(e, t * n_head * head_dim)?; // fully written by rms_norm
+        e.rms_norm(
+            &q,
+            fa.q_norm.float_data(),
+            &mut qn,
+            head_dim,
+            n_head * t,
+            eps,
+        )?;
         q = qn;
-        let mut kn = vbuf(e, t * n_head_kv * head_dim)?;   // fully written by rms_norm
-        e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
+        let mut kn = vbuf(e, t * n_head_kv * head_dim)?; // fully written by rms_norm
+        e.rms_norm(
+            &k,
+            fa.k_norm.float_data(),
+            &mut kn,
+            head_dim,
+            n_head_kv * t,
+            eps,
+        )?;
         k = kn;
         let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+        e.rope_neox(
+            &mut q,
+            pos_d,
+            head_dim,
+            rope_dims,
+            n_head,
+            t,
+            cfg.rope_freq_base,
+            1.0,
+        )?;
+        e.rope_neox(
+            &mut k,
+            pos_d,
+            head_dim,
+            rope_dims,
+            n_head_kv,
+            t,
+            cfg.rope_freq_base,
+            1.0,
+        )?;
 
         // append T new K/V columns to the resident QUANTIZED cache. k/v are token-major [T, kv_dim]
         // f32; append-quantize each of the T token rows into the byte cache (q8_0 K / q5_1 V).
         let kvl = cache.kv[il].as_mut().unwrap();
-        let (kv_dim_k, kv_dim_v, ktb, vtb) = (kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes);
+        let (kv_dim_k, kv_dim_v, ktb, vtb) =
+            (kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes);
         if let Some(ctr) = stream_ctr {
             // stream: ONE batched append at the device counter (rows kernel = the per-view warp
             // math on a (block, token) grid, documented byte-identical); host len is a stale
             // LOWER BOUND under pre-issue (drain reconciles it).
-            e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, ctr, t,
-                                          kv_dim_k, kv_dim_v, ktb, vtb,
-                                          crate::Engine::kv_fp8_on())?;
+            e.append_kv_quantized_rows_dc(
+                &k,
+                &v,
+                &mut kvl.k,
+                &mut kvl.v,
+                ctr,
+                t,
+                kv_dim_k,
+                kv_dim_v,
+                ktb,
+                vtb,
+                crate::Engine::kv_fp8_on(),
+            )?;
         } else {
-        for i in 0..t {
-            let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
-            let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
-            e.append_kv_quantized_view(&k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len + i,
-                                       kv_dim_k, kv_dim_v, ktb, vtb,
-                                       crate::Engine::kv_fp8_on())?;
-        }
-        kvl.len += t;
+            for i in 0..t {
+                let k_row = k.slice(i * kv_dim_k..(i + 1) * kv_dim_k);
+                let v_row = v.slice(i * kv_dim_v..(i + 1) * kv_dim_v);
+                e.append_kv_quantized_view(
+                    &k_row,
+                    &v_row,
+                    &mut kvl.k,
+                    &mut kvl.v,
+                    kvl.len + i,
+                    kv_dim_k,
+                    kv_dim_v,
+                    ktb,
+                    vtb,
+                    crate::Engine::kv_fp8_on(),
+                )?;
+            }
+            kvl.len += t;
         }
 
         // BIT-IDENTICAL VERIFY ATTENTION (spec-exactness fix): the FP accumulation order must be
@@ -1236,16 +1769,16 @@ impl HybridModel {
         // construction; kernel-check pins rows-vs-loop byte identity, run-spec is the end gate.
         // Short ctx (any row below the vec crossover) and BW24_NO_FA_VEC/BW24_FA_ROWS_OFF keep the
         // per-row loop (whose fa_decode picks scalar/vec per row exactly like eager decode).
-        let mut attn = vbuf(e, t * n_head * head_dim)?;   // fully written by every FA arm below
-        let base_len = kvl.len - t;   // KV len BEFORE this round's T tokens were appended
-        // T=1 INCLUDED (2026-07-05): p-min cuts the draft to 1 in ~75% of rounds on hard
-        // (agentic) content — the old t>1 gate sent those rounds to the per-row loop (262us/row
-        // + q-row copy + per-row allocs vs 93us/row through the fused kernel at grid.z=1, same
-        // program). nsys accounting: 1088 of 1456 verify FA launches were T=1 escapees.
-        // LEAN T=1 ARM (BW24_SPEC_LEAN, close35): at t==1, q IS one row and fa_decode on it is
-        // the EXACT eager decode dispatch (vec_q_v2 + combine_f32; the rows pair measured +50us
-        // at m=1). Byte-identical: kernel-check pins rows-vs-loop identity, and the per-row loop
-        // at t=1 is fa_decode on the same q with zero-offset copies. Gates arbitrate.
+        let mut attn = vbuf(e, t * n_head * head_dim)?; // fully written by every FA arm below
+        let base_len = kvl.len - t; // KV len BEFORE this round's T tokens were appended
+                                    // T=1 INCLUDED (2026-07-05): p-min cuts the draft to 1 in ~75% of rounds on hard
+                                    // (agentic) content — the old t>1 gate sent those rounds to the per-row loop (262us/row
+                                    // + q-row copy + per-row allocs vs 93us/row through the fused kernel at grid.z=1, same
+                                    // program). nsys accounting: 1088 of 1456 verify FA launches were T=1 escapees.
+                                    // LEAN T=1 ARM (BW24_SPEC_LEAN, close35): at t==1, q IS one row and fa_decode on it is
+                                    // the EXACT eager decode dispatch (vec_q_v2 + combine_f32; the rows pair measured +50us
+                                    // at m=1). Byte-identical: kernel-check pins rows-vs-loop identity, and the per-row loop
+                                    // at t=1 is fa_decode on the same q with zero-offset copies. Gates arbitrate.
         if let Some(ctr) = stream_ctr {
             // STREAM ARM: causal base from the device counter; host kvl.len is a stale lower
             // bound used only for the split-sizing upper bound (+64 slack covers M pre-issued
@@ -1253,41 +1786,99 @@ impl HybridModel {
             let upper = kvl.len + t + 64;
             let k_view = e.view_u8(&kvl.k, (upper.min(cache.max_ctx)) * ktb);
             let v_view = e.view_u8(&kvl.v, (upper.min(cache.max_ctx)) * vtb);
-            e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                                ctr, upper.min(cache.max_ctx), t, scale, ktb, vtb, 0, false)?;
+            e.fa_decode_rows_dc(
+                &q,
+                &k_view,
+                &v_view,
+                &mut attn,
+                head_dim,
+                n_head,
+                n_head_kv,
+                ctr,
+                upper.min(cache.max_ctx),
+                t,
+                scale,
+                ktb,
+                vtb,
+                0,
+                false,
+            )?;
         } else if spec_lean() && t == 1 {
             let t_kv = base_len + 1;
             let k_view = e.view_u8(&kvl.k, t_kv * ktb);
             let v_view = e.view_u8(&kvl.v, t_kv * vtb);
-            e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                              t_kv, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
+            e.fa_decode_kvmod(
+                &q,
+                &k_view,
+                &v_view,
+                &mut attn,
+                head_dim,
+                n_head,
+                n_head_kv,
+                t_kv,
+                scale,
+                ktb,
+                vtb,
+                crate::Engine::kv_fp8_on(),
+            )?;
         } else if e.fa_rows_eligible(base_len, head_dim) {
             let k_view = e.view_u8(&kvl.k, (base_len + t) * ktb);
             let v_view = e.view_u8(&kvl.v, (base_len + t) * vtb);
-            e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
-                             base_len, t, scale, ktb, vtb, None, false,
-                             crate::Engine::kv_fp8_on())?;
+            e.fa_decode_rows(
+                &q,
+                &k_view,
+                &v_view,
+                &mut attn,
+                head_dim,
+                n_head,
+                n_head_kv,
+                base_len,
+                t,
+                scale,
+                ktb,
+                vtb,
+                None,
+                false,
+                crate::Engine::kv_fp8_on(),
+            )?;
         } else {
             for r in 0..t {
                 let t_kv_r = base_len + r + 1; // this row sees keys [0..t_kv_r)
                 let k_view_r = e.view_u8(&kvl.k, t_kv_r * ktb);
                 let v_view_r = e.view_u8(&kvl.v, t_kv_r * vtb);
                 // copy q row into an owned buffer (fa_decode takes &CudaSlice, not CudaView)
-                let mut q_row = vbuf(e, n_head * head_dim)?;   // fully written by copy_view_into
+                let mut q_row = vbuf(e, n_head * head_dim)?; // fully written by copy_view_into
                 let q_src = q.slice(r * n_head * head_dim..(r + 1) * n_head * head_dim);
                 e.copy_view_into(&mut q_row, 0, &q_src, n_head * head_dim)?;
-                let mut attn_row = vbuf(e, n_head * head_dim)?;   // fully written by fa_decode
-                e.fa_decode_kvmod(&q_row, &k_view_r, &v_view_r, &mut attn_row, head_dim,
-                                  n_head, n_head_kv, t_kv_r, scale, ktb, vtb, crate::Engine::kv_fp8_on())?;
-                e.copy_into(&mut attn, r * n_head * head_dim, &attn_row, n_head * head_dim)?;
+                let mut attn_row = vbuf(e, n_head * head_dim)?; // fully written by fa_decode
+                e.fa_decode_kvmod(
+                    &q_row,
+                    &k_view_r,
+                    &v_view_r,
+                    &mut attn_row,
+                    head_dim,
+                    n_head,
+                    n_head_kv,
+                    t_kv_r,
+                    scale,
+                    ktb,
+                    vtb,
+                    crate::Engine::kv_fp8_on(),
+                )?;
+                e.copy_into(
+                    &mut attn,
+                    r * n_head * head_dim,
+                    &attn_row,
+                    n_head * head_dim,
+                )?;
             }
         }
 
         let attn_g = match &gate {
             Some(gate) => {
-                let mut gsig = vbuf(e, t * n_head * head_dim)?;   // fully written by sigmoid
+                let mut gsig = vbuf(e, t * n_head * head_dim)?; // fully written by sigmoid
                 e.sigmoid(gate, &mut gsig, t * n_head * head_dim)?;
-                let mut ag = vbuf(e, t * n_head * head_dim)?;     // fully written by mul
+                let mut ag = vbuf(e, t * n_head * head_dim)?; // fully written by mul
                 e.mul(&attn, &gsig, &mut ag, t * n_head * head_dim)?;
                 ag
             }
@@ -1320,11 +1911,19 @@ impl HybridModel {
     /// hybrid linear-attn states are in-place (no position index), so a session can extend but
     /// never rewind — `committed` is the exact token list whose state the caches hold (includes
     /// any overshoot tokens past max_new; the caller renders from `committed`, not its own echo).
-    pub fn new_session(&self, e: &Engine, max_ctx: usize)
-                       -> Result<SpecSession, Box<dyn std::error::Error>> {
+    pub fn new_session(
+        &self,
+        e: &Engine,
+        max_ctx: usize,
+    ) -> Result<SpecSession, Box<dyn std::error::Error>> {
         Ok(SpecSession {
             cache: Cache::new(e, &self.cfg, max_ctx)?,
-            scratch: MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?,
+            scratch: MtpScratch::new(
+                e,
+                &self.cfg,
+                max_ctx,
+                self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
+            )?,
             committed: Vec::new(),
             last_h: None,
             next_pred: None,
@@ -1336,9 +1935,14 @@ impl HybridModel {
     /// One spec-decode turn on a live session. `suffix` = the NEW tokens only (turn N+1's user
     /// message rendered through the chat template continuation). Returns (new tokens emitted,
     /// drafted, accepted); session.committed grows by suffix + emitted.
-    pub fn generate_spec_session(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
-                                 max_new: usize, k: usize)
-                                 -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+    pub fn generate_spec_session(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+        suffix: &[u32],
+        max_new: usize,
+        k: usize,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         self.generate_spec_session_sampled(e, sess, suffix, max_new, k, None)
     }
 
@@ -1346,57 +1950,115 @@ impl HybridModel {
     /// per-SESSION Philox continuity (sess.sctr/uctr). None = env-driven (CLI) or greedy.
     /// Filters (top-k/p/min-p) apply SYMMETRICALLY to draft q and verify p — distribution-exact
     /// for the filtered target (feat/filtered-spec).
-    pub fn generate_spec_session_sampled(&self, e: &Engine, sess: &mut SpecSession, suffix: &[u32],
-                                 max_new: usize, k: usize, sampling: Option<SpecSampling>)
-                                 -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
-        let mtp_dense = self.mtp.as_ref()
-            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
-        let trunk_dense = self.layers.iter()
+    pub fn generate_spec_session_sampled(
+        &self,
+        e: &Engine,
+        sess: &mut SpecSession,
+        suffix: &[u32],
+        max_new: usize,
+        k: usize,
+        sampling: Option<SpecSampling>,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        let mtp_dense = self
+            .mtp
+            .as_ref()
+            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. }))
+            .unwrap_or(false);
+        let trunk_dense = self
+            .layers
+            .iter()
             .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
         // FULL_PREC forces the EAGER draft: the graph capture would enclose cuBLASLt f32 GEMV
         // (the FloatBf16 else-branches) and a bf16_to_f32 dequant alloc — neither is stream-capture
         // safe. Eager rides matmul/matmul_decode_exact, which dequant FloatBf16 on use. (§item 2.)
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
-            && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
+            && !spec_host_embd()
+            && mtp_dense
+            && trunk_dense
+            && k + 2 < 96
+            && !crate::model::full_prec_enabled();
         let was_tracking = e.ctx().is_event_tracking();
-        if graph_draft && was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        if graph_draft && was_tracking {
+            unsafe {
+                e.ctx().disable_event_tracking();
+            }
+        }
         let r = self.generate_spec_inner2(e, suffix, max_new, k, graph_draft, Some(sess), sampling);
-        if graph_draft && was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        if graph_draft && was_tracking {
+            unsafe {
+                e.ctx().enable_event_tracking();
+            }
+        }
         let (out, d, a) = r?;
         Ok((out, d, a))
     }
 
-    pub fn generate_spec(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize)
-                         -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
-        let mtp_dense = self.mtp.as_ref()
-            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. })).unwrap_or(false);
-        let trunk_dense = self.layers.iter()
+    pub fn generate_spec(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+        k: usize,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+        let mtp_dense = self
+            .mtp
+            .as_ref()
+            .map(|m| matches!(m.ffn, crate::hybrid::Ffn::Dense { .. }))
+            .unwrap_or(false);
+        let trunk_dense = self
+            .layers
+            .iter()
             .all(|l| matches!(l.ffn, crate::hybrid::Ffn::Dense { .. }));
         // FULL_PREC forces eager (see generate_spec_session note): CUDA graph capture cannot
         // enclose cuBLASLt f32 GEMV or the bf16_to_f32 dequant alloc the FloatBf16 path needs.
         let graph_draft = std::env::var("BW24_SPEC_NOGRAPH").is_err()
-            && mtp_dense && trunk_dense && k + 2 < 96 && !crate::model::full_prec_enabled();
+            && !spec_host_embd()
+            && mtp_dense
+            && trunk_dense
+            && k + 2 < 96
+            && !crate::model::full_prec_enabled();
         if !graph_draft {
             return self.generate_spec_inner2(e, prompt, max_new, k, false, None, None);
         }
         let was_tracking = e.ctx().is_event_tracking();
-        if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        if was_tracking {
+            unsafe {
+                e.ctx().disable_event_tracking();
+            }
+        }
         let r = self.generate_spec_inner2(e, prompt, max_new, k, true, None, None);
-        if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        if was_tracking {
+            unsafe {
+                e.ctx().enable_event_tracking();
+            }
+        }
         r
     }
 
-    fn generate_spec_inner2(&self, e: &Engine, prompt: &[u32], max_new: usize, k: usize,
-                           graph_draft: bool, mut sess: Option<&mut SpecSession>,
-                           sampling: Option<SpecSampling>)
-                         -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
+    fn generate_spec_inner2(
+        &self,
+        e: &Engine,
+        prompt: &[u32],
+        max_new: usize,
+        k: usize,
+        graph_draft: bool,
+        mut sess: Option<&mut SpecSession>,
+        sampling: Option<SpecSampling>,
+    ) -> Result<(Vec<u32>, usize, usize), Box<dyn std::error::Error>> {
         assert!(k >= 1, "k must be >= 1");
-        let mtp = self.mtp.as_ref().expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
+        let mtp = self
+            .mtp
+            .as_ref()
+            .expect("generate_spec requires an MTP head (nextn_predict_layers>0)");
         let n_vocab = self.output.out_features();
         // FR-Spec: the draft head may be TRIMMED (fewer rows than n_vocab); the draft argmax runs
         // over the draft vocab and the winning index maps through d2t to a TARGET token id.
         // Everything downstream (verify/accept/commit) sees target ids only — exactness unchanged.
-        let d_vocab = mtp.shared_head_head.as_ref().unwrap_or(&self.output).out_features();
+        let d_vocab = mtp
+            .shared_head_head
+            .as_ref()
+            .unwrap_or(&self.output)
+            .out_features();
         let n_embd = self.cfg.n_embd as usize;
         // SESSION MODE: reuse the live cache/scratch, prime only the suffix. `base` = tokens
         // already committed (their state is in the caches); 0 = fresh single-shot call.
@@ -1407,21 +2069,45 @@ impl HybridModel {
         };
         let mut own_cache;
         let mut own_scratch;
-        let (cache, scratch, mut sess_tail): (&mut Cache, &mut MtpScratch,
-                                              Option<(&mut Vec<u32>, &mut Option<CudaSlice<f32>>,
-                                                      &mut Option<u32>, &mut u32, &mut u32)>) =
-            match sess.take() {
-                Some(sr) => {
-                    let SpecSession { cache, scratch, committed, last_h, next_pred, sctr: s_sctr, uctr: s_uctr } = sr;
-                    (cache, scratch, Some((committed, last_h, next_pred, s_sctr, s_uctr)))
-                }
-                None => {
-                    own_cache = Cache::new(e, &self.cfg, max_ctx)?;
-                    // Persistent scratch = max_ctx rows (~2KB/token quantized).
-                    own_scratch = MtpScratch::new(e, &self.cfg, max_ctx, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
-                    (&mut own_cache, &mut own_scratch, None)
-                }
-            };
+        let (cache, scratch, mut sess_tail): (
+            &mut Cache,
+            &mut MtpScratch,
+            Option<(
+                &mut Vec<u32>,
+                &mut Option<CudaSlice<f32>>,
+                &mut Option<u32>,
+                &mut u32,
+                &mut u32,
+            )>,
+        ) = match sess.take() {
+            Some(sr) => {
+                let SpecSession {
+                    cache,
+                    scratch,
+                    committed,
+                    last_h,
+                    next_pred,
+                    sctr: s_sctr,
+                    uctr: s_uctr,
+                } = sr;
+                (
+                    cache,
+                    scratch,
+                    Some((committed, last_h, next_pred, s_sctr, s_uctr)),
+                )
+            }
+            None => {
+                own_cache = Cache::new(e, &self.cfg, max_ctx)?;
+                // Persistent scratch = max_ctx rows (~2KB/token quantized).
+                own_scratch = MtpScratch::new(
+                    e,
+                    &self.cfg,
+                    max_ctx,
+                    self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
+                )?;
+                (&mut own_cache, &mut own_scratch, None)
+            }
+        };
         let base = cache.pos;
         // PERSISTENT DRAFT KV (the only mode since 2026-07-08 — the legacy round-local scratch,
         // BW24_SPEC_KVLOCAL, measured -35 acceptance pts on the 27B p3 sweep and was removed;
@@ -1455,7 +2141,8 @@ impl HybridModel {
         // ~102/38 tok/s vs the engine's ~2000-5900 tok/s batched prefill). prime_cache returns the
         // full pre-output_norm hidden stack [T, n_embd], which IS prompt_h (the persistent-draft-KV
         // mtp_kv_fill input) — no per-token collection needed. Prompts below PRIME_MIN_T, and
-        // BW24_PRIME_TOKENWISE=1 (the escape seam), take the tokenwise decode_step_h loop.
+        // BW24_PRIME_TOKENWISE=1, and frozen Hy3 CPU/GPU expert splits take the tokenwise
+        // decode_step_h loop. The latter avoids transient GPU staging of the spilled expert bank.
         // EMPTY-SUFFIX CONTINUATION (serve bursts): a session turn with NO new tokens resumes
         // generation exactly where the last turn stopped — no prime at all. The stashed
         // `next_pred` plays prime_logits' argmax role (it IS the argmax of the logits after
@@ -1464,16 +2151,22 @@ impl HybridModel {
         let continuation = prompt.is_empty();
         if continuation {
             assert!(session_mode, "empty prompt requires a session");
-            assert!(sess_tail.as_ref().map_or(false, |(c, lh, np, _, _)|
-                !c.is_empty() && lh.is_some() && np.is_some()),
-                "empty-suffix continuation needs a primed session (committed + last_h + next_pred)");
+            assert!(
+                sess_tail
+                    .as_ref()
+                    .map_or(false, |(c, lh, np, _, _)| !c.is_empty()
+                        && lh.is_some()
+                        && np.is_some()),
+                "empty-suffix continuation needs a primed session (committed + last_h + next_pred)"
+            );
         }
         let mut prime_logits;
         let mut prompt_h: Option<CudaSlice<f32>> = None;
         let t_prime = std::time::Instant::now();
         let batched_prime = !continuation
             && prompt.len() >= crate::hybrid_forward::PRIME_MIN_T
-            && std::env::var("BW24_PRIME_TOKENWISE").is_err();
+            && std::env::var("BW24_PRIME_TOKENWISE").is_err()
+            && !e.frozen_cpu_experts_prefer_tokenwise_prime();
         if continuation {
             prime_logits = Vec::new();
         } else if batched_prime {
@@ -1485,22 +2178,39 @@ impl HybridModel {
             prompt_h = Some(e.uninit(prompt.len() * n_embd)?);
             for (i, &tok) in prompt.iter().enumerate() {
                 let (l, h) = self.decode_step_h(e, tok, &mut *cache)?;
-                if let Some(ph) = prompt_h.as_mut() { e.copy_into(ph, i * n_embd, &h, n_embd)?; }
+                if let Some(ph) = prompt_h.as_mut() {
+                    e.copy_into(ph, i * n_embd, &h, n_embd)?;
+                }
                 prime_logits = l;
             }
         }
         e.stream().synchronize()?;
         // Harness timing contract (see crate::PRIME_NANOS): gen-only throughput without the
         // prime-subtraction hack.
-        crate::PRIME_NANOS.store(t_prime.elapsed().as_nanos() as u64,
-                                 std::sync::atomic::Ordering::Relaxed);
+        crate::PRIME_NANOS.store(
+            t_prime.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
-        // Resident embed table (model-lifetime, lazy first-use upload; kills the per-draft-token
-        // and per-verify host-dequant+htod that nsys measured at 84% of spec API time).
-        let embd_gpu = self.embd_gpu.get_or_init(|| {
-            e.upload_u8(&self.embd.raw).expect("embed table upload")
-        });
         let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
+        // Resident table is fastest when it fits. Large spill deployments can preserve that HBM
+        // for expert-cache slots and gather only the exact rows needed by MTP/verify from host.
+        let host_embd = spec_host_embd();
+        let embd_gpu = if host_embd {
+            None
+        } else {
+            Some(
+                self.embd_gpu
+                    .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload")),
+            )
+        };
+        let embd_dev = embd_gpu.map(|g| (g, embd_qt, embd_rb));
+        if host_embd {
+            eprintln!(
+                "[spec] host-row embedding: {} bytes kept off HBM",
+                self.embd.raw.len()
+            );
+        }
         let mut out: Vec<u32> = Vec::with_capacity(max_new);
         let mut total_drafted = 0usize;
         let mut total_accepted = 0usize;
@@ -1509,7 +2219,9 @@ impl HybridModel {
         // Emit it, then FEED it to establish the loop invariant below.
         let mut last_token = if continuation {
             sess_tail.as_ref().unwrap().2.unwrap()
-        } else { argmax(&prime_logits) as u32 };
+        } else {
+            argmax(&prime_logits) as u32
+        };
         out.push(last_token);
         if continuation {
             // draft-KV invariant: entries [0..base) are the session's exact fills; truncate any
@@ -1527,15 +2239,42 @@ impl HybridModel {
         // norm(max(0,p-q)) on reject, bonus sampled from p on full accept. Counter-based Philox
         // everywhere (seed, event) -> reproducible. temp==0/unset = the greedy path, untouched.
         let sp = sampling.unwrap_or_else(|| SpecSampling {
-            temp: std::env::var("BW24_SPEC_TEMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-            seed: std::env::var("BW24_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(42),
-            top_k: std::env::var("BW24_TOP_K").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            top_p: std::env::var("BW24_TOP_P").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
-            min_p: std::env::var("BW24_MIN_P").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-            penalty_last_n: std::env::var("BW24_PENALTY_LAST_N").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-            penalty_repeat: std::env::var("BW24_PENALTY_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
-            penalty_freq: std::env::var("BW24_PENALTY_FREQ").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
-            penalty_present: std::env::var("BW24_PENALTY_PRESENT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            temp: std::env::var("BW24_SPEC_TEMP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
+            seed: std::env::var("BW24_SEED")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(42),
+            top_k: std::env::var("BW24_TOP_K")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            top_p: std::env::var("BW24_TOP_P")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+            min_p: std::env::var("BW24_MIN_P")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
+            penalty_last_n: std::env::var("BW24_PENALTY_LAST_N")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            penalty_repeat: std::env::var("BW24_PENALTY_REPEAT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+            penalty_freq: std::env::var("BW24_PENALTY_FREQ")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
+            penalty_present: std::env::var("BW24_PENALTY_PRESENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
         });
         let (sp_temp, sp_seed) = (sp.temp, sp.seed);
         let sampled = sp_temp > 0.0;
@@ -1543,8 +2282,13 @@ impl HybridModel {
         // the residual scatters q into target-id space (q=-inf off-trim — the head cannot propose
         // those, so their residual mass is p(x), correct by construction).
         let d2t_dev: Option<CudaSlice<u32>> = if sampled || crate::spec::spec_stream() {
-            match &mtp.d2t { Some(map) => Some(e.htod_u32_v(map)?), None => None }
-        } else { None };
+            match &mtp.d2t {
+                Some(map) => Some(e.htod_u32_v(map)?),
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut q_full_buf: Option<CudaSlice<f32>> = None;
         // Counters resume from the session (burst continuity: randomness must never repeat
         // across generate_spec_session calls); one-shot callers start at (0,0). Read through
@@ -1560,29 +2304,40 @@ impl HybridModel {
                 let (h0, l0) = (((m0 as u64 * c0 as u64) >> 32) as u32, m0.wrapping_mul(c0));
                 let (h1, l1) = (((m1 as u64 * c2 as u64) >> 32) as u32, m1.wrapping_mul(c2));
                 let (n0, n1, n2, n3) = (h1 ^ c1 ^ k0, l1, h0 ^ c3 ^ k1, l0);
-                c0 = n0; c1 = n1; c2 = n2; c3 = n3;
-                k0 = k0.wrapping_add(0x9E3779B9); k1 = k1.wrapping_add(0xBB67AE85);
+                c0 = n0;
+                c1 = n1;
+                c2 = n2;
+                c3 = n3;
+                k0 = k0.wrapping_add(0x9E3779B9);
+                k1 = k1.wrapping_add(0xBB67AE85);
             }
             (c0 as f32 + 1.0) * (1.0 / 4294967296.0)
         };
-        let mut draft_logits: Vec<CudaSlice<f32>> = Vec::new();   // retained head logits (q), per slot
-        let mut draft_stats: Vec<(f32, f32, f32)> = Vec::new();   // (row_max, th_e, z_e) per slot
-        let mut perturb_buf: Option<CudaSlice<f32>> = None;       // gumbel scratch (max(n_vocab,d_vocab))
-        let mut sample_tok = e.alloc_u32_zeroed(1)?;              // residual/bonus sample out
-        let mut col_buf: Option<CudaSlice<f32>> = None;           // materialized verify column
-        // Penalties (v2.1): applied to COPIES of q rows and p columns symmetrically (exactness
-        // for the penalized+filtered target). History = generated tokens, host-tracked window.
-        let pen_on = sampled && sp.penalty_last_n > 0
+        let mut draft_logits: Vec<CudaSlice<f32>> = Vec::new(); // retained head logits (q), per slot
+        let mut draft_stats: Vec<(f32, f32, f32)> = Vec::new(); // (row_max, th_e, z_e) per slot
+        let mut perturb_buf: Option<CudaSlice<f32>> = None; // gumbel scratch (max(n_vocab,d_vocab))
+        let mut sample_tok = e.alloc_u32_zeroed(1)?; // residual/bonus sample out
+        let mut col_buf: Option<CudaSlice<f32>> = None; // materialized verify column
+                                                        // Penalties (v2.1): applied to COPIES of q rows and p columns symmetrically (exactness
+                                                        // for the penalized+filtered target). History = generated tokens, host-tracked window.
+        let pen_on = sampled
+            && sp.penalty_last_n > 0
             && (sp.penalty_repeat != 1.0 || sp.penalty_freq != 0.0 || sp.penalty_present != 0.0);
         let mut pen_hist: Vec<u32> = if pen_on {
-            prompt.iter().rev().take(64).rev().cloned().collect()  // llama-parity: history spans prompt tail too
-        } else { Vec::new() };
+            prompt.iter().rev().take(64).rev().cloned().collect() // llama-parity: history spans prompt tail too
+        } else {
+            Vec::new()
+        };
         let mut pen_hist_d: Option<CudaSlice<u32>> = None;
-        let mut pcol_buf: Option<CudaSlice<f32>> = None;          // penalized p-column scratch
+        let mut pcol_buf: Option<CudaSlice<f32>> = None; // penalized p-column scratch
         let (init_logits, h_seed0) = self.decode_step_h(e, last_token, &mut *cache)?;
         let mut last_pred = argmax(&init_logits) as u32;
         // sampled mode: p-distribution after last_token, for the j==0/base==0 accept test.
-        let mut last_col_logits: Option<CudaSlice<f32>> = if sampled { Some(e.htod(&init_logits)?) } else { None };
+        let mut last_col_logits: Option<CudaSlice<f32>> = if sampled {
+            Some(e.htod(&init_logits)?)
+        } else {
+            None
+        };
         let mut last_col_stats: Option<(f32, f32, f32)> = None;
         // PERSISTENT h_seed buffer (allocated BEFORE any graph capture so no captured scratch can
         // alias it): every path that updates the round seed copies INTO it — no per-round allocs,
@@ -1598,11 +2353,17 @@ impl HybridModel {
         {
             if let Some(ph) = &prompt_h {
                 let np = prompt.len();
-                e.copy_view_into(&mut h_seed_buf, 0, &ph.slice((np - 1) * n_embd..np * n_embd),
-                                 n_embd)?;
+                e.copy_view_into(
+                    &mut h_seed_buf,
+                    0,
+                    &ph.slice((np - 1) * n_embd..np * n_embd),
+                    n_embd,
+                )?;
             } else if continuation {
                 if let Some((_, lh, _, _, _)) = sess_tail.as_ref() {
-                    if let Some(lh) = lh.as_ref() { e.copy_into(&mut h_seed_buf, 0, lh, n_embd)?; }
+                    if let Some(lh) = lh.as_ref() {
+                        e.copy_into(&mut h_seed_buf, 0, lh, n_embd)?;
+                    }
                 }
             }
         }
@@ -1624,7 +2385,10 @@ impl HybridModel {
         // below p_min. Hoisted above the loop: the graph capture bakes the prob kernels iff on.
         static PMIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
         let p_min = *PMIN.get_or_init(|| {
-            std::env::var("BW24_SPEC_PMIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
+            std::env::var("BW24_SPEC_PMIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0)
         });
         // ZERO-DRAFT ROUNDS (BW24_SPEC_PMIN0=1, vendored from llama.cpp's draft gating): let the
         // p-min gate apply at j==0 too, so a low-confidence round drafts NOTHING and the verify
@@ -1632,7 +2396,9 @@ impl HybridModel {
         // exactly this — draft acceptance 76% at mean len 2.5 because unpredictable stretches
         // never pay draft+verify overhead. Only legal when a pending bonus exists (an empty
         // verify batch is not); the j==0 exemption stays for pending-less rounds.
-        let pmin0 = std::env::var("BW24_SPEC_PMIN0").map(|v| v == "1").unwrap_or(false);
+        let pmin0 = std::env::var("BW24_SPEC_PMIN0")
+            .map(|v| v == "1")
+            .unwrap_or(false);
 
         // --- GRAPH DRAFT setup: persistent I/O buffers + ONE capture (2 warmups inside). The
         // warmups mutate scratch len_d / pos / tok / seed — all reset at every round start, so the
@@ -1645,15 +2411,34 @@ impl HybridModel {
         let mut draft_graph: Option<cudarc::driver::CudaGraph> = None;
         if graph_draft && !sampled {
             let cap_res = e.capture_graph(|e| {
-                self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                          &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
-                                          embd_rb, d_vocab, None, None)
+                self.mtp_head_forward_cap(
+                    e,
+                    mtp,
+                    &mut g_tok,
+                    &mut g_pos,
+                    &mut g_seed,
+                    &mut g_p,
+                    &mut *scratch,
+                    p_min > 0.0,
+                    true,
+                    embd_gpu.expect("graph draft requires resident embedding"),
+                    embd_qt,
+                    embd_rb,
+                    d_vocab,
+                    None,
+                    None,
+                )
             });
             match cap_res {
-                Ok(g) => { scratch.set_len(e, 0)?; draft_graph = Some(g); }
+                Ok(g) => {
+                    scratch.set_len(e, 0)?;
+                    draft_graph = Some(g);
+                }
                 Err(err) => {
                     scratch.set_len(e, 0)?;
-                    if debug_spec { eprintln!("[spec] draft-graph capture failed ({err}); eager fallback"); }
+                    if debug_spec {
+                        eprintln!("[spec] draft-graph capture failed ({err}); eager fallback");
+                    }
                 }
             }
         }
@@ -1678,21 +2463,39 @@ impl HybridModel {
         let pure_temp = sp.top_k == 0 && sp.top_p >= 1.0 && sp.min_p <= 0.0 && !pen_on;
         if graph_draft && sampled && pure_temp {
             let cap_res = e.capture_graph(|e| {
-                self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed, &mut g_p,
-                                          &mut *scratch, p_min > 0.0, true, embd_gpu, embd_qt,
-                                          embd_rb, d_vocab,
-                                          Some((&mut g_ctr, &mut g_perturb, &mut g_q,
-                                                sp_seed, sp_temp)), None)
+                self.mtp_head_forward_cap(
+                    e,
+                    mtp,
+                    &mut g_tok,
+                    &mut g_pos,
+                    &mut g_seed,
+                    &mut g_p,
+                    &mut *scratch,
+                    p_min > 0.0,
+                    true,
+                    embd_gpu.expect("graph draft requires resident embedding"),
+                    embd_qt,
+                    embd_rb,
+                    d_vocab,
+                    Some((&mut g_ctr, &mut g_perturb, &mut g_q, sp_seed, sp_temp)),
+                    None,
+                )
             });
             match cap_res {
                 Ok(g) => {
                     scratch.set_len(e, 0)?;
-                    for _ in 0..k { q_slots.push(e.zeros(d_vocab)?); }
+                    for _ in 0..k {
+                        q_slots.push(e.zeros(d_vocab)?);
+                    }
                     draft_graph_s = Some(g);
                 }
                 Err(err) => {
                     scratch.set_len(e, 0)?;
-                    if debug_spec { eprintln!("[spec] sampled draft-graph capture failed ({err}); eager fallback"); }
+                    if debug_spec {
+                        eprintln!(
+                            "[spec] sampled draft-graph capture failed ({err}); eager fallback"
+                        );
+                    }
                 }
             }
         }
@@ -1709,8 +2512,10 @@ impl HybridModel {
             // T (concat = T*2*n_embd*4B — 1.5GB at 40k) and its concat loop is 2*T launches. The
             // fill is a pure sequential append, so chunking is exact: each chunk appends its rows
             // at pos0=base+start with the identical per-row math. Same knob as the trunk prime.
-            let fill_chunk: usize = std::env::var("BW24_PRIME_CHUNK").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(4096);
+            let fill_chunk: usize = std::env::var("BW24_PRIME_CHUNK")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4096);
             let tp = prompt.len();
             let fill_chunk = if fill_chunk == 0 { tp } else { fill_chunk };
             let mut start = 0usize;
@@ -1723,8 +2528,16 @@ impl HybridModel {
                     // gets the PREVIOUS turn's last committed hidden (sess.last_h). Per chunk:
                     // rows start..end read h[start-1..end-1] — one dtod into a chunk buffer.
                     let mut phs = e.zeros(tc * n_embd)?;
-                    let (src_lo, dst_off) = if start == 0 { (0, n_embd) } else { ((start - 1) * n_embd, 0) };
-                    let n_copy = if start == 0 { (tc - 1) * n_embd } else { tc * n_embd };
+                    let (src_lo, dst_off) = if start == 0 {
+                        (0, n_embd)
+                    } else {
+                        ((start - 1) * n_embd, 0)
+                    };
+                    let n_copy = if start == 0 {
+                        (tc - 1) * n_embd
+                    } else {
+                        tc * n_embd
+                    };
                     if start == 0 {
                         if let Some((_, lh, _, _, _)) = sess_tail.as_ref() {
                             if let Some(lh) = lh.as_ref() {
@@ -1733,10 +2546,22 @@ impl HybridModel {
                         }
                     }
                     if n_copy > 0 {
-                        e.copy_view_into(&mut phs, dst_off, &ph.slice(src_lo..src_lo + n_copy), n_copy)?;
+                        e.copy_view_into(
+                            &mut phs,
+                            dst_off,
+                            &ph.slice(src_lo..src_lo + n_copy),
+                            n_copy,
+                        )?;
                     }
-                    self.mtp_kv_fill(e, mtp, &prompt[start..end], &phs, base + start, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
+                    self.mtp_kv_fill(
+                        e,
+                        mtp,
+                        &prompt[start..end],
+                        &phs,
+                        base + start,
+                        &mut *scratch,
+                        embd_dev,
+                    )?;
                 }
                 start = end;
             }
@@ -1745,8 +2570,12 @@ impl HybridModel {
         // `nsys -c cudaProfilerApi` capture contains ONLY the round loop (draft/verify/commit).
         // (=1 brackets the whole call in run_spec.rs, prime included.)
         if std::env::var("BW24_PROFILE_SPEC").as_deref() == Ok("2") {
-            unsafe extern "C" { fn cudaProfilerStart() -> i32; }
-            unsafe { cudaProfilerStart(); }
+            unsafe extern "C" {
+                fn cudaProfilerStart() -> i32;
+            }
+            unsafe {
+                cudaProfilerStart();
+            }
         }
         // ROUND-STREAM stage (c) 4 (BW24_SPEC_STREAM=1, experimental): pre-issued M-round
         // bursts with ZERO per-round host readbacks — the accept/seed/rollback/ring kernels
@@ -1756,25 +2585,48 @@ impl HybridModel {
         // NOTE: not gated on the caller's graph_draft (its trunk_dense conjunct turns the 35B
         // MoE off) — the stream capture encloses ONLY the dense MTP head; the head-dense /
         // full-prec / k gates are re-derived here and a failed capture degrades to stream-off.
-        let stream_on = crate::spec::spec_stream() && !sampled && !spec_replay && !session_mode
-            && !crate::model::full_prec_enabled() && k + 2 < 96;
+        let stream_on = crate::spec::spec_stream()
+            && !sampled
+            && !spec_replay
+            && !session_mode
+            && embd_gpu.is_some()
+            && !crate::model::full_prec_enabled()
+            && k + 2 < 96;
         let mut stream_graph: Option<cudarc::driver::CudaGraph> = None;
         let mut g_tokp2k = e.alloc_u32_zeroed(2 * k.max(1))?;
         if stream_on {
             let cap = e.capture_graph(|e| {
                 for j in 0..k.max(1) {
-                    self.mtp_head_forward_cap(e, mtp, &mut g_tok, &mut g_pos, &mut g_seed,
-                                              &mut g_p, &mut *scratch, true, true,
-                                              embd_gpu, embd_qt, embd_rb, d_vocab, None,
-                                              Some((&mut g_tokp2k, j, d2t_dev.as_ref())))?;
+                    self.mtp_head_forward_cap(
+                        e,
+                        mtp,
+                        &mut g_tok,
+                        &mut g_pos,
+                        &mut g_seed,
+                        &mut g_p,
+                        &mut *scratch,
+                        true,
+                        true,
+                        embd_gpu.expect("round stream requires resident embedding"),
+                        embd_qt,
+                        embd_rb,
+                        d_vocab,
+                        None,
+                        Some((&mut g_tokp2k, j, d2t_dev.as_ref())),
+                    )?;
                 }
                 Ok(())
             });
             match cap {
-                Ok(g) => { scratch.set_len(e, 0)?; stream_graph = Some(g); }
+                Ok(g) => {
+                    scratch.set_len(e, 0)?;
+                    stream_graph = Some(g);
+                }
                 Err(err) => {
                     scratch.set_len(e, 0)?;
-                    if debug_spec { eprintln!("[spec] stream-graph capture failed ({err}); stream off"); }
+                    if debug_spec {
+                        eprintln!("[spec] stream-graph capture failed ({err}); stream off");
+                    }
                 }
             }
         }
@@ -1788,11 +2640,26 @@ impl HybridModel {
         // module (extracted 2026-07-12; the gemma burst reuses them).
         let sb = crate::round_stream::StreamBufs::new(e, k, crate::spec::spec_stream_m())?;
         let crate::round_stream::StreamBufs {
-            mut vtok_d, mut brk_d, mut pend_d, last_pred_d, mut pos_ctr, mut pos_start_d,
-            mut ring_d, acc_d: mut stream_acc, m_rounds, k: _ } = sb;
+            mut vtok_d,
+            mut brk_d,
+            mut pend_d,
+            last_pred_d,
+            mut pos_ctr,
+            mut pos_start_d,
+            mut ring_d,
+            acc_d: mut stream_acc,
+            m_rounds,
+            k: _,
+        } = sb;
         let stream_ptrs: Option<CudaSlice<u64>> = if stream_active {
-            Some(crate::round_stream::kv_len_ptr_table(e, cache, Some(&pos_ctr))?)
-        } else { None };
+            Some(crate::round_stream::kv_len_ptr_table(
+                e,
+                cache,
+                Some(&pos_ctr),
+            )?)
+        } else {
+            None
+        };
 
         let mut round = 0usize;
         // (Adaptive-K — BW24_SPEC_ADAPT, acceptance-EMA draft length — measured an HONEST LOSS
@@ -1805,7 +2672,9 @@ impl HybridModel {
         // cache never reallocates len_d; see cache.rs "stable pointer" note). 0 = no KV layer.
         let kv_len_ptrs: Option<CudaSlice<u64>> = if spec_devacc() && !spec_replay {
             Some(crate::round_stream::kv_len_ptr_table(e, cache, None)?)
-        } else { None };
+        } else {
+            None
+        };
         // BONUS FOLD (2026-07-04): after a FULL accept the bonus token is NOT committed with a
         // separate T=1 trunk pass (a full weight read per round). It stays PENDING and rides as
         // column 0 of the NEXT round's verify batch. Under predecessor pairing the next chain
@@ -1813,78 +2682,122 @@ impl HybridModel {
         // pass of any kind). Verify still
         // checks every emitted token against the target -> exactness holds by construction; only
         // DRAFT QUALITY can shift, which the acceptance numbers arbitrate.
-        let mut pending: Option<u32> = None;   // bonus emitted but not yet committed to cache
-        // BW24_SPEC_PHASE=1: per-round wall decomposition (draft / verify / accept+commit) —
-        // no tracing, no extra syncs (each phase is naturally sync-bounded: draft readbacks,
-        // the verify accept readback). Printed once at loop end via spec-stats.
+        let mut pending: Option<u32> = None; // bonus emitted but not yet committed to cache
+                                             // BW24_SPEC_PHASE=1: per-round wall decomposition (draft / verify / accept+commit) —
+                                             // no tracing, no extra syncs (each phase is naturally sync-bounded: draft readbacks,
+                                             // the verify accept readback). Printed once at loop end via spec-stats.
         let phase_on = std::env::var("BW24_SPEC_PHASE").as_deref() == Ok("1");
         let (mut ph_draft, mut ph_verify, mut ph_rest) = (0f64, 0f64, 0f64);
         let mut ph_wait = 0f64;
         let mut ph_t = std::time::Instant::now();
         let mut ph_mark = |acc: &mut f64, on: bool| {
-            if on { let now = std::time::Instant::now();
-                    *acc += (now - ph_t).as_secs_f64(); ph_t = now; }
+            if on {
+                let now = std::time::Instant::now();
+                *acc += (now - ph_t).as_secs_f64();
+                ph_t = now;
+            }
         };
         while out.len() < max_new {
             // ROUND-STREAM BURST: from round 1 (pending guaranteed by every non-replay arm),
             // issue M rounds with zero readbacks, then drain the ring + reconcile mirrors.
-            if let (true, Some(sg), Some(ptrs)) =
-                (stream_active && round >= 1 && pending.is_some(), &stream_graph, &stream_ptrs) {
+            if let (true, Some(sg), Some(ptrs)) = (
+                stream_active && round >= 1 && pending.is_some(),
+                &stream_graph,
+                &stream_ptrs,
+            ) {
                 if debug_spec {
                     static ONCE: std::sync::Once = std::sync::Once::new();
-                    ONCE.call_once(|| eprintln!("[bw24] ROUND-STREAM burst engaged (M={m_rounds} k={k})"));
+                    ONCE.call_once(|| {
+                        eprintln!("[bw24] ROUND-STREAM burst engaged (M={m_rounds} k={k})")
+                    });
                 }
                 e.set_i32_one(&mut pos_ctr, cache.pos as i32)?;
                 e.set_u32_one(&mut pend_d, pending.unwrap())?;
-                e.set_u32_one(&mut ring_d, 0)?;   // ring count = 0 (writes element 0)
+                e.set_u32_one(&mut ring_d, 0)?; // ring count = 0 (writes element 0)
                 for _mi in 0..m_rounds {
                     e.i32_copy_add(&pos_ctr, &mut pos_start_d, 0)?;
-                    cache.snapshot_into(e, &mut snap)?;             // device D2Ds, stream-ordered
-                    e.i32_copy_add(&pos_ctr, &mut scratch.kv.len_d, 0)?;   // draft-KV rollback
-                    e.i32_copy_add(&pos_ctr, &mut g_pos, 1)?;              // rope pos = pos + base
+                    cache.snapshot_into(e, &mut snap)?; // device D2Ds, stream-ordered
+                    e.i32_copy_add(&pos_ctr, &mut scratch.kv.len_d, 0)?; // draft-KV rollback
+                    e.i32_copy_add(&pos_ctr, &mut g_pos, 1)?; // rope pos = pos + base
                     e.u32_copy(&pend_d, &mut g_tok)?;
                     e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
                     sg.launch()?;
-                    e.spec_assemble_verify(&g_tokp2k, &pend_d, d2t_dev.as_ref(), &mut vtok_d,
-                                           &mut brk_d, p_min, k, pmin0)?;
+                    e.spec_assemble_verify(
+                        &g_tokp2k,
+                        &pend_d,
+                        d2t_dev.as_ref(),
+                        &mut vtok_d,
+                        &mut brk_d,
+                        p_min,
+                        k,
+                        pmin0,
+                    )?;
                     let mut ck = VerifyCkpt::new(self.layers.len());
                     let dummy = vec![0u32; t_v_s];
                     let (tl_d, vx) = self.decode_step_t_core_stream(
-                        e, &dummy, 0, &mut *cache, Some((embd_gpu, embd_qt, embd_rb)),
-                        Some(&mut ck), Some((&vtok_d, &pos_ctr)))?;
+                        e,
+                        &dummy,
+                        0,
+                        &mut *cache,
+                        embd_dev,
+                        Some(&mut ck),
+                        Some((&vtok_d, &pos_ctr)),
+                    )?;
                     for j in 0..t_v_s {
                         e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?;
                     }
-                    e.spec_accept_greedy_dc(&preds_d, &vtok_d, &last_pred_d, &brk_d, &mut stream_acc)?;
+                    e.spec_accept_greedy_dc(
+                        &preds_d,
+                        &vtok_d,
+                        &last_pred_d,
+                        &brk_d,
+                        &mut stream_acc,
+                    )?;
                     e.spec_seed_gather(&vx, &fill_prev, &stream_acc, &mut h_seed_buf, 1, n_embd)?;
                     e.copy_into(&mut fill_prev, 0, &h_seed_buf, n_embd)?;
-                    self.commit_verified_prefix_stream(e, &mut *cache, &snap, &ck, &stream_acc,
-                                                       1, t_v_s)?;
-                    e.spec_rollback_stream(ptrs, &pos_start_d, &stream_acc, 1,
-                                           self.layers.len() + 1)?;
+                    self.commit_verified_prefix_stream(
+                        e,
+                        &mut *cache,
+                        &snap,
+                        &ck,
+                        &stream_acc,
+                        1,
+                        t_v_s,
+                    )?;
+                    e.spec_rollback_stream(
+                        ptrs,
+                        &pos_start_d,
+                        &stream_acc,
+                        1,
+                        self.layers.len() + 1,
+                    )?;
                     e.spec_ring_commit(&vtok_d, &stream_acc, &brk_d, &mut ring_d, &mut pend_d)?;
                 }
                 e.stream().synchronize()?;
                 let ring_h = e.dtoh_u32(&ring_d)?;
                 let cnt = ring_h[0] as usize;
                 for i in 0..cnt {
-                    if out.len() < max_new { out.push(ring_h[1 + i]); }
+                    if out.len() < max_new {
+                        out.push(ring_h[1 + i]);
+                    }
                 }
                 let pos_h = e.dtoh_i32(&pos_ctr)?[0] as usize;
                 for il in 0..self.layers.len() {
-                    if let Some(kvl) = cache.kv[il].as_mut() { kvl.len = pos_h; }
+                    if let Some(kvl) = cache.kv[il].as_mut() {
+                        kvl.len = pos_h;
+                    }
                 }
                 cache.pos = pos_h;
                 scratch.kv.len = pos_h;
-                pending = Some(ring_h[cnt]);            // last drained token = the live bonus
+                pending = Some(ring_h[cnt]); // last drained token = the live bonus
                 last_token = ring_h[cnt];
-                total_drafted += k * m_rounds;          // upper bound (p-min breaks uncounted)
+                total_drafted += k * m_rounds; // upper bound (p-min breaks uncounted)
                 total_accepted += cnt.saturating_sub(m_rounds);
                 round += m_rounds;
                 continue;
             }
-            let pos = cache.pos;            // #tokens committed (EXCLUDES a pending bonus)
-            cache.snapshot_into(e, &mut snap)?;  // §C: snapshot BEFORE draft+verify
+            let pos = cache.pos; // #tokens committed (EXCLUDES a pending bonus)
+            cache.snapshot_into(e, &mut snap)?; // §C: snapshot BEFORE draft+verify
             ph_mark(&mut ph_rest, phase_on);
 
             // --- 1. DRAFT k tokens with the NextN head (autoregressive, T=1 each) ---
@@ -1901,10 +2814,13 @@ impl HybridModel {
                 let w0 = pen_hist.len().saturating_sub(sp.penalty_last_n);
                 pen_hist_d = Some(e.htod_u32_v(&pen_hist[w0..])?);
             }
-            let k_this = k;   // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
+            let k_this = k; // fixed draft length (adaptive-K removed 2026-07-08, honest loss)
             let mut draft: Vec<u32> = Vec::with_capacity(k);
-            let mut draft_idx: Vec<u32> = Vec::with_capacity(k);   // trimmed-vocab ids (== draft when untrimmed)
-            if sampled { draft_logits.clear(); draft_stats.clear(); }
+            let mut draft_idx: Vec<u32> = Vec::with_capacity(k); // trimmed-vocab ids (== draft when untrimmed)
+            if sampled {
+                draft_logits.clear();
+                draft_stats.clear();
+            }
             if let (false, Some(gr)) = (sampled || pen_on, &draft_graph) {
                 // GRAPH DRAFT: one dispatch per drafted token. The chain feeds itself on-device
                 // (in-graph argmax -> tok_d -> next replay's embed; h_nextn -> h_seed_d; pos_d
@@ -1914,18 +2830,25 @@ impl HybridModel {
                 e.copy_into(&mut g_seed, 0, &h_seed_buf, n_embd)?;
                 for j in 0..k_this {
                     gr.launch()?;
-                    scratch.kv.len += 1;   // host mirror (len_d advanced in-graph)
+                    scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
                     let idx = e.dtoh_u32_one(&g_tok)?;
                     // trimmed draft vocab -> target token id (identity when no d2t map)
-                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    let d = match &mtp.d2t {
+                        Some(map) => map[idx as usize],
+                        None => idx,
+                    };
                     if p_min > 0.0 {
                         let p = e.dtoh(&g_p)?[0];
-                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) {
+                            break;
+                        }
                     }
                     draft.push(d);
                     // with a trimmed head the NEXT embed must read the TARGET id, not the draft
                     // index the argmax wrote — patch the persistent token buffer (4B htod).
-                    if d != idx { e.set_u32_one(&mut g_tok, d)?; }
+                    if d != idx {
+                        e.set_u32_one(&mut g_tok, d)?;
+                    }
                 }
             } else if let (true, Some(gr)) = (sampled, &draft_graph_s) {
                 // SAMPLED GRAPH DRAFT: one replay per drafted token — head forward + gumbel +
@@ -1940,30 +2863,49 @@ impl HybridModel {
                 e.set_u32_one(&mut g_ctr, sctr.wrapping_sub(1))?;
                 for j in 0..k_this {
                     gr.launch()?;
-                    scratch.kv.len += 1;   // host mirror (len_d advanced in-graph)
-                    sctr += 1;             // mirrors the in-graph g_ctr bump (eager parity:
-                                           // counts the p-min-discarded token too)
-                    // q retention: ONE async D2D of the persistent head-logits buffer into this
-                    // round's slot j (stream-ordered after the replay, before the next one).
+                    scratch.kv.len += 1; // host mirror (len_d advanced in-graph)
+                    sctr += 1; // mirrors the in-graph g_ctr bump (eager parity:
+                               // counts the p-min-discarded token too)
+                               // q retention: ONE async D2D of the persistent head-logits buffer into this
+                               // round's slot j (stream-ordered after the replay, before the next one).
                     e.copy_into(&mut q_slots[j], 0, &g_q, d_vocab)?;
                     let idx = e.dtoh_u32_one(&g_tok)?;
-                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    let d = match &mtp.d2t {
+                        Some(map) => map[idx as usize],
+                        None => idx,
+                    };
                     draft_idx.push(idx);
                     if p_min > 0.0 {
                         let p = e.dtoh(&g_p)?[0];
-                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) {
+                            break;
+                        }
                     }
                     draft.push(d);
                     // trimmed head: the NEXT embed must read the TARGET id (see the greedy arm).
-                    if d != idx { e.set_u32_one(&mut g_tok, d)?; }
+                    if d != idx {
+                        e.set_u32_one(&mut g_tok, d)?;
+                    }
                 }
                 // uniform accept path: fill draft_stats per used slot (pure-temp regime — the
                 // stats degenerate to th=0 / full-Z; one filter_stats launch per slot, tiny).
                 for j in 0..draft.len().max(draft_idx.len()) {
                     let rows0 = e.htod_i32(&[0])?;
                     let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
-                    e.filter_stats(&q_slots[j], d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
-                                   d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                    e.filter_stats(
+                        &q_slots[j],
+                        d_vocab,
+                        &rows0,
+                        &mut th_d,
+                        &mut z_d,
+                        &mut mx_d,
+                        d_vocab,
+                        1,
+                        sp_temp,
+                        sp.top_k,
+                        sp.top_p,
+                        sp.min_p,
+                    )?;
                     draft_stats.push((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
                 }
             } else {
@@ -1974,25 +2916,46 @@ impl HybridModel {
                     // GPU-ARGMAX DRAFT (2026-07-03): device logits + device argmax + 4-byte token
                     // read instead of the ~600KB full-vocab dtoh + host argmax per draft token.
                     let mtp_pos = pos + base0 + j;
-                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(e, mtp, e_tok, &d_seed, &mut *scratch, mtp_pos, embd_gpu, embd_qt, embd_rb)?;
+                    let (dl_d, h_nextn) = self.mtp_head_forward_dev(
+                        e,
+                        mtp,
+                        e_tok,
+                        &d_seed,
+                        &mut *scratch,
+                        mtp_pos,
+                        embd_dev,
+                    )?;
                     let tok_d = if sampled {
                         // FILTERED Gumbel-max: stats -> masked perturb -> argmax = one draw from
                         // the filtered softmax (filters off => th=0, exact v1 semantics).
-                        if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
-                        let mut q_row = e.clone_dtod(&dl_d)?;      // retained q (penalized when on)
+                        if perturb_buf.is_none() {
+                            perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?);
+                        }
+                        let mut q_row = e.clone_dtod(&dl_d)?; // retained q (penalized when on)
                         if pen_on {
                             let h = pen_hist_d.as_ref().unwrap();
                             let nh = h.len();
-                            e.penalize_logits(&mut q_row, h, nh, sp.penalty_repeat, sp.penalty_freq,
-                                              sp.penalty_present, d_vocab)?;
+                            e.penalize_logits(
+                                &mut q_row,
+                                h,
+                                nh,
+                                sp.penalty_repeat,
+                                sp.penalty_freq,
+                                sp.penalty_present,
+                                d_vocab,
+                            )?;
                         }
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
-                        e.filter_stats(&q_row, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
-                                       d_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        e.filter_stats(
+                            &q_row, d_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d, d_vocab, 1,
+                            sp_temp, sp.top_k, sp.top_p, sp.min_p,
+                        )?;
                         let (th, z, mx) = (e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0], e.dtoh(&mx_d)?[0]);
                         let pb = perturb_buf.as_mut().unwrap();
-                        e.gumbel_perturb_filtered(&q_row, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th)?;
+                        e.gumbel_perturb_filtered(
+                            &q_row, pb, d_vocab, sp_seed, sctr, sp_temp, mx, th,
+                        )?;
                         sctr += 1;
                         draft_logits.push(q_row);
                         draft_stats.push((mx, th, z));
@@ -2001,12 +2964,19 @@ impl HybridModel {
                         e.argmax_token_device(&dl_d, d_vocab)?
                     };
                     let idx = e.dtoh_u32_one(&tok_d)?;
-                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
-                    if sampled { draft_idx.push(idx); }
+                    let d = match &mtp.d2t {
+                        Some(map) => map[idx as usize],
+                        None => idx,
+                    };
+                    if sampled {
+                        draft_idx.push(idx);
+                    }
                     if p_min > 0.0 {
                         let p_d = e.prob_of_token_device(&dl_d, &tok_d, d_vocab)?;
                         let p = e.dtoh(&p_d)?[0];
-                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) { break; }
+                        if p < p_min && (j > 0 || (pmin0 && base0 == 1)) {
+                            break;
+                        }
                     }
                     draft.push(d);
                     e_tok = d;
@@ -2019,16 +2989,30 @@ impl HybridModel {
             // --- 2. VERIFY: one batched target forward. With a pending bonus, it rides as col 0
             //         (committing its KV/recur inside the SAME weight read); drafts follow. ---
             let verify_tokens: Vec<u32> = match pending {
-                Some(b) => { let mut v = Vec::with_capacity(k_round + 1); v.push(b); v.extend_from_slice(&draft); v }
+                Some(b) => {
+                    let mut v = Vec::with_capacity(k_round + 1);
+                    v.push(b);
+                    v.extend_from_slice(&draft);
+                    v
+                }
                 None => draft.clone(),
             };
             let base = if pending.is_some() { 1 } else { 0 };
             // ckpt (REPLAY-FREE partial accept): retain per-layer state-rebuild inputs alongside
             // the verify. Pure buffer keep-alives + dtod clones — kernel work is unchanged.
-            let mut ckpt = if spec_replay { None } else { Some(VerifyCkpt::new(self.layers.len())) };
-            let (tlogits_d, vx) = self.decode_step_t_core(e, &verify_tokens, pos, &mut *cache,
-                                                          Some((embd_gpu, embd_qt, embd_rb)),
-                                                          ckpt.as_mut())?;
+            let mut ckpt = if spec_replay {
+                None
+            } else {
+                Some(VerifyCkpt::new(self.layers.len()))
+            };
+            let (tlogits_d, vx) = self.decode_step_t_core(
+                e,
+                &verify_tokens,
+                pos,
+                &mut *cache,
+                embd_dev,
+                ckpt.as_mut(),
+            )?;
 
             ph_mark(&mut ph_verify, phase_on);
             // --- 3. GREEDY ACCEPT (walk prefix, stop at first mismatch) ---
@@ -2044,11 +3028,15 @@ impl HybridModel {
                 for j in 0..t_v {
                     e.argmax_token_device_col(&tlogits_d, j, n_vocab, &mut preds_d, j)?;
                 }
-                preds = e.dtoh_u32(&preds_d)?;   // <- the verify-GPU wait lands here
+                preds = e.dtoh_u32(&preds_d)?; // <- the verify-GPU wait lands here
             }
             ph_mark(&mut ph_wait, phase_on);
             let t_pred = |j: usize| -> u32 {
-                if j == 0 && base == 0 { last_pred } else { preds[base + j - 1] }
+                if j == 0 && base == 0 {
+                    last_pred
+                } else {
+                    preds[base + j - 1]
+                }
             };
             let mut devacc_seeded = false;
             let mut devacc_acc: Option<CudaSlice<u32>> = None;
@@ -2060,7 +3048,14 @@ impl HybridModel {
                 if crate::spec::spec_devacc() && k_round > 0 && !spec_replay {
                     let draft_d = e.htod_u32_v(&draft)?;
                     let mut acc_out = e.alloc_u32_zeroed(2)?;
-                    e.spec_accept_greedy(&preds_d, &draft_d, last_pred, base, k_round, &mut acc_out)?;
+                    e.spec_accept_greedy(
+                        &preds_d,
+                        &draft_d,
+                        last_pred,
+                        base,
+                        k_round,
+                        &mut acc_out,
+                    )?;
                     devacc_acc = Some(acc_out.clone());
                     // stage (b): next-round seed gathered ON DEVICE from acc_out before the host
                     // ever reads n_acc (j=base+n_acc -> vx col j-1; j==0 -> fill_prev). The three
@@ -2075,7 +3070,8 @@ impl HybridModel {
                     // update after the readback; commit_verified_prefix skips its len_d writes.
                     if let Some(ptrs) = &kv_len_ptrs {
                         let saved: Vec<i32> = (0..self.layers.len())
-                            .map(|il| snap.kv_len[il].map(|v| v as i32).unwrap_or(0)).collect();
+                            .map(|il| snap.kv_len[il].map(|v| v as i32).unwrap_or(0))
+                            .collect();
                         let saved_d = e.htod_i32(&saved)?;
                         e.spec_rollback_kv(ptrs, &saved_d, &acc_out, base, self.layers.len())?;
                     }
@@ -2083,26 +3079,35 @@ impl HybridModel {
                     let ab = e.dtoh_u32(&acc_out)?;
                     (ab[0] as usize, ab[1])
                 } else {
-                let mut n_acc = 0usize;
-                for j in 0..k_round {
-                    if t_pred(j) == draft[j] { n_acc += 1; } else { break; }
-                }
-                // bonus = target's own token at the first non-accepted slot. n_acc in 0..=k; t_pred
-                // is defined for j in 0..=k (j==0 -> last_logits, j>=1 -> col j-1, last col = k-1).
-                (n_acc, t_pred(n_acc))
+                    let mut n_acc = 0usize;
+                    for j in 0..k_round {
+                        if t_pred(j) == draft[j] {
+                            n_acc += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    // bonus = target's own token at the first non-accepted slot. n_acc in 0..=k; t_pred
+                    // is defined for j in 0..=k (j==0 -> last_logits, j>=1 -> col j-1, last col = k-1).
+                    (n_acc, t_pred(n_acc))
                 }
             } else {
                 // --- SAMPLED ACCEPT (rejection sampling): u_j < p_j(x_j)/q_j(x_j) walk ---
-                if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
+                if col_buf.is_none() {
+                    col_buf = Some(e.zeros(n_vocab)?);
+                }
                 // FILTERED p_j: per-verify-col stats (one batched filter_stats call), then the
                 // filtered gather. j==0&&base==0 reads last_col (its own stats row appended).
                 let mut pj = vec![0f32; k_round.max(1)];
-                let mut col_stats: Vec<(f32, f32, f32)> = Vec::new();  // (max, th, z) per verify col used
+                let mut col_stats: Vec<(f32, f32, f32)> = Vec::new(); // (max, th, z) per verify col used
                 if k_round > 0 {
                     let mut ids: Vec<u32> = Vec::new();
                     let mut rows: Vec<i32> = Vec::new();
                     for j in 0..k_round {
-                        if j > 0 || base == 1 { ids.push(draft[j]); rows.push((base + j) as i32 - 1); }
+                        if j > 0 || base == 1 {
+                            ids.push(draft[j]);
+                            rows.push((base + j) as i32 - 1);
+                        }
                     }
                     if !ids.is_empty() {
                         let nr = rows.len();
@@ -2110,7 +3115,11 @@ impl HybridModel {
                         // buffer (rows remapped 0..nr) so stats+gathers see the penalized p.
                         // penalties: materialize used columns contiguously, penalize all rows in
                         // one launch, and point stats+gathers at the penalized buffer (rows 0..nr).
-                        let p_rows: Vec<i32> = if pen_on { (0..nr as i32).collect() } else { rows.clone() };
+                        let p_rows: Vec<i32> = if pen_on {
+                            (0..nr as i32).collect()
+                        } else {
+                            rows.clone()
+                        };
                         if pen_on {
                             if pcol_buf.as_ref().map(|b| b.len()).unwrap_or(0) < nr * n_vocab {
                                 pcol_buf = Some(e.zeros(nr * n_vocab)?);
@@ -2118,51 +3127,100 @@ impl HybridModel {
                             let pc = pcol_buf.as_mut().unwrap();
                             for (i2, &r) in rows.iter().enumerate() {
                                 let c = r as usize;
-                                e.copy_view_into(pc, i2 * n_vocab,
-                                                 &tlogits_d.slice(c * n_vocab..(c + 1) * n_vocab), n_vocab)?;
+                                e.copy_view_into(
+                                    pc,
+                                    i2 * n_vocab,
+                                    &tlogits_d.slice(c * n_vocab..(c + 1) * n_vocab),
+                                    n_vocab,
+                                )?;
                             }
                             let h = pen_hist_d.as_ref().unwrap();
                             let nh = h.len();
-                            e.penalize_logits_rows(pc, h, nh, sp.penalty_repeat, sp.penalty_freq,
-                                                   sp.penalty_present, n_vocab, nr)?;
+                            e.penalize_logits_rows(
+                                pc,
+                                h,
+                                nh,
+                                sp.penalty_repeat,
+                                sp.penalty_freq,
+                                sp.penalty_present,
+                                n_vocab,
+                                nr,
+                            )?;
                         }
-                        let p_src: &CudaSlice<f32> = if pen_on { pcol_buf.as_ref().unwrap() } else { &tlogits_d };
+                        let p_src: &CudaSlice<f32> = if pen_on {
+                            pcol_buf.as_ref().unwrap()
+                        } else {
+                            &tlogits_d
+                        };
                         let rowsd = e.htod_i32(&p_rows)?;
-                        let (mut th_d, mut z_d, mut mx_d) = (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
-                        e.filter_stats(p_src, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d,
-                                       n_vocab, nr, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        let (mut th_d, mut z_d, mut mx_d) =
+                            (e.zeros(nr)?, e.zeros(nr)?, e.zeros(nr)?);
+                        e.filter_stats(
+                            p_src, n_vocab, &rowsd, &mut th_d, &mut z_d, &mut mx_d, n_vocab, nr,
+                            sp_temp, sp.top_k, sp.top_p, sp.min_p,
+                        )?;
                         let idsd = e.htod_u32_v(&ids)?;
                         let mut outd = e.zeros(nr)?;
-                        e.softmax_gather_filtered(p_src, n_vocab, &idsd, &rowsd, &th_d, &z_d,
-                                                  &mut outd, n_vocab, nr, sp_temp)?;
+                        e.softmax_gather_filtered(
+                            p_src, n_vocab, &idsd, &rowsd, &th_d, &z_d, &mut outd, n_vocab, nr,
+                            sp_temp,
+                        )?;
                         let outv = e.dtoh(&outd)?;
                         let (thv, zv, mxv) = (e.dtoh(&th_d)?, e.dtoh(&z_d)?, e.dtoh(&mx_d)?);
                         let mut oi = 0usize;
-                        for j in 0..k_round { if j > 0 || base == 1 { pj[j] = outv[oi]; oi += 1; } }
+                        for j in 0..k_round {
+                            if j > 0 || base == 1 {
+                                pj[j] = outv[oi];
+                                oi += 1;
+                            }
+                        }
                         col_stats = (0..nr).map(|i| (mxv[i], thv[i], zv[i])).collect();
                     }
                     if base == 0 {
                         let lc: &CudaSlice<f32> = if pen_on {
-                            if col_buf.is_none() { col_buf = Some(e.zeros(n_vocab)?); }
+                            if col_buf.is_none() {
+                                col_buf = Some(e.zeros(n_vocab)?);
+                            }
                             let cb = col_buf.as_mut().unwrap();
-                            e.copy_into(cb, 0, last_col_logits.as_ref().expect("sampled: last_col_logits unset"), n_vocab)?;
+                            e.copy_into(
+                                cb,
+                                0,
+                                last_col_logits
+                                    .as_ref()
+                                    .expect("sampled: last_col_logits unset"),
+                                n_vocab,
+                            )?;
                             let h = pen_hist_d.as_ref().unwrap();
                             let nh = h.len();
-                            e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                            e.penalize_logits(
+                                cb,
+                                h,
+                                nh,
+                                sp.penalty_repeat,
+                                sp.penalty_freq,
+                                sp.penalty_present,
+                                n_vocab,
+                            )?;
                             col_buf.as_ref().unwrap()
                         } else {
-                            last_col_logits.as_ref().expect("sampled: last_col_logits unset")
+                            last_col_logits
+                                .as_ref()
+                                .expect("sampled: last_col_logits unset")
                         };
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
-                        e.filter_stats(lc, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
-                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        e.filter_stats(
+                            lc, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d, n_vocab, 1,
+                            sp_temp, sp.top_k, sp.top_p, sp.min_p,
+                        )?;
                         let idsd = e.htod_u32_v(&[draft[0]])?;
                         let mut outd = e.zeros(1)?;
-                        e.softmax_gather_filtered(lc, n_vocab, &idsd, &rows0, &th_d, &z_d,
-                                                  &mut outd, n_vocab, 1, sp_temp)?;
+                        e.softmax_gather_filtered(
+                            lc, n_vocab, &idsd, &rows0, &th_d, &z_d, &mut outd, n_vocab, 1, sp_temp,
+                        )?;
                         pj[0] = e.dtoh(&outd)?[0];
-                        last_col_stats = Some((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
+                        last_col_stats =
+                            Some((e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0]));
                     }
                 }
                 // q source: the graph arm retained the head logits in the persistent q_slots;
@@ -2170,33 +3228,59 @@ impl HybridModel {
                 // FILTERED q_j: stats from draft_stats (eager pushes in-chain; the graph arm
                 // computes them post-replay — graph engages only filter/penalty-free, so the
                 // stats degenerate to th=0/full-Z there, keeping ONE accept path).
-                let q_bufs: &[CudaSlice<f32>] =
-                    if draft_graph_s.is_some() { &q_slots } else { &draft_logits };
+                let q_bufs: &[CudaSlice<f32>] = if draft_graph_s.is_some() {
+                    &q_slots
+                } else {
+                    &draft_logits
+                };
                 let mut n_acc = 0usize;
                 for j in 0..k_round {
                     let (qmx, qth, qz) = draft_stats[j];
                     let idsd = e.htod_u32_v(&[draft_idx[j]])?;
                     let rowsd = e.htod_i32(&[0])?;
-                    let thd = e.htod(&[qth])?; let zd = e.htod(&[qz])?;
+                    let thd = e.htod(&[qth])?;
+                    let zd = e.htod(&[qz])?;
                     let _ = qmx;
                     let mut outd = e.zeros(1)?;
-                    e.softmax_gather_filtered(&q_bufs[j], d_vocab, &idsd, &rowsd, &thd, &zd,
-                                              &mut outd, d_vocab, 1, sp_temp)?;
+                    e.softmax_gather_filtered(
+                        &q_bufs[j], d_vocab, &idsd, &rowsd, &thd, &zd, &mut outd, d_vocab, 1,
+                        sp_temp,
+                    )?;
                     let qj = e.dtoh(&outd)?[0];
-                    let u = host_u01(sp_seed, uctr); uctr += 1;
-                    if (u as f64) * (qj as f64) < pj[j] as f64 { n_acc += 1; } else { break; }
+                    let u = host_u01(sp_seed, uctr);
+                    uctr += 1;
+                    if (u as f64) * (qj as f64) < pj[j] as f64 {
+                        n_acc += 1;
+                    } else {
+                        break;
+                    }
                 }
                 let bonus = if n_acc == k_round {
                     // FULL ACCEPT: bonus ~ FILTERED softmax at the last verify column.
                     let col = base + k_round - 1;
                     let cb = col_buf.as_mut().unwrap();
-                    e.copy_view_into(cb, 0, &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab), n_vocab)?;
+                    e.copy_view_into(
+                        cb,
+                        0,
+                        &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab),
+                        n_vocab,
+                    )?;
                     if pen_on {
                         let h = pen_hist_d.as_ref().unwrap();
                         let nh = h.len();
-                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                        e.penalize_logits(
+                            cb,
+                            h,
+                            nh,
+                            sp.penalty_repeat,
+                            sp.penalty_freq,
+                            sp.penalty_present,
+                            n_vocab,
+                        )?;
                     }
-                    if perturb_buf.is_none() { perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?); }
+                    if perturb_buf.is_none() {
+                        perturb_buf = Some(e.zeros(d_vocab.max(n_vocab))?);
+                    }
                     // stats for the last used col: reuse col_stats when it covers it, else compute.
                     let (mx, th, _z) = if !col_stats.is_empty() {
                         *col_stats.last().unwrap()
@@ -2204,8 +3288,10 @@ impl HybridModel {
                         let rows0 = e.htod_i32(&[0])?;
                         let (mut th_d, mut z_d, mut mx_d) = (e.zeros(1)?, e.zeros(1)?, e.zeros(1)?);
                         let cb0 = col_buf.as_ref().unwrap();
-                        e.filter_stats(cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d,
-                                       n_vocab, 1, sp_temp, sp.top_k, sp.top_p, sp.min_p)?;
+                        e.filter_stats(
+                            cb0, n_vocab, &rows0, &mut th_d, &mut z_d, &mut mx_d, n_vocab, 1,
+                            sp_temp, sp.top_k, sp.top_p, sp.min_p,
+                        )?;
                         (e.dtoh(&mx_d)?[0], e.dtoh(&th_d)?[0], e.dtoh(&z_d)?[0])
                     };
                     let pb = perturb_buf.as_mut().unwrap();
@@ -2219,7 +3305,12 @@ impl HybridModel {
                     let cb = col_buf.as_mut().unwrap();
                     if n_acc > 0 || base == 1 {
                         let col = base + n_acc - 1;
-                        e.copy_view_into(cb, 0, &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab), n_vocab)?;
+                        e.copy_view_into(
+                            cb,
+                            0,
+                            &tlogits_d.slice(col * n_vocab..(col + 1) * n_vocab),
+                            n_vocab,
+                        )?;
                     } else {
                         let lc = last_col_logits.as_ref().unwrap();
                         e.copy_into(cb, 0, lc, n_vocab)?;
@@ -2227,10 +3318,19 @@ impl HybridModel {
                     if pen_on {
                         let h = pen_hist_d.as_ref().unwrap();
                         let nh = h.len();
-                        e.penalize_logits(cb, h, nh, sp.penalty_repeat, sp.penalty_freq, sp.penalty_present, n_vocab)?;
+                        e.penalize_logits(
+                            cb,
+                            h,
+                            nh,
+                            sp.penalty_repeat,
+                            sp.penalty_freq,
+                            sp.penalty_present,
+                            n_vocab,
+                        )?;
                     }
                     let cb2 = col_buf.as_ref().unwrap();
-                    let sc = sctr; sctr += 1;
+                    let sc = sctr;
+                    sctr += 1;
                     // p-stats for the reject column: from col_stats when the col was gathered,
                     // else (j==0&&base==0) from last_col_stats.
                     let p_stats = if n_acc > 0 || base == 1 {
@@ -2244,13 +3344,35 @@ impl HybridModel {
                     };
                     let q_stats = draft_stats[n_acc];
                     if let Some(map) = &d2t_dev {
-                        if q_full_buf.is_none() { q_full_buf = Some(e.zeros(n_vocab)?); }
+                        if q_full_buf.is_none() {
+                            q_full_buf = Some(e.zeros(n_vocab)?);
+                        }
                         let qf = q_full_buf.as_mut().unwrap();
                         e.scatter_trim_logits(&q_bufs[n_acc], map, qf, d_vocab, n_vocab)?;
                         let qf2 = q_full_buf.as_ref().unwrap();
-                        e.residual_sample_filtered(cb2, Some(qf2), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
+                        e.residual_sample_filtered(
+                            cb2,
+                            Some(qf2),
+                            n_vocab,
+                            sp_temp,
+                            sp_seed,
+                            sc,
+                            p_stats,
+                            q_stats,
+                            &mut sample_tok,
+                        )?;
                     } else {
-                        e.residual_sample_filtered(cb2, Some(&q_bufs[n_acc]), n_vocab, sp_temp, sp_seed, sc, p_stats, q_stats, &mut sample_tok)?;
+                        e.residual_sample_filtered(
+                            cb2,
+                            Some(&q_bufs[n_acc]),
+                            n_vocab,
+                            sp_temp,
+                            sp_seed,
+                            sc,
+                            p_stats,
+                            q_stats,
+                            &mut sample_tok,
+                        )?;
                     }
                     e.dtoh_u32(&sample_tok)?[0]
                 };
@@ -2260,9 +3382,15 @@ impl HybridModel {
             total_accepted += n_acc;
             if spec_stats {
                 st_len_hist[k_round] += 1;
-                for j in 0..k_round { st_drafted[j] += 1; }
-                for j in 0..n_acc { st_accepted[j] += 1; }
-                if n_acc == k_round { st_full += 1; }
+                for j in 0..k_round {
+                    st_drafted[j] += 1;
+                }
+                for j in 0..n_acc {
+                    st_accepted[j] += 1;
+                }
+                if n_acc == k_round {
+                    st_full += 1;
+                }
             }
 
             if debug_spec {
@@ -2275,7 +3403,9 @@ impl HybridModel {
             // and the next turn's continuation seeds one token off (gate-caught 2026-07-05). The
             // single-shot path keeps the cap (its caller truncates + drops the cache anyway).
             for j in 0..n_acc {
-                if !session_mode && out.len() >= max_new { break; }
+                if !session_mode && out.len() >= max_new {
+                    break;
+                }
                 out.push(draft[j]);
             }
             if pen_on {
@@ -2283,7 +3413,9 @@ impl HybridModel {
                 pen_hist.push(bonus);
             }
             let bonus_emitted = session_mode || out.len() < max_new;
-            if bonus_emitted { out.push(bonus); }
+            if bonus_emitted {
+                out.push(bonus);
+            }
             last_token = bonus;
 
             // --- 5. ROLLBACK + advance (§C) ---
@@ -2301,7 +3433,12 @@ impl HybridModel {
                 // left one extra chain append at that slot. Partial accepts need NO fill (the
                 // chain already covered every accepted position; round-start set_len truncates).
                 let mut vh_seed = e.zeros(n_embd)?;
-                e.copy_view_into(&mut vh_seed, 0, &vx.slice((t_v - 1) * n_embd..t_v * n_embd), n_embd)?;
+                e.copy_view_into(
+                    &mut vh_seed,
+                    0,
+                    &vx.slice((t_v - 1) * n_embd..t_v * n_embd),
+                    n_embd,
+                )?;
                 if refresh {
                     // TRUE-HIDDEN REFRESH (2026-07-03, the HANDOVER-listed acceptance lever):
                     // overwrite ALL committed positions' scratch entries with K/V from their EXACT
@@ -2315,25 +3452,37 @@ impl HybridModel {
                     let mut vxs = e.zeros(t_v * n_embd)?;
                     e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
                     if t_v > 1 {
-                        e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(t_v - 1) * n_embd),
-                                         (t_v - 1) * n_embd)?;
+                        e.copy_view_into(
+                            &mut vxs,
+                            n_embd,
+                            &vx.slice(0..(t_v - 1) * n_embd),
+                            (t_v - 1) * n_embd,
+                        )?;
                     }
-                    self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
+                    self.mtp_kv_fill(e, mtp, &verify_tokens, &vxs, pos, &mut *scratch, embd_dev)?;
                 } else {
                     scratch.set_len(e, pos + base + k_round - 1)?;
                     // predecessor of the last draft = verify col t_v-2 (or fill_prev at t_v==1)
                     let mut hp = e.zeros(n_embd)?;
                     if t_v >= 2 {
-                        e.copy_view_into(&mut hp, 0,
-                                         &vx.slice((t_v - 2) * n_embd..(t_v - 1) * n_embd),
-                                         n_embd)?;
+                        e.copy_view_into(
+                            &mut hp,
+                            0,
+                            &vx.slice((t_v - 2) * n_embd..(t_v - 1) * n_embd),
+                            n_embd,
+                        )?;
                     } else {
                         e.copy_into(&mut hp, 0, &fill_prev, n_embd)?;
                     }
-                    self.mtp_kv_fill(e, mtp, &[draft[k_round - 1]], &hp,
-                                     pos + base + k_round - 1, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
+                    self.mtp_kv_fill(
+                        e,
+                        mtp,
+                        &[draft[k_round - 1]],
+                        &hp,
+                        pos + base + k_round - 1,
+                        &mut *scratch,
+                        embd_dev,
+                    )?;
                 }
                 // REFERENCE SEEDING: no pseudo pass — the next chain's step 0 IS the
                 // reference's (id_last, h_prev) draft row; it appends the bonus's scratch
@@ -2344,7 +3493,9 @@ impl HybridModel {
                     e.copy_into(&mut fill_prev, 0, &vh_seed, n_embd)?;
                 }
                 pending = Some(bonus);
-                if debug_spec { eprintln!("  -> FULL ACCEPT (bonus pending, prev-h seed)"); }
+                if debug_spec {
+                    eprintln!("  -> FULL ACCEPT (bonus pending, prev-h seed)");
+                }
             } else if !spec_replay && base + n_acc >= 1 {
                 // PARTIAL ACCEPT, REPLAY-FREE (2026-07-03 — the profiled #1 long-ctx spec cost):
                 // the verify's first j = base+n_acc columns ARE the committed sequence, computed
@@ -2357,12 +3508,26 @@ impl HybridModel {
                 // accept (never compounds: the next verify recomputes true hiddens for all
                 // committed columns).
                 let j = base + n_acc;
-                self.commit_verified_prefix(e, &mut *cache, &snap, ckpt.as_ref().unwrap(), j,
-                                            devacc_seeded,
-                                            if devacc_seeded { devacc_acc.as_ref().map(|a| (a, base, t_v)) }
-                                            else { None })?;
+                self.commit_verified_prefix(
+                    e,
+                    &mut *cache,
+                    &snap,
+                    ckpt.as_ref().unwrap(),
+                    j,
+                    devacc_seeded,
+                    if devacc_seeded {
+                        devacc_acc.as_ref().map(|a| (a, base, t_v))
+                    } else {
+                        None
+                    },
+                )?;
                 let mut seed = e.zeros(n_embd)?;
-                e.copy_view_into(&mut seed, 0, &vx.slice((j - 1) * n_embd..j * n_embd), n_embd)?;
+                e.copy_view_into(
+                    &mut seed,
+                    0,
+                    &vx.slice((j - 1) * n_embd..j * n_embd),
+                    n_embd,
+                )?;
                 // Draft scratch: TRUE-HIDDEN REFRESH of the committed prefix (see the full-accept
                 // branch); without it the chain entries stand and only the tail truncates. Either
                 // way len ends at pos+j so the pseudo append lands at the bonus's slot pos+j
@@ -2372,11 +3537,22 @@ impl HybridModel {
                     let mut vxs = e.zeros(j * n_embd)?;
                     e.copy_into(&mut vxs, 0, &fill_prev, n_embd)?;
                     if j > 1 {
-                        e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(j - 1) * n_embd),
-                                         (j - 1) * n_embd)?;
+                        e.copy_view_into(
+                            &mut vxs,
+                            n_embd,
+                            &vx.slice(0..(j - 1) * n_embd),
+                            (j - 1) * n_embd,
+                        )?;
                     }
-                    self.mtp_kv_fill(e, mtp, &verify_tokens[0..j], &vxs, pos, &mut *scratch,
-                                     embd_gpu, embd_qt, embd_rb)?;
+                    self.mtp_kv_fill(
+                        e,
+                        mtp,
+                        &verify_tokens[0..j],
+                        &vxs,
+                        pos,
+                        &mut *scratch,
+                        embd_dev,
+                    )?;
                 } else {
                     scratch.set_len(e, pos + j)?;
                 }
@@ -2387,7 +3563,9 @@ impl HybridModel {
                     e.copy_into(&mut fill_prev, 0, &seed, n_embd)?;
                 }
                 pending = Some(bonus);
-                if debug_spec { eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)"); }
+                if debug_spec {
+                    eprintln!("  -> PARTIAL(replay-free j={j}, bonus pending, prev-h seed)");
+                }
             } else if !spec_replay {
                 // ZERO ROUND FOLD (2026-07-10, verify-cost target #3): base+n_acc == 0 — a
                 // pending-less round where nothing was accepted (PMIN0 zero-draft chains after a
@@ -2402,7 +3580,9 @@ impl HybridModel {
                 scratch.set_len(e, pos)?;
                 e.copy_into(&mut h_seed_buf, 0, &fill_prev, n_embd)?;
                 pending = Some(bonus);
-                if debug_spec { eprintln!("  -> ZERO-ROUND FOLD (bonus pending, fill_prev seed)"); }
+                if debug_spec {
+                    eprintln!("  -> ZERO-ROUND FOLD (bonus pending, fill_prev seed)");
+                }
             } else {
                 // PARTIAL ACCEPT, LEGACY REPLAY (seam BW24_SPEC_REPLAY=1 — or j==0: nothing of
                 // this round survives, only possible before the first pending exists, ~round 0):
@@ -2411,29 +3591,42 @@ impl HybridModel {
                 // [bonus] as ONE batched T forward — single weight read, bit-identical to greedy
                 // (the verify-all-columns path is the same math). Commits the bonus with a TRUE
                 // trunk hidden.
-                cache.rollback(e, &snap, 0)?;   // accept_len=0: KV len = pos, recur = snapshot
+                cache.rollback(e, &snap, 0)?; // accept_len=0: KV len = pos, recur = snapshot
                 let mut replay: Vec<u32> = Vec::with_capacity(base + n_acc + 1);
-                if let Some(b) = pending.take() { replay.push(b); }
+                if let Some(b) = pending.take() {
+                    replay.push(b);
+                }
                 replay.extend_from_slice(&draft[0..n_acc]);
                 replay.push(bonus);
                 // Full-stack forward (decode_step_t_core = decode_step_t_h_emb_dev's body):
                 // Predecessor pairing seeds from the PREDECESSOR row (col len-2) — the same-row path takes the
                 // last col exactly as before (byte-identical to the old _h_emb_dev call).
-                let (rl_d, rx) = self.decode_step_t_core(e, &replay, pos, &mut *cache,
-                                                         Some((embd_gpu, embd_qt, embd_rb)), None)?;
+                let (rl_d, rx) =
+                    self.decode_step_t_core(e, &replay, pos, &mut *cache, embd_dev, None)?;
                 // last_pred = argmax of the LAST column's logits (predicts the token after `bonus`)
                 // — device argmax + one 4-byte read instead of the full-vocab column dtoh.
                 e.argmax_token_device_col(&rl_d, replay.len() - 1, n_vocab, &mut preds_d, 0)?;
                 last_pred = e.dtoh_u32(&preds_d)?[0];
                 if sampled {
                     let lr0 = replay.len();
-                    let lc = last_col_logits.as_mut().expect("sampled: last_col_logits unset");
-                    e.copy_view_into(lc, 0, &rl_d.slice((lr0 - 1) * n_vocab..lr0 * n_vocab), n_vocab)?;
+                    let lc = last_col_logits
+                        .as_mut()
+                        .expect("sampled: last_col_logits unset");
+                    e.copy_view_into(
+                        lc,
+                        0,
+                        &rl_d.slice((lr0 - 1) * n_vocab..lr0 * n_vocab),
+                        n_vocab,
+                    )?;
                 }
                 let lr = replay.len();
                 if lr >= 2 {
-                    e.copy_view_into(&mut h_seed_buf, 0,
-                                     &rx.slice((lr - 2) * n_embd..(lr - 1) * n_embd), n_embd)?;
+                    e.copy_view_into(
+                        &mut h_seed_buf,
+                        0,
+                        &rx.slice((lr - 2) * n_embd..(lr - 1) * n_embd),
+                        n_embd,
+                    )?;
                 } else {
                     // 1-token replay (round-0 miss): the bonus's predecessor is the OLD
                     // last_token, whose own-row hidden fill_prev still holds.
@@ -2441,10 +3634,16 @@ impl HybridModel {
                 }
                 // the bonus is COMMITTED here — it becomes the last committed row.
                 let mut rh_last = e.zeros(n_embd)?;
-                e.copy_view_into(&mut rh_last, 0, &rx.slice((lr - 1) * n_embd..lr * n_embd),
-                                 n_embd)?;
+                e.copy_view_into(
+                    &mut rh_last,
+                    0,
+                    &rx.slice((lr - 1) * n_embd..lr * n_embd),
+                    n_embd,
+                )?;
                 e.copy_into(&mut fill_prev, 0, &rh_last, n_embd)?;
-                if debug_spec { eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}"); }
+                if debug_spec {
+                    eprintln!("  -> PARTIAL(replay={replay:?}), next_pred={last_pred}");
+                }
             }
             if devacc_seeded {
                 // stage (b) epilogue: fill_prev takes the gathered seed AFTER the refresh fills
@@ -2456,17 +3655,32 @@ impl HybridModel {
         }
 
         if spec_stats {
-            let per_slot: Vec<String> = (0..k).map(|j| if st_drafted[j] > 0 {
-                format!("{}/{}={:.3}", st_accepted[j], st_drafted[j],
-                        st_accepted[j] as f64 / st_drafted[j] as f64)
-            } else { "0/0".into() }).collect();
+            let per_slot: Vec<String> = (0..k)
+                .map(|j| {
+                    if st_drafted[j] > 0 {
+                        format!(
+                            "{}/{}={:.3}",
+                            st_accepted[j],
+                            st_drafted[j],
+                            st_accepted[j] as f64 / st_drafted[j] as f64
+                        )
+                    } else {
+                        "0/0".into()
+                    }
+                })
+                .collect();
             let acc = if total_drafted > 0 {
-                total_accepted as f64 / total_drafted as f64 } else { 0.0 };
-            eprintln!("[spec-stats] rounds={round} full_accept={st_full} len_hist={st_len_hist:?} \
+                total_accepted as f64 / total_drafted as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "[spec-stats] rounds={round} full_accept={st_full} len_hist={st_len_hist:?} \
                        per_slot=[{}] total={total_accepted}/{total_drafted}={acc:.3} \
                        tok_per_round={:.3}",
-                      per_slot.join(" "),
-                      (total_accepted + round) as f64 / round.max(1) as f64);
+                per_slot.join(" "),
+                (total_accepted + round) as f64 / round.max(1) as f64
+            );
         }
         if phase_on {
             let tot = ph_draft + ph_verify + ph_wait + ph_rest;
@@ -2493,17 +3707,19 @@ impl HybridModel {
                 // the prediction AFTER the bonus never materialized; it would have been the next
                 // round's verify col 0). The bonus commit's own logits ARE that prediction.
                 *next_pred_slot = Some(argmax(&lg_b) as u32);
-                self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch,
-                                 embd_gpu, embd_qt, embd_rb)?;
+                self.mtp_kv_fill(e, mtp, &[b], &fill_prev, pos_b, &mut *scratch, embd_dev)?;
                 *last_h = Some(hb);
             } else {
                 // fill_prev tracks the hidden of the last COMMITTED row throughout the loop.
                 *last_h = Some(e.clone_dtod(&fill_prev)?);
             }
             committed.extend_from_slice(prompt);
-            committed.extend_from_slice(&out);   // FULL out incl. overshoot — it's all committed
-            debug_assert_eq!(cache.pos, committed.len(),
-                "session invariant: cache rows == committed tokens");
+            committed.extend_from_slice(&out); // FULL out incl. overshoot — it's all committed
+            debug_assert_eq!(
+                cache.pos,
+                committed.len(),
+                "session invariant: cache rows == committed tokens"
+            );
             return Ok((out, total_drafted, total_accepted));
         }
         out.truncate(max_new);
@@ -2534,27 +3750,51 @@ impl HybridModel {
     /// the head-distillation extraction (hqmtp): the ENGINE is the source of truth for trunk
     /// hiddens (HF torch reproductions of the hybrid trunk measured only ~0.5 greedy
     /// agreement vs this path — not usable as a training-data source).
-    pub fn replay_acceptance(&self, e: &Engine, tokens: &[u32], k: usize, stride: usize,
-                             chunk: usize, mut hdump: Option<&mut std::fs::File>)
-        -> Result<(Vec<(usize, Vec<u32>, Vec<u32>)>, Vec<u32>), Box<dyn std::error::Error>> {
+    pub fn replay_acceptance(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        k: usize,
+        stride: usize,
+        chunk: usize,
+        mut hdump: Option<&mut std::fs::File>,
+    ) -> Result<(Vec<(usize, Vec<u32>, Vec<u32>)>, Vec<u32>), Box<dyn std::error::Error>> {
         assert!(k >= 1 && stride >= 1 && chunk >= 2);
-        let mtp = self.mtp.as_ref().expect("replay_acceptance requires an MTP head");
+        let mtp = self
+            .mtp
+            .as_ref()
+            .expect("replay_acceptance requires an MTP head");
         let n_vocab = self.output.out_features();
-        let d_vocab = mtp.shared_head_head.as_ref().unwrap_or(&self.output).out_features();
+        let d_vocab = mtp
+            .shared_head_head
+            .as_ref()
+            .unwrap_or(&self.output)
+            .out_features();
         let n_embd = self.cfg.n_embd as usize;
         let t_total = tokens.len();
         assert!(t_total >= 8, "corpus too short ({t_total} tokens)");
         let mut cache = Cache::new(e, &self.cfg, t_total + k + 8)?;
-        let mut scratch = MtpScratch::new(e, &self.cfg, t_total + k + 8, self.mtp.as_ref().and_then(|m| m.geom.as_ref()))?;
-        let embd_gpu = self.embd_gpu.get_or_init(|| {
-            e.upload_u8(&self.embd.raw).expect("embed table upload")
-        });
+        let mut scratch = MtpScratch::new(
+            e,
+            &self.cfg,
+            t_total + k + 8,
+            self.mtp.as_ref().and_then(|m| m.geom.as_ref()),
+        )?;
         let (embd_qt, embd_rb) = self.embd.qt_and_row_bytes(n_embd);
+        let embd_gpu = if spec_host_embd() {
+            None
+        } else {
+            Some(
+                self.embd_gpu
+                    .get_or_init(|| e.upload_u8(&self.embd.raw).expect("embed table upload")),
+            )
+        };
+        let embd_dev = embd_gpu.map(|g| (g, embd_qt, embd_rb));
 
         // bg[i] = the trunk's greedy pick for position i under the forced context (i >= 1).
         let mut bg: Vec<u32> = vec![0; t_total + 1];
         let mut rows: Vec<(usize, Vec<u32>, Vec<u32>)> = Vec::new();
-        let mut prev_last_h = e.zeros(n_embd)?;   // predecessor hidden entering the chunk
+        let mut prev_last_h = e.zeros(n_embd)?; // predecessor hidden entering the chunk
         let mut seed_buf = e.zeros(n_embd)?;
         let mut preds_d = e.alloc_u32_zeroed(chunk)?;
         let nll_on = std::env::var("BW24_REPLAY_NLL").as_deref() == Ok("1");
@@ -2566,15 +3806,18 @@ impl HybridModel {
             let ch = &tokens[s..cend];
             // 1. forced trunk pass — verify path (decode-exact contract): all-column logits +
             //    the chunk's true hiddens.
-            let (tl_d, vx) = self.decode_step_t_core(e, ch, s, &mut cache,
-                                                     Some((embd_gpu, embd_qt, embd_rb)), None)?;
-            for j in 0..tc { e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?; }
+            let (tl_d, vx) = self.decode_step_t_core(e, ch, s, &mut cache, embd_dev, None)?;
+            for j in 0..tc {
+                e.argmax_token_device_col(&tl_d, j, n_vocab, &mut preds_d, j)?;
+            }
             let preds = e.dtoh_u32(&preds_d)?;
-            for j in 0..tc { bg[s + j + 1] = preds[j]; }
+            for j in 0..tc {
+                bg[s + j + 1] = preds[j];
+            }
             // BW24_REPLAY_NLL=1: teacher-forced NLL/perplexity over the same forced pass — the
             // checkpoint-quality metric (position j's logits score the GOLD next token).
             if nll_on {
-                let jmax = if cend < t_total { tc } else { tc - 1 };  // last pos has no gold next
+                let jmax = if cend < t_total { tc } else { tc - 1 }; // last pos has no gold next
                 if jmax > 0 {
                     let ids: Vec<u32> = (0..jmax).map(|j| tokens[s + j + 1]).collect();
                     let rows: Vec<i32> = (0..jmax as i32).collect();
@@ -2606,8 +3849,12 @@ impl HybridModel {
             // per token saved; the forced trunk pass + hdump is all the mode needs).
             let chainless = stride > t_total;
             if chainless {
-                e.copy_view_into(&mut prev_last_h, 0,
-                                 &vx.slice((tc - 1) * n_embd..tc * n_embd), n_embd)?;
+                e.copy_view_into(
+                    &mut prev_last_h,
+                    0,
+                    &vx.slice((tc - 1) * n_embd..tc * n_embd),
+                    n_embd,
+                )?;
                 s = cend;
                 continue;
             }
@@ -2616,33 +3863,52 @@ impl HybridModel {
             let mut vxs = e.zeros(tc * n_embd)?;
             e.copy_into(&mut vxs, 0, &prev_last_h, n_embd)?;
             if tc > 1 {
-                e.copy_view_into(&mut vxs, n_embd, &vx.slice(0..(tc - 1) * n_embd),
-                                 (tc - 1) * n_embd)?;
+                e.copy_view_into(
+                    &mut vxs,
+                    n_embd,
+                    &vx.slice(0..(tc - 1) * n_embd),
+                    (tc - 1) * n_embd,
+                )?;
             }
             scratch.set_len(e, s)?;
-            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
+            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_dev)?;
             // 3. draft chains at sampled positions, DESCENDING: a chain reads only slots
             //    [0..p) (true fills) and appends at >= p; the next (smaller-p) chain's set_len
             //    truncates those approximate appends before they can ever be read.
             let ps: Vec<usize> = (s..cend)
-                .filter(|p| *p >= 1 && *p % stride == 0 && *p + k <= t_total).collect();
+                .filter(|p| *p >= 1 && *p % stride == 0 && *p + k <= t_total)
+                .collect();
             for &p in ps.iter().rev() {
                 scratch.set_len(e, p)?;
-                if p == s { e.copy_into(&mut seed_buf, 0, &prev_last_h, n_embd)?; }
-                else {
-                    e.copy_view_into(&mut seed_buf, 0,
-                                     &vx.slice((p - 1 - s) * n_embd..(p - s) * n_embd), n_embd)?;
+                if p == s {
+                    e.copy_into(&mut seed_buf, 0, &prev_last_h, n_embd)?;
+                } else {
+                    e.copy_view_into(
+                        &mut seed_buf,
+                        0,
+                        &vx.slice((p - 1 - s) * n_embd..(p - s) * n_embd),
+                        n_embd,
+                    )?;
                 }
                 let mut e_tok = tokens[p];
                 let mut d_seed = e.clone_dtod(&seed_buf)?;
                 let mut drafts: Vec<u32> = Vec::with_capacity(k);
                 for j in 0..k {
                     let (dl_d, h_nextn) = self.mtp_head_forward_dev(
-                        e, mtp, e_tok, &d_seed, &mut scratch, p + 1 + j,
-                        embd_gpu, embd_qt, embd_rb)?;
+                        e,
+                        mtp,
+                        e_tok,
+                        &d_seed,
+                        &mut scratch,
+                        p + 1 + j,
+                        embd_dev,
+                    )?;
                     let tok_d = e.argmax_token_device(&dl_d, d_vocab)?;
                     let idx = e.dtoh_u32_one(&tok_d)?;
-                    let d = match &mtp.d2t { Some(map) => map[idx as usize], None => idx };
+                    let d = match &mtp.d2t {
+                        Some(map) => map[idx as usize],
+                        None => idx,
+                    };
                     drafts.push(d);
                     e_tok = d;
                     d_seed = h_nextn;
@@ -2653,18 +3919,27 @@ impl HybridModel {
             // 4. restore TRUE entries for the whole chunk (the next chunk's chains and fills
             //    expect scratch.len == cend with exact rows).
             scratch.set_len(e, s)?;
-            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_gpu, embd_qt, embd_rb)?;
-            e.copy_view_into(&mut prev_last_h, 0, &vx.slice((tc - 1) * n_embd..tc * n_embd),
-                             n_embd)?;
+            self.mtp_kv_fill(e, mtp, ch, &vxs, s, &mut scratch, embd_dev)?;
+            e.copy_view_into(
+                &mut prev_last_h,
+                0,
+                &vx.slice((tc - 1) * n_embd..tc * n_embd),
+                n_embd,
+            )?;
             s = cend;
         }
         for (p, drafts, targets) in rows.iter_mut() {
-            for j in 0..drafts.len() { targets.push(bg[*p + 1 + j]); }
+            for j in 0..drafts.len() {
+                targets.push(bg[*p + 1 + j]);
+            }
         }
         rows.sort_by_key(|r| r.0);
         if nll_cnt > 0 {
             let mean = nll_sum / nll_cnt as f64;
-            println!("[replay-nll] tokens={nll_cnt} nll/token={mean:.5} ppl={:.4}", mean.exp());
+            println!(
+                "[replay-nll] tokens={nll_cnt} nll/token={mean:.5} ppl={:.4}",
+                mean.exp()
+            );
         }
         Ok((rows, bg))
     }

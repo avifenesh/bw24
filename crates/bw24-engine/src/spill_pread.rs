@@ -4,22 +4,36 @@
 //! through a bounded CPU worker pool so known-next reads overlap GPU compute. Only the CUDA owner
 //! thread submits H2D or publishes cache residency. mmap remains the default and byte oracle.
 
-use std::collections::HashSet;
-use std::fs::File;
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::unix::fs::FileExt;
-use std::sync::{Arc, Mutex, mpsc};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use cudarc::driver::{CudaEvent, CudaStream, PinnedHostSlice};
 
 use crate::Engine;
 
+const DIRECT_IO_ALIGNMENT: usize = 4096;
+
+fn direct_extent_aligned(offset: u64, len: usize) -> bool {
+    offset.is_multiple_of(DIRECT_IO_ALIGNMENT as u64) && len.is_multiple_of(DIRECT_IO_ALIGNMENT)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SpillIoMode {
     Mmap,
     Pread,
     Worker,
+    Direct,
+}
+
+impl SpillIoMode {
+    fn is_worker(self) -> bool {
+        matches!(self, Self::Worker | Self::Direct)
+    }
 }
 
 fn parse_spill_io(value: Option<&str>) -> Result<SpillIoMode, &'static str> {
@@ -27,7 +41,8 @@ fn parse_spill_io(value: Option<&str>) -> Result<SpillIoMode, &'static str> {
         "mmap" => Ok(SpillIoMode::Mmap),
         "pread" => Ok(SpillIoMode::Pread),
         "worker" => Ok(SpillIoMode::Worker),
-        _ => Err("expected mmap, pread, or worker"),
+        "direct" => Ok(SpillIoMode::Direct),
+        _ => Err("expected mmap, pread, worker, or direct"),
     }
 }
 
@@ -48,25 +63,35 @@ pub(crate) fn configured_mode() -> SpillIoMode {
     })
 }
 
-pub(crate) fn worker_enabled() -> bool { configured_mode() == SpillIoMode::Worker }
+pub(crate) fn worker_enabled() -> bool {
+    configured_mode().is_worker()
+}
+
+pub(crate) fn copy_h2d_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("BW24_SPILL_COPY_H2D").as_deref() == Ok("1"))
+}
 
 fn parse_depth(value: Option<&str>) -> Result<usize, &'static str> {
     let depth = value.unwrap_or("2").parse::<usize>().map_err(|_| "expected an integer")?;
     if (1..=64).contains(&depth) { Ok(depth) } else { Err("expected 1..=64") }
 }
 
-fn configured_depth() -> usize {
-    let raw = std::env::var("BW24_SPILL_PREAD_DEPTH").ok();
-    match parse_depth(raw.as_deref()) {
-        Ok(depth) => depth,
-        Err(reason) => {
-            eprintln!(
-                "[spill-pread] invalid BW24_SPILL_PREAD_DEPTH={:?} ({reason}); using 2",
-                raw.as_deref().unwrap_or("")
-            );
-            2
+pub(crate) fn configured_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        let raw = std::env::var("BW24_SPILL_PREAD_DEPTH").ok();
+        match parse_depth(raw.as_deref()) {
+            Ok(depth) => depth,
+            Err(reason) => {
+                eprintln!(
+                    "[spill-pread] invalid BW24_SPILL_PREAD_DEPTH={:?} ({reason}); using 2",
+                    raw.as_deref().unwrap_or("")
+                );
+                2
+            }
         }
-    }
+    })
 }
 
 pub(crate) fn pread_exact_at(file: &File, mut dst: &mut [u8], mut offset: u64)
@@ -306,6 +331,8 @@ pub(crate) struct PreadPool {
     workers: Option<WorkerPool>,
     next_ticket: u64,
     tickets: HashSet<ReadTicket>,
+    direct_files: HashMap<(u64, u64), Arc<File>>,
+    random_advised_files: HashSet<(u64, u64)>,
 }
 
 impl PreadPool {
@@ -332,30 +359,91 @@ impl PreadPool {
             }
         }
         let depth = buffers.len();
-        let workers = if mode == SpillIoMode::Worker {
+        let workers = if mode.is_worker() {
             Some(WorkerPool::try_new(depth)?)
         } else { None };
         let description = match mode {
             SpillIoMode::Pread => "blocking demand pread",
             SpillIoMode::Worker => "bounded worker prefetch",
+            SpillIoMode::Direct => "bounded O_DIRECT worker prefetch",
             SpillIoMode::Mmap => unreachable!(),
         };
-        if mode == SpillIoMode::Worker && depth < 6 {
-            eprintln!("[spill-worker] WARNING: effective depth {depth} < 6; grouped current+next \
-                       overlap is degraded; continuing with projection concurrency and mmap fallback");
+        if mode.is_worker() && depth < 6 {
+            eprintln!(
+                "[spill-worker] WARNING: effective depth {depth} < 6; grouped current+next \
+                       overlap is degraded; continuing with projection concurrency and mmap fallback"
+            );
         }
+        let h2d_stream = if copy_h2d_enabled() {
+            "copy-stream H2D"
+        } else {
+            "compute-stream H2D"
+        };
         eprintln!(
             "[spill-pread] enabled: depth={depth} buffer_bytes={capacity} total_pinned_bytes={} \
-             ({description}, caller-thread H2D, mmap error fallback)",
+             ({description}, caller-thread {h2d_stream}, mmap error fallback)",
             depth.saturating_mul(capacity)
         );
         Ok(Self {
-            buffers, capacity, stream: e.stream().clone(), stats: PreadStats::default(), mode,
-            workers, next_ticket: 1, tickets: HashSet::new(),
+            buffers,
+            capacity,
+            stream: if copy_h2d_enabled() {
+                e.copy_stream.clone()
+            } else {
+                e.stream().clone()
+            },
+            stats: PreadStats::default(),
+            mode,
+            workers,
+            next_ticket: 1,
+            tickets: HashSet::new(),
+            direct_files: HashMap::new(),
+            random_advised_files: HashSet::new(),
         })
     }
 
-    pub(crate) fn is_worker(&self) -> bool { self.mode == SpillIoMode::Worker }
+    pub(crate) fn is_worker(&self) -> bool {
+        self.mode.is_worker()
+    }
+
+    fn io_file(&mut self, file: Arc<File>) -> Result<Arc<File>, Box<dyn std::error::Error>> {
+        let metadata = file.metadata()?;
+        let key = (metadata.dev(), metadata.ino());
+        if self.mode == SpillIoMode::Worker {
+            if self.random_advised_files.insert(key) {
+                // Expert ids are router-selected rather than sequential file scans. Disabling
+                // kernel readahead makes the page cache a precise host-RAM tier instead of reading
+                // adjacent, usually-unselected experts and evicting useful pages. The advice is
+                // per opened inode and changes caching only; positioned-read bytes stay identical.
+                let result =
+                    unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_RANDOM) };
+                if result != 0 {
+                    self.random_advised_files.remove(&key);
+                    return Err(io::Error::from_raw_os_error(result).into());
+                }
+            }
+            return Ok(file);
+        }
+        if self.mode != SpillIoMode::Direct {
+            return Ok(file);
+        }
+        if let Some(direct) = self.direct_files.get(&key) {
+            return Ok(direct.clone());
+        }
+        let proc_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+        let direct = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(proc_path)?,
+        );
+        let direct_metadata = direct.metadata()?;
+        if (direct_metadata.dev(), direct_metadata.ino()) != key {
+            return Err(io::Error::other("O_DIRECT reopen changed the source inode").into());
+        }
+        self.direct_files.insert(key, direct.clone());
+        Ok(direct)
+    }
 
     fn reap_completed(&mut self) {
         self.poll_worker_completions();
@@ -489,10 +577,14 @@ impl PreadPool {
         self.submit_worker_with_admission(file, offset, len, WorkerAdmission::Speculative)
     }
 
-    fn submit_worker_with_admission(&mut self, file: Arc<File>, offset: u64, len: usize,
-                                    admission: WorkerAdmission)
-                                    -> Result<Option<ReadTicket>, Box<dyn std::error::Error>> {
-        if self.mode != SpillIoMode::Worker {
+    fn submit_worker_with_admission(
+        &mut self,
+        file: Arc<File>,
+        offset: u64,
+        len: usize,
+        admission: WorkerAdmission,
+    ) -> Result<Option<ReadTicket>, Box<dyn std::error::Error>> {
+        if !self.mode.is_worker() {
             return Err(io::Error::other("worker read submitted to blocking pread backend").into());
         }
         if len > self.capacity {
@@ -502,6 +594,18 @@ impl PreadPool {
                 format!("expert extent {len} exceeds pread buffer capacity {}", self.capacity),
             ).into());
         }
+        if self.mode == SpillIoMode::Direct && !direct_extent_aligned(offset, len) {
+            self.stats.read_errors += 1;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "O_DIRECT expert extent requires {DIRECT_IO_ALIGNMENT}-byte aligned offset \
+                     and length (offset={offset}, len={len})"
+                ),
+            )
+            .into());
+        }
+        let file = self.io_file(file)?;
         self.reap_completed();
         let free_count = self.buffers.iter()
             .filter(|buffer| buffer.phase == BufferPhase::Free)
@@ -701,7 +805,10 @@ impl Drop for PreadPool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferPhase, parse_depth, parse_spill_io, pread_exact_at, SpillIoMode};
+    use super::{
+        direct_extent_aligned, parse_depth, parse_spill_io, pread_exact_at, BufferPhase,
+        SpillIoMode,
+    };
 
     fn temp_file(name: &str, bytes: &[u8]) -> (std::path::PathBuf, std::fs::File) {
         let path = std::env::temp_dir().join(format!(
@@ -717,6 +824,7 @@ mod tests {
         assert_eq!(parse_spill_io(None), Ok(SpillIoMode::Mmap));
         assert_eq!(parse_spill_io(Some("pread")), Ok(SpillIoMode::Pread));
         assert_eq!(parse_spill_io(Some("worker")), Ok(SpillIoMode::Worker));
+        assert_eq!(parse_spill_io(Some("direct")), Ok(SpillIoMode::Direct));
         assert!(parse_spill_io(Some("uring")).is_err());
         assert_eq!(parse_depth(None), Ok(2));
         assert_eq!(parse_depth(Some("8")), Ok(8));
@@ -734,6 +842,14 @@ mod tests {
         pread_exact_at(&file, &mut unaligned, 3).unwrap();
         assert_eq!(unaligned, bytes[3..40]);
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn direct_io_requires_conservative_block_alignment() {
+        assert!(direct_extent_aligned(0, 4096));
+        assert!(direct_extent_aligned(8192, 16384));
+        assert!(!direct_extent_aligned(1, 4096));
+        assert!(!direct_extent_aligned(0, 4095));
     }
 
     #[test]

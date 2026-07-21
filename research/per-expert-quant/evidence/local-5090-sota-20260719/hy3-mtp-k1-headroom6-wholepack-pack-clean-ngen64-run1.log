@@ -1,0 +1,65 @@
+[runner] thermal_regime=clean-swap, default system power policy, no intentional cooldown
+[runner] memory_regime=requested 36-GiB CPU cache with 6-GiB MemAvailable reserve
+[runner] measurement_N=1 generation_tokens=64
+[runner] mode=pack
+[runner] preflight_free_vram_mib=23672
+[runner] git_head=650d45c496ecb2d5cae009e1b3e03d347e2db8ea
+ebecf5b8dcd1b6598c480e554199c08c361832ac23611821d517115ff8dfe093  /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec
+8bf23e565f64baec94f9b40f1848d179e17e42b87784db1c1d3def5ea89fa031  /tmp/libbw24-cpu-experts-headroom-final.so
+ 17:35:33 up 16 days,  2:47,  2 users,  load average: 2.05, 2.40, 6.05
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        23Gi        26Gi       8.8Gi        20Gi        37Gi
+Swap:          8.0Gi        80Mi       7.9Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G  81M   -1
+MemAvailable:   39071260 kB
+SwapFree:        8305664 kB
+Dirty:              2952 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 1  0  82940 27973264 117112 20882424  515  570 62786  3793 23534   16 13  5 82  0  0  0
+ 0  0  82940 27980540 117112 20882396    0    0     0   280 9768 16127  2  1 97  0  0  0
+ 1  0  82940 27931912 117120 20881396    0    0     0   400 20305 27056  3  1 96  0  0  0
+2026/07/20 17:35:35.933, NVIDIA GeForce RTX 5090 Laptop GPU, 52, 8.95 W, 0 %, 312 MiB, 23672 MiB
+Command terminated by signal 15
+	Command being timed: "env BW24_CPU_EXPERT_FREEZE_PACK=1 BW24_NGEN=64 BW24_SPEC_K=1 BW24_SPEC_HOST_EMBD=1 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts-headroom-final.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_RESERVE_GB=6 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K=3 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 GOMP_CPU_AFFINITY=0-7 /home/avifenesh/.codex/worktrees/e25d/bw24/target/release/run-spec /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 24.90
+	System time (seconds): 3.99
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:29.38
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5634288
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 543
+	Minor (reclaiming a frame) page faults: 3333999
+	Voluntary context switches: 1821
+	Involuntary context switches: 407
+	Swaps: 0
+	File system inputs: 8776312
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+[runner] exit_status=143
+ 17:36:05 up 16 days,  2:47,  2 users,  load average: 2.38, 2.45, 5.95
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        24Gi        22Gi       8.8Gi        24Gi        36Gi
+Swap:          8.0Gi        80Mi       7.9Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G  81M   -1
+MemAvailable:   38679544 kB
+SwapFree:        8305664 kB
+Dirty:              3164 kB
+Writeback:             0 kB
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 2  0  82940 23141296 118204 25320244  515  570 62788  3793 23533   16 13  5 82  0  0  0
+ 4  0  82940 23166540 118204 25320660    0    0     0     8 11552 18994  3  1 97  0  0  0
+ 1  0  82940 23181712 118228 25320776    0    0     0   460 8953 21035  3  1 96  0  0  0
+2026/07/20 17:36:07.351, NVIDIA GeForce RTX 5090 Laptop GPU, 55, 24.22 W, 0 %, 312 MiB, 23672 MiB

@@ -1,0 +1,93 @@
+date=2026-07-21T12:56:40+03:00
+background_affinity=0-7
+cpu_expert_affinity=8-23
+schedule=guided,8
+ 12:56:40 up 16:17,  1 user,  load average: 5.31, 7.83, 7.64
+Linux 7.0.0-27-generic (avifenesh) 	07/21/26 	_x86_64_	(24 CPU)
+
+12:56:40     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+12:56:41       8    2.02    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   96.97
+12:56:41       9    1.00    0.00    1.00    0.00    0.00    1.00    0.00    0.00    0.00   97.00
+12:56:41      10    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+12:56:41      11    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+12:56:41      12   16.16    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   82.83
+12:56:41      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:56:41      14    1.96    0.00    6.86    0.00    0.00    0.00    0.00    0.00    0.00   91.18
+12:56:41      15    4.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   95.00
+12:56:41      16    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:56:41      17    3.03    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   95.96
+12:56:41      18    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:56:41      19    0.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+12:56:41      20    0.99    0.00    3.96    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+12:56:41      21    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:56:41      22    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+12:56:41      23    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+
+Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:       8    2.02    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   96.97
+Average:       9    1.00    0.00    1.00    0.00    0.00    1.00    0.00    0.00    0.00   97.00
+Average:      10    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+Average:      11    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+Average:      12   16.16    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   82.83
+Average:      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:      14    1.96    0.00    6.86    0.00    0.00    0.00    0.00    0.00    0.00   91.18
+Average:      15    4.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   95.00
+Average:      16    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:      17    3.03    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   95.96
+Average:      18    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:      19    0.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+Average:      20    0.99    0.00    3.96    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+Average:      21    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:      22    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+Average:      23    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+repeat=1
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.069277 weight_GB/s=45.71 expert_bound_tok/s=14.43 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.066501 weight_GB/s=47.62 expert_bound_tok/s=15.04 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.072884 weight_GB/s=43.45 expert_bound_tok/s=13.72 checksum=-84.0951437 warm_checksum=-84.0951437
+repeat=2
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.057924 weight_GB/s=54.67 expert_bound_tok/s=17.26 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.070233 weight_GB/s=45.09 expert_bound_tok/s=14.24 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.065995 weight_GB/s=47.98 expert_bound_tok/s=15.15 checksum=-84.0951437 warm_checksum=-84.0951437
+repeat=3
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.058012 weight_GB/s=54.58 expert_bound_tok/s=17.24 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.071234 weight_GB/s=44.45 expert_bound_tok/s=14.04 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.074887 weight_GB/s=42.28 expert_bound_tok/s=13.35 checksum=-84.0951437 warm_checksum=-84.0951437
+repeat=4
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.068311 weight_GB/s=46.35 expert_bound_tok/s=14.64 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.063232 weight_GB/s=50.08 expert_bound_tok/s=15.81 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.060558 weight_GB/s=52.29 expert_bound_tok/s=16.51 checksum=-84.0951437 warm_checksum=-84.0951437
+repeat=5
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.062737 weight_GB/s=50.47 expert_bound_tok/s=15.94 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.071681 weight_GB/s=44.17 expert_bound_tok/s=13.95 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=2 tasks=1185 layered_experts=5 weight_GB=3.166 threads=16 seconds=0.068578 weight_GB/s=46.17 expert_bound_tok/s=14.58 checksum=-84.0951437 warm_checksum=-84.0951437
+abi_fused_q2_n4
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.34 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001074s io=0.000008s insert=0.000009s compute=0.205812s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.404117 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.33 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001099s io=0.000007s insert=0.000010s compute=0.219328s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.427453 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.34 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001096s io=0.000007s insert=0.000010s compute=0.207279s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.407011 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.40 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001116s io=0.000008s insert=0.000009s compute=0.201494s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.394712 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393
+[bw24-cpu] RAM headroom cap: requested=0.00 GiB available=37.38 GiB reserve=4.00 GiB effective=0.00 GiB
+[bw24-cpu] normal-RAM expert cache: 0.00 GiB policy=lru io=buffered
+[bw24-cpu] fused gate/up/SwiGLU and down/reduce stages enabled
+[bw24-cpu-profile] calls=508 prepare=0.001109s io=0.000007s insert=0.000010s compute=0.215457s read_projections=0 read_GB=0.000
+[bw24-cpu-cache] hits=0 misses=0 hit_rate=0.00% read_GB=0.000 resident_GB=0.000
+experts=4 iterations=500 ms/token=0.412303 hash=0b35230a73c63d1f first=-4.3375001 last=-2.42459393

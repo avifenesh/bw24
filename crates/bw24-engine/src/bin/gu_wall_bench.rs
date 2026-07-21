@@ -40,7 +40,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let macros_d = e.htod(&vec![1.0f32; 3 * n_expert])?;
 
     let variant = std::env::var("BW24_MOE_DEVQ8_GU").unwrap_or_default();
-    let bytes = (n_used * 2 * n_ff * rb / (in_f / 32) * (in_f / 32)) as f64; // 8ex*2rows*512*880
     let bytes = (n_used * 2 * n_ff) as f64 * rb as f64;
     // warmup + reps
     let reps = 300usize;

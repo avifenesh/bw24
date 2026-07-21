@@ -1,0 +1,35 @@
+tools/../crates/bw24-engine/cu/qmatvec.cu(4107): warning #550-D: variable "s1" was set but never used
+          int s0 = whichHalf * 2, s1 = s0 + 1;
+                                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+tools/../crates/bw24-engine/cu/qmatvec.cu(4107): warning #550-D: variable "s1" was set but never used
+          int s0 = whichHalf * 2, s1 = s0 + 1;
+                                  ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+	Command being timed: "nvcc -O3 -std=c++17 -arch=sm_120a tools/bench_mapped_qmatvec.cu -o /tmp/bw24-bench-mixed-q8"
+	User time (seconds): 22.78
+	System time (seconds): 0.76
+	Percent of CPU this job got: 50%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:47.06
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 308688
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 504349
+	Voluntary context switches: 143
+	Involuntary context switches: 623
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

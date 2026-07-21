@@ -1,0 +1,22 @@
+bw24 native v2k Q2_K thread sweep 2026-07-21T15:49:24+03:00
+Each point: 10 warmups + 100 timed production-MoE calls; active desktop; powersave governor
+f7948a3d853fadd3d2e2a3c324e0c7eb268db82b8a5403bdfbb17a4d10717a68  /tmp/libbw24-cpu-experts-native-v2k.so
+55, 10.41 W
+pass=ascending
+native Q2_K 4-expert 4096x1536x4096 t=1: 7.941 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=2: 4.022 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=4: 2.022 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=6: 1.405 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=8: 1.090 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=12: 1.014 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=16: 2.668 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=24: 8.882 ms/token checksum=8076798197760.00000000
+pass=descending
+native Q2_K 4-expert 4096x1536x4096 t=24: 8.299 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=16: 3.354 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=12: 1.192 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=8: 1.101 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=6: 1.436 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=4: 2.062 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=2: 4.047 ms/token checksum=8076798197760.00000000
+native Q2_K 4-expert 4096x1536x4096 t=1: 8.031 ms/token checksum=8076798197760.00000000

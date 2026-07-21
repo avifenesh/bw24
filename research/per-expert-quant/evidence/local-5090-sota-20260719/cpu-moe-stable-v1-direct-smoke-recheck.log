@@ -1,0 +1,2 @@
+[bw24-cpu-profile] calls=9 prepare=0.000029s io=0.000000s insert=0.000000s compute=0.002033s read_projections=0 read_GB=0.000
+experts=1 iterations=1 ms/token=0.105247 hash=c90ad3934ff2244b first=-5.29205751 last=-4.97031116

@@ -14,7 +14,7 @@
 //!
 //! Gated behind `BW24_MOE_CACHE` (default off => current stage-every-token behavior).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, HostSlice, SyncOnDrop};
 use crate::Engine;
@@ -42,21 +42,35 @@ impl BlockId {
 /// policy, 2026-07-08 — the transient staging tier went with the ghost filter).
 #[derive(Clone, Copy, Debug)]
 pub enum DispatchSlot {
-    Resident(usize),
+        Resident(usize),
 }
 
-/// SLRU GPU expert-residency cache. N fixed slots, each sized to the largest block so any block
-/// fits any slot (fixed-address, never re-allocated). One global instance shared across all layers.
+/// One fixed-address size class with an independent SLRU. Separating queues by capacity prevents a
+/// small mixed-layout block from consuming the scarce slots that can hold a larger block.
+struct SlotClass {
+    capacity: usize,
+    probation: VecDeque<usize>,
+    protected: VecDeque<usize>,
+    free: Vec<usize>,
+    protected_cap: usize,
+}
+
+/// SLRU GPU expert-residency cache. Slots remain fixed-address for the cache lifetime. Uniform
+/// models use one class; mixed-layout models may preallocate several exact-capacity classes.
 pub struct MoeSlotCache {
-    slots: Vec<CudaSlice<u8>>,        // N fixed GPU buffers, each `max_block_bytes`
-    occupant: Vec<Option<BlockId>>,   // slots[s] currently holds occupant[s]  (the residency bitmask)
-    table: HashMap<BlockId, usize>,   // BlockId -> slot index (O(1) residency lookup)
-    probation: VecDeque<usize>,       // SLRU segment 1 (slot indices, LRU front = coldest)
-    protected: VecDeque<usize>,       // SLRU segment 2 (hot; capped at ~0.8*N)
-    free: Vec<usize>,                 // unused slot indices (startup)
+    slots: Vec<CudaSlice<u8>>, // fixed GPU buffers; capacities live in `classes`
+    slot_class: Vec<usize>,    // slot index -> size-class index
+    classes: Vec<SlotClass>,
+    occupant: Vec<Option<BlockId>>, // slots[s] currently holds occupant[s]  (the residency bitmask)
+    table: HashMap<BlockId, usize>, // BlockId -> slot index (O(1) residency lookup)
+    /// Exponentially aged online access scores for the optional mixed-layout LFU victim policy.
+    /// Scores survive eviction and perf-counter resets; an opt-in decode-epoch decay prevents a
+    /// batched prompt from permanently outweighing recent token-to-token reuse.
+    frequencies: HashMap<BlockId, f32>,
     /// Copy-stream prefetches that have reserved a slot but are not visible in `table` until the
     /// consumer inserts an explicit compute-stream wait for `ready`. Pending slots are absent from
     /// both SLRU queues, so neither synchronous admission nor another prefetch can evict them.
+
     pending: HashMap<BlockId, PendingBlock>,
     /// Source owners whose copy completed submission but not yet DMA completion. They are reaped
     /// only after the recorded copy-stream event reports complete.
@@ -70,10 +84,10 @@ pub struct MoeSlotCache {
     compute_sources: HashMap<KeepaliveKey, ExpertKeepalive>,
     /// Opt-in positioned-read backends. Pinned buffers remain owned here until their explicit
     /// compute-stream completion events fire.
-    pread: Option<PreadPool>,
+        pread: Option<PreadPool>,
     /// Known-next reads submitted to disk workers but not yet consumed by dispatch. They own pinned
     /// buffers, not GPU slots; all CUDA submission remains on the caller thread.
-    worker_reads: HashMap<BlockId, ReadTicket>,
+    worker_reads: HashMap<BlockId, WorkerRead>,
     pread_requested: bool,
     pread_fallbacks: u64,
     /// Retained so an event-creation failure after copy submission can be drained again during
@@ -81,11 +95,24 @@ pub struct MoeSlotCache {
     copy_stream: Arc<CudaStream>,
     copy_stream_unknown: bool,
     compute_stream: Arc<CudaStream>,
-    compute_stream_unknown: bool,
+        compute_stream_unknown: bool,
 
     n: usize,
-    protected_cap: usize,
     max_block_bytes: usize,
+    size_aware: bool,
+    frequency_evict: bool,
+    frequency_decay: Option<f32>,
+    /// Relative LFU value of a NextN/MTP access. The MTP block is keyed at `u16::MAX` and is
+    /// latency-critical during speculative decode, but contributes only one layer of observations
+    /// versus the full trunk. Keep the neutral default; local fixed-residency profiling may raise
+    /// it after an exact throughput sweep.
+    mtp_frequency_weight: f32,
+    last_forward_layer: Option<u16>,
+    last_forward_t: usize,
+    /// Stable-residency mode for heterogeneous CPU/GPU expert execution. Once frozen, callers may
+    /// still read resident slots, but must stage cache misses through transient scratch instead of
+    /// changing which experts execute on each backend.
+    frozen: bool,
 
     // --- LAUNCH-STRUCTURE STAGE 3 (2026-07-05): device-side expert-pointer indirection ---
     /// Resident-block count per LAYER (all 3 projections summed). When a layer reaches
@@ -112,7 +139,13 @@ pub struct MoeSlotCache {
 struct PendingBlock {
     slot: usize,
     ready: Arc<CudaEvent>,
-    keepalive: Option<ExpertKeepalive>,
+        keepalive: Option<ExpertKeepalive>,
+}
+
+#[derive(Clone, Copy)]
+struct WorkerRead {
+    ticket: ReadTicket,
+    len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -142,13 +175,15 @@ impl HostSlice<u8> for ExactPinnedPrefix<'_> {
     fn len(&self) -> usize { self.0.len() }
 
     unsafe fn stream_synced_slice<'a>(
-        &'a self,
+                &'a self,
         _stream: &'a CudaStream,
     ) -> (&'a [u8], SyncOnDrop<'a>) {
-        // SAFETY: stage_pread_on_compute_stream records an explicit event immediately after the
-        // async memcpy and PreadPool retains both allocation and event until it completes.
+        // SAFETY: the pread staging helpers record an explicit event immediately after the async
+        // memcpy and PreadPool retains both allocation and event until it completes.
         (self.0, SyncOnDrop::Record(None))
     }
+
+
 
     unsafe fn stream_synced_mut_slice<'a>(
         &'a mut self,
@@ -196,7 +231,86 @@ fn stage_pread_on_compute_stream(
     let mut dst = slot.slice_mut(0..host_bytes.len());
     e.stream().memcpy_htod(&source, &mut dst)?;
     ready.record(e.stream())?;
-    Ok(ready)
+        Ok(ready)
+}
+
+fn stage_pread_prefetch_on_copy_stream(
+    e: &Engine,
+    host_bytes: &[u8],
+    slot: &mut CudaSlice<u8>,
+) -> Result<Arc<CudaEvent>, (Box<dyn std::error::Error>, bool)> {
+    let ready = match e.ctx().new_event(None) {
+        Ok(ready) => Arc::new(ready),
+        Err(err) => return Err((err.into(), true)),
+    };
+    let source = ExactPinnedPrefix(host_bytes);
+    let mut dst = slot.slice_mut(0..host_bytes.len());
+    let submitted = e
+        .copy_stream
+        .memcpy_htod(&source, &mut dst)
+        .and_then(|()| ready.record(&e.copy_stream));
+    match submitted {
+        Ok(()) => Ok(ready),
+        Err(err) => match e.copy_stream.synchronize() {
+            Ok(()) => Err((err.into(), true)),
+            Err(sync_err) => Err((
+                std::io::Error::other(format!(
+                "pread copy-stream H2D setup failed ({err}); stream drain also failed ({sync_err})"
+            ))
+                .into(),
+                false,
+            )),
+        },
+    }
+}
+
+/// Allocate the same fraction of every exact block-size class under one byte budget. This avoids
+/// biasing residency toward either low-bit or high-bit tiers while eliminating max-slot padding.
+fn size_class_plan(block_bytes: &[usize], budget_bytes: usize) -> Vec<(usize, usize)> {
+    let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+    for &bytes in block_bytes.iter().filter(|&&bytes| bytes > 0) {
+        *counts.entry(bytes).or_insert(0) += 1;
+    }
+    if counts.is_empty() || budget_bytes == 0 {
+        return Vec::new();
+    }
+    let total_bytes: u128 = counts
+        .iter()
+        .map(|(&bytes, &count)| (bytes as u128 + 8) * count as u128)
+        .sum();
+    let budget = budget_bytes as u128;
+    let mut plan: Vec<(usize, usize, u128)> = counts
+        .iter()
+        .map(|(&bytes, &count)| {
+            let scaled = count as u128 * budget;
+            (
+                bytes,
+                (scaled / total_bytes).min(count as u128) as usize,
+                scaled % total_bytes,
+            )
+        })
+        .collect();
+    let mut used: u128 = plan
+        .iter()
+        .map(|(bytes, count, _)| (*bytes as u128 + 8) * *count as u128)
+        .sum();
+
+    // Hamilton-style remainder pass keeps class proportions close after flooring. There are only
+    // a handful of layout classes, so one additional slot per class covers all rounding loss.
+    let mut order: Vec<usize> = (0..plan.len()).collect();
+    order.sort_by(|&a, &b| plan[b].2.cmp(&plan[a].2).then(a.cmp(&b)));
+    for index in order {
+        let (bytes, count, _) = plan[index];
+        let available = counts[&bytes];
+        let required = bytes as u128 + 8;
+        if count < available && used + required <= budget {
+            plan[index].1 += 1;
+            used += required;
+        }
+    }
+    plan.into_iter()
+        .filter_map(|(bytes, count, _)| (count > 0).then_some((bytes, count)))
+        .collect()
 }
 
 impl MoeSlotCache {
@@ -205,38 +319,90 @@ impl MoeSlotCache {
     /// layer's. The 35B-A3B keeps its 256 experts HOST-resident, so the GPU has ~20+ GB free at
     /// decode — empirically a 256-slot cache thrashes (~2-7% hit) while a few-thousand-slot cache
     /// reaches ~85%+ steady-state. So the DEFAULT auto-sizes N to fill `BW24_MOE_VRAM_FRAC` (default
-    /// 0.40) of free VRAM, clamped to [256, ~hot-set]. `BW24_MOE_SLOTS` forces an exact N.
+    /// 0.85) of free VRAM, clamped to [256, ~hot-set]. `BW24_MOE_SLOTS` forces an exact N.
     pub fn new(e: &Engine, max_block_bytes: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let (free, _total) = e.ctx().mem_get_info()?;
-        // hard headroom: never use more than 80% of free; keep 2 blocks of slack.
-        let max_by_vram = ((free as f64 * 0.80) as usize / max_block_bytes).saturating_sub(2).max(8);
-        let want = if let Some(n) = std::env::var("BW24_MOE_SLOTS").ok().and_then(|s| s.parse::<usize>().ok()) {
-            n
+        // Keep two blocks of slack after the machine-specific hard ceiling. The default remains
+        // 80%; tightly provisioned spill rigs may raise it only after an OOM-gated local sweep.
+        let hard_frac = cache_hard_vram_frac();
+        let hard_bytes =
+            ((free as f64 * hard_frac) as usize).saturating_sub(2 * (max_block_bytes + 8));
+        let forced_slots = std::env::var("BW24_MOE_SLOTS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
+        let requested_bytes = if let Some(n) = forced_slots {
+            n.saturating_mul(max_block_bytes + 8)
         } else {
-            // auto: fill BW24_MOE_VRAM_FRAC of free VRAM with slots (default 40%).
+            // auto: fill BW24_MOE_VRAM_FRAC of free VRAM with slots (default 85%).
             // DEFAULT 0.85 (2026-07-06 local sweep: 0.40=25.0, 0.60=28.0, 0.85=28.5 tok/s on the
             // spill-regime 35B — hit-rate 87.8% -> 99.2%, PCIe 55 -> 3.8 MB/tok; the 0.80
             // hard-headroom cap below still bounds the true allocation, so 0.85 requests the max).
             // Rigs co-running other GPU work should set BW24_MOE_VRAM_FRAC lower.
-            let frac = std::env::var("BW24_MOE_VRAM_FRAC").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.85);
-            (((free as f64 * frac) as usize) / max_block_bytes).max(256)
+            let frac = std::env::var("BW24_MOE_VRAM_FRAC")                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.85);
+            (free as f64 * frac) as usize
         };
-        let n = want.min(max_by_vram).max(8);
+        let budget_bytes = requested_bytes.min(hard_bytes);
+        let layout = e.moe_cache_layout().unwrap_or_default();
+        let size_aware = forced_slots.is_none()
+            && std::env::var("BW24_MOE_SIZE_AWARE").as_deref() == Ok("1")
+            && !layout.is_empty();
+        let frequency_evict = std::env::var("BW24_MOE_LFU").as_deref() == Ok("1");
+        let frequency_decay = if frequency_evict {
+            cache_lfu_decay()
+        } else {
+            None
+        };
+        let mtp_frequency_weight = cache_lfu_mtp_weight();
+        let mut class_plan = if size_aware {
+            size_class_plan(&layout, budget_bytes)
+        } else {
+            Vec::new()
+        };
+        if class_plan.iter().map(|(_, count)| count).sum::<usize>() < 8 {
+            let n = (budget_bytes / (max_block_bytes + 8)).max(8);
+            class_plan = vec![(max_block_bytes, n)];
+        }
+        let n: usize = class_plan.iter().map(|(_, count)| count).sum();
 
         let mut slots = Vec::with_capacity(n);
+        let mut slot_class = Vec::with_capacity(n);
+        let mut classes = Vec::with_capacity(class_plan.len());
         let mut occupant = Vec::with_capacity(n);
-        let mut free_list = Vec::with_capacity(n);
-        for s in 0..n {
-            // +8 tail pad: the wide-load expert dots' aligned window reads up to 6B past
-            // the final q4_0 block (values discarded; must be mapped).
-            slots.push(e.alloc_u8(max_block_bytes + 8)?);
-            occupant.push(None);
-            free_list.push(n - 1 - s); // push reversed so pop() yields 0,1,2,... (deterministic fill)
+        for (class_index, &(capacity, count)) in class_plan.iter().enumerate() {
+            let start = slots.len();
+            for _ in 0..count {
+                // +8 tail pad: wide expert dots may issue an aligned read past the final block.
+                slots.push(e.alloc_u8(capacity + 8)?);
+                slot_class.push(class_index);
+                occupant.push(None);
+            }
+            let free_slots = (start..start + count).rev().collect();
+            classes.push(SlotClass {
+                capacity,
+                probation: VecDeque::new(),
+                protected: VecDeque::new(),
+                free: free_slots,
+                protected_cap: ((count as f64 * 0.8) as usize).max(1),
+            });
         }
-        let protected_cap = ((n as f64 * 0.8) as usize).max(1);
+        if size_aware {
+            let allocated: usize = class_plan
+                .iter()
+                .map(|(bytes, count)| (bytes + 8) * count)
+                .sum();
+            eprintln!(
+                "[moe-cache] size-aware fixed slots: {n} slots in {} classes, {:.2} GB / {:.2} GB budget",
+                class_plan.len(),
+                allocated as f64 / 1e9,
+                budget_bytes as f64 / 1e9
+            );
+        }
         let pread_mode = crate::spill_pread::configured_mode();
         let pread_requested = pread_mode != SpillIoMode::Mmap;
         let pread = if pread_requested {
+
             match PreadPool::try_new(e, max_block_bytes, pread_mode) {
                 Ok(pool) => Some(pool),
                 Err(err) => {
@@ -246,28 +412,120 @@ impl MoeSlotCache {
             }
         } else { None };
 
+
         Ok(MoeSlotCache {
-            slots, occupant, table: HashMap::with_capacity(n * 2),
-            probation: VecDeque::new(), protected: VecDeque::new(), free: free_list,
-            pending: HashMap::new(), inflight_sources: Vec::new(),
-            quarantined_sources: Vec::new(), compute_sources: HashMap::new(),
+            slots,
+            slot_class,
+            classes,
+            occupant,
+            table: HashMap::with_capacity(n * 2),
+            frequencies: HashMap::with_capacity(layout.len().max(n * 2)),
+            pending: HashMap::new(),
+            inflight_sources: Vec::new(),
+            quarantined_sources: Vec::new(),
+ compute_sources: HashMap::new(),
             pread, worker_reads: HashMap::new(), pread_requested, pread_fallbacks: 0,
             copy_stream: e.copy_stream.clone(), copy_stream_unknown: false,
-            compute_stream: e.stream().clone(), compute_stream_unknown: false,
-            n, protected_cap, max_block_bytes,
-            per_layer: HashMap::new(), dev_rows: HashMap::new(), prewarm_tried: HashSet::new(),
+                        compute_stream: e.stream().clone(),
+            compute_stream_unknown: false,
+            n,
+            max_block_bytes,
+            size_aware,
+            frequency_evict,
+            frequency_decay,
+            mtp_frequency_weight,
+            last_forward_layer: None,
+            last_forward_t: 0,
+            frozen: false,
+            per_layer: HashMap::new(),
+            dev_rows: HashMap::new(),
+            prewarm_tried: HashSet::new(),
             hits: 0, misses: 0, staged_bytes: 0,
         })
     }
 
     #[inline]
-    pub fn n_slots(&self) -> usize { self.n }
+    pub fn n_slots(&self) -> usize {         self.n
+    }
     #[inline]
-    pub fn max_block_bytes(&self) -> usize { self.max_block_bytes }
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+    pub fn freeze(&mut self) {
+        if !self.frozen {
+            self.frozen = true;
+            let (_, complete, one_projection, two_projections, stranded_blocks) =
+                self.expert_residency_shape();
+            eprintln!(
+                "[moe-cache] residency frozen: {} slots, {} resident blocks; \
+                 {complete} complete experts, {one_projection} one-projection fragments, \
+                 {two_projections} two-projection fragments ({stranded_blocks} stranded blocks)",
+                self.n,
+                self.table.len()
+            );
+            let mut mtp_masks = HashMap::<u16, u8>::new();
+            for id in self.table.keys().filter(|id| id.layer == u16::MAX) {
+                *mtp_masks.entry(id.ex).or_insert(0) |= 1u8 << id.proj;
+            }
+            if !mtp_masks.is_empty() {
+                let complete = mtp_masks.values().filter(|&&mask| mask == 0b111).count();
+                eprintln!(
+                    "[moe-cache] frozen MTP residency: {} blocks, {complete} complete experts",
+                    mtp_masks.values().map(|mask| mask.count_ones() as usize).sum::<usize>()
+                );
+            }
+        }
+    }
+
+    pub(crate) fn expert_residency_shape(&self) -> (usize, usize, usize, usize, usize) {
+        let mut masks = HashMap::<(u16, u16), u8>::new();
+        for id in self.table.keys() {
+            *masks.entry((id.layer, id.ex)).or_insert(0) |= 1u8 << id.proj;
+        }
+        let complete = masks.values().filter(|&&mask| mask == 0b111).count();
+        let one_projection = masks
+            .values()
+            .filter(|&&mask| mask.count_ones() == 1)
+            .count();
+        let two_projections = masks
+            .values()
+            .filter(|&&mask| mask.count_ones() == 2)
+            .count();
+        let stranded_blocks = one_projection + 2 * two_projections;
+        (
+            masks.len(),
+            complete,
+            one_projection,
+            two_projections,
+            stranded_blocks,
+        )
+    }
+
+    #[inline]
+    pub fn max_block_bytes(&self) -> usize {
+        self.max_block_bytes
+    }
+
 
     /// O(1) residency check (the ktransformers `generate_gpu_experts_masks` analog).
     #[inline]
     pub fn resident(&self, id: BlockId) -> Option<usize> { self.table.get(&id).copied() }
+
+    #[inline]
+    fn frequency_increment(&self, id: BlockId) -> f32 {
+        if id.layer == u16::MAX { self.mtp_frequency_weight } else { 1.0 }
+    }
+
+    /// Record a routed block that a fused all-hit path consumed without going through dispatch.
+    /// Warmup-only callers use this to make the LFU profile reflect actual grouped GPU traffic;
+    /// frozen serving skips it because residency can no longer change.
+    pub(crate) fn note_profile_hit(&mut self, id: BlockId) {
+        if self.frozen || !self.table.contains_key(&id) {
+            return;
+        }
+        let increment = self.frequency_increment(id);
+        *self.frequencies.entry(id).or_insert(0.0) += increment;
+    }
 
     /// HIT promotion (SLRU): on a probation hit promote to protected; on a protected hit bump to MRU.
     ///
@@ -277,68 +535,126 @@ impl MoeSlotCache {
     /// ~850 hits/token that was ~40M host ops/token — measured as the fast-admit A/B regression
     /// 48.5 -> 46.0 tok/s on the 35B g7e decode). Skip it until eviction is possible. On 96GB
     /// (slots >= whole-model block count) every HIT stays an O(1) table lookup forever; on spill
-    /// rigs this only defers SLRU ordering to when eviction pressure actually exists.
+        /// rigs this only defers SLRU ordering to when eviction pressure actually exists.
     /// Bookkeeping-only: the dispatched bytes are identical either way (the D.2 gate pins it).
     fn on_hit(&mut self, slot: usize) {
-        if !self.free.is_empty() { return; }
-        if let Some(pos) = self.probation.iter().position(|&x| x == slot) {
-            self.probation.remove(pos);
+        let class_index = self.slot_class[slot];
+        let class = &mut self.classes[class_index];
+        if !class.free.is_empty() {
+            return;
+        }
+        if let Some(pos) = class.probation.iter().position(|&x| x == slot) {
+            class.probation.remove(pos);
             self.push_protected(slot);
-        } else if let Some(pos) = self.protected.iter().position(|&x| x == slot) {
-            self.protected.remove(pos);
-            self.protected.push_back(slot); // MRU
+        } else if let Some(pos) = class.protected.iter().position(|&x| x == slot) {
+            class.protected.remove(pos);
+            class.protected.push_back(slot); // MRU
         } else {
             // not in either segment (shouldn't happen for a resident slot) — treat as protected MRU
             self.push_protected(slot);
+
         }
     }
+
 
     /// Push a slot to protected MRU; if protected exceeds its cap, demote its LRU front to probation.
     fn push_protected(&mut self, slot: usize) {
-        self.protected.push_back(slot);
-        while self.protected.len() > self.protected_cap {
-            if let Some(demoted) = self.protected.pop_front() {
-                self.probation.push_back(demoted);
-            } else { break; }
+        let class = &mut self.classes[self.slot_class[slot]];
+        class.protected.push_back(slot);
+        while class.protected.len() > class.protected_cap {
+            if let Some(demoted) = class.protected.pop_front() {
+                class.probation.push_back(demoted);
+            } else {
+                break;
+            }
         }
     }
 
-    /// Pick + free an eviction victim slot, removing its occupant from the table. Victim = probation
-    /// LRU front; if probation empty, demote protected LRU -> probation then evict. Returns the slot.
-    fn evict_one(&mut self) -> usize {
-        if let Some(s) = self.probation.pop_front() {
-            if let Some(old) = self.occupant[s].take() {
-                self.table.remove(&old);
-                self.on_block_evicted(old.layer);
-            }
-            return s;
+    fn remove_occupant(&mut self, slot: usize) {
+        if let Some(old) = self.occupant[slot].take() {
+            self.table.remove(&old);
+            self.on_block_evicted(old.layer);
         }
-        if let Some(s) = self.protected.pop_front() {
-            if let Some(old) = self.occupant[s].take() {
-                self.table.remove(&old);
-                self.on_block_evicted(old.layer);
-            }
-            return s;
+    }
+
+    /// Lowest cumulative-frequency resident in one class; ties keep ordinary LRU order. A cold
+    /// admission therefore becomes the sacrificial slot on the next miss instead of displacing a
+    /// prompt-proven hot expert. `keep` protects the expert whose kernels are currently queued.
+    fn frequency_victim_in_class(&mut self, class_index: usize, keep: &[BlockId]) -> Option<usize> {
+        let class = &self.classes[class_index];
+        let probation_len = class.probation.len();
+        let candidate = class
+            .probation
+            .iter()
+            .chain(class.protected.iter())
+            .enumerate()
+            .filter_map(|(position, &slot)| {
+                let id = self.occupant[slot]?;
+                (!keep.contains(&id)).then_some((
+                    self.frequencies.get(&id).copied().unwrap_or(0.0),
+                    position,
+                    slot,
+                ))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let (_, position, slot) = candidate?;
+        if position < probation_len {
+            self.classes[class_index].probation.remove(position);
+        } else {
+            self.classes[class_index]
+                .protected
+                .remove(position - probation_len);
         }
-        unreachable!("evict_one called with no resident slots (n>=8 guarantees occupancy)");
+        Some(slot)
+    }
+
+    /// Pick the LRU victim from the smallest class that can hold `required` bytes.
+    fn evict_one(&mut self, required: usize) -> Option<usize> {
+        for class_index in 0..self.classes.len() {
+            if self.classes[class_index].capacity < required {
+                continue;
+            }
+            let slot = if self.frequency_evict {
+                self.frequency_victim_in_class(class_index, &[])
+            } else {
+                self.classes[class_index]
+                    .probation
+                    .pop_front()
+                    .or_else(|| self.classes[class_index].protected.pop_front())
+            };
+            if let Some(slot) = slot {
+                self.remove_occupant(slot);
+                return Some(slot);
+            }
+        }
+        None
     }
 
     /// Pick a resident victim that is not needed by the expert currently being computed. Pending
     /// slots never enter the SLRU queues, so they are excluded automatically. Returns `None` rather
     /// than evicting a protected block; the caller then leaves this block to the synchronous path.
-    fn evict_one_excluding(&mut self, keep: &[BlockId]) -> Option<usize> {
+    fn evict_one_excluding(&mut self, required: usize, keep: &[BlockId]) -> Option<usize> {
         let take = |q: &mut VecDeque<usize>, occupant: &[Option<BlockId>]| {
             q.iter()
                 .position(|&s| occupant[s].is_some_and(|id| !keep.contains(&id)))
                 .and_then(|pos| q.remove(pos))
         };
-        let slot = take(&mut self.probation, &self.occupant)
-            .or_else(|| take(&mut self.protected, &self.occupant))?;
-        if let Some(old) = self.occupant[slot].take() {
-            self.table.remove(&old);
-            self.on_block_evicted(old.layer);
+        for class_index in 0..self.classes.len() {
+            if self.classes[class_index].capacity < required {
+                continue;
+            }
+            let slot = if self.frequency_evict {
+                self.frequency_victim_in_class(class_index, keep)
+            } else {
+                take(&mut self.classes[class_index].probation, &self.occupant)
+                    .or_else(|| take(&mut self.classes[class_index].protected, &self.occupant))
+            };
+            if let Some(slot) = slot {
+                self.remove_occupant(slot);
+                return Some(slot);
+            }
         }
-        Some(slot)
+        None
     }
 
     /// STAGE 3 bookkeeping: a resident block of `layer` was evicted — the layer is no longer fully
@@ -348,24 +664,35 @@ impl MoeSlotCache {
     /// enqueued BEFORE this eviction's staging memcpy on the same stream (single-stream ordering).
     fn on_block_evicted(&mut self, layer: u16) {
         if let Some(c) = self.per_layer.get_mut(&layer) { *c -= 1; }
-        self.dev_rows.remove(&layer);
+                self.dev_rows.remove(&layer);
     }
 
-    fn reserve_slot(&mut self) -> usize {
-        if let Some(slot) = self.free.pop() { slot } else { self.evict_one() }
+    fn reserve_slot(&mut self, required: usize) -> Option<usize> {
+        for class in &mut self.classes {
+            if class.capacity >= required {
+                if let Some(slot) = class.free.pop() {
+                    return Some(slot);
+                }
+            }
+        }
+        self.evict_one(required)
     }
 
     fn release_reserved_slot(&mut self, slot: usize) {
         debug_assert!(self.occupant[slot].is_none());
-        self.free.push(slot);
+        self.classes[self.slot_class[slot]].free.push(slot);
     }
 
     fn publish(&mut self, id: BlockId, slot: usize) {
         self.occupant[slot] = Some(id);
         self.table.insert(id, slot);
-        self.probation.push_back(slot);
+        self.classes[self.slot_class[slot]]
+            .probation
+            .push_back(slot);
         *self.per_layer.entry(id.layer).or_insert(0) += 1;
     }
+
+
 
     fn reap_copy_sources(&mut self) {
         self.inflight_sources.retain(|(ready, _)| !ready.is_complete());
@@ -382,7 +709,13 @@ impl MoeSlotCache {
     /// probation (new admissions enter probation — they earn promotion on a later hit).
     fn admit(&mut self, id: BlockId, host_bytes: &[u8], e: &Engine)
              -> Result<usize, Box<dyn std::error::Error>> {
-        let slot = self.reserve_slot();
+        let slot = self.reserve_slot(host_bytes.len()).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "no MoE cache slot can hold {} bytes (max class {})",
+                host_bytes.len(),
+                self.classes.last().map(|class| class.capacity).unwrap_or(0)
+            ))
+        })?;
         // Pending copy-stream admissions are not in either SLRU queue, so `evict_one` cannot return
         // an in-flight slot. This synchronous copy and its consumer remain ordered on gpu.stream.
         if let Err(err) = e.stage_expert(host_bytes, &mut self.slots[slot], 0) {
@@ -421,10 +754,131 @@ impl MoeSlotCache {
     /// reads. In-flight CPU reads keep their buffers until completion restores them safely.
     pub(crate) fn begin_worker_scope(&mut self) {
         if self.worker_reads.is_empty() { return; }
-        let tickets: Vec<_> = self.worker_reads.drain().map(|(_, ticket)| ticket).collect();
+                let tickets: Vec<_> = self
+            .worker_reads
+            .drain()
+            .map(|(_, read)| read.ticket)
+            .collect();
         if let Some(pool) = self.pread.as_mut().filter(|pool| pool.is_worker()) {
-            for ticket in tickets { let _ = pool.cancel_worker(ticket); }
+            for ticket in tickets {
+ let _ = pool.cancel_worker(ticket); }
+                }
+    }
+
+    /// Age cumulative LFU at decode-token boundaries. A batched prompt may touch one block many
+    /// times before decode begins; treating those touches as permanent future-use votes poisons a
+    /// spill cache. The first T=1 sweep starts a fresh frequency epoch while preserving populated
+    /// GPU slots. Later decode sweeps exponentially age history so recent cross-token reuse can
+    /// displace stale prompt-specific experts.
+    ///
+    /// MoE layers are visited in ascending order and the cache is model-global, so
+    /// `layer <= previous_layer` marks a new model forward. This changes victim selection only;
+    /// every hit and miss still feeds identical expert bytes to the same GPU kernel.
+    pub(crate) fn begin_forward_epoch(&mut self, layer: u16, t: usize) {
+        let Some(decay) = self.frequency_decay else {
+            self.last_forward_layer = Some(layer);
+            self.last_forward_t = t;
+            return;
+        };
+        let new_sweep = self
+            .last_forward_layer
+            .is_some_and(|previous| layer <= previous);
+        if new_sweep && t == 1 {
+            if self.last_forward_t != 1 {
+                self.frequencies.clear();
+            } else {
+                self.frequencies.retain(|_, score| {
+                    *score *= decay;
+                    *score >= 1.0e-3
+                });
+            }
         }
+        self.last_forward_layer = Some(layer);
+        self.last_forward_t = t;
+    }
+
+    /// Turn already-submitted disk reads into copy-stream GPU admissions at a host-routing
+    /// boundary. The caller must invoke this only after the router's DtoH synchronization has
+    /// completed all earlier-layer compute, and `keep` must contain every block selected in the
+    /// current layer. A reserved victim is therefore neither in use nor about to be used, so its
+    /// H2D can start immediately while the CPU workers finish later reads. Consumers still insert
+    /// an explicit compute-stream wait through the ordinary `pending` dispatch path.
+    pub(crate) fn promote_worker_reads_at_safe_boundary(
+        &mut self,
+        order: &[BlockId],
+        keep: &[BlockId],
+        e: &Engine,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        if !crate::spill_pread::copy_h2d_enabled() {
+            return Ok(0);
+        }
+        let mut promoted = 0usize;
+        for &id in order {
+            if self.table.contains_key(&id) || self.pending.contains_key(&id) {
+                if let Some(read) = self.worker_reads.remove(&id) {
+                    if let Some(pool) = self.pread.as_mut() {
+                        let _ = pool.cancel_worker(read.ticket);
+                    }
+                }
+                continue;
+            }
+            let Some(read) = self.worker_reads.get(&id).copied() else {
+                continue;
+            };
+            let Some(slot) = self.reserve_prefetch_slot(read.len, keep) else {
+                continue;
+            };
+            self.worker_reads.remove(&id);
+
+            let index = match self.pread.as_mut().unwrap().wait_worker(read.ticket) {
+                Ok(index) => index,
+                Err(err) => {
+                    let _ = self.pread.as_mut().unwrap().cancel_worker(read.ticket);
+                    self.release_reserved_slot(slot);
+                    self.note_pread_fallback(err.as_ref());
+                    continue;
+                }
+            };
+            let ready = {
+                let bytes = match self.pread.as_ref().unwrap().bytes(index, read.len) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        self.pread.as_mut().unwrap().abort_read(index);
+                        self.release_reserved_slot(slot);
+                        self.note_pread_fallback(err.as_ref());
+                        continue;
+                    }
+                };
+                stage_pread_prefetch_on_copy_stream(e, bytes, &mut self.slots[slot])
+            };
+            let ready = match ready {
+                Ok(ready) => ready,
+                Err((err, reusable)) => {
+                    if reusable {
+                        self.pread.as_mut().unwrap().abort_read(index);
+                        self.release_reserved_slot(slot);
+                        self.note_pread_fallback(err.as_ref());
+                        continue;
+                    }
+                    self.pread.as_mut().unwrap().mark_unknown_h2d(index);
+                    self.copy_stream_unknown = true;
+                    return Err(err);
+                }
+            };
+            self.pread.as_mut().unwrap().mark_h2d(index, ready.clone());
+            self.occupant[slot] = Some(id);
+            self.pending.insert(
+                id,
+                PendingBlock {
+                    slot,
+                    ready,
+                    keepalive: None,
+                },
+            );
+            self.staged_bytes += read.len as u64;
+            promoted += 1;
+        }
+        Ok(promoted)
     }
 
     fn dispatch_disk(
@@ -444,13 +898,14 @@ impl MoeSlotCache {
         }
 
         let pending = self.worker_reads.remove(&id);
-        let pool = self.pread.as_mut().unwrap();
+                let pool = self.pread.as_mut().unwrap();
         let read = if pool.is_worker() {
             let ticket = match pending {
-                Some(ticket) => Ok(Some(ticket)),
+                Some(read) => Ok(Some(read.ticket)),
                 None => pool.submit_worker(file.clone(), offset, len),
             };
             match ticket {
+
                 Ok(Some(ticket)) => match pool.wait_worker(ticket) {
                     Ok(index) => Ok(index),
                     Err(err) => {
@@ -475,9 +930,15 @@ impl MoeSlotCache {
             }
         };
 
+
         // The blocking read happens before eviction, so an I/O failure leaves cache residency
         // untouched and can safely use the mmap oracle.
-        let slot = self.reserve_slot();
+        let slot = self.reserve_slot(len).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "no MoE cache slot can hold {len} bytes (max class {})",
+                self.classes.last().map(|class| class.capacity).unwrap_or(0)
+            ))
+        })?;
         let ready = {
             let bytes = match self.pread.as_ref().unwrap().bytes(index, len) {
                 Ok(bytes) => bytes,
@@ -535,6 +996,8 @@ impl MoeSlotCache {
     pub(crate) fn dispatch_source(&mut self, id: BlockId, source: ExpertSource<'_>, e: &Engine)
                                   -> Result<DispatchSlot, Box<dyn std::error::Error>> {
         self.reap_copy_sources();
+        let increment = self.frequency_increment(id);
+        *self.frequencies.entry(id).or_insert(0.0) += increment;
         if let Some(s) = self.table.get(&id).copied() {
             self.hits += 1;
             self.on_hit(s);
@@ -595,17 +1058,25 @@ impl MoeSlotCache {
             ExpertSource::Memory { bytes: host_bytes, keepalive: None },
             keep,
             e,
-        )
+                )
     }
 
-    fn reserve_prefetch_slot(&mut self, keep: &[BlockId]) -> Option<usize> {
-        self.free.pop().or_else(|| self.evict_one_excluding(keep))
+    fn reserve_prefetch_slot(&mut self, required: usize, keep: &[BlockId]) -> Option<usize> {
+        for class in &mut self.classes {
+            if class.capacity >= required {
+                if let Some(slot) = class.free.pop() {
+                    return Some(slot);
+                }
+            }
+        }
+        self.evict_one_excluding(required, keep)
     }
 
-    fn prefetch_bytes(&mut self, id: BlockId, host_bytes: &[u8],
+    fn prefetch_bytes(
+&mut self, id: BlockId, host_bytes: &[u8],
                       keepalive: Option<ExpertKeepalive>, keep: &[BlockId], e: &Engine)
                       -> Result<bool, Box<dyn std::error::Error>> {
-        let Some(slot) = self.reserve_prefetch_slot(keep) else { return Ok(false) };
+        let Some(slot) = self.reserve_prefetch_slot(host_bytes.len(), keep) else { return Ok(false) };
         let ready = match stage_on_copy_stream(e, host_bytes, &mut self.slots[slot]) {
             Ok(ready) => ready,
             Err((err, reusable)) => {
@@ -650,7 +1121,7 @@ impl MoeSlotCache {
                     match self.pread.as_mut().unwrap()
                         .submit_worker_speculative(file.clone(), offset, len) {
                         Ok(Some(ticket)) => {
-                            self.worker_reads.insert(id, ticket);
+                            self.worker_reads.insert(id, WorkerRead { ticket, len });
                             Ok(true)
                         }
                         Ok(None) => Ok(false),
@@ -693,12 +1164,25 @@ impl MoeSlotCache {
             // Prewarm is a whole-layer scan. It must not silently turn explicit demand I/O back
             // into an mmap walk; organic misses will populate the cache through dispatch_source.
             return Ok(());
-        }
+                }
         let resident = self.per_layer.get(&layer).copied().unwrap_or(0) as usize;
         let missing = 3 * n_expert - resident;
-        if self.free.len() < missing { return Ok(()); }  // won't evict for a prewarm
+        if self.size_aware {
+            return Ok(());
+        } // heterogeneous prewarm needs a per-class fit proof
+        if self
+            .classes
+            .iter()
+            .map(|class| class.free.len())
+            .sum::<usize>()
+            < missing
+        {
+            return Ok(()); // won't evict for a prewarm
+        }
         for ex in 0..n_expert {
-            for (proj, exps) in [(PROJ_GATE, &m.gate_exps), (PROJ_UP, &m.up_exps),
+            for (proj, exps) in [
+                (PROJ_GATE, &m.gate_exps),
+ (PROJ_UP, &m.up_exps),
                                  (PROJ_DOWN, &m.down_exps)] {
                 let id = BlockId::new(layer, proj, ex as u16);
                 if self.table.contains_key(&id) { continue; }
@@ -774,7 +1258,162 @@ impl MoeSlotCache {
         let mut stats = self.pread.as_ref().map(PreadPool::stats).unwrap_or_default();
         stats.fallbacks = self.pread_fallbacks;
         Some(stats)
+        }
+}
+
+fn cache_lfu_decay() -> Option<f32> {
+    let raw = std::env::var("BW24_MOE_LFU_DECAY").ok()?;
+    match parse_cache_lfu_decay(Some(&raw)) {
+        Ok(value) => value,
+        Err(reason) => {
+            eprintln!(
+                "[moe-cache] invalid BW24_MOE_LFU_DECAY={raw:?} ({reason}); disabling LFU decay"
+            );
+            None
+        }
     }
+}
+
+fn cache_lfu_mtp_weight() -> f32 {
+    const DEFAULT: f32 = 1.0;
+    let raw = std::env::var("BW24_MOE_LFU_MTP_WEIGHT").ok();
+    match parse_cache_lfu_mtp_weight(raw.as_deref()) {
+        Ok(value) => value,
+        Err(reason) => {
+            eprintln!(
+                "[moe-cache] invalid BW24_MOE_LFU_MTP_WEIGHT={:?} ({reason}); using {DEFAULT}",
+                raw.as_deref().unwrap_or("")
+            );
+            DEFAULT
+        }
+    }
+}
+
+fn parse_cache_lfu_mtp_weight(raw: Option<&str>) -> Result<f32, &'static str> {
+    let value = raw
+        .unwrap_or("1")
+        .parse::<f32>()
+        .map_err(|_| "expected a number")?;
+    if value.is_finite() && (0.25..=64.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("expected a finite multiplier from 0.25 through 64")
+    }
+}
+
+fn parse_cache_lfu_decay(raw: Option<&str>) -> Result<Option<f32>, &'static str> {
+    let Some(raw) = raw else { return Ok(None) };
+    let value = raw.parse::<f32>().map_err(|_| "expected a number")?;
+    if value.is_finite() && value > 0.0 && value <= 1.0 {
+        Ok(Some(value))
+    } else {
+        Err("expected a finite fraction greater than 0 and at most 1")
+    }
+}
+
+fn cache_hard_vram_frac() -> f64 {
+    const DEFAULT: f64 = 0.80;
+    let raw = std::env::var("BW24_MOE_HARD_VRAM_FRAC").ok();
+    match parse_cache_hard_vram_frac(raw.as_deref()) {
+        Ok(value) => value,
+        Err(reason) => {
+            eprintln!(
+                "[moe-cache] invalid BW24_MOE_HARD_VRAM_FRAC={:?} ({reason}); using {DEFAULT}",
+                raw.as_deref().unwrap_or("")
+            );
+            DEFAULT
+        }
+    }
+}
+
+fn parse_cache_hard_vram_frac(raw: Option<&str>) -> Result<f64, &'static str> {
+    let value = raw
+        .unwrap_or("0.80")
+        .parse::<f64>()
+        .map_err(|_| "expected a number")?;
+    if value.is_finite() && (0.10..=0.95).contains(&value) {
+        Ok(value)
+    } else {
+        Err("expected a finite fraction from 0.10 through 0.95")
+    }
+}
+
+#[cfg(test)]
+mod vram_fraction_tests {
+    use super::{
+        parse_cache_hard_vram_frac, parse_cache_lfu_decay, parse_cache_lfu_mtp_weight,
+        size_class_plan,
+    };
+
+    #[test]
+    fn hard_vram_fraction_defaults_and_rejects_unsafe_values() {
+        assert_eq!(parse_cache_hard_vram_frac(None), Ok(0.80));
+        assert_eq!(parse_cache_hard_vram_frac(Some("0.82")), Ok(0.82));
+        assert!(parse_cache_hard_vram_frac(Some("NaN")).is_err());
+        assert_eq!(parse_cache_hard_vram_frac(Some("0.95")), Ok(0.95));
+        assert!(parse_cache_hard_vram_frac(Some("0.96")).is_err());
+        assert!(parse_cache_hard_vram_frac(Some("1.0")).is_err());
+        assert!(parse_cache_hard_vram_frac(Some("bad")).is_err());
+    }
+
+    #[test]
+    fn lfu_decay_is_opt_in_and_bounded() {
+        assert_eq!(parse_cache_lfu_decay(None), Ok(None));
+        assert_eq!(parse_cache_lfu_decay(Some("0.8")), Ok(Some(0.8)));
+        assert_eq!(parse_cache_lfu_decay(Some("1")), Ok(Some(1.0)));
+        for value in ["0", "-0.1", "1.1", "NaN", "bad"] {
+            assert!(
+                parse_cache_lfu_decay(Some(value)).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn lfu_mtp_weight_defaults_and_is_bounded() {
+        assert_eq!(parse_cache_lfu_mtp_weight(None), Ok(1.0));
+        assert_eq!(parse_cache_lfu_mtp_weight(Some("4")), Ok(4.0));
+        for value in ["0", "0.1", "65", "NaN", "bad"] {
+            assert!(
+                parse_cache_lfu_mtp_weight(Some(value)).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn size_class_plan_preserves_classes_and_never_exceeds_budget() {
+        let blocks = [100usize, 100, 100, 200, 200, 400];
+        let budget = (108 * 2) + 208 + 408;
+        let plan = size_class_plan(&blocks, budget);
+        assert!(plan.iter().all(|(_, count)| *count > 0));
+        assert!(
+            plan.iter()
+                .map(|(bytes, count)| (bytes + 8) * count)
+                .sum::<usize>()
+                <= budget
+        );
+        assert!(plan.iter().all(|(bytes, count)| {
+            *count <= blocks.iter().filter(|block| **block == *bytes).count()
+        }));
+    }
+
+    #[test]
+    fn size_class_plan_returns_full_inventory_when_it_fits() {
+        let blocks = [100usize, 100, 200, 400];
+        let budget: usize = blocks.iter().map(|bytes| bytes + 8).sum();
+        assert_eq!(
+            size_class_plan(&blocks, budget),
+            vec![(100, 2), (200, 1), (400, 1)]
+        );
+    }
+
+    #[test]
+    fn size_class_plan_does_not_overflow_on_pathological_sizes() {
+        let plan = size_class_plan(&[usize::MAX, usize::MAX], usize::MAX);
+        assert!(plan.is_empty());
+    }
+
 }
 
 impl Drop for MoeSlotCache {

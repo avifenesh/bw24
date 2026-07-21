@@ -1,0 +1,93 @@
+2026-07-20T02:54:44+03:00
+Linux avifenesh 7.0.0-27-generic #27-Ubuntu SMP PREEMPT_DYNAMIC Thu Jun 18 19:13:49 UTC 2026 x86_64 GNU/Linux
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 51, 8.91 W, 180 MHz, 405 MHz, 312 MiB, 24463 MiB
+3277838, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 260 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        21Gi        26Gi       8.0Gi        21Gi        39Gi
+Swap:          8.0Gi          0B       8.0Gi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G   0B   -1
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 6331, 244, 7164, 958, 369, 12331, 244, 78357, 46997, 1703, 413, 8528, 11, 10243, 11, 289, 13561, 6590, 13, 44626, 4055, 1932, 42970, 289, 8913, 35510, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5691 slots in 5 classes, 15.04 GB / 15.04 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] normal-RAM expert cache: 36.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.328e0  MATCH
+generated 64 tokens in 9.998s = 6.40 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 4871, 11, 1622, 81425, 5278, 279, 244, 1970, 101435, 59909, 46997, 1703, 503, 280, 7164, 13, 4468, 2171, 5658, 25, 286, 12, 15993, 1970, 4906, 42970, 3236, 12, 1970, 24385, 35510, 503, 356, 252, 1054, 289, 2057, 1515, 1338, 185, 12, 607, 13130, 63, 341, 18264, 1320, 8528, 552, 4304, 584, 12, 607, 19392, 63, 341, 3595, 1364, 445, 4304, 584]
+MoE cache DECODE-WINDOW: 5691 slots | hits=58188 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=5024 experts=21052 backend_wall=8.005s RAM_hits=55296 RAM_misses=7860 RAM_fills=20.71 GB RAM_resident=38.65 GB phase_prepare=0.122s phase_io=2.589s phase_insert=0.056s phase_compute=5.226s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=19504 resident_1=809 resident_2=739
+storage DECODE-WINDOW: 20.77 GB physical reads
+steady-state rep 0: generated 64 tokens in 8.909s = 7.18 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [12, 607, 55266, 63, 341, 245, 61292, 1362, 1438, 6515, 185, 4140, 25274, 1661, 24708, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 1622, 11669, 25, 1733, 324, 1364, 185, 408, 1622, 79100, 25, 24708, 58, 5661, 60, 324, 5953]
+MoE cache STEADY-STATE rep 0: 5691 slots | hits=45492 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 0: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 0: calls=5044 experts=25284 backend_wall=7.375s RAM_hits=66416 RAM_misses=9436 RAM_fills=25.26 GB RAM_resident=38.65 GB phase_prepare=0.214s phase_io=2.618s phase_insert=0.022s phase_compute=4.507s
+CPU expert HBM fragments STEADY-STATE rep 0: resident_0=23872 resident_1=650 resident_2=762
+storage STEADY-STATE rep 0: 25.26 GB physical reads
+steady-state rep 1: generated 64 tokens in 8.940s = 7.16 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [12, 607, 55266, 63, 341, 245, 61292, 1362, 1438, 6515, 185, 4140, 25274, 1661, 24708, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 1622, 11669, 25, 1733, 324, 1364, 185, 408, 1622, 79100, 25, 24708, 58, 5661, 60, 324, 5953]
+MoE cache STEADY-STATE rep 1: 5691 slots | hits=45492 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 1: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 1: calls=5044 experts=25284 backend_wall=7.372s RAM_hits=66416 RAM_misses=9436 RAM_fills=25.26 GB RAM_resident=38.65 GB phase_prepare=0.249s phase_io=2.600s phase_insert=0.017s phase_compute=4.491s
+CPU expert HBM fragments STEADY-STATE rep 1: resident_0=23872 resident_1=650 resident_2=762
+storage STEADY-STATE rep 1: 25.26 GB physical reads
+steady-state rep 2: generated 64 tokens in 9.089s = 7.04 tok/s (same-prefix warm-cache greedy decode)
+steady-state tokens: [12, 607, 55266, 63, 341, 245, 61292, 1362, 1438, 6515, 185, 4140, 25274, 1661, 24708, 2243, 2732, 14006, 25, 185, 300, 12196, 32, 3548, 4814, 280, 244, 78357, 46997, 1703, 64102, 300, 1120, 4277, 5428, 9575, 1961, 11, 1364, 25, 1733, 8, 5131, 5953, 25, 185, 408, 1622, 11669, 25, 1733, 324, 1364, 185, 408, 1622, 79100, 25, 24708, 58, 5661, 60, 324, 5953]
+MoE cache STEADY-STATE rep 2: 5691 slots | hits=45492 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker STEADY-STATE rep 2: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts STEADY-STATE rep 2: calls=5044 experts=25284 backend_wall=7.522s RAM_hits=66416 RAM_misses=9436 RAM_fills=25.26 GB RAM_resident=38.65 GB phase_prepare=0.257s phase_io=2.620s phase_insert=0.018s phase_compute=4.613s
+CPU expert HBM fragments STEADY-STATE rep 2: resident_0=23872 resident_1=650 resident_2=762
+storage STEADY-STATE rep 2: 25.26 GB physical reads
+steady-state MEDIAN: 64-token same-prefix window, N=3, 7.16 tok/s (warm HBM/RAM expert caches)
+OUTPUT TEXT: "Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  \nIt includes:\n\n- Full **type hints**\n- **Docstrings** for the class and every public method\n- `insert` (append / insert at index)\n- `delete` (by value or index)\n"
+--- generated text ---
+Below is a complete, self-contained implementation of a **doubly-linked list** in Python.  
+It includes:
+
+- Full **type hints**
+- **Docstrings** for the class and every public method
+- `insert` (append / insert at index)
+- `delete` (by value or index)
+
+[spill-pread] reads=34462 bytes=95949963264 errors=0 short_reads=0 fallbacks=0 buffer_waits=10509 ring_full=703
+[bw24-cpu-profile] calls=47808 prepare=1.925053s io=28.773611s insert=0.206872s compute=42.566616s read_projections=96270 read_GB=256.554
+	Command being timed: "env BW24_NGEN=64 BW24_NMEASURE=64 BW24_NMEASURE_REPS=3 BW24_CHAT=1 BW24_PROMPT=Write a Python function that implements a doubly-linked list with insert, delete, and reverse operations. Include full type hints and docstrings. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=0.8 BW24_MOE_VRAM_FRAC=0.97 BW24_MOE_HARD_VRAM_FRAC=0.97 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=36 BW24_CPU_EXPERT_CACHE_POLICY=lru BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv GOMP_CPU_AFFINITY=0-7 target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 376.68
+	System time (seconds): 49.75
+	Percent of CPU this job got: 202%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 3:31.10
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 49229800
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 26200
+	Minor (reclaiming a frame) page faults: 19410001
+	Voluntary context switches: 2859289
+	Involuntary context switches: 4668
+	Swaps: 0
+	File system inputs: 705744336
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+name, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB], memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 66, 30.92 W, 1590 MHz, 14001 MHz, 312 MiB, 24463 MiB
+               total        used        free      shared  buff/cache   available
+Mem:            60Gi        13Gi        39Gi       3.7Gi        12Gi        47Gi
+Swap:          8.0Gi       7.5Gi       532Mi
+NAME      TYPE SIZE USED PRIO
+/swap.img file   8G 7.5G   -1
+run_status=0

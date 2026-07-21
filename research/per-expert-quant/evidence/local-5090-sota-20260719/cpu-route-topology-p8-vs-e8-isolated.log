@@ -1,0 +1,32 @@
+date=2026-07-21T12:55:47+03:00
+schedule=guided,8 layered_experts=5 background=16-23
+affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.085144 weight_GB/s=37.19 expert_bound_tok/s=11.74 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.086454 weight_GB/s=36.63 expert_bound_tok/s=11.57 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=8-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.094641 weight_GB/s=33.46 expert_bound_tok/s=10.57 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.106093 weight_GB/s=29.85 expert_bound_tok/s=9.43 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.088222 weight_GB/s=35.89 expert_bound_tok/s=11.34 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.080992 weight_GB/s=39.10 expert_bound_tok/s=12.35 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=8-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.087020 weight_GB/s=36.39 expert_bound_tok/s=11.49 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.088943 weight_GB/s=35.60 expert_bound_tok/s=11.24 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.081037 weight_GB/s=39.07 expert_bound_tok/s=12.34 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.082705 weight_GB/s=38.29 expert_bound_tok/s=12.09 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=8-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.098710 weight_GB/s=32.08 expert_bound_tok/s=10.13 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.095226 weight_GB/s=33.25 expert_bound_tok/s=10.50 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.078896 weight_GB/s=40.13 expert_bound_tok/s=12.67 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.087970 weight_GB/s=36.00 expert_bound_tok/s=11.37 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=8-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.096115 weight_GB/s=32.94 expert_bound_tok/s=10.40 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.093815 weight_GB/s=33.75 expert_bound_tok/s=10.66 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=0-7
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.079891 weight_GB/s=39.63 expert_bound_tok/s=12.52 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.087907 weight_GB/s=36.02 expert_bound_tok/s=11.38 checksum=-84.0951437 warm_checksum=-84.0951437
+affinity=8-15
+iteration=0 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.089718 weight_GB/s=35.29 expert_bound_tok/s=11.15 checksum=-84.0951437 warm_checksum=-84.0951437
+iteration=1 tasks=1185 layered_experts=5 weight_GB=3.166 threads=8 seconds=0.087531 weight_GB/s=36.18 expert_bound_tok/s=11.42 checksum=-84.0951437 warm_checksum=-84.0951437

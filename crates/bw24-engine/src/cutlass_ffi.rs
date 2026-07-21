@@ -27,12 +27,12 @@ use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DevicePtrMut};
 /// concurrently. The `Mutex<Option<>>` on the Engine guards only the lazy build/grow (matches moe_cache);
 /// the GEMM itself runs on `gpu.stream` under that lock for the call's duration (one worker => no contention).
 pub struct CutlassScratch {
-    pub workspace: CudaSlice<u8>,   // >= max over shapes of cutlass_fp4_workspace_size(m,n,k)
-    pub a_packed: CudaSlice<u8>,    // >= max m*k/2
-    pub sfa_linear: CudaSlice<u8>,  // >= max m*k/16
-    pub sfa_sw: CudaSlice<u8>,      // >= max cutlass_sfa_size(m,k)
-    pub y: CudaSlice<f32>,          // >= max m*n
-    pub alpha: CudaSlice<f32>,      // resident [1], written in-place via memcpy_htod each call
+    pub workspace: CudaSlice<u8>, // >= max over shapes of cutlass_fp4_workspace_size(m,n,k)
+    pub a_packed: CudaSlice<u8>,  // >= max m*k/2
+    pub sfa_linear: CudaSlice<u8>, // >= max m*k/16
+    pub sfa_sw: CudaSlice<u8>,    // >= max cutlass_sfa_size(m,k)
+    pub y: CudaSlice<f32>,        // >= max m*n
+    pub alpha: CudaSlice<f32>,    // resident [1], written in-place via memcpy_htod each call
     // Current capacities (in elements/bytes) so we only grow when a bigger shape appears.
     cap_ws: usize,
     cap_a: usize,
@@ -58,34 +58,59 @@ unsafe extern "C" {
         sfb: *const core::ffi::c_void,
         alpha_dev: *const f32,
         d: *mut core::ffi::c_void,
-        m: i32, n: i32, k: i32,
+        m: i32,
+        n: i32,
+        k: i32,
         workspace: *mut core::ffi::c_void,
         workspace_bytes: usize,
         stream: *mut core::ffi::c_void,
     ) -> i32;
     /// Scatter linear [n, k/16] ue4m3 weight scales -> swizzled SFB layout. Returns cudaError as int.
     pub fn bw24_cutlass_repack_sfb(
-        sfb_linear: *const core::ffi::c_void, sfb_swizzled: *mut core::ffi::c_void,
-        n: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+        sfb_linear: *const core::ffi::c_void,
+        sfb_swizzled: *mut core::ffi::c_void,
+        n: i32,
+        k: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// De-interleave a GGUF NVFP4 weight tensor (raw [n] rows of `row_bytes`) into the CUTLASS B
     /// operand: b_packed [n, k/2] plain K-contiguous packed e2m1, sfb_linear [n, k/16] ue4m3 scales
     /// (linear, then feed to bw24_cutlass_repack_sfb). Returns cudaError as int. One-time, at load.
     pub fn bw24_gguf_nvfp4_deinterleave(
-        src: *const core::ffi::c_void, row_bytes: i64,
-        b_packed: *mut core::ffi::c_void, sfb_linear: *mut core::ffi::c_void,
-        n: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+        src: *const core::ffi::c_void,
+        row_bytes: i64,
+        b_packed: *mut core::ffi::c_void,
+        sfb_linear: *mut core::ffi::c_void,
+        n: i32,
+        k: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// Scatter linear [m, k/16] ue4m3 activation scales -> swizzled SFA layout. Returns cudaError as int.
     pub fn bw24_cutlass_repack_sfa(
-        sfa_linear: *const core::ffi::c_void, sfa_swizzled: *mut core::ffi::c_void,
-        m: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+        sfa_linear: *const core::ffi::c_void,
+        sfa_swizzled: *mut core::ffi::c_void,
+        m: i32,
+        k: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// TEST oracle: quantize [rows,k] f32 -> packed e2m1 (rows*k/2 B) + linear ue4m3 scales (rows*k/16 B).
     pub fn bw24_nvfp4_quant_ref(
-        src_f32: *const core::ffi::c_void, packed_e2m1: *mut core::ffi::c_void,
-        scales_linear: *mut core::ffi::c_void, rows: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+        src_f32: *const core::ffi::c_void,
+        packed_e2m1: *mut core::ffi::c_void,
+        scales_linear: *mut core::ffi::c_void,
+        rows: i32,
+        k: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// TEST oracle: dequantize packed e2m1 + linear ue4m3 scales -> f32 [rows,k].
     pub fn bw24_nvfp4_dequant_ref(
-        packed_e2m1: *const core::ffi::c_void, scales_linear: *const core::ffi::c_void,
-        dst_f32: *mut core::ffi::c_void, rows: i32, k: i32, stream: *mut core::ffi::c_void) -> i32;
+        packed_e2m1: *const core::ffi::c_void,
+        scales_linear: *const core::ffi::c_void,
+        dst_f32: *mut core::ffi::c_void,
+        rows: i32,
+        k: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
 }
 
 impl crate::Engine {
@@ -103,58 +128,100 @@ impl crate::Engine {
     }
 
     /// Scatter linear ue4m3 weight scales into CUTLASS's swizzled SFB layout (one-time, at load).
-    pub fn cutlass_repack_sfb(&self, sfb_linear: &CudaSlice<u8>, sfb_swizzled: &mut CudaSlice<u8>,
-                              n: usize, k: usize) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn cutlass_repack_sfb(
+        &self,
+        sfb_linear: &CudaSlice<u8>,
+        sfb_swizzled: &mut CudaSlice<u8>,
+        n: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
         let (src, _g1) = sfb_linear.device_ptr(stream);
         let (dst, _g2) = sfb_swizzled.device_ptr_mut(stream);
         let rc = unsafe {
-            bw24_cutlass_repack_sfb(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
-                                    n as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+            bw24_cutlass_repack_sfb(
+                src as *const core::ffi::c_void,
+                dst as *mut core::ffi::c_void,
+                n as i32,
+                k as i32,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
         };
-        if rc != 0 { return Err(format!("bw24_cutlass_repack_sfb cudaError={rc}").into()); }
+        if rc != 0 {
+            return Err(format!("bw24_cutlass_repack_sfb cudaError={rc}").into());
+        }
         Ok(())
     }
 
     /// Scatter linear ue4m3 activation scales into CUTLASS's swizzled SFA layout (per-prefill).
-    pub fn cutlass_repack_sfa(&self, sfa_linear: &CudaSlice<u8>, sfa_swizzled: &mut CudaSlice<u8>,
-                              m: usize, k: usize) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn cutlass_repack_sfa(
+        &self,
+        sfa_linear: &CudaSlice<u8>,
+        sfa_swizzled: &mut CudaSlice<u8>,
+        m: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
         let (src, _g1) = sfa_linear.device_ptr(stream);
         let (dst, _g2) = sfa_swizzled.device_ptr_mut(stream);
         let rc = unsafe {
-            bw24_cutlass_repack_sfa(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
-                                    m as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+            bw24_cutlass_repack_sfa(
+                src as *const core::ffi::c_void,
+                dst as *mut core::ffi::c_void,
+                m as i32,
+                k as i32,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
         };
-        if rc != 0 { return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into()); }
+        if rc != 0 {
+            return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into());
+        }
         Ok(())
     }
 
     /// De-interleave a GGUF NVFP4 weight tensor into the CUTLASS B operand layout (one-time, at load).
     /// `src` = raw GGUF rows (n rows of row_bytes); produces b_packed [n,k/2] plain packed e2m1 and
     /// sfb_linear [n,k/16] ue4m3 scales (caller then scatters via cutlass_repack_sfb).
-    pub fn cutlass_gguf_nvfp4_deinterleave(&self, src: &CudaSlice<u8>, row_bytes: usize,
-                                           b_packed: &mut CudaSlice<u8>, sfb_linear: &mut CudaSlice<u8>,
-                                           n: usize, k: usize)
-                                           -> Result<(), Box<dyn std::error::Error>> {
+    pub fn cutlass_gguf_nvfp4_deinterleave(
+        &self,
+        src: &CudaSlice<u8>,
+        row_bytes: usize,
+        b_packed: &mut CudaSlice<u8>,
+        sfb_linear: &mut CudaSlice<u8>,
+        n: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
         let (s, _g0) = src.device_ptr(stream);
         let (p, _g1) = b_packed.device_ptr_mut(stream);
         let (sc, _g2) = sfb_linear.device_ptr_mut(stream);
         let rc = unsafe {
-            bw24_gguf_nvfp4_deinterleave(s as *const core::ffi::c_void, row_bytes as i64,
-                                         p as *mut core::ffi::c_void, sc as *mut core::ffi::c_void,
-                                         n as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+            bw24_gguf_nvfp4_deinterleave(
+                s as *const core::ffi::c_void,
+                row_bytes as i64,
+                p as *mut core::ffi::c_void,
+                sc as *mut core::ffi::c_void,
+                n as i32,
+                k as i32,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
         };
-        if rc != 0 { return Err(format!("bw24_gguf_nvfp4_deinterleave cudaError={rc}").into()); }
+        if rc != 0 {
+            return Err(format!("bw24_gguf_nvfp4_deinterleave cudaError={rc}").into());
+        }
         Ok(())
     }
 
     /// Build a CUTLASS-ready NVFP4 weight (B operand) from raw GGUF bytes: de-interleave to plain
     /// packed e2m1 + scatter the per-16 ue4m3 scales into CUTLASS's swizzled SFB. One-time, at load.
     /// Returns (b_packed [n,k/2], sfb_swizzled [bw24_cutlass_sfb_size]).
-    pub fn build_cutlass_weight(&self, raw: &CudaSlice<u8>, n: usize, k: usize, row_bytes: usize)
-                                -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
+    pub fn build_cutlass_weight(
+        &self,
+        raw: &CudaSlice<u8>,
+        n: usize,
+        k: usize,
+        row_bytes: usize,
+    ) -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
         let mut b_packed = self.alloc_u8(n * k / 2)?;
         let mut sfb_linear = self.alloc_u8(n * (k / 16))?;
         self.cutlass_gguf_nvfp4_deinterleave(raw, row_bytes, &mut b_packed, &mut sfb_linear, n, k)?;
@@ -167,8 +234,12 @@ impl crate::Engine {
     /// Quantize an activation [m,k] f32 to the CUTLASS A operand: plain packed e2m1 [m,k/2] + swizzled
     /// SFA. Uses the same NVFP4 quantizer the smoke test proved correct (CUTLASS dtype ctors), so the
     /// bytes are exactly what the GEMM decodes. Per-prefill (per-token amax). Returns (a_packed, sfa_sw).
-    pub fn quantize_fp4_act_cutlass(&self, x: &CudaSlice<f32>, m: usize, k: usize)
-                                    -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
+    pub fn quantize_fp4_act_cutlass(
+        &self,
+        x: &CudaSlice<f32>,
+        m: usize,
+        k: usize,
+    ) -> Result<(CudaSlice<u8>, CudaSlice<u8>), Box<dyn std::error::Error>> {
         let mut a_packed = self.alloc_u8(m * k / 2)?;
         let mut sfa_linear = self.alloc_u8(m * (k / 16))?;
         self.cutlass_nvfp4_quant_ref(x, &mut a_packed, &mut sfa_linear, m, k)?;
@@ -188,9 +259,16 @@ impl crate::Engine {
     /// bounded by m,n,k), and y/a_packed/sfa are fully overwritten — bit-identical to a per-call alloc.
     /// Returns an owned y copy (caller expects an owned CudaSlice); the resident y is the work buffer.
     #[allow(clippy::too_many_arguments)]
-    pub fn cutlass_fp4_gemm(&self, b_packed: &CudaSlice<u8>, sfb_swizzled: &CudaSlice<u8>,
-                            x: &CudaSlice<f32>, alpha: f32, m: usize, n: usize, k: usize)
-                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn cutlass_fp4_gemm(
+        &self,
+        b_packed: &CudaSlice<u8>,
+        sfb_swizzled: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        alpha: f32,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         // Size the scratch for THIS shape (grows if a bigger shape appears; no-op once at max).
         self.ensure_cutlass_scratch(m, n, k)?;
         let mut guard = self.cutlass_scratch.lock().unwrap();
@@ -204,10 +282,17 @@ impl crate::Engine {
             let (src, _g1) = s.sfa_linear.device_ptr(stream);
             let (dst, _g2) = s.sfa_sw.device_ptr_mut(stream);
             let rc = unsafe {
-                bw24_cutlass_repack_sfa(src as *const core::ffi::c_void, dst as *mut core::ffi::c_void,
-                                        m as i32, k as i32, stream.cu_stream() as *mut core::ffi::c_void)
+                bw24_cutlass_repack_sfa(
+                    src as *const core::ffi::c_void,
+                    dst as *mut core::ffi::c_void,
+                    m as i32,
+                    k as i32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
             };
-            if rc != 0 { return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_cutlass_repack_sfa cudaError={rc}").into());
+            }
         }
 
         // 2) Write alpha IN PLACE into the resident [1] f32 (no fresh htod alloc per call).
@@ -235,18 +320,28 @@ impl crate::Engine {
                     sfb_p as *const core::ffi::c_void,
                     al_p as *const f32,
                     d_p as *mut core::ffi::c_void,
-                    m as i32, n as i32, k as i32,
-                    ws_p as *mut core::ffi::c_void, ws_bytes,
+                    m as i32,
+                    n as i32,
+                    k as i32,
+                    ws_p as *mut core::ffi::c_void,
+                    ws_bytes,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             };
-            if rc != 0 { return Err(format!("bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)").into()); }
+            if rc != 0 {
+                return Err(format!(
+                    "bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)"
+                )
+                .into());
+            }
         }
 
         // 4) Copy the [m,n] result out of the resident work buffer into an owned slice (D2D, on-stream).
         //    The caller's downstream consumes an owned CudaSlice; the resident y stays for the next call.
         let mut out = self.alloc_uninit::<f32>(m * n)?;
-        self.gpu.stream.memcpy_dtod(&s.y.slice(0..m * n), &mut out)?;
+        self.gpu
+            .stream
+            .memcpy_dtod(&s.y.slice(0..m * n), &mut out)?;
         Ok(out)
     }
 
@@ -254,8 +349,12 @@ impl crate::Engine {
     /// Each buffer is sized to the MAX shape seen; the workspace takes the max over per-shape queries
     /// (CUTLASS accepts a workspace >= its requirement). Only reallocates a buffer when a bigger shape
     /// appears — in steady prefill this fires a handful of times then never again (zero per-call alloc).
-    fn ensure_cutlass_scratch(&self, m: usize, n: usize, k: usize)
-                              -> Result<(), Box<dyn std::error::Error>> {
+    fn ensure_cutlass_scratch(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let need_ws = self.cutlass_fp4_workspace_size(m, n, k).max(1);
         let need_a = m * k / 2;
         let need_sfa_lin = m * (k / 16);
@@ -271,52 +370,94 @@ impl crate::Engine {
                 sfa_sw: self.alloc_u8(need_sfa_sw)?,
                 y: self.alloc_uninit::<f32>(need_y)?,
                 alpha: self.alloc_uninit::<f32>(1)?,
-                cap_ws: need_ws, cap_a: need_a, cap_sfa_lin: need_sfa_lin,
-                cap_sfa_sw: need_sfa_sw, cap_y: need_y,
+                cap_ws: need_ws,
+                cap_a: need_a,
+                cap_sfa_lin: need_sfa_lin,
+                cap_sfa_sw: need_sfa_sw,
+                cap_y: need_y,
             });
             return Ok(());
         }
         let s = guard.as_mut().unwrap();
-        if need_ws > s.cap_ws { s.workspace = self.alloc_u8(need_ws)?; s.cap_ws = need_ws; }
-        if need_a > s.cap_a { s.a_packed = self.alloc_u8(need_a)?; s.cap_a = need_a; }
-        if need_sfa_lin > s.cap_sfa_lin { s.sfa_linear = self.alloc_u8(need_sfa_lin)?; s.cap_sfa_lin = need_sfa_lin; }
-        if need_sfa_sw > s.cap_sfa_sw { s.sfa_sw = self.alloc_u8(need_sfa_sw)?; s.cap_sfa_sw = need_sfa_sw; }
-        if need_y > s.cap_y { s.y = self.alloc_uninit::<f32>(need_y)?; s.cap_y = need_y; }
+        if need_ws > s.cap_ws {
+            s.workspace = self.alloc_u8(need_ws)?;
+            s.cap_ws = need_ws;
+        }
+        if need_a > s.cap_a {
+            s.a_packed = self.alloc_u8(need_a)?;
+            s.cap_a = need_a;
+        }
+        if need_sfa_lin > s.cap_sfa_lin {
+            s.sfa_linear = self.alloc_u8(need_sfa_lin)?;
+            s.cap_sfa_lin = need_sfa_lin;
+        }
+        if need_sfa_sw > s.cap_sfa_sw {
+            s.sfa_sw = self.alloc_u8(need_sfa_sw)?;
+            s.cap_sfa_sw = need_sfa_sw;
+        }
+        if need_y > s.cap_y {
+            s.y = self.alloc_uninit::<f32>(need_y)?;
+            s.cap_y = need_y;
+        }
         Ok(())
     }
 
     /// TEST oracle: quantize a [rows,k] f32 device matrix to packed e2m1 + linear ue4m3 scales using
     /// CUTLASS's own dtype constructors (so bytes match what the GEMM decodes). Phase-0 smoke test only.
-    pub fn cutlass_nvfp4_quant_ref(&self, src: &CudaSlice<f32>, packed: &mut CudaSlice<u8>,
-                                   scales_linear: &mut CudaSlice<u8>, rows: usize, k: usize)
-                                   -> Result<(), Box<dyn std::error::Error>> {
+    pub fn cutlass_nvfp4_quant_ref(
+        &self,
+        src: &CudaSlice<f32>,
+        packed: &mut CudaSlice<u8>,
+        scales_linear: &mut CudaSlice<u8>,
+        rows: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
         let (s, _g0) = src.device_ptr(stream);
         let (p, _g1) = packed.device_ptr_mut(stream);
         let (sc, _g2) = scales_linear.device_ptr_mut(stream);
         let rc = unsafe {
-            bw24_nvfp4_quant_ref(s as *const core::ffi::c_void, p as *mut core::ffi::c_void,
-                                 sc as *mut core::ffi::c_void, rows as i32, k as i32,
-                                 stream.cu_stream() as *mut core::ffi::c_void)
+            bw24_nvfp4_quant_ref(
+                s as *const core::ffi::c_void,
+                p as *mut core::ffi::c_void,
+                sc as *mut core::ffi::c_void,
+                rows as i32,
+                k as i32,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
         };
-        if rc != 0 { return Err(format!("bw24_nvfp4_quant_ref cudaError={rc}").into()); }
+        if rc != 0 {
+            return Err(format!("bw24_nvfp4_quant_ref cudaError={rc}").into());
+        }
         Ok(())
     }
 
     /// TEST oracle: dequantize packed e2m1 + linear ue4m3 scales back to f32 [rows,k] (Phase-0 only).
-    pub fn cutlass_nvfp4_dequant_ref(&self, packed: &CudaSlice<u8>, scales_linear: &CudaSlice<u8>,
-                                     dst: &mut CudaSlice<f32>, rows: usize, k: usize)
-                                     -> Result<(), Box<dyn std::error::Error>> {
+    pub fn cutlass_nvfp4_dequant_ref(
+        &self,
+        packed: &CudaSlice<u8>,
+        scales_linear: &CudaSlice<u8>,
+        dst: &mut CudaSlice<f32>,
+        rows: usize,
+        k: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
         let (p, _g0) = packed.device_ptr(stream);
         let (sc, _g1) = scales_linear.device_ptr(stream);
         let (d, _g2) = dst.device_ptr_mut(stream);
         let rc = unsafe {
-            bw24_nvfp4_dequant_ref(p as *const core::ffi::c_void, sc as *const core::ffi::c_void,
-                                   d as *mut core::ffi::c_void, rows as i32, k as i32,
-                                   stream.cu_stream() as *mut core::ffi::c_void)
+            bw24_nvfp4_dequant_ref(
+                p as *const core::ffi::c_void,
+                sc as *const core::ffi::c_void,
+                d as *mut core::ffi::c_void,
+                rows as i32,
+                k as i32,
+                stream.cu_stream() as *mut core::ffi::c_void,
+            )
         };
-        if rc != 0 { return Err(format!("bw24_nvfp4_dequant_ref cudaError={rc}").into()); }
+        if rc != 0 {
+            return Err(format!("bw24_nvfp4_dequant_ref cudaError={rc}").into());
+        }
         Ok(())
     }
 
@@ -327,11 +468,15 @@ impl crate::Engine {
     #[allow(clippy::too_many_arguments)]
     pub fn cutlass_fp4_gemm_raw(
         &self,
-        a_e2m1: &CudaSlice<u8>, b_e2m1: &CudaSlice<u8>,
-        sfa: &CudaSlice<u8>, sfb: &CudaSlice<u8>,
+        a_e2m1: &CudaSlice<u8>,
+        b_e2m1: &CudaSlice<u8>,
+        sfa: &CudaSlice<u8>,
+        sfb: &CudaSlice<u8>,
         alpha_dev: &CudaSlice<f32>,
         d: &mut CudaSlice<f32>,
-        m: usize, n: usize, k: usize,
+        m: usize,
+        n: usize,
+        k: usize,
         workspace: &mut CudaSlice<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let stream = &self.gpu.stream;
@@ -352,12 +497,20 @@ impl crate::Engine {
                 sfb_p as *const core::ffi::c_void,
                 al_p as *const f32,
                 d_p as *mut core::ffi::c_void,
-                m as i32, n as i32, k as i32,
-                ws_p as *mut core::ffi::c_void, ws_bytes,
+                m as i32,
+                n as i32,
+                k as i32,
+                ws_p as *mut core::ffi::c_void,
+                ws_bytes,
                 stream.cu_stream() as *mut core::ffi::c_void,
             )
         };
-        if rc != 0 { return Err(format!("bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)").into()); }
+        if rc != 0 {
+            return Err(format!(
+                "bw24_cutlass_fp4_gemm returned {rc} (CUTLASS status / workspace code)"
+            )
+            .into());
+        }
         Ok(())
     }
 }
