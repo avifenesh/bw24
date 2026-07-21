@@ -35,7 +35,7 @@ impl Chain {
                 pad: [0; 4],
                 value: cu::CUlaunchAttributeValue { programmaticStreamSerializationAllowed: 1 },
             };
-            let mut cfg = cu::CUlaunchConfig {
+            let cfg = cu::CUlaunchConfig {
                 gridDimX: 8, gridDimY: 1, gridDimZ: 1,
                 blockDimX: 128, blockDimY: 1, blockDimZ: 1,
                 sharedMemBytes: 0, hStream: self.stream,

@@ -97,8 +97,6 @@ impl Cache {
         // per-block bytes follow the env-selected KV formats (kvbytes lane; default q8_0/q5_1
         // = 34/24 — MUST match the flash fatbin Engine::new loaded, both read the same env).
         let (kbb, vbb) = crate::kv_blk_bytes();
-        let k_tok_bytes = (kv_dim_k / 32) * kbb;
-        let v_tok_bytes = (kv_dim_v / 32) * vbb;
         let (conv_dim, d_state, num_v, d_conv) = if let Some(s) = &cfg.ssm {
             let num_k = s.group_count as usize;
             let num_v = s.time_step_rank as usize;

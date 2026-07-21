@@ -285,6 +285,7 @@ std::int32_t dot_i8_16(
 }
 
 #if defined(__SSSE3__)
+#if !defined(__AVXVNNI__) || !defined(__AVX2__)
 __m128i byte_shift_right(__m128i values, int shift) {
     switch (shift) {
         case 0: return values;
@@ -294,6 +295,7 @@ __m128i byte_shift_right(__m128i values, int shift) {
         default: throw std::runtime_error("invalid packed-byte shift");
     }
 }
+#endif
 
 __m128i unpack_nibbles(const std::uint8_t * values, bool high) {
     const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i *>(values));
@@ -306,6 +308,7 @@ void store_i8(std::int8_t * destination, __m128i values) {
     _mm_store_si128(reinterpret_cast<__m128i *>(destination), values);
 }
 
+#if !defined(__AVXVNNI__) || !defined(__AVX2__)
 std::int32_t dot_i8_16(__m128i weights, const Q8Block16 & input) {
 #if defined(__AVXVNNI__)
     const __m128i activations = _mm_load_si128(
@@ -321,6 +324,7 @@ std::int32_t dot_i8_16(__m128i weights, const Q8Block16 & input) {
     return dot_i8_16(unpacked, input.values, input.sum);
 #endif
 }
+#endif
 
 #if defined(__AVXVNNI__) && defined(__AVX2__)
 std::array<std::int32_t, 2> dot_i8_16_pair(
@@ -331,7 +335,8 @@ std::array<std::int32_t, 2> dot_i8_16_pair(
         activations,
         _mm_load_si128(reinterpret_cast<const __m128i *>(high.values)),
         1);
-    const __m256i biased = _mm256_xor_si256(weights, _mm256_set1_epi8(0x80));
+    const __m256i biased = _mm256_xor_si256(
+        weights, _mm256_set1_epi8(static_cast<char>(0x80)));
     const __m256i products = _mm256_dpbusd_epi32(
         _mm256_setzero_si256(), biased, activations);
     auto reduce = [](__m128i lanes) {

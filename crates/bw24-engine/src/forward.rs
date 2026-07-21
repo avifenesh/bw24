@@ -41,7 +41,6 @@ impl Model {
             // QKV projections: q[T, n_head*head_dim], k/v[T, n_head_kv*head_dim]
             let q_out = layer.wq.out_features(); // n_head*head_dim
             let k_out = layer.wk.out_features();
-            let v_out = layer.wv.out_features();
             let mut q = e.matmul(&layer.wq, &h, t)?;
             let mut k = e.matmul(&layer.wk, &h, t)?;
             let v = e.matmul(&layer.wv, &h, t)?;
@@ -144,7 +143,6 @@ impl Model {
         // final norm + lm_head
         let mut hn = e.zeros(t * n_embd)?;
         e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, t, eps)?;
-        let n_vocab = self.output.out_features();
         let logits = e.matmul(&self.output, &hn, t)?;
         let host = e.dtoh(&logits)?;
         Ok(host)
