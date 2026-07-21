@@ -525,6 +525,40 @@ float dot_quantized_row(
             const std::uint8_t * scales = block + 4;
             const std::uint8_t * high = qtype == QT_Q5_K ? block + 16 : nullptr;
             const std::uint8_t * quants = qtype == QT_Q5_K ? block + 48 : block + 16;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group Q4_K path: both 16-wide halves of a 32-weight group share one
+            // scale/min pair, so unpack the group's nibbles into one 256-bit vector and
+            // evaluate both activation blocks with a single vpdpbusd. Scale and min terms
+            // apply sequentially in original half order, preserving floating-point
+            // accumulation order exactly. Q5_K keeps the established groupwise path.
+            if (qtype == QT_Q4_K) {
+                for (int group = 0; group < 8; ++group) {
+                    const int pair = group / 2;
+                    const bool upper_nibble = group % 2 != 0;
+                    const __m256i packed = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i *>(quants + pair * 32));
+                    const __m256i values = _mm256_and_si256(
+                        upper_nibble ? _mm256_srli_epi16(packed, 4) : packed,
+                        _mm256_set1_epi8(15));
+                    int scale = 0;
+                    int minimum = 0;
+                    scale_min_k4(group, scales, scale, minimum);
+                    const auto integer_dots = dot_i8_16_pair(
+                        values,
+                        activation.blocks[block16(superblock, group * 2)],
+                        activation.blocks[block16(superblock, group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            block16(superblock, group * 2 + lane)];
+                        result += d * scale * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                        result -= dmin * minimum * input.scale
+                            * static_cast<float>(input.sum);
+                    }
+                }
+                continue;
+            }
+#endif
             for (int group = 0; group < 8; ++group) {
                 const int pair = group / 2;
                 const bool upper_nibble = group % 2 != 0;
