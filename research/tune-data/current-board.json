@@ -1,9 +1,9 @@
 {
-  "updated": "2026-07-13",
+  "updated": "2026-07-18",
   "rig": "RTX 5090 Laptop",
-  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, validity-gated cold starts, no flags (tuned paths are defaults). Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss",
+  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss",
   "plain_decode": {
-    "context": "tg128 at 512-token context, sustained-load regime (both engines same session)",
+    "context": "tg128 at 512-token context, 2026-07-09 cold-start rebaseline (both engines same session)",
     "rows": [
       {
         "model": "Qwen3.5-9B NVFP4 (GGUF)",
@@ -23,7 +23,7 @@
     ]
   },
   "speculative": {
-    "context": "MTP head, both engines at their measured best config. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
+    "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt — rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
     "rows": [
       {
         "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
@@ -90,31 +90,25 @@
   "extra_card_rows": [
     {
       "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
-      "bw24": 200.6,
-      "llama": 189.7
+      "bw24": 199.7,
+      "llama": 187.6
     },
     {
-      "model": "Gemma-4 26B-A4B (K=6 + FR trim)",
-      "bw24": 381.9,
-      "llama": 258.7,
+      "model": "Gemma-4 26B-A4B 1.7k ctx (K=6 MTP + trim)",
+      "bw24": 297.7,
+      "llama": 286.1,
       "spec": true
     },
     {
-      "model": "Gemma-4 31B dense (K=7 MTP + FR trim)",
-      "bw24": 167.5,
-      "llama": 112.1,
+      "model": "Gemma-4 31B dense 1.7k ctx (K=6 MTP + trim)",
+      "bw24": 97.3,
+      "llama": 83.9,
       "spec": true
     },
     {
       "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
       "bw24": 199.9,
       "llama": 181.0
-    },
-    {
-      "model": "Gemma-4 E4B (K=2 MTP assistant)",
-      "bw24": 267.3,
-      "llama": 181.3,
-      "spec": true
     }
   ]
 }
