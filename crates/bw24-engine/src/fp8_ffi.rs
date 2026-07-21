@@ -44,7 +44,11 @@ unsafe extern "C" {
 /// prefill dispatch — unset means zero VRAM / zero dispatch change.
 pub fn pp_fp8_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_PP_FP8").map(|v| v == "1").unwrap_or(false))
+    *ON.get_or_init(|| {
+        std::env::var("BW24_PP_FP8")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
 }
 
 /// `BW24_ST_E4M3=1` gate (default OFF; lane e4m3dec 2026-07-08): F8-E4M3-origin safetensors
@@ -56,7 +60,11 @@ pub fn pp_fp8_enabled() -> bool {
 /// tensors (they never surface as Q8_0, so the stash arm never fires).
 pub fn st_e4m3_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_ST_E4M3").map(|v| v == "1").unwrap_or(false))
+    *ON.get_or_init(|| {
+        std::env::var("BW24_ST_E4M3")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
 }
 
 /// Resident scratch for the FP8 prefill GEMM (mirrors `CutlassScratch`): the quantized activation
@@ -78,20 +86,32 @@ impl crate::Engine {
     /// FP8 prefill GEMM for a weight carrying the fp8 operand: y[m,out] = x[m,in] @ (e4m3 W)^T
     /// with the per-batch act scale and per-tensor weight_scale folded in-GEMM. Returns None when
     /// the env is off or the weight has no fp8 operand (caller falls through to the Q8_0 path).
-    pub fn try_fp8_gemm(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
-                        -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+    pub fn try_fp8_gemm(
+        &self,
+        w: &crate::model::GpuTensor,
+        x: &CudaSlice<f32>,
+        m: usize,
+    ) -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
-        if cfg!(bw24_portable_cuda) { return Ok(None); }
+        if cfg!(bw24_portable_cuda) {
+            return Ok(None);
+        }
         // Two e4m3 operand sources, one GEMM:
         //  * QT_F8_E4M3 (BW24_ST_E4M3): the RESIDENT decode bytes ARE the raw checkpoint e4m3 —
         //    prefill rides them directly (one copy, no budget). Unconditional: this dtype has no
         //    other prefill GEMM class, so the FP8 path is inherent to the config, not a flag.
         //  * fp8 stash (BW24_PP_FP8=1): the Q8_0-decode config's optional duplicate operand.
         let (w_bytes, w_scale, ne) = match w {
-            GpuTensor::Quant { qtype, bytes, scale, ne, .. } if *qtype == crate::QT_F8_E4M3 =>
-                (bytes, *scale, ne),
-            GpuTensor::Quant { fp8: Some(f8), ne, .. } if pp_fp8_enabled() =>
-                (&f8.bytes, f8.scale, ne),
+            GpuTensor::Quant {
+                qtype,
+                bytes,
+                scale,
+                ne,
+                ..
+            } if *qtype == crate::QT_F8_E4M3 => (bytes, *scale, ne),
+            GpuTensor::Quant {
+                fp8: Some(f8), ne, ..
+            } if pp_fp8_enabled() => (&f8.bytes, f8.scale, ne),
             _ => return Ok(None),
         };
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
@@ -131,9 +151,12 @@ impl crate::Engine {
                     q_p as *mut core::ffi::c_void,
                     sc_p as *mut f32,
                     y_p as *mut f32,
-                    m as i32, out_f as i32, in_f as i32,
+                    m as i32,
+                    out_f as i32,
+                    in_f as i32,
                     w_scale,
-                    ws_p as *mut core::ffi::c_void, FP8_WS_BYTES,
+                    ws_p as *mut core::ffi::c_void,
+                    FP8_WS_BYTES,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             }
@@ -141,7 +164,9 @@ impl crate::Engine {
         if rc != 0 {
             return Err(format!(
                 "bw24_fp8_pp_gemm rc={rc} (m={m} n={out_f} k={in_f}; 1xxxx=cudaError quant chain, \
-                 2xxxx=no cublasLt algo, 3xxxx=matmul status)").into());
+                 2xxxx=no cublasLt algo, 3xxxx=matmul status)"
+            )
+            .into());
         }
         Ok(Some(y))
     }

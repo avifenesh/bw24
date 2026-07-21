@@ -104,6 +104,7 @@ dependencies = [
  "bw24-runtime",
  "bw24-tokenizer",
  "cudarc",
+ "libc",
  "memmap2",
 ]
 

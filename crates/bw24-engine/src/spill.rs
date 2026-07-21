@@ -14,10 +14,10 @@
 //! behavior, byte-identical: `HostExps::tiers` stays `None` and every expert slices the single
 //! pinned/paged backing store. The daily models (9B/27B) fit 24 GB and NEVER trigger spill.
 
-use std::sync::Arc;
-use memmap2::Mmap;
-use crate::Engine;
 use crate::model::HostBuf;
+use crate::Engine;
+use memmap2::Mmap;
+use std::sync::Arc;
 
 /// Runtime free-memory budget (SPILLING-PLAN §2). Both numbers are QUERIED at load, never
 /// hardcoded — free host RAM "varies with other LLM servers", so the split between pinned (Tier 1)
@@ -33,10 +33,12 @@ pub struct MemBudget {
 
 impl MemBudget {
     pub fn probe(e: &Engine) -> Result<Self, Box<dyn std::error::Error>> {
-        let (free_vram, _total) = e.ctx().mem_get_info()?;     // same call moe_cache.rs:77 uses
-        let avail = read_meminfo_kb("MemAvailable")? * 1024;   // MemAvailable (NOT MemFree)
+        let (free_vram, _total) = e.ctx().mem_get_info()?; // same call moe_cache.rs:77 uses
+        let avail = read_meminfo_kb("MemAvailable")? * 1024; // MemAvailable (NOT MemFree)
         let frac = std::env::var("BW24_SPILL_PINNED_FRAC")
-            .ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.60);
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.60);
         Ok(MemBudget {
             free_vram,
             free_pinnable_ram: (avail as f64 * frac) as usize,
@@ -51,7 +53,9 @@ fn read_meminfo_kb(key: &str) -> Result<usize, Box<dyn std::error::Error>> {
         // line form: "MemAvailable:   12345678 kB"
         if let Some(rest) = line.strip_prefix(key) {
             let rest = rest.trim_start_matches(':').trim();
-            let kb: usize = rest.split_whitespace().next()
+            let kb: usize = rest
+                .split_whitespace()
+                .next()
                 .ok_or("malformed /proc/meminfo line")?
                 .parse()?;
             return Ok(kb);
@@ -89,7 +93,10 @@ impl SpillCtx {
     /// budget from a live `MemBudget` probe.
     /// The whole-map expert advice defaults to random (the historical behavior); setting
     /// `BW24_MOE_MMAP_ADVICE=normal` restores ordinary Linux readahead. SPILLING-PLAN §1.
-    pub fn open(g: &bw24_gguf::GgufFile, budget: &MemBudget) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn open(
+        g: &bw24_gguf::GgufFile,
+        budget: &MemBudget,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let file = g.opened_file().clone();
         // MAP_SHARED, no MAP_POPULATE (memmap2's default Mmap::map): zero upfront copy, demand-fault.
         let map = unsafe { Mmap::map(file.as_ref())? };
@@ -121,15 +128,25 @@ pub fn place_expert(
         ctx.pinned_remaining -= len;
         ctx.n_pinned += 1;
         let mut p = unsafe { e.ctx().alloc_pinned::<u8>(len)? };
-        { let dst = p.as_mut_slice()?; dst.copy_from_slice(raw); }
+        {
+            let dst = p.as_mut_slice()?;
+            dst.copy_from_slice(raw);
+        }
         let base = p.as_ptr()? as *const u8;
-        Ok(HostBuf::Pinned { slice: std::sync::Arc::new(p), base, len })
+        Ok(HostBuf::Pinned {
+            slice: std::sync::Arc::new(p),
+            base,
+            len,
+        })
     } else {
         // Tier 2: mmap the GGUF region — demand-faulted from NVMe on first H2D. Zero RAM cost.
         ctx.n_mmap += 1;
         ctx.mmap_bytes += len;
         Ok(HostBuf::Mmap {
-            map: ctx.file_map.clone(), file: ctx.file.clone(), off: file_off, len,
+            map: ctx.file_map.clone(),
+            file: ctx.file.clone(),
+            off: file_off,
+            len,
         })
     }
 }
@@ -149,7 +166,9 @@ pub struct SpillBlock {
 impl SpillBlock {
     /// The H2D DMA source for this block — resolves the tier (`Pinned` fast / `Mmap` demand-fault).
     #[inline]
-    pub fn bytes(&self) -> &[u8] { self.host.as_bytes() }
+    pub fn bytes(&self) -> &[u8] {
+        self.host.as_bytes()
+    }
 }
 
 /// SPILLING-PLAN §3: the requested `Tiered` generalization. Structurally it is the existing
@@ -158,8 +177,8 @@ impl SpillBlock {
 /// The MoE hot loop drives the two seams directly (`expert_bytes()` + `with_moe_cache`), so this is
 /// a documentation/structural alias, not a new hot path.
 pub struct Tiered {
-    pub host: crate::model::HostExps,            // Tier 1/2 (Pinned hot / Mmap cold), per-expert
-    pub slots: crate::moe_cache::MoeSlotCache,   // Tier 0 GPU residency (existing slot cache)
+    pub host: crate::model::HostExps, // Tier 1/2 (Pinned hot / Mmap cold), per-expert
+    pub slots: crate::moe_cache::MoeSlotCache, // Tier 0 GPU residency (existing slot cache)
 }
 
 #[cfg(all(test, unix))]
@@ -169,9 +188,8 @@ mod tests {
 
     #[test]
     fn spill_ctx_keeps_parsed_gguf_inode_after_path_replacement() {
-        let path = std::env::temp_dir().join(format!(
-            "bw24-spill-inode-{}.gguf", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("bw24-spill-inode-{}.gguf", std::process::id()));
         let mut original = Vec::new();
         original.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
         original.extend_from_slice(&3u32.to_le_bytes());
@@ -184,7 +202,10 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, vec![0xA5u8; original.len()]).unwrap();
 
-        let budget = MemBudget { free_vram: 0, free_pinnable_ram: 0 };
+        let budget = MemBudget {
+            free_vram: 0,
+            free_pinnable_ram: 0,
+        };
         let spill = SpillCtx::open(&gguf, &budget).unwrap();
         assert!(std::sync::Arc::ptr_eq(&spill.file, gguf.opened_file()));
         assert_eq!(&spill.file_map[..], original.as_slice());

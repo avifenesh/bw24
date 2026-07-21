@@ -30,6 +30,7 @@ HANDOVER.md sections from that date.
 | flag | default | what it does |
 |---|---|---|
 | `BW24_SPEC_K` | 3 | draft depth K. Per-(model,content): 27B K=3, 9B K=2–3, 35B K=2 (2026-07-05/06 sweeps) |
+| `BW24_SPEC_HOST_EMBD` | off | `1` keeps the token-embedding table in host memory for the Hy3 spill profile, reducing HBM pressure at the cost of a host-row transfer |
 | `BW24_SPEC_PMIN` | 0.0 | p-min confidence gate — stop the draft chain when head confidence drops below it (0.15–0.3 typical) |
 | `BW24_SPEC_PMIN0` | off | `1` lets p-min gate slot 0 too (zero-draft rounds). Pays below ~75% base acceptance, hurts above ~90% (2026-07-08, 35B +13–23 tok/s) |
 | `BW24_SPEC_HPOST` | off | `1` feeds the MTP head POST-output_norm hidden — acceptance lever on the 27B (>100 tok/s crossing, 2026-07-06). Per-model choice |
@@ -46,6 +47,7 @@ HANDOVER.md sections from that date.
 | `BW24_PP_REPS` | 1 | prefill repetitions (N-median protocol) |
 | `BW24_PP_WARMUP` | 1 | prefill warmup runs |
 | `BW24_NMEASURE` | 32 | decode tokens measured after counter reset |
+| `BW24_FORCE_TOKENS_FILE` | off | run-gen diagnostic: teacher-force numeric token ids from a file so placement A/Bs traverse an identical decode route |
 | `BW24_TURN_TOKENS` | 512 | session-bench: suffix length per turn |
 | `BW24_HIST_FILE` | required | session-bench: conversation history text file |
 
@@ -81,14 +83,33 @@ HANDOVER.md sections from that date.
 | `BW24_FA_SPLIT` | ctx-adaptive | force fixed FA split-keys. EXACTNESS: split count changes combine FP order — run-spec must re-gate (32 broke 9B self-consistency, 2026-07-03/07) |
 | `BW24_PRIME_CHUNK` | 4096 | chunked-prime chunk size in tokens (`0` = monolithic). Long-ctx OOM/transient control |
 | `BW24_MOE_VRAM_FRAC` | 0.85 | SLRU expert-cache fraction of free VRAM (sweep 2026-07-06: 0.40=25.0 → 0.85=28.5 tok/s). Lower it on rigs co-running other GPU work |
+| `BW24_MOE_HARD_VRAM_FRAC` | 0.80 | machine-specific hard ceiling for the SLRU allocation (`0.10..=0.95`). Raise only after a local OOM-gated sweep. Hy3 on the 24GB RTX 5090 validated `0.85` at 21.21GiB peak framebuffer use: 2,006 slots, exact argmax/tokens, and 0.53 -> 1.03 tok/s on the warm repeat together with worker depth 16 |
 | `BW24_MOE_SLOTS` | auto | force an exact SLRU slot count (spill experiments used 64/512) |
 | `BW24_MOE_RESIDENT` | on | `0` forces the SLRU path even when experts fit VRAM (fits-VRAM resident = 169.55 vs 28.5 tok/s on the local 35B) |
 | `BW24_MOE_RESIDENT_GB` | 80% of free | resident-experts budget override (g7e M3 partial-resident tier) |
 | `BW24_MOE_PINNED` | pinned when MOE_CACHE on | force pinned host expert slabs |
+| `BW24_MOE_SIZE_AWARE` | off | `1` partitions SLRU slots by expert projection size so mixed-size Hy3 tiers cannot strand capacity |
+| `BW24_MOE_LFU` | off | `1` enables frequency-aware GPU SLRU eviction; this is separate from the fixed LRU policy in the optional CPU projection cache |
+| `BW24_MOE_LFU_DECAY` | off | finite `(0,1]` epoch decay for GPU-cache frequency scores; `1.0` retains counts while still enabling forward-epoch accounting |
+| `BW24_MOE_LFU_MTP_WEIGHT` | 1.0 | finite `0.25..=64` multiplier applied to GPU-cache frequency updates from MTP/verify epochs |
 | `BW24_SPILL_DISK` | off | set = enable the NVMe disk tier for MoE experts (M3-class models that exceed host RAM) |
 | `BW24_SPILL_PINNED_FRAC` | 0.60 | fraction of MemAvailable the spill tier may pin |
-| `BW24_SPILL_IO` | `mmap` | expert storage backend: `mmap` (default and fallback), `pread` (blocking positioned-read oracle), or `worker` (bounded CPU positioned-read prefetch into CUDA-pinned buffers; caller-thread H2D/cache publication). Invalid values and backend/read failures degrade to mmap |
-| `BW24_SPILL_PREAD_DEPTH` | 2 | pinned-buffer count and worker-thread count for `worker` (`1..=64`; also sizes the blocking `pread` pool). The 2026-07-10 G7e A/B used depth 8; re-gate on the local RTX 5090 before changing its setting |
+| `BW24_SPILL_IO` | `mmap` | expert storage backend: `mmap` (default and fallback), `pread` (blocking positioned-read oracle), `worker` (bounded CPU positioned-read prefetch), or `direct` (the same worker pipeline with O_DIRECT for 4 KiB-aligned expert extents). Invalid values, unaligned direct extents, and backend/read failures degrade to mmap and increment fallback/error counters |
+| `BW24_SPILL_PREAD_DEPTH` | 2 | pinned-buffer count and worker-thread count for `worker` (`1..=64`; also sizes the blocking `pread` pool). Hy3 on the local RTX 5090 measured depth 16 as the knee: it matched depth 32 at 1.18 tok/s after a reverse-order repeat, used 107MB rather than 214MB of pinned RAM, and removed depth-8 ring saturation |
+| `BW24_SPILL_WORKER_EXPERT_WINDOW` | `(pread_depth-1)/3`, minimum 1 | complete experts kept in the rolling positioned-read window; each expert occupies three projection buffers |
+| `BW24_CPU_EXPERT_LIB` | off | path to the optional Hy3-only llama.cpp CPU-expert companion library. Complete frozen-cache hits stay on CUDA; experts missing any projection run wholly on CPU |
+| `BW24_CPU_EXPERT_THREADS` | 8 | OpenMP compute threads for one-token CPU expert work (`1..=256`) |
+| `BW24_CPU_EXPERT_IO_THREADS` | compute thread count | positioned-read workers used by the CPU expert backend (`1..=256`) |
+| `BW24_CPU_EXPERT_CACHE_GB` | 16 | requested normal-RAM cache ceiling for CPU-routed expert projection bytes; the local Hy3 5090 lane may request 36 GiB only when the live-stack headroom gate below permits it |
+| `BW24_CPU_EXPERT_RESERVE_GB` | 4 | live-stack RAM headroom retained by capping `BW24_CPU_EXPERT_CACHE_GB` to `MemAvailable - reserve` when the CPU companion initializes and prints the effective budget |
+| CPU expert cache eviction | LRU | fixed winners-only policy; experimental LFU and layer-aware least-stale arms did not beat the measured LRU path and were removed |
+| `BW24_CPU_EXPERT_IO` | `buffered` | CPU expert reads: `buffered` or aligned `direct` positioned I/O |
+| `BW24_CPU_EXPERT_MIRROR_MAP` | off | tab-separated inode/alternate-path map for splitting large direct reads across byte-identical expert mirrors on two NVMe devices |
+| `BW24_CPU_EXPERT_FREEZE_CACHE` | off | `1` freezes HBM expert residency so CPU/GPU backend assignment cannot drift after warmup; required for exact repeatable Hy3 hybrid serving |
+| `BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS` | off | discarded tokens used to profile/fill HBM before freezing; `BW24_CPU_EXPERT_FREEZE_WARMUP_SPEC_K` selects speculative warmup depth in run-spec |
+| `BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT` | off | `1` lets CPU-routed warmup misses vote for HBM admission before the residency set freezes; current-token execution remains on CPU |
+| `BW24_CPU_AFFINITY` | `0-7` in `run_hy3_local_5090.sh` | CPU list used by the Hy3 launcher for `taskset` and `GOMP_CPU_AFFINITY`; wrapper-only machine topology setting |
+| `BW24_CPU_EXPERT_BATCHED_PRIME` | off | rollback seam: `1` restores batched prompt replay after Hy3 CPU/GPU expert residency freezes; the local spill path otherwise replays tokenwise to avoid transiently rereading the missing expert bank |
 | `BW24_ST_PINNED` | off | `1` pins the safetensors expert store — ONLY for fits-in-RAM checkpoints (pinning 26GB evicted the page cache: 30x regression, 2026-07-07) |
 | `BW24_ST_REPACK_DISK` | on | `0` forces in-RAM gather instead of the `.bw24-repack` disk cache (safetensors stream-repack loader) |
 | `BW24_KQ_NVFP4` | 0 | load-time k-quant→NVFP4 re-encode: `1` = Q4_K, `2` = +Q5_K. +3.9% 9B plain but ~2x quant error and an acceptance tax — bpw equality ≠ quality-class equality (2026-07-08). Speed-mode opt-in only |
@@ -137,7 +158,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_SPEC_REPLAY=1` | legacy rollback+replay partial accept (also the j==0 fallback) | replay-free default 2026-07-03 (+10–32%) |
 | `BW24_SPEC_NOREFRESH=1` | chain-approximate draft-KV entries (no true-hidden refresh) | refresh default 2026-07-03 (+4–6% acc) |
 | `BW24_SPEC_NOGRAPH=1` | eager draft chain (no CUDA-graph draft) | graph draft 2026-07-03 |
-| `BW24_PRIME_TOKENWISE=1` | tokenwise decode-step prime (escape; <16-tok prompts take it anyway) | batched prime 2026-07-03 (23x TTFT at 6k) |
+| `BW24_PRIME_TOKENWISE=1` | force tokenwise decode-step prime in every phase (<16-tok prompts take it anyway). Frozen Hy3 CPU/GPU expert serving selects tokenwise automatically after its profiling warmup | batched prime 2026-07-03 (23x TTFT at 6k) |
 | `BW24_PRIME_APPEND_LOOP=1` | per-row KV append instead of the batched `_rows` kernel | measured equal 2026-07-03 |
 | `BW24_PRIME_DEQW=0` | inline-dequant prefill FA (no bf16 dequant-once workspace) | deqw default 2026-07-05 (32k prime 1.60x) |
 | `BW24_GEMMA_GKV=0` | gemma GLOBAL (hd512) layers back to q8_0/q5_1 KV (default = e4m3 via the kf8vf8 module) | fp8-globals default-on 2026-07-11 — the depth-plain lever (dequant-latency-bound, ncu) |

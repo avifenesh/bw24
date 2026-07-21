@@ -9,6 +9,7 @@ bw24-runtime = { path = "../bw24-runtime" }
 bw24-tokenizer = { path = "../bw24-tokenizer" }
 cudarc = { version = "0.19", default-features = false, features = ["std", "cuda-13010", "dynamic-loading", "driver", "cublas", "cublaslt", "nvrtc"] }
 memmap2 = "0.9"
+libc = "0.2"
 
 [[bin]]
 name = "gemma-gate"
@@ -126,3 +127,7 @@ path = "src/bin/session_bench.rs"
 [[bin]]
 name = "fa-ab-bench"
 path = "src/bin/fa_ab_bench.rs"
+
+[[bin]]
+name = "frspec-rank"
+path = "src/bin/frspec_rank.rs"

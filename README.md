@@ -16,8 +16,8 @@ From-scratch LLM inference engine in Rust + CUDA, built for one machine: an RTX 
 | Tier | Models | State |
 |---|---|---|
 | **Supported** | Qwen3.5-9B, Qwen3.6-27B, Qwen3.6-35B-A3B MoE (NVFP4/IQ4_XS); Gemma-4 26B-A4B MoE (QAT Q4_0 + MTP drafter) | Board-published, beats llama.cpp plain and spec (tables below) |
-| **Supported, under tuning** | Gemma-4 31B dense, E4B (QAT Q4_0 GGUF) | Runs end-to-end, gated, tuning campaign live (table below) |
-| **In progress** | Hy3-REAP50, MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router arcs still open |
+| **Supported, under tuning** | Gemma-4 31B dense, E4B (QAT Q4_0 GGUF); Hy3 Layer103.5 overlay (VRAM→RAM→dual-NVMe spill) | Runs end-to-end and is correctness-gated; tuning campaigns remain live |
+| **In progress** | MiniMax-M3 REAP50 (safetensors, VRAM→RAM→NVMe spill) | Loads + generates; hybrid/sigmoid-router tuning remains open |
 
 ## Quick start
 
@@ -30,6 +30,42 @@ BW24_SPEC_K=3 ./target/release/run-spec /path/to/qwen36-27b.gguf   # MTP specula
 ```
 
 Tuned paths are the defaults — no flags needed. Flags exist only for runtime parameters, machine config, and rollback seams (`docs/FLAGS.md`). `run-gen` prints a prefill/decode argmax gate before timing anything; a MISMATCH line voids the numbers after it.
+
+### Hy3 spill profile on a 24 GB GPU
+
+Hy3's expert bank exceeds both VRAM and ordinary host-RAM budgets. bw24 freezes a profiled HBM
+resident set, keeps a bounded LRU projection cache in normal RAM, reads misses with positioned
+direct I/O, and can split each large read across byte-identical copies on two NVMe devices. The
+core engine still has no ggml dependency; this optional Hy3 path loads a small CPU-expert companion
+built against llama.cpp's CPU shared libraries. The tested dependency is commit
+`bb090d1f1dbf3c29df6778fda123aa352329514e`:
+
+```bash
+git -C /path/to/llama.cpp checkout bb090d1f1dbf3c29df6778fda123aa352329514e
+cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build \
+  -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build /path/to/llama.cpp/build --target ggml-cpu ggml-base -j
+tools/build_cpu_expert_companion.sh /path/to/llama.cpp
+tools/run_hy3_local_5090.sh \
+  /path/to/hy3-layer103p5-runtime \
+  target/release/libbw24-cpu-experts.so \
+  /path/to/expert-mirror/inode-alternates.tsv
+```
+
+`BW24_CPU_EXPERT_LIB` loads native code into the bw24 process; build it from a checkout you trust.
+
+The mirror argument is optional. `tools/build_dual_nvme_expert_view.py` and
+`tools/build_expert_mirror_map.py` create the verified striped view and alternate-path map. The run
+profile requests a 36 GiB CPU cache, retains 4 GiB of live `MemAvailable` headroom, uses eight
+P-cores, and prints the effective cache cap before warmup; it reduces the cache instead of
+exhausting RAM when the desktop stack is too large.
+
+The strongest completed target-rig N=64 run produced 7.54 tok/s plain and 7.60 tok/s at MTP K=1,
+with K=1 through K=8 self-consistency passing. This is a single run whose thermal regime was not
+captured independently, so it is bring-up evidence rather than a generated board row. Sustained
+10 tok/s remains the next target. Raw log:
+`research/per-expert-quant/evidence/local-5090-sota-20260719/hy3-mtp-k1to8-postcleanup-maxprofile-ngen64-run1.log`.
 
 ## Performance — Qwen (NVFP4 / IQ4_XS)
 
@@ -110,13 +146,14 @@ pairs, N=2 each side.
 
 - **Prefill** trails llama.cpp (0.59-0.78x), root-caused: llama benches NVFP4 prefill at W4A4 (FP4 activations), a numeric class bw24's exactness gates reject — bw24's in-tree W4A4 arm beats llama but forks argmax on long prompts (`docs/FLAGS.md` §5). Output quality outranks the prefill column.
 - Gemma 31B depth cells (plain 0.96x, spec 0.87x) and E4B are the open tuning front; 26B is done and 31B short spec is above (1.09x).
-- Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the published format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`).
+- Hy3 spill reaches 7.60 tok/s at K=1 in the strongest completed N=64 run, below the 10 tok/s target; prompt replay remains much slower than token generation and the best 36 GiB host-cache setting needs a quiet 60 GiB machine.
+- Safetensors runs checkpoints llama.cpp cannot (NVIDIA NVFP4 ST, 121 GB spilled MoEs) but GGUF is the primary delivery format — ST showed seed-sensitive long-context repetition (`research/tune-data/27b-st-vs-gguf-final.md`). The published Hy3 Layer103.5 expert overlay is the scoped exception documented below.
 
 ## What's inside
 
 - **NVFP4 / Q4_0 decode** — split-plane repacked matvecs, warp-level dp4a, int8 W4A8 tensor-core prefill GEMM, per-shape auto-dispatch.
 - **MTP speculative decoding** — embedded draft head, one batched K+1 verify, zero-sync async rounds, adaptive draft depth; K=1..8 self-consistency gate.
-- **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, SLRU expert residency with VRAM→host→disk spill.
+- **MoE on 24 GB** — expert-major CSR batching, decode-once dequant, frozen SLRU expert residency, bounded host LRU, and mirrored positioned reads across VRAM→RAM→NVMe.
 - **Quantized-KV attention** — fused prefill/decode FlashAttention-class kernels (q8_0/q5_1 or FP8-e4m3 KV per layer class), split-K, device-length counters for graph replay.
 - **CUDA-graph decode** — one graph replay per token, 4 bytes/token host traffic.
 - **Hybrid + sigmoid-router architectures** — gated-delta-net mixes (Qwen3.6), MiniMax/DeepSeek-style routing.
@@ -141,7 +178,7 @@ Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-g
 
 - NVIDIA Blackwell consumer GPU (sm_120a); primary target RTX 5090 Laptop.
 - CUDA 13.1 (`BW24_NVCC` overrides the nvcc path), Rust edition 2024, cudarc 0.19.
-- A model: GGUF or HF safetensors directory (pass either path).
+- A model: GGUF or HF safetensors directory (pass either path). The optional Hy3 CPU-expert path also needs a CPU-only shared-library build of llama.cpp.
 
 ## Limitations
 
@@ -157,6 +194,7 @@ Every kernel change passes, in order: `kernel-check` (CPU reference), the `run-g
 - [`docs/COMPETITOR-SETUP.md`](docs/COMPETITOR-SETUP.md) — competitor engines at their peak on this box.
 - [`research/tune-data/`](research/tune-data/) + [`research/gemma4-bringup/`](research/gemma4-bringup/) — every experiment as JSONL, wins and losses both.
 - [`research/benchmarks.md`](research/benchmarks.md) — the A/B measurement protocol.
+- [`research/per-expert-quant/hy3-layer103p5-release.md`](research/per-expert-quant/hy3-layer103p5-release.md) — obtain and relocate the published Hy3 overlay.
 
 ## Contributing
 

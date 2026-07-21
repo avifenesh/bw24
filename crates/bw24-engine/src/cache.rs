@@ -3,21 +3,21 @@
 //! - Fixed recurrent state (conv ring + SSM state) for linear-attention layers (kept on GPU).
 //! No host round-trips per step. Single sequence.
 
-use cudarc::driver::CudaSlice;
-use bw24_gguf::config::{ModelConfig, LayerKind};
 use crate::Engine;
+use bw24_gguf::config::{LayerKind, ModelConfig};
+use cudarc::driver::CudaSlice;
 
 /// Per-full-attn-layer growing KV cache, resident on GPU. QUANTIZED (KVQUANT-PLAN §B):
 /// K stored q8_0 (34 B/32 elem), V stored q5_1 (24 B/32 elem). Per-token byte layout keeps the
 /// [token, kv_head, dim] element order so a 32-block never straddles a head (assert head_dim%32==0).
 /// Element-within-token index = kv_head*head_dim + d; block = idx/32; lane = idx%32.
 pub struct KvLayer {
-    pub k: CudaSlice<u8>,        // q8_0 packed, capacity max_ctx*k_tok_bytes
-    pub v: CudaSlice<u8>,        // q5_1 packed, capacity max_ctx*v_tok_bytes
-    pub kv_dim_k: usize,         // head_dim_k * n_head_kv  (K elements per token)
-    pub kv_dim_v: usize,         // head_dim_v * n_head_kv  (V elements per token)
-    pub k_tok_bytes: usize,      // (kv_dim_k/32)*34
-    pub v_tok_bytes: usize,      // (kv_dim_v/32)*24
+    pub k: CudaSlice<u8>,   // q8_0 packed, capacity max_ctx*k_tok_bytes
+    pub v: CudaSlice<u8>,   // q5_1 packed, capacity max_ctx*v_tok_bytes
+    pub kv_dim_k: usize,    // head_dim_k * n_head_kv  (K elements per token)
+    pub kv_dim_v: usize,    // head_dim_v * n_head_kv  (V elements per token)
+    pub k_tok_bytes: usize, // (kv_dim_k/32)*34
+    pub v_tok_bytes: usize, // (kv_dim_v/32)*24
     pub len: usize,
     /// Device-resident mirror of `len` (CUDA-GRAPH-PLAN Phase 2). Holds the KV write SLOT for the
     /// append-dc kernel (old len, before this step's append); after `inc_seqlen` it holds the new
@@ -29,8 +29,8 @@ pub struct KvLayer {
 /// conv_state and ssm_state are BOTH kept RESIDENT on GPU — the conv ring assemble + roll runs
 /// on-device (conv_assemble_and_roll), so there is no per-step dtoh/htod for either.
 pub struct RecurLayer {
-    pub conv_state: CudaSlice<f32>,  // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
-    pub ssm_state: CudaSlice<f32>,   // GPU [d_state, d_state, num_v] transposed M[col][i]
+    pub conv_state: CudaSlice<f32>, // GPU [conv_dim, d_conv-1] (channel c, tap j at c*pad + j)
+    pub ssm_state: CudaSlice<f32>,  // GPU [d_state, d_state, num_v] transposed M[col][i]
     /// PERSISTENT second SSM-state buffer for the gdn-scan double buffer (DECODE DETERMINISM FIX).
     /// gdn_scan needs DISTINCT in/out state buffers. The old eager path allocated a fresh
     /// `state_scratch` via `e.uninit` every step and swapped its pointer into `ssm_state`; that
@@ -57,15 +57,19 @@ pub struct Cache {
 ///   buffers are mutated IN PLACE by the verify pass and have no position index to truncate. C.2.
 ///   (CudaSlice::clone is an Arc refcount, NOT a buffer copy — so we alloc fresh + memcpy_dtod.)
 pub struct CacheSnapshot {
-    pub kv_len: Vec<Option<usize>>,            // per layer (Some for full-attn layers)
-    pub conv: Vec<Option<CudaSlice<f32>>>,     // per layer (Some for linear-attn layers, D2D copy)
+    pub kv_len: Vec<Option<usize>>, // per layer (Some for full-attn layers)
+    pub conv: Vec<Option<CudaSlice<f32>>>, // per layer (Some for linear-attn layers, D2D copy)
     pub ssm: Vec<Option<CudaSlice<f32>>>,
     pub pos: usize,
 }
 
 impl Cache {
     /// Allocate GPU-resident caches sized by arch + max context.
-    pub fn new(e: &Engine, cfg: &ModelConfig, max_ctx: usize) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        e: &Engine,
+        cfg: &ModelConfig,
+        max_ctx: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let n = cfg.n_layer as usize;
         let mut kv = Vec::with_capacity(n);
         let mut recur = Vec::with_capacity(n);
@@ -85,13 +89,24 @@ impl Cache {
             let num_k = s.group_count as usize;
             let num_v = s.time_step_rank as usize;
             let ds = s.state_size as usize;
-            (ds * num_k * 2 + ds * num_v, ds, num_v, s.conv_kernel as usize)
-        } else { (0, 0, 0, 0) };
+            (
+                ds * num_k * 2 + ds * num_v,
+                ds,
+                num_v,
+                s.conv_kernel as usize,
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
         for il in 0..cfg.n_layer {
             // gemma4 R5: per-layer KV geometry (SWA 256hd x 8kv = 2048 / global 512hd x 2kv = 1024).
             let (kv_dim_k, kv_dim_v) = match &cfg.gemma4 {
                 Some(g) => {
-                    let hd = if g.swa_pattern[il as usize] { g.key_length_swa } else { g.key_length_global } as usize;
+                    let hd = if g.swa_pattern[il as usize] {
+                        g.key_length_swa
+                    } else {
+                        g.key_length_global
+                    } as usize;
                     // E4B ships a SCALAR head_count_kv (per-layer vec empty; scalar = 2 in
                     // the gguf, landing in cfg.n_head_kv): kv_dim = hd * 2 for BOTH kinds —
                     // swa 2x256 = 512, global 2x512 = 1024. The old fallback used
@@ -121,13 +136,22 @@ impl Cache {
             // FP8-GLOBALS (gemma, 2026-07-11): global (hd512) layers hold e4m3 K/V (32B/32elem
             // both planes — the dequant-latency arc); windowed layers keep the default pair.
             let g4_global_fp8 = crate::Engine::gkv_on()
-                && cfg.gemma4.as_ref().is_some_and(|g| !g.swa_pattern[il as usize]);
+                && cfg
+                    .gemma4
+                    .as_ref()
+                    .is_some_and(|g| !g.swa_pattern[il as usize]);
             let g4_windowed_fp8 = crate::Engine::wkv_on()
-                && cfg.gemma4.as_ref().is_some_and(|g| g.swa_pattern[il as usize]);
+                && cfg
+                    .gemma4
+                    .as_ref()
+                    .is_some_and(|g| g.swa_pattern[il as usize]);
             // QWEN FP8-KV (BW24_KV_FP8, bring-up): non-gemma full-attn layers, uniform class.
             let qwen_fp8 = crate::Engine::kv_fp8_on() && cfg.gemma4.is_none();
-            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 || qwen_fp8 { (32, 32) }
-                                 else { (kbb, vbb) };
+            let (kbb_l, vbb_l) = if g4_global_fp8 || g4_windowed_fp8 || qwen_fp8 {
+                (32, 32)
+            } else {
+                (kbb, vbb)
+            };
             let k_tok_bytes = (kv_dim_k / 32) * kbb_l;
             let v_tok_bytes = (kv_dim_v / 32) * vbb_l;
             match cfg.layer_kind(il) {
@@ -138,7 +162,11 @@ impl Cache {
                         // expert-dot precedent; zero hot-loop branches, values discarded).
                         k: e.alloc_u8(max_ctx * k_tok_bytes + 8)?,
                         v: e.alloc_u8(max_ctx * v_tok_bytes + 8)?,
-                        kv_dim_k, kv_dim_v, k_tok_bytes, v_tok_bytes, len: 0,
+                        kv_dim_k,
+                        kv_dim_v,
+                        k_tok_bytes,
+                        v_tok_bytes,
+                        len: 0,
                         len_d: e.htod_i32(&[0])?,
                     }));
                     recur.push(None);
@@ -153,7 +181,12 @@ impl Cache {
                 }
             }
         }
-        Ok(Cache { kv, recur, pos: 0, max_ctx })
+        Ok(Cache {
+            kv,
+            recur,
+            pos: 0,
+            max_ctx,
+        })
     }
 
     /// Snapshot the dual cache before a spec-decode draft+verify round (MTP-PLAN §C/§D.4).
@@ -174,24 +207,39 @@ impl Cache {
                     conv.push(Some(e.clone_dtod(&rl.conv_state)?));
                     ssm.push(Some(e.clone_dtod(&rl.ssm_state)?));
                 }
-                None => { conv.push(None); ssm.push(None); }
+                None => {
+                    conv.push(None);
+                    ssm.push(None);
+                }
             }
         }
-        Ok(CacheSnapshot { kv_len, conv, ssm, pos: self.pos })
+        Ok(CacheSnapshot {
+            kv_len,
+            conv,
+            ssm,
+            pos: self.pos,
+        })
     }
 
     /// PERSISTENT-BUFFER snapshot (spec-decode hot loop): refresh `snap` IN PLACE — same values as
     /// `snapshot()` but the conv/ssm device buffers are reused across rounds (D2D copy-into, ZERO
     /// allocations vs 2 fresh clones per linear layer per round). `snap` must come from a prior
     /// `snapshot()` of THIS cache (same layer shapes).
-    pub fn snapshot_into(&self, e: &Engine, snap: &mut CacheSnapshot)
-                         -> Result<(), Box<dyn std::error::Error>> {
+    pub fn snapshot_into(
+        &self,
+        e: &Engine,
+        snap: &mut CacheSnapshot,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let n = self.kv.len();
         for il in 0..n {
             snap.kv_len[il] = self.kv[il].as_ref().map(|kvl| kvl.len);
             if let Some(rl) = &self.recur[il] {
-                let dc = snap.conv[il].as_mut().expect("snapshot_into: shape mismatch (conv)");
-                let ds = snap.ssm[il].as_mut().expect("snapshot_into: shape mismatch (ssm)");
+                let dc = snap.conv[il]
+                    .as_mut()
+                    .expect("snapshot_into: shape mismatch (conv)");
+                let ds = snap.ssm[il]
+                    .as_mut()
+                    .expect("snapshot_into: shape mismatch (ssm)");
                 let (cn, sn) = (rl.conv_state.len(), rl.ssm_state.len());
                 e.copy_into(dc, 0, &rl.conv_state, cn)?;
                 e.copy_into(ds, 0, &rl.ssm_state, sn)?;
@@ -208,8 +256,12 @@ impl Cache {
     ///   T=1 decode path to rebuild the recurrent state for those positions. We restore (not
     ///   replay here) because replay needs the model; this only resets state to the pre-round value.
     /// `cache.pos` is set to `snap.pos` so the caller's replay advances it back to the commit point.
-    pub fn rollback(&mut self, e: &Engine, snap: &CacheSnapshot, accept_len: usize)
-                    -> Result<(), Box<dyn std::error::Error>> {
+    pub fn rollback(
+        &mut self,
+        e: &Engine,
+        snap: &CacheSnapshot,
+        accept_len: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for il in 0..self.kv.len() {
             if let (Some(kvl), Some(saved)) = (self.kv[il].as_mut(), snap.kv_len[il]) {
                 kvl.len = saved + accept_len;
@@ -220,8 +272,12 @@ impl Cache {
                 e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
             }
             if let Some(rl) = self.recur[il].as_mut() {
-                if let Some(c) = &snap.conv[il] { e.copy_into(&mut rl.conv_state, 0, c, c.len())?; }
-                if let Some(s) = &snap.ssm[il]  { e.copy_into(&mut rl.ssm_state,  0, s, s.len())?; }
+                if let Some(c) = &snap.conv[il] {
+                    e.copy_into(&mut rl.conv_state, 0, c, c.len())?;
+                }
+                if let Some(s) = &snap.ssm[il] {
+                    e.copy_into(&mut rl.ssm_state, 0, s, s.len())?;
+                }
             }
         }
         self.pos = snap.pos;

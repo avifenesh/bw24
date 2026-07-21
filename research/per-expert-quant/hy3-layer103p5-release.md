@@ -20,7 +20,58 @@ The published artifact is a `bw24-expert-overlay-v2`, not a Transformers checkpo
 [Avifenesh/Hy3-REAP-Layer103p5-bw24](https://huggingface.co/Avifenesh/Hy3-REAP-Layer103p5-bw24).
 
 Use `tools/relocate_hy3_expert_overlay.py` to create a zero-copy runtime view that points the
-immutable published overlay at a local copy of the pinned source checkpoint.
+immutable published overlay at a local copy of the pinned source checkpoint:
+
+```bash
+python3 tools/relocate_hy3_expert_overlay.py \
+  /path/to/Hy3-REAP-Layer103p5-bw24 \
+  /path/to/tencent-Hy3-716aa724 \
+  /path/to/hy3-layer103p5-runtime
+```
+
+The runtime still needs the source checkpoint's non-expert tensors and the unmanaged layer-80 MTP
+experts, but it does not need a second copy of the main 79-layer expert bank. To build a verified
+sparse source view, download the source `config.json`, tensor index, every shard containing a
+non-expert tensor, and the layer-80 expert shards, then pass `--sparse-source-view`:
+
+```bash
+python3 tools/relocate_hy3_expert_overlay.py \
+  /path/to/Hy3-REAP-Layer103p5-bw24 \
+  /path/to/tencent-Hy3-716aa724 \
+  /path/to/hy3-layer103p5-runtime \
+  --sparse-source-view /path/to/hy3-layer103p5-sparse-source
+```
+
+The command verifies the pinned source fingerprints and that every managed expert projection is
+either supplied by the overlay or explicitly pruned. It keeps dense and layer-80 shards real and
+uses valid empty safetensors placeholders only for expert-only shards that the overlay supersedes.
+
+## Run on the 24 GB RTX 5090 profile
+
+Build bw24 and its optional CPU-expert companion, then launch the measured local spill profile:
+
+```bash
+cargo build --release
+git -C /path/to/llama.cpp checkout bb090d1f1dbf3c29df6778fda123aa352329514e
+cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build \
+  -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=ON -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build /path/to/llama.cpp/build --target ggml-cpu ggml-base -j
+tools/build_cpu_expert_companion.sh /path/to/llama.cpp
+tools/run_hy3_local_5090.sh \
+  /path/to/hy3-layer103p5-runtime \
+  target/release/libbw24-cpu-experts.so \
+  /path/to/expert-mirror/inode-alternates.tsv
+```
+
+The companion is trusted native code loaded into the bw24 process. Build it from the pinned,
+reviewed checkout above (or an intentionally audited replacement).
+
+The mirror map is optional but enables split reads across two byte-identical NVMe copies. Build it
+with `tools/build_dual_nvme_expert_view.py` and `tools/build_expert_mirror_map.py`. The launcher
+uses the correctness-gated non-fused LRU winner and retains 4 GiB of live RAM headroom; startup
+prints the effective host-cache size when the requested 36 GiB does not fit the current desktop
+stack.
 
 Receipt anchors:
 

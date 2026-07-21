@@ -12,8 +12,8 @@
 //! All dispatched behind BW24_MMQ=1. Always built (no external deps) — unlike cutlass_ffi which is
 //! BW24_CUTLASS-gated.
 
-use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
 use crate::Engine;
+use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
 
 unsafe extern "C" {
     /// Bytes needed for the block_fp4_mmq activation scratch for (in_f, n_tokens).
@@ -28,7 +28,9 @@ unsafe extern "C" {
         w_nvfp4_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
         out_scale: f32,
@@ -46,7 +48,9 @@ unsafe extern "C" {
         w_nvfp4_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
         out_scale: f32,
@@ -63,7 +67,9 @@ unsafe extern "C" {
         w_nvfp4_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
         out_scale: f32,
@@ -77,7 +83,9 @@ unsafe extern "C" {
         w_q4k_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
@@ -86,7 +94,9 @@ unsafe extern "C" {
         w_q5k_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
@@ -100,7 +110,9 @@ unsafe extern "C" {
         w_q8_0_blocks: *const core::ffi::c_void,
         act_f32: *const f32,
         y: *mut f32,
-        in_f: i32, out_f: i32, n_tokens: i32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
         stream: *mut core::ffi::c_void,
     ) -> i32;
@@ -109,17 +121,33 @@ unsafe extern "C" {
     /// Bytes for the token-major block_q8_1_mmq activation scratch (in_f, n_tokens).
     pub fn bw24_mmq_iq_experts_act_bytes(in_f: i32, n_tokens: i32) -> usize;
     /// Quantize token-major f32 activation [n_tokens, in_f] -> block_q8_1_mmq (D4). Returns 0 or 1000+err.
-    pub fn bw24_mmq_iq_quantize_act(act_f32: *const f32, act_scratch: *mut core::ffi::c_void,
-                                    in_f: i32, n_tokens: i32, stream: *mut core::ffi::c_void) -> i32;
+    pub fn bw24_mmq_iq_quantize_act(
+        act_f32: *const f32,
+        act_scratch: *mut core::ffi::c_void,
+        in_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// Expert-segmented IQ MMA MMQ. Same CSR shape as moe_pairs_matvec_q8_dec: `table` = [3,n_expert]
     /// device slab ptrs, CSR ex_ids/ex_off/ex_pairs group pairs by expert, pair_tok gathers the
     /// activation row. y = [n_pairs, out_f] pair-major. `act_scratch` pre-quantized over n_tokens.
     /// qtype: 5=IQ4_XS, 6=IQ3_S. Returns 0 or 1000+cudaError.
     pub fn bw24_mmq_iq_experts(
-        table: *const u64, proj: i32, n_expert: i32,
-        ex_ids: *const i32, ex_off: *const i32, ex_pairs: *const i32, pair_tok: *const i32,
-        act_scratch: *const core::ffi::c_void, y: *mut f32,
-        in_f: i32, out_f: i32, n_active: i32, n_tokens: i32, qtype: i32, row_bytes: i64,
+        table: *const u64,
+        proj: i32,
+        n_expert: i32,
+        ex_ids: *const i32,
+        ex_off: *const i32,
+        ex_pairs: *const i32,
+        pair_tok: *const i32,
+        act_scratch: *const core::ffi::c_void,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_active: i32,
+        n_tokens: i32,
+        qtype: i32,
+        row_bytes: i64,
         stream: *mut core::ffi::c_void,
     ) -> i32;
 }
@@ -134,7 +162,11 @@ unsafe extern "C" {
 /// (speed/accuracy tradeoff opt-in, unchanged).
 pub fn mmq_w4a8_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(true))
+    *ON.get_or_init(|| {
+        std::env::var("BW24_MMQ_W4A8")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 
 /// Q8_0 MMQ prefill seam (lane/ppmmq lever 2, DEFAULT ON since 2026-07-09 — `BW24_PP_Q8MMQ=0`
@@ -147,7 +179,11 @@ pub fn mmq_q8_enabled() -> bool {
     // Promotion battery (2026-07-09): argmax MATCH on 35B p1/p2/p3 + 9B p2/p3 (p4-16k OOMs
     // identically with and without the flag — pre-existing gate capacity limit, not this seam);
     // kernel-check ALL GREEN; run-spec K=1..8 PASS on 9B+35B. 35B pp 2456->3069 free-clock.
-    *ON.get_or_init(|| std::env::var("BW24_PP_Q8MMQ").map(|v| v != "0").unwrap_or(true))
+    *ON.get_or_init(|| {
+        std::env::var("BW24_PP_Q8MMQ")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 
 impl Engine {
@@ -155,58 +191,84 @@ impl Engine {
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if cfg!(bw24_portable_cuda) { return false; }
+        if cfg!(bw24_portable_cuda) {
+            return false;
+        }
         let mmq_opt_in = std::env::var("BW24_MMQ").is_ok();
         match w {
             // A6 split-plane repacked NVFP4: ONLY the W4A8 loader has an rp arm (pure address
             // remap, bit-identical output — mmq_nvfp4_w4a8.cu load_tiles_nvfp4_w4a8<is_rp>).
             // The W4A4 loader (mmq_fp4.cu load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks only,
             // so an rp weight with W4A8 disabled falls through to the rp-ported int8 GEMM.
-            GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp =>
-                mmq_w4a8_enabled() && w.in_features() % 64 == 0,
+            GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp => {
+                mmq_w4a8_enabled() && w.in_features() % 64 == 0
+            }
             // GGUF-layout NVFP4 (BW24_RP=0): W4A8 (default-on) or the explicit W4A4 opt-in.
-            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 =>
-                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0,
-            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
-                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0,
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 => {
+                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0
+            }
+            GpuTensor::Quant { qtype, .. }
+                if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>
+            {
+                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0
+            }
             // Q8_0 dense projections (35B attn/ssm/shexp): opt-in only (BW24_PP_Q8MMQ=1), its own
             // numeric config vs qmatvec_gemm_q8_0. in_f % 32 == 0 (integral q8_0 blocks per row).
-            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q8_0 =>
-                mmq_q8_enabled() && w.in_features() % 32 == 0,
+            GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q8_0 => {
+                mmq_q8_enabled() && w.in_features() % 32 == 0
+            }
             _ => false,
         }
     }
 
     /// Unified vendored-MMQ dispatch: routes to the NVFP4 or Q4_K/Q5_K launcher by qtype.
     /// Caller MUST have checked `mmq_supports(w)`. `x` is the RAW f32 activation.
-    pub fn qmatvec_mmq(&self, w: &crate::model::GpuTensor, x: &CudaSlice<f32>, m: usize)
-                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq(
+        &self,
+        w: &crate::model::GpuTensor,
+        x: &CudaSlice<f32>,
+        m: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         use crate::model::GpuTensor;
         let (in_f, out_f) = (w.in_features(), w.out_features());
-        let GpuTensor::Quant { bytes, scale, qtype, rp, .. } = w else {
+        let GpuTensor::Quant {
+            bytes,
+            scale,
+            qtype,
+            rp,
+            ..
+        } = w
+        else {
             return Err("qmatvec_mmq: not a Quant tensor".into());
         };
         // NVFP4 tile choice: W4A8 (accuracy-safe int8 pair, DEFAULT since the flip) vs W4A4
         // (mxf4nvf4 mma, explicit BW24_MMQ=1 speed/accuracy tradeoff). An rp weight ALWAYS takes
         // W4A8 — only its loader has the split-plane arm (pure address remap, bit-identical).
         // Explicit BW24_MMQ_W4A8=1 still overrides a simultaneous BW24_MMQ=1 (predecessor rule).
-        let w4a8_explicit = std::env::var("BW24_MMQ_W4A8").map(|v| v != "0").unwrap_or(false);
-        let use_w4a8 = *rp || w4a8_explicit
-            || (mmq_w4a8_enabled() && std::env::var("BW24_MMQ").is_err());
+        let w4a8_explicit = std::env::var("BW24_MMQ_W4A8")
+            .map(|v| v != "0")
+            .unwrap_or(false);
+        let use_w4a8 =
+            *rp || w4a8_explicit || (mmq_w4a8_enabled() && std::env::var("BW24_MMQ").is_err());
         match *qtype {
             // STAGE 2: the accuracy-safe int8 W4A8 MMQ tile (weight FP4->int8 dequant + q8_1
             // activation) — handles BOTH weight layouts (rp = A6 split-plane vs GGUF blocks).
-            q if q == crate::QT_NVFP4 && use_w4a8 =>
-                self.qmatvec_mmq_nvfp4_w4a8(bytes, x, m, in_f, out_f, *scale, *rp),
+            q if q == crate::QT_NVFP4 && use_w4a8 => {
+                self.qmatvec_mmq_nvfp4_w4a8(bytes, x, m, in_f, out_f, *scale, *rp)
+            }
             q if q == crate::QT_NVFP4 => self.qmatvec_mmq_nvfp4(bytes, x, m, in_f, out_f, *scale),
             q if q == crate::QT_Q4_K || q == crate::QT_Q5_K => {
                 let mut y = self.qmatvec_mmq_q45k_raw(bytes, x, m, in_f, out_f, q)?;
-                if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
+                if *scale != 1.0 {
+                    self.scale_inplace(&mut y, *scale, m * out_f)?;
+                }
                 Ok(y)
             }
             q if q == crate::QT_Q8_0 => {
                 let mut y = self.qmatvec_mmq_q8_0_raw(bytes, x, m, in_f, out_f)?;
-                if *scale != 1.0 { self.scale_inplace(&mut y, *scale, m * out_f)?; }
+                if *scale != 1.0 {
+                    self.scale_inplace(&mut y, *scale, m * out_f)?;
+                }
                 Ok(y)
             }
             q => Err(format!("qmatvec_mmq: unsupported qtype {q}").into()),
@@ -217,10 +279,19 @@ impl Engine {
     /// Conventional xy-tiling only (the vendored stream-K arm — BW24_MMQ_STREAMK — was removed
     /// 2026-07-08: 1.11x per-GEMM but its k-split f32 reorder flipped the model argmax gate;
     /// rig5090.jsonl 2026-07-03 has the record).
-    pub fn qmatvec_mmq_q45k_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                in_f: usize, out_f: usize, qtype: i32)
-                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        assert!(in_f % 256 == 0, "MMQ Q4_K/Q5_K requires in_f % 256 == 0, got {in_f}");
+    pub fn qmatvec_mmq_q45k_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        qtype: i32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 256 == 0,
+            "MMQ Q4_K/Q5_K requires in_f % 256 == 0, got {in_f}"
+        );
         let act_bytes = unsafe { bw24_mmq_q45k_act_bytes(in_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
@@ -230,28 +301,44 @@ impl Engine {
             let (x_p, _gx) = x.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
             let (s_p, _gs) = scratch.device_ptr_mut(stream);
-            let launcher = if qtype == crate::QT_Q4_K { bw24_mmq_q4_K } else { bw24_mmq_q5_K };
+            let launcher = if qtype == crate::QT_Q4_K {
+                bw24_mmq_q4_K
+            } else {
+                bw24_mmq_q5_K
+            };
             let rc = unsafe {
                 launcher(
                     w_p as *const core::ffi::c_void,
                     x_p as *const f32,
                     y_p as *mut f32,
-                    in_f as i32, out_f as i32, m as i32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             };
-            if rc != 0 { return Err(format!("bw24_mmq_q45k(qtype={qtype}) rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_q45k(qtype={qtype}) rc={rc}").into());
+            }
         }
         Ok(y)
     }
 
     /// Bare Q8_0 int8-MMA MMQ launch (no macro-scale) — the kernel_check accuracy-gate entry and
     /// the `qmatvec_mmq` dispatch body. Conventional xy-tiling only (no stream-K / fixup scratch).
-    pub fn qmatvec_mmq_q8_0_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                               in_f: usize, out_f: usize)
-                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        assert!(in_f % 32 == 0, "MMQ Q8_0 requires in_f % 32 == 0, got {in_f}");
+    pub fn qmatvec_mmq_q8_0_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 32 == 0,
+            "MMQ Q8_0 requires in_f % 32 == 0, got {in_f}"
+        );
         let act_bytes = unsafe { bw24_mmq_q8_0_act_bytes(in_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
@@ -266,12 +353,16 @@ impl Engine {
                     w_p as *const core::ffi::c_void,
                     x_p as *const f32,
                     y_p as *mut f32,
-                    in_f as i32, out_f as i32, m as i32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             };
-            if rc != 0 { return Err(format!("bw24_mmq_q8_0 rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_q8_0 rc={rc}").into());
+            }
         }
         Ok(y)
     }
@@ -281,23 +372,43 @@ impl Engine {
     /// write-back epilogue (was a separate scale_inplace launch + full y round-trip per matmul).
     /// Same elementwise multiply -> bit-identical to the two-launch form.
     /// `x` is the RAW f32 activation (the launcher quantizes it to block_fp4_mmq internally).
-    pub fn qmatvec_mmq_nvfp4(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                             in_f: usize, out_f: usize, scale: f32)
-                             -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq_nvfp4(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_mmq_nvfp4_scaled(bytes, x, m, in_f, out_f, scale)
     }
 
     /// Bare MMQ launch (no macro-scale) — for the kernel_check accuracy gate.
-    pub fn qmatvec_mmq_nvfp4_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                 in_f: usize, out_f: usize)
-                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq_nvfp4_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_mmq_nvfp4_scaled(bytes, x, m, in_f, out_f, 1.0)
     }
 
-    fn qmatvec_mmq_nvfp4_scaled(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                in_f: usize, out_f: usize, scale: f32)
-                                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        assert!(in_f % 64 == 0, "MMQ NVFP4 requires in_f % 64 == 0, got {in_f}");
+    fn qmatvec_mmq_nvfp4_scaled(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 64 == 0,
+            "MMQ NVFP4 requires in_f % 64 == 0, got {in_f}"
+        );
         let act_bytes = unsafe { bw24_mmq_nvfp4_act_bytes(in_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
@@ -312,13 +423,17 @@ impl Engine {
                     w_p as *const core::ffi::c_void,
                     x_p as *const f32,
                     y_p as *mut f32,
-                    in_f as i32, out_f as i32, m as i32,
+                    in_f as i32,
+                    out_f as i32,
+                    m as i32,
                     s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                     scale,
                 )
             };
-            if rc != 0 { return Err(format!("bw24_mmq_nvfp4 rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_nvfp4 rc={rc}").into());
+            }
         }
         Ok(y)
     }
@@ -327,31 +442,58 @@ impl Engine {
     /// int8 at tile-load and the activation stays q8_1 int8 — the accuracy-safe rung. Macro-scale
     /// folded into the write-back epilogue (bit-identical to a post-matmul scale_inplace).
     /// `rp` selects the weight layout (A6 split-plane vs GGUF blocks) — bit-identical output.
-    pub fn qmatvec_mmq_nvfp4_w4a8(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                  in_f: usize, out_f: usize, scale: f32, rp: bool)
-                                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq_nvfp4_w4a8(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+        rp: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, scale, rp)
     }
 
     /// Bare W4A8 MMQ launch (no macro-scale, GGUF layout) — for the kernel_check accuracy gate.
-    pub fn qmatvec_mmq_nvfp4_w4a8_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                      in_f: usize, out_f: usize)
-                                      -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq_nvfp4_w4a8_raw(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0, false)
     }
 
     /// Bare W4A8 MMQ launch on an A6 split-plane repacked weight — the rp-loader bit-identity gate
     /// compares this against `qmatvec_mmq_nvfp4_w4a8_raw` on the same weight.
-    pub fn qmatvec_mmq_nvfp4_w4a8_raw_rp(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                         in_f: usize, out_f: usize)
-                                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn qmatvec_mmq_nvfp4_w4a8_raw_rp(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.qmatvec_mmq_nvfp4_w4a8_scaled(bytes, x, m, in_f, out_f, 1.0, true)
     }
 
-    fn qmatvec_mmq_nvfp4_w4a8_scaled(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>, m: usize,
-                                     in_f: usize, out_f: usize, scale: f32, rp: bool)
-                                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        assert!(in_f % 64 == 0, "MMQ NVFP4 W4A8 requires in_f % 64 == 0, got {in_f}");
+    fn qmatvec_mmq_nvfp4_w4a8_scaled(
+        &self,
+        bytes: &CudaSlice<u8>,
+        x: &CudaSlice<f32>,
+        m: usize,
+        in_f: usize,
+        out_f: usize,
+        scale: f32,
+        rp: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(
+            in_f % 64 == 0,
+            "MMQ NVFP4 W4A8 requires in_f % 64 == 0, got {in_f}"
+        );
         let act_bytes = unsafe { bw24_mmq_nvfp4_w4a8_act_bytes(in_f as i32, m as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
@@ -371,7 +513,9 @@ impl Engine {
                         w_p as *const core::ffi::c_void,
                         x_p as *const f32,
                         y_p as *mut f32,
-                        in_f as i32, out_f as i32, m as i32,
+                        in_f as i32,
+                        out_f as i32,
+                        m as i32,
                         s_p as *mut core::ffi::c_void,
                         stream.cu_stream() as *mut core::ffi::c_void,
                         scale,
@@ -382,7 +526,9 @@ impl Engine {
                         w_p as *const core::ffi::c_void,
                         x_p as *const f32,
                         y_p as *mut f32,
-                        in_f as i32, out_f as i32, m as i32,
+                        in_f as i32,
+                        out_f as i32,
+                        m as i32,
                         s_p as *mut core::ffi::c_void,
                         stream.cu_stream() as *mut core::ffi::c_void,
                         scale,
@@ -390,15 +536,21 @@ impl Engine {
                     )
                 }
             };
-            if rc != 0 { return Err(format!("bw24_mmq_nvfp4_w4a8(f8f4={f8f4}) rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_nvfp4_w4a8(f8f4={f8f4}) rc={rc}").into());
+            }
         }
         Ok(y)
     }
 
     /// Quantize token-major f32 activation [n_tokens, in_f] to the block_q8_1_mmq (D4) scratch the
     /// IQ expert-MMA kernel consumes. Returns the scratch buffer (one per proj input per layer).
-    pub fn mmq_iq_quantize_act(&self, x: &CudaSlice<f32>, in_f: usize, n_tokens: usize)
-                               -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+    pub fn mmq_iq_quantize_act(
+        &self,
+        x: &CudaSlice<f32>,
+        in_f: usize,
+        n_tokens: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
         let act_bytes = unsafe { bw24_mmq_iq_experts_act_bytes(in_f as i32, n_tokens as i32) };
         let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         {
@@ -406,11 +558,17 @@ impl Engine {
             let (x_p, _gx) = x.device_ptr(stream);
             let (s_p, _gs) = scratch.device_ptr_mut(stream);
             let rc = unsafe {
-                bw24_mmq_iq_quantize_act(x_p as *const f32, s_p as *mut core::ffi::c_void,
-                                         in_f as i32, n_tokens as i32,
-                                         stream.cu_stream() as *mut core::ffi::c_void)
+                bw24_mmq_iq_quantize_act(
+                    x_p as *const f32,
+                    s_p as *mut core::ffi::c_void,
+                    in_f as i32,
+                    n_tokens as i32,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
             };
-            if rc != 0 { return Err(format!("bw24_mmq_iq_quantize_act rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_iq_quantize_act rc={rc}").into());
+            }
         }
         Ok(scratch)
     }
@@ -419,12 +577,24 @@ impl Engine {
     /// Same CSR inputs (table/ex_ids/ex_off/ex_pairs/pair_tok) + a pre-quantized q8_1_mmq activation
     /// scratch (from `mmq_iq_quantize_act` over n_tokens). y = [n_pairs, out_f] pair-major.
     #[allow(clippy::too_many_arguments)]
-    pub fn mmq_iq_experts(&self, table: &CudaSlice<u64>, proj: i32, n_expert: usize,
-                          ex_ids: &CudaSlice<i32>, ex_off: &CudaSlice<i32>, ex_pairs: &CudaSlice<i32>,
-                          pair_tok: &CudaSlice<i32>, act_scratch: &CudaSlice<u8>,
-                          in_f: usize, out_f: usize, n_active: usize, n_pairs: usize, n_tokens: usize,
-                          qtype: i32, row_bytes: usize)
-                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+    pub fn mmq_iq_experts(
+        &self,
+        table: &CudaSlice<u64>,
+        proj: i32,
+        n_expert: usize,
+        ex_ids: &CudaSlice<i32>,
+        ex_off: &CudaSlice<i32>,
+        ex_pairs: &CudaSlice<i32>,
+        pair_tok: &CudaSlice<i32>,
+        act_scratch: &CudaSlice<u8>,
+        in_f: usize,
+        out_f: usize,
+        n_active: usize,
+        n_pairs: usize,
+        n_tokens: usize,
+        qtype: i32,
+        row_bytes: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let mut y = self.alloc_uninit::<f32>(n_pairs * out_f)?;
         {
             let stream = &self.gpu.stream;
@@ -437,14 +607,27 @@ impl Engine {
             let (y_p, _g6) = y.device_ptr_mut(stream);
             let rc = unsafe {
                 bw24_mmq_iq_experts(
-                    tab_p as *const u64, proj, n_expert as i32,
-                    ei_p as *const i32, eo_p as *const i32, ep_p as *const i32, pt_p as *const i32,
-                    as_p as *const core::ffi::c_void, y_p as *mut f32,
-                    in_f as i32, out_f as i32, n_active as i32, n_tokens as i32, qtype, row_bytes as i64,
+                    tab_p as *const u64,
+                    proj,
+                    n_expert as i32,
+                    ei_p as *const i32,
+                    eo_p as *const i32,
+                    ep_p as *const i32,
+                    pt_p as *const i32,
+                    as_p as *const core::ffi::c_void,
+                    y_p as *mut f32,
+                    in_f as i32,
+                    out_f as i32,
+                    n_active as i32,
+                    n_tokens as i32,
+                    qtype,
+                    row_bytes as i64,
                     stream.cu_stream() as *mut core::ffi::c_void,
                 )
             };
-            if rc != 0 { return Err(format!("bw24_mmq_iq_experts rc={rc}").into()); }
+            if rc != 0 {
+                return Err(format!("bw24_mmq_iq_experts rc={rc}").into());
+            }
         }
         Ok(y)
     }

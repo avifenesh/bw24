@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: CPU-only artifact path safety tests
+        run: python3 tools/test_nvme_builder_safety.py
+
       - name: Install CUDA 13.1 (nvcc + headers only — compile needs no GPU)
         run: |
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
