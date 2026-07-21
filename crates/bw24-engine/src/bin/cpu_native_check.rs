@@ -394,6 +394,120 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if status != 0 || !smoke_output[0].is_finite() {
         return Err("native dot mishandled finite subnormal activations".into());
     }
+
+    // File-backed identity: the same multi-expert MoE token served through file descriptors
+    // (asynchronous pipelined reads on first touch, RAM cache hits on second) must match the
+    // in-memory-weights result bit for bit.
+    {
+        let n_experts = 4usize;
+        let mut blobs: Vec<Vec<u8>> = Vec::with_capacity(n_experts * 3);
+        for expert_index in 0..n_experts {
+            for projection_index in 0..3usize {
+                let mut row = gate_row.clone();
+                row[7] ^= (0x11 * (expert_index as u8 + 1)) ^ (0x40 >> projection_index);
+                blobs.push(row.repeat(256));
+            }
+        }
+        let mut file_bytes: Vec<u8> = Vec::new();
+        let mut offsets: Vec<u64> = Vec::with_capacity(blobs.len());
+        for blob in &blobs {
+            offsets.push(file_bytes.len() as u64);
+            file_bytes.extend_from_slice(blob);
+        }
+        let path = std::env::temp_dir().join(format!(
+            "bw24-cpu-file-identity-{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, &file_bytes)?;
+        let file = std::fs::File::open(&path)?;
+        std::fs::remove_file(&path)?;
+        let fd = {
+            use std::os::unix::io::AsRawFd;
+            file.as_raw_fd()
+        };
+        let projection = |weights: *const u8, fd: i32, offset: u64, scale: f32| Projection {
+            weights,
+            qtype: qtype(GgmlType::Q2_K),
+            in_features: 256,
+            out_features: 256,
+            row_bytes: gate_row.len(),
+            byte_len: gate_row.len() * 256,
+            file_fd: fd,
+            file_offset: offset,
+            scale,
+        };
+        let scales = [0.5f32, 0.25, 0.75];
+        let route_weights = [0.125f32, 0.375, -0.25, 0.5];
+        let build_experts = |file_backed: bool| -> Vec<Expert> {
+            (0..n_experts)
+                .map(|expert_index| {
+                    let projection_at = |projection_index: usize| {
+                        let blob_index = expert_index * 3 + projection_index;
+                        if file_backed {
+                            projection(
+                                std::ptr::null(),
+                                fd,
+                                offsets[blob_index],
+                                scales[projection_index],
+                            )
+                        } else {
+                            projection(
+                                blobs[blob_index].as_ptr(),
+                                -1,
+                                0,
+                                scales[projection_index],
+                            )
+                        }
+                    };
+                    Expert {
+                        gate: projection_at(0),
+                        up: projection_at(1),
+                        down: projection_at(2),
+                        route_weight: route_weights[expert_index],
+                    }
+                })
+                .collect()
+        };
+        let run = |experts: &[Expert]| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+            let mut output = vec![f32::NAN; 256];
+            let mut error = vec![0i8; 512];
+            let status = unsafe {
+                moe(
+                    experts.as_ptr(),
+                    experts.len() as i32,
+                    smoke_input.as_ptr(),
+                    output.as_mut_ptr(),
+                    8,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                return Err(format!("file-backed MoE call failed: {message}").into());
+            }
+            Ok(output)
+        };
+        let memory_output = run(&build_experts(false))?;
+        let file_experts = build_experts(true);
+        let cold_output = run(&file_experts)?;
+        let warm_output = run(&file_experts)?;
+        for (label, output) in [("cold", &cold_output), ("warm", &warm_output)] {
+            for (index, (actual, expected)) in
+                output.iter().zip(memory_output.iter()).enumerate()
+            {
+                if actual.to_bits() != expected.to_bits() {
+                    return Err(format!(
+                        "file-backed {label} MoE output {index} not bit-identical: \
+                         expected={expected} actual={actual}"
+                    )
+                    .into());
+                }
+            }
+        }
+        println!("file-backed pipelined-read MoE identity (cold + warm): PASS");
+    }
+
     println!("ABI v2 symbols, production MoE, and non-finite/subnormal checks: PASS");
 
     if std::env::var_os("BW24_CPU_NATIVE_BENCH").is_some() {
