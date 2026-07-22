@@ -1,0 +1,19 @@
+=== build Wed Jul 22 12:27:22 UTC 2026
+    Finished `release` profile [optimized] target(s) in 1m 49s
+=== kernel-check
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 0/262144 OK
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 0/409600 OK
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+ALL GREEN: kernels match CPU reference.
+=== 12B argmax + pp (sp ON)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+prefill 1736 tok in 0.2029s = 8554.7 tok/s (pp1736)
+prefill 1736 tok in 0.2042s = 8499.7 tok/s (pp1736)
+=== pp (sp OFF)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.940e0  MATCH
+prefill 1736 tok in 0.2078s = 8354.2 tok/s (pp1736)
+prefill 1736 tok in 0.2089s = 8309.9 tok/s (pp1736)
+=== SP DONE Wed Jul 22 12:30:08 UTC 2026

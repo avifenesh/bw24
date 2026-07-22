@@ -5722,19 +5722,51 @@ impl Engine {
         let f32_stage = *F32_STAGE.get_or_init(|| {
             std::env::var("BW24_FA512_STAGE").as_deref() == Ok("f32")
         });
+        // Single-pass arm (BW24_FA512_SP=0 reverts to the z=2 bf16 kernel): GEMM0 split-K across
+        // the 2 warps instead of recomputed per O-half CTA — the 2026-07-22 kernel-diff excess.
+        // Own numeric config (partial-sum order) — battery-gated.
+        static SP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let sp = !f32_stage
+            && *SP_ON.get_or_init(|| {
+                std::env::var("BW24_FA512_SP").map(|v| v != "0").unwrap_or(true)
+            });
         self.fa_prefill_hd512_arm(q, k, v, o, head_dim, n_head, n_head_kv, t, t_kv, scale,
-                                  causal, f32_stage)
+                                  causal, f32_stage, sp)
     }
 
-    /// hd512 FA prefill with the stage arm FORCED (`f32_stage`) — the kernel_check bit-identity
-    /// gate entry (`fa_prefill_hd512` picks the arm from BW24_FA512_STAGE).
+    /// hd512 FA prefill with the stage/sp arms FORCED — the kernel_check gate entry
+    /// (`fa_prefill_hd512` picks the arms from BW24_FA512_STAGE / BW24_FA512_SP).
     #[allow(clippy::too_many_arguments)]
     pub fn fa_prefill_hd512_arm(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                                 o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
                                 n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
-                                f32_stage: bool)
+                                f32_stage: bool, sp: bool)
                                 -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512, "fa_prefill_hd512 is hd512 only");
+        if sp && !f32_stage {
+            // Single-pass: 16 q-rows/CTA, 2 warps, grid (ceil(T/16), n_head, 1).
+            // smem: sQ[16][512] + sK[32][512] + sV[32][512] + sP[16][32] (bf16) + sS[16][32]+sL f32.
+            const SP_M: usize = 16; const BKS: usize = 32;
+            let f = self.func("fa_prefill_bf16_hd512_sp");
+            let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
+                       + 4 * (SP_M * BKS + SP_M)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
+                block_dim: (32, 2, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
+                                                t as i32, t_kv as i32, causal as i32);
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         const BLOCK_Q: usize = 32; const BK: usize = 32; const HALF: usize = 256;
         let f = self.func(if f32_stage { "fa_prefill_f32_hd512" } else { "fa_prefill_bf16_hd512" });
         // sQ[32][512] + sK[BK][512] + sV[BK][256] + sP[32][BK] (bf16) + sL[32] f32
