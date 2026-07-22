@@ -27,3 +27,17 @@ Conclusions carried forward:
    needs asymmetric partitioning (explicit work split), not shared worksharing loops.
 4. Freeze profiles pin residency by design: donor experiments must rewarm, never restore —
    this session's method note for every future HBM-budget arm.
+
+## Addendum — frac94 (2026-07-23, overnight)
+
+| arm | tok/s | frozen | decode-window counters |
+|---|---:|---|---|
+| frac94 rewarm | 4.56 | **5521 / 1804** (+236 / +85, no OOM) | — |
+| frac94 restore ×2 | 4.77, 4.71 | restored | experts 8809→8254 (−6.3%), compute 3.14→2.87 s (−8%), **io UNCHANGED 2.86→2.87 s** |
+
+Decisive counter-level finding: residency growth removes CPU experts that were RAM-cache hits,
+not NVMe misses — the hottest non-resident experts are exactly the cached ones, so the io wall
+does not move. The Phase-0 simulation's miss-byte prediction modeled admission wrongly on this
+axis. Residency donors are therefore a small compute-only lever (~+1–3%, inside run noise at
+N=2); `VRAM_FRAC` stays 0.90 by winners-only. The io wall (2.87 s/window) is now the binding
+constraint and yields only to prediction-guided prefetch or a step-change in HBM budget.

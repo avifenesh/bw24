@@ -1,0 +1,51 @@
+loaded Hy3 from bw24 repack dir (80 trunk layers; optional MTP skipped)
+chat-templated prompt:
+<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs.<｜hy_Assistant:opensource｜><think:opensource></think:opensource>
+prompt text: "Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs."
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded decode tokens before fixed residency
+[moe-cache] size-aware fixed slots: 5521 slots in 5 classes, 14.59 GB / 14.59 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[bw24] experimental CPU expert backend: /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/lib-shm.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=47.38 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[moe-cache] residency frozen: 5521 slots, 5521 resident blocks; 1804 complete experts, 45 one-projection fragments, 32 two-projection fragments (109 stranded blocks)
+[moe-cache] freeze profile saved: 5521 blocks -> /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile-frac94.txt
+post-freeze verify-prefill argmax=40129  decode argmax=40129  logit maxdiff=1.981e0  MATCH
+generated 32 tokens in 7.025s = 4.56 tok/s (ST greedy decode)
+tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438, 503, 279, 1244, 16678, 47739, 4452, 289, 32215, 47739, 4452, 107669, 9875, 413, 1970, 58138, 9042, 45164, 41116, 503, 280, 244, 1970, 28462, 26367]
+MoE cache DECODE-WINDOW: 5521 slots | hits=35910 misses=0 (hit-rate=100.0%) | staged 0.00 GB H2D (0.0 MB/token)
+spill worker DECODE-WINDOW: reads=0 bytes=0 waits=0 ring_full=0 fallbacks=0
+CPU experts DECODE-WINDOW: calls=2457 experts=8254 backend_wall=6.088s exposed_wait=5.954s RAM_hits=14187 RAM_misses=10575 RAM_fills=27.63 GB RAM_resident=21.47 GB phase_prepare=0.043s phase_io=2.917s phase_insert=0.011s phase_compute=3.112s
+CPU expert HBM fragments DECODE-WINDOW: resident_0=8021 resident_1=160 resident_2=73
+storage DECODE-WINDOW: 27.63 GB physical reads
+OUTPUT TEXT: "Below is a **concrete mental model** of how CPU‑side and GPU‑side parallelism interact with **NVMe spill latency** in a **large Mi"
+--- generated text ---
+Below is a **concrete mental model** of how CPU‑side and GPU‑side parallelism interact with **NVMe spill latency** in a **large Mi
+[spill-pread] reads=152944 bytes=404011155456 errors=0 short_reads=0 fallbacks=0 buffer_waits=126843 ring_full=432
+[bw24-cpu-cache] hits=104172 misses=83322 hit_rate=55.56% read_GB=218.290 resident_GB=21.473
+[bw24-cpu-profile] calls=16061 prepare=0.690843s io=24.120358s insert=0.088543s compute=31.245557s read_projections=83322 read_GB=218.290 stage_entry=2.349647s stage_cached=22.759146s stage_missing=3.575759s stage_accum=0.798912s
+	Command being timed: "taskset --cpu-list 0-7 env GOMP_CPU_AFFINITY=0-7 BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile-frac94.txt BW24_NGEN=32 BW24_CHAT=1 BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.90 BW24_MOE_HARD_VRAM_FRAC=0.90 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/lib-shm.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=20 BW24_CPU_EXPERT_RESERVE_GB=4 BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv BW24_CPU_EXPERT_FREEZE_CACHE=1 BW24_CPU_EXPERT_FREEZE_WARMUP_TOKENS=128 BW24_CPU_EXPERT_FREEZE_PROFILE_ADMIT=1 BW24_MOE_VRAM_FRAC=0.94 BW24_MOE_HARD_VRAM_FRAC=0.94 /home/avifenesh/projects/bw24/target/release/run-gen /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 281.54
+	System time (seconds): 112.48
+	Percent of CPU this job got: 83%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 7:49.18
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 38482828
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 10044876
+	Minor (reclaiming a frame) page faults: 15016483
+	Voluntary context switches: 12308285
+	Involuntary context switches: 27618
+	Swaps: 0
+	File system inputs: 1330848688
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
