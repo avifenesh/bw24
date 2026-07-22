@@ -414,13 +414,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             offsets.push(file_bytes.len() as u64);
             file_bytes.extend_from_slice(blob);
         }
-        let path = std::env::temp_dir().join(format!(
-            "bw24-cpu-file-identity-{}.bin",
-            std::process::id()
-        ));
-        std::fs::write(&path, &file_bytes)?;
+        // BW24_CPU_FILE_IDENTITY_KEEP names a persistent fixture path (written only if
+        // absent, never removed) so shm-cache warm restarts can be exercised across
+        // processes; default remains an unlinked per-process temp file.
+        let keep_path = std::env::var_os("BW24_CPU_FILE_IDENTITY_KEEP");
+        let path = match &keep_path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => std::env::temp_dir().join(format!(
+                "bw24-cpu-file-identity-{}.bin",
+                std::process::id()
+            )),
+        };
+        if keep_path.is_none() || !path.exists() {
+            std::fs::write(&path, &file_bytes)?;
+        }
         let file = std::fs::File::open(&path)?;
-        std::fs::remove_file(&path)?;
+        if keep_path.is_none() {
+            std::fs::remove_file(&path)?;
+        }
         let fd = {
             use std::os::unix::io::AsRawFd;
             file.as_raw_fd()

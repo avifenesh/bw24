@@ -6,6 +6,7 @@
 #include <omp.h>
 #include <immintrin.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -107,6 +108,203 @@ QuantSpec quant_spec(std::int32_t qtype) {
     }
 }
 
+// Optional persistent cache arena on tmpfs (BW24_CPU_EXPERT_CACHE_SHM=1): weight blocks live
+// in a named shm segment and the cache index persists across process restarts, so a
+// restarting server starts with a warm cache instead of re-reading tens of GB from NVMe.
+// Safety: an exclusive flock serializes ownership (a second concurrent process silently gets
+// a private in-memory cache); the header state flips to dirty at open and clean only after a
+// successful index write, so a crash yields a cold-but-correct start; and cache keys pin
+// device/inode/size/ctime, so entries from a changed source tree can never match.
+class ShmArena {
+public:
+    struct PersistedEntry {
+        std::uint64_t device = 0;
+        std::uint64_t inode = 0;
+        std::uint64_t file_size = 0;
+        std::int64_t ctime_seconds = 0;
+        std::int64_t ctime_nanoseconds = 0;
+        std::uint64_t file_offset = 0;
+        std::uint64_t byte_len = 0;
+        std::uint64_t shm_offset = 0;
+        std::uint64_t pool_bytes = 0;
+    };
+
+    static ShmArena & instance() {
+        static ShmArena * arena = new ShmArena();  // leaked: see RawBlockPool::instance
+        return *arena;
+    }
+
+    bool enabled() const { return base_ != nullptr; }
+    bool reopened_clean() const { return reopened_clean_; }
+
+    bool contains(const void * pointer) const {
+        const auto * p = static_cast<const std::uint8_t *>(pointer);
+        return base_ != nullptr && p >= data_begin() && p < base_ + segment_bytes_;
+    }
+
+    // Allocation state is process-local; occupied ranges are rebuilt from the persisted
+    // index at reopen (holes become the freelist). Called with no concurrent access at
+    // startup, then only under RawBlockPool's mutex.
+    void * acquire(std::size_t pool_bytes, std::size_t alignment) {
+        for (auto it = holes_.begin(); it != holes_.end(); ++it) {
+            const std::size_t aligned = align_up(it->first, alignment);
+            if (aligned + pool_bytes <= it->first + it->second) {
+                const std::size_t hole_off = it->first;
+                const std::size_t hole_len = it->second;
+                holes_.erase(it);
+                if (aligned > hole_off) holes_.emplace_back(hole_off, aligned - hole_off);
+                if (aligned + pool_bytes < hole_off + hole_len) {
+                    holes_.emplace_back(
+                        aligned + pool_bytes, hole_off + hole_len - aligned - pool_bytes);
+                }
+                return base_ + aligned;
+            }
+        }
+        const std::size_t aligned = align_up(bump_, alignment);
+        if (aligned + pool_bytes > segment_bytes_) return nullptr;  // arena full
+        bump_ = aligned + pool_bytes;
+        return base_ + aligned;
+    }
+
+    void release(void * pointer, std::size_t pool_bytes) {
+        holes_.emplace_back(
+            static_cast<std::size_t>(static_cast<std::uint8_t *>(pointer) - base_),
+            pool_bytes);
+    }
+
+    std::uint64_t offset_of(const void * pointer) const {
+        return static_cast<std::uint64_t>(
+            static_cast<const std::uint8_t *>(pointer) - base_);
+    }
+
+    std::uint8_t * pointer_at(std::uint64_t offset) const { return base_ + offset; }
+
+    // Marks a range occupied during index reload (before any acquire).
+    void reserve_range(std::uint64_t offset, std::uint64_t pool_bytes) {
+        occupied_.emplace_back(offset, pool_bytes);
+    }
+
+    void finish_reload() {
+        std::sort(occupied_.begin(), occupied_.end());
+        std::size_t cursor = data_offset_;
+        for (const auto & [offset, length] : occupied_) {
+            if (offset > cursor) holes_.emplace_back(cursor, offset - cursor);
+            cursor = std::max(cursor, static_cast<std::size_t>(offset + length));
+        }
+        bump_ = cursor;
+        occupied_.clear();
+    }
+
+    std::size_t max_entries() const { return kIndexEntries; }
+    PersistedEntry * index_table() const {
+        return reinterpret_cast<PersistedEntry *>(base_ + 4096);
+    }
+    std::uint64_t * entry_count_slot() const {
+        return &header()->entry_count;
+    }
+
+    void mark_dirty() { header()->state = 0; msync_header(); }
+    void mark_clean(std::uint64_t entries) {
+        header()->entry_count = entries;
+        header()->state = 1;
+        msync_header();
+    }
+
+private:
+    struct Header {
+        std::uint64_t magic;
+        std::uint32_t version;
+        std::uint32_t state;  // 0 = dirty, 1 = clean index
+        std::uint64_t segment_bytes;
+        std::uint64_t entry_count;
+    };
+
+    static constexpr std::uint64_t kMagic = 0x62773234736d6863ull;  // "bw24shmc"
+    static constexpr std::uint32_t kVersion = 1;
+    static constexpr std::size_t kIndexEntries = 262144;  // 72 B each ≈ 18 MiB
+
+    ShmArena() {
+        const char * flag = std::getenv("BW24_CPU_EXPERT_CACHE_SHM");
+        if (flag == nullptr || std::strcmp(flag, "1") != 0) return;
+        const char * name_raw = std::getenv("BW24_CPU_EXPERT_CACHE_SHM_NAME");
+        const std::string name = name_raw != nullptr && *name_raw != '\0'
+            ? name_raw : "/bw24-expert-cache-v1";
+        const double budget_gib = [] {
+            const char * raw = std::getenv("BW24_CPU_EXPERT_CACHE_GB");
+            if (raw == nullptr || *raw == '\0') return 16.0;
+            return std::strtod(raw, nullptr);
+        }();
+        segment_bytes_ = static_cast<std::size_t>(budget_gib * 1.06 * 1024.0 * 1024.0 * 1024.0)
+            + (std::size_t(64) << 20);
+        data_offset_ = align_up(4096 + kIndexEntries * sizeof(PersistedEntry), std::size_t(2) << 20);
+
+        fd_ = shm_open(name.c_str(), O_RDWR | O_CREAT, 0600);
+        if (fd_ < 0) {
+            std::fprintf(stderr, "[bw24-cpu] shm cache disabled: shm_open(%s): %s\n",
+                name.c_str(), std::strerror(errno));
+            return;
+        }
+        if (flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+            std::fprintf(stderr,
+                "[bw24-cpu] shm cache busy (another process holds %s); using private cache\n",
+                name.c_str());
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        struct stat st {};
+        const bool fresh = fstat(fd_, &st) != 0
+            || static_cast<std::size_t>(st.st_size) != segment_bytes_;
+        if (fresh && ftruncate(fd_, static_cast<off_t>(segment_bytes_)) != 0) {
+            std::fprintf(stderr, "[bw24-cpu] shm cache disabled: ftruncate: %s\n",
+                std::strerror(errno));
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        void * mapping = mmap(nullptr, segment_bytes_, PROT_READ | PROT_WRITE,
+            MAP_SHARED, fd_, 0);
+        if (mapping == MAP_FAILED) {
+            std::fprintf(stderr, "[bw24-cpu] shm cache disabled: mmap: %s\n",
+                std::strerror(errno));
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+        base_ = static_cast<std::uint8_t *>(mapping);
+        madvise(base_, segment_bytes_, MADV_HUGEPAGE);  // honored only if shmem THP allows
+        auto * head = header();
+        reopened_clean_ = !fresh && head->magic == kMagic && head->version == kVersion
+            && head->state == 1 && head->segment_bytes == segment_bytes_;
+        if (!reopened_clean_) {
+            head->magic = kMagic;
+            head->version = kVersion;
+            head->segment_bytes = segment_bytes_;
+            head->entry_count = 0;
+        }
+        bump_ = data_offset_;
+    }
+
+    Header * header() const { return reinterpret_cast<Header *>(base_); }
+
+    void msync_header() { msync(base_, 4096, MS_SYNC); }
+
+    std::uint8_t * data_begin() const { return base_ + data_offset_; }
+
+    static std::size_t align_up(std::size_t value, std::size_t alignment) {
+        return (value + alignment - 1) & ~(alignment - 1);
+    }
+
+    int fd_ = -1;
+    std::uint8_t * base_ = nullptr;
+    std::size_t segment_bytes_ = 0;
+    std::size_t data_offset_ = 0;
+    std::size_t bump_ = 0;
+    bool reopened_clean_ = false;
+    std::vector<std::pair<std::size_t, std::size_t>> holes_;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> occupied_;
+};
+
 // Recycles page-aligned weight-buffer blocks. Expert misses allocate 1–4 MB per projection at
 // ~0.9 GB/token; glibc returns freed chunks to the kernel (mmap for large blocks, heap trim at
 // 128 KB), so every miss re-faults ~7.8M first-touch pages per 32 decoded tokens and the
@@ -137,6 +335,13 @@ public:
         // window. khugepaged collapses these during warmup (THP mode "madvise" on this rig).
         const std::size_t alignment = pool_bytes >= (std::size_t(2) << 20)
             ? (std::size_t(2) << 20) : 4096;
+        auto & arena = ShmArena::instance();
+        if (arena.enabled()) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            void * block = arena.acquire(pool_bytes, alignment);
+            if (block != nullptr) return block;
+            // Arena full: fall through to a private block (still correct, just not persisted).
+        }
         void * allocation = nullptr;
         const int status = posix_memalign(&allocation, alignment, pool_bytes);
         if (status != 0) {
@@ -152,13 +357,16 @@ public:
     void release(void * block, std::size_t pool_bytes) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (pooled_bytes_ + pool_bytes <= kMaxPooledBytes) {
+            // Arena blocks always recycle through the freelist (never free()d — the memory
+            // belongs to the shm segment); the cap only bounds private blocks.
+            const bool arena_block = ShmArena::instance().contains(block);
+            if (arena_block || pooled_bytes_ + pool_bytes <= kMaxPooledBytes) {
                 try {
                     free_[pool_bytes].push_back(block);
                     pooled_bytes_ += pool_bytes;
                     return;
                 } catch (...) {
-                    // fall through to free()
+                    if (arena_block) return;  // leak into the segment rather than free()
                 }
             }
         }
@@ -1249,6 +1457,48 @@ public:
         std::fprintf(stderr, "[bw24-cpu] normal-RAM expert cache: %.2f GiB policy=lru io=%s\n",
             static_cast<double>(budget_) / (1024.0 * 1024.0 * 1024.0),
             direct_io_enabled() ? "direct" : "buffered");
+        auto & arena = ShmArena::instance();
+        if (!arena.enabled()) return;
+        std::uint64_t reloaded = 0;
+        if (arena.reopened_clean()) {
+            const std::uint64_t count = std::min<std::uint64_t>(
+                *arena.entry_count_slot(), arena.max_entries());
+            const auto * table = arena.index_table();
+            for (std::uint64_t i = 0; i < count && used_ <= budget_; ++i) {
+                const auto & row = table[i];
+                if (row.byte_len == 0 || row.pool_bytes < row.byte_len) continue;
+                CacheKey key {
+                    FileKey {
+                        InodeKey { row.device, row.inode },
+                        row.file_size,
+                        row.ctime_seconds,
+                        row.ctime_nanoseconds,
+                    },
+                    row.file_offset,
+                    row.byte_len,
+                };
+                if (entries_.find(key) != entries_.end()) continue;
+                auto bytes = std::make_shared<AlignedBytes>();
+                bytes->storage = std::unique_ptr<void, AlignedBytes::Free>(
+                    arena.pointer_at(row.shm_offset),
+                    AlignedBytes::Free(static_cast<std::size_t>(row.pool_bytes)));
+                bytes->capacity = row.byte_len;
+                bytes->alignment = 4096;
+                bytes->data = bytes->storage.get();
+                arena.reserve_range(row.shm_offset, row.pool_bytes);
+                lru_.push_back(key);
+                entries_.emplace(key, Entry { std::move(bytes), std::prev(lru_.end()) });
+                used_ += key.len;
+                ++reloaded;
+            }
+        }
+        arena.finish_reload();
+        arena.mark_dirty();
+        std::fprintf(stderr,
+            "[bw24-cpu] shm cache: %s, warm entries=%llu (%.3f GB)\n",
+            arena.reopened_clean() ? "reopened clean" : "cold start",
+            static_cast<unsigned long long>(reloaded),
+            static_cast<double>(used_) / 1.0e9);
     }
 
     ~WeightCache() {
@@ -1265,6 +1515,33 @@ public:
             hit_rate,
             static_cast<double>(read_bytes_) / 1.0e9,
             static_cast<double>(used_) / 1.0e9);
+        auto & arena = ShmArena::instance();
+        if (!arena.enabled()) return;
+        // Persist the index in LRU order (oldest first) so a reload preserves recency; only
+        // entries whose blocks live inside the segment are recorded.
+        auto * table = arena.index_table();
+        std::uint64_t persisted = 0;
+        for (const auto & key : lru_) {
+            if (persisted >= arena.max_entries()) break;
+            const auto found = entries_.find(key);
+            if (found == entries_.end()) continue;
+            const auto & bytes = found->second.bytes;
+            if (!arena.contains(bytes->data)) continue;
+            table[persisted++] = ShmArena::PersistedEntry {
+                key.file.inode.device,
+                key.file.inode.inode,
+                key.file.size,
+                key.file.ctime_seconds,
+                key.file.ctime_nanoseconds,
+                key.offset,
+                key.len,
+                arena.offset_of(bytes->data),
+                bytes->storage.get_deleter().pool_bytes,
+            };
+        }
+        arena.mark_clean(persisted);
+        std::fprintf(stderr, "[bw24-cpu] shm cache: persisted %llu entries\n",
+            static_cast<unsigned long long>(persisted));
     }
 
     std::shared_ptr<AlignedBytes> find(const CacheKey & key) {
