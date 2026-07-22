@@ -1,0 +1,27 @@
+=== 31B argmax + pp baseline
+prefill argmax=623  decode argmax=623  logit maxdiff=1.218e0  MATCH
+prefill 1736 tok in 0.7025s = 2471.3 tok/s (pp1736)
+=== nsys 31B prime anatomy
+     68.7       1481589349       1230  1204544.2   791961.0    266909   2057581     668382.3  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      8.5        182901170         30  6096705.7  6096793.0   6079401   6114825      10759.0  fa_prefill_bf16_hd512_sp                                                                            
+      6.2        133548518        420   317972.7   204270.0     52895    527835     188639.4  q4_0_split_rp_build                                                                                 
+      4.0         85724543        150   571497.0   572443.0    555131    586779       7020.4  fa_prefill_w_bf16_p1                                                                                
+      3.2         69536750        180   386315.3   386428.5    380637    394301       2462.0  gelu_tanh_mul_q8_1                                                                                  
+      1.8         38892328        720    54017.1    19504.0     16095    150175      56555.0  quantize_mmq_q8_1_d4_q4_0(const float *, void *, long, long, long, int)                             
+      1.5         31800806        180   176671.1   169486.5    165054    219486      17121.9  rms_norm_qkv_w4_f32                                                                                 
+      1.4         29842937        543    54959.4    53920.0     42912     63967       6075.7  rms_norm_f32                                                                                        
+      1.3         27308238        540    50570.8    37183.5     18080    144511      28633.3  f32_to_bf16_flat                                                                                    
+      1.2         26676370        180   148202.1   138015.0    132286    206495      24715.0  rope_neox2_f32                                                                                      
+      0.8         17307879        180    96154.9    96047.0     92767    101663       1851.9  add_rms_norm_f32                                                                                    
+      0.6         13972992        183    76355.1    77567.0      2080     78976       9625.9  quantize_q8_1                                                                                       
+=== G31ANAT DONE Wed Jul 22 21:12:45 UTC 2026
+-- Build files have been written to: /workspace/llama.cpp/build
+[380/380] Linking CXX executable bin/llama-bench
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       2657.58 ± 0.61 |
+     67.4        869597939       2460   353495.1   223262.5     61056    584540     202101.3  void mul_mat_q<(ggml_type)2, (int)128, (bool)0>(const char *, const int *, const int *, const int *…
+     10.5        135810257        820   165622.3   111071.5     32896    272638      90604.8  void mul_mat_q<(ggml_type)2, (int)112, (bool)0>(const char *, const int *, const int *, const int *…
+      4.1         53024988        400   132562.5   119311.0     86431    209918      45563.9  void flash_attn_ext_f16<(int)256, (int)256, (int)32, (int)2, (bool)0, (bool)0>(const char *, const …
+      2.4         30857098        480    64285.6    76544.0     26815     78016      21556.8  void unary_gated_op_kernel<&op_gelu, float>(const T2 *, const T2 *, T2 *, long, long, long, long)   
+      2.2         28964009         80   362050.1   331198.0    220735    568412     133248.1  void flash_attn_ext_f16<(int)512, (int)512, (int)8, (int)8, (bool)0, (bool)0>(const char *, const c…
+      2.2         27795618       3280     8474.3     6240.0      3424     20576       4964.5  void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)1>(const float *, const int *, void *, long, long, long,…
+=== L31D DONE Wed Jul 22 21:30:50 UTC 2026
