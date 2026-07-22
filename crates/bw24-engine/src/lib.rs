@@ -5671,6 +5671,35 @@ impl Engine {
                             -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         debug_assert_eq!(head_dim, 256, "fa_prefill_w is stamped hd256 only");
+        // MQA head-grouping (BW24_FAW_G4=0 reverts): 4 heads/CTA share the staged K/V —
+        // per-(head,row) FP chain identical to the per-head stamp -> bit-identical (gated).
+        static G4_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let g4 = !floor && !f32_stage && n_head_kv == 1 && n_head % 4 == 0
+            && *G4_ON.get_or_init(|| {
+                std::env::var("BW24_FAW_G4").map(|v| v != "0").unwrap_or(true)
+            });
+        if g4 {
+            const SP_M: usize = 16;
+            let f = self.func("fa_prefill_w_bf16_g4");
+            let shmem = (2 * (2 * BK * head_dim + 4 * SP_M * head_dim + 4 * SP_M * BK)
+                       + 4 * (4 * SP_M)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32).div_ceil(SP_M as u32), (n_head / 4) as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
+                n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         let f = self.func(if floor { "fa_prefill_w_f32" }
                           else if f32_stage { "fa_prefill_w_f32_pp" }
                           else { "fa_prefill_w_bf16_pp" });
