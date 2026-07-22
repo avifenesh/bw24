@@ -1,0 +1,16 @@
+    Finished `release` profile [optimized] target(s) in 1m 53s
+=== gates (swizzled P1 default)
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: bit-mismatch 0/65536 OK
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: bit-mismatch 0/102400 OK
+ALL GREEN: kernels match CPU reference.
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+=== SWZ A/B x3 (swz-p1 vs o2; p1-pre-swz baseline was 5926-5931)
+prefill 1736 tok in 0.2827s = 6140.2 tok/s (pp1736)
+prefill 1736 tok in 0.2981s = 5823.5 tok/s (pp1736)
+prefill 1736 tok in 0.2826s = 6142.1 tok/s (pp1736)
+prefill 1736 tok in 0.2976s = 5833.3 tok/s (pp1736)
+prefill 1736 tok in 0.2830s = 6134.7 tok/s (pp1736)
+prefill 1736 tok in 0.2975s = 5835.4 tok/s (pp1736)
+=== SWZ DONE Wed Jul 22 19:59:23 UTC 2026

@@ -103,6 +103,30 @@ static __device__ __forceinline__ void ld_A(ATile& t, const __nv_bfloat16* xs0, 
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
         : "=r"(xi[0]),"=r"(xi[1]),"=r"(xi[2]),"=r"(xi[3]) : "r"(addr));
 }
+// Swizzled ldmatrix variants (P1 swizzle, engine-study mech 4): 512B smem rows put every
+// ldmatrix lane in one bank column (multi-way conflicts); stores XOR the 16B-chunk index with
+// (row&7), these loads apply the same XOR — pure address permutation, bit-identical data.
+static __device__ __forceinline__ void ld_A_sw(ATile& t, const __nv_bfloat16* smem_base,
+        int row0, int chunk0, int row_chunks){
+    int* xi = (int*)t.x;
+    const int r = row0 + ((int)threadIdx.x % 16);
+    const int c = chunk0 + ((int)threadIdx.x / 16);
+    const uint32_t* xs = (const uint32_t*)smem_base + (size_t)r*row_chunks*4 + (size_t)(c ^ (r & 7))*4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
+        : "=r"(xi[0]),"=r"(xi[1]),"=r"(xi[2]),"=r"(xi[3]) : "r"(addr));
+}
+static __device__ __forceinline__ void ld_A_trans_sw(ATile& t, const __nv_bfloat16* smem_base,
+        int row0, int chunk0, int row_chunks){
+    int* xi = (int*)t.x;
+    const int r = row0 + ((int)threadIdx.x % 16);
+    const int c = chunk0 + ((int)threadIdx.x / 16);
+    const uint32_t* xs = (const uint32_t*)smem_base + (size_t)r*row_chunks*4 + (size_t)(c ^ (r & 7))*4;
+    uint32_t addr = (uint32_t)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0,%1,%2,%3}, [%4];"
+        : "=r"(xi[0]),"=r"(xi[2]),"=r"(xi[1]),"=r"(xi[3]) : "r"(addr));
+}
+
 // load_ldmatrix_trans tile<16,8> x4.trans (mma.cuh:884-894). OUTPUT reorder x0,x2,x1,x3.
 // Same 32-bit .shared address as ld_A (FIX C1/C3, proven in mma_validate.cu pv_test).
 static __device__ __forceinline__ void ld_A_trans(ATile& t, const __nv_bfloat16* xs0, int stride_pairs){
@@ -1266,7 +1290,22 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
         const int q_pos0w = (T_kv - T) + qrow_base;
 
         ATile Qf[HD / K_STEP];
-        load_q_frags_bf16<HD>(Qf, Q, sQstage, qrow_base, nqw, head, n_head, head_dim, lane);
+        {
+            // swizzled transient Q stage (own store+load pair; K later overwrites with its own)
+            constexpr int QCH = HD / 8;
+            const int4 z4 = make_int4(0,0,0,0);
+            for (int i = lane; i < M_ROWS*QCH; i += WARP_SZ) {
+                int r = i / QCH, dc = i % QCH;
+                ((int4*)sQstage)[r*QCH + (dc ^ (r & 7))] = (r < nqw)
+                    ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head) * head_dim))[dc]
+                    : z4;
+            }
+            __syncwarp();
+            #pragma unroll
+            for (int kt = 0; kt < HD / K_STEP; ++kt)
+                ld_A_sw(Qf[kt], sQstage, 0, kt*2, QCH);
+            __syncwarp();
+        }
         __syncthreads();
 
         CTile O_acc[O_NBLK];
@@ -1291,14 +1330,14 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
             for (int i = bt; i < BKT*RCH; i += N_WARPS*WARP_SZ) {
                 int kk = i / RCH, dc = i % RCH;
                 const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * head_dim;
-                fa_cp_async_16((int4*)dst + i, (const int4*)(src + rowo) + dc);
+                fa_cp_async_16((int4*)dst + kk*RCH + (dc ^ (kk & 7)), (const int4*)(src + rowo) + dc);
             }
         };
         auto sync_rows = [&](__nv_bfloat16* dst, const __nv_bfloat16* src, int k0p, int nkp) {
             for (int i = bt; i < BKT*RCH; i += N_WARPS*WARP_SZ) {
                 int kk = i / RCH, dc = i % RCH;
                 const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * head_dim;
-                ((int4*)dst)[i] = (kk < nkp) ? ((const int4*)(src + rowo))[dc] : zero4;
+                ((int4*)dst)[kk*RCH + (dc ^ (kk & 7))] = (kk < nkp) ? ((const int4*)(src + rowo))[dc] : zero4;
             }
         };
         bool k_async = (k0_first < T_kv) && !(causal_i && k0_first > q_pos_max)
@@ -1328,7 +1367,7 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
                 #pragma unroll
                 for (int kt = 0; kt < HD / K_STEP; ++kt) {
                     ATile Kt;
-                    ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                    ld_A_sw(Kt, sK, kg, kt*2, HEAD_DIM/8);
                     BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
                     BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
                     mma_bf16(C0, Qf[kt], Blo);
@@ -1432,7 +1471,7 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
                 for (int kk = 0; kk < BKT; kk += K_STEP) {
                     ATile A; ATile Bt;
                     ld_A(A, sPw + kk, BKT/2);
-                    ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                    ld_A_trans_sw(Bt, sV, kk, d0/8, HEAD_DIM/8);
                     BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                     BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
                     mma_bf16(Clo, A, Blo);
