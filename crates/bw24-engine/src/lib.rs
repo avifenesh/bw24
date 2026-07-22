@@ -5671,6 +5671,35 @@ impl Engine {
                             -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         debug_assert_eq!(head_dim, 256, "fa_prefill_w is stamped hd256 only");
+        // P1 (2026-07-22 engine study): per-head Br=64 stamp with the FA2 schedule (V-copy
+        // over GEMM0, next-K over softmax+GEMM1) + boundary/interior mask split. FP order
+        // preserved -> bit-identical (gated). BW24_FAW_P1=0 reverts to the g4/o2 arms.
+        static P1_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let p1 = !floor && !f32_stage
+            && *P1_ON.get_or_init(|| {
+                std::env::var("BW24_FAW_P1").map(|v| v != "0").unwrap_or(true)
+            });
+        if p1 {
+            let f = self.func("fa_prefill_w_bf16_p1");
+            let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
+                n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         // MQA head-grouping (BW24_FAW_G4=0 reverts): 4 heads/CTA share the staged K/V —
         // per-(head,row) FP chain identical to the per-head stamp -> bit-identical (gated).
         static G4_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

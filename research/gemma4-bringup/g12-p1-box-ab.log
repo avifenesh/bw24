@@ -1,0 +1,16 @@
+    Finished `release` profile [optimized] target(s) in 1m 51s
+=== kernel-check (P1 default in fa_w gate)
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: bit-mismatch 0/65536 OK
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: bit-mismatch 0/102400 OK
+ALL GREEN: kernels match CPU reference.
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+=== P1 A/B x3 (P1 vs o2)
+prefill 1736 tok in 0.2930s = 5924.2 tok/s (pp1736)
+prefill 1736 tok in 0.2977s = 5830.6 tok/s (pp1736)
+prefill 1736 tok in 0.2928s = 5928.1 tok/s (pp1736)
+prefill 1736 tok in 0.2979s = 5826.9 tok/s (pp1736)
+prefill 1736 tok in 0.2929s = 5926.4 tok/s (pp1736)
+prefill 1736 tok in 0.2975s = 5834.8 tok/s (pp1736)
+=== P1 DONE Wed Jul 22 19:32:21 UTC 2026
