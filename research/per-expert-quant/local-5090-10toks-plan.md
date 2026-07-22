@@ -115,13 +115,14 @@ by direct measurement). Serial phases each get the fabric to themselves. The win
 - **THP arena (CRIU trick: pre-created, never-unmapped, hugepage-backed mappings)** — pool
   blocks 2 MB-aligned + `MADV_HUGEPAGE`; compute streams the resident set through thousands
   instead of millions of TLB entries. Built; e2e pair queued.
-- **Persistent warm cache (Valkey trick: the store outlives the client)** — move the expert
-  cache into a `memfd` segment with a persisted index (device/inode/offset/len keys + block
-  offsets); a restarting process `SCM_RIGHTS`-receives or re-opens the memfd and starts with
-  a warm 20 GiB cache: no refill io, no 128-token warmup churn. Design sketch:
-  `memfd_create` + `ftruncate(cache_bytes)`, block allocator inside the segment, index as a
-  flat table in the segment header, generation-pinned like the mirror map (fail closed on
-  source-tree mismatch). Restart hit rate goes from 0% to steady-state instantly.
+- **Persistent warm cache — SHIPPED opt-in (`BW24_CPU_EXPERT_CACHE_SHM=1`, ec3cf22)**:
+  named tmpfs segment + persisted LRU-ordered index, flock-serialized, crash→cold-correct,
+  generation-pinned keys. Verified at scale (17.1 GB / 6,701 entries reopened warm, zero
+  refill for the retained set). Measured caveat: decode windows are freeze-protocol-identical
+  and the warmup flood evicts most of the warm head (only 3.3 GB whole-run io saved), so the
+  wall-clock payoff needs the NEXT increment — persist the freeze/residency profile with the
+  index and SKIP the 128-token warmup on clean warm reopen. Startup wall is dominated by
+  GPU-side HBM staging (~412 GB spill reads), its own future lane.
 - **io_uring read backend (Valkey 8's io model)** — registered buffers (the pool registers
   once), SQPOLL on an E-core, zero-syscall submissions; replaces the 8-thread pread army.
   Already the sanctioned next storage comparison in the lane rules.

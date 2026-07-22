@@ -72,6 +72,20 @@ Decode-window compute: control 3.0–3.2 s → pool 2.63–2.99 s → THP 2.76�
 io volume; argmax MATCH on every run. Net **+7% e2e** over the same-day control band and
 +4.8% over the 2026-07-21 4.60 receipt, from CPU-side memory-system work only.
 
+## Addendum 2 — persistent shm cache pair (`warm-cold.log` / `warm-warm.log`)
+
+`BW24_CPU_EXPERT_CACHE_SHM=1` cold→warm restart pair on the full model: the warm process
+reopened 6,701 entries (17.149 GB) with zero refill reads for the reloaded set, argmax MATCH
+both runs. Honest read: under the freeze protocol the decode windows are state-identical by
+construction (same frozen residency and cache: hits/misses/fills equal), so the 4.66 vs 4.91
+tok/s delta is run variance, not a claimable win; and whole-run NVMe reads fell only 3.3 GB
+of 227.9 GB because the 128-token warmup flood streams far past the cache and evicts most of
+the warm head before it pays. The feature's value is the restart PROPERTY (instant warm
+cache, zero refill for the retained set) — converting it into wall-clock requires the next
+increment: persist the freeze/residency profile alongside the index and skip the warmup
+phase entirely on a clean warm reopen. Startup wall (~7:45) is dominated by GPU-side HBM
+staging (~412 GB spill-worker reads), a separate lever.
+
 Stage-split instrumentation on the pipelined path localized its inflation inside the
 worksharing compute loops of both cached and missing subsets (entry/wait/accumulation
 innocent), with the serial path fast under the identical region structure — consistent with
