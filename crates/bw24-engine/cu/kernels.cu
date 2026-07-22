@@ -1,5 +1,6 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -815,6 +816,47 @@ extern "C" __global__ void rms_norm_qkv_w4_f32(const float* __restrict__ q, cons
     }
 }
 
+extern "C" __global__ void rms_norm_qkv_w4b_f32(const float* __restrict__ q, const float* __restrict__ k,
+                                               const float* __restrict__ v,
+                                               const float* __restrict__ wq, const float* __restrict__ wk,
+                                               const float* __restrict__ wv,
+                                               float* __restrict__ dq, float* __restrict__ dk,
+                                               float* __restrict__ dv,
+                                               __nv_bfloat16* __restrict__ dvb,
+                                               int ncols, int rq, int rk, int rv, float eps) {
+    const int row  = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= rq + rk + rv) return;
+    const float* xr; const float* w; float* dr;
+    if (row < rq)           { xr = q + (size_t)row * ncols;              w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { int r = row - rq;      xr = k + (size_t)r * ncols; w = wk; dr = dk + (size_t)r * ncols; }
+    else                    { int r = row - rq - rk; xr = v + (size_t)r * ncols; w = wv; dr = dv + (size_t)r * ncols; }
+    const int nc4 = ncols >> 2;
+    const float4* x4 = (const float4*)xr;
+    float sum = 0.0f;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i];
+        sum += xv.x * xv.x + xv.y * xv.y + xv.z * xv.z + xv.w * xv.w;
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    const float scale = rsqrtf(sum / ncols + eps);
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    // v rows also emit bf16 (the FA V operand; q/k get theirs post-rope).
+    __nv_bfloat16* db = (row >= rq + rk) ? dvb + (size_t)(row - rq - rk) * ncols : nullptr;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i]; float4 wv4 = w4[i];
+        float4 ov;
+        ov.x = xv.x * scale * wv4.x; ov.y = xv.y * scale * wv4.y;
+        ov.z = xv.z * scale * wv4.z; ov.w = xv.w * scale * wv4.w;
+        d4[i] = ov;
+        if (db) {
+            db[4*i+0] = __float2bfloat16(ov.x); db[4*i+1] = __float2bfloat16(ov.y);
+            db[4*i+2] = __float2bfloat16(ov.z); db[4*i+3] = __float2bfloat16(ov.w);
+        }
+    }
+}
+
 // ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
 // rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
 // (rope_neox math verbatim on the normed row; barrier between store and rope read). ----
@@ -1282,6 +1324,38 @@ extern "C" __global__ void rope_neox2_f32(float* __restrict__ q, float* __restri
     float x1 = base[j + half];
     base[j]        = x0 * c - x1 * sn;
     base[j + half] = x0 * sn + x1 * c;
+}
+
+// bf16-emit twin (31B glue lane 2026-07-23): identical rope math + stores, ALSO emits the
+// post-rope values as bf16 (the exact __float2bfloat16 the FA pre-converter applied) — the FA
+// operands come out of this launch, killing the separate q/k f32->bf16 convert + re-read.
+extern "C" __global__ void rope_neox2_bf16e_f32(float* __restrict__ q, float* __restrict__ k,
+                                          __nv_bfloat16* __restrict__ qb, __nv_bfloat16* __restrict__ kb,
+                                          const int* __restrict__ pos,
+                                          int head_dim, int n_dims, int nh_q, int nh_k,
+                                          int n_tokens, float theta_scale, float freq_scale,
+                                          const float* __restrict__ ff) {
+    int hd2 = head_dim / 2;
+    int j = threadIdx.x;
+    if (j >= hd2) return;
+    int hr = blockIdx.x;
+    int total_q = nh_q * n_tokens;
+    float* base; __nv_bfloat16* baseb; int tok;
+    if (hr < total_q) { base = q + (size_t)hr * head_dim; baseb = qb + (size_t)hr * head_dim; tok = hr / nh_q; }
+    else { int r = hr - total_q; base = k + (size_t)r * head_dim; baseb = kb + (size_t)r * head_dim; tok = r / nh_k; }
+    int half = n_dims / 2;
+    if (j >= half) return;
+    float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+    if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+    float c = cosf(theta), sn = sinf(theta);
+    float x0 = base[j];
+    float x1 = base[j + half];
+    float y0 = x0 * c - x1 * sn;
+    float y1 = x0 * sn + x1 * c;
+    base[j]        = y0;
+    base[j + half] = y1;
+    baseb[j]        = __float2bfloat16(y0);
+    baseb[j + half] = __float2bfloat16(y1);
 }
 
 // ---- tiny async setters/packers (gemma spec round: zero host-memory transfers) ----

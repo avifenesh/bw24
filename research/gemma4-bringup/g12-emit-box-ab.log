@@ -1,0 +1,17 @@
+    Finished `release` profile [optimized] target(s) in 1m 55s
+=== gates
+ALL GREEN: kernels match CPU reference.
+=== 12B argmax emit-on vs emit-off (must be IDENTICAL maxdiff)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+=== 31B emit A/B x3
+prefill 1736 tok in 0.6960s = 2494.2 tok/s (pp1736)
+prefill 1736 tok in 0.7025s = 2471.1 tok/s (pp1736)
+prefill 1736 tok in 0.6975s = 2488.9 tok/s (pp1736)
+prefill 1736 tok in 0.7021s = 2472.7 tok/s (pp1736)
+prefill 1736 tok in 0.6969s = 2490.9 tok/s (pp1736)
+prefill 1736 tok in 0.7017s = 2473.9 tok/s (pp1736)
+=== 12B emit pair
+prefill 1736 tok in 0.2829s = 6135.7 tok/s (pp1736)
+prefill 1736 tok in 0.2825s = 6144.5 tok/s (pp1736)
+=== EMIT DONE Wed Jul 22 21:47:42 UTC 2026

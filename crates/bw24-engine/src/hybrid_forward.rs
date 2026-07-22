@@ -2831,13 +2831,33 @@ impl HybridModel {
         let mut k = e.uninit(t * nkv * hd)?;
         // R7: V = weightless rms_norm of the raw projection; NEVER roped.
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // 31B glue lane: producers emit the bf16 FA operands (norm emits vb; rope emits qb/kb
+        // post-rope) — kills 3 f32->bf16 converts + re-reads per layer. Bit-identical operands
+        // (same __float2bfloat16); BW24_FA_EMIT=0 reverts to the convert-in-FA path.
+        static EMIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let emit = t >= 16 && crate::Engine::qkvnorm_w_on_prefill(nh * t + 2 * nkv * t, hd)
+            && *EMIT.get_or_init(|| std::env::var("BW24_FA_EMIT").map(|s| s != "0").unwrap_or(true));
+        let mut qb = e.alloc_uninit::<u8>(if emit { t * nh * hd * 2 } else { 1 })?;
+        let mut kb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
+        let mut vb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
+        if emit {
+            e.rms_norm_qkv_w4b(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                               &aux.ones, &mut q, &mut k, &mut v, &mut vb,
+                               hd, nh * t, nkv * t, eps)?;
+        } else {
+            e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                           &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        }
 
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        if emit {
+            e.rope_neox2_bf16e(&mut q, &mut k, &mut qb, &mut kb, pos_d, hd, hd, nh, nkv, t,
+                               base, 1.0, ff)?;
+        } else {
+            e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        }
 
         if let Some(cache) = cache {
             let kvl = cache.kv[il].as_mut().unwrap();
@@ -2853,14 +2873,19 @@ impl HybridModel {
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
         if swa && t > win {
             if hd == 256 && std::env::var("BW24_NOFA").is_err() {
-                e.fa_prefill_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+                if emit { e.fa_prefill_w_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
+                                             scale, true, win)?; }
+                else { e.fa_prefill_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true,
+                                      win)?; }
             } else {
                 e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
             }
         } else if hd == 256 && std::env::var("BW24_NOFA").is_err() {
             e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         } else if hd == 512 && std::env::var("BW24_NOFA").is_err() {
-            e.fa_prefill_hd512(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+            if emit { e.fa_prefill_hd512_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
+                                             scale, true)?; }
+            else { e.fa_prefill_hd512(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?; }
         } else {
             e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         }

@@ -3171,6 +3171,38 @@ impl Engine {
 
     /// gemma4 fused q/k/v head norms (one launch, per-row rms_norm_f32-verbatim).
     #[allow(clippy::too_many_arguments)]
+    /// True when the warp-per-row qkv norm would engage for (rows, ncols) — the emit lane
+    /// piggybacks on the same conditions.
+    pub fn qkvnorm_w_on_prefill(rows: usize, ncols: usize) -> bool {
+        static WARP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *WARP_ON.get_or_init(|| {
+            std::env::var("BW24_QKVNORM_W").map(|v| v != "0").unwrap_or(true)
+        }) && ncols % 4 == 0 && rows >= 64
+    }
+
+    /// w4 norm with bf16 V EMIT (31B glue lane): the v segment also writes its normed rows as
+    /// bf16 (the FA V operand — bit-identical to a post-hoc f32_to_bf16). Prefill-depth only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_qkv_w4b(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                        wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
+                        dq: &mut CudaSlice<f32>, dk: &mut CudaSlice<f32>, dv: &mut CudaSlice<f32>,
+                        dvb: &mut CudaSlice<u8>,
+                        ncols: usize, rq: usize, rk: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        assert!(ncols % 4 == 0 && rq + 2 * rk >= 64);
+        let f = self.func("rms_norm_qkv_w4b_f32");
+        let rows = (rq + 2 * rk) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (rows.div_ceil(8), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let (nc, rqi, rki, rvi, e) = (ncols as i32, rq as i32, rk as i32, rk as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv).arg(&mut *dvb)
+         .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     pub fn rms_norm_qkv(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                         wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
                         dq: &mut CudaSlice<f32>, dk: &mut CudaSlice<f32>, dv: &mut CudaSlice<f32>,
@@ -5688,6 +5720,34 @@ impl Engine {
                               window, floor || faw_f32, floor)
     }
 
+    /// Windowed FA prefill with PRE-CONVERTED bf16 operands (producer-emitted; 31B glue lane).
+    /// Launches the P1 stamp directly — callers guarantee qb/kb/vb hold the exact bf16 of q/k/v.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_w_pre(&self, qb: &CudaSlice<u8>, kb: &CudaSlice<u8>, vb: &CudaSlice<u8>,
+                            o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
+                            n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
+                            window: usize)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        debug_assert_eq!(head_dim, 256);
+        let f = self.func("fa_prefill_w_bf16_p1");
+        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
+            n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qb).arg(kb).arg(vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+         .arg(&scale).arg(&cz).arg(&wi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// Windowed FA prefill with the stage arm FORCED — the kernel_check bit-identity entry.
     #[allow(clippy::too_many_arguments)]
     pub fn fa_prefill_w_arm(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
@@ -5828,6 +5888,32 @@ impl Engine {
                                   causal, f32_stage, sp)
     }
 
+    /// hd512 single-pass FA with PRE-CONVERTED bf16 operands (producer-emitted).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_hd512_pre(&self, qb: &CudaSlice<u8>, kb: &CudaSlice<u8>, vb: &CudaSlice<u8>,
+                                o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
+                                n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool)
+                                -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert_eq!(head_dim, 512);
+        const SP_M: usize = 16; const BKS: usize = 32;
+        let f = self.func("fa_prefill_bf16_hd512_sp");
+        let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
+                   + 4 * (SP_M * BKS + SP_M)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
+            block_dim: (32, 2, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
+                                            t as i32, t_kv as i32, causal as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qb).arg(kb).arg(vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+         .arg(&scale).arg(&cz);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// hd512 FA prefill with the stage/sp arms FORCED — the kernel_check gate entry
     /// (`fa_prefill_hd512` picks the arms from BW24_FA512_STAGE / BW24_FA512_SP).
     #[allow(clippy::too_many_arguments)]
@@ -5887,6 +5973,38 @@ impl Engine {
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz);
             unsafe { b.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// rope_neox2 with bf16 EMIT (31B glue lane): identical rope math/stores plus the post-rope
+    /// values written as bf16 — the FA q/k operands come from this launch (bit-identical to the
+    /// separate f32_to_bf16 the FA entries would run).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rope_neox2_bf16e(&self, q: &mut CudaSlice<f32>, k: &mut CudaSlice<f32>,
+                            qb: &mut CudaSlice<u8>, kb: &mut CudaSlice<u8>,
+                            pos: &CudaSlice<i32>, head_dim: usize, n_dims: usize,
+                            nh_q: usize, nh_k: usize, n_tokens: usize, base: f32,
+                            freq_scale: f32, ff: Option<&CudaSlice<f32>>)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("rope_neox2_bf16e_f32");
+        let rows = ((nh_q + nh_k) * n_tokens) as u32;
+        let cfg = LaunchConfig { grid_dim: (rows, 1, 1),
+                                 block_dim: ((head_dim / 2) as u32, 1, 1), shared_mem_bytes: 0 };
+        let theta_scale = base.powf(-2.0 / n_dims as f32);
+        let (hd, nd, nhq, nhk, nt) = (head_dim as i32, n_dims as i32, nh_q as i32,
+                                      nh_k as i32, n_tokens as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match ff {
+            Some(t) => { b.arg(&mut *q).arg(&mut *k).arg(&mut *qb).arg(&mut *kb).arg(pos)
+                          .arg(&hd).arg(&nd).arg(&nhq).arg(&nhk).arg(&nt)
+                          .arg(&theta_scale).arg(&freq_scale).arg(t);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(&mut *q).arg(&mut *k).arg(&mut *qb).arg(&mut *kb).arg(pos)
+                       .arg(&hd).arg(&nd).arg(&nhq).arg(&nhk).arg(&nt)
+                       .arg(&theta_scale).arg(&freq_scale).arg(&null);
+                      unsafe { b.launch(cfg)?; } }
         }
         Ok(())
     }
