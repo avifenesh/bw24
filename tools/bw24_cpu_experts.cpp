@@ -1420,9 +1420,14 @@ struct ReadRequest {
 // byte-identical to the serial path. BW24_CPU_EXPERT_PIPELINE=0 is the rollback seam.
 
 bool pipeline_enabled() {
+    // Opt-in until the single-region structural fix lands: with the default passive OMP
+    // waits, the pipeline's ready-batch region entries pay futex+C-state wakes and decode
+    // compute inflated 3.0 -> 8.4 s per 32 tokens; with ACTIVE waits the spinning workers
+    // starve the caller between calls and the end-to-end result is flat (2026-07-22,
+    // local-5090-next3 bisect chain). The Hy3 launcher opts in with the measured config.
     static const bool enabled = [] {
         const char * raw = std::getenv("BW24_CPU_EXPERT_PIPELINE");
-        return raw == nullptr || *raw == '\0' || std::strcmp(raw, "0") != 0;
+        return raw != nullptr && std::strcmp(raw, "1") == 0;
     }();
     return enabled;
 }

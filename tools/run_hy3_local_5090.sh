@@ -12,7 +12,14 @@ model_dir=$(realpath -- "$1")
 cpu_expert_lib=$(realpath -- "$2")
 mirror_map=${3:-}
 run_spec=$repo_dir/target/release/run-spec
+# Compute threads stay on the P-cores; the process mask also covers E-cores so the
+# companion's async read pool (BW24_CPU_EXPERT_IO_CPUSET) can run there. OMP workers
+# must spin through the pipeline's read-wait gaps: with the default passive sleep,
+# every ready-batch region entry pays a futex+C-state wake and decode compute
+# inflated 3.0 s -> 8.4 s per 32 tokens (2026-07-22 bisect, local-5090-next3).
+proc_list=${BW24_CPU_PROC_AFFINITY:-0-15}
 cpu_list=${BW24_CPU_AFFINITY:-0-7}
+io_cpuset=${BW24_CPU_EXPERT_IO_CPUSET:-8-15}
 spec_env=()
 if [[ ${BW24_SPEC_K:-1} != all ]]; then
   spec_env=(BW24_SPEC_K="${BW24_SPEC_K:-1}")
@@ -37,8 +44,11 @@ if [[ -n $mirror_map ]]; then
   mirror_env=(BW24_CPU_EXPERT_MIRROR_MAP="$mirror_map")
 fi
 
-exec taskset --cpu-list "$cpu_list" env \
+exec taskset --cpu-list "$proc_list" env \
   GOMP_CPU_AFFINITY="$cpu_list" \
+  OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-ACTIVE}" \
+  BW24_CPU_EXPERT_PIPELINE="${BW24_CPU_EXPERT_PIPELINE:-1}" \
+  BW24_CPU_EXPERT_IO_CPUSET="$io_cpuset" \
   "${spec_env[@]}" \
   BW24_SPEC_HOST_EMBD="${BW24_SPEC_HOST_EMBD:-1}" \
   BW24_CHAT="${BW24_CHAT:-1}" \
