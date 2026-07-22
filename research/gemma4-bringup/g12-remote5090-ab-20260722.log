@@ -1,0 +1,11 @@
+=== INTERLEAVED A/B pp1736 (llama,bw24 x3) Wed Jul 22 12:18:22 UTC 2026
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     8226.64 ± 199.92 |
+prefill 1736 tok in 0.2058s = 8434.2 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     8118.07 ± 194.14 |
+prefill 1736 tok in 0.2071s = 8381.1 tok/s (pp1736)
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     8048.93 ± 192.35 |
+prefill 1736 tok in 0.2082s = 8336.3 tok/s (pp1736)
+=== nsys bw24 prime Wed Jul 22 12:19:09 UTC 2026
+=== nsys llama pp1736
+kern tables written
+=== AB DONE Wed Jul 22 12:19:59 UTC 2026
