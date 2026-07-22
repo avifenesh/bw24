@@ -1,0 +1,21 @@
+    Finished `release` profile [optimized] target(s) in 1m 56s
+=== fi oracle gates (arm forced)
+fa_prefill_hd512 T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=64: bit-mismatch 209461/262144 FAIL
+fa_prefill_hd512_sp T=64 Tkv=64: rel=2.86e-3 OK
+fa_prefill_hd512 T=100 Tkv=100: rel=2.86e-3 OK
+fa_prefill_hd512 bf16-stage T=100: bit-mismatch 341369/409600 FAIL
+fa_prefill_hd512_sp T=100 Tkv=100: rel=2.86e-3 OK
+Error: "2 kernel(s) FAILED"
+=== 12B argmax fi
+prefill argmax=623  decode argmax=623  logit maxdiff=1.853e0  MATCH
+=== FI A/B (fi vs sp) 12B x2 then 31B x2
+prefill 1736 tok in 0.2823s = 6149.1 tok/s (pp1736)
+prefill 1736 tok in 0.2822s = 6151.8 tok/s (pp1736)
+prefill 1736 tok in 0.2821s = 6152.8 tok/s (pp1736)
+prefill 1736 tok in 0.2823s = 6149.9 tok/s (pp1736)
+prefill 1736 tok in 0.6962s = 2493.6 tok/s (pp1736)
+prefill 1736 tok in 0.6971s = 2490.3 tok/s (pp1736)
+prefill 1736 tok in 0.6970s = 2490.6 tok/s (pp1736)
+prefill 1736 tok in 0.6971s = 2490.2 tok/s (pp1736)
+=== FI DONE Wed Jul 22 22:20:11 UTC 2026

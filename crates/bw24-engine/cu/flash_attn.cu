@@ -2435,6 +2435,253 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
 //  z=2 bf16 kernel.                                                     //
 // ===================================================================== //
 #define SP_M_ROWS 16
+extern "C" __global__ void __launch_bounds__(128, 1) fa_prefill_bf16_hd512_fi(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    // FI GEOMETRY (FlashInfer hd512 blueprint at f32 class, 2026-07-23): 32 q-rows/CTA,
+    // 4 warps as (row-tile rt = warp&1, kt-half kh = warp>>1); GEMM0 split-K 2-way per
+    // row-tile merged via sS (1-ULP class — FMA-contraction differences vs the f32 chain
+    // are expected and battery-gated, NOT bit-gated; see the 02:20 root-cause row).
+    // V TIME-SHARES K smem (safe per same diagnosis). Q in smem, re-ldmatrix per kt.
+    constexpr int HEAD_DIM  = 512;
+    constexpr int ROWS      = 32;                       // q-rows per CTA
+    constexpr int HALFK     = (HEAD_DIM / K_STEP) / 2;  // 16 kt per kt-half
+    constexpr int QUART     = HEAD_DIM / 4;             // 128 V/O dims per warp
+    constexpr int O_NBLK    = 2 * (QUART / N_KEYS);     // 2 row-tiles x 16 = 32 CTiles
+    const int warp = threadIdx.y;                       // 0..3
+    const int rt   = warp & 1;                          // row-tile this warp scores
+    const int kh   = warp >> 1;                         // kt-half this warp scores
+    const int lane = threadIdx.x;
+    const int head    = blockIdx.y;
+    const int kv_head = head / (n_head / n_head_kv);
+    const int qrow_base = blockIdx.x * ROWS;
+    if (head >= n_head || qrow_base >= T) return;
+    const int nq = min(ROWS, T - qrow_base);
+
+    extern __shared__ char smem_fi[];
+    __nv_bfloat16* sQ  = (__nv_bfloat16*)smem_fi;        // ROWS*HEAD_DIM      (32KB)
+    __nv_bfloat16* sKV = sQ + ROWS*HEAD_DIM;             // BK*HEAD_DIM        (32KB, K then V)
+    float* sS = (float*)(sKV + BK*HEAD_DIM);             // 2 * 16*BK f32      (4KB)
+    __nv_bfloat16* sP = (__nv_bfloat16*)(sS + 2*M_ROWS*BK); // ROWS*BK bf16    (2KB)
+    float* sL = (float*)(sP + ROWS*BK);                  // ROWS f32
+    float* sSrt = sS + rt*M_ROWS*BK;
+    __nv_bfloat16* sPrt = sP + rt*M_ROWS*BK;
+
+    const int causal_i = causal;
+    const int q_pos0 = (T_kv - T) + qrow_base;           // pos of row 0
+    const int bt  = warp*WARP_SZ + lane;
+    const int bsz = 4*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+    constexpr int QCH = HEAD_DIM / 8;
+
+    // stage Q once (swizzled)
+    for (int i = bt; i < ROWS*QCH; i += bsz) {
+        int r = i / QCH, dc = i % QCH;
+        ((int4*)sQ)[r*QCH + (dc ^ (r & 7))] = (qrow_base + r < T)
+            ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM))[dc]
+            : zero4;
+    }
+    __syncthreads();
+
+    CTile O_acc[O_NBLK];
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=O_acc[c].x[1]=O_acc[c].x[2]=O_acc[c].x[3]=0.0f; }
+    // running m/l per row-tile this LANE tracks — each warp tracks BOTH row-tiles for its
+    // O quarter: [tile][lo/hi]
+    float m_run[2][2] = {{NEG_INF, NEG_INF}, {NEG_INF, NEG_INF}};
+    float l_run[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        const int q_pos_max = q_pos0 + (ROWS - 1);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- stage K (full 512, swizzled) ----
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM;
+            ((int4*)sKV)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk)
+                ? ((const int4*)(K + rowo))[dc] : zero4;
+        }
+        __syncthreads();
+
+        // ---- GEMM0: warp (rt, kh) scores its row-tile over its kt-half ----
+        CTile Sc[BK/N_KEYS];
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C0, C1;
+            C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+            C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+            #pragma unroll 8
+            for (int kt0 = 0; kt0 < HALFK; ++kt0) {
+                const int kt = kh*HALFK + kt0;
+                ATile Qf, Kt;
+                ld_A_sw(Qf, sQ, rt*M_ROWS, kt*2, QCH);
+                ld_A_sw(Kt, sKV, kg, kt*2, QCH);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf, Blo);
+                mma_bf16(C1, Qf, Bhi);
+            }
+            Sc[kg/N_KEYS + 0] = C0;
+            Sc[kg/N_KEYS + 1] = C1;
+        }
+        // merge kt-halves: kh==0 stores, kh==1 adds; then everyone reads the sum.
+        if (kh == 0) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sSrt[r_lo*BK + g*N_KEYS + c0 + 0] = Sc[g].x[0];
+                sSrt[r_lo*BK + g*N_KEYS + c0 + 1] = Sc[g].x[1];
+                sSrt[r_hi*BK + g*N_KEYS + c0 + 0] = Sc[g].x[2];
+                sSrt[r_hi*BK + g*N_KEYS + c0 + 1] = Sc[g].x[3];
+            }
+        }
+        __syncthreads();
+        if (kh == 1) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sSrt[r_lo*BK + g*N_KEYS + c0 + 0] += Sc[g].x[0];
+                sSrt[r_lo*BK + g*N_KEYS + c0 + 1] += Sc[g].x[1];
+                sSrt[r_hi*BK + g*N_KEYS + c0 + 0] += Sc[g].x[2];
+                sSrt[r_hi*BK + g*N_KEYS + c0 + 1] += Sc[g].x[3];
+            }
+        }
+        __syncthreads();
+
+        // ---- softmax + P (each warp processes BOTH row-tiles for its O update; the
+        // kh==0 warps of each row-tile write P once) ----
+        float alpha[2][2];
+        for (int tI = 0; tI < 2; ++tI) {
+            const float* sSt = sS + tI*M_ROWS*BK;
+            const int q0t = q_pos0 + tI*M_ROWS;
+            float smax_lo = NEG_INF, smax_hi = NEG_INF;
+            float vals[BK/N_KEYS][4];
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    int col = g*N_KEYS + c0 + (l & 1);
+                    int row = (l < 2) ? r_lo : r_hi;
+                    int q_pos = q0t + row;
+                    float sv = sSt[((l < 2) ? r_lo : r_hi)*BK + g*N_KEYS + c0 + (l & 1)] * scale;
+                    if (col >= nk) sv = NEG_INF;
+                    if (causal_i && (k0 + col) > q_pos) sv = NEG_INF;
+                    vals[g][l] = sv;
+                    if (l < 2) smax_lo = fmaxf(smax_lo, sv);
+                    else       smax_hi = fmaxf(smax_hi, sv);
+                }
+            }
+            smax_lo = row_max4(smax_lo);
+            smax_hi = row_max4(smax_hi);
+            float mn_lo = fmaxf(m_run[tI][0], smax_lo);
+            float mn_hi = fmaxf(m_run[tI][1], smax_hi);
+            alpha[tI][0] = (m_run[tI][0] == NEG_INF) ? 0.0f : exp2f((m_run[tI][0] - mn_lo) * LOG2E);
+            alpha[tI][1] = (m_run[tI][1] == NEG_INF) ? 0.0f : exp2f((m_run[tI][1] - mn_hi) * LOG2E);
+            float lp_lo = 0.0f, lp_hi = 0.0f;
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float mn = (l < 2) ? mn_lo : mn_hi;
+                    float sv = vals[g][l];
+                    float pv = (sv == NEG_INF) ? 0.0f : exp2f((sv - mn) * LOG2E);
+                    vals[g][l] = pv;
+                    if (l < 2) lp_lo += pv; else lp_hi += pv;
+                }
+            }
+            lp_lo = row_sum4(lp_lo);
+            lp_hi = row_sum4(lp_hi);
+            l_run[tI][0] = l_run[tI][0] * alpha[tI][0] + lp_lo;
+            l_run[tI][1] = l_run[tI][1] * alpha[tI][1] + lp_hi;
+            m_run[tI][0] = mn_lo; m_run[tI][1] = mn_hi;
+            // P written once per row-tile (the warp with rt==tI && kh==0)
+            if (rt == tI && kh == 0) {
+                __nv_bfloat16* sPt = sP + tI*M_ROWS*BK;
+                #pragma unroll
+                for (int g = 0; g < BK/N_KEYS; ++g) {
+                    sPt[r_lo*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(vals[g][0]);
+                    sPt[r_lo*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(vals[g][1]);
+                    sPt[r_hi*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(vals[g][2]);
+                    sPt[r_hi*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(vals[g][3]);
+                }
+            }
+        }
+        __syncthreads();                                  // P complete; K reads done long ago
+
+        // ---- V time-shares K smem ----
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM;
+            ((int4*)sKV)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk)
+                ? ((const int4*)(V + rowo))[dc] : zero4;
+        }
+        __syncthreads();
+
+        // ---- GEMM1: warp owns V/O quarter [warp*128, warp*128+128) for BOTH row-tiles ----
+        for (int tI = 0; tI < 2; ++tI) {
+            const int obase = tI * (QUART / N_KEYS);
+            #pragma unroll
+            for (int c = 0; c < QUART / N_KEYS; ++c) {
+                O_acc[obase + c].x[0] *= alpha[tI][0]; O_acc[obase + c].x[1] *= alpha[tI][0];
+                O_acc[obase + c].x[2] *= alpha[tI][1]; O_acc[obase + c].x[3] *= alpha[tI][1];
+            }
+            for (int d0 = 0; d0 < QUART; d0 += 2*N_KEYS) {
+                CTile Clo, Chi;
+                Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
+                Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
+                #pragma unroll
+                for (int kk = 0; kk < BK; kk += K_STEP) {
+                    ATile A; ATile Bt;
+                    ld_A(A, sP + tI*M_ROWS*BK + kk, BK/2);
+                    ld_A_trans_sw(Bt, sKV, kk, (warp*QUART + d0)/8, QCH);
+                    BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                    BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                    mma_bf16(Clo, A, Blo);
+                    mma_bf16(Chi, A, Bhi);
+                }
+                O_acc[obase + (d0/N_KEYS) + 0].x[0] += Clo.x[0]; O_acc[obase + (d0/N_KEYS) + 0].x[1] += Clo.x[1];
+                O_acc[obase + (d0/N_KEYS) + 0].x[2] += Clo.x[2]; O_acc[obase + (d0/N_KEYS) + 0].x[3] += Clo.x[3];
+                O_acc[obase + (d0/N_KEYS) + 1].x[0] += Chi.x[0]; O_acc[obase + (d0/N_KEYS) + 1].x[1] += Chi.x[1];
+                O_acc[obase + (d0/N_KEYS) + 1].x[2] += Chi.x[2]; O_acc[obase + (d0/N_KEYS) + 1].x[3] += Chi.x[3];
+            }
+        }
+        __syncthreads();                                  // V reads done before next K stage
+    }
+
+    // final l per row-tile: lane c0==0 of warp (rt==tI, kh==0) writes sL
+    for (int tI = 0; tI < 2; ++tI) {
+        if (rt == tI && kh == 0 && c0 == 0) {
+            sL[tI*M_ROWS + r_lo] = l_run[tI][0];
+            sL[tI*M_ROWS + r_hi] = l_run[tI][1];
+        }
+    }
+    __syncthreads();
+
+    for (int tI = 0; tI < 2; ++tI) {
+        const int obase = tI * (QUART / N_KEYS);
+        #pragma unroll
+        for (int c = 0; c < QUART / N_KEYS; ++c) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int r = tI*M_ROWS + CTile::get_i(l);
+                int d = warp*QUART + c*N_KEYS + CTile::get_j(l);
+                if (r < nq) {
+                    float linv = (sL[r] > 0.0f) ? (1.0f / sL[r]) : 0.0f;
+                    O[((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM + d]
+                        = O_acc[obase + c].x[l] * linv;
+                }
+            }
+        }
+    }
+}
+
 extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_bf16_hd512_sp(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
         const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
