@@ -566,26 +566,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let (mut resident_before, mut landed) = (0u64, false);
-            unsafe {
-                cache_stats(std::ptr::null_mut(), std::ptr::null_mut(),
-                            std::ptr::null_mut(), &mut resident_before);
-            }
+            let prefetch_stats: StatsFn = {
+                let symbol = unsafe {
+                    libc::dlsym(handle, c"bw24_cpu_expert_prefetch_stats_v2".as_ptr())
+                };
+                if symbol.is_null() {
+                    // Annex-era companions always export the stats symbol alongside prefetch.
+                    let _ = cache_stats;
+                    return Err("prefetch symbol present but prefetch stats symbol absent".into());
+                }
+                unsafe { std::mem::transmute(symbol) }
+            };
+            let mut landed = false;
             for _ in 0..200 {
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                let mut resident = 0u64;
+                let (mut submitted, mut inflight) = (0u64, 0u64);
                 unsafe {
-                    cache_stats(std::ptr::null_mut(), std::ptr::null_mut(),
-                                std::ptr::null_mut(), &mut resident);
+                    prefetch_stats(&mut submitted, std::ptr::null_mut(),
+                                   std::ptr::null_mut(), &mut inflight);
                 }
-                let expected: u64 = extra_blobs.iter().map(|b| b.len() as u64).sum();
-                if resident >= resident_before + expected {
+                if submitted >= 3 && inflight == 0 {
                     landed = true;
                     break;
                 }
             }
             if !landed {
-                return Err("prefetched projections never landed in the cache".into());
+                return Err("prefetched projections never completed".into());
             }
             let prefetched_expert = Expert {
                 gate: projections[0],
@@ -611,7 +617,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into());
                 }
             }
-            println!("detached prefetch (cold insert + bit-identity): PASS");
+            let mut promoted = 0u64;
+            unsafe {
+                prefetch_stats(std::ptr::null_mut(), &mut promoted,
+                               std::ptr::null_mut(), std::ptr::null_mut());
+            }
+            if promoted < 3 {
+                return Err(format!(
+                    "annex promoted {promoted}/3 speculated projections on demand"
+                )
+                .into());
+            }
+            println!("detached prefetch (annex promote + bit-identity): PASS");
         } else {
             println!("detached prefetch: SKIP (symbol absent)");
         }

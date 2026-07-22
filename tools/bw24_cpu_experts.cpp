@@ -36,6 +36,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 extern "C" {
@@ -1599,12 +1600,6 @@ public:
         insert_at(key, bytes, /*cold=*/false);
     }
 
-    /// Speculative-prefetch insertion: lands at the LRU-oldest position so a mispredicted
-    /// expert is first out and can never displace proven-hot entries (lead's rule).
-    void insert_cold(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
-        insert_at(key, bytes, /*cold=*/true);
-    }
-
     bool contains(const CacheKey & key) {
         std::lock_guard<std::mutex> lock(mutex_);
         return entries_.find(key) != entries_.end();
@@ -1749,6 +1744,95 @@ WeightCache & weight_cache() {
     return cache;
 }
 
+// Speculative entries live OUTSIDE the main LRU (2026-07-23 A/B autopsy: cold-front
+// insertions at a full cache are evicted by demand fills before their layer arrives and the
+// same experts re-prefetch every token). The annex is a small FIFO side-buffer: a demand miss
+// checks it and PROMOTES a hit into the main cache; annex membership plus the in-flight set
+// dedups repeat predictions for free. Speculation can therefore never evict a demand entry
+// and never re-reads what it already holds.
+class PrefetchAnnex {
+public:
+    static PrefetchAnnex & instance() {
+        static PrefetchAnnex * annex = new PrefetchAnnex();  // leaked: static-dtor ordering
+        return *annex;
+    }
+
+    std::size_t budget() const { return budget_; }
+
+    /// True if the key is already speculated (held or being read) — callers skip re-prefetch.
+    bool speculated(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return held_.find(key) != held_.end() || inflight_.find(key) != inflight_.end();
+    }
+
+    bool begin_read(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (held_.find(key) != held_.end()) return false;
+        return inflight_.insert(key).second;
+    }
+
+    void abort_read(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(key);
+    }
+
+    void complete_read(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        inflight_.erase(key);
+        if (held_.find(key) != held_.end()) return;
+        order_.push_back(key);
+        held_.emplace(key, bytes);
+        used_ += key.len;
+        while (used_ > budget_ && !order_.empty()) {
+            const auto oldest = order_.front();
+            order_.pop_front();
+            const auto found = held_.find(oldest);
+            if (found != held_.end()) {
+                used_ -= found->first.len;
+                held_.erase(found);
+                ++expired_;
+            }
+        }
+    }
+
+    /// Demand-miss path: take a speculated buffer if present (promotion into the main cache
+    /// is the caller's job). Counts usefulness.
+    std::shared_ptr<AlignedBytes> take(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = held_.find(key);
+        if (found == held_.end()) return {};
+        auto bytes = found->second;
+        used_ -= found->first.len;
+        held_.erase(found);
+        ++promoted_;
+        return bytes;
+    }
+
+    void snapshot(std::uint64_t * promoted, std::uint64_t * expired) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (promoted != nullptr) *promoted = promoted_;
+        if (expired != nullptr) *expired = expired_;
+    }
+
+private:
+    PrefetchAnnex() {
+        const char * raw = std::getenv("BW24_CPU_EXPERT_PREFETCH_ANNEX_GB");
+        const double gib = raw != nullptr && *raw != '\0' ? std::strtod(raw, nullptr) : 1.5;
+        budget_ = static_cast<std::size_t>(
+            std::clamp(gib, 0.125, 16.0) * 1024.0 * 1024.0 * 1024.0);
+    }
+
+    std::mutex mutex_;
+    std::size_t budget_ = 0;
+    std::size_t used_ = 0;
+    std::deque<CacheKey> order_;
+    std::unordered_map<CacheKey, std::shared_ptr<AlignedBytes>, CacheKeyHash> held_;
+    std::unordered_set<CacheKey, CacheKeyHash> inflight_;
+    std::uint64_t promoted_ = 0;
+    std::uint64_t expired_ = 0;
+};
+
+
 void copy_error(char * dst, std::size_t capacity, const std::string & message) {
     if (dst == nullptr || capacity == 0) return;
     const std::size_t count = std::min(capacity - 1, message.size());
@@ -1786,6 +1870,13 @@ ProjectionRuntime prepare_projection(
         const CacheKey key { source, desc.file_offset, desc.byte_len };
         runtime.cache_key = key;
         runtime.weight_owner = weight_cache().find(key);
+        if (!runtime.weight_owner) {
+            // Demand miss: promote a speculated buffer from the prefetch annex if one landed.
+            if (auto speculated = PrefetchAnnex::instance().take(key)) {
+                weight_cache().insert(key, speculated);
+                runtime.weight_owner = std::move(speculated);
+            }
+        }
         if (!runtime.weight_owner) {
             runtime.weight_owner = std::make_shared<AlignedBytes>();
             const bool direct = direct_io_enabled()
@@ -1878,6 +1969,7 @@ std::atomic<int> & prefetch_inflight() {
     static std::atomic<int> count { 0 };
     return count;
 }
+
 
 struct IoJob {
     ProjectionRuntime * projection = nullptr;
@@ -1980,11 +2072,15 @@ private:
                     state->projection_failed[index].store(true, std::memory_order_release);
                 }
                 if (state->projection_pending[index].fetch_sub(1,
-                        std::memory_order_acq_rel) == 1
-                    && !state->projection_failed[index].load(std::memory_order_acquire)) {
-                    // A failed speculative read is simply dropped — never cached, never fatal.
-                    weight_cache().insert_cold(
-                        job.projection->cache_key, job.projection->weight_owner);
+                        std::memory_order_acq_rel) == 1) {
+                    // Completed speculative read lands in the ANNEX, never the main cache; a
+                    // failed one just releases its in-flight claim (dropped, never fatal).
+                    if (state->projection_failed[index].load(std::memory_order_acquire)) {
+                        PrefetchAnnex::instance().abort_read(job.projection->cache_key);
+                    } else {
+                        PrefetchAnnex::instance().complete_read(
+                            job.projection->cache_key, job.projection->weight_owner);
+                    }
                 }
                 prefetch_inflight().fetch_sub(1, std::memory_order_relaxed);
                 if (state->outstanding.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -2448,6 +2544,7 @@ extern "C" std::int32_t bw24_cpu_expert_prefetch_v2(
         const long value = std::strtol(raw, nullptr, 10);
         return value >= 1 && value <= 4096 ? static_cast<int>(value) : 32;
     }();
+    auto & annex = PrefetchAnnex::instance();
     auto state = std::make_unique<PrefetchState>();
     state->descs.reserve(static_cast<std::size_t>(count));
     for (std::int32_t index = 0; index < count; ++index) {
@@ -2466,11 +2563,28 @@ extern "C" std::int32_t bw24_cpu_expert_prefetch_v2(
     for (std::size_t index = 0; index < state->descs.size(); ++index) {
         const auto & desc = state->descs[index];
         if (prefetch_inflight().load(std::memory_order_relaxed) >= max_inflight) break;
-        ProjectionRuntime runtime = prepare_projection(desc);
-        if (!runtime.needs_read) continue;  // already cached (find() also refreshed its LRU slot)
+        // Build the cache key without prepare_projection: the demand path's annex promotion
+        // must never fire from a speculative probe, and cache stats must not count them.
+        const FileKey source = file_key(desc.file_fd);
+        const CacheKey key { source, desc.file_offset, desc.byte_len };
+        if (weight_cache().contains(key)) continue;
+        if (!annex.begin_read(key)) continue;  // already speculated or in flight (dedup)
+        ProjectionRuntime runtime;
+        runtime.desc = &state->descs[index];
+        runtime.cache_key = key;
+        runtime.weight_owner = std::make_shared<AlignedBytes>();
+        const bool direct = direct_io_enabled()
+            && desc.file_offset % 4096 == 0 && desc.byte_len % 4096 == 0;
+        runtime.weight_owner->resize(desc.byte_len, direct ? 4096 : 64);
+        runtime.read_fd = direct
+            ? direct_files().resolve(desc.file_fd, source.inode)
+            : desc.file_fd;
+        runtime.alternate_read_fd = direct
+            ? mirror_files().resolve(desc.file_fd, source)
+            : -1;
+        runtime.needs_read = true;
         state->runtimes.push_back(std::move(runtime));
         auto & stored = state->runtimes.back();
-        stored.desc = &state->descs[index];  // repoint at the owned copy, not the caller's array
         const std::size_t slot = state->runtimes.size() - 1;
         const std::size_t jobs_before = jobs.size();
         state->projection_pending[slot].store(0, std::memory_order_relaxed);
@@ -2546,6 +2660,28 @@ extern "C" int bw24_cpu_dot_v2(
 } catch (...) {
     copy_error(error, error_capacity, "unknown bw24 CPU dot failure");
     return 1;
+}
+
+// Annex/speculation accounting: submitted speculative projections, annex promotions (a
+// speculated buffer served a demand miss), annex expiries (never used, FIFO-evicted), and
+// reads still in flight.
+extern "C" void bw24_cpu_expert_prefetch_stats_v2(
+        std::uint64_t * submitted,
+        std::uint64_t * promoted,
+        std::uint64_t * expired,
+        std::uint64_t * inflight) noexcept {
+    if (submitted != nullptr) {
+        *submitted = cpu_profile().prefetch_projections.load(std::memory_order_relaxed);
+    }
+    if (inflight != nullptr) {
+        *inflight = static_cast<std::uint64_t>(
+            std::max(0, prefetch_inflight().load(std::memory_order_relaxed)));
+    }
+    try {
+        PrefetchAnnex::instance().snapshot(promoted, expired);
+    } catch (...) {
+        // Diagnostic path; the C ABI must never propagate an exception.
+    }
 }
 
 extern "C" void bw24_cpu_expert_cache_stats_v2(

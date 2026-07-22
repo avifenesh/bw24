@@ -552,7 +552,11 @@ pub(crate) fn start_prefetch_predictor(
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&t| (1..=8).contains(&t))
-        .unwrap_or(2);
+        .unwrap_or(1);
+    let min_layer = std::env::var("BW24_MOE_PREFETCH_MIN_LAYER")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(40);
     let mut table: std::collections::HashMap<u16, PredictLayer> = Default::default();
     for (layer_index, init) in layers {
         let mut experts = Vec::with_capacity(init.weights_n_expert);
@@ -582,7 +586,7 @@ pub(crate) fn start_prefetch_predictor(
     let (sender, receiver) = std::sync::mpsc::sync_channel::<(u16, Vec<f32>)>(8);
     std::thread::Builder::new()
         .name("bw24-moe-prefetch".to_string())
-        .spawn(move || prefetch_worker(receiver, table, resident, depth, top))
+        .spawn(move || prefetch_worker(receiver, table, resident, depth, top, min_layer))
         .map_err(|error| format!("cannot spawn prefetch worker: {error}"))?;
     let created = PREDICTOR
         .set(Some(Predictor {
@@ -664,6 +668,7 @@ fn prefetch_worker(
     resident: std::collections::HashSet<(u16, u8, u16)>,
     depth: usize,
     top: usize,
+    min_layer: u16,
 ) {
     let Ok(backend) = backend() else { return };
     let Some(prefetch) = backend.prefetch else { return };
@@ -671,6 +676,9 @@ fn prefetch_worker(
     while let Ok((layer, input)) = receiver.recv() {
         for d in 1..=depth {
             let target = layer + d as u16;
+            if target < min_layer {
+                continue;  // pilot precision only justifies the deep half (k >= ~40)
+            }
             let Some(predict) = table.get(&target) else { continue };
             if input.len() != predict.n_embd {
                 continue;
