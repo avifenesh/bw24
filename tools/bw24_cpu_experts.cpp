@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -106,9 +107,91 @@ QuantSpec quant_spec(std::int32_t qtype) {
     }
 }
 
+// Recycles page-aligned weight-buffer blocks. Expert misses allocate 1–4 MB per projection at
+// ~0.9 GB/token; glibc returns freed chunks to the kernel (mmap for large blocks, heap trim at
+// 128 KB), so every miss re-faults ~7.8M first-touch pages per 32 decoded tokens and the
+// kernel zero-fills the entire read volume. Recycled blocks stay faulted-in: steady-state
+// decode performs no allocation, no page faults, and no kernel zeroing.
+class RawBlockPool {
+public:
+    static RawBlockPool & instance() {
+        // Intentionally leaked: cache entries release buffers here from static destructors,
+        // which may run after a function-local static pool would have been destroyed.
+        static RawBlockPool * pool = new RawBlockPool();
+        return *pool;
+    }
+
+    void * acquire(std::size_t pool_bytes) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = free_.find(pool_bytes);
+            if (found != free_.end() && !found->second.empty()) {
+                void * block = found->second.back();
+                found->second.pop_back();
+                pooled_bytes_ -= pool_bytes;
+                return block;
+            }
+        }
+        // 2 MB-aligned blocks + MADV_HUGEPAGE: expert projections are 1-4 MB and the compute
+        // kernels stream the whole resident set, so 4 KB pages cost millions of TLB walks per
+        // window. khugepaged collapses these during warmup (THP mode "madvise" on this rig).
+        const std::size_t alignment = pool_bytes >= (std::size_t(2) << 20)
+            ? (std::size_t(2) << 20) : 4096;
+        void * allocation = nullptr;
+        const int status = posix_memalign(&allocation, alignment, pool_bytes);
+        if (status != 0) {
+            throw std::runtime_error(
+                "aligned CPU expert allocation failed: " + std::string(std::strerror(status)));
+        }
+        if (alignment >= (std::size_t(2) << 20)) {
+            madvise(allocation, pool_bytes, MADV_HUGEPAGE);
+        }
+        return allocation;
+    }
+
+    void release(void * block, std::size_t pool_bytes) noexcept {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (pooled_bytes_ + pool_bytes <= kMaxPooledBytes) {
+                try {
+                    free_[pool_bytes].push_back(block);
+                    pooled_bytes_ += pool_bytes;
+                    return;
+                } catch (...) {
+                    // fall through to free()
+                }
+            }
+        }
+        std::free(block);
+    }
+
+private:
+    // Buffers cycle cache -> pool -> next miss, so the pool holds only the churn window;
+    // the cap is a backstop against pathological size-class drift.
+    static constexpr std::size_t kMaxPooledBytes = std::size_t(2) << 30;
+
+    std::mutex mutex_;
+    std::unordered_map<std::size_t, std::vector<void *>> free_;
+    std::size_t pooled_bytes_ = 0;
+};
+
 struct AlignedBytes {
     struct Free {
-        void operator()(void * pointer) const { std::free(pointer); }
+        // No default member initializer: NSDMIs of nested classes are late-parsed until the
+        // enclosing class closes, which would leave Free non-default-constructible at the
+        // `storage` member declaration below.
+        std::size_t pool_bytes;
+
+        Free() : pool_bytes(0) {}
+        explicit Free(std::size_t bytes) : pool_bytes(bytes) {}
+
+        void operator()(void * pointer) const {
+            if (pool_bytes != 0) {
+                RawBlockPool::instance().release(pointer, pool_bytes);
+            } else {
+                std::free(pointer);
+            }
+        }
     };
 
     std::unique_ptr<void, Free> storage;
@@ -117,19 +200,15 @@ struct AlignedBytes {
     void * data = nullptr;
 
     void resize(std::size_t bytes, std::size_t alignment = 64) {
-        if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
-            throw std::runtime_error("alignment must be a power of two");
+        if (alignment == 0 || (alignment & (alignment - 1)) != 0 || alignment > 4096) {
+            throw std::runtime_error("alignment must be a power of two up to 4096");
         }
         if (capacity >= bytes && this->alignment >= alignment) return;
-        void * allocation = nullptr;
-        const int status = posix_memalign(&allocation, alignment, bytes);
-        if (status != 0) {
-            throw std::runtime_error(
-                "aligned CPU expert allocation failed: " + std::string(std::strerror(status)));
-        }
-        storage.reset(allocation);
+        const std::size_t pool_bytes = (bytes + 4095) & ~std::size_t(4095);
+        void * allocation = RawBlockPool::instance().acquire(pool_bytes);
+        storage = std::unique_ptr<void, Free>(allocation, Free(pool_bytes));
         capacity = bytes;
-        this->alignment = alignment;
+        this->alignment = 4096;
         data = allocation;
     }
 
@@ -1128,19 +1207,28 @@ struct CpuProfile {
     std::atomic<std::uint64_t> compute_ns { 0 };
     std::atomic<std::uint64_t> read_projections { 0 };
     std::atomic<std::uint64_t> read_bytes { 0 };
+    std::atomic<std::uint64_t> stage_entry_ns { 0 };
+    std::atomic<std::uint64_t> stage_cached_ns { 0 };
+    std::atomic<std::uint64_t> stage_missing_ns { 0 };
+    std::atomic<std::uint64_t> stage_accum_ns { 0 };
     ~CpuProfile() {
         const auto to_seconds = [](std::uint64_t ns) { return ns / 1.0e9; };
         std::fprintf(
             stderr,
             "[bw24-cpu-profile] calls=%llu prepare=%.6fs io=%.6fs insert=%.6fs "
-            "compute=%.6fs read_projections=%llu read_GB=%.3f\n",
+            "compute=%.6fs read_projections=%llu read_GB=%.3f "
+            "stage_entry=%.6fs stage_cached=%.6fs stage_missing=%.6fs stage_accum=%.6fs\n",
             static_cast<unsigned long long>(calls.load(std::memory_order_relaxed)),
             to_seconds(prepare_ns.load(std::memory_order_relaxed)),
             to_seconds(io_ns.load(std::memory_order_relaxed)),
             to_seconds(insert_ns.load(std::memory_order_relaxed)),
             to_seconds(compute_ns.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(read_projections.load(std::memory_order_relaxed)),
-            read_bytes.load(std::memory_order_relaxed) / 1.0e9);
+            read_bytes.load(std::memory_order_relaxed) / 1.0e9,
+            to_seconds(stage_entry_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_cached_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_missing_ns.load(std::memory_order_relaxed)),
+            to_seconds(stage_accum_ns.load(std::memory_order_relaxed)));
     }
 };
 
@@ -1660,66 +1748,149 @@ void dot_row(const ProjectionRuntime & projection, int row, float * output) {
 }
 
 // Runs the full per-expert chain (gate/up dots, SwiGLU, down-activation quantize, down dots)
-// for a subset of the call's experts. Row-level math and per-expert op order are identical for
-// every subset partition, so pipelined and serial paths produce byte-identical expert outputs.
-void compute_experts(
+// for a subset of the call's experts. Orphaned worksharing: binds to the caller's parallel
+// team (or runs sequentially outside one). Row-level math and per-expert op order are
+// identical for every subset partition, so all partitions produce byte-identical outputs.
+// Zero-size subsets still encounter every worksharing construct (no early return).
+void compute_expert_stages(
         const std::vector<int> & subset,
         std::vector<ExpertRuntime> & runtime,
         const bw24_cpu_expert_v2 * experts,
         std::vector<QuantizedActivation> & down_activations,
         std::vector<std::uint8_t> & down_activation_finite,
         int n_ff,
-        int n_embd,
-        int threads) {
+        int n_embd) {
     const int n_subset = static_cast<int>(subset.size());
-    if (n_subset == 0) return;
-#pragma omp parallel num_threads(threads)
-    {
 #pragma omp for schedule(dynamic, 16)
-        for (int task = 0; task < n_subset * n_ff * 2; ++task) {
-            const int expert = subset[static_cast<std::size_t>(task / (n_ff * 2))];
-            const int local = task % (n_ff * 2);
-            const bool is_up = local >= n_ff;
-            const int row = local % n_ff;
-            auto & work = runtime[static_cast<std::size_t>(expert)];
-            if (is_up) {
-                dot_row(work.up, row, &work.up_output[row]);
-            } else {
-                dot_row(work.gate, row, &work.gate_output[row]);
-            }
-        }
-
-#pragma omp for schedule(static)
-        for (int index = 0; index < n_subset * n_ff; ++index) {
-            const int expert = subset[static_cast<std::size_t>(index / n_ff)];
-            const int column = index % n_ff;
-            const auto & desc = experts[expert];
-            auto & work = runtime[static_cast<std::size_t>(expert)];
-            const float gate = work.gate_output[column] * desc.gate.scale;
-            const float up = work.up_output[column] * desc.up.scale;
-            work.activation[column] = (gate / (1.0f + std::exp(-gate))) * up;
-        }
-
-#pragma omp for schedule(static)
-        for (int index = 0; index < n_subset; ++index) {
-            const int expert = subset[static_cast<std::size_t>(index)];
-            auto & work = runtime[static_cast<std::size_t>(expert)];
-            auto & activation = down_activations[static_cast<std::size_t>(expert)];
-            down_activation_finite[static_cast<std::size_t>(expert)] =
-                static_cast<std::uint8_t>(
-                    activation.quantize(work.activation.data(), work.down.desc->in_features));
-            work.down.activation_f32 = work.activation.data();
-            work.down.activation_q8 = &activation;
-        }
-
-#pragma omp for schedule(dynamic, 16)
-        for (int task = 0; task < n_subset * n_embd; ++task) {
-            const int expert = subset[static_cast<std::size_t>(task / n_embd)];
-            const int row = task % n_embd;
-            auto & work = runtime[static_cast<std::size_t>(expert)];
-            dot_row(work.down, row, &work.down_output[row]);
+    for (int task = 0; task < n_subset * n_ff * 2; ++task) {
+        const int expert = subset[static_cast<std::size_t>(task / (n_ff * 2))];
+        const int local = task % (n_ff * 2);
+        const bool is_up = local >= n_ff;
+        const int row = local % n_ff;
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        if (is_up) {
+            dot_row(work.up, row, &work.up_output[row]);
+        } else {
+            dot_row(work.gate, row, &work.gate_output[row]);
         }
     }
+
+#pragma omp for schedule(static)
+    for (int index = 0; index < n_subset * n_ff; ++index) {
+        const int expert = subset[static_cast<std::size_t>(index / n_ff)];
+        const int column = index % n_ff;
+        const auto & desc = experts[expert];
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        const float gate = work.gate_output[column] * desc.gate.scale;
+        const float up = work.up_output[column] * desc.up.scale;
+        work.activation[column] = (gate / (1.0f + std::exp(-gate))) * up;
+    }
+
+#pragma omp for schedule(static)
+    for (int index = 0; index < n_subset; ++index) {
+        const int expert = subset[static_cast<std::size_t>(index)];
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        auto & activation = down_activations[static_cast<std::size_t>(expert)];
+        down_activation_finite[static_cast<std::size_t>(expert)] =
+            static_cast<std::uint8_t>(
+                activation.quantize(work.activation.data(), work.down.desc->in_features));
+        work.down.activation_f32 = work.activation.data();
+        work.down.activation_q8 = &activation;
+    }
+
+#pragma omp for schedule(dynamic, 16)
+    for (int task = 0; task < n_subset * n_embd; ++task) {
+        const int expert = subset[static_cast<std::size_t>(task / n_embd)];
+        const int row = task % n_embd;
+        auto & work = runtime[static_cast<std::size_t>(expert)];
+        dot_row(work.down, row, &work.down_output[row]);
+    }
+}
+
+// One parallel region per call. Cached experts compute while reads land; the io wait happens
+// INSIDE the region (master waits on the cv, workers park once at the barrier), so the team
+// pays at most one sleep/wake per call regardless of OMP_WAIT_POLICY, and no thread ever
+// spins between calls. Missing experts then compute, and the final accumulation runs over
+// all experts in index order — byte-identical to the serial path.
+std::uint64_t compute_call_single_region(
+        const std::vector<int> & cached_experts,
+        const std::vector<int> & missing_experts,
+        CallIoState & io_state,
+        std::vector<ExpertRuntime> & runtime,
+        const bw24_cpu_expert_v2 * experts,
+        int n_experts,
+        std::vector<QuantizedActivation> & down_activations,
+        std::vector<std::uint8_t> & down_activation_finite,
+        float * output,
+        int n_ff,
+        int n_embd,
+        int threads) {
+    auto & profile = cpu_profile();
+    std::uint64_t io_wait_ns = 0;
+    const auto region_entry = std::chrono::steady_clock::now();
+#pragma omp parallel num_threads(threads)
+    {
+#pragma omp master
+        profile.stage_entry_ns.fetch_add(elapsed_ns(region_entry), std::memory_order_relaxed);
+        const auto cached_start = std::chrono::steady_clock::now();
+        compute_expert_stages(cached_experts, runtime, experts, down_activations,
+                              down_activation_finite, n_ff, n_embd);
+#pragma omp master
+        profile.stage_cached_ns.fetch_add(
+            elapsed_ns(cached_start), std::memory_order_relaxed);
+#pragma omp master
+        {
+            if (!missing_experts.empty()) {
+                const auto wait_start = std::chrono::steady_clock::now();
+                int read_error = 0;
+                {
+                    std::unique_lock<std::mutex> lock(io_state.mutex);
+                    io_state.ready_cv.wait(lock, [&io_state] {
+                        return io_state.outstanding_experts == 0;
+                    });
+                    read_error = io_state.first_error;
+                }
+                io_wait_ns = elapsed_ns(wait_start);
+                profile.io_ns.fetch_add(io_wait_ns, std::memory_order_relaxed);
+                const auto insert_start = std::chrono::steady_clock::now();
+                if (read_error == 0) {
+                    for (const int expert : missing_experts) {
+                        auto & work = runtime[static_cast<std::size_t>(expert)];
+                        for (auto * projection : { &work.gate, &work.up, &work.down }) {
+                            if (!projection->needs_read) continue;
+                            weight_cache().insert(
+                                projection->cache_key, projection->weight_owner);
+                            profile.read_projections.fetch_add(1, std::memory_order_relaxed);
+                            profile.read_bytes.fetch_add(
+                                projection->desc->byte_len, std::memory_order_relaxed);
+                        }
+                    }
+                }
+                profile.insert_ns.fetch_add(
+                    elapsed_ns(insert_start), std::memory_order_relaxed);
+            }
+        }
+#pragma omp barrier
+        const auto missing_start = std::chrono::steady_clock::now();
+        compute_expert_stages(missing_experts, runtime, experts, down_activations,
+                              down_activation_finite, n_ff, n_embd);
+#pragma omp master
+        profile.stage_missing_ns.fetch_add(
+            elapsed_ns(missing_start), std::memory_order_relaxed);
+        const auto accum_start = std::chrono::steady_clock::now();
+#pragma omp for schedule(static)
+        for (int row = 0; row < n_embd; ++row) {
+            float sum = 0.0f;
+            for (int expert = 0; expert < n_experts; ++expert) {
+                const float scale = experts[expert].route_weight * experts[expert].down.scale;
+                sum = std::fma(runtime[expert].down_output[row], scale, sum);
+            }
+            output[row] = sum;
+        }
+#pragma omp master
+        profile.stage_accum_ns.fetch_add(elapsed_ns(accum_start), std::memory_order_relaxed);
+    }
+    return io_wait_ns;
 }
 
 } // namespace
@@ -1843,65 +2014,23 @@ int bw24_cpu_moe_token_impl(
         work.up.activation_q8 = &input_activation;
     }
 
+    // One parallel region covers cached compute, the in-region io wait, missing compute, and
+    // accumulation. compute_ns excludes the master's measured io wait so the io/compute split
+    // stays meaningful.
     {
-        const auto compute_start = std::chrono::steady_clock::now();
-        compute_experts(cached_experts, runtime, experts, down_activations,
-                        down_activation_finite, n_ff, n_embd, threads);
-        compute_elapsed += elapsed_ns(compute_start);
+        const auto region_start = std::chrono::steady_clock::now();
+        const std::uint64_t io_wait_ns = compute_call_single_region(
+            cached_experts, missing_experts, io_state, runtime, experts, n_experts,
+            down_activations, down_activation_finite, output, n_ff, n_embd, threads);
+        const std::uint64_t region_ns = elapsed_ns(region_start);
+        compute_elapsed += region_ns > io_wait_ns ? region_ns - io_wait_ns : 0;
     }
-
-    // Consume missing experts in read-completion order. io_ns on this path records the wall
-    // time compute actually spent blocked on reads (the exposed remainder after overlap).
-    std::size_t consumed = 0;
-    std::vector<int> ready_now;
-    while (consumed < missing_experts.size()) {
-        {
-            const auto wait_start = std::chrono::steady_clock::now();
-            std::unique_lock<std::mutex> lock(io_state.mutex);
-            io_state.ready_cv.wait(lock, [&io_state] {
-                return !io_state.ready.empty() || io_state.first_error != 0;
-            });
-            if (io_state.first_error != 0) break;
-            ready_now.swap(io_state.ready);
-            lock.unlock();
-            profile.io_ns.fetch_add(elapsed_ns(wait_start), std::memory_order_relaxed);
-        }
-        const auto insert_start = std::chrono::steady_clock::now();
-        for (const int expert : ready_now) {
-            auto & work = runtime[static_cast<std::size_t>(expert)];
-            for (auto * projection : { &work.gate, &work.up, &work.down }) {
-                if (!projection->needs_read) continue;
-                weight_cache().insert(projection->cache_key, projection->weight_owner);
-                profile.read_projections.fetch_add(1, std::memory_order_relaxed);
-                profile.read_bytes.fetch_add(
-                    projection->desc->byte_len, std::memory_order_relaxed);
-            }
-        }
-        profile.insert_ns.fetch_add(elapsed_ns(insert_start), std::memory_order_relaxed);
-        const auto compute_start = std::chrono::steady_clock::now();
-        compute_experts(ready_now, runtime, experts, down_activations,
-                        down_activation_finite, n_ff, n_embd, threads);
-        compute_elapsed += elapsed_ns(compute_start);
-        consumed += ready_now.size();
-        ready_now.clear();
-    }
-    if (io_state.first_error != 0) {
-        throw std::runtime_error(std::string("CPU expert pipelined pread failed: ")
-            + std::strerror(io_state.first_error));
-    }
-
     {
-        const auto compute_start = std::chrono::steady_clock::now();
-#pragma omp parallel for schedule(static) num_threads(threads)
-        for (int row = 0; row < n_embd; ++row) {
-            float sum = 0.0f;
-            for (int expert = 0; expert < n_experts; ++expert) {
-                const float scale = experts[expert].route_weight * experts[expert].down.scale;
-                sum = std::fma(runtime[expert].down_output[row], scale, sum);
-            }
-            output[row] = sum;
+        std::lock_guard<std::mutex> lock(io_state.mutex);
+        if (io_state.first_error != 0) {
+            throw std::runtime_error(std::string("CPU expert pipelined pread failed: ")
+                + std::strerror(io_state.first_error));
         }
-        compute_elapsed += elapsed_ns(compute_start);
     }
     if (std::find(down_activation_finite.begin(), down_activation_finite.end(), 0)
         != down_activation_finite.end()) {

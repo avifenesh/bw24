@@ -103,6 +103,36 @@ Estimate after phases 1+2: **~7.5–8 tok/s**.
 
 Estimate after phase 3: **~9–10 tok/s**.
 
+## Phase 3.5 — memory-system engineering (owner direction 2026-07-22: raid the CRIU/Valkey/fast-systems playbook, not just GPU+pipe)
+
+Measured context: the io/compute overlap pipeline was retired — concurrent full-rate O_DIRECT
+DMA across a 20 GiB rotating buffer space inflates the compute loops themselves ~2.7x
+(stage-split counters; scheduling, power, preemption, and allocator mechanisms each ruled out
+by direct measurement). Serial phases each get the fabric to themselves. The winning arm
+(serial + RawBlockPool buffer recycling + paired kernels + scratch pooling) measured
+4.92/4.72 vs 4.50 control median. The system levers now ranked:
+
+- **THP arena (CRIU trick: pre-created, never-unmapped, hugepage-backed mappings)** — pool
+  blocks 2 MB-aligned + `MADV_HUGEPAGE`; compute streams the resident set through thousands
+  instead of millions of TLB entries. Built; e2e pair queued.
+- **Persistent warm cache (Valkey trick: the store outlives the client)** — move the expert
+  cache into a `memfd` segment with a persisted index (device/inode/offset/len keys + block
+  offsets); a restarting process `SCM_RIGHTS`-receives or re-opens the memfd and starts with
+  a warm 20 GiB cache: no refill io, no 128-token warmup churn. Design sketch:
+  `memfd_create` + `ftruncate(cache_bytes)`, block allocator inside the segment, index as a
+  flat table in the segment header, generation-pinned like the mirror map (fail closed on
+  source-tree mismatch). Restart hit rate goes from 0% to steady-state instantly.
+- **io_uring read backend (Valkey 8's io model)** — registered buffers (the pool registers
+  once), SQPOLL on an E-core, zero-syscall submissions; replaces the 8-thread pread army.
+  Already the sanctioned next storage comparison in the lane rules.
+- **resctrl CAT/MBA probe** — RDT flags present on the 275HX, resctrl not mounted. If L3/MBA
+  partitioning works on this client part, fence io DMA away from compute's LLC slice — the
+  direct counter to the measured fabric interference; could resurrect overlap later.
+- **prefetchnta weight streaming** in the paired kernels — read-once weights shouldn't evict
+  the LLC hot set. Microbenchable without GPU.
+- Read coalescing: dead — layout is per-projection files (`blkN-{gate,up,down}-mixed.bin`),
+  an expert's three reads hit three files by construction.
+
 ## Phase 4 — grind and re-stack
 
 - Kernel: pair-decode port for the top qtype from P0.A (Q2_K pattern → Q3_K/NVFP4).
