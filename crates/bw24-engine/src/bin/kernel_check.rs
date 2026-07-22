@@ -47,6 +47,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("rms_norm     maxdiff={d:.2e} {}", if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
     }
 
+    // --- warp-per-row qkv norm (BW24_QKVNORM_W, prefill rows>=64): CPU-oracle gate on the
+    // rms_norm_qkv dispatch at prefill depth (picks rms_norm_qkv_w4_f32). Own numeric config
+    // (float4-lane reduce order) -> f32-band tolerance vs CPU, not bit-identity. ---
+    {
+        let (hd, nh, nkv, t) = (512usize, 4usize, 1usize, 32usize);
+        let eps = 1e-6f32;
+        let (rq, rk) = (nh * t, nkv * t);
+        let q: Vec<f32> = (0..rq * hd).map(|i| pr(i + 29)).collect();
+        let k: Vec<f32> = (0..rk * hd).map(|i| pr(i + 31)).collect();
+        let v: Vec<f32> = (0..rk * hd).map(|i| pr(i + 37)).collect();
+        let wq: Vec<f32> = (0..hd).map(|i| 0.5 + pr(i + 41) * 0.1).collect();
+        let wk: Vec<f32> = (0..hd).map(|i| 0.5 + pr(i + 43) * 0.1).collect();
+        let wv: Vec<f32> = vec![1.0; hd];
+        let cpu_norm = |x: &[f32], w: &[f32], rows: usize| -> Vec<f32> {
+            let mut o = vec![0f32; rows * hd];
+            for r in 0..rows {
+                let xr = &x[r * hd..(r + 1) * hd];
+                let ms: f32 = xr.iter().map(|v| v * v).sum::<f32>() / hd as f32;
+                let s = 1.0 / (ms + eps).sqrt();
+                for i in 0..hd { o[r * hd + i] = xr[i] * s * w[i]; }
+            }
+            o
+        };
+        let (cq, ck, cv) = (cpu_norm(&q, &wq, rq), cpu_norm(&k, &wk, rk), cpu_norm(&v, &wv, rk));
+        let qd = e.htod(&q)?; let kd = e.htod(&k)?; let vd = e.htod(&v)?;
+        let wqd = e.htod(&wq)?; let wkd = e.htod(&wk)?; let wvd = e.htod(&wv)?;
+        let mut dq = e.zeros(rq * hd)?; let mut dk = e.zeros(rk * hd)?; let mut dv = e.zeros(rk * hd)?;
+        e.rms_norm_qkv(&qd, &kd, &vd, &wqd, &wkd, &wvd, &mut dq, &mut dk, &mut dv, hd, rq, rk, eps)?;
+        let d = maxdiff(&cq, &e.dtoh(&dq)?)
+            .max(maxdiff(&ck, &e.dtoh(&dk)?))
+            .max(maxdiff(&cv, &e.dtoh(&dv)?));
+        println!("rms_norm_qkv_w4 (prefill rows) maxdiff={d:.2e} {}",
+                 if d < 1e-4 { "OK" } else { fails += 1; "FAIL" });
+    }
+
     // --- RANK3 LEVER (add+rmsnorm fuse): add_rms_norm must be BIT-IDENTICAL to add_f32 then
     //     rms_norm_f32 (same residual `res` AND same normed `dst`). ---
     {

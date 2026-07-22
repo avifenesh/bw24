@@ -246,14 +246,18 @@ impl Engine {
                 (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 256 == 0
             }
             // Q8_0 dense projections (35B attn/ssm/shexp): opt-in only (BW24_PP_Q8MMQ=1), its own
-            // numeric config vs qmatvec_gemm_q8_0. in_f % 32 == 0 (integral q8_0 blocks per row).
+            // numeric config vs qmatvec_gemm_q8_0. in_f % 256 == 0: MMQ_ITER_K=256 loads 8-block
+            // groups, so a non-multiple row would read a garbage weight tail (fp16 d bytes can be
+            // NaN-pattern, and NaN * 0-padded-activation = NaN — the 26B ffn_down lesson).
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q8_0 => {
-                mmq_q8_enabled() && w.in_features() % 32 == 0
+                mmq_q8_enabled() && w.in_features() % 256 == 0
             }
             // Q4_0 dense projections (gemma QAT ggufs): BW24_PP_Q4MMQ seam. Both weight layouts
-            // (raw 18B blocks and the BW24_Q4RP split-plane repack) have loader arms.
+            // (raw 18B blocks and the BW24_Q4RP split-plane repack) have loader arms. Same
+            // in_f % 256 == 0 tail rule as Q8_0 (26B ffn_down in_f=2112 NaN'd on the %32 gate);
+            // non-multiples fall back to the hand-rolled qmatvec_gemm_q4_0[_rp].
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_Q4_0 => {
-                mmq_q4_enabled() && w.in_features() % 32 == 0
+                mmq_q4_enabled() && w.in_features() % 256 == 0
             }
             _ => false,
         }
@@ -451,7 +455,11 @@ impl Engine {
                 )
             };
             if rc != 0 {
-                return Err(format!("bw24_mmq_q4_0(rp={rp}) rc={rc}").into());
+                return Err(format!(
+                    "bw24_mmq_q4_0(rp={rp}, in_f={in_f}, out_f={out_f}, m={m}, wbytes={}) rc={rc}",
+                    bytes.len()
+                )
+                .into());
             }
         }
         Ok(y)

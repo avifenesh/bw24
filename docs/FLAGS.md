@@ -193,6 +193,8 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_MMQ_W4A8=0` | int8 GEMM prefill everywhere (no W4A8 MMQ tile) | W4A8 default 2026-07-05 (1.54–1.9x prime) |
 | `BW24_PP_Q8MMQ=0` | hand-rolled `qmatvec_gemm_q8_0` tiling GEMM for Q8_0 prefill (no int8-MMA MMQ) | default 2026-07-09 (35B pp 2456→3069) |
 | `BW24_PP_Q4MMQ=0` | hand-rolled `qmatvec_gemm_q4_0[_rp]` tiling GEMM for Q4_0 prefill (no int8-MMA MMQ) | default 2026-07-22 (gemma-12B lane) |
+| `BW24_FA512_STAGE=f32` | f32-staged hd512 FA prefill kernel (no bf16 pre-convert; bit-identical either way) | bf16 default 2026-07-22 (12B pp +23%) |
+| `BW24_QKVNORM_W=0` | block-tree `rms_norm_qkv_f32` at prefill depth (no warp-per-row float4 twin) | default 2026-07-22 (12B lane) |
 | `BW24_MOE_Q8=0` | Stage-A f32-dequant expert kernels — restores BYTE-identity for the MOE_GATE oracle | dp4a experts 2026-07-06 (+22%) |
 | `BW24_MOE_Q8_KQ=0` | exclude k-quant arms from the q8 expert dot set | 2026-07-06 (+9 tok/s 35B) |
 | `BW24_MOE_DEC=0` | `_em` per-token re-decode expert dot (no decode-once) | dec default 2026-07-05 (3.34x 35B prefill) |

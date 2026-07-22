@@ -776,6 +776,45 @@ extern "C" __global__ void rms_norm_qkv_f32(const float* __restrict__ q, const f
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
 }
 
+// ---- warp-per-row twin of rms_norm_qkv_f32 (prefill T>=16): the block-per-row form runs
+// 17k+ tiny blocks of rms_block() threads over 512-col head rows at ~92GB/s (launch/reduce
+// latency dominates the 2KB/row payload). Here: 8 warps/block, one ROW per warp, float4
+// loads, warp-shuffle reduce only. OWN NUMERIC CONFIG (float4-lane partial sums reduce in a
+// different order than the block tree) — battery-gated, BW24_QKVNORM_W=0 reverts. ----
+extern "C" __global__ void rms_norm_qkv_w4_f32(const float* __restrict__ q, const float* __restrict__ k,
+                                               const float* __restrict__ v,
+                                               const float* __restrict__ wq, const float* __restrict__ wk,
+                                               const float* __restrict__ wv,
+                                               float* __restrict__ dq, float* __restrict__ dk,
+                                               float* __restrict__ dv,
+                                               int ncols, int rq, int rk, int rv, float eps) {
+    const int row  = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= rq + rk + rv) return;
+    const float* xr; const float* w; float* dr;
+    if (row < rq)           { xr = q + (size_t)row * ncols;              w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { int r = row - rq;      xr = k + (size_t)r * ncols; w = wk; dr = dk + (size_t)r * ncols; }
+    else                    { int r = row - rq - rk; xr = v + (size_t)r * ncols; w = wv; dr = dv + (size_t)r * ncols; }
+    const int nc4 = ncols >> 2;
+    const float4* x4 = (const float4*)xr;
+    float sum = 0.0f;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i];
+        sum += xv.x * xv.x + xv.y * xv.y + xv.z * xv.z + xv.w * xv.w;
+    }
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o);
+    const float scale = rsqrtf(sum / ncols + eps);
+    const float4* w4 = (const float4*)w;
+    float4* d4 = (float4*)dr;
+    for (int i = lane; i < nc4; i += 32) {
+        float4 xv = x4[i]; float4 wv4 = w4[i];
+        float4 ov;
+        ov.x = xv.x * scale * wv4.x; ov.y = xv.y * scale * wv4.y;
+        ov.z = xv.z * scale * wv4.z; ov.w = xv.w * scale * wv4.w;
+        d4[i] = ov;
+    }
+}
+
 // ---- E4B glue fusion wave 3: rms_norm_qkv + rope_neox2 in ONE launch. Row segments as in
 // rms_norm_qkv_f32; after the norm store, q rows (seg 0) and k rows (seg 1) rope in-block
 // (rope_neox math verbatim on the normed row; barrier between store and rope read). ----

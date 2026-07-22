@@ -3176,6 +3176,28 @@ impl Engine {
                         dq: &mut CudaSlice<f32>, dk: &mut CudaSlice<f32>, dv: &mut CudaSlice<f32>,
                         ncols: usize, rq: usize, rk: usize, eps: f32)
                         -> Result<(), Box<dyn std::error::Error>> {
+        // Warp-per-row float4 twin (default; BW24_QKVNORM_W=0 reverts): the block-per-row form
+        // spends 767us/launch on 17k+ 2KB rows at prefill depth (launch/reduce latency-bound,
+        // ~92GB/s). Own numeric config (reduce order differs) — battery-gated.
+        static WARP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let warp_on = *WARP_ON.get_or_init(|| {
+            std::env::var("BW24_QKVNORM_W").map(|v| v != "0").unwrap_or(true)
+        });
+        // rows >= 64 keeps decode (nh + 2*nkv rows) on the block-tree kernel — decode/verify/
+        // replay numerics are untouched on every model; only prefill depth takes the new config.
+        if warp_on && ncols % 4 == 0 && rq + 2 * rk >= 64 {
+            let f = self.func("rms_norm_qkv_w4_f32");
+            let rows = (rq + 2 * rk) as u32;
+            let cfg = LaunchConfig {
+                grid_dim: (rows.div_ceil(8), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0,
+            };
+            let (nc, rqi, rki, rvi, e) = (ncols as i32, rq as i32, rk as i32, rk as i32, eps);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv)
+             .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         let f = self.func("rms_norm_qkv_f32");
         let grid = (rq + 2 * rk) as u32;
         let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
