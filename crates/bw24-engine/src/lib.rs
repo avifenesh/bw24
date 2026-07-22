@@ -4107,8 +4107,12 @@ impl Engine {
         }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
-        // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not aq/ad.
-        if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) && !self.verify_exact_on() {
+        // q8_1 D4 for NVFP4 W4A8, FP8/UE4M3 for W4A4, q8_1 DS4 for Q4_K/Q5_K), so x_fallback not
+        // aq/ad. Callers that pre-quantized and dropped the f32 input pass an EMPTY x_fallback
+        // (E4B's fusion port: h = zeros(0)) — the length guard keeps those on the aq/ad GEMM
+        // below instead of feeding the MMQ quantizer a 0-byte buffer (illegal address).
+        if m >= 16 && w.out_features() >= 128 && self.mmq_supports(w) && !self.verify_exact_on()
+            && x_fallback.len() >= m * w.in_features() {
             return self.qmatvec_mmq(w, x_fallback, m);
         }
         // Stage-C FP4 prefill (BW24_FP4): native mxf4 GEMM needs the f32 activation (FP4-quant differs
