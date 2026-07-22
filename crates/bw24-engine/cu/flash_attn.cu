@@ -1501,6 +1501,211 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_w_bf
 // ===================================================================== //
 #define N_WARPS_512 2
 #define BLOCK_Q_512 (M_ROWS*N_WARPS_512)   // 32 query rows per CTA
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_w_bf16_g4o2(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal, int window)
+{
+    constexpr int HEAD_DIM  = 256;
+    constexpr int O_NBLK    = HEAD_DIM / N_KEYS;
+    const int warp = threadIdx.y;                       // 0..3 = head-in-group
+    const int lane = threadIdx.x;
+    const int head    = blockIdx.y * 4 + warp;
+    const int kv_head = 0;                              // MQA only (dispatch-guarded)
+    const int q_base  = blockIdx.x * M_ROWS;            // 16 q-rows shared by all 4 heads
+    const int qrow_base = q_base;
+    if (q_base >= T) return;
+    const int nqw = min(M_ROWS, T - qrow_base);
+
+    extern __shared__ char smem_g4o2[];
+    // OCCUPANCY-2 variant (2026-07-22, the llama hd256 mechanism): ONE 16KB K/V buffer inside
+    // the Q-stage region (dead after load_q_frags) — K staged for GEMM0, then V overwrites it
+    // for GEMM1 (+1 barrier per tile). CTA smem ~36.5KB -> 2 CTA/SM; cross-CTA overlap hides
+    // the serial staging the way llama's small-smem config does.
+    __nv_bfloat16* sQ = (__nv_bfloat16*)smem_g4o2;                // 4*M_ROWS*HEAD_DIM (transient)
+    __nv_bfloat16* sKb = sQ;                                      // BK*HEAD_DIM (16KB)
+    __nv_bfloat16* sVb = sQ + BK*HEAD_DIM;                        // BK*HEAD_DIM (16KB)
+    __nv_bfloat16* sP = sQ + 4*M_ROWS*HEAD_DIM;                   // 4*M_ROWS*BK
+    float* sL = (float*)(sP + 4*M_ROWS*BK);                       // 4*M_ROWS f32
+    __nv_bfloat16* sQw = sQ + warp*M_ROWS*HEAD_DIM;
+    __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
+    float* sLw = sL + warp*M_ROWS;
+
+    const int causal_i = causal;
+    const int q_pos0w = (T_kv - T) + qrow_base;
+    const int bt  = warp*WARP_SZ + lane;
+    const int bsz = N_WARPS*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+    constexpr int RCH = HEAD_DIM / 8;
+
+    // ---- per-warp: stage own head's 16-row Q, hold fragments in registers ----
+    ATile Qf[HEAD_DIM / K_STEP];
+    load_q_frags_bf16<256>(Qf, Q, sQw, qrow_base, nqw, head, n_head, head_dim, lane);
+    __syncthreads();
+
+    CTile O_acc[O_NBLK];
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=O_acc[c].x[1]=O_acc[c].x[2]=O_acc[c].x[3]=0.0f; }
+    float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    const int q_pos_max = (T_kv - T) + q_base + (M_ROWS - 1);
+    const int k0_lo = (window > 0) ? (((T_kv - T) + q_base) - (window - 1)) : 0;
+    int k0 = 0;
+    if (window > 0 && k0_lo > 0) { while (k0 + BK <= k0_lo) k0 += BK; }
+    for (; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- stage K and V together at tile start (two 16KB halves of the dead Q region) ----
+        for (int i = bt; i < BK*RCH; i += bsz) {
+            int kk = i / RCH, dc = i % RCH;
+            const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim;
+            ((int4*)sKb)[i] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
+            ((int4*)sVb)[i] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
+        }
+        __syncthreads();
+
+        CTile Sc[BK/N_KEYS];
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C0, C1;
+            C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+            C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+            #pragma unroll
+            for (int kt = 0; kt < HEAD_DIM / K_STEP; ++kt) {
+                ATile Kt;
+                ld_A(Kt, sKb + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf[kt], Blo);
+                mma_bf16(C1, Qf[kt], Bhi);
+            }
+            Sc[kg/N_KEYS + 0] = C0;
+            Sc[kg/N_KEYS + 1] = C1;
+        }
+
+        float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int col = g*N_KEYS + c0 + (l & 1);
+                int row = (l < 2) ? r_lo : r_hi;
+                int q_pos = q_pos0w + row;
+                float s = Sc[g].x[l] * scale;
+                if (col >= nk) s = NEG_INF;
+                if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                if (window > 0 && (k0 + col) < q_pos - (window - 1)) s = NEG_INF;
+                Sc[g].x[l] = s;
+                if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
+                else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
+            }
+        }
+        s_tile_max_lo = row_max4(s_tile_max_lo);
+        s_tile_max_hi = row_max4(s_tile_max_hi);
+
+        float m_prev_lo = m_lo, m_prev_hi = m_hi;
+        float m_new_lo = fmaxf(m_prev_lo, s_tile_max_lo);
+        float m_new_hi = fmaxf(m_prev_hi, s_tile_max_hi);
+        float alpha_lo = (m_prev_lo == NEG_INF) ? 0.0f : exp2f((m_prev_lo - m_new_lo) * LOG2E);
+        float alpha_hi = (m_prev_hi == NEG_INF) ? 0.0f : exp2f((m_prev_hi - m_new_hi) * LOG2E);
+
+        float l_part_lo = 0.0f, l_part_hi = 0.0f;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float mn = (l < 2) ? m_new_lo : m_new_hi;
+                float s  = Sc[g].x[l];
+                float p  = (s == NEG_INF) ? 0.0f : exp2f((s - mn) * LOG2E);
+                Sc[g].x[l] = p;
+                if (l < 2) l_part_lo += p; else l_part_hi += p;
+            }
+        }
+        l_part_lo = row_sum4(l_part_lo);
+        l_part_hi = row_sum4(l_part_hi);
+        l_lo = l_lo * alpha_lo + l_part_lo;
+        l_hi = l_hi * alpha_hi + l_part_hi;
+        m_lo = m_new_lo; m_hi = m_new_hi;
+
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            sPw[r_lo*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[0]);
+            sPw[r_lo*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[1]);
+            sPw[r_hi*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[2]);
+            sPw[r_hi*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[3]);
+        }
+        __syncwarp();
+
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) {
+            O_acc[c].x[0] *= alpha_lo; O_acc[c].x[1] *= alpha_lo;
+            O_acc[c].x[2] *= alpha_hi; O_acc[c].x[3] *= alpha_hi;
+        }
+
+        for (int d0 = 0; d0 < HEAD_DIM; d0 += 2*N_KEYS) {
+            CTile Clo, Chi;
+            Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
+            Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < BK; kk += K_STEP) {
+                ATile A; ATile Bt;
+                ld_A(A, sPw + kk, BK/2);
+                ld_A_trans(Bt, sVb + kk*HEAD_DIM + d0, HEAD_DIM/2);
+                BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                mma_bf16(Clo, A, Blo);
+                mma_bf16(Chi, A, Bhi);
+            }
+            O_acc[(d0/N_KEYS) + 0].x[0] += Clo.x[0]; O_acc[(d0/N_KEYS) + 0].x[1] += Clo.x[1];
+            O_acc[(d0/N_KEYS) + 0].x[2] += Clo.x[2]; O_acc[(d0/N_KEYS) + 0].x[3] += Clo.x[3];
+            O_acc[(d0/N_KEYS) + 1].x[0] += Chi.x[0]; O_acc[(d0/N_KEYS) + 1].x[1] += Chi.x[1];
+            O_acc[(d0/N_KEYS) + 1].x[2] += Chi.x[2]; O_acc[(d0/N_KEYS) + 1].x[3] += Chi.x[3];
+        }
+        __syncthreads();
+    }
+
+    if (c0 == 0) { sLw[r_lo] = l_lo; sLw[r_hi] = l_hi; }
+    __syncwarp();
+
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) {
+        #pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int r = CTile::get_i(l);
+            int d = c*N_KEYS + CTile::get_j(l);
+            if (r < nqw) {
+                float linv = (sLw[r] > 0.0f) ? (1.0f / sLw[r]) : 0.0f;
+                O[((size_t)(qrow_base + r) * n_head + head) * head_dim + d] = O_acc[c].x[l] * linv;
+            }
+        }
+    }
+}
+
+// ===================================================================== //
+//  KERNEL 1d : fa_prefill_f32_hd512 — gemma4 GLOBAL layers (hd 512).    //
+//  hd512 cannot ride the hd256 bodies: Q-in-reg needs 32 A-frags and    //
+//  register-O 64 CTiles (256+128 regs — spills). This variant:          //
+//    * BLOCK_Q=32 (2 warps x 16 rows), Q staged ONCE per CTA in smem    //
+//      (sQ 32x512 bf16) and re-ldmatrix'd per K-step — no persistent    //
+//      Q fragments.                                                     //
+//    * grid.z = 2 O-HALVES: each CTA recomputes the FULL 512-dim QK     //
+//      scores (softmax needs the whole dot) but stages/accumulates only //
+//      its 256-dim V half — register-O stays 32 CTiles. GEMM0 is run    //
+//      twice per (q,k) pair across the grid; globals are 8/48 layers    //
+//      and the naive kernel this replaces was ~50x slower.              //
+//  Softmax = the pp register recipe (row m/l in regs, 4-lane reduce).   //
+//  smem: sQ 32KB + sK 32KB + sV(half) 16KB + sP 2KB + sL — ~82.2KB     //
+//  -> 1 CTA/SM; grid (ceil(T/32), n_head, 2) covers the 82 SMs at any   //
+//  practical T.                                                         //
+// ===================================================================== //
+#define N_WARPS_512 2
+#define BLOCK_Q_512 (M_ROWS*N_WARPS_512)   // 32 query rows per CTA
 extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_f32_hd512(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,

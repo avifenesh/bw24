@@ -5680,9 +5680,19 @@ impl Engine {
             });
         if g4 {
             const SP_M: usize = 16;
-            let f = self.func("fa_prefill_w_bf16_g4");
-            let shmem = (2 * (2 * BK * head_dim + 4 * SP_M * head_dim + 4 * SP_M * BK)
-                       + 4 * (4 * SP_M)) as u32;
+            // Occupancy-2 twin (BW24_FAW_O2=0 reverts): one shared K/V buffer inside the dead
+            // Q-stage region -> ~36.5KB smem, 2 CTA/SM (the llama hd256 mechanism). Bit-identical.
+            static O2_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let o2 = *O2_ON.get_or_init(|| {
+                std::env::var("BW24_FAW_O2").map(|v| v != "0").unwrap_or(true)
+            });
+            let f = self.func(if o2 { "fa_prefill_w_bf16_g4o2" } else { "fa_prefill_w_bf16_g4" });
+            let shmem = if o2 {
+                (2 * (4 * SP_M * head_dim + 4 * SP_M * BK) + 4 * (4 * SP_M)) as u32
+            } else {
+                (2 * (2 * BK * head_dim + 4 * SP_M * head_dim + 4 * SP_M * BK)
+                    + 4 * (4 * SP_M)) as u32
+            };
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             let cfg = LaunchConfig {
