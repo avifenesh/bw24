@@ -225,14 +225,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0);
+        // BW24_CPU_EXPERT_FREEZE_PROFILE: restage a saved residency set and skip the warmup
+        // entirely (the warmup streams ~200 GB through the spill path; a restage reads only
+        // the chosen blocks). A run that still warms up writes the profile for the next one.
+        let freeze_profile = std::env::var("BW24_CPU_EXPERT_FREEZE_PROFILE")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from);
         let gate_label = if freeze_warmup_tokens > 0 {
-            println!(
-                "[moe-cache] warming {freeze_warmup_tokens} discarded decode tokens before fixed residency"
-            );
-            let _ = model.generate(&e, &prompt, freeze_warmup_tokens + 1)?;
-            e.stream().synchronize()?;
-            model.freeze_cpu_expert_residency(&e)?;
-            "post-freeze verify-prefill"
+            let restored = match &freeze_profile {
+                Some(path) => model.restore_cpu_expert_residency_profile(&e, path)?,
+                None => false,
+            };
+            if restored {
+                e.stream().synchronize()?;
+                "post-freeze verify-prefill"
+            } else {
+                println!(
+                    "[moe-cache] warming {freeze_warmup_tokens} discarded decode tokens before fixed residency"
+                );
+                let _ = model.generate(&e, &prompt, freeze_warmup_tokens + 1)?;
+                e.stream().synchronize()?;
+                model.freeze_cpu_expert_residency(&e)?;
+                if let Some(path) = &freeze_profile {
+                    model.save_cpu_expert_residency_profile(&e, path)?;
+                }
+                "post-freeze verify-prefill"
+            }
         } else {
             "verify-prefill"
         };

@@ -1627,6 +1627,116 @@ impl HybridModel {
         sizes
     }
 
+    /// Persist the frozen residency set so a later process can restage it directly and skip
+    /// the profiling warmup. Plain text: a versioned header binding slot geometry, then one
+    /// `layer proj ex` triple per line. A mismatched or stale profile is rejected at load
+    /// (header check) or degrades to fewer restaged blocks (per-id checks); either way the
+    /// post-freeze argmax gate still validates the serving assignment.
+    pub fn save_cpu_expert_residency_profile(
+        &self,
+        e: &Engine,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(ids) = e.export_moe_residency() else {
+            return Err("no MoE residency cache to persist".into());
+        };
+        let mut body = format!(
+            "bw24-freeze-profile v1 max_block={} blocks={}\n",
+            self.max_moe_block(),
+            ids.len()
+        );
+        for (layer, proj, ex) in &ids {
+            body.push_str(&format!("{layer} {proj} {ex}\n"));
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, path)?;
+        println!(
+            "[moe-cache] freeze profile saved: {} blocks -> {}",
+            ids.len(),
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// Restage a saved freeze profile and freeze immediately, skipping the profiling warmup.
+    /// Returns false (leaving the cache untouched for a normal warmup) when the profile is
+    /// missing or its header does not match this model's slot geometry.
+    pub fn restore_cpu_expert_residency_profile(
+        &self,
+        e: &Engine,
+        path: &std::path::Path,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::hybrid::Ffn;
+        use crate::moe_cache::BlockId;
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Ok(false);
+        };
+        let mut lines = content.lines();
+        let Some(header) = lines.next() else { return Ok(false) };
+        let expected = format!("bw24-freeze-profile v1 max_block={}", self.max_moe_block());
+        if !header.starts_with(&expected) {
+            println!(
+                "[moe-cache] freeze profile ignored (geometry mismatch): {}",
+                path.display()
+            );
+            return Ok(false);
+        }
+        let mut by_layer: std::collections::HashMap<u16, Vec<BlockId>> =
+            std::collections::HashMap::new();
+        for line in lines {
+            let mut fields = line.split_whitespace();
+            let (Some(layer), Some(proj), Some(ex)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let (Ok(layer), Ok(proj), Ok(ex)) =
+                (layer.parse::<u16>(), proj.parse::<u8>(), ex.parse::<u16>())
+            else {
+                continue;
+            };
+            by_layer
+                .entry(layer)
+                .or_default()
+                .push(BlockId::new(layer, proj, ex));
+        }
+        let requested: usize = by_layer.values().map(Vec::len).sum();
+        if requested == 0 {
+            return Ok(false);
+        }
+        let max_block = self.max_moe_block();
+        let mut restaged = 0usize;
+        let mut stage_layer = |layer_index: u16,
+                               ffn: &Ffn|
+         -> Result<(), Box<dyn std::error::Error>> {
+            let Ffn::Moe(m) = ffn else { return Ok(()) };
+            let Some(ids) = by_layer.get(&layer_index) else {
+                return Ok(());
+            };
+            e.with_moe_cache(max_block, |cache, eng| {
+                for id in ids {
+                    if cache.restage_block(*id, m, eng)? {
+                        restaged += 1;
+                    }
+                }
+                Ok(())
+            })
+        };
+        for (index, layer) in self.layers.iter().enumerate() {
+            stage_layer(index as u16, &layer.ffn)?;
+        }
+        if let Some(mtp) = self.mtp.as_ref() {
+            stage_layer(u16::MAX, &mtp.ffn)?;
+        }
+        e.freeze_moe_cache();
+        println!(
+            "[moe-cache] freeze profile restored: {restaged}/{requested} blocks restaged from {}",
+            path.display()
+        );
+        Ok(true)
+    }
+
     /// Freeze the heterogeneous CPU/GPU split after the caller's discarded profile warmup.
     pub fn freeze_cpu_expert_residency(
         &self,

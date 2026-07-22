@@ -1239,6 +1239,16 @@ impl Engine {
         }
     }
 
+    /// The current residency set as (layer, proj, ex) triples, or None if no cache was built.
+    /// Never constructs a cache.
+    pub fn export_moe_residency(&self) -> Option<Vec<(u16, u8, u16)>> {
+        self.moe_cache
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(crate::moe_cache::MoeSlotCache::export_residency)
+    }
+
     pub(crate) fn moe_cache_frozen(&self) -> bool {
         self.moe_cache
             .lock()

@@ -1152,6 +1152,53 @@ impl MoeSlotCache {
     /// still applies). Runs at most once per layer (success or not). The H2D copies are the SAME
     /// stage_expert bytes the miss path would issue — bit-identity unchanged; this only front-loads
     /// them so the device-dispatch fast path fires from token 0 instead of after the SLRU fill.
+    /// Frozen residency as (layer, proj, ex) triples in slot order, for the freeze-profile
+    /// sidecar. Slot order keeps the restage admit sequence close to the original placement.
+    pub fn export_residency(&self) -> Vec<(u16, u8, u16)> {
+        self.occupant
+            .iter()
+            .flatten()
+            .map(|id| (id.layer, id.proj, id.ex))
+            .collect()
+    }
+
+    /// Admit one specific block from a saved freeze profile, reading through the layer's
+    /// established expert source (the same recipe as `prewarm_layer`, but id-targeted so a
+    /// persisted residency set restages without a profiling warmup). Returns false for ids
+    /// that no longer resolve (changed plan, pruned expert) — the caller counts and reports.
+    pub fn restage_block(&mut self, id: BlockId, m: &crate::hybrid::MoeWeights, e: &Engine)
+                         -> Result<bool, Box<dyn std::error::Error>> {
+        if self.table.contains_key(&id) {
+            return Ok(true);
+        }
+        let exps = match id.proj {
+            PROJ_GATE => &m.gate_exps,
+            PROJ_UP => &m.up_exps,
+            PROJ_DOWN => &m.down_exps,
+            _ => return Ok(false),
+        };
+        if id.ex as usize >= exps.n_expert {
+            return Ok(false);
+        }
+        if m.active_experts.as_ref().is_some_and(|active| !active[id.ex as usize]) {
+            return Ok(false);
+        }
+        if exps.expert_layout(id.ex as usize).len == 0 {
+            return Ok(false);
+        }
+        match exps.expert_source(id.ex as usize) {
+            ExpertSource::Memory { bytes, keepalive } => {
+                self.retain_compute_source(keepalive);
+                self.admit(id, bytes, e)?;
+            }
+            ExpertSource::Disk { fallback, keepalive, .. } => {
+                self.retain_compute_source(Some(keepalive));
+                self.admit(id, fallback, e)?;
+            }
+        }
+        Ok(true)
+    }
+
     pub fn prewarm_layer(&mut self, layer: u16, m: &crate::hybrid::MoeWeights, e: &Engine)
                          -> Result<(), Box<dyn std::error::Error>> {
         if !self.prewarm_tried.insert(layer) { return Ok(()); }
