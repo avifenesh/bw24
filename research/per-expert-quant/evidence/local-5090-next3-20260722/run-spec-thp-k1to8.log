@@ -1,0 +1,94 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] warming 128 discarded speculative tokens at K=3 before fixed residency
+[moe-cache] size-aware fixed slots: 5080 slots in 5 classes, 13.82 GB / 13.82 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[bw24] experimental CPU expert backend: /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/lib-thp.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=43.44 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spec-stats] rounds=74 full_accept=21 len_hist=[6, 21, 19, 28] per_slot=[36/68=0.529 14/47=0.298 4/28=0.143] total=54/143=0.378 tok_per_round=1.730
+[spec-phase] draft=2375.0ms (1.0%) verify-issue=228285.2ms (98.9%) verify-wait=53.2ms (0.0%) commit-host=14.3ms (0.0%) rounds=74
+[moe-cache] residency frozen: 5080 slots, 5080 resident blocks; 1650 complete experts, 48 one-projection fragments, 41 two-projection fragments (130 stranded blocks)
+[moe-cache] frozen MTP residency: 72 blocks, 24 complete experts
+
+[generate]   7 tok in 2.037s = 3.44 tok/s (gen-only; this run's prime 11.506s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=4 len_hist=[0, 4] per_slot=[4/4=1.000] total=4/4=1.000 tok_per_round=2.000
+[spec-phase] draft=15.3ms (1.1%) verify-issue=1399.8ms (98.7%) verify-wait=2.5ms (0.2%) commit-host=0.4ms (0.0%) rounds=4
+
+[generate_spec K=1] 8 tok in 1.689s = 4.14 tok/s (1.21x vs generate; this run's prime 11.112s)
+  acceptance: 4/4 = 100.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 4] per_slot=[3/4=0.750 2/4=0.500] total=5/8=0.625 tok_per_round=2.250
+[spec-phase] draft=25.7ms (1.2%) verify-issue=2171.4ms (98.7%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=2] 8 tok in 2.465s = 2.84 tok/s (0.83x vs generate; this run's prime 11.239s)
+  acceptance: 5/8 = 62.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 2] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000] total=5/10=0.500 tok_per_round=2.250
+[spec-phase] draft=44.3ms (1.8%) verify-issue=2387.5ms (98.0%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=3] 8 tok in 2.701s = 2.59 tok/s (0.75x vs generate; this run's prime 11.161s)
+  acceptance: 5/10 = 50.0%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 1, 1] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000 0/1=0.000] total=5/11=0.455 tok_per_round=2.250
+[spec-phase] draft=52.5ms (1.8%) verify-issue=2785.0ms (98.0%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=4] 8 tok in 3.102s = 2.26 tok/s (0.66x vs generate; this run's prime 11.513s)
+  acceptance: 5/11 = 45.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 1, 1, 0] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000 0/1=0.000 0/0] total=5/11=0.455 tok_per_round=2.250
+[spec-phase] draft=66.7ms (2.5%) verify-issue=2639.9ms (97.4%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=5] 8 tok in 2.974s = 2.35 tok/s (0.68x vs generate; this run's prime 11.069s)
+  acceptance: 5/11 = 45.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 1, 1, 0, 0] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000 0/1=0.000 0/0 0/0] total=5/11=0.455 tok_per_round=2.250
+[spec-phase] draft=61.4ms (2.2%) verify-issue=2742.4ms (97.7%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=6] 8 tok in 3.079s = 2.27 tok/s (0.66x vs generate; this run's prime 11.267s)
+  acceptance: 5/11 = 45.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 1, 1, 0, 0, 0] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000 0/1=0.000 0/0 0/0 0/0] total=5/11=0.455 tok_per_round=2.250
+[spec-phase] draft=56.8ms (2.2%) verify-issue=2565.5ms (97.7%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=7] 8 tok in 2.892s = 2.42 tok/s (0.70x vs generate; this run's prime 11.091s)
+  acceptance: 5/11 = 45.5%   self-consistency: PASS (identical to generate)
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=4 full_accept=2 len_hist=[0, 0, 2, 1, 1, 0, 0, 0, 0] per_slot=[3/4=0.750 2/4=0.500 0/2=0.000 0/1=0.000 0/0 0/0 0/0 0/0] total=5/11=0.455 tok_per_round=2.250
+[spec-phase] draft=51.8ms (2.0%) verify-issue=2568.3ms (97.9%) verify-wait=2.6ms (0.1%) commit-host=0.7ms (0.0%) rounds=4
+
+[generate_spec K=8] 8 tok in 2.886s = 2.43 tok/s (0.71x vs generate; this run's prime 11.358s)
+  acceptance: 5/11 = 45.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[spill-pread] reads=235410 bytes=614757826560 errors=0 short_reads=0 fallbacks=0 buffer_waits=208681 ring_full=387
+[bw24-cpu-cache] hits=464804 misses=279406 hit_rate=62.46% read_GB=734.153 resident_GB=21.472
+[bw24-cpu-profile] calls=58262 prepare=1.793349s io=76.676090s insert=0.319508s compute=98.861355s read_projections=279406 read_GB=734.153 stage_entry=4.352650s stage_cached=78.846897s stage_missing=9.144089s stage_accum=2.241902s
+	Command being timed: "env BW24_NGEN=8 BW24_SPEC_K=all BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.2 BW24_SPEC_PMIN0=1 BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. tools/run_hy3_local_5090.sh /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/lib-thp.so /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv"
+	User time (seconds): 762.77
+	System time (seconds): 129.91
+	Percent of CPU this job got: 165%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 8:57.90
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 48013084
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 7380
+	Minor (reclaiming a frame) page faults: 16347993
+	Voluntary context switches: 6858699
+	Involuntary context switches: 16247
+	Swaps: 0
+	File system inputs: 2654471328
+	File system outputs: 48
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

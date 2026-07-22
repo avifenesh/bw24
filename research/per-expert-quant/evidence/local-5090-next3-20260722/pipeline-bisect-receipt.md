@@ -55,3 +55,29 @@ run-spec K=1..8 self-consistency PASS (candidate), `kernel-check` ALL GREEN, per
 0 fail. Anomaly noted: `spin-arm-3` froze 9,050 CPU-routed experts vs 8,809 elsewhere
 (profile-admit timing sensitivity) — its 4.55 slightly understates that arm.
 Non-scoring contended runs quarantined under `premature-migration-window/`.
+
+## Addendum — the shipped winner (same day, `v2-*`/`final-*`/`v4` logs)
+
+Two earlier probe rounds (`pool-*`, `stage-pipe-stage`) ran a stale binary: the buffer-pool
+commit did not compile (nested-class NSDMI made the deleter non-default-constructible) and
+the build script's exit status went unchecked. Those rounds are void. After the fix:
+
+| arm (serial io, pipeline off) | runs | median |
+|---|---|---:|
+| control (merged main companion) | 4.55 4.50 4.77 4.46 4.48 | 4.50 |
+| + paired kernels + scratch pooling + RawBlockPool buffer recycling | 4.92 4.72 4.67 | **4.72** |
+| + 2 MB-aligned blocks with `MADV_HUGEPAGE` | 4.84 4.80 | **4.82** (N=2) |
+
+Decode-window compute: control 3.0–3.2 s → pool 2.63–2.99 s → THP 2.76–2.85 s; unchanged
+io volume; argmax MATCH on every run. Net **+7% e2e** over the same-day control band and
++4.8% over the 2026-07-21 4.60 receipt, from CPU-side memory-system work only.
+
+Stage-split instrumentation on the pipelined path localized its inflation inside the
+worksharing compute loops of both cached and missing subsets (entry/wait/accumulation
+innocent), with the serial path fast under the identical region structure — consistent with
+concurrent-DMA fabric interference (snoop/invalidation traffic across the rotating buffer
+space). The planned `IO_THREADS=1` trickle-DMA confirmation run was lost to a host
+interruption and has not been obtained; the interference mechanism is the surviving
+explanation, not a confirmed one. The pipeline scaffold (IoPool, per-expert readiness,
+single-region wait) stays in the tree behind the opt-in flag for the cross-call prefetch
+lane, which does not require full-rate concurrency.
