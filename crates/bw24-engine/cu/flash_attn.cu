@@ -1232,8 +1232,8 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body(
     }
 }
 
-template<int HD>
-static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
+template<int HD, int BKT>
+static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
         const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
@@ -1251,13 +1251,13 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
     const int nqw = min(M_ROWS, T - qrow_base);
 
     extern __shared__ char smem_raw[];
-    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // BK*HEAD_DIM
-    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM
-    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // BLOCK_Q*BK
-    float* sS = (float*)(sP + BLOCK_Q*BK);                        // BLOCK_Q*BK f32
-    float* sM = sS + BLOCK_Q*BK;                                  // BLOCK_Q f32
+    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // BKT*HEAD_DIM
+    __nv_bfloat16* sV = sK + BKT*HEAD_DIM;                         // BKT*HEAD_DIM
+    __nv_bfloat16* sP = sV + BKT*HEAD_DIM;                         // BLOCK_Q*BKT
+    float* sS = (float*)(sP + BLOCK_Q*BKT);                        // BLOCK_Q*BKT f32
+    float* sM = sS + BLOCK_Q*BKT;                                  // BLOCK_Q f32
     float* sL = sM + BLOCK_Q;                                     // BLOCK_Q f32
-    __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
+    __nv_bfloat16* sPw = sP + warp*M_ROWS*BKT;
     float* sLw = sL + warp*M_ROWS;
     __nv_bfloat16* sQstage = sK + warp*M_ROWS*HEAD_DIM;
 
@@ -1286,42 +1286,42 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
         const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
         const int k0_lo = (window > 0) ? (((T_kv - T) + q_base) - (window - 1)) : 0;
         int k0_first = 0;
-        if (window > 0 && k0_lo > 0) { while (k0_first + BK <= k0_lo) k0_first += BK; }
+        if (window > 0 && k0_lo > 0) { while (k0_first + BKT <= k0_lo) k0_first += BKT; }
         auto cp_rows = [&](__nv_bfloat16* dst, const __nv_bfloat16* src, int k0p) {
-            for (int i = bt; i < BK*RCH; i += N_WARPS*WARP_SZ) {
+            for (int i = bt; i < BKT*RCH; i += N_WARPS*WARP_SZ) {
                 int kk = i / RCH, dc = i % RCH;
                 const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * head_dim;
                 fa_cp_async_16((int4*)dst + i, (const int4*)(src + rowo) + dc);
             }
         };
         auto sync_rows = [&](__nv_bfloat16* dst, const __nv_bfloat16* src, int k0p, int nkp) {
-            for (int i = bt; i < BK*RCH; i += N_WARPS*WARP_SZ) {
+            for (int i = bt; i < BKT*RCH; i += N_WARPS*WARP_SZ) {
                 int kk = i / RCH, dc = i % RCH;
                 const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * head_dim;
                 ((int4*)dst)[i] = (kk < nkp) ? ((const int4*)(src + rowo))[dc] : zero4;
             }
         };
         bool k_async = (k0_first < T_kv) && !(causal_i && k0_first > q_pos_max)
-                       && (T_kv - k0_first >= BK);
+                       && (T_kv - k0_first >= BKT);
         if (k_async) { cp_rows(sK, K, k0_first); }
         fa_cp_commit();
 
-        for (int k0 = k0_first; k0 < T_kv; k0 += BK) {
-            const int nk = min(BK, T_kv - k0);
+        for (int k0 = k0_first; k0 < T_kv; k0 += BKT) {
+            const int nk = min(BKT, T_kv - k0);
             if (causal_i && k0 > q_pos_max) break;
 
             fa_cp_wait<0>();
             __syncthreads();
             if (!k_async) { sync_rows(sK, K, k0, nk); __syncthreads(); }
-            const bool v_async = (nk == BK);
+            const bool v_async = (nk == BKT);
             if (v_async) { cp_rows(sV, V, k0); }
             fa_cp_commit();
             if (!v_async) { sync_rows(sV, V, k0, nk); }
 
-            CTile Sc[BK/N_KEYS];
+            CTile Sc[BKT/N_KEYS];
             #pragma unroll
-            for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
-            for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            for (int g = 0; g < BKT/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+            for (int kg = 0; kg < BKT; kg += 2*N_KEYS) {
                 CTile C0, C1;
                 C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
                 C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
@@ -1339,21 +1339,21 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
             }
             __syncthreads();                              // all warps done reading sK
             {
-                int kn = k0 + BK;
-                k_async = !(causal_i && kn > q_pos_max) && kn < T_kv && (T_kv - kn >= BK);
+                int kn = k0 + BKT;
+                k_async = !(causal_i && kn > q_pos_max) && kn < T_kv && (T_kv - kn >= BKT);
                 if (k_async) { cp_rows(sK, K, kn); }      // overlaps softmax + GEMM1
                 fa_cp_commit();
             }
             // Boundary/interior split (FA2 fwd_kernel:298-429): interior tiles are full,
             // fully below every row's causal diagonal, and above every row's window bottom.
-            const bool boundary = (nk < BK)
-                || (causal_i && (k0 + BK - 1) > q_pos0w)
-                || (window > 0 && k0 < (q_pos0w + (BLOCK_Q - 1)) - (window - 1) + BK);
+            const bool boundary = (nk < BKT)
+                || (causal_i && (k0 + BKT - 1) > q_pos0w)
+                || (window > 0 && k0 < (q_pos0w + (BLOCK_Q - 1)) - (window - 1) + BKT);
 
             float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
             if (boundary) {
             #pragma unroll
-            for (int g = 0; g < BK/N_KEYS; ++g) {
+            for (int g = 0; g < BKT/N_KEYS; ++g) {
                 #pragma unroll
                 for (int l = 0; l < 4; ++l) {
                     int col = g*N_KEYS + c0 + (l & 1);
@@ -1370,7 +1370,7 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
             }
             } else {
             #pragma unroll
-            for (int g = 0; g < BK/N_KEYS; ++g) {
+            for (int g = 0; g < BKT/N_KEYS; ++g) {
                 #pragma unroll
                 for (int l = 0; l < 4; ++l) {
                     float s = Sc[g].x[l] * scale;
@@ -1391,7 +1391,7 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
 
             float l_part_lo = 0.0f, l_part_hi = 0.0f;
             #pragma unroll
-            for (int g = 0; g < BK/N_KEYS; ++g) {
+            for (int g = 0; g < BKT/N_KEYS; ++g) {
                 #pragma unroll
                 for (int l = 0; l < 4; ++l) {
                     float mn = (l < 2) ? m_new_lo : m_new_hi;
@@ -1408,11 +1408,11 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
             m_lo = m_new_lo; m_hi = m_new_hi;
 
             #pragma unroll
-            for (int g = 0; g < BK/N_KEYS; ++g) {
-                sPw[r_lo*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[0]);
-                sPw[r_lo*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[1]);
-                sPw[r_hi*BK + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[2]);
-                sPw[r_hi*BK + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[3]);
+            for (int g = 0; g < BKT/N_KEYS; ++g) {
+                sPw[r_lo*BKT + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[0]);
+                sPw[r_lo*BKT + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[1]);
+                sPw[r_hi*BKT + g*N_KEYS + c0 + 0] = __float2bfloat16(Sc[g].x[2]);
+                sPw[r_hi*BKT + g*N_KEYS + c0 + 1] = __float2bfloat16(Sc[g].x[3]);
             }
             __syncwarp();
 
@@ -1429,9 +1429,9 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
                 Clo.x[0]=Clo.x[1]=Clo.x[2]=Clo.x[3]=0.0f;
                 Chi.x[0]=Chi.x[1]=Chi.x[2]=Chi.x[3]=0.0f;
                 #pragma unroll
-                for (int kk = 0; kk < BK; kk += K_STEP) {
+                for (int kk = 0; kk < BKT; kk += K_STEP) {
                     ATile A; ATile Bt;
-                    ld_A(A, sPw + kk, BK/2);
+                    ld_A(A, sPw + kk, BKT/2);
                     ld_A_trans(Bt, sV + kk*HEAD_DIM + d0, HEAD_DIM/2);
                     BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                     BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
@@ -1466,6 +1466,7 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1(
 }
 
 
+
 // P1 windowed stamp (engine-study FA2 schedule; BW24_FAW_P1=0 reverts).
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_w_bf16_p1(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
@@ -1473,9 +1474,10 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_w_bf
         int head_dim, int n_head, int n_head_kv, int T, int T_kv,
         float scale, int causal, int window)
 {
-    fa_prefill_bf16_pp_body_p1<256>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale,
-                                    causal, window);
+    fa_prefill_bf16_pp_body_p1t<256, BK>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv,
+                                         scale, causal, window);
 }
+
 
 // Windowed bf16-staged stamp (gemma4 SWA prefill, hd256 — BW24_FAW_STAGE=f32 reverts).
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_w_bf16_pp(
