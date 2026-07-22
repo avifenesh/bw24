@@ -1309,6 +1309,13 @@ impl HybridModel {
                         cpu_selected.push((expert, route_weight));
                     }
                 }
+                if crate::cpu_experts::predictor_enabled() {
+                    // Fire-and-forget lookahead: the predictor worker scores layers il+1..
+                    // from this layer's MoE input and prefetches predicted-and-missing
+                    // experts into the companion RAM cache. Never blocks this thread.
+                    let row = &host_input[tok * n_embd..(tok + 1) * n_embd];
+                    crate::cpu_experts::predictor_submit(il, row);
+                }
                 if cpu_selected.is_empty() {
                     None
                 } else {
@@ -1851,6 +1858,76 @@ impl HybridModel {
         let (sel, w) =
             Self::moe_route_sigmoid_host(&lg, t, n_expert, n_used, bias, sf, route_norm, active)?;
         Ok((sel, w, input))
+    }
+
+    /// Start the prediction-guided prefetch worker (BW24_MOE_PREFETCH=depth). Call after
+    /// residency freeze: the worker filters against a static snapshot of the frozen HBM set.
+    /// Builds a fully-owned per-layer table (host router copies via one-time DtoH, bias,
+    /// active mask, prebuilt projection descriptors) so no model reference escapes.
+    pub fn start_moe_prefetch_predictor(
+        &self,
+        e: &Engine,
+        cfg: &ModelConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::hybrid::Ffn;
+        let Some(sig) = cfg.sigmoid_router() else {
+            return Err("prefetch predictor requires a sigmoid-router arch".into());
+        };
+        let resident: std::collections::HashSet<(u16, u8, u16)> = e
+            .export_moe_residency()
+            .ok_or("prefetch predictor needs the frozen MoE residency cache")?
+            .into_iter()
+            .collect();
+        let mut layers = Vec::new();
+        for (index, layer) in self.layers.iter().enumerate() {
+            let Ffn::Moe(m) = &layer.ffn else { continue };
+            let crate::model::GpuTensor::Float { data, .. } = &m.gate_inp else { continue };
+            let router = e.dtoh(data)?;
+            let n_expert = m.gate_exps.n_expert;
+            let n_embd = m.gate_exps.in_f;
+            if router.len() != n_embd * n_expert {
+                continue;
+            }
+            let build = |exps: &crate::model::HostExps| {
+                (0..n_expert)
+                    .map(|expert| crate::cpu_experts::predictor_projection(exps, expert))
+                    .collect::<Vec<_>>()
+            };
+            layers.push((index as u16, crate::cpu_experts::PredictLayerInit {
+                router,
+                bias: m.exp_probs_b.clone(),
+                active: m.active_experts.clone(),
+                n_embd,
+                n_used: cfg
+                    .moe
+                    .as_ref()
+                    .map(|moe| moe.expert_used_count as usize)
+                    .ok_or("prefetch predictor requires MoE config")?,
+                sig,
+                weights_n_expert: n_expert,
+                gate: build(&m.gate_exps),
+                up: build(&m.up_exps),
+                down: build(&m.down_exps),
+            }));
+        }
+        crate::cpu_experts::start_prefetch_predictor(layers, resident)
+            .map_err(|error| error.into())
+    }
+
+    /// Crate-visible sigmoid-routing oracle for the prefetch predictor: identical selection
+    /// math to the runtime router, applied to host-computed lookahead logits.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn moe_route_sigmoid_host_public(
+        logits: &[f32],
+        t: usize,
+        n_expert: usize,
+        n_used: usize,
+        bias: Option<&[f32]>,
+        sf: f32,
+        route_norm: bool,
+        active: Option<&[bool]>,
+    ) -> Result<(Vec<u32>, Vec<f32>), Box<dyn std::error::Error>> {
+        Self::moe_route_sigmoid_host(logits, t, n_expert, n_used, bias, sf, route_norm, active)
     }
 
     #[allow(clippy::too_many_arguments)]

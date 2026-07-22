@@ -255,6 +255,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "verify-prefill"
         };
+        if freeze_warmup_tokens > 0
+            && std::env::var("BW24_MOE_PREFETCH").is_ok_and(|value| value != "0")
+        {
+            model.start_moe_prefetch_predictor(&e, &model.cfg)?;
+        }
 
         // Scope the batched reference cache so only one max-context GPU KV allocation is live at
         // a time. The serving cache below is the one retained for measured generation.
@@ -380,6 +385,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stats.insert_ns as f64 / 1e9,
                     stats.compute_ns as f64 / 1e9,
                 );
+                let (predictor_submitted, predictor_dropped) =
+                    e.cpu_expert_predictor_stats();
+                if predictor_submitted > 0 || predictor_dropped > 0 {
+                    println!(
+                        "MoE prefetch predictor: submitted={predictor_submitted} dropped={predictor_dropped}"
+                    );
+                }
             }
             if let (Some(before), Some(after)) =
                 (cpu_residency_before, e.cpu_expert_gpu_residency_stats())

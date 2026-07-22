@@ -1303,6 +1303,10 @@ impl Engine {
 
     /// Caller-blocked nanoseconds at CPU expert joins. Compare before/after snapshots to measure
     /// the backend tail that resident-GPU expert work did not hide.
+    pub fn cpu_expert_predictor_stats(&self) -> (u64, u64) {
+        crate::cpu_experts::predictor_stats()
+    }
+
     pub fn cpu_expert_exposed_wait_ns(&self) -> Option<u64> {
         crate::cpu_experts::configured().then(crate::cpu_experts::exposed_wait_ns)
     }

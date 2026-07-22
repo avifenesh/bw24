@@ -43,7 +43,7 @@ struct CpuExpertV2 {
 }
 
 #[derive(Clone)]
-struct OwnedProjection {
+pub(crate) struct OwnedProjection {
     weights: usize,
     qtype: i32,
     in_features: i32,
@@ -85,6 +85,7 @@ type MoeTokenFn = unsafe extern "C" fn(
 ) -> i32;
 type CacheStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64);
 type ProfileStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64);
+type PrefetchFn = unsafe extern "C" fn(*const CpuProjectionV2, i32, *mut i8, usize) -> i32;
 
 struct CpuBackend {
     // Kept open for process lifetime so the native bw24 function pointers remain valid.
@@ -92,6 +93,8 @@ struct CpuBackend {
     moe_token: MoeTokenFn,
     cache_stats: CacheStatsFn,
     profile_stats: ProfileStatsFn,
+    // Optional (added after ABI v2 shipped): absent in older companions, prefetch disabled.
+    prefetch: Option<PrefetchFn>,
 }
 
 // The dlopen handle names process-global immutable code after initialization.
@@ -197,6 +200,12 @@ fn load_backend_from_path(path: &std::ffi::OsStr) -> Result<CpuBackend, String> 
         let moe_token: MoeTokenFn = unsafe { std::mem::transmute(token_symbol) };
         let cache_stats: CacheStatsFn = unsafe { std::mem::transmute(stats_symbol) };
         let profile_stats: ProfileStatsFn = unsafe { std::mem::transmute(profile_symbol) };
+        // Optional symbol: older companions predate speculative prefetch.
+        let prefetch: Option<PrefetchFn> =
+            load_symbol(handle, b"bw24_cpu_expert_prefetch_v2\0")
+                .ok()
+                // SAFETY: when present the companion exports this exact v2 C signature.
+                .map(|symbol| unsafe { std::mem::transmute::<*mut c_void, PrefetchFn>(symbol) });
         eprintln!(
             "[bw24] experimental CPU expert backend: {} (threads={})",
             path.to_string_lossy(),
@@ -207,6 +216,7 @@ fn load_backend_from_path(path: &std::ffi::OsStr) -> Result<CpuBackend, String> 
             moe_token,
             cache_stats,
             profile_stats,
+            prefetch,
         })
     })();
     if result.is_err() {
@@ -482,6 +492,236 @@ impl Drop for CpuExpertTicket {
         // therefore wait until the persistent worker has stopped reading those bytes.
         if let Some(receiver) = self.receiver.take() {
             let _ = receiver.recv();
+        }
+    }
+}
+
+// ---- prediction-guided speculative prefetch (increment 2) --------------------------------
+// Grounded in research/moe/expert-prefetch-prediction-pilot.md: applying layer j's router to
+// layer k's MoE input predicts the deep half's routed experts at 84-100% argmax precision for
+// j-k <= 4. A dedicated worker thread (never the decode thread) scores lookahead layers with
+// host copies of the router weights, filters HBM-resident and pruned experts, and hands the
+// predicted-and-missing projections to the companion's detached cold-insert prefetch.
+
+struct PredictLayer {
+    /// Router weights transposed to [n_expert][n_embd] for sequential dot products.
+    router_t: Vec<f32>,
+    bias: Option<Vec<f32>>,
+    active: Option<Vec<bool>>,
+    n_embd: usize,
+    n_expert: usize,
+    n_used: usize,
+    sig: (f32, bool),
+    /// Prebuilt per-expert projection descriptors (gate/up/down); None for pruned ids. The
+    /// OwnedProjection keeps the backing file handles alive for the process lifetime.
+    experts: Vec<Option<[OwnedProjection; 3]>>,
+}
+
+struct Predictor {
+    sender: SyncSender<(u16, Vec<f32>)>,
+    submitted: AtomicU64,
+    dropped: AtomicU64,
+}
+
+static PREDICTOR: OnceLock<Option<Predictor>> = OnceLock::new();
+
+fn prefetch_depth_from_env() -> usize {
+    std::env::var("BW24_MOE_PREFETCH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&depth| (1..=8).contains(&depth))
+        .unwrap_or(0)
+}
+
+/// Build the predictor from per-layer inputs and start its worker. Called once from the model
+/// after residency freeze (the resident snapshot must be final). `layers` carries, per MoE
+/// layer index, everything the worker needs — fully owned, no model references escape.
+pub(crate) fn start_prefetch_predictor(
+    layers: Vec<(u16, PredictLayerInit)>,
+    resident: std::collections::HashSet<(u16, u8, u16)>,
+) -> Result<(), String> {
+    let depth = prefetch_depth_from_env();
+    if depth == 0 {
+        return Err("BW24_MOE_PREFETCH is not enabled".to_string());
+    }
+    let backend = backend()?;
+    if backend.prefetch.is_none() {
+        return Err("companion library lacks bw24_cpu_expert_prefetch_v2".to_string());
+    }
+    let top = std::env::var("BW24_MOE_PREFETCH_TOP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&t| (1..=8).contains(&t))
+        .unwrap_or(2);
+    let mut table: std::collections::HashMap<u16, PredictLayer> = Default::default();
+    for (layer_index, init) in layers {
+        let mut experts = Vec::with_capacity(init.weights_n_expert);
+        for expert in 0..init.weights_n_expert {
+            experts.push(init.build_expert(expert));
+        }
+        let n_embd = init.n_embd;
+        let n_expert = init.weights_n_expert;
+        // Transpose [n_embd, n_expert] -> [n_expert][n_embd].
+        let mut router_t = vec![0.0f32; n_embd * n_expert];
+        for row in 0..n_embd {
+            for expert in 0..n_expert {
+                router_t[expert * n_embd + row] = init.router[row * n_expert + expert];
+            }
+        }
+        table.insert(layer_index, PredictLayer {
+            router_t,
+            bias: init.bias,
+            active: init.active,
+            n_embd,
+            n_expert,
+            n_used: init.n_used,
+            sig: init.sig,
+            experts,
+        });
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<(u16, Vec<f32>)>(8);
+    std::thread::Builder::new()
+        .name("bw24-moe-prefetch".to_string())
+        .spawn(move || prefetch_worker(receiver, table, resident, depth, top))
+        .map_err(|error| format!("cannot spawn prefetch worker: {error}"))?;
+    let created = PREDICTOR
+        .set(Some(Predictor {
+            sender,
+            submitted: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+        }))
+        .is_ok();
+    if !created {
+        return Err("prefetch predictor already started".to_string());
+    }
+    eprintln!("[bw24] moe prefetch predictor: depth={depth} top={top}");
+    Ok(())
+}
+
+/// Per-layer construction inputs, fully owned.
+pub(crate) struct PredictLayerInit {
+    pub router: Vec<f32>,
+    pub bias: Option<Vec<f32>>,
+    pub active: Option<Vec<bool>>,
+    pub n_embd: usize,
+    pub n_used: usize,
+    pub sig: (f32, bool),
+    pub weights_n_expert: usize,
+    pub gate: Vec<Option<crate::cpu_experts::OwnedProjection>>,
+    pub up: Vec<Option<crate::cpu_experts::OwnedProjection>>,
+    pub down: Vec<Option<crate::cpu_experts::OwnedProjection>>,
+}
+
+impl PredictLayerInit {
+    fn build_expert(&self, expert: usize) -> Option<[OwnedProjection; 3]> {
+        Some([
+            self.gate[expert].clone()?,
+            self.up[expert].clone()?,
+            self.down[expert].clone()?,
+        ])
+    }
+}
+
+/// Build one OwnedProjection for the predictor table (pruned/CUDA-pinned experts yield None).
+pub(crate) fn predictor_projection(
+    exps: &crate::model::HostExps,
+    expert: usize,
+) -> Option<OwnedProjection> {
+    projection(exps, expert).ok()
+}
+
+/// Fire-and-forget: hand layer il's MoE input to the predictor. Never blocks the decode
+/// thread — a full channel drops the sample (speculation must not backpressure decode).
+pub(crate) fn predictor_submit(layer: u16, input: &[f32]) {
+    let Some(Some(predictor)) = PREDICTOR.get().map(Option::as_ref) else { return };
+    match predictor.sender.try_send((layer, input.to_vec())) {
+        Ok(()) => {
+            predictor.submitted.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
+            predictor.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(crate) fn predictor_enabled() -> bool {
+    matches!(PREDICTOR.get(), Some(Some(_)))
+}
+
+pub(crate) fn predictor_stats() -> (u64, u64) {
+    match PREDICTOR.get().map(Option::as_ref) {
+        Some(Some(p)) => (
+            p.submitted.load(Ordering::Relaxed),
+            p.dropped.load(Ordering::Relaxed),
+        ),
+        _ => (0, 0),
+    }
+}
+
+fn prefetch_worker(
+    receiver: Receiver<(u16, Vec<f32>)>,
+    table: std::collections::HashMap<u16, PredictLayer>,
+    resident: std::collections::HashSet<(u16, u8, u16)>,
+    depth: usize,
+    top: usize,
+) {
+    let Ok(backend) = backend() else { return };
+    let Some(prefetch) = backend.prefetch else { return };
+    let mut error = vec![0i8; 512];
+    while let Ok((layer, input)) = receiver.recv() {
+        for d in 1..=depth {
+            let target = layer + d as u16;
+            let Some(predict) = table.get(&target) else { continue };
+            if input.len() != predict.n_embd {
+                continue;
+            }
+            // logits = router @ x with sigmoid selection parity to the runtime oracle.
+            let mut logits = vec![0.0f32; predict.n_expert];
+            for (expert, logit) in logits.iter_mut().enumerate() {
+                let row = &predict.router_t[expert * predict.n_embd
+                    ..(expert + 1) * predict.n_embd];
+                *logit = row
+                    .iter()
+                    .zip(&input)
+                    .map(|(weight, value)| weight * value)
+                    .sum();
+            }
+            let Ok((sel, _weights)) = crate::hybrid::HybridModel::moe_route_sigmoid_host_public(
+                &logits,
+                1,
+                predict.n_expert,
+                predict.n_used,
+                predict.bias.as_deref(),
+                predict.sig.0,
+                predict.sig.1,
+                predict.active.as_deref(),
+            ) else {
+                continue;
+            };
+            let mut descs: Vec<CpuProjectionV2> = Vec::new();
+            for &expert in sel.iter().take(top) {
+                let expert_index = expert as usize;
+                let Some(Some(projections)) = predict.experts.get(expert_index) else {
+                    continue;
+                };
+                for (proj_index, owned) in projections.iter().enumerate() {
+                    if owned.file.is_none() {
+                        continue;  // memory-backed, nothing to read
+                    }
+                    if resident.contains(&(target, proj_index as u8, expert as u16)) {
+                        continue;  // HBM-resident, never CPU-routed
+                    }
+                    descs.push(ffi_projection(owned));
+                }
+            }
+            if descs.is_empty() {
+                continue;
+            }
+            let count = descs.len() as i32;
+            // SAFETY: descs outlive the call; the companion copies what it keeps.
+            unsafe {
+                prefetch(descs.as_ptr(), count, error.as_mut_ptr(), error.len());
+            }
         }
     }
 }

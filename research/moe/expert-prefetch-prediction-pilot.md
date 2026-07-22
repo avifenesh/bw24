@@ -34,3 +34,19 @@ into the RAM cache as lowest-priority insertions with separately-accounted traff
 lead's misprediction rules). Risk to A/B: prefetch DMA re-introduces concurrent-io-under-
 compute at trickle volume — the fabric-interference regression was measured at full rate;
 the arm must watch phase_compute, not just the hit rate.
+
+## Increment-2 A/B: REJECT as-built (2026-07-23, arm-pf-* logs in local-5090-next3-20260722)
+
+pf-off 4.74/4.75 vs pf-on 2.90/2.88 (depth=2, top=2, ungated). Mechanism autopsy from
+counters: (1) no cross-token dedup — the same predicted experts re-prefetched every token,
+~14k speculative projection reads per 32-token window (~37 GB, exceeding demand io);
+(2) cold LRU-front insertion self-cancels at a full cache — demand fills evict speculative
+entries before their layer arrives, so they are re-read in a loop; (3) no depth/margin gate —
+the pilot's precision only justifies k>=48; (4) the concurrent-DMA compute tax reappears at
+this volume (phase_compute 2.87→3.49 s). Predictor plumbing itself is sound (6083 submissions,
+0 drops, decode thread unblocked).
+
+Redesign targets before the next arm: a small prefetch ANNEX outside the LRU (speculative
+entries never enter or evict the main cache; promoted on first demand hit), cross-token dedup
+with an in-annex/in-flight check, deep-half + score-margin gating, top-1 only, and a byte
+budget per token (~a quarter of demand io) so speculation can never dominate the bus.
