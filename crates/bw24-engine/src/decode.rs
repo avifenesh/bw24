@@ -1454,6 +1454,21 @@ impl HybridModel {
                     })?;
                 return Ok(GenOutput { tokens: out, stop_reason: reason });
             }
+            // 12B/31B WHOLE-TOKEN GRAPH door (BW24_GEMMA_GRAPH=1), mirrored from `generate`:
+            // run-gen/serving measure THIS path, and the `generate` door never covered it —
+            // the 2026-07-22 graph A/B read flat because the env engaged nothing here.
+            if !e4b && std::env::var("BW24_GEMMA_GRAPH").as_deref() == Ok("1") {
+                let (out_cell, sampler_cell) = (&mut out, &mut *sampler);
+                let eos = params.eos.clone();
+                let (toks, greason) = self.gemma4_generate_graph(
+                    e, cache.pos, first, &mut cache, budget, &eos, |tok| {
+                        sampler_cell.accept(tok);
+                        out_cell.push(tok);
+                        on_token(tok)
+                    })?;
+                let _ = toks;
+                return Ok(GenOutput { tokens: out, stop_reason: greason });
+            }
             let mut next = first;
             for _ in 0..budget {
                 sampler.accept(next);
