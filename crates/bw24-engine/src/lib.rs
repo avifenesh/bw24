@@ -5650,10 +5650,30 @@ impl Engine {
             return self.sdpa_naive_w(q, k, v, o, head_dim, n_head, n_head_kv,
                                      t, t_kv, scale, causal, window);
         }
+        // Default: bf16-prestaged twin (same treatment as hd512 — Q/K/V pre-converted once,
+        // int4 stage copies; bit-identical, kernel_check-gated). BW24_FAW_STAGE=f32 reverts;
+        // BW24_FA_FLOOR keeps the f32 floor stamp untouched.
+        static FAW_F32: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let faw_f32 = *FAW_F32.get_or_init(|| {
+            std::env::var("BW24_FAW_STAGE").as_deref() == Ok("f32")
+        });
+        let floor = std::env::var("BW24_FA_FLOOR").is_ok();
+        self.fa_prefill_w_arm(q, k, v, o, head_dim, n_head, n_head_kv, t, t_kv, scale, causal,
+                              window, floor || faw_f32, floor)
+    }
+
+    /// Windowed FA prefill with the stage arm FORCED — the kernel_check bit-identity entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_w_arm(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+                            o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
+                            n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
+                            window: usize, f32_stage: bool, floor: bool)
+                            -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         debug_assert_eq!(head_dim, 256, "fa_prefill_w is stamped hd256 only");
-        let floor = std::env::var("BW24_FA_FLOOR").is_ok();
-        let f = self.func(if floor { "fa_prefill_w_f32" } else { "fa_prefill_w_f32_pp" });
+        let f = self.func(if floor { "fa_prefill_w_f32" }
+                          else if f32_stage { "fa_prefill_w_f32_pp" }
+                          else { "fa_prefill_w_bf16_pp" });
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
                    + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -5664,10 +5684,20 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                                 t as i32, t_kv as i32, causal as i32, window as i32);
-        let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
-         .arg(&scale).arg(&cz).arg(&wi);
-        unsafe { b.launch(cfg)?; }
+        if f32_stage {
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+        } else {
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+        }
         Ok(())
     }
 

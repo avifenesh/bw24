@@ -1492,6 +1492,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sc=cpu.iter().map(|v|v.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
             println!("fa_prefill T={t} Tkv={tkv}: rel={rel:.2e} {}", if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
         }
+        // --- windowed FA prefill (gemma4 SWA, hd256): CPU-oracle rel + f32-vs-bf16-stage BIT
+        // identity (same pre-converter argument as hd512/mmq — any nonzero diff = staging bug).
+        {
+            let (hdw, nhw, nkvw, wnd) = (256usize, 4usize, 1usize, 32usize);
+            let scalew = 1.0f32 / (hdw as f32).sqrt();
+            let cpu_sdpa_w = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nhw * hdw];
+                for head in 0..nhw { for qt in 0..t {
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nhw + head) * hdw..][..hdw];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, s) in sc.iter_mut().enumerate() {
+                        let kv = &k[tk * hdw..][..hdw];
+                        let mut a = 0.0; for d in 0..hdw { a += qv[d] * kv[d]; }
+                        a *= scalew;
+                        if tk > q_pos || (q_pos >= wnd && tk < q_pos - (wnd - 1)) { a = -1e30; }
+                        *s = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for s in sc.iter_mut() { *s = (*s - mx).exp(); sum += *s; }
+                    for s in sc.iter_mut() { *s /= sum; }
+                    let ov = &mut o[(qt * nhw + head) * hdw..][..hdw];
+                    for d in 0..hdw {
+                        let mut a = 0.0; for tk in 0..tkv { a += sc[tk] * v[tk * hdw + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hdw*nhw*t).map(|i| pr(i+47)*0.2).collect();
+                let k: Vec<f32> = (0..hdw*nkvw*tkv).map(|i| pr(i+53)*0.2).collect();
+                let v: Vec<f32> = (0..hdw*nkvw*tkv).map(|i| pr(i+61)*0.2).collect();
+                let cpu = cpu_sdpa_w(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_f32=e.zeros(hdw*nhw*t)?; let mut o_bf=e.zeros(hdw*nhw*t)?;
+                e.fa_prefill_w_arm(&qd,&kd,&vd,&mut o_f32,hdw,nhw,nkvw,t,tkv,scalew,true,wnd,true,false)?;
+                e.fa_prefill_w_arm(&qd,&kd,&vd,&mut o_bf,hdw,nhw,nkvw,t,tkv,scalew,true,wnd,false,false)?;
+                let gf=e.dtoh(&o_f32)?; let gb=e.dtoh(&o_bf)?;
+                let d=maxdiff(&cpu,&gf);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_w T={t} Tkv={tkv} w={wnd}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
+                println!("fa_prefill_w bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
+                         gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
         // --- hd512 FA prefill (gemma4 globals, MQA nkv=1): CPU-oracle rel gate on BOTH stage
         // arms + f32-vs-bf16-stage BIT identity (the pre-converter applies the exact
         // __float2bfloat16 the in-kernel stage applied -> ANY nonzero diff = staging bug).
