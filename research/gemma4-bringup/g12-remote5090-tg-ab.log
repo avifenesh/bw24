@@ -1,0 +1,10 @@
+=== INTERLEAVED tg128 A/B (llama,bw24 x3) Wed Jul 22 12:31:52 UTC 2026
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           tg128 |        152.80 ± 8.59 |
+generated 128 tokens in 0.814s = 157.16 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.031s) [stop: MaxNew]
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           tg128 |        158.44 ± 0.49 |
+generated 128 tokens in 0.815s = 157.15 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.031s) [stop: MaxNew]
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           tg128 |        158.40 ± 0.51 |
+generated 128 tokens in 0.814s = 157.16 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.031s) [stop: MaxNew]
+=== nsys bw24 decode
+=== nsys llama decode
+=== TG DONE Wed Jul 22 12:32:16 UTC 2026
