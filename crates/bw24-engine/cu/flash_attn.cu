@@ -1232,6 +1232,16 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_w_bf
                                  window);
 }
 
+// cp.async primitives (the mmq_nvfp4_w4a8.cu pipe pattern — cp.async changes WHEN bytes
+// arrive, never WHAT is computed; consumption order is unchanged -> bit-identical).
+static __device__ __forceinline__ void fa_cp_async_16(void * smem_dst, const void * gsrc) {
+    const unsigned d = (unsigned) __cvta_generic_to_shared(smem_dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(d), "l"(gsrc));
+}
+static __device__ __forceinline__ void fa_cp_commit() { asm volatile("cp.async.commit_group;\n"); }
+template <int n>
+static __device__ __forceinline__ void fa_cp_wait() { asm volatile("cp.async.wait_group %0;\n" :: "n"(n)); }
+
 // ===================================================================== //
 //  KERNEL 1w-g4 : fa_prefill_w_bf16_g4 — HEAD-GROUPED windowed prefill  //
 //  (hd256, MQA n_head_kv==1, n_head % 4 == 0). llama's flash_attn_ext   //
@@ -1265,9 +1275,14 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_w_bf
     const int nqw = min(M_ROWS, T - qrow_base);
 
     extern __shared__ char smem_g4[];
-    __nv_bfloat16* sK = (__nv_bfloat16*)smem_g4;                  // BK*HEAD_DIM
-    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM
-    __nv_bfloat16* sQ = sV + BK*HEAD_DIM;                         // 4*M_ROWS*HEAD_DIM
+    // Double-buffered K/V ring (2026-07-22 pipeline port, llama nstages=2): buffer 1 REUSES the
+    // Q staging region — Q lives in registers after load_q_frags_bf16, so its 32KB smem is dead
+    // for the rest of the kernel and is exactly one K/V pair. Zero extra smem.
+    __nv_bfloat16* sK0 = (__nv_bfloat16*)smem_g4;                 // BK*HEAD_DIM
+    __nv_bfloat16* sV0 = sK0 + BK*HEAD_DIM;                       // BK*HEAD_DIM
+    __nv_bfloat16* sQ = sV0 + BK*HEAD_DIM;                        // 4*M_ROWS*HEAD_DIM (transient)
+    __nv_bfloat16* sK1 = sQ;                                      // ring slot 1 (after Q load)
+    __nv_bfloat16* sV1 = sQ + BK*HEAD_DIM;
     __nv_bfloat16* sP = sQ + 4*M_ROWS*HEAD_DIM;                   // 4*M_ROWS*BK
     float* sL = (float*)(sP + 4*M_ROWS*BK);                       // 4*M_ROWS f32
     __nv_bfloat16* sQw = sQ + warp*M_ROWS*HEAD_DIM;
@@ -1294,20 +1309,59 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_w_bf
     const int r_hi = r_lo + 8;
     const int c0   = (lane % 4) * 2;
 
-    for (int k0 = 0; k0 < T_kv; k0 += BK) {
-        const int nk = min(BK, T_kv - k0);
-        const int q_pos_max = (T_kv - T) + q_base + (M_ROWS - 1);
-        if (causal_i && k0 > q_pos_max) break;
-        if (window > 0 && (k0 + BK) <= ((T_kv - T) + q_base) - (window - 1)) continue;
-
-        // ---- stage shared K/V once per CTA (all 4 warps cooperate) ----
+    // Valid-tile walk (window skip folded into the step function so the prefetch can look ahead).
+    const int q_pos_max = (T_kv - T) + q_base + (M_ROWS - 1);
+    const int k0_lo = (window > 0) ? (((T_kv - T) + q_base) - (window - 1)) : 0;
+    const int k0_hi = causal_i ? q_pos_max : (T_kv - 1);        // last k index that can matter
+    auto first_k0 = [&]() -> int {
+        int k = 0;
+        if (window > 0 && k0_lo > 0) { k = ((k0_lo - BK) / BK) * BK; if (k < 0) k = 0;
+            while (k + BK <= k0_lo) k += BK; }
+        return k;
+    };
+    // cp.async prefetch of one FULL tile (nk == BK) into a ring slot; tail tiles stage sync.
+    auto prefetch = [&](int k0p, __nv_bfloat16* dK, __nv_bfloat16* dV) {
         for (int i = bt; i < BK*RCH; i += bsz) {
             int kk = i / RCH, dc = i % RCH;
-            const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim;
-            ((int4*)sK)[i] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
-            ((int4*)sV)[i] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
+            const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * head_dim;
+            fa_cp_async_16((int4*)dK + i, (const int4*)(K + rowo) + dc);
+            fa_cp_async_16((int4*)dV + i, (const int4*)(V + rowo) + dc);
+        }
+        fa_cp_commit();
+    };
+    int k0 = first_k0();
+    int buf = 0;
+    bool pending = false;                     // a cp.async group is in flight for `buf`
+    if (k0 < T_kv && k0 <= k0_hi && T_kv - k0 >= BK) { prefetch(k0, sK0, sV0); pending = true; }
+
+    for (; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        if (causal_i && k0 > q_pos_max) break;
+
+        __nv_bfloat16* sK = buf ? sK1 : sK0;
+        __nv_bfloat16* sV = buf ? sV1 : sV0;
+        if (pending) {
+            fa_cp_wait<0>();
+            pending = false;
+        } else {
+            // tail tile (nk < BK) or first tile after a non-prefetched start: stage sync.
+            for (int i = bt; i < BK*RCH; i += bsz) {
+                int kk = i / RCH, dc = i % RCH;
+                const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim;
+                ((int4*)sK)[i] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
+                ((int4*)sV)[i] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
+            }
         }
         __syncthreads();
+
+        // Prefetch the NEXT valid full tile into the other ring slot while computing this one.
+        {
+            int kn = k0 + BK;
+            if (!(causal_i && kn > q_pos_max) && kn < T_kv && T_kv - kn >= BK) {
+                prefetch(kn, buf ? sK0 : sK1, buf ? sV0 : sV1);
+                pending = true;
+            }
+        }
 
         CTile Sc[BK/N_KEYS];
         #pragma unroll
@@ -1408,6 +1462,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 1) fa_prefill_w_bf
             O_acc[(d0/N_KEYS) + 1].x[2] += Chi.x[2]; O_acc[(d0/N_KEYS) + 1].x[3] += Chi.x[3];
         }
         __syncthreads();
+        buf ^= 1;
     }
 
     if (c0 == 0) { sLw[r_lo] = l_lo; sLw[r_hi] = l_hi; }
