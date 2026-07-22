@@ -517,6 +517,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         println!("file-backed pipelined-read MoE identity (cold + warm): PASS");
+
+        // Detached speculative prefetch (optional symbol; older companions skip): prefetch a
+        // never-touched file-backed expert, poll cache stats until its bytes land, then the
+        // MoE call over it must still be bit-identical to the in-memory result.
+        type PrefetchFn = unsafe extern "C" fn(*const Projection, i32, *mut i8, usize) -> i32;
+        let prefetch: Option<PrefetchFn> = unsafe {
+            let symbol = libc::dlsym(handle, c"bw24_cpu_expert_prefetch_v2".as_ptr());
+            if symbol.is_null() { None } else { Some(std::mem::transmute(symbol)) }
+        };
+        if let Some(prefetch) = prefetch {
+            let cache_stats: StatsFn =
+                unsafe { required_symbol(handle, c"bw24_cpu_expert_cache_stats_v2")? };
+            let mut extra_blobs: Vec<Vec<u8>> = Vec::new();
+            for projection_index in 0..3usize {
+                let mut row = gate_row.clone();
+                row[9] ^= 0x77 ^ (projection_index as u8);
+                extra_blobs.push(row.repeat(256));
+            }
+            let prefetch_path = std::env::temp_dir().join(format!(
+                "bw24-cpu-prefetch-{}.bin",
+                std::process::id()
+            ));
+            let mut extra_offsets = Vec::new();
+            let mut prefetch_bytes: Vec<u8> = Vec::new();
+            for blob in &extra_blobs {
+                extra_offsets.push(prefetch_bytes.len() as u64);
+                prefetch_bytes.extend_from_slice(blob);
+            }
+            std::fs::write(&prefetch_path, &prefetch_bytes)?;
+            let file = std::fs::File::open(&prefetch_path)?;
+            std::fs::remove_file(&prefetch_path)?;
+            let fd = {
+                use std::os::unix::io::AsRawFd;
+                file.as_raw_fd()
+            };
+            let projections: Vec<Projection> = (0..3)
+                .map(|i| projection(std::ptr::null(), fd, extra_offsets[i], scales[i]))
+                .collect();
+            let mut error = vec![0i8; 512];
+            let submitted = unsafe {
+                prefetch(projections.as_ptr(), 3, error.as_mut_ptr(), error.len())
+            };
+            if submitted != 3 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                return Err(format!(
+                    "prefetch submitted {submitted}/3: {message}"
+                )
+                .into());
+            }
+            let (mut resident_before, mut landed) = (0u64, false);
+            unsafe {
+                cache_stats(std::ptr::null_mut(), std::ptr::null_mut(),
+                            std::ptr::null_mut(), &mut resident_before);
+            }
+            for _ in 0..200 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let mut resident = 0u64;
+                unsafe {
+                    cache_stats(std::ptr::null_mut(), std::ptr::null_mut(),
+                                std::ptr::null_mut(), &mut resident);
+                }
+                let expected: u64 = extra_blobs.iter().map(|b| b.len() as u64).sum();
+                if resident >= resident_before + expected {
+                    landed = true;
+                    break;
+                }
+            }
+            if !landed {
+                return Err("prefetched projections never landed in the cache".into());
+            }
+            let prefetched_expert = Expert {
+                gate: projections[0],
+                up: projections[1],
+                down: projections[2],
+                route_weight: 0.25,
+            };
+            let memory_expert = Expert {
+                gate: projection(extra_blobs[0].as_ptr(), -1, 0, scales[0]),
+                up: projection(extra_blobs[1].as_ptr(), -1, 0, scales[1]),
+                down: projection(extra_blobs[2].as_ptr(), -1, 0, scales[2]),
+                route_weight: 0.25,
+            };
+            let from_prefetch = run(std::slice::from_ref(&prefetched_expert))?;
+            let from_memory = run(std::slice::from_ref(&memory_expert))?;
+            for (index, (actual, expected)) in
+                from_prefetch.iter().zip(from_memory.iter()).enumerate()
+            {
+                if actual.to_bits() != expected.to_bits() {
+                    return Err(format!(
+                        "prefetched MoE output {index} not bit-identical"
+                    )
+                    .into());
+                }
+            }
+            println!("detached prefetch (cold insert + bit-identity): PASS");
+        } else {
+            println!("detached prefetch: SKIP (symbol absent)");
+        }
     }
 
     println!("ABI v2 symbols, production MoE, and non-finite/subnormal checks: PASS");

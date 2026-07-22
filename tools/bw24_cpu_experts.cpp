@@ -947,6 +947,39 @@ float dot_quantized_row(
             const std::uint16_t high_scales = read_u16(block + 2);
             const std::uint8_t * low_scales = block + 4;
             const std::uint8_t * quants = block + 8;
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+            // Paired-group path: both halves of a 32-weight group share one 6-bit scale, so
+            // pshufb-decode the group's 16 nibble bytes into one 256-bit vector (low nibbles
+            // -> lane 0, high nibbles -> lane 1) and evaluate both activation blocks with a
+            // single vpdpbusd. Scale terms apply in original half order — accumulation
+            // order unchanged.
+            {
+                const __m128i table = _mm_loadu_si128(
+                    reinterpret_cast<const __m128i *>(values));
+                const __m256i table_pair = _mm256_set_m128i(table, table);
+                for (int group = 0; group < 8; ++group) {
+                    const int packed_scale = (low_scales[group / 2] >> (4 * (group % 2))) & 15;
+                    const int scale = packed_scale | (((high_scales >> (2 * group)) & 3) << 4);
+                    const __m128i packed = _mm_loadu_si128(
+                        reinterpret_cast<const __m128i *>(quants + group * 16));
+                    const __m256i nibbles = _mm256_and_si256(
+                        _mm256_set_m128i(_mm_srli_epi16(packed, 4), packed),
+                        _mm256_set1_epi8(15));
+                    const __m256i decoded_pair = _mm256_shuffle_epi8(table_pair, nibbles);
+                    const auto integer_dots = dot_i8_16_pair(
+                        decoded_pair,
+                        activation.blocks[block16(superblock, group * 2)],
+                        activation.blocks[block16(superblock, group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            block16(superblock, group * 2 + lane)];
+                        result += d * (scale - 32) * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                    }
+                }
+            }
+            continue;
+#endif
             for (int group = 0; group < 8; ++group) {
                 const int packed_scale = (low_scales[group / 2] >> (4 * (group % 2))) & 15;
                 const int scale = packed_scale | (((high_scales >> (2 * group)) & 3) << 4);
@@ -1419,13 +1452,16 @@ struct CpuProfile {
     std::atomic<std::uint64_t> stage_cached_ns { 0 };
     std::atomic<std::uint64_t> stage_missing_ns { 0 };
     std::atomic<std::uint64_t> stage_accum_ns { 0 };
+    std::atomic<std::uint64_t> prefetch_projections { 0 };
+    std::atomic<std::uint64_t> prefetch_bytes { 0 };
     ~CpuProfile() {
         const auto to_seconds = [](std::uint64_t ns) { return ns / 1.0e9; };
         std::fprintf(
             stderr,
             "[bw24-cpu-profile] calls=%llu prepare=%.6fs io=%.6fs insert=%.6fs "
             "compute=%.6fs read_projections=%llu read_GB=%.3f "
-            "stage_entry=%.6fs stage_cached=%.6fs stage_missing=%.6fs stage_accum=%.6fs\n",
+            "stage_entry=%.6fs stage_cached=%.6fs stage_missing=%.6fs stage_accum=%.6fs "
+            "prefetch_projections=%llu prefetch_GB=%.3f\n",
             static_cast<unsigned long long>(calls.load(std::memory_order_relaxed)),
             to_seconds(prepare_ns.load(std::memory_order_relaxed)),
             to_seconds(io_ns.load(std::memory_order_relaxed)),
@@ -1436,7 +1472,10 @@ struct CpuProfile {
             to_seconds(stage_entry_ns.load(std::memory_order_relaxed)),
             to_seconds(stage_cached_ns.load(std::memory_order_relaxed)),
             to_seconds(stage_missing_ns.load(std::memory_order_relaxed)),
-            to_seconds(stage_accum_ns.load(std::memory_order_relaxed)));
+            to_seconds(stage_accum_ns.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                prefetch_projections.load(std::memory_order_relaxed)),
+            prefetch_bytes.load(std::memory_order_relaxed) / 1.0e9);
     }
 };
 
@@ -1557,18 +1596,36 @@ public:
     }
 
     void insert(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
+        insert_at(key, bytes, /*cold=*/false);
+    }
+
+    /// Speculative-prefetch insertion: lands at the LRU-oldest position so a mispredicted
+    /// expert is first out and can never displace proven-hot entries (lead's rule).
+    void insert_cold(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes) {
+        insert_at(key, bytes, /*cold=*/true);
+    }
+
+    bool contains(const CacheKey & key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return entries_.find(key) != entries_.end();
+    }
+
+    void insert_at(const CacheKey & key, const std::shared_ptr<AlignedBytes> & bytes,
+                   bool cold) {
         if (budget_ == 0 || bytes->size() > budget_) return;
         std::lock_guard<std::mutex> lock(mutex_);
         const auto found = entries_.find(key);
         if (found != entries_.end()) {
-            lru_.splice(lru_.end(), lru_, found->second.lru);
+            if (!cold) lru_.splice(lru_.end(), lru_, found->second.lru);
             return;
         }
-        lru_.push_back(key);
-        entries_.emplace(key, Entry {
-            bytes,
-            std::prev(lru_.end()),
-        });
+        if (cold) {
+            lru_.push_front(key);
+            entries_.emplace(key, Entry { bytes, lru_.begin() });
+        } else {
+            lru_.push_back(key);
+            entries_.emplace(key, Entry { bytes, std::prev(lru_.end()) });
+        }
         used_ += key.len;
         read_bytes_ += key.len;
         while (used_ > budget_ && !lru_.empty()) {
@@ -1806,6 +1863,22 @@ struct CallIoState {
     int first_error = 0;                // first errno observed by any read
 };
 
+// Detached speculative-prefetch batch: heap-owned, freed by the last completing read. Owns
+// copies of the caller's projection descriptors (the caller returns immediately) and the
+// destination buffers; each fully-read projection is inserted cold into the weight cache.
+struct PrefetchState {
+    std::vector<bw24_cpu_projection_v2> descs;
+    std::vector<ProjectionRuntime> runtimes;
+    std::unique_ptr<std::atomic<int>[]> projection_pending;
+    std::unique_ptr<std::atomic<bool>[]> projection_failed;
+    std::atomic<int> outstanding { 0 };
+};
+
+std::atomic<int> & prefetch_inflight() {
+    static std::atomic<int> count { 0 };
+    return count;
+}
+
 struct IoJob {
     ProjectionRuntime * projection = nullptr;
     int fd = -1;
@@ -1813,6 +1886,7 @@ struct IoJob {
     std::size_t length = 0;
     int expert_index = -1;
     CallIoState * call = nullptr;
+    PrefetchState * prefetch = nullptr;  // set instead of `call` for detached prefetch reads
 };
 
 class IoPool {
@@ -1899,6 +1973,25 @@ private:
                 job.projection->weight_owner->data) + job.offset;
             const int status = pread_exact(
                 *job.projection, job.fd, destination, job.offset, job.length);
+            if (job.prefetch != nullptr) {
+                auto * state = job.prefetch;
+                const std::size_t index = static_cast<std::size_t>(job.expert_index);
+                if (status != 0) {
+                    state->projection_failed[index].store(true, std::memory_order_release);
+                }
+                if (state->projection_pending[index].fetch_sub(1,
+                        std::memory_order_acq_rel) == 1
+                    && !state->projection_failed[index].load(std::memory_order_acquire)) {
+                    // A failed speculative read is simply dropped — never cached, never fatal.
+                    weight_cache().insert_cold(
+                        job.projection->cache_key, job.projection->weight_owner);
+                }
+                prefetch_inflight().fetch_sub(1, std::memory_order_relaxed);
+                if (state->outstanding.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    delete state;
+                }
+                continue;
+            }
             auto * state = job.call;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
@@ -2335,6 +2428,85 @@ extern "C" int bw24_cpu_moe_token_v2(
         std::size_t error_capacity) {
     return bw24_cpu_moe_token_impl(
         experts, expert_count, input, output, threads, error, error_capacity);
+}
+
+// Detached speculative prefetch: reads the given projections into the RAM cache as cold
+// (evict-first) insertions and returns immediately. Cached projections are skipped; requests
+// beyond the in-flight cap are dropped, never queued — speculative traffic must not compound
+// under load. Returns the number of projections actually submitted, or -1 on invalid input.
+extern "C" std::int32_t bw24_cpu_expert_prefetch_v2(
+        const bw24_cpu_projection_v2 * projections,
+        std::int32_t count,
+        char * error,
+        std::size_t error_capacity) try {
+    if (projections == nullptr || count <= 0) {
+        throw std::runtime_error("invalid CPU expert prefetch invocation");
+    }
+    static const int max_inflight = [] {
+        const char * raw = std::getenv("BW24_CPU_EXPERT_PREFETCH_MAX_INFLIGHT");
+        if (raw == nullptr || *raw == '\0') return 32;
+        const long value = std::strtol(raw, nullptr, 10);
+        return value >= 1 && value <= 4096 ? static_cast<int>(value) : 32;
+    }();
+    auto state = std::make_unique<PrefetchState>();
+    state->descs.reserve(static_cast<std::size_t>(count));
+    for (std::int32_t index = 0; index < count; ++index) {
+        const auto & desc = projections[index];
+        if (desc.file_fd < 0) continue;  // memory-backed projections need no prefetch
+        state->descs.push_back(desc);
+    }
+    const std::size_t n = state->descs.size();
+    if (n == 0) return 0;
+    state->runtimes.reserve(n);
+    state->projection_pending = std::make_unique<std::atomic<int>[]>(n);
+    state->projection_failed = std::make_unique<std::atomic<bool>[]>(n);
+    std::vector<IoJob> jobs;
+    std::int32_t submitted = 0;
+    auto & profile = cpu_profile();
+    for (std::size_t index = 0; index < state->descs.size(); ++index) {
+        const auto & desc = state->descs[index];
+        if (prefetch_inflight().load(std::memory_order_relaxed) >= max_inflight) break;
+        ProjectionRuntime runtime = prepare_projection(desc);
+        if (!runtime.needs_read) continue;  // already cached (find() also refreshed its LRU slot)
+        state->runtimes.push_back(std::move(runtime));
+        auto & stored = state->runtimes.back();
+        stored.desc = &state->descs[index];  // repoint at the owned copy, not the caller's array
+        const std::size_t slot = state->runtimes.size() - 1;
+        const std::size_t jobs_before = jobs.size();
+        state->projection_pending[slot].store(0, std::memory_order_relaxed);
+        state->projection_failed[slot].store(false, std::memory_order_relaxed);
+        const std::size_t length = desc.byte_len;
+        if (stored.alternate_read_fd >= 0 && length >= 8192) {
+            const std::size_t split = (length / 2) & ~std::size_t(4095);
+            jobs.push_back(IoJob { &stored, stored.read_fd, 0, split,
+                static_cast<int>(slot), nullptr, state.get() });
+            jobs.push_back(IoJob { &stored, stored.alternate_read_fd, split, length - split,
+                static_cast<int>(slot), nullptr, state.get() });
+        } else {
+            jobs.push_back(IoJob { &stored, stored.read_fd, 0, length,
+                static_cast<int>(slot), nullptr, state.get() });
+        }
+        state->projection_pending[slot].store(
+            static_cast<int>(jobs.size() - jobs_before), std::memory_order_relaxed);
+        prefetch_inflight().fetch_add(1, std::memory_order_relaxed);
+        profile.prefetch_projections.fetch_add(1, std::memory_order_relaxed);
+        profile.prefetch_bytes.fetch_add(length, std::memory_order_relaxed);
+        ++submitted;
+    }
+    if (jobs.empty()) return 0;
+    state->outstanding.store(static_cast<int>(jobs.size()), std::memory_order_relaxed);
+    auto & pool = IoPool::instance();
+    pool.ensure_started(io_thread_count(8));
+    pool.submit(std::move(jobs));
+    state.release();  // owned by the completion path from here
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return submitted;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return -1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown CPU expert prefetch failure");
+    return -1;
 }
 
 // Model-independent correctness hook used by `cpu-native-check`. This intentionally exercises the
