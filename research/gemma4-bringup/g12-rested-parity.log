@@ -1,0 +1,27 @@
+== model: gemma-4-12b-it-qat-q4_0.gguf
+temp-pre: 55
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3974.17 ± 158.29 |
+prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
+prefill 1736 tok in 0.4444s = 3906.1 tok/s (pp1736)
+temp-pre: 59
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3950.31 ± 156.05 |
+prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
+prefill 1736 tok in 0.4454s = 3897.9 tok/s (pp1736)
+temp-pre: 59
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3957.55 ± 164.69 |
+prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
+prefill 1736 tok in 0.4455s = 3897.1 tok/s (pp1736)
+== model: gemma-4-31B_q4_0-it.gguf
+temp-pre: 59
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1555.72 ± 0.74 |
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.2138s = 1430.3 tok/s (pp1736)
+temp-pre: 62
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1553.82 ± 0.05 |
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.2208s = 1422.0 tok/s (pp1736)
+temp-pre: 63
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.83 ± 4.34 |
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.2201s = 1422.8 tok/s (pp1736)
+PRINT COMPLETE Wed Jul 22 08:57:09 PM UTC 2026
