@@ -510,33 +510,29 @@ size_t bw24_mmq_q4_0_act_bytes(int in_f, int n_tokens) {
     return (size_t) (nblocks + MMQ_X) * sizeof(block_q8_1_mmq);
 }
 
-// Run the Q4_0 int8-MMA MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
-//   W_q4_0 : rp == 0 -> raw ggml block_q4_0 weight rows (18B blocks, in_f/32 per row).
-//            rp != 0 -> BW24_Q4RP split-plane repack: qs plane (out_f * in_f/32 * 16B, block-major)
-//                       at W, fp16 d plane (dense) at W + out_f*(in_f/32)*16.
-//   act_f32       : f32 activation [n_tokens, in_f].
-//   y             : f32 output [n_tokens, out_f].
-//   act_scratch   : pre-alloc'd >= bw24_mmq_q4_0_act_bytes(in_f, n_tokens).
-// Requires in_f % 32 == 0. Returns 0 on success, else (1000 + cudaError).
-int bw24_mmq_q4_0(const void * W_q4_0, const float * act_f32, float * y,
-                  int in_f, int out_f, int n_tokens, void * act_scratch, void * stream, int rp) {
+// Quantize the f32 activation [n_tokens, in_f] into the block_q8_1_mmq (D4) scratch WITHOUT
+// launching the GEMM — the quantize-once seam: q/k/v (and gate/up) share one input, so the
+// caller quantizes once and feeds bw24_mmq_q4_0_gemm per projection. Returns 0 or 2000+err.
+int bw24_mmq_q4_0_quant_act(const float * act_f32, void * act_scratch,
+                            int in_f, int n_tokens, void * stream) {
     cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
-
-    // ---- 1) quantize activation f32 -> block_q8_1_mmq (D4) ----
     const int64_t ne10 = in_f;
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
-    {
-        const int64_t block_num_y = (ne10_padded + 4 * CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) /
-                                    (4 * CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
-        const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-        const dim3 num_blocks((unsigned) n_tokens, (unsigned) block_num_y, 1);
-        quantize_mmq_q8_1_d4_q4_0<<<num_blocks, block_size, 0, st>>>(
-            act_f32, act_scratch, ne10, /*s01*/ in_f, ne10_padded, n_tokens);
-        cudaError_t e = cudaGetLastError();
-        if (e != cudaSuccess) { return 2000 + (int) e; }   // 2xxx = activation quantizer fault
-    }
+    const int64_t block_num_y = (ne10_padded + 4 * CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) /
+                                (4 * CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
+    const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
+    const dim3 num_blocks((unsigned) n_tokens, (unsigned) block_num_y, 1);
+    quantize_mmq_q8_1_d4_q4_0<<<num_blocks, block_size, 0, st>>>(
+        act_f32, act_scratch, ne10, /*s01*/ in_f, ne10_padded, n_tokens);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { return 2000 + (int) e; }   // 2xxx = activation quantizer fault
+    return 0;
+}
 
-    // ---- 2) launch mul_mat_q q4_0 (conventional xy-tiling) ----
+// GEMM-only entry: y = pre-quantized act_scratch @ W^T (same tile as bw24_mmq_q4_0).
+int bw24_mmq_q4_0_gemm(const void * W_q4_0, const void * act_scratch, float * y,
+                       int in_f, int out_f, int n_tokens, void * stream, int rp) {
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
     const bool need_check = (out_f % MMQ_Y) != 0;
     const int * y_q = (const int *) act_scratch;
     const char * W  = (const char *) W_q4_0;
@@ -550,6 +546,21 @@ int bw24_mmq_q4_0(const void * W_q4_0, const float * act_f32, float * y,
     return need_check
         ? mmq_q4_0_launch<true,  false>(W, nullptr, y_q, y, in_f, out_f, n_tokens, st)
         : mmq_q4_0_launch<false, false>(W, nullptr, y_q, y, in_f, out_f, n_tokens, st);
+}
+
+// Run the Q4_0 int8-MMA MMQ prefill GEMM. y[n_tokens, out_f] = act[n_tokens, in_f] @ W[out_f, in_f]^T.
+//   W_q4_0 : rp == 0 -> raw ggml block_q4_0 weight rows (18B blocks, in_f/32 per row).
+//            rp != 0 -> BW24_Q4RP split-plane repack: qs plane (out_f * in_f/32 * 16B, block-major)
+//                       at W, fp16 d plane (dense) at W + out_f*(in_f/32)*16.
+//   act_f32       : f32 activation [n_tokens, in_f].
+//   y             : f32 output [n_tokens, out_f].
+//   act_scratch   : pre-alloc'd >= bw24_mmq_q4_0_act_bytes(in_f, n_tokens).
+// Requires in_f % 32 == 0. Returns 0 on success, else (1000 + cudaError).
+int bw24_mmq_q4_0(const void * W_q4_0, const float * act_f32, float * y,
+                  int in_f, int out_f, int n_tokens, void * act_scratch, void * stream, int rp) {
+    int rc = bw24_mmq_q4_0_quant_act(act_f32, act_scratch, in_f, n_tokens, stream);
+    if (rc != 0) { return rc; }
+    return bw24_mmq_q4_0_gemm(W_q4_0, act_scratch, y, in_f, out_f, n_tokens, stream, rp);
 }
 
 } // extern "C"

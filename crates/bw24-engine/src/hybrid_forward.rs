@@ -2818,6 +2818,9 @@ impl HybridModel {
         let eps = self.cfg.rms_eps;
         let aux = self.gemma4_aux.as_ref().unwrap();
 
+        // quantize-once window: q/k/v share `h` — the MMQ D4 activation quantizes once
+        // (h stays borrowed across the triple, so the cache key can't go stale).
+        e.mmq_act_begin();
         let q0 = e.matmul(&fa.wq, h, t)?;   // [t, nh*hd]
         let k0 = e.matmul(&fa.wk, h, t)?;   // [t, nkv*hd]
         // globals ship no v_proj (wv := wk at load) — V input is the SAME projection output;
@@ -3258,7 +3261,11 @@ impl HybridModel {
                 } else { None };
                 match fused {
                     Some(p) => p,
-                    None => (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?),
+                    None => {
+                        // quantize-once window: gate/up share `zsh` (borrowed across the pair).
+                        e.mmq_act_begin();
+                        (e.matmul(ffn_gate, &zsh, t)?, e.matmul(ffn_up, &zsh, t)?)
+                    }
                 }
             };
             let mut act = e.uninit(t * n_ff)?;

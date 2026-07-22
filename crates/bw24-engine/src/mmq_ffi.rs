@@ -15,6 +15,13 @@
 use crate::Engine;
 use cudarc::driver::{CudaSlice, DevicePtr, DevicePtrMut};
 
+/// Quantize-once seam state (see `Engine::mmq_act_begin`): window epoch + one cached
+/// (epoch, act_ptr, m, in_f, D4 scratch) slot. Slot drops (freeing the scratch) on each new window.
+static MMQ_ACT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[allow(clippy::type_complexity)]
+static MMQ_ACT_SLOT: std::sync::Mutex<Option<(u64, u64, usize, usize, CudaSlice<u8>)>> =
+    std::sync::Mutex::new(None);
+
 unsafe extern "C" {
     /// Bytes needed for the block_fp4_mmq activation scratch for (in_f, n_tokens).
     pub fn bw24_mmq_nvfp4_act_bytes(in_f: i32, n_tokens: i32) -> usize;
@@ -132,6 +139,25 @@ unsafe extern "C" {
         out_f: i32,
         n_tokens: i32,
         act_scratch: *mut core::ffi::c_void,
+        stream: *mut core::ffi::c_void,
+        rp: i32,
+    ) -> i32;
+    /// Quantize-only entry (quantize-once seam): f32 activation -> block_q8_1_mmq scratch.
+    pub fn bw24_mmq_q4_0_quant_act(
+        act_f32: *const f32,
+        act_scratch: *mut core::ffi::c_void,
+        in_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// GEMM-only entry: consumes a pre-quantized scratch (from bw24_mmq_q4_0_quant_act).
+    pub fn bw24_mmq_q4_0_gemm(
+        w_q4_0: *const core::ffi::c_void,
+        act_scratch: *const core::ffi::c_void,
+        y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
         stream: *mut core::ffi::c_void,
         rp: i32,
     ) -> i32;
@@ -416,6 +442,17 @@ impl Engine {
         Ok(y)
     }
 
+    /// Open a quantize-once sharing window for the NEXT activation (quantize-once seam): sibling
+    /// Q4_0 MMQ matmuls on the SAME input (q/k/v; gate/up) quantize its D4 scratch once. Safe by
+    /// construction: a hit requires the same window epoch AND the same (ptr, m, in_f) — the caller
+    /// opens a window while it holds the shared input alive, so its address can neither change nor
+    /// be recycled inside the window. Paths that never call this never hit the cache.
+    pub fn mmq_act_begin(&self) {
+        use std::sync::atomic::Ordering;
+        MMQ_ACT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        *MMQ_ACT_SLOT.lock().unwrap() = None;
+    }
+
     /// Bare Q4_0 int8-MMA MMQ launch (no macro-scale) — the kernel_check accuracy-gate entry and
     /// the `qmatvec_mmq` dispatch body. `rp` selects the weight layout (BW24_Q4RP split-plane vs
     /// raw ggml 18B blocks) — pure address remap, bit-identical output.
@@ -428,35 +465,61 @@ impl Engine {
         out_f: usize,
         rp: bool,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use std::sync::atomic::Ordering;
         assert!(
             in_f % 32 == 0,
             "MMQ Q4_0 requires in_f % 32 == 0, got {in_f}"
         );
-        let act_bytes = unsafe { bw24_mmq_q4_0_act_bytes(in_f as i32, m as i32) };
-        let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
         let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let stream = &self.gpu.stream;
+        let (x_p, _gx) = x.device_ptr(stream);
+        let epoch = MMQ_ACT_EPOCH.load(Ordering::Relaxed);
+        // quantize-once: reuse the window's scratch when the SAME activation comes back.
+        let mut slot = MMQ_ACT_SLOT.lock().unwrap();
+        let hit = matches!(&*slot,
+            Some((e, p, mm, inf, _)) if *e == epoch && *p == x_p as u64 && *mm == m && *inf == in_f);
+        if !hit {
+            let act_bytes = unsafe { bw24_mmq_q4_0_act_bytes(in_f as i32, m as i32) };
+            let mut scratch = self.alloc_uninit::<u8>(act_bytes)?;
+            {
+                let (s_p, _gs) = scratch.device_ptr_mut(stream);
+                let rc = unsafe {
+                    bw24_mmq_q4_0_quant_act(
+                        x_p as *const f32,
+                        s_p as *mut core::ffi::c_void,
+                        in_f as i32,
+                        m as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                    )
+                };
+                if rc != 0 {
+                    return Err(
+                        format!("bw24_mmq_q4_0_quant_act(in_f={in_f}, m={m}) rc={rc}").into()
+                    );
+                }
+            }
+            *slot = Some((epoch, x_p as u64, m, in_f, scratch));
+        }
+        let scratch = &slot.as_ref().unwrap().4;
         {
-            let stream = &self.gpu.stream;
             let (w_p, _gw) = bytes.device_ptr(stream);
-            let (x_p, _gx) = x.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
-            let (s_p, _gs) = scratch.device_ptr_mut(stream);
+            let (s_p, _gs) = scratch.device_ptr(stream);
             let rc = unsafe {
-                bw24_mmq_q4_0(
+                bw24_mmq_q4_0_gemm(
                     w_p as *const core::ffi::c_void,
-                    x_p as *const f32,
+                    s_p as *const core::ffi::c_void,
                     y_p as *mut f32,
                     in_f as i32,
                     out_f as i32,
                     m as i32,
-                    s_p as *mut core::ffi::c_void,
                     stream.cu_stream() as *mut core::ffi::c_void,
                     rp as i32,
                 )
             };
             if rc != 0 {
                 return Err(format!(
-                    "bw24_mmq_q4_0(rp={rp}, in_f={in_f}, out_f={out_f}, m={m}, wbytes={}) rc={rc}",
+                    "bw24_mmq_q4_0_gemm(rp={rp}, in_f={in_f}, out_f={out_f}, m={m}, wbytes={}) rc={rc}",
                     bytes.len()
                 )
                 .into());
