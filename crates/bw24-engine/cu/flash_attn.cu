@@ -1506,6 +1506,19 @@ static __device__ __forceinline__ void fa_prefill_bf16_pp_body_p1t(
 
 
 
+// P1 PLAIN stamp (causal, window=0) — the same p1t body serves the non-SWA prefill lane
+// (qwen models + gemma globals-hd256 elsewhere). Opt-in BW24_FA_P1=1 until the qwen battery
+// runs; the windowed twin is already default for the gemma lane.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_bf16_p1(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_bf16_pp_body_p1t<256, BK>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv,
+                                         scale, causal, 0);
+}
+
 // P1 windowed stamp (engine-study FA2 schedule; BW24_FAW_P1=0 reverts).
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_w_bf16_p1(
         const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,

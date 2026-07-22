@@ -5609,6 +5609,32 @@ impl Engine {
         }
         // FLOOR PORT (P2+P0a+P0b+P1): 4 warps/CTA, BLOCK_Q=64 query rows, BK=32 KV tile,
         // Q-in-reg + register-O, grid.y=n_head_kv (4 Q-heads share staged K/V).
+        // P1 plain arm (BW24_FA_P1=1 opt-in until the qwen battery): the engine-study body
+        // (FA2 schedule + boundary split + swizzle) on the non-windowed lane. bf16 pre-convert.
+        static FA_P1: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let fa_p1 = *FA_P1.get_or_init(|| std::env::var("BW24_FA_P1").as_deref() == Ok("1"));
+        if fa_p1 && head_dim == 256 && !std::env::var("BW24_FA_FLOOR").is_ok() {
+            const BLOCK_Q: usize = 64; const BKX: usize = 32;
+            let f = self.func("fa_prefill_bf16_p1");
+            let shmem = (2 * (2 * BKX * head_dim + BLOCK_Q * BKX)
+                       + 4 * (BLOCK_Q * BKX + 2 * BLOCK_Q)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32,
+                n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti)
+             .arg(&tkvi).arg(&scale).arg(&cz);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         // Edge 5a (DEFAULT): fa_prefill_f32_pp — register-resident softmax (no sSw smem
         // round-trip), the FA3 softmax-GEMM overlap variant. ncu (pp512): short_scoreboard
         // 4.32->3.47, wait 1.99->1.45, per-call ~577us->~440us (1.31x) at flat 12.1% warps /
