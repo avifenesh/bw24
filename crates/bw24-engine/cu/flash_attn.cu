@@ -2460,7 +2460,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
     // ---- stage the CTA's 16-row Q tile once (int4 = 8 bf16 per copy) ----
     for (int i = bt; i < SP_M_ROWS*QCH; i += bsz) {
         int r = i / QCH, dc = i % QCH;
-        ((int4*)sQ)[i] = (qrow_base + r < T)
+        ((int4*)sQ)[r*QCH + (dc ^ (r & 7))] = (qrow_base + r < T)
             ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM))[dc]
             : zero4;
     }
@@ -2483,8 +2483,8 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
         for (int i = bt; i < BK*QCH; i += bsz) {
             int kk = i / QCH, dc = i % QCH;
             const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM;
-            ((int4*)sK)[i] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
-            ((int4*)sV)[i] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
+            ((int4*)sK)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
+            ((int4*)sV)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
         }
         __syncthreads();
 
@@ -2500,8 +2500,8 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
             for (int kt0 = 0; kt0 < KT_HALF; ++kt0) {
                 const int kt = warp*KT_HALF + kt0;
                 ATile Qf, Kt;
-                ld_A(Qf, sQ + kt*K_STEP, HEAD_DIM/2);
-                ld_A(Kt, sK + kg*HEAD_DIM + kt*K_STEP, HEAD_DIM/2);
+                ld_A_sw(Qf, sQ, 0, kt*2, HEAD_DIM/8);
+                ld_A_sw(Kt, sK, kg, kt*2, HEAD_DIM/8);
                 BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
                 BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
                 mma_bf16(C0, Qf, Blo);
@@ -2608,7 +2608,7 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
             for (int kk = 0; kk < BK; kk += K_STEP) {
                 ATile A; ATile Bt;
                 ld_A(A, sP + kk, BK/2);
-                ld_A_trans(Bt, sV + kk*HEAD_DIM + d_base + d0, HEAD_DIM/2);
+                ld_A_trans_sw(Bt, sV, kk, (d_base + d0)/8, HEAD_DIM/8);
                 BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                 BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
                 mma_bf16(Clo, A, Blo);
