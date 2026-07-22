@@ -39,3 +39,18 @@ holds for the hd256 port; the hd512 4-way split-K DOES reorder → own numeric c
 
 Iteration rig: vast box (final numbers on the laptop only). Correctness: kernel-check windowed
 gates + argmax/VERIFY battery per landing.
+
+## §2 refined (2026-07-22 late): hd512 wide-tile geometry (from llama's 512-row config)
+
+`fa_prefill_bf16_hd512_w64`: 64 q-rows/CTA, 8 warps (256 thr), grid (T/64, n_head).
+- Q in SMEM (llama Q_in_reg=false at hd512): 64x512 bf16 = 64KB, staged once per CTA.
+- K dim-CHUNKED (llama nbatch_K2=128): stage K[32 keys][128 dims] = 8KB per chunk; GEMM0
+  accumulates over 4 chunks (kt order preserved within warp -> same FP order per row-dot).
+- V dim-chunked likewise for GEMM1 (d0 walks chunk-local dims; O order preserved).
+- Warps split ROWS (8 warps x 8 rows). Per-warp: Q re-ldmatrix from smem per kt; S = 8x32;
+  softmax on own rows; O = 8 rows x 512 dims = 32 CTiles (128 regs, sp-proven).
+- smem: sQ 64KB + K/V chunk ring 2x8KB + sP 8x32x2B x8 warps (4KB) + sL ~85KB -> occ 1 but
+  K/V global traffic /4 vs sp (staged once per 64 rows).
+- NUMERIC: per-row dot order = kt sequential as sp? NO — sp splits kt across warps (2-way
+  partial sums); w64 keeps each row's FULL kt chain in ONE warp -> matches the ORIGINAL z2
+  bf16 kernel's per-row order, NOT sp's. => own numeric config vs sp; gate oracle + battery.
