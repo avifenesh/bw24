@@ -166,6 +166,14 @@ pub fn fa_vec_min_tkv() -> usize {
         .unwrap_or_else(|| FA_VEC_MIN_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
+/// f16-P/V door (BW24_FA_F16PV=1): opt-in numeric class — llama-fa=1-style f16 P + f16 P@V
+/// accumulation on the hd512 single-pass prefill kernel (KQ/softmax/normalize stay f32).
+/// Off by default; own battery before any default consideration.
+pub fn fa_f16pv_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() == Ok("1"))
+}
+
 /// hd-512 vec crossover floor (BW24_FA512_MIN, default 512) — shared by fa_decode dispatch
 /// and the gemma global-layer rows/parity call sites.
 pub fn fa512_min_tkv() -> usize {
@@ -5885,7 +5893,7 @@ impl Engine {
                 std::env::var("BW24_FA512_SP").map(|v| v != "0").unwrap_or(true)
             });
         self.fa_prefill_hd512_arm(q, k, v, o, head_dim, n_head, n_head_kv, t, t_kv, scale,
-                                  causal, f32_stage, sp)
+                                  causal, f32_stage, sp, sp && fa_f16pv_on())
     }
 
     /// hd512 single-pass FA with PRE-CONVERTED bf16 operands (producer-emitted).
@@ -5896,7 +5904,15 @@ impl Engine {
                                 -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512);
         const SP_M: usize = 16; const BKS: usize = 32;
-        let f = self.func("fa_prefill_bf16_hd512_sp");
+        // f16-P/V door (BW24_FA_F16PV=1): P and the P@V accumulation in f16 (llama's fa=1 VKQ
+        // class); KQ/softmax/rescale-band/final-normalize stay f32. Own numeric config —
+        // battery-gated. V bytes must be f16 for the sp16 kernel (stage/ldmatrix are typeless).
+        let f16pv = fa_f16pv_on();
+        let vh; let vref: &CudaSlice<u8> = if f16pv {
+            vh = self.bf16_to_f16(vb, t_kv * n_head_kv * head_dim)?; &vh
+        } else { vb };
+        let f = self.func(if f16pv { "fa_prefill_bf16_hd512_sp16" }
+                          else { "fa_prefill_bf16_hd512_sp" });
         let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
                    + 4 * (SP_M * BKS + SP_M)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -5908,7 +5924,7 @@ impl Engine {
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(qb).arg(kb).arg(vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+        b.arg(qb).arg(kb).arg(vref).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
          .arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
         Ok(())
@@ -5920,14 +5936,16 @@ impl Engine {
     pub fn fa_prefill_hd512_arm(&self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
                                 o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
                                 n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
-                                f32_stage: bool, sp: bool)
+                                f32_stage: bool, sp: bool, f16pv: bool)
                                 -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512, "fa_prefill_hd512 is hd512 only");
         if sp && !f32_stage {
             // Single-pass: 16 q-rows/CTA, 2 warps, grid (ceil(T/16), n_head, 1).
             // smem: sQ[16][512] + sK[32][512] + sV[32][512] + sP[16][32] (bf16) + sS[16][32]+sL f32.
+            // f16pv: sp16 kernel — f16 P + f16 P@V accum, V operand encoded f16.
             const SP_M: usize = 16; const BKS: usize = 32;
-            let f = self.func("fa_prefill_bf16_hd512_sp");
+            let f = self.func(if f16pv { "fa_prefill_bf16_hd512_sp16" }
+                              else { "fa_prefill_bf16_hd512_sp" });
             let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
                        + 4 * (SP_M * BKS + SP_M)) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -5940,7 +5958,8 @@ impl Engine {
                                                 t as i32, t_kv as i32, causal as i32);
             let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
             let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
-            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
+            let vb = if f16pv { self.f32_to_f16(v, t_kv * n_head_kv * head_dim)? }
+                     else { self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)? };
             let mut b = self.gpu.stream.launch_builder(&f);
             b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
              .arg(&scale).arg(&cz);
@@ -6023,6 +6042,39 @@ impl Engine {
         };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(&mut y).arg(&n_i);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    pub fn f32_to_f16(&self, x: &CudaSlice<f32>, n: usize)
+                      -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(n % 4 == 0, "f32_to_f16 requires n % 4 == 0, got {n}");
+        let mut y = self.alloc_uninit::<u8>(n * 2)?;
+        let f = self.func("f32_to_f16_flat");
+        let n_i = n as i64;
+        let cfg = LaunchConfig {
+            grid_dim: (((n / 4) as u32).div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut y).arg(&n_i);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// bf16 bytes -> f16 bytes, n elements (the f16-P/V door's V re-encode on the emit lane).
+    pub fn bf16_to_f16(&self, xb: &CudaSlice<u8>, n: usize)
+                       -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(n % 2 == 0, "bf16_to_f16 requires n % 2 == 0, got {n}");
+        let mut y = self.alloc_uninit::<u8>(n * 2)?;
+        let f = self.func("bf16_to_f16_flat");
+        let n2 = (n / 2) as i64;
+        let cfg = LaunchConfig {
+            grid_dim: (((n / 2) as u32).div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(xb).arg(&mut y).arg(&n2);
         unsafe { b.launch(cfg)?; }
         Ok(y)
     }

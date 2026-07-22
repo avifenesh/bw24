@@ -1575,11 +1575,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cpu = cpu_sdpa5(&q, &k, &v, t, tkv);
                 let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
                 let mut o_f32=e.zeros(hd5*nh5*t)?; let mut o_bf=e.zeros(hd5*nh5*t)?;
-                let mut o_sp=e.zeros(hd5*nh5*t)?;
-                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_f32,hd5,nh5,nhkv5,t,tkv,scale5,true,true,false)?;
-                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_bf,hd5,nh5,nhkv5,t,tkv,scale5,true,false,false)?;
-                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_sp,hd5,nh5,nhkv5,t,tkv,scale5,true,false,true)?;
+                let mut o_sp=e.zeros(hd5*nh5*t)?; let mut o_sp16=e.zeros(hd5*nh5*t)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_f32,hd5,nh5,nhkv5,t,tkv,scale5,true,true,false,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_bf,hd5,nh5,nhkv5,t,tkv,scale5,true,false,false,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_sp,hd5,nh5,nhkv5,t,tkv,scale5,true,false,true,false)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_sp16,hd5,nh5,nhkv5,t,tkv,scale5,true,false,true,true)?;
                 let gf=e.dtoh(&o_f32)?; let gb=e.dtoh(&o_bf)?; let gs=e.dtoh(&o_sp)?;
+                let gs16=e.dtoh(&o_sp16)?;
                 let d=maxdiff(&cpu,&gf);
                 let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
                 println!("fa_prefill_hd512 T={t} Tkv={tkv}: rel={rel:.2e} {}",
@@ -1591,6 +1593,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let dsp=maxdiff(&cpu,&gs); let relsp=dsp/sc;
                 println!("fa_prefill_hd512_sp T={t} Tkv={tkv}: rel={relsp:.2e} {}",
                          if relsp<2e-2 {"OK"} else {fails+=1;"FAIL"});
+                // f16-P/V door (BW24_FA_F16PV): f16 P + f16 P@V accum — own numeric class.
+                // Same 2e-2 oracle band: f16's 11-bit mantissa on softmax-weighted O(1) sums
+                // sits at ~1e-3; a band miss means a real staging/fragment bug, not rounding.
+                let d16=maxdiff(&cpu,&gs16); let rel16=d16/sc;
+                println!("fa_prefill_hd512_sp16 T={t} Tkv={tkv}: rel={rel16:.2e} {}",
+                         if rel16<2e-2 {"OK"} else {fails+=1;"FAIL"});
             }
         }
         // decode cases (T=1) — K/V come from the QUANTIZED resident cache (q8_0 K / q5_1 V).

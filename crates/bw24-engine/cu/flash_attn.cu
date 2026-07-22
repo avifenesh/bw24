@@ -842,6 +842,37 @@ static __device__ __forceinline__ float row_sum4(float v) {
     return v;   // all 4 lanes of the quad hold the row sum
 }
 
+// f16-accum mma (the BW24_FA_F16PV door, llama fa=1 VKQ class): m16n8k16 f16 in / f16 out.
+// ONLY the P@V accumulation uses this — KQ, softmax and the final normalize stay f32.
+struct CTileH { unsigned x[2]; };  // 16x8 f16 accum tile: 4 halves packed as 2 half2-in-u32
+static __device__ __forceinline__ void mma_f16acc(CTileH& D, const ATile& A, const BTile& B) {
+    const unsigned* a = (const unsigned*)A.x;
+    const unsigned* b = (const unsigned*)B.x;
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {%0,%1}, {%2,%3,%4,%5}, {%6,%7}, {%0,%1};"
+        : "+r"(D.x[0]), "+r"(D.x[1])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+extern "C" __global__ void f32_to_f16_flat(
+        const float* __restrict__ x, __half* __restrict__ y, long n)
+{
+    long i = ((long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i >= n) return;
+    float4 v = *(const float4*)(x + i);
+    __half2* o = (__half2*)(y + i);
+    o[0] = __floats2half2_rn(v.x, v.y);
+    o[1] = __floats2half2_rn(v.z, v.w);
+}
+
+extern "C" __global__ void bf16_to_f16_flat(
+        const __nv_bfloat162* __restrict__ x, __half2* __restrict__ y, long n2)
+{
+    long i = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n2) return;
+    float2 v = __bfloat1622float2(x[i]);
+    y[i] = __floats2half2_rn(v.x, v.y);
+}
+
 // cp.async primitives (the mmq_nvfp4_w4a8.cu pipe pattern — cp.async changes WHEN bytes
 // arrive, never WHAT is computed; consumption order is unchanged -> bit-identical).
 static __device__ __forceinline__ void fa_cp_async_16(void * smem_dst, const void * gsrc) {
@@ -2652,6 +2683,227 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
         }
     }
 }
+
+extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_bf16_hd512_sp16(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    constexpr int HEAD_DIM  = 512;
+    constexpr int HD_KTILES = HEAD_DIM / K_STEP;      // 32
+    constexpr int HALF      = HEAD_DIM / 2;           // 256 V/O dims per WARP
+    constexpr int O_NBLK    = HALF / N_KEYS;          // 32 CTiles per warp
+    constexpr int KT_HALF   = HD_KTILES / 2;          // 16 kt per warp (GEMM0 split-K)
+    const int warp = threadIdx.y;                     // 0..1
+    const int lane = threadIdx.x;
+    const int head    = blockIdx.y;
+    const int kv_head = head / (n_head / n_head_kv);
+    const int qrow_base = blockIdx.x * SP_M_ROWS;
+    if (head >= n_head || qrow_base >= T) return;
+    const int nqw = min(SP_M_ROWS, T - qrow_base);
+    const int d_base = warp * HALF;                   // this WARP's O half
+
+    extern __shared__ char smem_raw512sp[];
+    __nv_bfloat16* sQ = (__nv_bfloat16*)smem_raw512sp;            // SP_M_ROWS*HEAD_DIM
+    __nv_bfloat16* sK = sQ + SP_M_ROWS*HEAD_DIM;                  // BK*HEAD_DIM
+    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM (full 512)
+    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // SP_M_ROWS*BK
+    float* sS = (float*)(sP + SP_M_ROWS*BK);                      // SP_M_ROWS*BK f32 partials
+    float* sL = sS + SP_M_ROWS*BK;                                // SP_M_ROWS f32
+
+    const int causal_i = causal;
+    const int q_pos0  = (T_kv - T) + qrow_base;
+    const int bt  = warp*WARP_SZ + lane;              // 0..63
+    const int bsz = N_WARPS_512*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+    constexpr int QCH = HEAD_DIM / 8;
+
+    // ---- stage the CTA's 16-row Q tile once (int4 = 8 bf16 per copy) ----
+    for (int i = bt; i < SP_M_ROWS*QCH; i += bsz) {
+        int r = i / QCH, dc = i % QCH;
+        ((int4*)sQ)[r*QCH + (dc ^ (r & 7))] = (qrow_base + r < T)
+            ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM))[dc]
+            : zero4;
+    }
+    __syncthreads();
+
+    CTileH O_acc[O_NBLK];                     // f16 P@V accumulation (the door class)
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=0u; O_acc[c].x[1]=0u; }
+    float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        const int q_pos_max = (T_kv - T) + qrow_base + (SP_M_ROWS - 1);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- stage K + V (both full 512), int4 copies ----
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM;
+            ((int4*)sK)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk) ? ((const int4*)(K + rowo))[dc] : zero4;
+            ((int4*)sV)[kk*QCH + (dc ^ (kk & 7))] = (kk < nk) ? ((const int4*)(V + rowo))[dc] : zero4;
+        }
+        __syncthreads();
+
+        // ---- GEMM0 split-K: warp w accumulates its 16 kt, partials meet in sS ----
+        CTile Sc[BK/N_KEYS];
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) { Sc[g].x[0]=Sc[g].x[1]=Sc[g].x[2]=Sc[g].x[3]=0.0f; }
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C0, C1;
+            C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+            C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+            #pragma unroll 8
+            for (int kt0 = 0; kt0 < KT_HALF; ++kt0) {
+                const int kt = warp*KT_HALF + kt0;
+                ATile Qf, Kt;
+                ld_A_sw(Qf, sQ, 0, kt*2, HEAD_DIM/8);
+                ld_A_sw(Kt, sK, kg, kt*2, HEAD_DIM/8);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf, Blo);
+                mma_bf16(C1, Qf, Bhi);
+            }
+            Sc[kg/N_KEYS + 0] = C0;
+            Sc[kg/N_KEYS + 1] = C1;
+        }
+        // warp0 writes its partials, warp1 adds, both read the sum back.
+        if (warp == 0) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sS[r_lo*BK + g*N_KEYS + c0 + 0] = Sc[g].x[0];
+                sS[r_lo*BK + g*N_KEYS + c0 + 1] = Sc[g].x[1];
+                sS[r_hi*BK + g*N_KEYS + c0 + 0] = Sc[g].x[2];
+                sS[r_hi*BK + g*N_KEYS + c0 + 1] = Sc[g].x[3];
+            }
+        }
+        __syncthreads();
+        if (warp == 1) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sS[r_lo*BK + g*N_KEYS + c0 + 0] += Sc[g].x[0];
+                sS[r_lo*BK + g*N_KEYS + c0 + 1] += Sc[g].x[1];
+                sS[r_hi*BK + g*N_KEYS + c0 + 0] += Sc[g].x[2];
+                sS[r_hi*BK + g*N_KEYS + c0 + 1] += Sc[g].x[3];
+            }
+        }
+        __syncthreads();
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            Sc[g].x[0] = sS[r_lo*BK + g*N_KEYS + c0 + 0];
+            Sc[g].x[1] = sS[r_lo*BK + g*N_KEYS + c0 + 1];
+            Sc[g].x[2] = sS[r_hi*BK + g*N_KEYS + c0 + 0];
+            Sc[g].x[3] = sS[r_hi*BK + g*N_KEYS + c0 + 1];
+        }
+        __syncthreads();
+
+        // ---- register softmax (identical per warp — same summed scores) ----
+        float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int col = g*N_KEYS + c0 + (l & 1);
+                int row = (l < 2) ? r_lo : r_hi;
+                int q_pos = q_pos0 + row;
+                float s = Sc[g].x[l] * scale;
+                if (col >= nk) s = NEG_INF;
+                if (causal_i && (k0 + col) > q_pos) s = NEG_INF;
+                Sc[g].x[l] = s;
+                if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
+                else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
+            }
+        }
+        s_tile_max_lo = row_max4(s_tile_max_lo);
+        s_tile_max_hi = row_max4(s_tile_max_hi);
+        float m_new_lo = fmaxf(m_lo, s_tile_max_lo);
+        float m_new_hi = fmaxf(m_hi, s_tile_max_hi);
+        float alpha_lo = (m_lo == NEG_INF) ? 0.0f : exp2f((m_lo - m_new_lo) * LOG2E);
+        float alpha_hi = (m_hi == NEG_INF) ? 0.0f : exp2f((m_hi - m_new_hi) * LOG2E);
+        float l_part_lo = 0.0f, l_part_hi = 0.0f;
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float mn = (l < 2) ? m_new_lo : m_new_hi;
+                float s  = Sc[g].x[l];
+                float p  = (s == NEG_INF) ? 0.0f : exp2f((s - mn) * LOG2E);
+                Sc[g].x[l] = p;
+                if (l < 2) l_part_lo += p; else l_part_hi += p;
+            }
+        }
+        l_part_lo = row_sum4(l_part_lo);
+        l_part_hi = row_sum4(l_part_hi);
+        l_lo = l_lo * alpha_lo + l_part_lo;
+        l_hi = l_hi * alpha_hi + l_part_hi;
+        m_lo = m_new_lo; m_hi = m_new_hi;
+
+        // P to sP once (warp0; both warps hold identical values).
+        if (warp == 0) {
+            __half* sPh = (__half*)sP;
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                sPh[r_lo*BK + g*N_KEYS + c0 + 0] = __float2half(Sc[g].x[0]);
+                sPh[r_lo*BK + g*N_KEYS + c0 + 1] = __float2half(Sc[g].x[1]);
+                sPh[r_hi*BK + g*N_KEYS + c0 + 0] = __float2half(Sc[g].x[2]);
+                sPh[r_hi*BK + g*N_KEYS + c0 + 1] = __float2half(Sc[g].x[3]);
+            }
+        }
+        __syncthreads();
+
+        {
+            const __half2 alo = __float2half2_rn(alpha_lo);
+            const __half2 ahi = __float2half2_rn(alpha_hi);
+            #pragma unroll
+            for (int c = 0; c < O_NBLK; ++c) {
+                __half2 lo = __hmul2(*(__half2*)&O_acc[c].x[0], alo);
+                __half2 hi = __hmul2(*(__half2*)&O_acc[c].x[1], ahi);
+                O_acc[c].x[0] = *(unsigned*)&lo;
+                O_acc[c].x[1] = *(unsigned*)&hi;
+            }
+        }
+
+        // ---- GEMM1: warp w owns O[:, d_base .. d_base+256) ----
+        for (int d0 = 0; d0 < HALF; d0 += 2*N_KEYS) {
+            #pragma unroll
+            for (int kk = 0; kk < BK; kk += K_STEP) {
+                ATile A; ATile Bt;
+                ld_A(A, sP + kk, BK/2);
+                ld_A_trans_sw(Bt, sV, kk, (d_base + d0)/8, HEAD_DIM/8);
+                BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                mma_f16acc(O_acc[(d0/N_KEYS) + 0], A, Blo);
+                mma_f16acc(O_acc[(d0/N_KEYS) + 1], A, Bhi);
+            }
+        }
+        __syncthreads();
+    }
+
+    if (warp == 0 && c0 == 0) { sL[r_lo] = l_lo; sL[r_hi] = l_hi; }
+    __syncthreads();
+
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) {
+        #pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int r = CTile::get_i(l);
+            int d = c*N_KEYS + CTile::get_j(l);
+            if (r < nqw) {
+                float linv = (sL[r] > 0.0f) ? (1.0f / sL[r]) : 0.0f;
+                const __half2 h2 = *(const __half2*)&O_acc[c].x[l / 2];
+                const float ov = __half2float((l & 1) ? __high2half(h2) : __low2half(h2));
+                O[((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM + d_base + d]
+                    = ov * linv;
+            }
+        }
+    }
+}
+
 
 extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_pp_hd128(
         const float* __restrict__ Q, const float* __restrict__ K,
