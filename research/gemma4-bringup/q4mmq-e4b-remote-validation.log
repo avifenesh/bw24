@@ -1,0 +1,12 @@
+=== installing cuda-toolkit-13 Wed Jul 22 11:34:37 UTC 2026
+using /usr/local/cuda-13.1/bin/nvcc
+Build cuda_13.1.r13.1/compiler.37061995_0
+=== build start Wed Jul 22 11:37:07 UTC 2026
+    Finished `release` profile [optimized] target(s) in 1m 47s
+=== kernel-check
+ALL GREEN: kernels match CPU reference.
+=== E4B depth argmax
+prefill argmax=623  decode argmax=623  logit maxdiff=5.940e-1  MATCH
+=== REMOTE DONE Wed Jul 22 11:39:13 UTC 2026
+---
+NVIDIA GeForce RTX 5090, 12.0
