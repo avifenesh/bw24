@@ -5923,34 +5923,6 @@ impl Engine {
                                 f32_stage: bool, sp: bool)
                                 -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512, "fa_prefill_hd512 is hd512 only");
-        // FI geometry (BW24_FA512_FI=1, opt-in until battery): 32 rows/CTA, 4 warps,
-        // V-time-shares-K smem, VO quarters — the FlashInfer hd512 blueprint at f32.
-        static FI_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let fi = !f32_stage && *FI_ON.get_or_init(|| {
-            std::env::var("BW24_FA512_FI").as_deref() == Ok("1")
-        });
-        if fi {
-            const ROWS: usize = 32; const BKS: usize = 32;
-            let f = self.func("fa_prefill_bf16_hd512_fi");
-            let shmem = (2 * (ROWS * head_dim + BKS * head_dim + ROWS * BKS)
-                       + 4 * (2 * 16 * BKS + ROWS)) as u32;
-            use cudarc::driver::sys::CUfunction_attribute_enum as A;
-            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
-            let cfg = LaunchConfig {
-                grid_dim: ((t as u32).div_ceil(ROWS as u32), n_head as u32, 1),
-                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
-            };
-            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32,
-                n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
-            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
-            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
-            let vb = self.f32_to_bf16(v, t_kv * n_head_kv * head_dim)?;
-            let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(&qb).arg(&kb).arg(&vb).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
-             .arg(&scale).arg(&cz);
-            unsafe { b.launch(cfg)?; }
-            return Ok(());
-        }
         if sp && !f32_stage {
             // Single-pass: 16 q-rows/CTA, 2 warps, grid (ceil(T/16), n_head, 1).
             // smem: sQ[16][512] + sK[32][512] + sV[32][512] + sP[16][32] (bf16) + sS[16][32]+sL f32.

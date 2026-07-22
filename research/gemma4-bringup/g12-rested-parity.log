@@ -1,27 +1,39 @@
 == model: gemma-4-12b-it-qat-q4_0.gguf
-temp-pre: 55
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3974.17 ± 158.29 |
+temp-pre: 56
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3966.78 ± 169.23 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4444s = 3906.1 tok/s (pp1736)
-temp-pre: 59
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3950.31 ± 156.05 |
+prefill 1736 tok in 0.4426s = 3922.3 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 0.4491s = 3865.6 tok/s (pp1736)
+temp-pre: 60
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3938.48 ± 159.57 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4454s = 3897.9 tok/s (pp1736)
-temp-pre: 59
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3957.55 ± 164.69 |
+prefill 1736 tok in 0.4444s = 3906.5 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 0.4490s = 3866.6 tok/s (pp1736)
+temp-pre: 61
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3940.40 ± 180.46 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4455s = 3897.1 tok/s (pp1736)
+prefill 1736 tok in 0.4456s = 3896.1 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 0.4504s = 3854.7 tok/s (pp1736)
 == model: gemma-4-31B_q4_0-it.gguf
-temp-pre: 59
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1555.72 ± 0.74 |
+temp-pre: 61
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1553.40 ± 0.99 |
 prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2138s = 1430.3 tok/s (pp1736)
-temp-pre: 62
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1553.82 ± 0.05 |
-prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2208s = 1422.0 tok/s (pp1736)
+prefill 1736 tok in 1.2059s = 1439.6 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 1.3176s = 1317.6 tok/s (pp1736)
 temp-pre: 63
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.83 ± 4.34 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1549.44 ± 0.15 |
 prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2201s = 1422.8 tok/s (pp1736)
-PRINT COMPLETE Wed Jul 22 08:57:09 PM UTC 2026
+prefill 1736 tok in 1.2178s = 1425.6 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 1.3279s = 1307.3 tok/s (pp1736)
+temp-pre: 64
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.89 ± 1.07 |
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.2147s = 1429.1 tok/s (pp1736)
+fi-arm:
+prefill 1736 tok in 1.2992s = 1336.2 tok/s (pp1736)
+PRINT COMPLETE Wed Jul 22 11:15:40 PM UTC 2026
