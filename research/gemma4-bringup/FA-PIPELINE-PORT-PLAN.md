@@ -54,3 +54,19 @@ gates + argmax/VERIFY battery per landing.
 - NUMERIC: per-row dot order = kt sequential as sp? NO — sp splits kt across warps (2-way
   partial sums); w64 keeps each row's FULL kt chain in ONE warp -> matches the ORIGINAL z2
   bf16 kernel's per-row order, NOT sp's. => own numeric config vs sp; gate oracle + battery.
+
+## §2 VERDICT (2026-07-22): wide-tile CLOSED at the f32-exact class
+
+Worked the geometry to exhaustion: (a) 64-row/8-warp with row-split warps needs 8-row warps —
+breaks the 16-row CTile fragment mapping; (b) warp-pair dim-split brings back the z2 2x-GEMM0
+duplication sp just removed; (c) sp-wide (32 rows, 2 row-blocks x 2 halves) needs
+3x32KB(Q/K/V) + 4KB f32 partial-S + P/L = ~104KB > the 99KB sm_120 CTA cap; (d) 16-row warps
+with full-512 register O = 64 f32 CTiles = 256 regs -> spills (the original z2 motivation).
+llama's hd512 fits the same silicon because fa=1 accumulates S/P/O in F16 — half the register
+and smem footprint for the same tile. OUR remaining hd512/hd256 FA gap vs llama is therefore a
+NUMERIC-CLASS premium (we hold f32 online-softmax accumulation; they don't), not scheduling.
+
+NEXT LEVER (legitimate, not tonight's): `BW24_FA_F16ACC` opt-in arm — f16-accum FA prefill
+variants, the same speed/accuracy-tradeoff door class as BW24_MMQ W4A4 (precedented). It is
+also the FAIRER A/B: llama's fa=1 default IS f16-accum, so exact-class bw24 vs f16 llama
+undercounts us. Gate: full battery in-config (argmax/VERIFY/spec) + explicit flag doc.
