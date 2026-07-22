@@ -70,3 +70,14 @@ NEXT LEVER (legitimate, not tonight's): `BW24_FA_F16ACC` opt-in arm — f16-accu
 variants, the same speed/accuracy-tradeoff door class as BW24_MMQ W4A4 (precedented). It is
 also the FAIRER A/B: llama's fa=1 default IS f16-accum, so exact-class bw24 vs f16 llama
 undercounts us. Gate: full battery in-config (argmax/VERIFY/spec) + explicit flag doc.
+
+## 31B glue lane (2026-07-23, from g31-glue-verdict): producers emit bf16
+
+31B loses ~70ms/prime of GLUE to llama while winning GEMM and FA. Biggest safe cuts:
+- `rope_neox2_bf16emit`: rope writes q/k f32 as today AND `qb/kb` bf16 (same __float2bfloat16
+  the converter applied — FA operands bit-identical). Kills 2 of 3 converts + their re-reads.
+- `rms_norm_qkv_w4` gains an optional `vb` bf16 emit (v is normed-but-never-roped).
+- fa_prefill_* accept optional pre-converted operands (fall back to f32_to_bf16 when absent —
+  non-gemma callers unchanged).
+Both bit-identical on every stream -> bit-gates. Sized ~15-18ms/prime on 31B (+2%), ~+1% 12B.
+NOT the block-per-row fused rms_norm_qkv_rope (would undo the warp-norm fix at depth).
