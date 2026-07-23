@@ -166,28 +166,28 @@ pub fn fa_vec_min_tkv() -> usize {
         .unwrap_or_else(|| FA_VEC_MIN_DEFAULT.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
-/// f16-P/V door (BW24_FA_F16PV=1): opt-in numeric class — llama-fa=1-style f16 P + f16 P@V
-/// accumulation on the hd512 single-pass prefill kernel (KQ/softmax/normalize stay f32).
-/// Off by default; own battery before any default consideration.
+/// f16-P/V class (DEFAULT since 2026-07-23 stamp v4; BW24_FA_F16PV=0 = f32-class rollback):
+/// llama-fa=1-style f16 P + f16 P@V accumulation on the hd512/SWA prefill stamps
+/// (KQ/softmax/normalize stay f32). Laptop stamp: 12B 1.045x, 31B 0.979x vs llama.
 pub fn fa_f16pv_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() != Ok("0"))
 }
 
-/// Head-pair arm (BW24_FA512_HP=1, requires the f16pv door): GQA ncols2=2 — 2 heads per
-/// CTA share each staged K/V tile, Q register-resident. Engages when n_head is even and
-/// the GQA group (n_head/n_head_kv) is even, so a pair never straddles kv groups.
+/// hd512 head-pair arm (DEFAULT since stamp v4; BW24_FA512_HP=0 reverts to sp16): GQA
+/// ncols2=2 — 2 heads per CTA share each staged K/V tile, Q register-resident. Engages
+/// when n_head is even and the GQA group (n_head/n_head_kv) is even.
 pub fn fa512_hp_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FA512_HP").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("BW24_FA512_HP").as_deref() != Ok("0"))
 }
 
-/// SWA head-pair arm (BW24_FAW_HP=1, requires the f16pv door): llama-class windowed
-/// geometry — 32 q-rows x 2 heads per CTA sharing staged K/V, f16 P@V accumulation.
-/// Even n_head and even GQA group required.
+/// SWA head-pair arm (DEFAULT since stamp v4; BW24_FAW_HP=0 reverts to p1): llama-class
+/// windowed geometry — 32 q-rows x 2 heads per CTA sharing staged K/V, f16 P@V
+/// accumulation. Even n_head and even GQA group required (guarded per call).
 pub fn faw_hp_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BW24_FAW_HP").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("BW24_FAW_HP").as_deref() != Ok("0"))
 }
 
 /// 4-warp sp16 experiment arm (BW24_FA512_W4=1, requires the f16pv door): GEMM0 split-K
