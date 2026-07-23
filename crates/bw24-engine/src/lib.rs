@@ -3154,6 +3154,7 @@ impl Engine {
         Ok(x)
     }
 
+
     /// T-token device embed gather (spec verify/replay): tokens uploaded as a tiny [T] u32 htod,
     /// rows dequanted on-device -> x[T, n_embd]. Replaces host per-row dequant + T*n_embd*4B htod
     /// (nsys: 84% of spec API time was HtoD). Bit-identical rows (same per-dtype deq).
@@ -3584,6 +3585,52 @@ impl Engine {
         b.arg(x).arg(w).arg(&mut q).arg(&mut d).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
         Ok((q, d))
+    }
+
+    /// Slot-fed rms_norm_q8_1 twin (alloc-free capture lane): identical launch (incl. the
+    /// PDL arm), caller-owned outputs.
+    pub fn rms_norm_q8_1_into(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, ncols: usize,
+                              nrows: usize, eps: f32,
+                              q: &mut CudaSlice<i8>, d: &mut CudaSlice<f32>)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let nblk = ncols / 32;
+        debug_assert!(q.len() >= nrows * ncols && d.len() >= nrows * nblk);
+        let (nc, e) = (ncols as i32, eps);
+        if Self::pdl_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
+            let (pq, _g2) = q.device_ptr_mut(s); let (pd, _g3) = d.device_ptr_mut(s);
+            let mut ps = [
+                &px as *const _ as *mut std::ffi::c_void, &pw as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pd as *const _ as *mut _,
+                &nc as *const _ as *mut _, &e as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_norm_q8_1", (nrows as u32, 1, 1), (1024, 1, 1),
+                                     &mut ps)?; }
+            return Ok(());
+        }
+        let f = self.func("rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (1024, 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(w).arg(&mut *q).arg(&mut *d).arg(&nc).arg(&e);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// Slot-fed quantize_q8_1 twin (alloc-free capture lane).
+    pub fn quantize_q8_1_into(&self, x: &CudaSlice<f32>, m: usize, in_f: usize,
+                              q: &mut CudaSlice<i8>, d: &mut CudaSlice<f32>)
+                              -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("quantize_q8_1");
+        let nblk = in_f / 32;
+        debug_assert!(q.len() >= m * in_f && d.len() >= m * nblk);
+        let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
+        let (inf, mi) = (in_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(x).arg(&mut *q).arg(&mut *d).arg(&inf).arg(&mi);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// DECODE GLUE-FUSION LEVER: `res = a+b; z = rms_norm(res)*w` with z emitted as q8_1. `res` is
@@ -4544,6 +4591,60 @@ impl Engine {
         Ok(Some((y0, y1, y2)))
     }
 
+    /// Slot-fed fused3 twin (alloc-free capture lane): identical launch, caller-owned outputs.
+    /// Returns Ok(false) when the fused path is unavailable (caller falls back).
+    #[allow(clippy::too_many_arguments)]
+    pub fn matmul_q4_fused3_into(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                 w2: &crate::model::GpuTensor,
+                                 aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                 y0: &mut CudaSlice<f32>, y1: &mut CudaSlice<f32>,
+                                 y2: &mut CudaSlice<f32>)
+        -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let q4 = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, .. } if *qtype == QT_Q4_0 =>
+                    Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((rb1, o1)), Some((rb2, o2))) = (q4(w0), q4(w1), q4(w2))
+        else { return Ok(false) };
+        if w0.in_features() != w1.in_features() || w0.in_features() != w2.in_features() {
+            return Ok(false);
+        }
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1), (b2, rp2)) = (eff(w0), eff(w1), eff(w2));
+        if rp0 != rp1 || rp1 != rp2 { return Ok(false); }
+        let rp = rp0;
+        let rpb: u32 = 4;
+        let mr1 = rp && Self::q40_mr1_on();
+        let nb = |o: usize| if mr1 { (o as u32).div_ceil(rpb) }
+                            else { (o as u32).div_ceil(2).div_ceil(rpb) };
+        let grid = nb(o0) + nb(o1) + nb(o2);
+        debug_assert!(y0.len() >= o0 && y1.len() >= o1 && y2.len() >= o2);
+        let f = self.func(if mr1 { "qmatvec_q4_0_mmvq_fused3_mr1_rp" }
+                          else if rp { "qmatvec_q4_0_mmvq_fused3_rp" }
+                          else { "qmatvec_q4_0_mmvq_fused3" });
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
+        let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1).arg(&mut *y2)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
+        unsafe { b.launch(cfg)?; }
+        Ok(true)
+    }
+
     /// FUSED Q4_0 m=1 PAIR (gemma shared gate+up).
     pub fn matmul_q4_fused2(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
                             aq: &CudaSlice<i8>, ad: &CudaSlice<f32>)
@@ -4591,6 +4692,53 @@ impl Engine {
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
         unsafe { b.launch(cfg)?; }
         Ok(Some((y0, y1)))
+    }
+
+    /// Slot-fed fused2 twin (alloc-free capture lane): identical launch, caller-owned outputs.
+    pub fn matmul_q4_fused2_into(&self, w0: &crate::model::GpuTensor, w1: &crate::model::GpuTensor,
+                                 aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                                 y0: &mut CudaSlice<f32>, y1: &mut CudaSlice<f32>)
+        -> Result<bool, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let q4 = |w: &GpuTensor| -> Option<(usize, usize)> {
+            match w {
+                GpuTensor::Quant { qtype, row_bytes, .. } if *qtype == QT_Q4_0 =>
+                    Some((*row_bytes, w.out_features())),
+                _ => None,
+            }
+        };
+        let (Some((rb0, o0)), Some((rb1, o1))) = (q4(w0), q4(w1)) else { return Ok(false) };
+        if w0.in_features() != w1.in_features() { return Ok(false); }
+        fn eff(w: &GpuTensor) -> (&CudaSlice<u8>, bool) {
+            match w {
+                GpuTensor::Quant { bytes, rp4, rp, .. } => match rp4 {
+                    Some(m) => (m, true),
+                    None => (bytes, *rp),
+                },
+                _ => unreachable!(),
+            }
+        }
+        let ((b0, rp0), (b1, rp1)) = (eff(w0), eff(w1));
+        if rp0 != rp1 { return Ok(false); }
+        let rp = rp0;
+        let rpb: u32 = 4;
+        let mr1 = rp && Self::q40_mr1_on();
+        let nb = |o: usize| if mr1 { (o as u32).div_ceil(rpb) }
+                            else { (o as u32).div_ceil(2).div_ceil(rpb) };
+        let grid = nb(o0) + nb(o1);
+        debug_assert!(y0.len() >= o0 && y1.len() >= o1);
+        let f = self.func(if mr1 { "qmatvec_q4_0_mmvq_fused2_mr1_rp" }
+                          else if rp { "qmatvec_q4_0_mmvq_fused2_rp" }
+                          else { "qmatvec_q4_0_mmvq_fused2" });
+        let cfg = LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (32, rpb, 1), shared_mem_bytes: 0 };
+        let inf = w0.in_features() as i32;
+        let (oo0, oo1) = (o0 as i32, o1 as i32);
+        let (r0, r1) = (rb0 as i64, rb1 as i64);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1)
+         .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
+        unsafe { b.launch(cfg)?; }
+        Ok(true)
     }
 
     /// BATCHED fused2 (2026-07-13, megakernel-microcosm probe): gate+up b-tier matvecs in
