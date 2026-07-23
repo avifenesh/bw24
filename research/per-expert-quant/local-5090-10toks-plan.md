@@ -147,3 +147,33 @@ Every phase: interleaved N=32 control/candidate pairs, cooled 55–56 °C starts
 token ids, post-freeze argmax MATCH, kernel-check ALL GREEN, run-spec K=1..8 PASS, raw logs
 committed under `evidence/`. These are local-Hy3 numbers, never Qwen-board rows. Winners
 merge, losers get a receipt and die (winners-only rule).
+
+## Campaign state after the 2026-07-23 wall-mapping (READ FIRST for the next session)
+
+Standing best: **4.82 tok/s** (paired kernels + buffer pool + THP, receipts in
+`evidence/local-5090-next3-20260722/`), plus −21% startup (freeze profile) and the warm shm
+cache. Correctness green throughout.
+
+The io wall (~90 ms/token of NVMe reads) is now measured closed from every software side:
+
+| attack | verdict |
+|---|---|
+| bigger/better host cache (size, LRU/LFU/SLRU) | flat curves |
+| HBM residency growth (frac 0.92/0.94, KV-fp8) | compute-only, io unchanged — absorbed experts were cache-hits |
+| in-call io/compute overlap | fabric interference, compute 3.0→8.4 s |
+| prediction-guided prefetch (3 arms + 2 pilot extensions) | lead-time/precision scissors: strong signal at 2-5 ms lead, no signal at 42+ ms; MB-scale reads need the long lead |
+| MTP/spec amortization (K=1..8 re-stack) | loses at every K — verification MULTIPLIES expert io, acceptance 48-63% cannot pay it |
+
+Remaining doors are all OWNER-DECISION axes, not tuning:
+1. **Artifact axis**: fewer bytes per expert (deeper quant below Q2_K or more pruning) —
+   quality tradeoff, five-arm-study territory, not a runtime knob.
+2. **Concurrency axis**: multi-request serving shares hot experts across streams — io
+   amortizes across users where it cannot within one stream. Changes the product target
+   (single-stream 10 tok/s vs aggregate).
+3. **Hardware axis**: desktop-class bus/DRAM headroom or faster storage; the scaffolding
+   (annex, predictor, pipeline) is retained env-off and becomes viable there.
+
+Single-stream 10 tok/s on this laptop with this artifact is, on current evidence, not
+reachable by runtime work alone: every mechanism is either measured flat or measured
+negative with the mechanism identified. ~5.0-5.2 is the defensible ceiling of the present
+configuration (band 4.7-4.9 + the small unbanked kernels tail).
