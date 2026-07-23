@@ -42,3 +42,26 @@ Build (in order):
 4. **Gate**: aggregate tok/s at m=2/4/8 vs m× single-stream baseline; per-stream latency
    reported alongside (aggregate wins must not hide unacceptable per-stream tails);
    correctness = each stream's output identical to its single-stream run.
+
+## Lane 3 seam recon (2026-07-23, full map in agent transcript; key facts)
+
+- `Cache` is hard single-sequence (scalar `len`/`pos`, one recurrent state per layer) — but
+  v1 lockstep AVOIDS the refactor: m independent `Cache` objects, one per stream.
+- Attention stays per-stream (existing `full_attn_decode`/`linear_attn_decode` calls, T=1
+  each) — no block-diagonal mask needed until attention batching becomes worth it
+  (`fa_decode_rows` per-row key ranges are the seam when it does).
+- `moe_ffn_grouped` (hybrid_forward.rs:2742) gathers/scatters by flat row index, stream-
+  agnostic — reusable for the cross-stream MoE stage, GPU side.
+- CPU companion ABI is one-row-per-call: within-step io amortization needs NO ABI change
+  (stream 1's miss fills the shared RAM cache; siblings hit). Weight-decode compute
+  amortization needs a multi-row ABI v3 — deferred to M3.
+
+Increments (each battery-gated):
+- **M1**: `decode_step_lockstep(streams)` — per-layer walk, per-stream mixers, per-stream
+  sequential MoE (correctness first: each stream's tokens identical to its single-stream
+  run; aggregate baseline measured).
+- **M2**: cross-stream MoE stage — route all m rows, dispatch CPU experts stream-ordered so
+  shared-cache reuse lands within the step; measure io amortization vs the 1.12/1.32/1.66x
+  curve.
+- **M3**: companion ABI v3 multi-row-per-expert + GPU grouped dispatch across streams.
+- **M4**: m=4/8 scaling, serve loop, per-stream latency reporting.
