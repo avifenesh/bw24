@@ -1,0 +1,45 @@
+loaded Hy3 (80 trunk layers)
+prompt tokens: 45 (m=8 streams, n_new=32)
+[moe-cache] size-aware fixed slots: 4585 slots in 5 classes, 12.11 GB / 12.12 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 4585 slots, 4585 resident blocks; 1245 complete experts, 180 one-projection fragments, 335 two-projection fragments (850 stranded blocks)
+[moe-cache] freeze profile restored: 5285/5285 blocks restaged from /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=42.03 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+lockstep m=8: 256 tokens in 46.307s = 5.53 tok/s aggregate, 0.69 tok/s per stream
+stream 0: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 1: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 2: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 3: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 4: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 5: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 6: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream 7: [40129, 316, 244, 1970, 716, 8002, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 252, 41116, 279, 55647, 9042, 83633, 280]
+stream-identity gate: PASS (all streams identical)
+[bw24-cpu-cache] hits=321694 misses=178340 hit_rate=64.33% read_GB=474.125 resident_GB=21.472
+[bw24-cpu-profile] calls=40390 prepare=1.105928s io=51.347972s insert=0.203799s compute=102.429979s read_projections=178340 read_GB=474.125 stage_entry=2.110302s stage_cached=49.957317s stage_missing=8.448443s stage_accum=2.218560s prefetch_projections=0 prefetch_GB=0.000
+	Command being timed: "taskset --cpu-list 0-7 env GOMP_CPU_AFFINITY=0-7 BW24_LOCKSTEP_M=8 BW24_NGEN=32 BW24_CHAT=1 BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.78 BW24_MOE_HARD_VRAM_FRAC=0.78 BW24_LOCKSTEP_GROUPED=1 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=20 BW24_CPU_EXPERT_RESERVE_GB=4 BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv /home/avifenesh/projects/bw24-hy3lane/target/release/run_lockstep /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 624.88
+	System time (seconds): 56.93
+	Percent of CPU this job got: 208%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 5:26.33
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 42887820
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3151129
+	Minor (reclaiming a frame) page faults: 14737707
+	Voluntary context switches: 6788671
+	Involuntary context switches: 6888
+	Swaps: 0
+	File system inputs: 951371960
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

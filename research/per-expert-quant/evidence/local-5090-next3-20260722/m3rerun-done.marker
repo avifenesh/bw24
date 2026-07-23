@@ -1,2 +1,5 @@
 M3RERUN+PERFCI9 DONE rc=0 2026-07-23T18:04:36+03:00
 lockstep m=3: 96 tokens in 13.867s = 6.92 tok/s aggregate, 2.31 tok/s per stream
+perf board is up to date
+To github.com:avifenesh/bw24.git
+   49f9d276..f0b684ee  hy3-10toks -> hy3-10toks

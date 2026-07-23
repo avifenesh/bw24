@@ -191,3 +191,19 @@ proposals still mispredict ~23%, each misprediction paying the expert-io multipl
 Verdict: the Hy3 layer-80 MTP head is unfit for spec serving on this profile (owner's bar:
 0.80; measured gated ceiling: 0.77). Door for later: a trained draft head (EAGLE-class or
 head fine-tune) — artifact/training axis. Runtime-side spec work on this head is closed.
+
+## Tail-Q2_K demotion (2026-07-24, dual-*.log) — the wall finally moves
+
+Frozen selection (tail-q2k-demote-set.json, frequency-cold non-resident experts): 4,841
+experts / 12,262 projections requantized IQ3_S/IQ4_XS/Q4_K/Q8_0 -> Q2_K from the pinned BF16
+source (streaming shard fetch, no imatrix — G7e sidecars unavailable locally; the screen is
+the gate). Overlay surgery: kept experts byte-copied, payload 78.5 -> 64.4 GB.
+
+Dual-NVMe pairs (both orders, fresh rewarm profiles): base 4.72/5.00 vs **tailq2k 6.20/5.78
+(+23%)**, argmax MATCH all arms. Counters: io 2.86->1.80 s (-37%), fills 27.8->16.8 GB
+(-40%), compute 2.97->2.39-2.74 s (cheaper decode per element + 344 extra complete experts
+resident free — smaller experts pack the same HBM). The earlier no-mirror flat result was
+regime noise; its +15% compute counter-move did not reproduce.
+
+Single-stream standing: 4.82 -> ~6.0. Ship gate: the 115-question hourish screen on both
+arms; the artifact does not promote on perf alone.

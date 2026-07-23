@@ -1,0 +1,43 @@
+loaded Hy3 (80 trunk layers)
+prompt tokens: 45 (m=6 streams, n_new=32)
+[moe-cache] size-aware fixed slots: 4820 slots in 5 classes, 12.74 GB / 12.74 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 4820 slots, 4820 resident blocks; 1389 complete experts, 127 one-projection fragments, 263 two-projection fragments (653 stranded blocks)
+[moe-cache] freeze profile restored: 5285/5285 blocks restaged from /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=44.05 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+lockstep m=6: 192 tokens in 33.582s = 5.72 tok/s aggregate, 0.95 tok/s per stream
+stream 0: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream 1: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream 2: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream 3: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream 4: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream 5: [40129, 316, 244, 1970, 79, 50909, 11, 1285, 47739, 7356, 12509, 503, 279, 1244, 16678, 47739, 289, 32215, 47739, 4452, 107669, 539, 712, 35299, 9, 55647, 9042, 45164, 41116, 280, 244, 1970]
+stream-identity gate: PASS (all streams identical)
+[bw24-cpu-cache] hits=231473 misses=132226 hit_rate=63.64% read_GB=351.153 resident_GB=21.475
+[bw24-cpu-profile] calls=32307 prepare=0.712998s io=36.616980s insert=0.141801s compute=60.318149s read_projections=132226 read_GB=351.153 stage_entry=0.522129s stage_cached=31.998623s stage_missing=1.683703s stage_accum=0.545331s prefetch_projections=0 prefetch_GB=0.000
+	Command being timed: "taskset --cpu-list 0-7 env GOMP_CPU_AFFINITY=0-7 BW24_LOCKSTEP_M=6 BW24_NGEN=32 BW24_CHAT=1 BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.82 BW24_MOE_HARD_VRAM_FRAC=0.82 BW24_LOCKSTEP_GROUPED=1 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so BW24_CPU_EXPERT_THREADS=8 BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=20 BW24_CPU_EXPERT_RESERVE_GB=4 BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv /home/avifenesh/projects/bw24-hy3lane/target/release/run_lockstep /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme"
+	User time (seconds): 471.22
+	System time (seconds): 44.80
+	Percent of CPU this job got: 206%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:09.97
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 41722940
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2156117
+	Minor (reclaiming a frame) page faults: 14751010
+	Voluntary context switches: 4981520
+	Involuntary context switches: 4622
+	Swaps: 0
+	File system inputs: 727953944
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
