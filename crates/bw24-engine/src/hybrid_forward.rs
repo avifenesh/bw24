@@ -3648,6 +3648,227 @@ impl HybridModel {
         Ok(())
     }
 
+    /// Persistent transient slots for the ALLOC-FREE captured dc step (the graph door):
+    /// every buffer the step produces per token lives here, allocated ONCE pre-capture, so
+    /// the captured graph carries zero cuMemAllocAsync/Free nodes (the 226us/launch tax,
+    /// osrt 2026-07-23). Sized for the model's max per-layer shapes.
+
+    /// Build the slot set (call OUTSIDE any capture).
+    pub fn g4_dc_slots(&self, e: &Engine) -> Result<G4DcSlots, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let n_vocab = self.output.out_features();
+        let n_layers = self.layers.len();
+        let (mut qmax, mut kvmax, mut ffmax) = (0usize, 0usize, 0usize);
+        for il in 0..n_layers {
+            let (hd, nkv, nh, _b, _s, _w) = self.gemma4_geom(il);
+            qmax = qmax.max(nh * hd);
+            kvmax = kvmax.max(nkv * hd);
+            if let crate::hybrid::Ffn::Dense { ffn_gate, .. } = &self.layers[il].ffn {
+                ffmax = ffmax.max(ffn_gate.out_features());
+            }
+        }
+        Ok(G4DcSlots {
+            x: e.uninit(n_embd)?, xn: e.uninit(n_embd)?, cur: e.uninit(n_embd)?,
+            hq: e.alloc_i8_uninit(n_embd)?, hd_: e.uninit(n_embd / 32)?,
+            q0: e.uninit(qmax)?, k0: e.uninit(kvmax)?, v0: e.uninit(kvmax)?,
+            q: e.uninit(qmax)?, k: e.uninit(kvmax)?, v: e.uninit(kvmax)?,
+            attn: e.uninit(qmax)?, o: e.uninit(n_embd)?,
+            attn_out: e.uninit(n_embd)?, zsh: e.uninit(n_embd)?,
+            zq: e.alloc_i8_uninit(n_embd.max(1))?, zd: e.uninit((n_embd / 32).max(1))?,
+            gate: e.uninit(ffmax)?, up: e.uninit(ffmax)?,
+            act: e.uninit(ffmax)?, actq: e.alloc_i8_uninit(ffmax)?, actd: e.uninit(ffmax / 32)?,
+            f0: e.uninit(n_embd)?, sn: e.uninit(n_embd)?,
+            hn: e.uninit(n_embd)?, logits: e.uninit(n_vocab)?,
+        })
+    }
+
+    /// m=1 pre-quantized matvec into a slot — mirrors matmul_pre's m=1 mmvq route exactly
+    /// (rp4-mirror bytes; mmvq_supports guaranteed for gemma4 q4_0/q6_K).
+    fn g4_matvec_m1_into(&self, e: &Engine, w: &crate::model::GpuTensor,
+                         aq: &CudaSlice<i8>, ad: &CudaSlice<f32>, y: &mut CudaSlice<f32>)
+                         -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let (bytes, qtype, row_bytes, scale, rp) = match w {
+            GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } =>
+                (bytes, *qtype, *row_bytes, *scale, *rp),
+            _ => return Err("g4_matvec_m1_into: non-quant tensor".into()),
+        };
+        let (mbytes, mrp) = match w {
+            GpuTensor::Quant { rp4: Some(m4), .. } => (m4, true),
+            _ => (bytes, rp),
+        };
+        e.qmatvec_mmvq_into(mbytes, aq, ad, 1, w.in_features(), w.out_features(),
+                            qtype, row_bytes, scale, mrp, y)
+    }
+
+    /// ALLOC-FREE dc step (capture body): kernel-for-kernel mirror of
+    /// `gemma4_decode_step_dc_into` at t=1 with every transient slot-fed. Dense gemma4 only
+    /// (12B/31B; uniform q4_0 trunk guarantees the fused2/3 arms).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemma4_decode_step_dc_slotted(&self, e: &Engine, token_d: &CudaSlice<u32>,
+                                         pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
+                                         embd_qt: i32, embd_rb: usize, cache: &mut Cache,
+                                         n_vocab: usize, cap_bucket_max: Option<(usize, usize)>,
+                                         sl: &mut G4DcSlots, tok_out: &mut CudaSlice<u32>)
+                                         -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        e.embed_gather_device_into(embd_gpu, token_d, &mut sl.x, n_embd, embd_qt, embd_rb)?;
+        e.scale_inplace(&mut sl.x, (n_embd as f32).sqrt(), n_embd)?;
+        let n_layers = self.layers.len();
+        let mut has_carry = false;
+        for il in 0..n_layers {
+            if !has_carry {
+                e.rms_norm_q8_1_into(&sl.x, self.layers[il].attn_norm.float_data(), n_embd, 1,
+                                     eps, &mut sl.hq, &mut sl.hd_)?;
+            }
+            has_carry = true;
+            let layer = &self.layers[il];
+            let Mixer::Full(fa) = &layer.mixer else { panic!("gemma4 layer {il} not full-attn") };
+            self.gemma4_decode_attn_dc_slotted(e, fa, il, pos_d, cache, cap_bucket_max, sl)?;
+            e.rms_norm(&sl.o, layer.post_attn_norm.float_data(), &mut sl.cur, n_embd, 1, eps)?;
+            let next_norm = if il + 1 < n_layers {
+                Some(self.layers[il + 1].attn_norm.float_data())
+            } else { None };
+            self.gemma4_layer_tail_slotted(e, layer, next_norm, sl)?;
+            std::mem::swap(&mut sl.x, &mut sl.xn);
+        }
+        e.rms_norm(&sl.x, self.output_norm.float_data(), &mut sl.hn, n_embd, 1, eps)?;
+        e.quantize_q8_1_into(&sl.hn, 1, n_embd, &mut sl.zq, &mut sl.zd)?;
+        // lm_head via the same m=1 mmvq route as matmul (q6_K on the gemma4 family).
+        {
+            let (zq, zd) = (&sl.zq, &sl.zd);
+            let zq = unsafe { &*(zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(zd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, &self.output, zq, zd, &mut sl.logits)?;
+        }
+        self.gemma4_suppress(e, &mut sl.logits, 1)?;
+        e.argmax_token_device_into(&sl.logits, tok_out, n_vocab)?;
+        e.inc_seqlen(pos_d)?;
+        if cap_bucket_max.is_none() { cache.pos += 1; }
+        Ok(())
+    }
+
+    /// Slot-fed dc attention: mirrors gemma4_decode_attn_dc's CAPTURE arm kernel-for-kernel.
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_decode_attn_dc_slotted(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer,
+                                     il: usize, pos_d: &CudaSlice<i32>, cache: &mut Cache,
+                                     cap_bucket_max: Option<(usize, usize)>, sl: &mut G4DcSlots)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, base, scale, swa) = self.gemma4_geom(il);
+        let eps = self.cfg.rms_eps;
+        let aux = self.gemma4_aux.as_ref().unwrap();
+        {
+            let hq = unsafe { &*(&sl.hq as *const CudaSlice<i8>) };
+            let hdq = unsafe { &*(&sl.hd_ as *const CudaSlice<f32>) };
+            if swa {
+                if !e.matmul_q4_fused3_into(&fa.wq, &fa.wk, &fa.wv, hq, hdq,
+                                            &mut sl.q0, &mut sl.k0, &mut sl.v0)? {
+                    return Err("slotted step: fused3 unavailable (non-uniform trunk)".into());
+                }
+            } else {
+                if !e.matmul_q4_fused2_into(&fa.wq, &fa.wk, hq, hdq, &mut sl.q0, &mut sl.k0)? {
+                    return Err("slotted step: fused2 unavailable".into());
+                }
+                let k0r = unsafe { &*(&sl.k0 as *const CudaSlice<f32>) };
+                e.copy_into(&mut sl.v0, 0, k0r, nkv * hd)?;
+            }
+        }
+        e.rms_norm_qkv(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                       &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv, eps)?;
+        let ff = if swa { None } else {
+            Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
+        };
+        e.rope_neox2(&mut sl.q, &mut sl.k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized_dc(&sl.k, &sl.v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                 (!swa && crate::Engine::gkv_on())
+                                     || (swa && crate::Engine::wkv_on()))?;
+        e.inc_seqlen(&mut kvl.len_d)?;
+        let (b_swa, b_glob) = cap_bucket_max.expect("slotted step is capture-only");
+        let k_view = e.view_u8(&kvl.k, kvl.k.len());
+        let v_view = e.view_u8(&kvl.v, kvl.v.len());
+        let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
+        let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
+            e.fa_decode_rows(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, b_glob - 1,
+                             1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                             Some((&kvl.len_d, -1)), false, false)?;
+        } else if swa && b_swa > win && hd == 256 && rows_on {
+            e.fa_decode_rows_w(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv,
+                               &kvl.len_d, -1, 1, scale, win,
+                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+        } else {
+            let b = if swa { b_swa } else { b_glob };
+            e.fa_decode_dc(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, &kvl.len_d, b,
+                           scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                           swa && crate::Engine::wkv_on())?;
+        }
+        {
+            let aq = unsafe { &*(&sl.attn as *const CudaSlice<f32>) };
+            e.quantize_q8_1_into(aq, 1, nh * hd, &mut sl.zq, &mut sl.zd)?;
+        }
+        {
+            let zq = unsafe { &*(&sl.zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(&sl.zd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, &fa.wo, zq, zd, &mut sl.o)?;
+        }
+        Ok(())
+    }
+
+    /// Slot-fed dense layer tail: mirrors gemma4_layer_tail_core (t=1, no pre-norm fold) +
+    /// tail_add_nq kernel-for-kernel; the next layer's (hq, hd_) carry lands in the slots.
+    fn gemma4_layer_tail_slotted(&self, e: &Engine, layer: &crate::hybrid::HybridLayer,
+                                 next_norm: Option<&CudaSlice<f32>>, sl: &mut G4DcSlots)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
+        let bits = layer.gemma4.as_ref().unwrap();
+        let crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } = &layer.ffn
+        else { return Err("slotted tail: dense ffn only".into()) };
+        e.add_rms_norm(&sl.cur, &sl.x, bits.ffn_norm.float_data(), &mut sl.attn_out,
+                       &mut sl.zsh, n_embd, 1, eps)?;
+        let n_ff = ffn_gate.out_features();
+        {
+            let zshr = unsafe { &*(&sl.zsh as *const CudaSlice<f32>) };
+            e.quantize_q8_1_into(zshr, 1, n_embd, &mut sl.zq, &mut sl.zd)?;
+        }
+        {
+            let zq = unsafe { &*(&sl.zq as *const CudaSlice<i8>) };
+            let zd = unsafe { &*(&sl.zd as *const CudaSlice<f32>) };
+            if !e.matmul_q4_fused2_into(ffn_gate, ffn_up, zq, zd, &mut sl.gate, &mut sl.up)? {
+                return Err("slotted tail: ffn fused2 unavailable".into());
+            }
+        }
+        debug_assert!(e.uses_q8_1_fast(ffn_down));
+        {
+            let upr = unsafe { &*(&sl.up as *const CudaSlice<f32>) };
+            let upv = e.view(upr, n_ff);
+            let up_all = upv.slice(0..n_ff);
+            let gr = unsafe { &*(&sl.gate as *const CudaSlice<f32>) };
+            e.gelu_tanh_mul_q8_1_into(gr, &up_all, &mut sl.act, n_ff, 1,
+                                      &mut sl.actq, &mut sl.actd)?;
+        }
+        {
+            let aq = unsafe { &*(&sl.actq as *const CudaSlice<i8>) };
+            let ad = unsafe { &*(&sl.actd as *const CudaSlice<f32>) };
+            self.g4_matvec_m1_into(e, ffn_down, aq, ad, &mut sl.f0)?;
+        }
+        e.rms_norm(&sl.f0, bits.post_ffw_norm.float_data(), &mut sl.sn, n_embd, 1, eps)?;
+        match next_norm {
+            Some(w) => {
+                e.add_scale_rms_norm_q8_1_into(&sl.sn, &sl.attn_out, bits.layer_scale, w,
+                                               &mut sl.xn, n_embd, 1, eps,
+                                               &mut sl.hq, &mut sl.hd_)?;
+            }
+            None => {
+                e.add_scale(&sl.sn, &sl.attn_out, bits.layer_scale, &mut sl.xn, n_embd)?;
+            }
+        }
+        Ok(())
+    }
+
     /// dc attention: same math as gemma4_decode_attn, KV slot/lengths from device counters.
     #[allow(clippy::too_many_arguments)]
     fn gemma4_decode_attn_dc(&self, e: &Engine, fa: &crate::hybrid::FullAttnLayer, il: usize,
@@ -3794,6 +4015,9 @@ impl HybridModel {
         let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize), bool, bool),
                                                   (cudarc::driver::CudaGraph,
                                                    Vec<Box<dyn std::any::Any + Send>>)> = Default::default();
+        // ALLOC-FREE capture: persistent transient slots — the captured graph carries zero
+        // mem nodes (the 226us/launch tax). Slots must outlive every cached graph.
+        let mut slots = self.g4_dc_slots(e)?;
         let mut out = Vec::with_capacity(max_new);
         let mut reason = StopReason::MaxNew;
         let mut next = first_token;
@@ -3837,12 +4061,14 @@ impl HybridModel {
                     let tok_ref = &mut token_d;
                     let pos_ref = &mut pos_d;
                     let cache_ref = &mut *cache;
+                    let slots_ref = &mut slots;
                     e.capture_graph_retained(|e| {
                         // self-feeding: the argmax writes token_d itself.
                         let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
-                        self.gemma4_decode_step_dc_into(e, tok_in, pos_ref, embd_gpu, qt, rb,
-                                                        cache_ref, n_vocab, Some(bucket_max),
-                                                        tok_ref)
+                        let sl = unsafe { &mut *(slots_ref as *mut G4DcSlots) };
+                        self.gemma4_decode_step_dc_slotted(e, tok_in, pos_ref, embd_gpu, qt, rb,
+                                                           cache_ref, n_vocab, Some(bucket_max),
+                                                           sl, tok_ref)
                     })?
                 };
                 cache.rollback(e, &snap, 0)?;
@@ -4924,3 +5150,18 @@ mod page_prefetch_tests {
         assert!(worker_prefetch_positions(0, 4, 0).is_empty());
     }
 }
+
+pub struct G4DcSlots {
+    x: CudaSlice<f32>, xn: CudaSlice<f32>, cur: CudaSlice<f32>,
+    hq: CudaSlice<i8>, hd_: CudaSlice<f32>,
+    q0: CudaSlice<f32>, k0: CudaSlice<f32>, v0: CudaSlice<f32>,
+    q: CudaSlice<f32>, k: CudaSlice<f32>, v: CudaSlice<f32>,
+    attn: CudaSlice<f32>, o: CudaSlice<f32>,
+    attn_out: CudaSlice<f32>, zsh: CudaSlice<f32>,
+    zq: CudaSlice<i8>, zd: CudaSlice<f32>,
+    gate: CudaSlice<f32>, up: CudaSlice<f32>,
+    act: CudaSlice<f32>, actq: CudaSlice<i8>, actd: CudaSlice<f32>,
+    f0: CudaSlice<f32>, sn: CudaSlice<f32>,
+    hn: CudaSlice<f32>, logits: CudaSlice<f32>,
+}
+
