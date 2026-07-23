@@ -1,2 +1,24 @@
 plimit: 150.00W temp: 56
 == kernel-check (SWA hp arm engaged via env)
+fa_prefill_w T=64 Tkv=64 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=64: bit-mismatch 65355/65536 FAIL
+fa_prefill_w T=100 Tkv=100 w=32: rel=2.76e-3 OK
+fa_prefill_w bf16-stage T=100: bit-mismatch 102218/102400 FAIL
+fa_prefill_hd512_sp16 T=64 Tkv=64: rel=4.27e-4 OK
+fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
+Error: "2 kernel(s) FAILED"
+== gemma-4-12b-it-qat-q4_0.gguf
+-- p1 (no hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=2.379e0  MATCH
+prefill 1736 tok in 0.4395s = 3950.2 tok/s (pp1736)
+-- swa-hp:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.950e0  MATCH
+prefill 1736 tok in 0.4413s = 3934.1 tok/s (pp1736)
+== gemma-4-31B_q4_0-it.gguf
+-- p1 (no hp):
+prefill argmax=623  decode argmax=623  logit maxdiff=1.074e0  MATCH
+prefill 1736 tok in 1.2010s = 1445.5 tok/s (pp1736)
+-- swa-hp:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.100e0  MATCH
+prefill 1736 tok in 1.2923s = 1343.3 tok/s (pp1736)
+GATE COMPLETE Thu Jul 23 01:19:56 AM UTC 2026
