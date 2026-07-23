@@ -1,0 +1,14 @@
+build: c7b6d946
+temp: 56  arm: Q4_0-K3
+plain: 94.12 tok/s | spec: 174.58 tok/s (1.85x) | stream agreement 64/64
+temp: 55  arm: Q4_0-K4
+plain: 94.37 tok/s | spec: 170.21 tok/s (1.80x) | stream agreement 64/64
+temp: 55  arm: Q4_0-K6
+plain: 94.33 tok/s | spec: 168.94 tok/s (1.79x) | stream agreement 64/64
+temp: 57  arm: Q8_0-K3
+plain: 94.27 tok/s | spec: 167.75 tok/s (1.78x) | stream agreement 64/64
+temp: 55  arm: Q8_0-K4
+plain: 94.35 tok/s | spec: 166.02 tok/s (1.76x) | stream agreement 64/64
+temp: 56  arm: Q8_0-K6
+plain: 94.10 tok/s | spec: 162.58 tok/s (1.73x) | stream agreement 64/64
+G12 SPEC FIRSTLIGHT COMPLETE Thu Jul 23 10:25:30 PM UTC 2026
