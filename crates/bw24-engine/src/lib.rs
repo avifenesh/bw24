@@ -5069,6 +5069,18 @@ impl Engine {
                         m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32,
                         rp: bool)
                         -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
+        self.qmatvec_mmvq_into(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, scale, rp, &mut y)?;
+        Ok(y)
+    }
+
+    /// Slot-fed MMVQ twin (alloc-free capture lane): full policy body, caller-owned output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_mmvq_into(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>, ad: &CudaSlice<f32>,
+                        m: usize, in_f: usize, out_f: usize, qtype: i32, row_bytes: usize, scale: f32,
+                        rp: bool, y: &mut CudaSlice<f32>)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(y.len() >= m * out_f);
         const ROWS_PER_BLOCK: u32 = 4;   // matches BW24_MMVQ_ROWS in qmatvec.cu
         // Multi-row-per-warp (mr2) policy, fixed since the 2026-07 sweeps (the BW24_MMVQ_MR
         // override + mr4 kernel were retired 2026-07-08 — mr4 regressed on register pressure and
@@ -5128,7 +5140,6 @@ impl Engine {
             _ => panic!("qmatvec_mmvq: qtype {qtype} has no MMVQ kernel"),
         };
         let f = self.func(name);
-        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output: skip memset
         // each block still has ROWS_PER_BLOCK warps; with mr rows/warp it covers ROWS_PER_BLOCK*mr rows.
         let rows_per_block = ROWS_PER_BLOCK * mr;
         let cfg = LaunchConfig {
@@ -5143,14 +5154,14 @@ impl Engine {
         // 53 scale launches/token on the 9B; for e4m3 the scale is the checkpoint's per-tensor f32
         // weight_scale). Other mmvq kernels keep the 8-arg signature.
         if qtype == QT_NVFP4 || qtype == QT_F8_E4M3 {
-            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
             unsafe { b.launch(cfg)?; }
         } else {
-            b.arg(bytes).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+            b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
             unsafe { b.launch(cfg)?; }
-            if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+            if scale != 1.0 { self.scale_inplace(y, scale, m * out_f)?; }
         }
-        Ok(y)
+        Ok(())
     }
 
     /// Test entry for the kernel_check bit-equivalence gate: run the warp-per-row MMVQ directly
