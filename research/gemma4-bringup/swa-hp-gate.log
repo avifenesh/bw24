@@ -9,18 +9,22 @@ fa_prefill_hd512_sp16 T=100 Tkv=100: rel=4.27e-4 OK
 ALL GREEN: kernels match CPU reference.
 == gemma-4-12b-it-qat-q4_0.gguf
 -- p1 (no hp):
-prefill argmax=623  decode argmax=623  logit maxdiff=1.593e1  MATCH
-prefill 1736 tok in 0.4378s = 3965.3 tok/s (pp1736)
+prefill argmax=623  decode argmax=623  logit maxdiff=2.059e0  MATCH
+prefill 1736 tok in 0.4374s = 3968.5 tok/s (pp1736)
 -- swa-hp (f16-V emit):
-prefill argmax=236761  decode argmax=623  logit maxdiff=3.030e1  MISMATCH
+prefill argmax=623  decode argmax=623  logit maxdiff=1.879e0  MATCH
+prefill 1736 tok in 0.4388s = 3956.0 tok/s (pp1736)
 -- full chain (door+512hp+swahp):
-prefill argmax=1102  decode argmax=623  logit maxdiff=3.424e1  MISMATCH
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4256s = 4078.5 tok/s (pp1736)
 == gemma-4-31B_q4_0-it.gguf
 -- p1 (no hp):
-prefill argmax=107  decode argmax=623  logit maxdiff=2.198e1  MISMATCH
+prefill argmax=623  decode argmax=623  logit maxdiff=1.141e0  MATCH
+prefill 1736 tok in 1.1990s = 1447.9 tok/s (pp1736)
 -- swa-hp (f16-V emit):
-prefill argmax=236746  decode argmax=623  logit maxdiff=2.317e1  MISMATCH
+prefill argmax=623  decode argmax=623  logit maxdiff=1.046e0  MATCH
+prefill 1736 tok in 1.2782s = 1358.2 tok/s (pp1736)
 -- full chain (door+512hp+swahp):
-prefill argmax=623  decode argmax=623  logit maxdiff=1.957e1  MATCH
-prefill 1736 tok in 1.2568s = 1381.2 tok/s (pp1736)
-GATE COMPLETE Thu Jul 23 01:33:23 AM UTC 2026
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.3046s = 1330.7 tok/s (pp1736)
+GATE COMPLETE Thu Jul 23 01:47:02 AM UTC 2026
