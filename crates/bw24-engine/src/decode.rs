@@ -653,10 +653,22 @@ impl HybridModel {
         let mut pending: Vec<Option<(CudaSlice<f32>, CudaSlice<f32>)>> =
             (0..m).map(|_| None).collect();
 
+        // M2 (BW24_LOCKSTEP_GROUPED=1): MoE layers batch all m rows through
+        // moe_ffn_lockstep — resident experts amortize weight reads across streams via the
+        // grouped GEMM machinery; CPU-assigned experts keep per-row companion calls.
+        let grouped = match std::env::var("BW24_LOCKSTEP_GROUPED").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            // Auto: grouped wins from m>=3 under the default q8 lanes (M2 gate 2026-07-23:
+            // m=2 6.17 base vs 5.85 grouped; m=3 6.31 grouped; m=4 5.66 vs 5.34).
+            _ => m >= 3,
+        };
+        let n_embd_total = n_embd * m;
         for (il, layer) in self.layers.iter().enumerate() {
             let anorm = layer.attn_norm.float_data();
             let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
                 && self.mixer_in_q8_1_fast(e, &layer.mixer);
+            let mut mixed_rows: Vec<Option<CudaSlice<f32>>> = (0..m).map(|_| None).collect();
             for s in 0..m {
                 let pos = caches[s].pos;
                 let taken = pending[s].take();
@@ -709,9 +721,40 @@ impl HybridModel {
                         )?
                     }
                 };
-                let (x1, ffn_out) =
-                    self.residual_norm_ffn(e, layer, &x[s], &mixed, n_embd, il, eps)?;
-                pending[s] = Some((x1, ffn_out));
+                if grouped && matches!(&layer.ffn, crate::hybrid::Ffn::Moe(_)) {
+                    mixed_rows[s] = Some(mixed);
+                } else {
+                    let (x1, ffn_out) =
+                        self.residual_norm_ffn(e, layer, &x[s], &mixed, n_embd, il, eps)?;
+                    pending[s] = Some((x1, ffn_out));
+                }
+            }
+            if grouped {
+                if let crate::hybrid::Ffn::Moe(moe_weights) = &layer.ffn {
+                    // Per-stream add+norm (identical math to residual_norm_ffn's MoE arm),
+                    // rows batched for the cross-stream MoE stage, outputs split back.
+                    let pnorm = layer.post_attn_norm.float_data();
+                    let mut zbatch = e.uninit(n_embd_total)?;
+                    let mut x1s: Vec<CudaSlice<f32>> = Vec::with_capacity(m);
+                    for s in 0..m {
+                        let mixed = mixed_rows[s].take().expect("grouped MoE row missing");
+                        let mut x1 = e.uninit(n_embd)?;
+                        let mut z = e.uninit(n_embd)?;
+                        e.add_rms_norm(&x[s], &mixed, pnorm, &mut x1, &mut z, n_embd, 1, eps)?;
+                        e.copy_view_into(&mut zbatch, s * n_embd, &z.slice(0..n_embd), n_embd)?;
+                        x1s.push(x1);
+                    }
+                    let max_block = self.max_moe_block();
+                    let ffn_all =
+                        self.moe_ffn_lockstep(e, moe_weights, &zbatch, m, il as u16, max_block)?;
+                    for (s, x1) in x1s.into_iter().enumerate() {
+                        let mut out = e.uninit(n_embd)?;
+                        e.copy_view_into(
+                            &mut out, 0,
+                            &ffn_all.slice(s * n_embd..(s + 1) * n_embd), n_embd)?;
+                        pending[s] = Some((x1, out));
+                    }
+                }
             }
         }
 

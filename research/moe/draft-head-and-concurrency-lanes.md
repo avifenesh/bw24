@@ -99,3 +99,23 @@ residency back. Standing concurrency scoreboard: 4.44 single -> 6.10 (m=2) / 6.0
 the MoE stage is still per-stream sequential — M2 (cross-stream expert batching) and M3
 (multi-row companion ABI) target exactly that; the frac knob needs stream-count-aware
 sizing in the serve loop (M4).
+
+## M2 gate (2026-07-23, m2gate-*.log)
+
+| arm | aggregate | identity |
+|---|---:|---|
+| m=2 base / grouped | 6.17 / 5.85 | PASS / PASS |
+| m=3 grouped | **6.31 (campaign best)** | PASS |
+| m=4 @0.85 base / grouped | 5.34 / 5.66 | PASS / PASS |
+
+Grouped MoE wins from m>=3 (+5-6%), loses at m=2 under the default q8 lanes (the sequential
+path's dp4a arms are faster than grouped's f32-dequant at tiny m); under BW24_MOE_Q8=0
+grouped already wins at m=2 (6.20 vs 6.09). Policy encoded: auto-grouped at m>=3.
+
+Numeric class, measured precisely: grouped-lockstep tokens are NOT bitwise-identical to the
+per-stream path even at BW24_MOE_Q8=0 — the m_e>1 batched GEMM reduces each row in a
+different FP order than m=1 (a single near-tie greedy flip at token 8 in the exactness pair;
+streams within any arm remain bit-identical, and cross-frac assignment changes are the other,
+previously documented divergence class). Exact parity with sequential is impossible by
+design once m_e>1 kernels engage; the gate standard for lockstep arms is per-arm stream
+identity + this documented class, mirroring the BW24_MOE_GROUPED prefill receipt.

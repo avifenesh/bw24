@@ -2961,6 +2961,178 @@ impl HybridModel {
 
         Ok(moe_out)
     }
+
+    /// Lane-3 M2: cross-stream MoE for lockstep decode. Routes all m stream rows in one
+    /// batch, executes fully-HBM-resident experts through the grouped gather/GEMM/scatter
+    /// machinery at m_e>1 (weight reads amortized across streams), and assigns any expert
+    /// with a missing projection to that row's CPU companion call (whole-expert granularity,
+    /// same rule as the sequential frozen path). Slot-pinned accumulation keeps each row's
+    /// expert-sum order identical to the sequential path.
+    pub(crate) fn moe_ffn_lockstep(
+        &self,
+        e: &Engine,
+        m: &MoeWeights,
+        zbatch: &CudaSlice<f32>,
+        mrows: usize,
+        il: u16,
+        max_block: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+        let cfg = &self.cfg;
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+
+        let logits = e.matmul(&m.gate_inp, zbatch, mrows)?;
+        let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
+            Self::moe_route_cfg(e, &logits, mrows, n_expert, n_used,
+                                m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
+        } else {
+            Self::moe_route_cfg(e, &logits, mrows, n_expert, n_used,
+                                None, None, m.active_experts.as_deref())?
+        };
+        Self::trace_moe_routes(il, mrows, &sel_all, &w_all)?;
+
+        // Residency split at whole-expert granularity against the (frozen) cache.
+        let resident_expert: Vec<bool> = e.with_moe_cache(max_block, |c, _| {
+            Ok((0..n_expert)
+                .map(|ex| {
+                    [PROJ_GATE, PROJ_UP, PROJ_DOWN].into_iter().all(|p| {
+                        c.resident(BlockId::new(il, p, ex as u16)).is_some()
+                    })
+                })
+                .collect())
+        })?;
+
+        struct Group {
+            rows: Vec<i32>,
+            slots: Vec<i32>,
+            weights: Vec<f32>,
+        }
+        let mut groups: std::collections::HashMap<usize, Group> = Default::default();
+        let mut cpu_rows: Vec<Vec<(usize, f32)>> = vec![Vec::new(); mrows];
+        for row in 0..mrows {
+            for j in 0..n_used {
+                let ex = sel_all[row * n_used + j] as usize;
+                let w = w_all[row * n_used + j];
+                if resident_expert[ex] {
+                    let group = groups.entry(ex).or_insert_with(|| Group {
+                        rows: Vec::new(),
+                        slots: Vec::new(),
+                        weights: Vec::new(),
+                    });
+                    group.rows.push(row as i32);
+                    group.slots.push(j as i32);
+                    group.weights.push(w);
+                } else {
+                    crate::cpu_experts::record_incomplete_gpu_residency(0);
+                    cpu_rows[row].push((ex, w));
+                }
+            }
+        }
+
+        // CPU tickets first: reads/compute overlap the GPU grouped work below.
+        let host_rows = e.dtoh(zbatch)?;
+        let mut tickets: Vec<(usize, crate::cpu_experts::CpuExpertTicket)> = Vec::new();
+        for (row, selected) in cpu_rows.iter().enumerate() {
+            if selected.is_empty() {
+                continue;
+            }
+            let host_row = &host_rows[row * n_embd..(row + 1) * n_embd];
+            let job = crate::cpu_experts::prepare_job(m, il, selected, host_row)
+                .map_err(std::io::Error::other)?;
+            tickets.push((row, crate::cpu_experts::submit(job).map_err(std::io::Error::other)?));
+        }
+
+        let mut slot_buf = e.zeros(mrows * n_used * n_embd)?;
+        let mut wbuf = e.zeros(mrows * n_used)?;
+        let mut order: Vec<usize> = groups.keys().copied().collect();
+        order.sort_by(|&a, &b| {
+            groups[&b].rows.len().cmp(&groups[&a].rows.len()).then(a.cmp(&b))
+        });
+        for &ex in &order {
+            let group = &groups[&ex];
+            let m_e = group.rows.len();
+            let gl = m.gate_exps.expert_layout(ex);
+            let ul = m.up_exps.expert_layout(ex);
+            let dl = m.down_exps.expert_layout(ex);
+            let row_idx_d = e.htod_i32(&group.rows)?;
+            let slot_idx_d = e.htod_i32(&group.slots)?;
+            let dmac = m.down_exps.macro_scale(ex);
+            let weight_d = if dmac == 1.0 {
+                e.htod(&group.weights)?
+            } else {
+                let scaled: Vec<f32> = group.weights.iter().map(|&w| w * dmac).collect();
+                e.htod(&scaled)?
+            };
+            let mut gathered = e.zeros(m_e * n_embd)?;
+            e.gather_rows(zbatch, &row_idx_d, &mut gathered, n_embd, m_e)?;
+            let gv = gathered.slice(0..m_e * n_embd);
+            let gate = e.with_moe_cache(max_block, |c, eng| {
+                let slot = c
+                    .resident(BlockId::new(il, PROJ_GATE, ex as u16))
+                    .ok_or("lockstep resident expert vanished (cache not frozen?)")?;
+                eng.qmatvec_view(c.buf(crate::moe_cache::DispatchSlot::Resident(slot)), 0..gl.len, &gv, m_e,
+                    m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)
+            })?;
+            let up = e.with_moe_cache(max_block, |c, eng| {
+                let slot = c
+                    .resident(BlockId::new(il, PROJ_UP, ex as u16))
+                    .ok_or("lockstep resident expert vanished (cache not frozen?)")?;
+                eng.qmatvec_view(c.buf(crate::moe_cache::DispatchSlot::Resident(slot)), 0..ul.len, &gv, m_e,
+                    m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
+            })?;
+            let mut act = e.zeros(m_e * n_ff_exp)?;
+            Self::ffn_act_scaled(e, cfg, &gate, &up,
+                m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+            let actv = act.slice(0..m_e * n_ff_exp);
+            let y = e.with_moe_cache(max_block, |c, eng| {
+                let slot = c
+                    .resident(BlockId::new(il, PROJ_DOWN, ex as u16))
+                    .ok_or("lockstep resident expert vanished (cache not frozen?)")?;
+                eng.qmatvec_view(c.buf(crate::moe_cache::DispatchSlot::Resident(slot)), 0..dl.len, &actv, m_e,
+                    m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)
+            })?;
+            e.scatter_slot(&y, &row_idx_d, &slot_idx_d, &weight_d,
+                           &mut slot_buf, &mut wbuf, n_embd, n_used, m_e)?;
+        }
+        let mut moe_out = e.zeros(mrows * n_embd)?;
+        e.reduce_slots(&slot_buf, &wbuf, &mut moe_out, n_embd, n_used, mrows)?;
+
+        // CPU contributions join BEFORE the shared expert — the sequential frozen path adds
+        // them there, and FP addition order must match for the identity gate.
+        for (row, ticket) in tickets {
+            let cpu_output = ticket.wait().map_err(std::io::Error::other)?;
+            let cpu_output = e.htod(&cpu_output)?;
+            let mut dst = moe_out.slice_mut(row * n_embd..(row + 1) * n_embd);
+            e.axpy_into(&cpu_output, 1.0, &mut dst, n_embd)?;
+        }
+
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();
+            let sg_gate = e.matmul(gate_shexp, zbatch, mrows)?;
+            let sg_up = e.matmul(up_shexp, zbatch, mrows)?;
+            let mut sa = e.zeros(mrows * n_ff_sh)?;
+            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, mrows * n_ff_sh)?;
+            let sh = e.matmul(down_shexp, &sa, mrows)?;
+            let g = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    let gs = e.linear(zbatch, gate_inp_shexp.float_data(), mrows, n_embd, 1)?;
+                    let mut g = e.uninit(mrows)?;
+                    e.sigmoid(&gs, &mut g, mrows)?;
+                    g
+                }
+                None => e.htod(&vec![1.0f32; mrows])?,
+            };
+            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, mrows)?;
+        }
+
+        Ok(moe_out)
+    }
 }
 
 // ============================ gemma4 (R8 verified wiring) ==================================
