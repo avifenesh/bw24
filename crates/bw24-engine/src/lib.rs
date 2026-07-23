@@ -391,6 +391,10 @@ pub struct Engine {
     /// f16-P/V door: pooled V re-encode buffer (bf16->f16) for the hd512 _pre path. Lazy-grow;
     /// per-call cudaMalloc was a laptop-regression suspect (VRAM pressure, 31B nkv=4 = 4x bytes).
     fa_vf16_scratch: Mutex<Option<CudaSlice<u8>>>,
+    /// Pooled fa-decode split partials (part_o, part_m, part_l): per-call zeros() was 3
+    /// alloc+memset pairs per fa launch (~144 mem nodes per decode token — the graph door's
+    /// residual launch tax) — lazy-grow, memset-prefix per use, stream-ordered reuse.
+    fa_part_pool: Mutex<Option<(CudaSlice<f32>, CudaSlice<f32>, CudaSlice<f32>)>>,
     /// name -> resolved CudaFunction (capture-safe lookups; see `func`).
     fn_cache: Mutex<std::collections::HashMap<String, CudaFunction>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
@@ -581,6 +585,7 @@ impl Engine {
                   router_stage: Mutex::new(None),
                   fp8_scratch: Mutex::new(None),
                   fa_vf16_scratch: Mutex::new(None),
+                  fa_part_pool: Mutex::new(None),
                   fn_cache: Mutex::new(Default::default()),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
@@ -6690,9 +6695,19 @@ impl Engine {
         let n_splits = if fa_vec { ((t_kv + sp - 1) / sp).max(1) } else { ((t_kv + 255) / 256).max(1) };
         let o_len = n_head * n_splits * head_dim;
         let ml_len = n_head * n_splits;
-        let (mut part_o, mut part_m, mut part_l) =
-            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
-        let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
+        let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
+        let (part_o, part_m, part_l) = (&mut *part_o, &mut *part_m, &mut *part_l);
         let (hd, nh, nhkv, tkvi, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, t_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         // The vec kernel holds head_dim/32 register accumulators (FA_DEC_MAX_DPL=8 -> head_dim<=256).
@@ -6962,9 +6977,19 @@ impl Engine {
             let base_i = (base_len + r0) as i32;
             let o_len = t_g * n_head * n_splits_g * head_dim;
             let ml_len = t_g * n_head * n_splits_g;
-            let (mut part_o, mut part_m, mut part_l) =
-                (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
-            let (part_o, part_m, part_l) = (&mut part_o, &mut part_m, &mut part_l);
+            let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
+            let (part_o, part_m, part_l) = (&mut *part_o, &mut *part_m, &mut *part_l);
             let qv = self.view(q, t * n_head * head_dim);
             let q_g = qv.slice(r0 * n_head * head_dim..(r0 + t_g) * n_head * head_dim);
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_g as u32, t_g as u32),
@@ -7056,8 +7081,18 @@ impl Engine {
         let gqa = (n_head / n_head_kv).max(1) as u32;
         let o_len = t * n_head * n_splits_max * head_dim;
         let ml_len = t * n_head * n_splits_max;
-        let (mut part_o, mut part_m, mut part_l) =
-            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         // Lane pick: decode AND verify both land here in the windowed regime (parity law —
         // hybrid_forward verify_attn), so the pick only needs internal consistency, not
         // clone-of-decode bit fidelity (SASS-proven impossible for textually identical
@@ -7091,7 +7126,7 @@ impl Engine {
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, gqa + 1, 1), shared_mem_bytes: sh };
             let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
              .arg(&ktb).arg(&vtb).arg(&wini);
             unsafe { b.launch(cfg)?; }
@@ -7111,7 +7146,7 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
@@ -7121,7 +7156,7 @@ impl Engine {
             LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
         let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(&nspm).arg(&spk).arg(&wini);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -7149,10 +7184,20 @@ impl Engine {
             let (nspm, spk) = (n_splits_max as i32, sp as i32);
             let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
             let gqa = (n_head / n_head_kv).max(1) as u32;
-            let (mut part_o, mut part_m, mut part_l) =
-                (self.zeros(t * n_head * n_splits_max * head_dim)?,
-                 self.zeros(t * n_head * n_splits_max)?,
-                 self.zeros(t * n_head * n_splits_max)?);
+            let o_len = t * n_head * n_splits_max * head_dim;
+            let ml_len = t * n_head * n_splits_max;
+            let mut part_guard = self.fa_part_pool.lock().unwrap();
+            if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+                let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+                *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                    self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                    self.alloc_uninit::<f32>(cm.max(ml_len))?));
+            }
+            let pg = part_guard.as_mut().unwrap();
+            self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+            self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+            self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+            let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
             let f = if g { self.func_g("fa_decode_vec_q_rows_v4_dc") }
                     else { self.func("fa_decode_vec_q_rows_v4_dc") };
             let sh = (11520 + 32 * head_dim * if g { 1 } else { 2 }) as u32;
@@ -7161,7 +7206,7 @@ impl Engine {
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, gqa, 1), shared_mem_bytes: sh };
             let mut b = self.gpu.stream.launch_builder(&f);
-            b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+            b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale)
              .arg(&nspm).arg(&spk).arg(&ktb).arg(&vtb);
             unsafe { b.launch(cfg)?; }
@@ -7169,7 +7214,7 @@ impl Engine {
             let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
             let mut b2 = self.gpu.stream.launch_builder(&fc);
-            b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
               .arg(base_dev).arg(&base_plus).arg(&nspm).arg(&spk);
             unsafe { b2.launch(cfg2)?; }
             return Ok(());
@@ -7182,8 +7227,18 @@ impl Engine {
         let gqa = (n_head / n_head_kv).max(1) as u32;
         let o_len = t * n_head * n_splits_max * head_dim;
         let ml_len = t * n_head * n_splits_max;
-        let (mut part_o, mut part_m, mut part_l) =
-            (self.zeros(o_len)?, self.zeros(ml_len)?, self.zeros(ml_len)?);
+        let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let f = self.func("fa_decode_vec_q_rows_v3_dc");
         let sh = (32 * head_dim * 2) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
@@ -7191,7 +7246,7 @@ impl Engine {
         let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
             block_dim: (32, gqa, 1), shared_mem_bytes: sh };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&scale).arg(&nspm).arg(&spk)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
@@ -7200,7 +7255,7 @@ impl Engine {
             block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         let plus0 = 0i32;
         let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh)
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(base_dev).arg(&plus0).arg(&nspm).arg(&spk);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
@@ -7247,9 +7302,20 @@ impl Engine {
         if g && head_dim == 256 && !fa_v4_at(bucket_max) { fa_vec = false; }   // mirror kvmod/geom
         let sp = fa_split_keys(bucket_max, n_head_kv);
         let n_splits = if fa_vec { ((bucket_max + sp - 1) / sp).max(1) } else { ((bucket_max + 255) / 256).max(1) };
-        let mut part_o = self.zeros(n_head * n_splits * head_dim)?;
-        let mut part_m = self.zeros(n_head * n_splits)?;
-        let mut part_l = self.zeros(n_head * n_splits)?;
+        let o_len = n_head * n_splits * head_dim;
+        let ml_len = n_head * n_splits;
+        let mut part_guard = self.fa_part_pool.lock().unwrap();
+        if part_guard.as_ref().map(|pp| pp.0.len() < o_len || pp.1.len() < ml_len).unwrap_or(true) {
+            let (co, cm) = part_guard.take().map(|pp| (pp.0.len(), pp.1.len())).unwrap_or((0, 0));
+            *part_guard = Some((self.alloc_uninit::<f32>(co.max(o_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?,
+                                self.alloc_uninit::<f32>(cm.max(ml_len))?));
+        }
+        let pg = part_guard.as_mut().unwrap();
+        self.gpu.stream.memset_zeros(&mut pg.0.slice_mut(0..o_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.1.slice_mut(0..ml_len))?;
+        self.gpu.stream.memset_zeros(&mut pg.2.slice_mut(0..ml_len))?;
+        let (part_o, part_m, part_l) = (&mut pg.0, &mut pg.1, &mut pg.2);
         let (hd, nh, nhkv, nsp) = (head_dim as i32, n_head as i32, n_head_kv as i32, n_splits as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
         let fa_vec = fa_vec && head_dim <= 512 && head_dim % 32 == 0;
@@ -7269,7 +7335,7 @@ impl Engine {
             return self.fa_decode_scalar_unified(q, k, v, o, head_dim, n_head, n_head_kv,
                                                  0, Some(t_kv_dev), scale, n_splits, sp,
                                                  k_tok_bytes, v_tok_bytes, g,
-                                                 &mut part_o, &mut part_m, &mut part_l, q8_out);
+                                                 &mut *part_o, &mut *part_m, &mut *part_l, q8_out);
         } else if fa_vec && head_dim == 256 && fa_v4_at(bucket_max) {
             // gemma/qwen v4 dc twin (eager default lane) — capture must mirror eager's pick,
             // incl the g-module route + raw-e4m3 sV sizing.
@@ -7311,11 +7377,11 @@ impl Engine {
                                                  0, Some(t_kv_dev), scale, n_splits,
                                                  if fa_vec { sp } else { 256 },
                                                  k_tok_bytes, v_tok_bytes, g,
-                                                 &mut part_o, &mut part_m, &mut part_l, q8_out);
+                                                 &mut *part_o, &mut *part_m, &mut *part_l, q8_out);
         };
         let ski = sp as i32;   // one-partition law: the twins derive ns_eff from (T_kv, ski)
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(&mut part_o).arg(&mut part_m).arg(&mut part_l)
+        b.arg(q).arg(k).arg(v).arg(&mut *part_o).arg(&mut *part_m).arg(&mut *part_l)
          .arg(&hd).arg(&nh).arg(&nhkv).arg(t_kv_dev).arg(&scale).arg(&nsp).arg(&ski)
          .arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
@@ -7324,13 +7390,13 @@ impl Engine {
             let fc = if g { self.func_g("fa_decode_combine_q8_1") }
                      else { self.fa_func("fa_decode_combine_q8_1", head_dim) };
             let mut b2 = self.gpu.stream.launch_builder(&fc);
-            b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh).arg(&nsp);
             unsafe { b2.launch(cfg2)?; }
             return Ok(());
         }
         let fc = if g { self.func_g("fa_decode_combine_f32") } else { self.fa_func("fa_decode_combine_f32", head_dim) };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
-        b2.arg(&part_o).arg(&part_m).arg(&part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
+        b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh).arg(&nsp);
         unsafe { b2.launch(cfg2)?; }
         Ok(())
     }
