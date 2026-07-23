@@ -147,3 +147,27 @@ amortization increment. Past m=4 the binding costs are (a) residency given back 
 stream-state frac headroom and (b) per-stream attention/glue, which scales linearly with m —
 batched attention (the fa_decode_rows block-diagonal seam from the recon) is the next
 structural lever, alongside stream-count-aware frac in a real serve loop.
+
+## Distinct-prompt correction (2026-07-23 evening, mix*.log) — the honest serving numbers
+
+| m (mixed prompts) | aggregate | vs single |
+|---|---:|---|
+| 1 | 4.74 | baseline |
+| 2 | 3.96 | **worse** |
+| 3 | 3.62 | worse |
+| 4 | 3.50 | worse |
+
+Every same-prompt gain (6.10-6.92) was the identical-routing artifact: identical streams
+route identically, so siblings ride pure cache hits and the grouped/rows machinery sees
+100% overlap. That regime is only real for identical-batch workloads. Under mixed prompts,
+cache hit rate stays flat (59-61% — cache contention is NOT the mechanism) but expert sets
+are disjoint: per step, m nearly-full expert loads serialize through the single CPU-executor
+thread (each call serial io-then-compute), so aggregate falls below single-stream.
+
+Lane-3 standing: the M1-M4 machinery (lockstep, grouped GPU dispatch, multi-row ABI, fused
+kernels) is correct, gated, and pays in identical-batch regimes — but mixed-workload serving
+needs CROSS-STREAM io/compute overlap (stream A's compute under stream B's reads): parallel
+per-stream CPU dispatch with the fabric-interference constraint the pipeline receipts
+mapped. That is the next design problem, not a tuning knob. Method lesson recorded: the
+overlap simulation modeled sharing but not dispatch serialization; and same-prompt harness
+runs must never be promoted as serving numbers.
