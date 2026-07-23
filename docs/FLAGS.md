@@ -225,6 +225,10 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FA_V4_MAX=1` | force the v4 FA lane at every t_kv (bypass the crossover) — correctness-forcing knob for the fp8 lane matrix (2026-07-12 closure battery) |
 | `BW24_DRAFT_GRAPH_CHECK=1` | re-run the gemma draft chain eagerly after each graph replay and diff the drafted slots (non-destructive replay-vs-eager bisect) |
 | `BW24_E4B_GRAPH_GATE=N` (gemma-gate) | E4B graph-door stream gate: `generate()` door OFF then ON on fresh caches, streams must be identical (the warmup-side-effect + exec-update oracle) |
+| `BW24_GEMMA_GRAPH=1` | 12B/31B whole-token alloc-free graph door (slotted decode step, captured once, replayed per token). Bit-identical (96/96 stream gate) but −5.6% vs dc-eager on the 12B (campaign closed 2026-07-23: ladder 81.3→84.8 vs eager 89.8; residual is GPU-side graph-exec scheduling, not allocs/launch cost). Experimental door, default OFF |
+| `BW24_GRAPH_GATE=N` (gemma-gate) | 12B/31B graph-door stream gate: eager vs graph token streams over N tokens must be identical + both throughputs printed |
+| `BW24_GRAPH_DRAIN=N` | raise the graph door's drain window above the pinned 1 (EXPERIMENTS ONLY: relaunching the same graph exec before its prior launch completes is ILLEGAL — chunk=4 reproduced ILLEGAL_ADDRESS) |
+| `BW24_GRAPH_CENSUS=1` | print the captured graph's node-type census (kernel/memset/memcpy/alloc/free counts) at instantiate |
 | `BW24_VERIFY_GATE2=K` (gemma-gate) | CHAINED batched-verify oracle: prefix tokenwise, then two back-to-back `decode_step_t` calls — per-position argmax must match the tokenwise chain. `BW24_VERIFY_GATE2_DEV=1` runs the device-token verify arm (the spec round's exact path) |
 | `BW24_ROUND_GRAPH_CHECK=1` | round-graph bisect: run the captured round body EAGERLY (no capture/replay) — splits body-semantics bugs from replay-mechanics bugs |
 | `BW24_E4B_DCG_EAGER` | E4B door bisect arm: run the dcg step eagerly per token instead of capture/replay — `1` = exact live bucket, `2` = the capture's win bucket (separates bucket-path numerics from the replay mechanism) |
