@@ -1,0 +1,16 @@
+plimit: 150.00W  temp: 57
+== arm: off
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.2073s = 1437.9 tok/s (pp1736)
+      7.3    3,506,556,207      1,640   2,138,144.0   1,420,127.5    321,149   4,370,205  1,262,494.0  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      0.9      409,636,452         40  10,240,911.3  10,340,132.5  9,188,214  12,348,573    607,506.5  fa_prefill_bf16_hd512_sp                                                                            
+      0.4      173,895,595        200     869,478.0     886,421.5    691,610   1,094,775     64,541.4  fa_prefill_w_bf16_p1                                                                                
+temp-post: 60
+== arm: door
+prefill argmax=623  decode argmax=623  logit maxdiff=1.074e0  MATCH
+prefill 1736 tok in 1.1996s = 1447.2 tok/s (pp1736)
+      7.3    3,510,738,099      1,640  2,140,694.0  1,437,275.0    323,645   4,316,700  1,265,893.6  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      0.8      365,648,939         40  9,141,223.5  9,145,144.0  8,188,636  10,934,887    614,696.8  fa_prefill_bf16_hd512_sp16                                                                          
+      0.4      174,036,742        200    870,183.7    876,403.0    691,963   1,092,535     67,719.0  fa_prefill_w_bf16_p1                                                                                
+temp-post: 61
+== arm: w4

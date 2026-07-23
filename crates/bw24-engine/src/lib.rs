@@ -182,6 +182,14 @@ pub fn fa512_hp_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA512_HP").as_deref() == Ok("1"))
 }
 
+/// SWA head-pair arm (BW24_FAW_HP=1, requires the f16pv door): llama-class windowed
+/// geometry — 32 q-rows x 2 heads per CTA sharing staged K/V, f16 P@V accumulation.
+/// Even n_head and even GQA group required.
+pub fn faw_hp_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FAW_HP").as_deref() == Ok("1"))
+}
+
 /// 4-warp sp16 experiment arm (BW24_FA512_W4=1, requires the f16pv door): GEMM0 split-K
 /// 4-way + GEMM1 4x128 O-dims. Own partial-sum order — oracle-band gated. Returns warp
 /// count (2 = base sp16). 8-warp arm measured NEGATIVE 2026-07-23 (jsonl) and removed.
@@ -5760,6 +5768,35 @@ impl Engine {
                             -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         debug_assert_eq!(head_dim, 256);
+        let hp = fa_f16pv_on() && faw_hp_on() && n_head % 2 == 0
+            && (n_head / n_head_kv) % 2 == 0;
+        if hp {
+            const BLOCK_QH: usize = 32;
+            // V bytes must be f16 for the h2 stamp; pooled scratch (stream-ordered reuse).
+            let n = t_kv * n_head_kv * head_dim;
+            let mut vguard = self.fa_vf16_scratch.lock().unwrap();
+            if vguard.as_ref().map(|b| b.len() < n * 2).unwrap_or(true) {
+                *vguard = Some(self.alloc_uninit::<u8>(n * 2)?);
+            }
+            self.bf16_to_f16_into(vb, n, vguard.as_mut().unwrap())?;
+            let vh = vguard.as_ref().unwrap();
+            let f = self.func("fa_prefill_w_bf16_p1h2");
+            let shmem = (2 * (2 * BK * head_dim + 2 * BLOCK_QH * BK)
+                       + 4 * (2 * BLOCK_QH)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32).div_ceil(BLOCK_QH as u32), (n_head / 2) as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
+                n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(qb).arg(kb).arg(vh).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         let f = self.func("fa_prefill_w_bf16_p1");
         let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
                    + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
@@ -5795,6 +5832,30 @@ impl Engine {
             && *P1_ON.get_or_init(|| {
                 std::env::var("BW24_FAW_P1").map(|v| v != "0").unwrap_or(true)
             });
+        let hp = p1 && fa_f16pv_on() && faw_hp_on() && n_head % 2 == 0
+            && (n_head / n_head_kv) % 2 == 0;
+        if hp {
+            const BLOCK_QH: usize = 32;
+            let f = self.func("fa_prefill_w_bf16_p1h2");
+            let shmem = (2 * (2 * BK * head_dim + 2 * BLOCK_QH * BK)
+                       + 4 * (2 * BLOCK_QH)) as u32;
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32).div_ceil(BLOCK_QH as u32), (n_head / 2) as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz, wi) = (head_dim as i32, n_head as i32,
+                n_head_kv as i32, t as i32, t_kv as i32, causal as i32, window as i32);
+            let qb = self.f32_to_bf16(q, t * n_head * head_dim)?;
+            let kb = self.f32_to_bf16(k, t_kv * n_head_kv * head_dim)?;
+            let vh = self.f32_to_f16(v, t_kv * n_head_kv * head_dim)?;
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&qb).arg(&kb).arg(&vh).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi)
+             .arg(&scale).arg(&cz).arg(&wi);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
         if p1 {
             let f = self.func("fa_prefill_w_bf16_p1");
             let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
