@@ -3792,7 +3792,8 @@ impl HybridModel {
         let nkv_g = g4.head_count_kv.iter().zip(g4.swa_pattern.iter())
             .find(|p| !*p.1).map(|p| *p.0 as usize).unwrap_or(2);
         let mut graphs: std::collections::HashMap<((bool, usize), (bool, usize), bool, bool),
-                                                  cudarc::driver::CudaGraph> = Default::default();
+                                                  (cudarc::driver::CudaGraph,
+                                                   Vec<Box<dyn std::any::Any + Send>>)> = Default::default();
         let mut out = Vec::with_capacity(max_new);
         let mut reason = StopReason::MaxNew;
         let mut next = first_token;
@@ -3828,11 +3829,15 @@ impl HybridModel {
                 let len_save: Vec<Option<i32>> = cache.kv.iter()
                     .map(|k| k.as_ref().map(|kvl| e.dtoh_i32_one(&kvl.len_d).unwrap())).collect();
                 let tok_save = e.dtoh_u32_one(&token_d)?;
+                // RETAINED capture (2026-07-23): the plain capture_graph left pool-transient
+                // clones as dead COPY NODES replayed every launch — the E4B 0.74ms/token
+                // regression class, and this door's measured -8.8%. The keeper pins warmup
+                // transients so the captured graph holds kernel nodes only.
                 let graph = {
                     let tok_ref = &mut token_d;
                     let pos_ref = &mut pos_d;
                     let cache_ref = &mut *cache;
-                    e.capture_graph(|e| {
+                    e.capture_graph_retained(|e| {
                         // self-feeding: the argmax writes token_d itself.
                         let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
                         self.gemma4_decode_step_dc_into(e, tok_in, pos_ref, embd_gpu, qt, rb,
@@ -3851,7 +3856,7 @@ impl HybridModel {
                 graphs.insert(key, graph);
                 captures += 1;
             }
-            graphs.get(&key).unwrap().launch()?;
+            graphs.get(&key).unwrap().0.launch()?;
             cache.pos += 1;
             for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
             next = e.dtoh_u32_one(&token_d)?;
