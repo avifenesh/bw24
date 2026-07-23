@@ -21,6 +21,9 @@ static MMQ_ACT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 #[allow(clippy::type_complexity)]
 static MMQ_ACT_SLOT: std::sync::Mutex<Option<(u64, u64, usize, usize, CudaSlice<u8>)>> =
     std::sync::Mutex::new(None);
+/// Stream-k fixup scratch (lazy; sized once per process — one slot per SM).
+static MMQ_FIXUP_SLOT: std::sync::Mutex<Option<cudarc::driver::CudaSlice<u8>>> =
+    std::sync::Mutex::new(None);
 
 unsafe extern "C" {
     /// Bytes needed for the block_fp4_mmq activation scratch for (in_f, n_tokens).
@@ -155,6 +158,20 @@ unsafe extern "C" {
         w_q4_0: *const core::ffi::c_void,
         act_scratch: *const core::ffi::c_void,
         y: *mut f32,
+        in_f: i32,
+        out_f: i32,
+        n_tokens: i32,
+        stream: *mut core::ffi::c_void,
+        rp: i32,
+    ) -> i32;
+    /// Stream-k fixup scratch bytes (one [MMQ_X x MMQ_Y] f32 slot per SM).
+    pub fn bw24_mmq_q4_0_fixup_bytes() -> usize;
+    /// Stream-k GEMM entry: tiling when wave efficiency >= 90%, else stream-k + fixup.
+    pub fn bw24_mmq_q4_0_gemm_sk(
+        w_q4_0: *const core::ffi::c_void,
+        act_scratch: *const core::ffi::c_void,
+        y: *mut f32,
+        fixup_scratch: *mut core::ffi::c_void,
         in_f: i32,
         out_f: i32,
         n_tokens: i32,
@@ -505,7 +522,31 @@ impl Engine {
             let (w_p, _gw) = bytes.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
             let (s_p, _gs) = scratch.device_ptr(stream);
-            let rc = unsafe {
+            // Stream-k arm (BW24_MMQ_SK=1, opt-in): small-batch tail-wave fix — the sk entry
+            // itself falls back to tiling at >=90% wave efficiency. Band-class fold order.
+            static SK_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let sk = *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK").as_deref() == Ok("1"));
+            let rc = if sk {
+                let mut fx = MMQ_FIXUP_SLOT.lock().unwrap();
+                if fx.is_none() {
+                    let nb = unsafe { bw24_mmq_q4_0_fixup_bytes() };
+                    *fx = Some(self.alloc_uninit::<u8>(nb)?);
+                }
+                let (f_p, _gf) = fx.as_mut().unwrap().device_ptr_mut(stream);
+                unsafe {
+                    bw24_mmq_q4_0_gemm_sk(
+                        w_p as *const core::ffi::c_void,
+                        s_p as *const core::ffi::c_void,
+                        y_p as *mut f32,
+                        f_p as *mut core::ffi::c_void,
+                        in_f as i32,
+                        out_f as i32,
+                        m as i32,
+                        stream.cu_stream() as *mut core::ffi::c_void,
+                        rp as i32,
+                    )
+                }
+            } else { unsafe {
                 bw24_mmq_q4_0_gemm(
                     w_p as *const core::ffi::c_void,
                     s_p as *const core::ffi::c_void,
@@ -516,7 +557,7 @@ impl Engine {
                     stream.cu_stream() as *mut core::ffi::c_void,
                     rp as i32,
                 )
-            };
+            } };
             if rc != 0 {
                 return Err(format!(
                     "bw24_mmq_q4_0_gemm(rp={rp}, in_f={in_f}, out_f={out_f}, m={m}, wbytes={}) rc={rc}",

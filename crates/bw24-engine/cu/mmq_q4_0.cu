@@ -329,10 +329,13 @@ static __device__ __forceinline__ void mmq_write_back_q4_0(
 }
 
 // ======================= mul_mat_q_process_tile (q4_0) =======================
-template <int mmq_x, bool need_check, bool is_rp>
+// `fixup`: stream-k partial tile — raw sums go to tmp_fixup[blockIdx.x slot] instead of dst
+// (the fixup kernel folds them; layout [block][j][i] mirrors mmq_write_back's enumeration).
+template <int mmq_x, bool need_check, bool is_rp, bool fixup>
 static __device__ __forceinline__ void mul_mat_q_process_tile_q4_0(
         const char * __restrict__ x, const char * __restrict__ x_d, const int offset_x,
         const int * __restrict__ y, const int * __restrict__ ids_dst, float * __restrict__ dst,
+        float * __restrict__ tmp_fixup,
         const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const int tile_x_max_i, const int tile_y_max_j, const int kb0_start, const int kb0_stop) {
     constexpr int warp_size = MMQ_WARP_SIZE;
@@ -378,7 +381,29 @@ static __device__ __forceinline__ void mul_mat_q_process_tile_q4_0(
         __syncthreads();
     }
 
-    mmq_write_back_q4_0<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+    if (fixup) {
+        // raw partials to this block's slot; same (j0,n,l) enumeration as mmq_write_back.
+        constexpr int granularity = mmq_get_granularity_device(mmq_x);
+        typedef tile<16, 8, int> tile_C;
+        constexpr int rows_per_warp = 2 * granularity;
+        constexpr int ntx_w = rows_per_warp / tile_C::I;
+        const int i0 = (threadIdx.y / ntx_w) * (ntx_w * tile_C::I);
+        float * tf = tmp_fixup + (size_t) blockIdx.x * (mmq_x * mmq_y);
+#pragma unroll
+        for (int j0 = 0; j0 < mmq_x; j0 += ntx_w * tile_C::J) {
+#pragma unroll
+            for (int n = 0; n < ntx_w; ++n) {
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    const int j = j0 + (threadIdx.y % ntx_w) * tile_C::J + tile_C::get_j(l);
+                    const int i = i0 + n * tile_C::I + tile_C::get_i(l);
+                    tf[j * mmq_y + i] = sum[(j0 / tile_C::J + n) * tile_C::ne + l];
+                }
+            }
+        }
+    } else {
+        mmq_write_back_q4_0<mmq_x, mmq_y, need_check>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+    }
 }
 
 // ======================= mul_mat_q (conventional xy-tiling) =======================
@@ -414,9 +439,154 @@ static __global__ void mul_mat_q_q4_0(
 
     const int offset_x = it * mmq_y * stride_row_x;
 
-    mul_mat_q_process_tile_q4_0<mmq_x, need_check, is_rp>(
-        x, x_d, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst,
+    mul_mat_q_process_tile_q4_0<mmq_x, need_check, is_rp, false>(
+        x, x_d, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, nullptr,
         stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j, 0, blocks_per_ne00);
+}
+
+// ======================= mul_mat_q stream-k (small-batch tail-wave fix) =======================
+// llama mmq.cuh stream-k port, 2D case (no channels/samples/experts): the kbc walk splits the
+// (it, jt, kb0) work space evenly across gridDim.x blocks; interior tiles write dst directly,
+// a block's trailing partial tile writes raw sums to tmp_fixup and the fixup kernel folds
+// them. Engaged only when xy-tiling wave efficiency < 90% (host gate) — the T=512-class
+// pp regime where small-out_f GEMMs strand 20-30% of SMs (2026-07-23: 175.9us vs llama
+// 144.3us med per GEMM at d512). Partial-sum fold order differs from tiling -> band class.
+template <int mmq_x, bool need_check, bool is_rp>
+__launch_bounds__(MMQ_WARP_SIZE * MMQ_NWARPS, 1)
+static __global__ void mul_mat_q_q4_0_sk(
+        const char * __restrict__ x, const char * __restrict__ x_d, const int * __restrict__ y,
+        float * __restrict__ dst, float * __restrict__ tmp_fixup,
+        const int nrows_x, const int ncols_dst, const int stride_row_x,
+        const int ncols_y, const int stride_col_dst, const int blocks_per_ne00) {
+    constexpr int nwarps = MMQ_NWARPS;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+    constexpr int mmq_y = MMQ_Y;
+    constexpr int blocks_per_iter = MMQ_ITER_K / QK4_0;   // 8
+
+    extern __shared__ int ids_dst_shared[];
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += nwarps * warp_size) {
+        const int j = j0 + threadIdx.y * warp_size + threadIdx.x;
+        if (j0 + nwarps * warp_size > mmq_x && j >= mmq_x) { break; }
+        ids_dst_shared[j] = j;
+    }
+    __syncthreads();
+
+    const int nty = (nrows_x   + mmq_y - 1) / mmq_y;
+    const int ntx = (ncols_dst + mmq_x - 1) / mmq_x;
+
+    // kbc == k-block index in the continuous (it, jt, kb0) space.
+    int64_t kbc      = (int64_t) blockIdx.x       * ntx * nty * blocks_per_ne00 / gridDim.x;
+    int64_t kbc_stop = (int64_t)(blockIdx.x + 1)  * ntx * nty * blocks_per_ne00 / gridDim.x;
+    kbc      -= (kbc      % blocks_per_ne00) % blocks_per_iter;
+    kbc_stop -= (kbc_stop % blocks_per_ne00) % blocks_per_iter;
+
+    int kb0_start = (int)(kbc % blocks_per_ne00);
+    int kb0_stop  = (int) min((int64_t) blocks_per_ne00, kb0_start + kbc_stop - kbc);
+    while (kbc < kbc_stop && kb0_stop == blocks_per_ne00) {
+        // interior: this block finishes the tile -> write dst directly.
+        const int tile = (int)(kbc / blocks_per_ne00);
+        const int jt = tile % ntx;
+        const int it = tile / ntx;
+        const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
+        const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+        const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
+        const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
+        const int offset_x = it * mmq_y * stride_row_x;
+
+        mul_mat_q_process_tile_q4_0<mmq_x, need_check, is_rp, false>(
+            x, x_d, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, nullptr,
+            stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j,
+            kb0_start, kb0_stop);
+
+        kbc += blocks_per_ne00;
+        kbc -= kbc % blocks_per_ne00;
+        kb0_start = 0;
+        kb0_stop  = (int) min((int64_t) blocks_per_ne00, kbc_stop - kbc);
+    }
+
+    if (kbc >= kbc_stop) { return; }
+
+    // trailing partial tile -> raw sums to the fixup buffer (folded by the fixup kernel).
+    const int tile = (int)(kbc / blocks_per_ne00);
+    const int jt = tile % ntx;
+    const int it = tile / ntx;
+    const int offset_y   = (jt * mmq_x) * (sizeof(block_q8_1_mmq) / sizeof(int));
+    const int offset_dst = jt * mmq_x * stride_col_dst + it * mmq_y;
+    const int tile_x_max_i = nrows_x   - it * mmq_y - 1;
+    const int tile_y_max_j = ncols_dst - jt * mmq_x - 1;
+    const int offset_x = it * mmq_y * stride_row_x;
+
+    mul_mat_q_process_tile_q4_0<mmq_x, need_check, is_rp, true>(
+        x, x_d, offset_x, y + offset_y, ids_dst_shared, dst + offset_dst, tmp_fixup,
+        stride_row_x, ncols_y, stride_col_dst, tile_x_max_i, tile_y_max_j,
+        kb0_start, (int)(kb0_start + kbc_stop - kbc));
+}
+
+// Fixup: fold partial sums from blocks whose range ENDED mid-tile into the tiles they
+// started (2D port of llama mul_mat_q_stream_k_fixup; half the warps of the GEMM kernel).
+template <int mmq_x, bool need_check>
+__launch_bounds__(MMQ_WARP_SIZE * (MMQ_NWARPS / 2), 1)
+static __global__ void mul_mat_q_q4_0_sk_fixup(
+        float * __restrict__ dst, const float * __restrict__ tmp_last_tile,
+        const int nrows_x, const int ncols_dst, const int stride_col_dst,
+        const int blocks_per_ne00, const int sk_blocks) {
+    constexpr int mmq_y = MMQ_Y;
+    constexpr int blocks_per_iter = MMQ_ITER_K / QK4_0;
+    constexpr int nwarps = MMQ_NWARPS / 2;
+    constexpr int warp_size = MMQ_WARP_SIZE;
+
+    float sum[mmq_x / nwarps] = {0.0f};
+    const int i = blockIdx.y * warp_size + threadIdx.x;
+    const int nty = (nrows_x   + mmq_y - 1) / mmq_y;
+    const int ntx = (ncols_dst + mmq_x - 1) / mmq_x;
+    const int bidx0 = blockIdx.x;
+
+    int64_t kbc0      = (int64_t) bidx0      * ntx * nty * blocks_per_ne00 / sk_blocks;
+    int64_t kbc0_stop = (int64_t)(bidx0 + 1) * ntx * nty * blocks_per_ne00 / sk_blocks;
+    kbc0      -= (kbc0      % blocks_per_ne00) % blocks_per_iter;
+    kbc0_stop -= (kbc0_stop % blocks_per_ne00) % blocks_per_iter;
+
+    const bool did_not_have_any_data   = kbc0 == kbc0_stop;
+    const bool wrote_beginning_of_tile = kbc0 % blocks_per_ne00 == 0;
+    const bool did_not_write_last      = kbc0 / blocks_per_ne00 == kbc0_stop / blocks_per_ne00
+                                         && kbc0_stop % blocks_per_ne00 != 0;
+    if (did_not_have_any_data || wrote_beginning_of_tile || did_not_write_last) { return; }
+
+    bool any_fixup = false;
+    int bidx = bidx0 - 1;
+    int64_t kbc_stop = kbc0;
+    while (true) {
+        int64_t kbc = (int64_t) bidx * ntx * nty * blocks_per_ne00 / sk_blocks;
+        kbc -= (kbc % blocks_per_ne00) % blocks_per_iter;
+        if (kbc == kbc_stop) { bidx--; kbc_stop = kbc; continue; }
+        any_fixup = true;
+#pragma unroll
+        for (int j0 = 0; j0 < mmq_x; j0 += nwarps) {
+            const int j = j0 + threadIdx.y;
+            sum[j0 / nwarps] += tmp_last_tile[(size_t) bidx * (mmq_x * mmq_y) + j * mmq_y + i];
+        }
+        if (kbc % blocks_per_ne00 == 0 || kbc / blocks_per_ne00 < kbc0 / blocks_per_ne00) {
+            break;
+        }
+        bidx--;
+        kbc_stop = kbc;
+    }
+    if (!any_fixup) { return; }
+
+    const int tile = (int)(kbc0 / blocks_per_ne00);
+    const int jt = tile % ntx;
+    const int it = tile / ntx;
+    dst += jt * mmq_x * stride_col_dst + it * mmq_y;
+    const int i_max = nrows_x   - it * mmq_y - 1;
+    const int j_max = ncols_dst - jt * mmq_x - 1;
+    if (need_check && i > i_max) { return; }
+#pragma unroll
+    for (int j0 = 0; j0 < mmq_x; j0 += nwarps) {
+        const int j = j0 + threadIdx.y;
+        if (j > j_max) { return; }
+        dst[j * stride_col_dst + i] += sum[j0 / nwarps];
+    }
 }
 
 // ======================= activation quantizer (quantize.cu, D4 layout) =======================
@@ -498,7 +668,83 @@ static int mmq_q4_0_launch(const char * W, const char * W_d, const int * y_q, fl
     return 0;
 }
 
+static int mmq_nsm() {
+    static int nsm = 0;
+    if (nsm == 0) {
+        int dev = 0; cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev);
+        if (nsm <= 0) { nsm = 1; }
+    }
+    return nsm;
+}
+
+// Stream-k launcher: engages when xy-tiling wave efficiency < 90% (llama's gate); otherwise
+// falls back to the (bit-identical) tiling launch. `fixup_scratch` >= bw24_mmq_q4_0_fixup_bytes().
+template <bool need_check, bool is_rp>
+static int mmq_q4_0_launch_sk(const char * W, const char * W_d, const int * y_q, float * y,
+                              float * fixup_scratch,
+                              int in_f, int out_f, int n_tokens, cudaStream_t st) {
+    const int nty = (out_f    + MMQ_Y - 1) / MMQ_Y;
+    const int ntx = (n_tokens + MMQ_X - 1) / MMQ_X;
+    const int ntiles = nty * ntx;
+    const int nsm = mmq_nsm();
+    const int waves = (ntiles + nsm - 1) / nsm;
+    const int eff_pct = 100 * ntiles / (nsm * waves);
+    if (eff_pct >= 90 || fixup_scratch == nullptr) {
+        return mmq_q4_0_launch<need_check, is_rp>(W, W_d, y_q, y, in_f, out_f, n_tokens, st);
+    }
+    const int stride_row_x    = in_f / QK4_0;
+    const int blocks_per_ne00 = in_f / QK4_0;
+    const int stride_col_dst  = out_f;
+    const int ncols_y         = n_tokens;
+    const dim3 grid((unsigned) nsm, 1, 1);
+    const dim3 block(MMQ_WARP_SIZE, MMQ_NWARPS, 1);
+    const size_t smem = mmq_q4_0_nbytes_shared();
+    cudaFuncSetAttribute(mul_mat_q_q4_0_sk<MMQ_X, need_check, is_rp>,
+                         cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    mul_mat_q_q4_0_sk<MMQ_X, need_check, is_rp><<<grid, block, smem, st>>>(
+        W, W_d, y_q, y, fixup_scratch, out_f, n_tokens, stride_row_x, ncols_y,
+        stride_col_dst, blocks_per_ne00);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { return 1000 + (int) e; }
+    const bool fixup_needed = ((int64_t) ntiles * blocks_per_ne00) % nsm != 0;
+    if (fixup_needed) {
+        const dim3 grid_f((unsigned) nsm, MMQ_Y / MMQ_WARP_SIZE, 1);
+        const dim3 block_f(MMQ_WARP_SIZE, MMQ_NWARPS / 2, 1);
+        mul_mat_q_q4_0_sk_fixup<MMQ_X, need_check><<<grid_f, block_f, 0, st>>>(
+            y, fixup_scratch, out_f, n_tokens, stride_col_dst, blocks_per_ne00, nsm);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { return 1000 + (int) e; }
+    }
+    return 0;
+}
+
 extern "C" {
+
+// Fixup scratch bytes for the stream-k GEMM (one [MMQ_X x MMQ_Y] f32 slot per SM).
+size_t bw24_mmq_q4_0_fixup_bytes(void) {
+    return (size_t) mmq_nsm() * MMQ_X * MMQ_Y * sizeof(float);
+}
+
+// Stream-k GEMM entry: tiling when wave efficiency >= 90%, else stream-k + fixup.
+int bw24_mmq_q4_0_gemm_sk(const void * W_q4_0, const void * act_scratch, float * y,
+                          void * fixup_scratch,
+                          int in_f, int out_f, int n_tokens, void * stream, int rp) {
+    cudaStream_t st = reinterpret_cast<cudaStream_t>(stream);
+    const bool need_check = (out_f % MMQ_Y) != 0;
+    const int * y_q = (const int *) act_scratch;
+    const char * W  = (const char *) W_q4_0;
+    const char * W_d = W + (size_t) out_f * (size_t) (in_f / QK4_0) * 16;
+    float * fx = (float *) fixup_scratch;
+    if (rp) {
+        return need_check
+            ? mmq_q4_0_launch_sk<true,  true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st)
+            : mmq_q4_0_launch_sk<false, true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+    }
+    return need_check
+        ? mmq_q4_0_launch_sk<true,  false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st)
+        : mmq_q4_0_launch_sk<false, false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st);
+}
 
 // Bytes needed for the quantized activation buffer (block_q8_1_mmq stream): caller pre-allocs.
 size_t bw24_mmq_q4_0_act_bytes(int in_f, int n_tokens) {
