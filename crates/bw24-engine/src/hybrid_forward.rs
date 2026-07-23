@@ -4081,6 +4081,11 @@ impl HybridModel {
                     }
                 }
                 e.set_u32_one(&mut token_d, tok_save)?;
+                if std::env::var("BW24_GRAPH_CENSUS").as_deref() == Ok("1") {
+                    if let Ok(c) = crate::graph_update::node_census(&graph.0) {
+                        eprintln!("[graph-census] {c:?}");
+                    }
+                }
                 graphs.insert(key, graph);
                 captures += 1;
             }
