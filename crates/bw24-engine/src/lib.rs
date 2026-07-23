@@ -524,6 +524,23 @@ pub static PRIME_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 impl Engine {
     pub fn new(ordinal: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let gpu = bw24_runtime::Gpu::new(ordinal)?;
+        // Default async-pool RELEASE_THRESHOLD is 0: freed blocks return to the OS at every
+        // sync, so cuMemAllocAsync NODES inside captured graphs re-map memory on EVERY
+        // cuGraphLaunch (measured 226us/launch on the gemma graph door, 2026-07-23 osrt).
+        // Pinning the threshold keeps the pool cached -> alloc nodes become pointer bumps.
+        unsafe {
+            use cudarc::driver::sys;
+            let dev: sys::CUdevice = ordinal as sys::CUdevice;
+            let mut pool: sys::CUmemoryPool = std::ptr::null_mut();
+            if sys::cuDeviceGetDefaultMemPool(&mut pool, dev) == sys::CUresult::CUDA_SUCCESS {
+                let mut thresh: u64 = u64::MAX;
+                let _ = sys::cuMemPoolSetAttribute(
+                    pool,
+                    sys::CUmemPool_attribute_enum::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                    &mut thresh as *mut u64 as *mut core::ffi::c_void,
+                );
+            }
+        }
         let module = gpu.ctx.load_module(Ptx::from_file(FATBIN_PATH))?;
         let hybrid = gpu.ctx.load_module(Ptx::from_file(HYBRID_FATBIN_PATH))?;
         let qmatvec = gpu.ctx.load_module(Ptx::from_file(QMATVEC_FATBIN_PATH))?;
