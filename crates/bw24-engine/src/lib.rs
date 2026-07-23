@@ -951,6 +951,19 @@ impl Engine {
         Ok(())
     }
 
+    /// PLAIN-DECODE GRAPH ring store: ring[(pos_start - base) % cap] = vam[0].
+    pub fn plain_tok_ring(&self, vam: &CudaSlice<u32>, pos_start: &CudaSlice<i32>,
+                          base: usize, ring: &mut CudaSlice<u32>)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("plain_tok_ring");
+        let (b, cap) = (base as i32, ring.len() as i32);
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
+        let mut bl = self.gpu.stream.launch_builder(&f);
+        bl.arg(vam).arg(pos_start).arg(&b).arg(&mut *ring).arg(&cap);
+        unsafe { bl.launch(cfg)?; }
+        Ok(())
+    }
+
     /// ROUND-STREAM stage (c) 4 epilogue: ring commit + tiny counter copies.
     pub fn spec_ring_commit(&self, vtok: &CudaSlice<u32>, acc: &CudaSlice<u32>,
                             brk: &CudaSlice<u32>, ring: &mut CudaSlice<u32>,

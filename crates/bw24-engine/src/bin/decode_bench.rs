@@ -87,7 +87,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      n as f64/dt_g, dt_g*1000.0/n as f64,
                      dt_e/dt_g);
         }
-        other => return Err(format!("unknown mode {other:?} (use eager|graph|both)").into()),
+        "g4graph" => {
+            // EAGER reference first (tokens + time), then the gemma4 plain-graph loop on a
+            // fresh cache; token-sequence identity is the gate, speedup is the number.
+            let mut cache_e = bw24_engine::cache::Cache::new(&e, &m.cfg, p + n + 8)?;
+            let mut ll = Vec::new();
+            for &t in &prompt { ll = m.decode_step(&e, t, &mut cache_e)?; }
+            e.stream().synchronize()?;
+            let t0 = std::time::Instant::now();
+            let mut toks_e = Vec::with_capacity(n);
+            for _ in 0..n {
+                let nx = argmax(&ll) as u32;
+                toks_e.push(nx);
+                ll = m.decode_step(&e, nx, &mut cache_e)?;
+            }
+            e.stream().synchronize()?;
+            let dt_e = t0.elapsed().as_secs_f64();
+
+            let mut cache_g = bw24_engine::cache::Cache::new(&e, &m.cfg, p + n + 8)?;
+            let mut ll2 = Vec::new();
+            for &t in &prompt { ll2 = m.decode_step(&e, t, &mut cache_g)?; }
+            let first = argmax(&ll2) as u32;
+            e.stream().synchronize()?;
+            let t1 = std::time::Instant::now();
+            let toks_g = m.gemma4_generate_plain_graph(&e, &mut cache_g, first, n, &[])?;
+            e.stream().synchronize()?;
+            let dt_g = t1.elapsed().as_secs_f64();
+            // eager emits [argmax0, next...]; graph feeds argmax0 and emits its successors —
+            // align: graph token i corresponds to eager token i+1... both sequences start
+            // from the same primed state: eager toks_e[0] = argmax(prime) = `first`;
+            // graph out[0] = argmax after decoding `first` = toks_e[1]. Compare shifted.
+            let n_cmp = toks_g.len().min(toks_e.len().saturating_sub(1));
+            let mism = (0..n_cmp).filter(|&i| toks_g[i] != toks_e[i + 1]).count();
+            println!("decode tg{n} @ctx{p}: EAGER {:.1} tok/s | G4GRAPH {:.1} tok/s ({:.2} ms/tok) | speedup {:.3}x | token-mismatches {mism}/{n_cmp} {}",
+                     n as f64/dt_e, toks_g.len() as f64/dt_g, dt_g*1000.0/toks_g.len().max(1) as f64,
+                     dt_e / dt_g * (toks_g.len() as f64 / n as f64),
+                     if mism == 0 { "MATCH" } else { "MISMATCH" });
+        }
+        other => return Err(format!("unknown mode {other:?} (use eager|graph|both|g4graph)").into()),
     }
     Ok(())
 }

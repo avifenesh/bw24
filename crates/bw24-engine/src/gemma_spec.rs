@@ -1414,3 +1414,150 @@ impl HybridModel {
         Ok(out)
     }
 }
+
+
+impl HybridModel {
+    /// PLAIN-DECODE CUDA-GRAPH loop (gemma4, greedy): one captured verify-trunk step
+    /// (t=1, device tokens/pos/lens) replayed per token — the launch-gap eraser the
+    /// decode decomposition demanded (2026-07-23: ~2.3ms/token idle at 128 launches).
+    /// Self-feeding: argmax -> tok_d -> next embed; counters advance in-graph via
+    /// spec_rollback_stream(base=1, acc=0). Tokens land in a device ring; ONE host sync
+    /// per drain window. Captures are keyed on the (rung, window-side, f512-side) regime
+    /// (the round-graph hint law); regime-crossing stretches run the same body eagerly.
+    /// Caller guarantees: gemma4, greedy, shared_kv_layers == 0, prompt already primed
+    /// (cache.pos = prompt len, host kvl.len mirrors set).
+    pub fn gemma4_generate_plain_graph(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        last: u32,
+        max_new: usize,
+        eos: &[u32],
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        const RING: usize = 64;
+        const DRAIN: usize = 32;                 // replays per host sync
+        let win_main = self.cfg.gemma4.as_ref().map(|g| g.sliding_window as usize).unwrap_or(0);
+        let n_rows = cache.kv.len() + 1;
+
+        let was_tracking = e.ctx().is_event_tracking();
+        if was_tracking { unsafe { e.ctx().disable_event_tracking(); } }
+        let r = self.gemma4_plain_graph_inner(e, cache, last, max_new, eos,
+                                              RING, DRAIN, win_main, n_rows);
+        if was_tracking { unsafe { e.ctx().enable_event_tracking(); } }
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gemma4_plain_graph_inner(
+        &self,
+        e: &Engine,
+        cache: &mut Cache,
+        last: u32,
+        max_new: usize,
+        eos: &[u32],
+        ring_cap: usize,
+        drain: usize,
+        win_main: usize,
+        n_rows: usize,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let mut scr = self.verify_stream_scratch(e, 1)?;
+        let mut tok_d = e.stream().alloc_zeros::<u32>(1)?;
+        e.u32_set_k(&mut tok_d, last, 0)?;
+        let mut pos_ctr = e.htod_i32(&[cache.pos as i32])?;
+        let mut pos_start_d = e.htod_i32(&[cache.pos as i32])?;
+        let acc0 = e.stream().alloc_zeros::<u32>(2)?;          // acc[0] = 0 -> counters +1
+        let mut ring = e.stream().alloc_zeros::<u32>(ring_cap)?;
+        let ptrs = crate::round_stream::kv_len_ptr_table(e, cache, Some(&pos_ctr))?;
+        for kvl in cache.kv.iter_mut().flatten() {
+            e.set_i32_one(&mut kvl.len_d, kvl.len as i32)?;
+        }
+        let ring_base = cache.pos;                             // baked into every capture
+
+        let mut graphs: std::collections::HashMap<
+            (usize, bool, bool),
+            (cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>),
+        > = Default::default();
+
+        let mut out: Vec<u32> = Vec::with_capacity(max_new);
+        let mut drained = 0usize;                              // tokens read off the ring
+
+        // hint law (round-graph): the arm-gating bound must sit on the SAME side of every
+        // crossover as the live lengths this capture serves, with the arms' own margins.
+        let hint_for = |pos: usize| -> usize {
+            if pos > win_main { pos + drain + 2 }
+            else if pos + 1 >= crate::fa512_min_tkv() { win_main.saturating_sub(2) }
+            else { crate::fa512_min_tkv().saturating_sub(5) }
+        };
+        let regime_key = |pos: usize| -> (usize, bool, bool) {
+            let rung = (pos + drain + 2).next_power_of_two().max(512);
+            (rung, pos > win_main, pos + 1 >= crate::fa512_min_tkv())
+        };
+        // the whole [pos, pos+n) stretch must share one regime for a captured replay run.
+        let stable_for = |pos: usize, n: usize| -> bool {
+            regime_key(pos) == regime_key(pos + n)
+                && (pos > win_main || pos + n + 2 < win_main)
+                && (pos + 1 >= crate::fa512_min_tkv()
+                    || pos + n + 2 < crate::fa512_min_tkv())
+        };
+
+        while out.len() < max_new {
+            let pos = cache.pos;
+            let hint = hint_for(pos);
+            let scr_ptr: *mut crate::hybrid_forward::VerifyStreamScratch = &mut scr;
+            let cache_ptr: *mut Cache = cache as *mut Cache;
+            let tok_ptr: *mut CudaSlice<u32> = &mut tok_d;
+            let ring_ptr: *mut CudaSlice<u32> = &mut ring;
+            let start_ptr: *mut CudaSlice<i32> = &mut pos_start_d;
+            let step = |e: &Engine| -> Result<(), Box<dyn std::error::Error>> {
+                // SAFETY: single-threaded body; raw pointers alias the outer &mut only here.
+                let (scr, cache, tok_d, ring, pos_start_d) = unsafe {
+                    (&mut *scr_ptr, &mut *cache_ptr, &mut *tok_ptr,
+                     &mut *ring_ptr, &mut *start_ptr) };
+                e.i32_copy_add(&pos_ctr, pos_start_d, 0)?;
+                let (vam, _hn) = self.gemma4_verify_t_am_stream(
+                    e, tok_d, 1, &pos_ctr, hint, cache, scr)?;
+                e.u32_copy(&vam, tok_d)?;
+                e.plain_tok_ring(&vam, pos_start_d, ring_base, ring)?;
+                e.spec_rollback_stream(&ptrs, pos_start_d, &acc0, 1, n_rows)?;
+                Ok(())
+            };
+
+            let n_left = max_new - out.len();
+            let burst = drain.min(n_left);
+            // BW24_G4PLAIN_EAGER=1: run the body eagerly every step (no capture/replay) —
+            // splits "body semantics wrong" from "replay mechanics wrong" (round-graph law).
+            let force_eager = std::env::var("BW24_G4PLAIN_EAGER").as_deref() == Ok("1");
+            let steps_done = if !force_eager && burst >= 4 && stable_for(pos, burst + 3) {
+                let key = regime_key(pos);
+                if !graphs.contains_key(&key) {
+                    // capture cost = 3 SERVED steps (2 warmups + the captured run itself):
+                    // the loop is self-feeding, so they are real tokens in the ring.
+                    let g = e.capture_graph_retained(step)?;
+                    graphs.insert(key, g);
+                    3
+                } else {
+                    let (g, _keep) = graphs.get(&key).unwrap();
+                    for _ in 0..burst { g.launch()?; }
+                    burst
+                }
+            } else {
+                step(e)?;                                     // eager fallback (same body)
+                1
+            };
+
+            // host mirrors + drain
+            cache.pos += steps_done;
+            for kvl in cache.kv.iter_mut().flatten() { kvl.len = cache.pos; }
+            e.stream().synchronize()?;
+            let ringh = e.dtoh_u32(&ring)?;
+            let total = cache.pos - ring_base;
+            while drained < total && out.len() < max_new {
+                let t = ringh[drained % ring_cap];
+                out.push(t);
+                drained += 1;
+                if eos.contains(&t) { return Ok(out); }
+            }
+        }
+        Ok(out)
+    }
+}
