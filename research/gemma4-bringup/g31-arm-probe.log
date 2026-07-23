@@ -14,3 +14,17 @@ prefill 1736 tok in 1.1996s = 1447.2 tok/s (pp1736)
       0.4      174,036,742        200    870,183.7    876,403.0    691,963   1,092,535     67,719.0  fa_prefill_w_bf16_p1                                                                                
 temp-post: 61
 == arm: w4
+prefill argmax=623  decode argmax=623  logit maxdiff=1.214e0  MATCH
+prefill 1736 tok in 1.2268s = 1415.1 tok/s (pp1736)
+      7.9    3,819,059,681      1,640  2,328,694.9  1,588,137.0    328,765  4,720,474  1,376,479.0  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      0.4      193,081,812        200    965,409.1    986,417.5    686,010  1,185,102     89,778.8  fa_prefill_w_bf16_p1                                                                                
+      0.3      154,375,999         40  3,859,400.0  3,872,375.0  3,207,109  4,409,755    302,808.4  fa_prefill_bf16_hd512_sp16w4                                                                        
+temp-post: 61
+== arm: hp
+prefill argmax=623  decode argmax=623  logit maxdiff=1.214e0  MATCH
+prefill 1736 tok in 1.1537s = 1504.7 tok/s (pp1736)
+      7.5    3,567,584,484      1,640  2,175,356.4  1,474,036.0    315,070  4,335,580  1,282,114.1  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      0.4      178,680,795        200    893,404.0    907,106.5    689,882  1,090,422     66,574.6  fa_prefill_w_bf16_p1                                                                                
+      0.2      118,925,423         40  2,973,135.6  2,996,483.5  2,594,506  3,514,883    203,243.0  fa_prefill_bf16_hd512_sp16h2                                                                        
+temp-post: 61
+PROBE COMPLETE Thu Jul 23 01:14:04 AM UTC 2026
