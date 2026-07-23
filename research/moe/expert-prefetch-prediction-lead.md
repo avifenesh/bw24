@@ -1,7 +1,9 @@
 # Lead: prediction-guided expert prefetch (unworked, candidate lever for the 4.6 → 10 tok/s climb)
 
-Status: lead only — nothing implemented, nothing measured on our box. Left by the owner after an
-external-paper review on 2026-07-21.
+Status: CLOSED NEGATIVE (2026-07-23) — built and measured through three A/B arms; see
+`expert-prefetch-prediction-pilot.md` for the receipts. The router-signal window is too short
+to move MB-scale weights and the long-lead window carries no signal (lead-time/precision
+scissors), on top of a measured concurrent-DMA compute tax. Machinery retained env-off.
 
 ## The idea
 

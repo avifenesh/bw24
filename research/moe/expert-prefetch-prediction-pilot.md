@@ -50,3 +50,31 @@ Redesign targets before the next arm: a small prefetch ANNEX outside the LRU (sp
 entries never enter or evict the main cache; promoted on first demand hit), cross-token dedup
 with an in-annex/in-flight check, deep-half + score-margin gating, top-1 only, and a byte
 budget per token (~a quarter of demand io) so speculation can never dominate the bus.
+
+## Increments 3-4 and lane CLOSURE (2026-07-23)
+
+Annex redesign (speculation isolated from the main cache, cross-token dedup, deep-half gate,
+E-core-pinned predictor) A/B'd twice more (pf3-*/pf4-* logs): still negative, and the
+decode-window demand counters never moved (RAM 15736/10691 in every arm — zero annex
+promotions despite 39 GB of completed speculative reads). Mechanism: a d=1-2 lookahead is
+~2.6-5 ms of lead, but a queued 2-4 MB O_DIRECT read under load takes tens of ms — demand
+beats every prefetch to its own expert, and the annex expires the late arrivals.
+
+The closing measurement is a lead-time/precision scissors, from the capture itself:
+
+| lead | non-resident precision |
+|---|---|
+| d=1-2 (2.6-5 ms — cannot beat read latency) | 55-75% (k>=64) |
+| d=16 (42 ms — beats read latency) | 10-34% |
+| d=24-32 (62-83 ms) | 10-17% |
+
+Prediction-guided expert prefetch on this box is therefore closed: the window where the
+router signal is strong is too short to move MB-scale weights, and the window long enough to
+move them carries no signal. This holds on top of the invariant fabric tax (speculative DMA
+inflates compute in every arm, 2.87 -> 3.4-12.6 s). The predictor/annex machinery stays in
+the tree env-off (correct, gated, bit-identical) as scaffolding. Resurrection bar: hardware
+with spare bus bandwidth relative to compute (desktop 5090 + faster DRAM/NVMe), KB-scale
+fetch granularity (sub-expert/projection-fragment storage), or a fundamentally better
+long-lead predictor (trained probe on deeper context, not the router cross-application).
+
+Per the lead's own protocol: negative result recorded, lead dropped.
