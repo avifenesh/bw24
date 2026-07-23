@@ -1,0 +1,18 @@
+build: 6ed959d8
+== 27B argmax (correct artifact)
+temp: 53  arm: argmax-27b
+prefill argmax=68  decode argmax=68  logit maxdiff=2.188e-1  MATCH
+== 27B run-spec
+temp: 63  arm: spec-27b
+
+[generate_spec K=7] 32 tok in 0.637s = 48.63 tok/s (1.05x vs generate; this run's prime 1.260s)
+  acceptance: 21/77 = 27.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 1.241s = 24.98 tok/s (0.54x vs generate; this run's prime 1.262s)
+  acceptance: 21/88 = 23.9%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+== gemma 31B MTP spec stream gate (BW24_SPEC=6, draft=MTP gguf)
+temp: 60  arm: g31-spec
+plain: 41.57 tok/s | spec: 101.33 tok/s (2.44x) | stream agreement 64/64
+PREMERGE2 COMPLETE Thu Jul 23 10:03:28 PM UTC 2026

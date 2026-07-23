@@ -1,114 +1,119 @@
 {
-  "updated": "2026-07-18",
-  "rig": "RTX 5090 Laptop",
-  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) — every win and every loss",
-  "plain_decode": {
-    "context": "tg128 at 512-token context, 2026-07-09 cold-start rebaseline (both engines same session)",
-    "rows": [
-      {
-        "model": "Qwen3.5-9B NVFP4 (GGUF)",
-        "bw24": 135.7,
-        "llama": 126.7
-      },
-      {
-        "model": "Qwen3.6-27B NVFP4 (GGUF)",
-        "bw24": 48.4,
-        "llama": 44.9
-      },
-      {
-        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-        "bw24": 178.2,
-        "llama": 167.8
-      }
-    ]
-  },
-  "speculative": {
-    "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt — rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
-    "rows": [
-      {
-        "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
-        "bw24": [
-          281.0,
-          211.7,
-          187.1
-        ],
-        "llama": [
-          122.2,
-          121.5,
-          117.7
-        ]
-      },
-      {
-        "model": "Qwen3.6-27B (K=3 + own-gen trimmed draft)",
-        "bw24": [
-          116.4,
-          101.2,
-          86.0
-        ],
-        "llama": [
-          91.7,
-          93.3,
-          81.5
-        ]
-      },
-      {
-        "model": "Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft)",
-        "bw24": [
-          280.6,
-          259.6,
-          258.0
-        ],
-        "llama": [
-          236.5,
-          174.6,
-          173.5
-        ]
-      }
-    ]
-  },
-  "bold_ratio_threshold": 1.05,
-  "plain_decode_depth": {
-    "context": "tg128 at 6257-token context (same session/hour-regime)",
-    "rows": [
-      {
-        "model": "Qwen3.5-9B NVFP4 (GGUF)",
-        "bw24": 127.2,
-        "llama": 120.0
-      },
-      {
-        "model": "Qwen3.6-27B NVFP4 (GGUF)",
-        "bw24": 45.9,
-        "llama": 43.0
-      },
-      {
-        "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
-        "bw24": 163.7,
-        "llama": 160.9
-      }
-    ]
-  },
-  "extra_card_rows": [
-    {
-      "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
-      "bw24": 199.7,
-      "llama": 187.6
-    },
-    {
-      "model": "Gemma-4 26B-A4B 1.7k ctx (K=6 MTP + trim)",
-      "bw24": 297.7,
-      "llama": 286.1,
-      "spec": true
-    },
-    {
-      "model": "Gemma-4 31B dense 1.7k ctx (K=6 MTP + trim)",
-      "bw24": 97.3,
-      "llama": 83.9,
-      "spec": true
-    },
-    {
-      "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
-      "bw24": 199.9,
-      "llama": 181.0
-    }
+ "updated": "2026-07-24",
+ "rig": "RTX 5090 Laptop",
+ "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
+ "plain_decode": {
+  "context": "tg128 at 512-token context, 2026-07-09 cold-start rebaseline (both engines same session)",
+  "rows": [
+   {
+    "model": "Qwen3.5-9B NVFP4 (GGUF)",
+    "bw24": 135.7,
+    "llama": 126.7
+   },
+   {
+    "model": "Qwen3.6-27B NVFP4 (GGUF)",
+    "bw24": 48.4,
+    "llama": 44.9
+   },
+   {
+    "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+    "bw24": 178.2,
+    "llama": 167.8
+   }
   ]
+ },
+ "speculative": {
+  "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
+  "rows": [
+   {
+    "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
+    "bw24": [
+     281.0,
+     211.7,
+     187.1
+    ],
+    "llama": [
+     122.2,
+     121.5,
+     117.7
+    ]
+   },
+   {
+    "model": "Qwen3.6-27B (K=3 + own-gen trimmed draft)",
+    "bw24": [
+     116.4,
+     101.2,
+     86.0
+    ],
+    "llama": [
+     91.7,
+     93.3,
+     81.5
+    ]
+   },
+   {
+    "model": "Qwen3.6-35B-A3B (K=2 + own-gen trimmed draft)",
+    "bw24": [
+     280.6,
+     259.6,
+     258.0
+    ],
+    "llama": [
+     236.5,
+     174.6,
+     173.5
+    ]
+   }
+  ]
+ },
+ "bold_ratio_threshold": 1.05,
+ "plain_decode_depth": {
+  "context": "tg128 at 6257-token context (same session/hour-regime)",
+  "rows": [
+   {
+    "model": "Qwen3.5-9B NVFP4 (GGUF)",
+    "bw24": 127.2,
+    "llama": 120.0
+   },
+   {
+    "model": "Qwen3.6-27B NVFP4 (GGUF)",
+    "bw24": 45.9,
+    "llama": 43.0
+   },
+   {
+    "model": "Qwen3.6-35B-A3B MoE (IQ4_XS)",
+    "bw24": 163.7,
+    "llama": 160.9
+   }
+  ]
+ },
+ "extra_card_rows": [
+  {
+   "model": "Gemma-4 12B QAT Q4_0 (GGUF)",
+   "bw24": 92.55,
+   "llama": 92.36
+  },
+  {
+   "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
+   "bw24": 199.7,
+   "llama": 187.6
+  },
+  {
+   "model": "Gemma-4 26B-A4B 1.7k ctx (K=6 MTP + trim)",
+   "bw24": 297.7,
+   "llama": 286.1,
+   "spec": true
+  },
+  {
+   "model": "Gemma-4 31B dense 1.7k ctx (K=6 MTP + trim)",
+   "bw24": 97.3,
+   "llama": 83.9,
+   "spec": true
+  },
+  {
+   "model": "Gemma-4 E4B QAT Q4_0 (GGUF)",
+   "bw24": 199.9,
+   "llama": 181.0
+  }
+ ]
 }
