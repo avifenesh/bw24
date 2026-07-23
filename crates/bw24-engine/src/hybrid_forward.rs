@@ -3674,7 +3674,9 @@ impl HybridModel {
             q: e.uninit(qmax)?, k: e.uninit(kvmax)?, v: e.uninit(kvmax)?,
             attn: e.uninit(qmax)?, o: e.uninit(n_embd)?,
             attn_out: e.uninit(n_embd)?, zsh: e.uninit(n_embd)?,
-            zq: e.alloc_i8_uninit(n_embd.max(1))?, zd: e.uninit((n_embd / 32).max(1))?,
+            // zq/zd feed the wo matvec (nh*hd rows — 4096 on hd512 globals > n_embd),
+            // the ffn entry (n_embd) and the lm_head (n_embd): size for the max.
+            zq: e.alloc_i8_uninit(n_embd.max(qmax))?, zd: e.uninit(n_embd.max(qmax) / 32)?,
             gate: e.uninit(ffmax)?, up: e.uninit(ffmax)?,
             act: e.uninit(ffmax)?, actq: e.alloc_i8_uninit(ffmax)?, actd: e.uninit(ffmax / 32)?,
             f0: e.uninit(n_embd)?, sn: e.uninit(n_embd)?,
