@@ -1,0 +1,47 @@
+== kernel-check NAKED (door defaults on)
+fa_prefill_w bf16-stage T=64: SKIPPED (hp door numeric class)
+fa_prefill_w bf16-stage T=100: SKIPPED (hp door numeric class)
+ALL GREEN: kernels match CPU reference.
+== argmax NAKED all 4
+-- gemma-4-12b-it-qat-q4_0.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+-- gemma-4-31B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+-- gemma-4-26B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=3.502e0  MATCH
+-- gemma-4-E4B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=7.589e-1  MATCH
+== board pairs (naked bw24 vs llama, N=3, per-arm cooldowns)
+== model: gemma-4-12b-it-qat-q4_0.gguf
+temp: 61  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3943.99 ± 158.29 |
+temp: 57  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4196s = 4137.4 tok/s (pp1736)
+temp: 59  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3948.53 ± 162.69 |
+temp: 57  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4200s = 4133.5 tok/s (pp1736)
+temp: 59  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3942.55 ± 169.01 |
+temp: 57  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=2.377e0  MATCH
+prefill 1736 tok in 0.4205s = 4128.0 tok/s (pp1736)
+== model: gemma-4-31B_q4_0-it.gguf
+temp: 59  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1555.00 ± 0.50 |
+temp: 57  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1420s = 1520.1 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1551.97 ± 0.06 |
+temp: 58  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1408s = 1521.7 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1551.73 ± 1.18 |
+temp: 58  plimit: 150.00W
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1414s = 1521.0 tok/s (pp1736)
+BATTERY V5 COMPLETE Thu Jul 23 02:34:08 AM UTC 2026
