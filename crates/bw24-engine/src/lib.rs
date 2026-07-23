@@ -851,12 +851,25 @@ impl Engine {
             assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl module load: {r:?}");
             m as usize
         });
+        // PDL wave-A: the mmvq kernels live in the qmatvec fatbin, not kernels.cu — second
+        // duplicate module, loaded lazily on the first kernels-module miss.
+        static QMODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let mut fns = FNS.lock().unwrap();
         let map = fns.get_or_insert_with(Default::default);
         if let Some(&f) = map.get(name) { return Ok(f as cu::CUfunction); }
         let cname = std::ffi::CString::new(name)?;
         let mut f: cu::CUfunction = std::ptr::null_mut();
-        let r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+        let mut r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+        if r == cu::CUresult::CUDA_ERROR_NOT_FOUND {
+            let qmodule = *QMODULE.get_or_init(|| {
+                let bytes = std::fs::read(env!("BW24_QMATVEC_FATBIN")).expect("qmatvec fatbin");
+                let mut m: cu::CUmodule = std::ptr::null_mut();
+                let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+                assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl qmatvec module load: {r:?}");
+                m as usize
+            });
+            r = unsafe { cu::cuModuleGetFunction(&mut f, qmodule as cu::CUmodule, cname.as_ptr()) };
+        }
         if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func {name}: {r:?}").into()); }
         map.insert(name, f as usize);
         Ok(f)
@@ -4638,6 +4651,32 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
+        // PDL wave-A (2026-07-23): the mr1 kernel carries BW24_PDL_ENTRY; only that
+        // variant may take the programmatic-serialization launch.
+        if mr1 && Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
+            let (p2, _g2) = b2.device_ptr(s); let (paq, _g3) = aq.device_ptr(s);
+            let (pad, _g4) = ad.device_ptr(s);
+            let (py0, _g5) = y0.device_ptr_mut(s); let (py1, _g6) = y1.device_ptr_mut(s);
+            let (py2, _g7) = y2.device_ptr_mut(s);
+            let mut ps = [
+                &p0 as *const _ as *mut std::ffi::c_void, &p1 as *const _ as *mut _,
+                &p2 as *const _ as *mut _, &paq as *const _ as *mut _,
+                &pad as *const _ as *mut _, &py0 as *const _ as *mut _,
+                &py1 as *const _ as *mut _, &py2 as *const _ as *mut _,
+                &inf as *const _ as *mut _, &oo0 as *const _ as *mut _,
+                &oo1 as *const _ as *mut _, &oo2 as *const _ as *mut _,
+                &r0 as *const _ as *mut _, &r1 as *const _ as *mut _,
+                &r2 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("qmatvec_q4_0_mmvq_fused3_mr1_rp",
+                                     (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
+            }
+            return Ok(Some((y0, y1, y2)));
+        }
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1).arg(&mut y2)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
@@ -4692,6 +4731,29 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
+        // PDL wave-A: identical to the owned twin (capture-lane parity).
+        if mr1 && Self::pdl_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
+            let (p2, _g2) = b2.device_ptr(s); let (paq, _g3) = aq.device_ptr(s);
+            let (pad, _g4) = ad.device_ptr(s);
+            let (py0, _g5) = y0.device_ptr_mut(s); let (py1, _g6) = y1.device_ptr_mut(s);
+            let (py2, _g7) = y2.device_ptr_mut(s);
+            let mut ps = [
+                &p0 as *const _ as *mut std::ffi::c_void, &p1 as *const _ as *mut _,
+                &p2 as *const _ as *mut _, &paq as *const _ as *mut _,
+                &pad as *const _ as *mut _, &py0 as *const _ as *mut _,
+                &py1 as *const _ as *mut _, &py2 as *const _ as *mut _,
+                &inf as *const _ as *mut _, &oo0 as *const _ as *mut _,
+                &oo1 as *const _ as *mut _, &oo2 as *const _ as *mut _,
+                &r0 as *const _ as *mut _, &r1 as *const _ as *mut _,
+                &r2 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("qmatvec_q4_0_mmvq_fused3_mr1_rp",
+                                     (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
+            return Ok(true);
+        }
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(b0).arg(b1).arg(b2).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1).arg(&mut *y2)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&oo2).arg(&r0).arg(&r1).arg(&r2);
@@ -4741,6 +4803,27 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
+        // PDL wave-A: mr1 kernel carries BW24_PDL_ENTRY.
+        if mr1 && Self::pdl_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
+            let (paq, _g2) = aq.device_ptr(s); let (pad, _g3) = ad.device_ptr(s);
+            let (py0, _g4) = y0.device_ptr_mut(s); let (py1, _g5) = y1.device_ptr_mut(s);
+            let mut ps = [
+                &p0 as *const _ as *mut std::ffi::c_void, &p1 as *const _ as *mut _,
+                &paq as *const _ as *mut _, &pad as *const _ as *mut _,
+                &py0 as *const _ as *mut _, &py1 as *const _ as *mut _,
+                &inf as *const _ as *mut _, &oo0 as *const _ as *mut _,
+                &oo1 as *const _ as *mut _, &r0 as *const _ as *mut _,
+                &r1 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("qmatvec_q4_0_mmvq_fused2_mr1_rp",
+                                     (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
+            }
+            return Ok(Some((y0, y1)));
+        }
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut y0).arg(&mut y1)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
@@ -4788,6 +4871,25 @@ impl Engine {
         let inf = w0.in_features() as i32;
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
+        // PDL wave-A: identical to the owned twin (capture-lane parity).
+        if mr1 && Self::pdl_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
+            let (paq, _g2) = aq.device_ptr(s); let (pad, _g3) = ad.device_ptr(s);
+            let (py0, _g4) = y0.device_ptr_mut(s); let (py1, _g5) = y1.device_ptr_mut(s);
+            let mut ps = [
+                &p0 as *const _ as *mut std::ffi::c_void, &p1 as *const _ as *mut _,
+                &paq as *const _ as *mut _, &pad as *const _ as *mut _,
+                &py0 as *const _ as *mut _, &py1 as *const _ as *mut _,
+                &inf as *const _ as *mut _, &oo0 as *const _ as *mut _,
+                &oo1 as *const _ as *mut _, &r0 as *const _ as *mut _,
+                &r1 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("qmatvec_q4_0_mmvq_fused2_mr1_rp",
+                                     (grid, 1, 1), (32, rpb, 1), &mut ps)?; }
+            return Ok(true);
+        }
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(b0).arg(b1).arg(aq).arg(ad).arg(&mut *y0).arg(&mut *y1)
          .arg(&inf).arg(&oo0).arg(&oo1).arg(&r0).arg(&r1);
@@ -5210,6 +5312,25 @@ impl Engine {
         if qtype == QT_NVFP4 || qtype == QT_F8_E4M3 {
             b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
             unsafe { b.launch(cfg)?; }
+        } else if Self::pdl_on()
+            && matches!(name, "qmatvec_q4_0_mmvq_rp" | "qmatvec_q6_K_mmvq") {
+            // PDL wave-A (2026-07-23): the two decode-hot single-matvec kernels carry
+            // BW24_PDL_ENTRY — grid launches while the producer drains. ONLY the marked
+            // names may take this launch (unmarked kernels would read unordered).
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pw, _g0) = bytes.device_ptr(s); let (paq, _g1) = aq.device_ptr(s);
+            let (pad, _g2) = ad.device_ptr(s); let (py, _g3) = y.device_ptr_mut(s);
+            let mut ps = [
+                &pw as *const _ as *mut std::ffi::c_void, &paq as *const _ as *mut _,
+                &pad as *const _ as *mut _, &py as *const _ as *mut _,
+                &inf as *const _ as *mut _, &outf as *const _ as *mut _,
+                &mi as *const _ as *mut _, &rb as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl(name, cfg.grid_dim, cfg.block_dim, &mut ps)?; }
+            }
+            if scale != 1.0 { self.scale_inplace(y, scale, m * out_f)?; }
         } else {
             b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
             unsafe { b.launch(cfg)?; }

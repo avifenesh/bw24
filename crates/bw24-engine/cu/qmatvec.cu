@@ -10,6 +10,16 @@
 #include <cuda_fp8.h>
 #include <cstdint>
 
+// PDL entry (same contract as kernels.cu): cudaGridDependencySynchronize() orders this
+// kernel's loads after the producer's writes while the grid launch overlaps the producer's
+// drain. ONLY kernels carrying this macro may be launched with
+// CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION. sm_90+ only.
+#if !defined(BW24_PORTABLE_CUDA) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#define BW24_PDL_ENTRY() cudaGridDependencySynchronize()
+#else
+#define BW24_PDL_ENTRY()
+#endif
+
 __device__ __forceinline__ float half_to_float(uint16_t h) {
     return __half2float(*reinterpret_cast<const __half*>(&h));
 }
@@ -1008,6 +1018,7 @@ extern "C" __global__ void qmatvec_q6_K_mmvq(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
+    BW24_PDL_ENTRY();
     int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
     int t = blockIdx.y;
     if (o >= out_f || t >= m) return;
@@ -6566,6 +6577,7 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_rp(
         const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
         const float* __restrict__ ad, float* __restrict__ y,
         int in_f, int out_f, int m, long row_bytes) {
+    BW24_PDL_ENTRY();
     q4_0_mmvq_row1_rp(W, aq, ad, y, in_f, out_f, m, row_bytes,
                       blockIdx.x * BW24_MMVQ_ROWS + (int)threadIdx.y, blockIdx.y);
 }
@@ -7313,6 +7325,7 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused2_mr1_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1,
         int in_f, int out0, int out1, long rb0, long rb1) {
+    BW24_PDL_ENTRY();
     const int rpb = (int)blockDim.y;
     int nb0 = (out0 + rpb - 1) / rpb;
     int nb1 = (out1 + rpb - 1) / rpb;
@@ -7334,6 +7347,7 @@ extern "C" __global__ void qmatvec_q4_0_mmvq_fused3_mr1_rp(
         const signed char* __restrict__ aq, const float* __restrict__ ad,
         float* __restrict__ y0, float* __restrict__ y1, float* __restrict__ y2,
         int in_f, int out0, int out1, int out2, long rb0, long rb1, long rb2) {
+    BW24_PDL_ENTRY();
     const int rpb = (int)blockDim.y;
     int nb0 = (out0 + rpb - 1) / rpb;
     int nb1 = (out1 + rpb - 1) / rpb;
