@@ -1105,6 +1105,66 @@ float dot_quantized_row(
     return result;
 }
 
+// Multi-row dot: decode each weight group ONCE and evaluate it against m_r activation rows —
+// the weight-decode ALU (the dominant per-element cost, P0 receipts) amortizes across rows.
+// Per-row accumulation order is identical to the single-row path (group-ascending, same
+// scale expressions), so each row's result matches dot_quantized_row bit-for-bit for the
+// fused formats. Formats without a fused multi path fall back to per-row dots (correct, no
+// amortization).
+void dot_row_multi(
+        std::int32_t qtype,
+        const std::uint8_t * weights,
+        const QuantizedActivation * const * activations,
+        float * results,
+        int m_r,
+        int count) {
+#if defined(__AVXVNNI__) && defined(__AVX2__)
+    if (qtype == QT_Q2_K) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 84;
+            const std::uint8_t * scales = block;
+            const std::uint8_t * quants = block + 16;
+            const float d = fp16_to_f32(read_u16(block + 80));
+            const float dmin = fp16_to_f32(read_u16(block + 82));
+            for (int half = 0; half < 2; ++half) {
+                const __m256i packed = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(quants + half * 32));
+                for (int pair = 0; pair < 4; ++pair) {
+                    const int group = half * 8 + pair * 2;
+                    const __m256i decoded = _mm256_and_si256(
+                        _mm256_srli_epi16(packed, pair * 2), _mm256_set1_epi8(3));
+                    for (int r = 0; r < m_r; ++r) {
+                        const auto & activation = *activations[r];
+                        const auto integer_dots = dot_i8_16_pair(
+                            decoded,
+                            activation.blocks[static_cast<std::size_t>(
+                                superblock * 16 + group)],
+                            activation.blocks[static_cast<std::size_t>(
+                                superblock * 16 + group + 1)]);
+                        for (int lane = 0; lane < 2; ++lane) {
+                            const int current = group + lane;
+                            const auto & input = activation.blocks[
+                                static_cast<std::size_t>(superblock * 16 + current)];
+                            results[r] += input.scale * (
+                                d * static_cast<float>(scales[current] & 15)
+                                    * integer_dots[lane]
+                                - dmin * static_cast<float>(scales[current] >> 4)
+                                    * input.sum);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+#endif
+    for (int r = 0; r < m_r; ++r) {
+        results[r] = dot_quantized_row(qtype, weights, *activations[r], count);
+    }
+}
+
 float dot_row_native(
         std::int32_t qtype,
         const std::uint8_t * weights,
@@ -2524,6 +2584,143 @@ extern "C" int bw24_cpu_moe_token_v2(
         std::size_t error_capacity) {
     return bw24_cpu_moe_token_impl(
         experts, expert_count, input, output, threads, error, error_capacity);
+}
+
+// Lane-3 M3: one EXPERT evaluated for m_r activation rows in a single call. The weight
+// bytes stream through the caches once and each weight-row's decode is amortized across all
+// rows (dot_row_multi). Outputs are per-row down-projections scaled by that row's route
+// weight; the caller owns cross-expert accumulation order. Cache/read behavior matches the
+// single-row path (same prepare_projection, same pipelined-or-serial read policy).
+extern "C" std::int32_t bw24_cpu_expert_rows_v2(
+        const bw24_cpu_expert_v2 * expert,
+        const float * inputs,
+        std::int32_t m_r,
+        const float * route_weights,
+        float * outputs,
+        std::int32_t threads,
+        char * error,
+        std::size_t error_capacity) try {
+    if (expert == nullptr || inputs == nullptr || outputs == nullptr
+        || route_weights == nullptr || m_r <= 0 || m_r > 64 || threads <= 0) {
+        throw std::runtime_error("invalid CPU expert rows invocation (m_r must be 1..=64)");
+    }
+    for (const auto * projection : { &expert->gate, &expert->up, &expert->down }) {
+        if (projection->qtype == QT_F32 || projection->qtype == QT_BF16) {
+            throw std::runtime_error("CPU expert rows path serves quantized experts only");
+        }
+    }
+    auto & profile = cpu_profile();
+    const auto prepare_start = std::chrono::steady_clock::now();
+    const int n_embd = expert->gate.in_features;
+    const int n_ff = expert->gate.out_features;
+    if (n_embd <= 0 || n_ff <= 0 || n_embd % 16 != 0 || n_ff % 16 != 0) {
+        throw std::runtime_error("CPU expert dimensions must be positive multiples of 16");
+    }
+    ExpertRuntime work;
+    work.gate = prepare_projection(expert->gate);
+    work.up = prepare_projection(expert->up);
+    work.down = prepare_projection(expert->down);
+    omp_set_dynamic(0);
+    omp_set_num_threads(threads);
+    std::vector<ProjectionRuntime *> projections {
+        &work.gate, &work.up, &work.down,
+    };
+    profile.prepare_ns.fetch_add(elapsed_ns(prepare_start), std::memory_order_relaxed);
+    load_projection_weights(projections, io_thread_count(threads));
+
+    const auto compute_start = std::chrono::steady_clock::now();
+    const std::size_t rows = static_cast<std::size_t>(m_r);
+    std::vector<QuantizedActivation> input_activations(rows);
+    for (std::size_t r = 0; r < rows; ++r) {
+        input_activations[r].prepare(n_embd);
+        if (!input_activations[r].quantize(inputs + r * n_embd, n_embd)) {
+            throw std::runtime_error("non-finite bw24 CPU expert rows input activation");
+        }
+    }
+    std::vector<const QuantizedActivation *> input_ptrs(rows);
+    for (std::size_t r = 0; r < rows; ++r) input_ptrs[r] = &input_activations[r];
+    std::vector<float> gate_out(rows * n_ff);
+    std::vector<float> up_out(rows * n_ff);
+    std::vector<float> act(rows * n_ff);
+    std::vector<std::uint8_t> act_finite(rows, 1);
+    std::vector<QuantizedActivation> act_q8(rows);
+    for (auto & a : act_q8) a.prepare(n_ff);
+    std::vector<float> down_out(rows * static_cast<std::size_t>(n_embd));
+#pragma omp parallel
+    {
+        // gate+up: one task per (projection, weight-row); decode amortized across m_r rows.
+#pragma omp for schedule(dynamic, 8)
+        for (int task = 0; task < 2 * n_ff; ++task) {
+            const bool is_up = task >= n_ff;
+            const int out_row = is_up ? task - n_ff : task;
+            const auto & projection = is_up ? work.up : work.gate;
+            const auto & desc = *projection.desc;
+            std::array<float, 64> local {};
+            dot_row_multi(
+                desc.qtype,
+                projection.weights + desc.row_bytes * static_cast<std::size_t>(out_row),
+                input_ptrs.data(),
+                local.data(),
+                m_r,
+                n_embd);
+            auto * destination = (is_up ? up_out.data() : gate_out.data());
+            for (std::size_t r = 0; r < rows; ++r) {
+                destination[r * n_ff + out_row] = local[r];
+            }
+        }
+#pragma omp for schedule(static)
+        for (int index = 0; index < static_cast<int>(rows) * n_ff; ++index) {
+            const std::size_t r = static_cast<std::size_t>(index) / n_ff;
+            const int column = index % n_ff;
+            const float gate = gate_out[r * n_ff + column] * expert->gate.scale;
+            const float up = up_out[r * n_ff + column] * expert->up.scale;
+            act[r * n_ff + column] = (gate / (1.0f + std::exp(-gate))) * up;
+        }
+#pragma omp for schedule(static)
+        for (int r = 0; r < m_r; ++r) {
+            const std::size_t row = static_cast<std::size_t>(r);
+            act_finite[row] = static_cast<std::uint8_t>(
+                act_q8[row].quantize(act.data() + row * n_ff, n_ff));
+        }
+#pragma omp for schedule(dynamic, 8)
+        for (int out_row = 0; out_row < n_embd; ++out_row) {
+            const auto & desc = *work.down.desc;
+            std::array<const QuantizedActivation *, 64> ptrs {};
+            for (std::size_t r = 0; r < rows; ++r) ptrs[r] = &act_q8[r];
+            std::array<float, 64> local {};
+            dot_row_multi(
+                desc.qtype,
+                work.down.weights + desc.row_bytes * static_cast<std::size_t>(out_row),
+                ptrs.data(),
+                local.data(),
+                m_r,
+                n_ff);
+            for (std::size_t r = 0; r < rows; ++r) {
+                down_out[r * static_cast<std::size_t>(n_embd) + out_row] = local[r];
+            }
+        }
+#pragma omp for schedule(static)
+        for (int index = 0; index < static_cast<int>(rows) * n_embd; ++index) {
+            const std::size_t r = static_cast<std::size_t>(index) / n_embd;
+            const int column = index % n_embd;
+            outputs[r * static_cast<std::size_t>(n_embd) + column] =
+                down_out[r * static_cast<std::size_t>(n_embd) + column]
+                    * expert->down.scale * route_weights[r];
+        }
+    }
+    if (std::find(act_finite.begin(), act_finite.end(), 0) != act_finite.end()) {
+        throw std::runtime_error("non-finite bw24 CPU expert rows SwiGLU activation");
+    }
+    profile.compute_ns.fetch_add(elapsed_ns(compute_start), std::memory_order_relaxed);
+    profile.calls.fetch_add(1, std::memory_order_relaxed);
+    if (error != nullptr && error_capacity != 0) error[0] = '\0';
+    return 0;
+} catch (const std::exception & exception) {
+    copy_error(error, error_capacity, exception.what());
+    return 1;
+} catch (...) {
+    copy_error(error, error_capacity, "unknown CPU expert rows failure");
+    return 1;
 }
 
 // Detached speculative prefetch: reads the given projections into the RAM cache as cold

@@ -479,14 +479,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .collect()
         };
-        let run = |experts: &[Expert]| -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        let run_with_input = |experts: &[Expert],
+                              input: &[f32]|
+         -> Result<Vec<f32>, Box<dyn std::error::Error>> {
             let mut output = vec![f32::NAN; 256];
             let mut error = vec![0i8; 512];
             let status = unsafe {
                 moe(
                     experts.as_ptr(),
                     experts.len() as i32,
-                    smoke_input.as_ptr(),
+                    input.as_ptr(),
                     output.as_mut_ptr(),
                     8,
                     error.as_mut_ptr(),
@@ -499,6 +501,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(output)
         };
+        let run = |experts: &[Expert]| run_with_input(experts, &smoke_input);
         let memory_output = run(&build_experts(false))?;
         let file_experts = build_experts(true);
         let cold_output = run(&file_experts)?;
@@ -631,6 +634,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("detached prefetch (annex promote + bit-identity): PASS");
         } else {
             println!("detached prefetch: SKIP (symbol absent)");
+        }
+
+        // Multi-row expert path (optional symbol): rows_v2 over m_r activation rows must be
+        // bit-identical to m_r single-expert moe calls with the same route weights.
+        type RowsFn = unsafe extern "C" fn(
+            *const Expert, *const f32, i32, *const f32, *mut f32, i32, *mut i8, usize) -> i32;
+        let rows_fn: Option<RowsFn> = unsafe {
+            let symbol = libc::dlsym(handle, c"bw24_cpu_expert_rows_v2".as_ptr());
+            if symbol.is_null() { None } else { Some(std::mem::transmute(symbol)) }
+        };
+        if let Some(rows_fn) = rows_fn {
+            let mut rows_blobs: Vec<Vec<u8>> = Vec::new();
+            for projection_index in 0..3usize {
+                let mut row = gate_row.clone();
+                row[11] ^= 0x2b ^ (projection_index as u8);
+                rows_blobs.push(row.repeat(256));
+            }
+            let rows_scales = [0.5f32, 0.25, 0.75];
+            let expert = Expert {
+                gate: projection(rows_blobs[0].as_ptr(), -1, 0, rows_scales[0]),
+                up: projection(rows_blobs[1].as_ptr(), -1, 0, rows_scales[1]),
+                down: projection(rows_blobs[2].as_ptr(), -1, 0, rows_scales[2]),
+                route_weight: 0.0, // per-row weights come from the rows argument
+            };
+            let m_r = 3usize;
+            let mut inputs = Vec::with_capacity(m_r * 256);
+            for r in 0..m_r {
+                for i in 0..256 {
+                    inputs.push(0.01 * ((i as f32) * 0.07 + r as f32 * 0.3).sin());
+                }
+            }
+            let weights_r = [0.5f32, -0.25, 0.125];
+            let mut rows_out = vec![f32::NAN; m_r * 256];
+            let mut error = vec![0i8; 512];
+            let status = unsafe {
+                rows_fn(&expert, inputs.as_ptr(), m_r as i32, weights_r.as_ptr(),
+                        rows_out.as_mut_ptr(), 8, error.as_mut_ptr(), error.len())
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                return Err(format!("expert rows call failed: {message}").into());
+            }
+            for r in 0..m_r {
+                let single = Expert { route_weight: weights_r[r], ..expert };
+                let reference = run_with_input(
+                    std::slice::from_ref(&single),
+                    &inputs[r * 256..(r + 1) * 256],
+                )?;
+                for (index, (actual, expected)) in rows_out[r * 256..(r + 1) * 256]
+                    .iter()
+                    .zip(reference.iter())
+                    .enumerate()
+                {
+                    if actual.to_bits() != expected.to_bits() {
+                        return Err(format!(
+                            "expert rows row {r} output {index} not bit-identical: \
+                             expected={expected} actual={actual}"
+                        )
+                        .into());
+                    }
+                }
+            }
+            println!("multi-row expert path (decode-amortized, bit-identity): PASS");
+        } else {
+            println!("multi-row expert path: SKIP (symbol absent)");
         }
     }
 
