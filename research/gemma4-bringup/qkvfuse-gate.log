@@ -1,0 +1,27 @@
+temp: 55  plimit: 150.00W
+== kernel-check
+ALL GREEN: kernels match CPU reference.
+== argmax x4
+-- gemma-4-12b-it-qat-q4_0.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=2.438e0  MATCH
+-- gemma-4-31B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.091e0  MATCH
+-- gemma-4-26B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
+-- gemma-4-E4B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.107e0  MATCH
+== graph stream gate (slotted arm changed too)
+GRAPH-GATE: eager 88.51 tok/s | graph 84.95 tok/s | stream 96/96 IDENTICAL
+== tg128 pair 12B (llama then bw24, cooldowns)
+temp: 56
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.41 ± 0.64 |
+generated 128 tokens in 1.409s = 90.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 54
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.07 ± 0.20 |
+generated 128 tokens in 1.409s = 90.81 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 54
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.40 ± 0.22 |
+generated 128 tokens in 1.410s = 90.81 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+== tg128 31B single (fold applies there too)
+generated 128 tokens in 3.157s = 40.55 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.313s) [stop: MaxNew]
+QKVFUSE GATE COMPLETE Thu Jul 23 06:49:00 PM UTC 2026

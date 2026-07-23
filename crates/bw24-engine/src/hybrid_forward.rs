@@ -3540,12 +3540,14 @@ impl HybridModel {
         let mut q = e.uninit(nh * hd)?;
         let mut k = e.uninit(nkv * hd)?;
         let mut v = e.uninit(nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
+        // E4B wave-3 fold, m=1 completion (2026-07-23): the rows arms took this fold at
+        // 550fcfa5; the decode-step trio kept 2 launches/layer it doesn't need.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized(&k, &v, &mut kvl.k, &mut kvl.v, kvl.len,
                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
@@ -3783,12 +3785,14 @@ impl HybridModel {
                 e.copy_into(&mut sl.v0, 0, k0r, nkv * hd)?;
             }
         }
-        e.rms_norm_qkv(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                       &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv, eps)?;
+        // E4B wave-3 fold, m=1 completion (2026-07-23) — MUST mirror the dc_into arm
+        // kernel-for-kernel (graph stream-identity gate).
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut sl.q, &mut sl.k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized_dc(&sl.k, &sl.v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
@@ -3913,12 +3917,13 @@ impl HybridModel {
         let mut q = e.uninit(nh * hd)?;
         let mut k = e.uninit(nkv * hd)?;
         let mut v = e.uninit(nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh, nkv, eps)?;
+        // E4B wave-3 fold, m=1 completion (2026-07-23): mirrored by the slotted arm.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, 1, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
