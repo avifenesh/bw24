@@ -823,7 +823,8 @@ extern "C" __global__ void rms_norm_qkv_w4b_f32(const float* __restrict__ q, con
                                                float* __restrict__ dq, float* __restrict__ dk,
                                                float* __restrict__ dv,
                                                __nv_bfloat16* __restrict__ dvb,
-                                               int ncols, int rq, int rk, int rv, float eps) {
+                                               int ncols, int rq, int rk, int rv, float eps,
+                                               int vf16) {
     const int row  = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     const int lane = threadIdx.x & 31;
     if (row >= rq + rk + rv) return;
@@ -851,8 +852,14 @@ extern "C" __global__ void rms_norm_qkv_w4b_f32(const float* __restrict__ q, con
         ov.z = xv.z * scale * wv4.z; ov.w = xv.w * scale * wv4.w;
         d4[i] = ov;
         if (db) {
-            db[4*i+0] = __float2bfloat16(ov.x); db[4*i+1] = __float2bfloat16(ov.y);
-            db[4*i+2] = __float2bfloat16(ov.z); db[4*i+3] = __float2bfloat16(ov.w);
+            if (vf16) {   // f16-P/V door: V operand consumed as __half by the h2/sp16 stamps
+                __half* dh = (__half*)db;
+                dh[4*i+0] = __float2half(ov.x); dh[4*i+1] = __float2half(ov.y);
+                dh[4*i+2] = __float2half(ov.z); dh[4*i+3] = __float2half(ov.w);
+            } else {
+                db[4*i+0] = __float2bfloat16(ov.x); db[4*i+1] = __float2bfloat16(ov.y);
+                db[4*i+2] = __float2bfloat16(ov.z); db[4*i+3] = __float2bfloat16(ov.w);
+            }
         }
     }
 }
