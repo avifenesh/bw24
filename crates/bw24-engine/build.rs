@@ -10,9 +10,11 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
     println!("cargo:rustc-check-cfg=cfg(bw24_cutlass)");
     let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
-    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "89"),
-            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), or 89 (portable eval)");
-    let portable = cuda_arch == "89";
+    assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "90a" | "89"),
+            "BW24_CUDA_ARCH must be 120a (default), 100a (B200), 90a (Hopper boot), or 89 (portable eval)");
+    // Hopper boot arch rides the portable-CUDA correctness path: sm_90a SASS, no
+    // sm_120a/sm_100a MMA kinds. Tuned wgmma paths are a separate later lane.
+    let portable = matches!(cuda_arch.as_str(), "89" | "90a");
     assert!(!(cuda_arch != "120a" && std::env::var_os("BW24_CUTLASS").is_some()),
             "BW24_CUTLASS is sm_120a-only and cannot be enabled for this CUDA architecture");
     let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
