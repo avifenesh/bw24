@@ -177,3 +177,17 @@ Single-stream 10 tok/s on this laptop with this artifact is, on current evidence
 reachable by runtime work alone: every mechanism is either measured flat or measured
 negative with the mechanism identified. ~5.0-5.2 is the defensible ceiling of the present
 configuration (band 4.7-4.9 + the small unbanked kernels tail).
+
+## Gated-MTP verdict (2026-07-23, owner criteria: K>2, high do-nothing threshold, acceptance >0.80)
+
+Confidence gating (BW24_SPEC_PMIN 0.5-0.85, PMIN0=1, K=3-4) raises attempted-acceptance from
+48-63% to 74-87% exactly as intended, and short NGEN=32 windows showed 1.04-1.11x. The N=3
+NGEN=64 confirmation reverts to 0.93-0.97x with acceptance stable at 74-77% — under the 0.80
+bar. The mechanism is head-quality-bound, not gating-bound: at PMIN 0.8 most steps are
+already do-nothing (22 proposals per 64 tokens) and the surviving highest-confidence
+proposals still mispredict ~23%, each misprediction paying the expert-io multiple. Raw logs:
+`evidence/local-5090-next3-20260722/mtp-gated-*.log`, `mtp-conf-*.log`.
+
+Verdict: the Hy3 layer-80 MTP head is unfit for spec serving on this profile (owner's bar:
+0.80; measured gated ceiling: 0.77). Door for later: a trained draft head (EAGLE-class or
+head fine-tune) — artifact/training axis. Runtime-side spec work on this head is closed.

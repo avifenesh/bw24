@@ -1,0 +1,47 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 5103 slots in 5 classes, 13.88 GB / 13.88 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 5103 slots, 5103 resident blocks; 1584 complete experts, 79 one-projection fragments, 136 two-projection fragments (351 stranded blocks)
+[moe-cache] freeze profile restored: 5285/5285 blocks restaged from /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=41.51 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+
+[generate]   31 tok in 8.920s = 3.48 tok/s (gen-only; this run's prime 18.070s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438, 503, 279, 1244, 16678, 47739, 4452, 289, 32215, 47739, 4452, 107669, 9875, 413, 1970, 58138, 9042, 45164, 41116, 503, 280, 244, 1970, 28462, 26367]
+[spec] host-row embedding: 525860864 bytes kept off HBM
+[spec-stats] rounds=24 full_accept=23 len_hist=[17, 6, 1, 0, 0] per_slot=[6/7=0.857 1/1=1.000 0/0 0/0] total=7/8=0.875 tok_per_round=1.292
+[spec-phase] draft=1219.5ms (14.8%) verify-issue=7012.5ms (85.0%) verify-wait=15.7ms (0.2%) commit-host=2.4ms (0.0%) rounds=24
+
+[generate_spec K=4] 32 tok in 8.611s = 3.60 tok/s (1.04x vs generate; this run's prime 11.940s)
+  acceptance: 7/8 = 87.5%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+[bw24-cpu-cache] hits=97593 misses=62628 hit_rate=60.91% read_GB=165.564 resident_GB=21.475
+[bw24-cpu-profile] calls=12121 prepare=0.459073s io=18.373595s insert=0.061077s compute=23.166214s read_projections=62628 read_GB=165.564 stage_entry=0.462596s stage_cached=19.760262s stage_missing=1.362788s stage_accum=0.330079s prefetch_projections=0 prefetch_GB=0.000
+	Command being timed: "env BW24_NGEN=32 BW24_SPEC_K=4 BW24_SPEC_STATS=1 BW24_SPEC_PHASE=1 BW24_SPEC_PMIN=0.85 BW24_SPEC_PMIN0=1 BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/hy3-freeze-profile.txt BW24_PROMPT=Explain how CPU and GPU parallelism can hide NVMe spill latency in a large mixture-of-experts model, including cache and prefetch tradeoffs. tools/run_hy3_local_5090.sh /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-root-mirror/inode-alternates.tsv"
+	User time (seconds): 281.97
+	System time (seconds): 44.73
+	Percent of CPU this job got: 118%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 4:35.14
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 47767748
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3510163
+	Minor (reclaiming a frame) page faults: 16411470
+	Voluntary context switches: 4812594
+	Involuntary context switches: 9752
+	Swaps: 0
+	File system inputs: 369515208
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
