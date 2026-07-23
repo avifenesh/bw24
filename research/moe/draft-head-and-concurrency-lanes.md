@@ -65,3 +65,21 @@ Increments (each battery-gated):
   curve.
 - **M3**: companion ABI v3 multi-row-per-expert + GPU grouped dispatch across streams.
 - **M4**: m=4/8 scaling, serve loop, per-stream latency reporting.
+
+## M1 first gate (2026-07-23, lockstep-m*.log)
+
+`decode_step_lockstep` + `run_lockstep`: per-stream math is `decode_step_h`'s; the harness
+gate requires all streams (same prompt) to emit identical tokens — PASS at m=1/2/4.
+
+| m | aggregate | per stream | whole-run cache hit rate |
+|---|---:|---:|---:|
+| 1 | 4.44 | 4.44 | 58.6% |
+| 2 | **6.10 (+37%)** | 3.05 | 67.4% |
+| 4 | 2.52 (COLLAPSE) | 0.63 | 72.0% |
+
+Cross-stream cache amortization works (hit rate climbs with m; m=2 beats the 1.12x overlap
+prediction because GPU-side residency adjacency stacks on top). The m=4 collapse is a
+per-step nonlinearity (step wall 328 ms -> 1590 ms), not RAM (RSS flat, zero swaps) —
+prime suspect is VRAM-edge pressure from 4 streams' recurrent states allocated after the
+0.90-frac expert slab sized itself; discriminator arms (m=4 at frac 0.85/0.80, m=3 at 0.90)
+in flight.

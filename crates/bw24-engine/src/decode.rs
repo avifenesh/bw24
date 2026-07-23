@@ -620,6 +620,117 @@ impl HybridModel {
         Ok((host, h_seed))
     }
 
+    /// LOCKSTEP MULTI-STREAM decode (lane-3 M1): m independent streams advance one token each
+    /// through a single per-layer walk. Per-stream math is identical to `decode_step_h` (same
+    /// fusion chain, same mixer and FFN calls against that stream's own `Cache`), so each
+    /// stream's token sequence is bit-identical to its single-stream run. The lockstep order
+    /// puts the m streams' layer-il MoE calls adjacent in time, so one stream's expert-cache
+    /// fill serves its siblings within the step — the measured cross-stream io amortization
+    /// (1.12x/1.32x/1.66x at m=2/4/8) lands without batching attention or the CPU ABI.
+    pub fn decode_step_lockstep(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        caches: &mut [Cache],
+    ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+        if tokens.len() != caches.len() || tokens.is_empty() {
+            return Err("lockstep needs one token per stream cache".into());
+        }
+        if self.cfg.gemma4.is_some() {
+            return Err("lockstep decode does not support the gemma4 paths".into());
+        }
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let m = tokens.len();
+
+        let mut pos_d = Vec::with_capacity(m);
+        let mut x: Vec<CudaSlice<f32>> = Vec::with_capacity(m);
+        for (s, &token) in tokens.iter().enumerate() {
+            pos_d.push(e.htod_i32(&[caches[s].pos as i32])?);
+            x.push(e.htod(&self.embd.gather(n_embd, &[token]))?);
+        }
+        let mut pending: Vec<Option<(CudaSlice<f32>, CudaSlice<f32>)>> =
+            (0..m).map(|_| None).collect();
+
+        for (il, layer) in self.layers.iter().enumerate() {
+            let anorm = layer.attn_norm.float_data();
+            let fuse = std::env::var("BW24_NO_FUSE_NORMQ").is_err()
+                && self.mixer_in_q8_1_fast(e, &layer.mixer);
+            for s in 0..m {
+                let pos = caches[s].pos;
+                let taken = pending[s].take();
+                let mixed = match (taken, fuse) {
+                    (Some((x1, f1)), true) => {
+                        let mut x2 = e.uninit(n_embd)?;
+                        let (hq, hd) =
+                            e.add_rms_norm_q8_1(&x1, &f1, anorm, &mut x2, n_embd, 1, eps)?;
+                        x[s] = x2;
+                        let h0 = e.zeros(0)?;
+                        match &layer.mixer {
+                            Mixer::Full(fa) => self.full_attn_decode_pre(
+                                e,
+                                fa,
+                                &h0,
+                                Some((&hq, &hd)),
+                                &pos_d[s],
+                                pos,
+                                &mut caches[s],
+                                il,
+                            )?,
+                            Mixer::Linear(la) => self.linear_attn_decode_pre(
+                                e,
+                                la,
+                                &h0,
+                                &hq,
+                                &hd,
+                                &mut caches[s],
+                                il,
+                                false,
+                            )?,
+                        }
+                    }
+                    (taken, _) => {
+                        if let Some((x1, f1)) = taken {
+                            let mut x2 = e.uninit(n_embd)?;
+                            e.add(&x1, &f1, &mut x2, n_embd)?;
+                            x[s] = x2;
+                        }
+                        self.attn_in_norm_mixer(
+                            e,
+                            layer,
+                            &x[s],
+                            &pos_d[s],
+                            pos,
+                            &mut caches[s],
+                            il,
+                            n_embd,
+                            eps,
+                        )?
+                    }
+                };
+                let (x1, ffn_out) =
+                    self.residual_norm_ffn(e, layer, &x[s], &mixed, n_embd, il, eps)?;
+                pending[s] = Some((x1, ffn_out));
+            }
+        }
+
+        let mut logits_host = Vec::with_capacity(m);
+        for s in 0..m {
+            if let Some((x1, f1)) = pending[s].take() {
+                let mut x2 = e.uninit(n_embd)?;
+                e.add(&x1, &f1, &mut x2, n_embd)?;
+                x[s] = x2;
+            }
+            let mut hn = e.uninit(n_embd)?;
+            e.rms_norm(&x[s], self.output_norm.float_data(), &mut hn, n_embd, 1, eps)?;
+            let logits = e.matmul(&self.output, &hn, 1)?;
+            logits_host.push(e.dtoh(&logits)?);
+            caches[s].pos += 1;
+        }
+        Ok(logits_host)
+    }
+
     /// DEVICE-COUNTER decode step (CUDA-GRAPH-PLAN Phase 2). A clone of `decode_step_h` that removes
     /// the two per-step VARYING host kernel-args by reading them from device counters:
     ///   1. the KV-append write slot  -> per-layer `kvl.len_d` (device i32[1])
