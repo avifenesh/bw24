@@ -425,7 +425,7 @@ impl ModelConfig {
     /// their wq out is exactly n_head*head_dim, and running the split would read 2x out of bounds.
     /// One predicate so every full-attn site (prefill/prime/decode/dc/spec) agrees.
     pub fn attn_out_gate(&self) -> bool {
-        self.m3.is_none() && self.hy3.is_none()
+        self.m3.is_none() && self.hy3.is_none() && self.gemma4.is_none()
     }
 
     /// DeepSeek-V3-class sigmoid routing knobs, arch-agnostic: `Some((scaling_factor, route_norm))`
