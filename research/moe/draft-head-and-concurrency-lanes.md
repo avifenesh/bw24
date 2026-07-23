@@ -171,3 +171,19 @@ per-stream CPU dispatch with the fabric-interference constraint the pipeline rec
 mapped. That is the next design problem, not a tuning knob. Method lesson recorded: the
 overlap simulation modeled sharing but not dispatch serialization; and same-prompt harness
 runs must never be promoted as serving numbers.
+
+## Executor-pool arms (2026-07-23 night, m2gate-ovl*.log) — cross-stream overlap works
+
+| arm (mixed prompts) | aggregate | vs serial-executor mixed |
+|---|---:|---|
+| m=2, 2 executors x 4 threads | **4.65** | 3.96 → **+17%** (parity with single-stream 4.74) |
+| m=3, 2x4 | 4.11 | 3.62 → +14% |
+| m=4, 2x4 | 3.95 | 3.50 → +13% |
+| m=3, 3x3 | 2.97 | worse — three 3-thread teams are too thin; 2 executors is the knee |
+
+Stream A's compute under stream B's reads is real and the fabric tax does not eat it at
+per-stream volume. Mixed serving is now at single-stream parity at m=2; the remaining gap is
+the in-call serial io (each call still reads-then-computes). This compounds with the
+tail-Q2_K requant (-22% miss bytes) — the io the executors serialize on shrinks by the same
+fraction. BW24_CPU_EXPERT_EXECUTORS default stays 1 (winners-only: parity is not a win);
+the serve-loop arm flips it when the compound clears the bar.

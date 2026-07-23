@@ -501,16 +501,32 @@ fn execute_token(job: CpuExpertJob) -> Result<Vec<f32>, String> {
 }
 
 fn start_executor() -> Result<CpuExecutor, String> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel::<CpuRequest>(1);
-    std::thread::Builder::new()
-        .name("bw24-cpu-executor".to_string())
-        .spawn(move || {
-            while let Ok(request) = receiver.recv() {
+    // BW24_CPU_EXPERT_EXECUTORS > 1 (lane-3 cross-stream overlap): several worker threads
+    // drain one queue, so stream A's expert compute runs under stream B's reads. Callers
+    // should split BW24_CPU_EXPERT_THREADS across executors (each companion call spawns its
+    // own OMP team). Default 1 = the established serial behavior.
+    let executors = std::env::var("BW24_CPU_EXPERT_EXECUTORS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&n| (1..=8).contains(&n))
+        .unwrap_or(1);
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<CpuRequest>(executors.max(1));
+    let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+    for index in 0..executors {
+        let receiver = std::sync::Arc::clone(&receiver);
+        std::thread::Builder::new()
+            .name(format!("bw24-cpu-executor-{index}"))
+            .spawn(move || loop {
+                let request = {
+                    let guard = receiver.lock().expect("cpu executor queue poisoned");
+                    guard.recv()
+                };
+                let Ok(request) = request else { return };
                 let result = execute(request.job);
                 let _ = request.reply.send(result);
-            }
-        })
-        .map_err(|error| format!("cannot start persistent CPU expert executor: {error}"))?;
+            })
+            .map_err(|error| format!("cannot start persistent CPU expert executor: {error}"))?;
+    }
     Ok(CpuExecutor { sender })
 }
 
