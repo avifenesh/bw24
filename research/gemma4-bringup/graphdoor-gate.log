@@ -1,5 +1,6 @@
-temp: 55
+temp: 52
 == stream gate (BW24_GRAPH_GATE=96)
- dc-eager: generated 128 tokens in 1.426s = 89.79 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
- dc-eager: generated 128 tokens in 1.424s = 89.89 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
-GRAPHDOOR GATE COMPLETE Thu Jul 23 03:34:42 PM UTC 2026
+GRAPH-GATE: eager 87.87 tok/s | graph 84.17 tok/s | stream 96/96 IDENTICAL
+ dc-eager: generated 128 tokens in 1.425s = 89.82 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
+ dc-eager: generated 128 tokens in 1.416s = 90.41 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+GRAPHDOOR GATE COMPLETE Thu Jul 23 03:41:05 PM UTC 2026

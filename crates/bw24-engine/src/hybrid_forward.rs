@@ -4030,7 +4030,12 @@ impl HybridModel {
         // Chunked replay ring: tokens park on-device; ONE drain sync per chunk. ring_base is
         // baked at the door entry (the modulo keeps every capture valid indefinitely).
         const RING: usize = 64;
-        const DRAIN: usize = 16;
+        // DRAIN pinned at 1 (2026-07-23): relaunching the SAME graph exec before its prior
+        // launch completes is ILLEGAL (chunk=4 -> ILLEGAL_ADDRESS; chunk=1 clean). Pipelining
+        // needs alternating exec instances — and the measured payoff was ~0 (the ~200us
+        // cuGraphLaunch host cost already overlaps its own launch's GPU work; llama pays
+        // 885us/launch the same way). BW24_GRAPH_DRAIN raises it only for experiments.
+        const DRAIN: usize = 1;
         let mut ring = e.stream().alloc_zeros::<u32>(RING)?;
         let ring_base = prompt_pos;
         let mut out = Vec::with_capacity(max_new);
@@ -4111,7 +4116,9 @@ impl HybridModel {
             // then ONE sync + ring drain. The chunk must stay inside this bucket key and
             // the budget; capture warmups already emitted their tokens through the ring.
             let mut chunk = 1usize;
-            while chunk < DRAIN && out.len() + chunk < max_new {
+            let drain_cap: usize = std::env::var("BW24_GRAPH_DRAIN").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(DRAIN);
+            while chunk < drain_cap && out.len() + chunk < max_new {
                 let t_next = cache.pos + 1 + chunk;
                 let key_s2 = if t_next > win { (true, usize::MAX) }
                              else { e.fa_bucket_key(t_next, hd_s, nkv_s, crate::Engine::wkv_on()) };
