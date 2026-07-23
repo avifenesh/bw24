@@ -73,6 +73,22 @@ pub(crate) struct CpuExpertJob {
     threads: i32,
 }
 
+/// Lane-3 M3: one EXPERT evaluated for several stream rows in a single companion call
+/// (bw24_cpu_expert_rows_v2 — weight decode amortized across rows). Output layout:
+/// [m_r, n_embd] per-row contributions with route weights applied.
+pub(crate) struct CpuRowsJob {
+    expert: OwnedExpert,
+    inputs: Vec<f32>,
+    route_weights: Vec<f32>,
+    output_features: usize,
+    threads: i32,
+}
+
+pub(crate) enum CpuJob {
+    Token(CpuExpertJob),
+    Rows(CpuRowsJob),
+}
+
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
 type MoeTokenFn = unsafe extern "C" fn(
     *const CpuExpertV2,
@@ -86,6 +102,16 @@ type MoeTokenFn = unsafe extern "C" fn(
 type CacheStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64);
 type ProfileStatsFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64);
 type PrefetchFn = unsafe extern "C" fn(*const CpuProjectionV2, i32, *mut i8, usize) -> i32;
+type RowsFn = unsafe extern "C" fn(
+    *const CpuExpertV2,
+    *const f32,
+    i32,
+    *const f32,
+    *mut f32,
+    i32,
+    *mut c_char,
+    usize,
+) -> i32;
 
 struct CpuBackend {
     // Kept open for process lifetime so the native bw24 function pointers remain valid.
@@ -95,6 +121,7 @@ struct CpuBackend {
     profile_stats: ProfileStatsFn,
     // Optional (added after ABI v2 shipped): absent in older companions, prefetch disabled.
     prefetch: Option<PrefetchFn>,
+    rows: Option<RowsFn>,
 }
 
 // The dlopen handle names process-global immutable code after initialization.
@@ -110,7 +137,7 @@ static GPU_RESIDENT_0: AtomicU64 = AtomicU64::new(0);
 static GPU_RESIDENT_1: AtomicU64 = AtomicU64::new(0);
 static GPU_RESIDENT_2: AtomicU64 = AtomicU64::new(0);
 struct CpuRequest {
-    job: CpuExpertJob,
+    job: CpuJob,
     reply: SyncSender<Result<Vec<f32>, String>>,
 }
 
@@ -211,12 +238,17 @@ fn load_backend_from_path(path: &std::ffi::OsStr) -> Result<CpuBackend, String> 
             path.to_string_lossy(),
             threads_from_env()?,
         );
+        let rows: Option<RowsFn> = load_symbol(handle, b"bw24_cpu_expert_rows_v2\0")
+            .ok()
+            // SAFETY: when present the companion exports this exact rows ABI signature.
+            .map(|symbol| unsafe { std::mem::transmute::<*mut c_void, RowsFn>(symbol) });
         Ok(CpuBackend {
             _handle: handle as usize,
             moe_token,
             cache_stats,
             profile_stats,
             prefetch,
+            rows,
         })
     })();
     if result.is_err() {
@@ -380,7 +412,55 @@ fn ffi_expert(expert: &OwnedExpert) -> CpuExpertV2 {
     }
 }
 
-fn execute(job: CpuExpertJob) -> Result<Vec<f32>, String> {
+fn execute(job: CpuJob) -> Result<Vec<f32>, String> {
+    match job {
+        CpuJob::Token(job) => execute_token(job),
+        CpuJob::Rows(job) => execute_rows(job),
+    }
+}
+
+fn execute_rows(job: CpuRowsJob) -> Result<Vec<f32>, String> {
+    let backend = backend()?;
+    let Some(rows_fn) = backend.rows else {
+        return Err("companion library lacks bw24_cpu_expert_rows_v2".to_string());
+    };
+    let expert = ffi_expert(&job.expert);
+    let m_r = job.route_weights.len();
+    let mut output = vec![0.0f32; m_r * job.output_features];
+    let mut error = vec![0i8; 1024];
+    let start = std::time::Instant::now();
+    // SAFETY: descriptors point into immutable model-owned bytes retained until the caller
+    // joins this job; spans match the descriptor dimensions and the stable rows ABI.
+    let status = unsafe {
+        rows_fn(
+            &expert,
+            job.inputs.as_ptr(),
+            m_r as i32,
+            job.route_weights.as_ptr(),
+            output.as_mut_ptr(),
+            job.threads,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    WALL_NS.fetch_add(
+        start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+        Ordering::Relaxed,
+    );
+    CALLS.fetch_add(1, Ordering::Relaxed);
+    EXPERTS.fetch_add(m_r as u64, Ordering::Relaxed);
+    if status != 0 {
+        if let Some(last) = error.last_mut() {
+            *last = 0;
+        }
+        // SAFETY: the fixed-size buffer contains at least the NUL written above.
+        let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+        return Err(format!("CPU expert rows backend failed: {message}"));
+    }
+    Ok(output)
+}
+
+fn execute_token(job: CpuExpertJob) -> Result<Vec<f32>, String> {
     let backend = backend()?;
     let experts: Vec<_> = job.experts.iter().map(ffi_expert).collect();
     let count =
@@ -442,6 +522,14 @@ fn executor() -> Result<&'static CpuExecutor, String> {
 }
 
 pub(crate) fn submit(job: CpuExpertJob) -> Result<CpuExpertTicket, String> {
+    submit_any(CpuJob::Token(job))
+}
+
+pub(crate) fn submit_rows(job: CpuRowsJob) -> Result<CpuExpertTicket, String> {
+    submit_any(CpuJob::Rows(job))
+}
+
+fn submit_any(job: CpuJob) -> Result<CpuExpertTicket, String> {
     let (reply, receiver) = std::sync::mpsc::sync_channel(1);
     executor()?
         .sender
@@ -449,6 +537,53 @@ pub(crate) fn submit(job: CpuExpertJob) -> Result<CpuExpertTicket, String> {
         .map_err(|_| "persistent CPU expert executor stopped".to_string())?;
     Ok(CpuExpertTicket {
         receiver: Some(receiver),
+    })
+}
+
+pub(crate) fn rows_supported() -> bool {
+    backend().is_ok_and(|b| b.rows.is_some())
+}
+
+/// Build a rows job: ONE expert, several (input-row, route-weight) pairs.
+pub(crate) fn prepare_rows_job(
+    weights: &MoeWeights,
+    expert: usize,
+    rows: &[(&[f32], f32)],
+) -> Result<CpuRowsJob, String> {
+    if rows.is_empty() || rows.len() > 64 {
+        return Err("CPU rows job needs 1..=64 rows".to_string());
+    }
+    if expert >= weights.gate_exps.n_expert {
+        return Err(format!("CPU rows expert id {expert} is out of range"));
+    }
+    if weights
+        .active_experts
+        .as_ref()
+        .is_some_and(|active| !active[expert])
+    {
+        return Err(format!("router selected pruned CPU rows expert id {expert}"));
+    }
+    let n_embd = weights.gate_exps.in_f;
+    let mut inputs = Vec::with_capacity(rows.len() * n_embd);
+    let mut route_weights = Vec::with_capacity(rows.len());
+    for (input, weight) in rows {
+        if input.len() != n_embd {
+            return Err("CPU rows input width mismatch".to_string());
+        }
+        inputs.extend_from_slice(input);
+        route_weights.push(*weight);
+    }
+    Ok(CpuRowsJob {
+        expert: OwnedExpert {
+            gate: projection(&weights.gate_exps, expert)?,
+            up: projection(&weights.up_exps, expert)?,
+            down: projection(&weights.down_exps, expert)?,
+            route_weight: 0.0,
+        },
+        inputs,
+        route_weights,
+        output_features: weights.down_exps.out_f,
+        threads: threads_from_env()?,
     })
 }
 

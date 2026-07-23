@@ -3013,6 +3013,8 @@ impl HybridModel {
         }
         let mut groups: std::collections::HashMap<usize, Group> = Default::default();
         let mut cpu_rows: Vec<Vec<(usize, f32)>> = vec![Vec::new(); mrows];
+        let mut cpu_by_expert: std::collections::HashMap<usize, Vec<(usize, f32)>> =
+            Default::default();
         for row in 0..mrows {
             for j in 0..n_used {
                 let ex = sel_all[row * n_used + j] as usize;
@@ -3029,21 +3031,65 @@ impl HybridModel {
                 } else {
                     crate::cpu_experts::record_incomplete_gpu_residency(0);
                     cpu_rows[row].push((ex, w));
+                    cpu_by_expert.entry(ex).or_default().push((row, w));
                 }
             }
         }
 
-        // CPU tickets first: reads/compute overlap the GPU grouped work below.
+        // CPU tickets first: reads/compute overlap the GPU grouped work below. Experts routed
+        // by >=2 streams go through the multi-row ABI (weight decode amortized across rows);
+        // each row's remaining experts stay one ordinary per-row call. Contribution FP-sum
+        // order per row differs from the sequential single-call chunk — part of the
+        // documented lockstep numeric class.
         let host_rows = e.dtoh(zbatch)?;
-        let mut tickets: Vec<(usize, crate::cpu_experts::CpuExpertTicket)> = Vec::new();
+        let rows_ok = crate::cpu_experts::rows_supported();
+        enum CpuPart {
+            Single { row: usize },
+            Rows { rows: Vec<usize> },
+        }
+        let mut tickets: Vec<(CpuPart, crate::cpu_experts::CpuExpertTicket)> = Vec::new();
+        let mut rows_served: std::collections::HashSet<(usize, usize)> = Default::default();
+        if rows_ok {
+            let mut shared: Vec<(usize, Vec<(usize, f32)>)> = cpu_by_expert
+                .into_iter()
+                .filter(|(_, rows)| rows.len() >= 2)
+                .collect();
+            shared.sort_by_key(|(ex, _)| *ex);
+            for (ex, mut row_weights) in shared {
+                row_weights.sort_by_key(|(row, _)| *row);
+                let inputs: Vec<(&[f32], f32)> = row_weights
+                    .iter()
+                    .map(|&(row, w)| (&host_rows[row * n_embd..(row + 1) * n_embd], w))
+                    .collect();
+                let job = crate::cpu_experts::prepare_rows_job(m, ex, &inputs)
+                    .map_err(std::io::Error::other)?;
+                for &(row, _) in &row_weights {
+                    rows_served.insert((row, ex));
+                }
+                tickets.push((
+                    CpuPart::Rows {
+                        rows: row_weights.iter().map(|&(row, _)| row).collect(),
+                    },
+                    crate::cpu_experts::submit_rows(job).map_err(std::io::Error::other)?,
+                ));
+            }
+        }
         for (row, selected) in cpu_rows.iter().enumerate() {
-            if selected.is_empty() {
+            let leftover: Vec<(usize, f32)> = selected
+                .iter()
+                .copied()
+                .filter(|&(ex, _)| !rows_served.contains(&(row, ex)))
+                .collect();
+            if leftover.is_empty() {
                 continue;
             }
             let host_row = &host_rows[row * n_embd..(row + 1) * n_embd];
-            let job = crate::cpu_experts::prepare_job(m, il, selected, host_row)
+            let job = crate::cpu_experts::prepare_job(m, il, &leftover, host_row)
                 .map_err(std::io::Error::other)?;
-            tickets.push((row, crate::cpu_experts::submit(job).map_err(std::io::Error::other)?));
+            tickets.push((
+                CpuPart::Single { row },
+                crate::cpu_experts::submit(job).map_err(std::io::Error::other)?,
+            ));
         }
 
         let mut slot_buf = e.zeros(mrows * n_used * n_embd)?;
@@ -3101,11 +3147,28 @@ impl HybridModel {
         let mut moe_out = e.zeros(mrows * n_embd)?;
         e.reduce_slots(&slot_buf, &wbuf, &mut moe_out, n_embd, n_used, mrows)?;
 
-        // CPU contributions join BEFORE the shared expert — the sequential frozen path adds
-        // them there, and FP addition order must match for the identity gate.
-        for (row, ticket) in tickets {
+        // CPU contributions join BEFORE the shared expert (the sequential path's placement).
+        let mut row_sums: Vec<Option<Vec<f32>>> = vec![None; mrows];
+        for (part, ticket) in tickets {
             let cpu_output = ticket.wait().map_err(std::io::Error::other)?;
-            let cpu_output = e.htod(&cpu_output)?;
+            let mut add_row = |row: usize, chunk: &[f32]| {
+                let sum = row_sums[row].get_or_insert_with(|| vec![0.0f32; n_embd]);
+                for (accumulator, value) in sum.iter_mut().zip(chunk) {
+                    *accumulator += value;
+                }
+            };
+            match part {
+                CpuPart::Single { row } => add_row(row, &cpu_output),
+                CpuPart::Rows { rows } => {
+                    for (slot, row) in rows.into_iter().enumerate() {
+                        add_row(row, &cpu_output[slot * n_embd..(slot + 1) * n_embd]);
+                    }
+                }
+            }
+        }
+        for (row, sum) in row_sums.into_iter().enumerate() {
+            let Some(sum) = sum else { continue };
+            let cpu_output = e.htod(&sum)?;
             let mut dst = moe_out.slice_mut(row * n_embd..(row + 1) * n_embd);
             e.axpy_into(&cpu_output, 1.0, &mut dst, n_embd)?;
         }

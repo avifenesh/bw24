@@ -119,3 +119,15 @@ streams within any arm remain bit-identical, and cross-frac assignment changes a
 previously documented divergence class). Exact parity with sequential is impossible by
 design once m_e>1 kernels engage; the gate standard for lockstep arms is per-arm stream
 identity + this documented class, mirroring the BW24_MOE_GROUPED prefill receipt.
+
+## M3 gate (2026-07-23, m2gate-m3-rows*/m4-rows logs)
+
+Multi-row expert dispatch live end-to-end: experts routed by >=2 streams go through
+bw24_cpu_expert_rows_v2 (weight decode amortized across rows; Q2_K fused, other formats
+generic). m=3: 6.33/6.40 (best 6.40, campaign peak); m=4: 5.93 vs M2's 5.66 (+4.8% — the
+gain grows with m, as sharing does). All stream-identity gates PASS. Cross-expert CPU
+contribution FP-sum order documented as part of the lockstep numeric class.
+
+Concurrency scoreboard after M1-M3: **4.44 single -> 6.17 (m=2) -> 6.40 (m=3) -> 5.93 (m=4)**.
+Remaining M4 items: m=6/8 arms with stream-count-aware frac sizing, serve loop, per-stream
+latency reporting, fused multi-row IQ3_S/Q4_K kernels (currently generic fallback).
