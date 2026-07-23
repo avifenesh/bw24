@@ -380,6 +380,9 @@ pub struct Engine {
     /// workspace, allocated once and grown to the largest prefill m*k (see fp8_ffi.rs). `None`
     /// until the first FP8 prefill GEMM; Mutex guards lazy build/grow only (matches cutlass_scratch).
     fp8_scratch: Mutex<Option<crate::fp8_ffi::Fp8Scratch>>,
+    /// f16-P/V door: pooled V re-encode buffer (bf16->f16) for the hd512 _pre path. Lazy-grow;
+    /// per-call cudaMalloc was a laptop-regression suspect (VRAM pressure, 31B nkv=4 = 4x bytes).
+    fa_vf16_scratch: Mutex<Option<CudaSlice<u8>>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
     /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
@@ -550,6 +553,7 @@ impl Engine {
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
                   fp8_scratch: Mutex::new(None),
+                  fa_vf16_scratch: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -5928,8 +5932,16 @@ impl Engine {
         let f16pv = fa_f16pv_on();
         let nw = if f16pv { fa512_wide_warps() } else { 2 };
         let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
-        let vh; let vref: &CudaSlice<u8> = if f16pv {
-            vh = self.bf16_to_f16(vb, t_kv * n_head_kv * head_dim)?; &vh
+        let mut vguard = self.fa_vf16_scratch.lock().unwrap();
+        let vref: &CudaSlice<u8> = if f16pv {
+            let n = t_kv * n_head_kv * head_dim;
+            let need = n * 2;
+            if vguard.as_ref().map(|b| b.len() < need).unwrap_or(true) {
+                *vguard = Some(self.alloc_uninit::<u8>(need)?);
+            }
+            let dst = vguard.as_mut().unwrap();
+            self.bf16_to_f16_into(vb, n, dst)?;
+            vguard.as_ref().unwrap()
         } else { vb };
         let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
                           else { match (f16pv, nw) {
@@ -6110,8 +6122,16 @@ impl Engine {
     /// bf16 bytes -> f16 bytes, n elements (the f16-P/V door's V re-encode on the emit lane).
     pub fn bf16_to_f16(&self, xb: &CudaSlice<u8>, n: usize)
                        -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
-        assert!(n % 2 == 0, "bf16_to_f16 requires n % 2 == 0, got {n}");
         let mut y = self.alloc_uninit::<u8>(n * 2)?;
+        self.bf16_to_f16_into(xb, n, &mut y)?;
+        Ok(y)
+    }
+
+    /// Same conversion into a caller-owned (pooled) buffer; `y.len() >= n*2`.
+    pub fn bf16_to_f16_into(&self, xb: &CudaSlice<u8>, n: usize, y: &mut CudaSlice<u8>)
+                            -> Result<(), Box<dyn std::error::Error>> {
+        assert!(n % 2 == 0, "bf16_to_f16 requires n % 2 == 0, got {n}");
+        assert!(y.len() >= n * 2);
         let f = self.func("bf16_to_f16_flat");
         let n2 = (n / 2) as i64;
         let cfg = LaunchConfig {
@@ -6119,9 +6139,9 @@ impl Engine {
             block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(xb).arg(&mut y).arg(&n2);
+        b.arg(xb).arg(y).arg(&n2);
         unsafe { b.launch(cfg)?; }
-        Ok(y)
+        Ok(())
     }
 
     /// FA prefill where K/V are QUANTIZED CudaViews into the resident byte KV cache (the T=K verify

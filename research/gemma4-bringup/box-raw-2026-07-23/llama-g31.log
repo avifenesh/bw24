@@ -1,0 +1,12 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 32109 MiB):
+  Device 0: NVIDIA GeForce RTX 5090, compute capability 12.0, VMM: yes, VRAM: 32109 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       2644.97 ± 0.00 |
+
+build: c818263f2 (9833)
+Collecting data...
+Generating '/tmp/nsys-report-7bae.qdstrm'
+[1/1] [0%                          ] llama-g31.nsys-rep[1/1] [0%                          ] llama-g31.nsys-rep[1/1] [====28%                     ] llama-g31.nsys-rep[1/1] [============56%             ] llama-g31.nsys-rep[1/1] [==================77%       ] llama-g31.nsys-rep[1/1] [========================100%] llama-g31.nsys-rep[1/1] [========================100%] llama-g31.nsys-rep
+Generated:
+	/tmp/llama-g31.nsys-rep
