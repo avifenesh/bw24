@@ -1,0 +1,22 @@
+build: 96362f3b
+temp: 52  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.36 ± 0.46 |
+temp: 52
+generated 128 tokens in 1.383s = 92.58 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 52  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.56 ± 0.26 |
+temp: 52
+generated 128 tokens in 1.383s = 92.56 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 52  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.60 ± 0.21 |
+temp: 52
+generated 128 tokens in 1.383s = 92.55 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.120s) [stop: MaxNew]
+temp: 53  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.25 ± 0.22 |
+temp: 58
+generated 128 tokens in 1.387s = 92.26 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.121s) [stop: MaxNew]
+temp: 56  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.28 ± 0.60 |
+temp: 60
+generated 128 tokens in 1.389s = 92.18 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.121s) [stop: MaxNew]
+G12 CELLSTAMP COMPLETE Thu Jul 23 09:48:40 PM UTC 2026
