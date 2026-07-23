@@ -1,2 +1,18 @@
 plimit: 150.00W temp: 56
 == gemma-4-12b-it-qat-q4_0.gguf door+512hp
+prefill argmax=623  decode argmax=623  logit maxdiff=2.653e0  MATCH
+prefill 1736 tok in 0.4240s = 4093.9 tok/s (pp1736)
+prefill argmax=623  decode argmax=623  logit maxdiff=2.653e0  MATCH
+prefill 1736 tok in 0.4251s = 4083.4 tok/s (pp1736)
+== gemma-4-31B_q4_0-it.gguf door+512hp
+prefill argmax=623  decode argmax=623  logit maxdiff=1.110e0  MATCH
+prefill 1736 tok in 1.1533s = 1505.2 tok/s (pp1736)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.110e0  MATCH
+prefill 1736 tok in 1.1582s = 1498.9 tok/s (pp1736)
+== nsys 31B swa-h2 (door+512hp+swahp)
+prefill argmax=623  decode argmax=623  logit maxdiff=1.217e0  MATCH
+prefill 1736 tok in 1.1776s = 1474.2 tok/s (pp1736)
+      7.6    3,651,299,971      1,640  2,226,402.4  1,454,360.0    327,228  4,414,314  1,310,241.1  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      0.3      135,429,046        200    677,145.2    686,597.0    541,913    811,414     39,984.3  fa_prefill_w_bf16_p1h2                                                                              
+      0.3      122,163,780         40  3,054,094.5  3,100,541.0  2,637,632  3,633,780    202,207.8  fa_prefill_bf16_hd512_sp16h2                                                                        
+CHAIN GATE COMPLETE Thu Jul 23 01:53:49 AM UTC 2026
