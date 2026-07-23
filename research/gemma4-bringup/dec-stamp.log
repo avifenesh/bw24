@@ -1,3 +1,27 @@
 == model: gemma-4-12b-it-qat-q4_0.gguf
 temp: 54  plimit: 150.00W
 | gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.71 ± 0.24 |
+temp: 55  plimit: 150.00W
+generated 128 tokens in 1.425s = 89.80 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.127s) [stop: MaxNew]
+temp: 56  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.56 ± 0.31 |
+temp: 56  plimit: 150.00W
+generated 128 tokens in 1.425s = 89.81 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.127s) [stop: MaxNew]
+temp: 57  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.56 ± 0.42 |
+temp: 56  plimit: 150.00W
+generated 128 tokens in 1.425s = 89.81 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.127s) [stop: MaxNew]
+== model: gemma-4-31B_q4_0-it.gguf
+temp: 57  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.74 ± 0.05 |
+temp: 57  plimit: 150.00W
+prefill argmax=12705  decode argmax=6571  logit maxdiff=1.394e1  MISMATCH
+temp: 58  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.71 ± 0.07 |
+temp: 57  plimit: 150.00W
+prefill argmax=12705  decode argmax=6571  logit maxdiff=1.394e1  MISMATCH
+temp: 58  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.69 ± 0.09 |
+temp: 57  plimit: 150.00W
+prefill argmax=12705  decode argmax=6571  logit maxdiff=1.394e1  MISMATCH
+DEC STAMP COMPLETE Thu Jul 23 11:03:42 AM UTC 2026

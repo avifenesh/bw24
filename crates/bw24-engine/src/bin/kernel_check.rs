@@ -1609,6 +1609,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          if rel16<2e-2 {"OK"} else {fails+=1;"FAIL"});
             }
         }
+        // --- hd512 GQA gate (31B globals: nkv>1, even group — the h2 head-pair arm's real
+        // shape; the nkv=1 case above never exercises kv_head sharing). CPU oracle indexes
+        // K/V by kv_head = head / (nh/nkv). 2026-07-23: the 31B D512 argmax MISMATCH traced
+        // to the hp arm — this gate pins the class band at the GQA shape.
+        {
+            let (hd6, nh6, nhkv6) = (512usize, 8usize, 4usize);
+            let scale6 = 1.0f32 / (hd6 as f32).sqrt();
+            let grp = nh6 / nhkv6;
+            let cpu_sdpa6 = |q: &[f32], k: &[f32], v: &[f32], t: usize, tkv: usize| -> Vec<f32> {
+                let mut o = vec![0.0f32; t * nh6 * hd6];
+                for head in 0..nh6 { for qt in 0..t {
+                    let kvh = head / grp;
+                    let q_pos = (tkv - t) + qt;
+                    let qv = &q[(qt * nh6 + head) * hd6..][..hd6];
+                    let mut sc = vec![0.0f32; tkv];
+                    for (tk, sv) in sc.iter_mut().enumerate() {
+                        let kv = &k[(tk * nhkv6 + kvh) * hd6..][..hd6];
+                        let mut a = 0.0; for d in 0..hd6 { a += qv[d] * kv[d]; }
+                        a *= scale6; if tk > q_pos { a = -1e30; } *sv = a;
+                    }
+                    let mx = sc.iter().cloned().fold(-1e30f32, f32::max);
+                    let mut sum = 0.0; for sv in sc.iter_mut() { *sv = (*sv - mx).exp(); sum += *sv; }
+                    for sv in sc.iter_mut() { *sv /= sum; }
+                    let ov = &mut o[(qt * nh6 + head) * hd6..][..hd6];
+                    for d in 0..hd6 {
+                        let mut a = 0.0;
+                        for tk in 0..tkv { a += sc[tk] * v[(tk * nhkv6 + kvh) * hd6 + d]; }
+                        ov[d] = a;
+                    }
+                } }
+                o
+            };
+            for (t, tkv) in [(64usize, 64usize), (100, 100)] {
+                let q: Vec<f32> = (0..hd6*nh6*t).map(|i| pr(i+29)*0.2).collect();
+                let k: Vec<f32> = (0..hd6*nhkv6*tkv).map(|i| pr(i+31)*0.2).collect();
+                let v: Vec<f32> = (0..hd6*nhkv6*tkv).map(|i| pr(i+37)*0.2).collect();
+                let cpu = cpu_sdpa6(&q, &k, &v, t, tkv);
+                let qd=e.htod(&q)?; let kd=e.htod(&k)?; let vd=e.htod(&v)?;
+                let mut o_hp=e.zeros(hd6*nh6*t)?;
+                e.fa_prefill_hd512_arm(&qd,&kd,&vd,&mut o_hp,hd6,nh6,nhkv6,t,tkv,scale6,true,false,true,true)?;
+                let gh=e.dtoh(&o_hp)?;
+                let d=maxdiff(&cpu,&gh);
+                let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
+                println!("fa_prefill_hd512 GQA nkv=4 (hp arm) T={t} Tkv={tkv}: rel={rel:.2e} {}",
+                         if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
+            }
+        }
         // decode cases (T=1) — K/V come from the QUANTIZED resident cache (q8_0 K / q5_1 V).
         // Quantize the f32 K/V token-by-token via the append kernel, then fa_decode dequants
         // inline. Tolerance loosened vs the f32 path: q5_1 V (5-bit affine) is the looser link.
