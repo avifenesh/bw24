@@ -1,0 +1,54 @@
+temp: 54  plimit: 150.00W
+== llama tg128 d512
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.33 ± 0.84 |
+== bw24 gen128
+prefill argmax=236761  decode argmax=236761  logit maxdiff=6.420e0  MATCH
+prefill 512 tok in 0.1236s = 4141.9 tok/s (pp512)
+generated 128 tokens in 1.415s = 90.46 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.125s) [stop: MaxNew]
+== nsys bw24 decode kernels
+Generating SQLite file /tmp/g12-dec.sqlite from /tmp/g12-dec.nsys-rep
+Processing [/tmp/g12-dec.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   Min (ns)  Max (ns)   StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  ---------  ---------  --------  ---------  -----------  ----------------------------------------------------------------------------------------------------
+     34.8    2,537,243,667     35,840   70,793.6   78,495.0    23,199     83,871     19,285.0  qmatvec_q4_0_mmvq_fused2_mr1_rp                                                                     
+     23.0    1,677,648,495     61,440   27,305.5   32,847.0    11,488     45,824     14,076.9  qmatvec_q4_0_mmvq_rp                                                                                
+      8.5      618,000,453        644  959,628.0  959,351.0   957,303  1,002,135      3,242.5  qmatvec_q6_K_mmvq                                                                                   
+      8.3      602,430,326     25,600   23,532.4   23,520.0    22,816     27,231        207.9  qmatvec_q4_0_mmvq_fused3_mr1_rp                                                                     
+      5.2      378,837,571      1,312  288,748.1  173,854.0    57,983    595,034    190,105.9  void mul_mat_q_q4_0<(int)128, (bool)0, (bool)1>(const char *, const char *, const int *, float *, i…
+      5.0      363,762,887     25,600   14,209.5   14,656.0     2,720     17,120      1,737.6  fa_decode_vec_q_v4                                                                                  
+      3.1      225,117,575     62,660    3,592.7    3,456.0     3,136     20,191      1,151.1  rms_norm_f32                                                                                        
+      1.9      140,691,802     30,912    4,551.4    4,032.0     3,744     92,383      6,513.4  gelu_tanh_mul_q8_1                                                                                  
+      1.7      120,577,383     30,912    3,900.7    3,712.0     3,456     32,255      2,105.5  add_rms_norm_f32                                                                                    
+      1.3       97,651,952      4,088   23,887.5   24,576.0     1,919     42,752     10,789.3  fa_decode_f32                                                                                       
+      1.2       88,135,432     62,276    1,415.2    1,344.0     1,216     25,824      1,258.9  quantize_q8_1                                                                                       
+      1.2       87,285,553     30,080    2,901.8    2,880.0     2,720      3,424         58.4  add_scale_rms_norm_q8_1                                                                             
+      1.0       69,298,471     29,688    2,334.2    2,144.0     1,183      7,072        972.7  fa_decode_combine_f32                                                                               
+      0.8       57,782,139     30,720    1,880.9    1,856.0     1,696      2,496        103.2  rms_norm_qkv_f32                                                                                    
+      0.6       45,201,299     30,720    1,471.4    1,408.0     1,247      2,176        150.3  rope_neox2_f32                                                                                      
+== nsys llama decode kernels
+Generating SQLite file /tmp/g12-decl.sqlite from /tmp/g12-decl.nsys-rep
+Processing [/tmp/g12-decl.sqlite] with [/opt/nvidia/nsight-systems/2025.5.2/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   Min (ns)  Max (ns)   StdDev (ns)                                                  Name                                                
+ --------  ---------------  ---------  ---------  ---------  --------  ---------  -----------  ----------------------------------------------------------------------------------------------------
+     63.5       89,880,101        328  274,024.7  142,302.5    19,264    511,899    188,652.1  void mul_mat_q<(ggml_type)2, (int)128, (bool)0>(const char *, const int *, const int *, const int *…
+      6.4        9,064,945        464   19,536.5   17,535.0     4,032     43,392     12,370.7  void mul_mat_vec_q<(ggml_type)2, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *,…
+      5.8        8,180,175         96   85,210.2   85,152.0    82,815     86,398        566.9  void mul_mat_vec_q<(ggml_type)2, (int)1, (bool)1, (bool)0>(const void *, const void *, const int *,…
+      2.8        3,953,629         48   82,367.3   82,576.0    79,903     84,127      1,240.2  void unary_gated_op_kernel<&op_gelu, float>(const T2 *, const T2 *, T2 *, long, long, long, long)   
+      2.3        3,318,244        288   11,521.7    4,160.0     3,616     29,056     10,644.2  void rms_norm_f32<(int)1024, (bool)1, (bool)1>(const float *, float *, int, long, long, long, float…
+      2.2        3,071,964        291   10,556.6    6,816.0     3,359     26,175      5,715.9  void rms_norm_f32<(int)1024, (bool)1, (bool)0>(const float *, float *, int, long, long, long, float…
+      2.1        2,939,072        328    8,960.6    6,400.0     4,928     22,816      5,474.4  void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)1>(const float *, const int *, void *, long, long, long,…
+      2.1        2,923,652          3  974,550.7  962,807.0   956,631  1,004,214     25,874.1  void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0>(const void *, const void *, const int *…
+      2.0        2,870,440         40   71,761.0   73,455.0    62,943     76,544      4,275.0  void flash_attn_ext_f16<(int)256, (int)256, (int)32, (int)2, (bool)0, (bool)0>(const char *, const …
+      1.8        2,527,236        563    4,488.9    2,688.0       960     11,968      3,028.2  quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)             
+      1.6        2,238,954        232    9,650.7    9,664.0     8,064     14,368        922.9  void mul_mat_q_stream_k_fixup<(ggml_type)2, (int)128, (bool)0>(const int *, const int *, float *, f…
+      1.5        2,064,522        288    7,168.5    1,856.0     1,408     31,200      8,833.7  void rms_norm_f32<(int)256, (bool)1, (bool)0>(const float *, float *, int, long, long, long, float,…
+      1.0        1,355,760         40   33,894.0   35,295.0    28,960     36,512      2,595.8  void flash_attn_stream_k_fixup_general<(int)256, (int)32, (int)2>(float *, const float2 *, int, int…
+      0.9        1,311,252          8  163,906.5  169,438.5   146,142    174,111     11,471.7  void flash_attn_ext_f16<(int)512, (int)512, (int)8, (int)8, (bool)0, (bool)0>(const char *, const c…
+      0.8        1,184,652        240    4,936.1    1,984.0     1,120     15,872      4,912.9  void rope_neox<(bool)1, (bool)0, float, float>(const T3 *, T4 *, int, int, int, int, int, int, int,…
+DECODE PROBE COMPLETE Thu Jul 23 04:51:45 AM UTC 2026
