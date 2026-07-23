@@ -1159,6 +1159,102 @@ void dot_row_multi(
         }
         return;
     }
+    if (qtype == QT_IQ3_S) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 110;
+            const float d = fp16_to_f32(read_u16(block));
+            const std::uint8_t * quants = block + 2;
+            const std::uint8_t * high = block + 66;
+            const std::uint8_t * signs = block + 74;
+            const std::uint8_t * scales = block + 106;
+            for (int group = 0; group < 8; ++group) {
+                const int scale_nibble = group % 2 == 0
+                    ? scales[group / 2] & 15 : scales[group / 2] >> 4;
+                const __m256i index_bytes = _mm256_cvtepu8_epi32(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(quants + group * 8)));
+                const __m256i high_bits = _mm256_and_si256(
+                    _mm256_srlv_epi32(
+                        _mm256_set1_epi32(high[group]),
+                        _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)),
+                    _mm256_set1_epi32(1));
+                const __m256i indices = _mm256_or_si256(
+                    index_bytes, _mm256_slli_epi32(high_bits, 8));
+                const __m256i grid = _mm256_i32gather_epi32(
+                    reinterpret_cast<const int *>(BW24_IQ3S_GRID), indices, 4);
+                const __m128i signs_low = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 1]].data())));
+                const __m128i signs_high = _mm_unpacklo_epi64(
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 2]].data())),
+                    _mm_loadl_epi64(reinterpret_cast<const __m128i *>(
+                        BW24_IQ3S_SIGNS[signs[group * 4 + 3]].data())));
+                const __m256i directions = _mm256_set_m128i(signs_high, signs_low);
+                const __m256i decoded_pair = _mm256_sign_epi8(grid, directions);
+                for (int r = 0; r < m_r; ++r) {
+                    const auto & activation = *activations[r];
+                    const auto integer_dots = dot_i8_16_pair(
+                        decoded_pair,
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2)],
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            static_cast<std::size_t>(superblock * 16 + group * 2 + lane)];
+                        results[r] += d * (1 + 2 * scale_nibble) * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if (qtype == QT_Q4_K) {
+        for (int r = 0; r < m_r; ++r) results[r] = 0.0f;
+        const int superblocks = count / 256;
+        for (int superblock = 0; superblock < superblocks; ++superblock) {
+            const std::uint8_t * block = weights + static_cast<std::size_t>(superblock) * 144;
+            const float d = fp16_to_f32(read_u16(block));
+            const float dmin = fp16_to_f32(read_u16(block + 2));
+            const std::uint8_t * scales = block + 4;
+            const std::uint8_t * quants = block + 16;
+            for (int group = 0; group < 8; ++group) {
+                const int pair = group / 2;
+                const bool upper_nibble = group % 2 != 0;
+                const __m256i packed = _mm256_loadu_si256(
+                    reinterpret_cast<const __m256i *>(quants + pair * 32));
+                const __m256i values = _mm256_and_si256(
+                    upper_nibble ? _mm256_srli_epi16(packed, 4) : packed,
+                    _mm256_set1_epi8(15));
+                int scale = 0;
+                int minimum = 0;
+                scale_min_k4(group, scales, scale, minimum);
+                for (int r = 0; r < m_r; ++r) {
+                    const auto & activation = *activations[r];
+                    const auto integer_dots = dot_i8_16_pair(
+                        values,
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2)],
+                        activation.blocks[static_cast<std::size_t>(
+                            superblock * 16 + group * 2 + 1)]);
+                    for (int lane = 0; lane < 2; ++lane) {
+                        const auto & input = activation.blocks[
+                            static_cast<std::size_t>(superblock * 16 + group * 2 + lane)];
+                        results[r] += d * scale * input.scale
+                            * static_cast<float>(integer_dots[lane]);
+                        results[r] -= dmin * minimum * input.scale
+                            * static_cast<float>(input.sum);
+                    }
+                }
+            }
+        }
+        return;
+    }
 #endif
     for (int r = 0; r < m_r; ++r) {
         results[r] = dot_quantized_row(qtype, weights, *activations[r], count);

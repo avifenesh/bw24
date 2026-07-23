@@ -645,17 +645,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if symbol.is_null() { None } else { Some(std::mem::transmute(symbol)) }
         };
         if let Some(rows_fn) = rows_fn {
+          for rows_type in [GgmlType::Q2_K, GgmlType::IQ3_S, GgmlType::Q4_K] {
+            let type_row = fixture(rows_type, 256);
             let mut rows_blobs: Vec<Vec<u8>> = Vec::new();
             for projection_index in 0..3usize {
-                let mut row = gate_row.clone();
+                let mut row = type_row.clone();
                 row[11] ^= 0x2b ^ (projection_index as u8);
                 rows_blobs.push(row.repeat(256));
             }
             let rows_scales = [0.5f32, 0.25, 0.75];
+            let rows_projection = |weights: *const u8, scale: f32| Projection {
+                weights,
+                qtype: qtype(rows_type),
+                in_features: 256,
+                out_features: 256,
+                row_bytes: type_row.len(),
+                byte_len: type_row.len() * 256,
+                file_fd: -1,
+                file_offset: 0,
+                scale,
+            };
             let expert = Expert {
-                gate: projection(rows_blobs[0].as_ptr(), -1, 0, rows_scales[0]),
-                up: projection(rows_blobs[1].as_ptr(), -1, 0, rows_scales[1]),
-                down: projection(rows_blobs[2].as_ptr(), -1, 0, rows_scales[2]),
+                gate: rows_projection(rows_blobs[0].as_ptr(), rows_scales[0]),
+                up: rows_projection(rows_blobs[1].as_ptr(), rows_scales[1]),
+                down: rows_projection(rows_blobs[2].as_ptr(), rows_scales[2]),
                 route_weight: 0.0, // per-row weights come from the rows argument
             };
             let m_r = 3usize;
@@ -696,7 +709,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            println!("multi-row expert path (decode-amortized, bit-identity): PASS");
+            println!(
+                "multi-row expert path (decode-amortized, bit-identity, {rows_type:?}): PASS"
+            );
+          }
         } else {
             println!("multi-row expert path: SKIP (symbol absent)");
         }
