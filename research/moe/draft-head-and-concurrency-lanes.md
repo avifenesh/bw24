@@ -83,3 +83,19 @@ per-step nonlinearity (step wall 328 ms -> 1590 ms), not RAM (RSS flat, zero swa
 prime suspect is VRAM-edge pressure from 4 streams' recurrent states allocated after the
 0.90-frac expert slab sized itself; discriminator arms (m=4 at frac 0.85/0.80, m=3 at 0.90)
 in flight.
+
+## M1 discriminator (2026-07-23, lockstep2-*.log): VRAM-edge confirmed
+
+| arm | aggregate | identity |
+|---|---:|---|
+| m=3 @ frac 0.90 | 6.03 | PASS |
+| m=4 @ frac 0.85 | **5.23** (was 2.52 @ 0.90) | PASS |
+| m=4 @ frac 0.80 | 5.13 | PASS |
+
+The m=4 collapse was VRAM-edge pressure: stream recurrent/KV state allocated after the
+0.90-frac expert slab left no headroom. At 0.85 the collapse vanishes; 0.80 trades too much
+residency back. Standing concurrency scoreboard: 4.44 single -> 6.10 (m=2) / 6.03 (m=3) /
+5.23 (m=4@0.85), all streams bit-identical to single-stream. Aggregate peaks at m=2-3 while
+the MoE stage is still per-stream sequential — M2 (cross-stream expert batching) and M3
+(multi-row companion ABI) target exactly that; the frac knob needs stream-count-aware
+sizing in the serve loop (M4).
