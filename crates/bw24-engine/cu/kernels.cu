@@ -196,6 +196,7 @@ extern "C" __global__ void argmax_final_f32(
 // x: [ncols, nrows] row-major (row stride = ncols). weight: [ncols]. dst same shape as x.
 extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float* __restrict__ w,
                                         float* __restrict__ dst, int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* xr = x + (size_t)row * ncols;
@@ -227,6 +228,7 @@ extern "C" __global__ void rms_norm_f32(const float* __restrict__ x, const float
 extern "C" __global__ void add_rms_norm_f32(const float* __restrict__ a, const float* __restrict__ b,
                                             const float* __restrict__ w, float* __restrict__ res,
                                             float* __restrict__ dst, int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;
@@ -1091,6 +1093,7 @@ extern "C" __global__ void add_scale_rms_norm_q8_1(const float* __restrict__ a, 
                                                    float* __restrict__ res,
                                                    signed char* __restrict__ out_q, float* __restrict__ out_d,
                                                    int ncols, float eps) {
+    BW24_PDL_ENTRY();
     int row = blockIdx.x;
     int tid = threadIdx.x;
     const float* ar = a + (size_t)row * ncols;

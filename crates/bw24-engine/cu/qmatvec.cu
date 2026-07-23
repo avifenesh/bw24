@@ -477,6 +477,7 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
 // __shfl_xor max reduce is order-independent -> d and q8 values BIT-IDENTICAL to the old kernel.
 extern "C" __global__ void quantize_q8_1(const float* __restrict__ x, signed char* __restrict__ out_q,
                                          float* __restrict__ out_d, int in_f, int m) {
+    BW24_PDL_ENTRY();
     int blk = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;   // global block-of-32 index
     int lane = threadIdx.x & 31;
     int nblk_row = in_f / 32;

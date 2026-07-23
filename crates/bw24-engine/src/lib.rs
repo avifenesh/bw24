@@ -820,6 +820,13 @@ impl Engine {
         self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// PDL wave-B1a seam: the four dense-glue kernels (rms_norm_f32, add_rms_norm_f32,
+    /// add_scale_rms_norm_q8_1, quantize_q8_1). BW24_PDL_WB=0 reverts alone.
+    pub fn pdl_wb_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_PDL_WB").map(|v| v != "0").unwrap_or(true))
+    }
+
     /// PDL wave-A seam: the mmvq matvec PDL launches only (the six glue kernels keep
     /// their own BW24_PDL master seam). BW24_PDL_MMVQ=0 reverts wave-A alone — the
     /// per-model no-harm bisect knob.
@@ -2729,13 +2736,28 @@ impl Engine {
 
     pub fn quantize_q8_1(&self, x: &CudaSlice<f32>, m: usize, in_f: usize)
                      -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        let f = self.func("quantize_q8_1");
         let nblk = in_f / 32;
         let mut q = self.alloc_uninit::<i8>(m * in_f)?;  // full-overwrite output: skip memset
         let mut d = self.alloc_uninit::<f32>(m * nblk)?;  // full-overwrite output: skip memset
         // WARP-PER-BLOCK kernel: one warp per 32-block -> m*in_f threads total.
         let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (px, _g0) = x.device_ptr(s);
+            let (pq, _g1) = q.device_ptr_mut(s); let (pd, _g2) = d.device_ptr_mut(s);
+            let mut ps = [
+                &px as *const _ as *mut std::ffi::c_void, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &inf as *const _ as *mut _,
+                &mi as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("quantize_q8_1", cfg.grid_dim, cfg.block_dim, &mut ps)?; }
+            }
+            return Ok((q, d));
+        }
+        let f = self.func("quantize_q8_1");
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(&mut q).arg(&mut d).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
@@ -3425,9 +3447,28 @@ impl Engine {
                                    -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let mut out_q = self.alloc_uninit::<i8>(nrows * ncols)?;
         let mut out_d = self.alloc_uninit::<f32>(nrows * (ncols / 32))?;
+        let (nc, e2) = (ncols as i32, eps);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b_in.device_ptr(s);
+            let (pw, _g2) = w.device_ptr(s); let (pr, _g3) = res.device_ptr_mut(s);
+            let (pq, _g4) = out_q.device_ptr_mut(s); let (pd, _g5) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pa as *const _ as *mut std::ffi::c_void, &pb as *const _ as *mut _,
+                &c as *const _ as *mut _, &pw as *const _ as *mut _,
+                &pr as *const _ as *mut _, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+                &e2 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("add_scale_rms_norm_q8_1", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            }
+            return Ok((out_q, out_d));
+        }
         let f = self.func("add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e2) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut out_q).arg(&mut out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
@@ -3442,9 +3483,26 @@ impl Engine {
                                         out_q: &mut CudaSlice<i8>, out_d: &mut CudaSlice<f32>)
                                         -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(out_q.len() >= nrows * ncols && out_d.len() >= nrows * (ncols / 32));
+        let (nc, e2) = (ncols as i32, eps);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b_in.device_ptr(s);
+            let (pw, _g2) = w.device_ptr(s); let (pr, _g3) = res.device_ptr_mut(s);
+            let (pq, _g4) = out_q.device_ptr_mut(s); let (pd, _g5) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pa as *const _ as *mut std::ffi::c_void, &pb as *const _ as *mut _,
+                &c as *const _ as *mut _, &pw as *const _ as *mut _,
+                &pr as *const _ as *mut _, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+                &e2 as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("add_scale_rms_norm_q8_1", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
         let f = self.func("add_scale_rms_norm_q8_1");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e2) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut *out_q).arg(&mut *out_d).arg(&nc).arg(&e2);
         unsafe { b.launch(cfg)?; }
@@ -3607,9 +3665,23 @@ impl Engine {
 
     pub fn rms_norm(&self, x: &CudaSlice<f32>, w: &CudaSlice<f32>, dst: &mut CudaSlice<f32>,
                     ncols: usize, nrows: usize, eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let (nc, e) = (ncols as i32, eps);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (px, _g0) = x.device_ptr(s); let (pw, _g1) = w.device_ptr(s);
+            let (pd, _g2) = dst.device_ptr_mut(s);
+            let mut ps = [
+                &px as *const _ as *mut std::ffi::c_void, &pw as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+                &e as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("rms_norm_f32", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
         let f = self.func("rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e) = (ncols as i32, eps);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(w).arg(dst).arg(&nc).arg(&e);
         unsafe { b.launch(cfg)?; }
@@ -3704,11 +3776,24 @@ impl Engine {
     pub fn quantize_q8_1_into(&self, x: &CudaSlice<f32>, m: usize, in_f: usize,
                               q: &mut CudaSlice<i8>, d: &mut CudaSlice<f32>)
                               -> Result<(), Box<dyn std::error::Error>> {
-        let f = self.func("quantize_q8_1");
         let nblk = in_f / 32;
         debug_assert!(q.len() >= m * in_f && d.len() >= m * nblk);
         let cfg = LaunchConfig::for_num_elems((m * in_f) as u32);
         let (inf, mi) = (in_f as i32, m as i32);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (px, _g0) = x.device_ptr(s);
+            let (pq, _g1) = q.device_ptr_mut(s); let (pd, _g2) = d.device_ptr_mut(s);
+            let mut ps = [
+                &px as *const _ as *mut std::ffi::c_void, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &inf as *const _ as *mut _,
+                &mi as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("quantize_q8_1", cfg.grid_dim, cfg.block_dim, &mut ps)?; }
+            return Ok(());
+        }
+        let f = self.func("quantize_q8_1");
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(x).arg(&mut *q).arg(&mut *d).arg(&inf).arg(&mi);
         unsafe { b.launch(cfg)?; }
@@ -3740,9 +3825,25 @@ impl Engine {
     pub fn add_rms_norm(&self, a: &CudaSlice<f32>, b: &CudaSlice<f32>, w: &CudaSlice<f32>,
                         res: &mut CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                         eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        let (nc, e) = (ncols as i32, eps);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pa, _g0) = a.device_ptr(s); let (pb, _g1) = b.device_ptr(s);
+            let (pw, _g2) = w.device_ptr(s);
+            let (pr, _g3) = res.device_ptr_mut(s); let (pd, _g4) = dst.device_ptr_mut(s);
+            let mut ps = [
+                &pa as *const _ as *mut std::ffi::c_void, &pb as *const _ as *mut _,
+                &pw as *const _ as *mut _, &pr as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+                &e as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("add_rms_norm_f32", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
         let f = self.func("add_rms_norm_f32");
         let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
-        let (nc, e) = (ncols as i32, eps);
         let mut b2 = self.gpu.stream.launch_builder(&f);
         b2.arg(a).arg(b).arg(w).arg(&mut *res).arg(&mut *dst).arg(&nc).arg(&e);
         unsafe { b2.launch(cfg)?; }
