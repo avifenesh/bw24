@@ -3401,6 +3401,23 @@ impl Engine {
         Ok((out_q, out_d))
     }
 
+    /// Slot-fed add_scale_rms_norm_q8_1 twin (alloc-free capture lane).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_scale_rms_norm_q8_1_into(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, c: f32,
+                                        w: &CudaSlice<f32>, res: &mut CudaSlice<f32>,
+                                        ncols: usize, nrows: usize, eps: f32,
+                                        out_q: &mut CudaSlice<i8>, out_d: &mut CudaSlice<f32>)
+                                        -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(out_q.len() >= nrows * ncols && out_d.len() >= nrows * (ncols / 32));
+        let f = self.func("add_scale_rms_norm_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let (nc, e2) = (ncols as i32, eps);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(a).arg(b_in).arg(&c).arg(w).arg(res).arg(&mut *out_q).arg(&mut *out_d).arg(&nc).arg(&e2);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// E4B glue fusion: rms(a, wa) prologue + the add_scale_rms_norm_q8_1 program — one launch
     /// replaces the per-layer rms_norm_f32(y) + emit pair in the PLE tail.
     #[allow(clippy::too_many_arguments)]
@@ -3472,6 +3489,38 @@ impl Engine {
         b.arg(gate).arg(up).arg(act).arg(&mut out_q).arg(&mut out_d).arg(&nc);
         unsafe { b.launch(cfg)?; }
         Ok((out_q, out_d))
+    }
+
+    /// Slot-fed gelu_tanh_mul_q8_1 twin (alloc-free capture lane; incl. the PDL arm).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gelu_tanh_mul_q8_1_into(&self, gate: &CudaSlice<f32>, up: &cudarc::driver::CudaView<f32>,
+                                   act: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
+                                   out_q: &mut CudaSlice<i8>, out_d: &mut CudaSlice<f32>)
+                                   -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(ncols % 128 == 0);
+        debug_assert!(out_q.len() >= nrows * ncols && out_d.len() >= nrows * (ncols / 32));
+        let nc = ncols as i32;
+        if Self::pdl_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pg, _g0) = gate.device_ptr(s); let (pu, _g1) = up.device_ptr(s);
+            let (pact, _g2) = act.device_ptr_mut(s);
+            let (pq, _g3) = out_q.device_ptr_mut(s); let (pd, _g4) = out_d.device_ptr_mut(s);
+            let mut ps = [
+                &pg as *const _ as *mut std::ffi::c_void, &pu as *const _ as *mut _,
+                &pact as *const _ as *mut _, &pq as *const _ as *mut _,
+                &pd as *const _ as *mut _, &nc as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl("gelu_tanh_mul_q8_1", (nrows as u32, 1, 1),
+                                     (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
+        let f = self.func("gelu_tanh_mul_q8_1");
+        let cfg = LaunchConfig { grid_dim: (nrows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&mut *act).arg(&mut *out_q).arg(&mut *out_d).arg(&nc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
     }
 
     /// gemma4: add + rms_norm3 with outputs 0/2 emitted q8_1 (zsh + moe_in) and 1 f32 (router).
