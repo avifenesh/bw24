@@ -174,6 +174,14 @@ pub fn fa_f16pv_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() == Ok("1"))
 }
 
+/// Head-pair arm (BW24_FA512_HP=1, requires the f16pv door): GQA ncols2=2 — 2 heads per
+/// CTA share each staged K/V tile, Q register-resident. Engages when n_head is even and
+/// the GQA group (n_head/n_head_kv) is even, so a pair never straddles kv groups.
+pub fn fa512_hp_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA512_HP").as_deref() == Ok("1"))
+}
+
 /// 4-warp sp16 experiment arm (BW24_FA512_W4=1, requires the f16pv door): GEMM0 split-K
 /// 4-way + GEMM1 4x128 O-dims. Own partial-sum order — oracle-band gated. Returns warp
 /// count (2 = base sp16). 8-warp arm measured NEGATIVE 2026-07-23 (jsonl) and removed.
@@ -5919,21 +5927,30 @@ impl Engine {
         // battery-gated. V bytes must be f16 for the sp16 kernel (stage/ldmatrix are typeless).
         let f16pv = fa_f16pv_on();
         let nw = if f16pv { fa512_wide_warps() } else { 2 };
+        let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
         let vh; let vref: &CudaSlice<u8> = if f16pv {
             vh = self.bf16_to_f16(vb, t_kv * n_head_kv * head_dim)?; &vh
         } else { vb };
-        let f = self.func(match (f16pv, nw) {
-            (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
-            (true, _) => "fa_prefill_bf16_hd512_sp16",
-            _ => "fa_prefill_bf16_hd512_sp",
-        });
-        let (nwarp, npart) = if nw > 2 { (nw, nw) } else { (2, 1) };
-        let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
-                   + 4 * (npart * SP_M * BKS + SP_M)) as u32;
+        let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+                          else { match (f16pv, nw) {
+                              (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
+                              (true, _) => "fa_prefill_bf16_hd512_sp16",
+                              _ => "fa_prefill_bf16_hd512_sp",
+                          } });
+        let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
+        // h2 drops sQ (Q register-resident) and doubles sP/sS/sL for the head pair.
+        let shmem = if hp {
+            (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
+               + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
+        } else {
+            (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
+               + 4 * (npart * SP_M * BKS + SP_M)) as u32
+        };
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let grid_y = if hp { (n_head / 2) as u32 } else { n_head as u32 };
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
+            grid_dim: ((t as u32).div_ceil(SP_M as u32), grid_y, 1),
             block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
@@ -5960,18 +5977,26 @@ impl Engine {
             // f16pv: sp16 kernel — f16 P + f16 P@V accum, V operand encoded f16.
             const SP_M: usize = 16; const BKS: usize = 32;
             let nw = if f16pv { fa512_wide_warps() } else { 2 };
-            let f = self.func(match (f16pv, nw) {
-                (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
-                (true, _) => "fa_prefill_bf16_hd512_sp16",
-                _ => "fa_prefill_bf16_hd512_sp",
-            });
-            let (nwarp, npart) = if nw > 2 { (nw, nw) } else { (2, 1) };
-            let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
-                       + 4 * (npart * SP_M * BKS + SP_M)) as u32;
+            let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
+            let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+                              else { match (f16pv, nw) {
+                                  (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
+                                  (true, _) => "fa_prefill_bf16_hd512_sp16",
+                                  _ => "fa_prefill_bf16_hd512_sp",
+                              } });
+            let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
+            let shmem = if hp {
+                (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
+                   + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
+            } else {
+                (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
+                   + 4 * (npart * SP_M * BKS + SP_M)) as u32
+            };
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let grid_y = if hp { (n_head / 2) as u32 } else { n_head as u32 };
             let cfg = LaunchConfig {
-                grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
+                grid_dim: ((t as u32).div_ceil(SP_M as u32), grid_y, 1),
                 block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
             };
             let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,

@@ -2684,6 +2684,318 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
     }
 }
 
+// Head-pair (MQA ncols2=2, llama fattn-mma:561) evolution of sp16w4: nkv=1 means every
+// head reads IDENTICAL K/V — pack 2 heads per CTA so each staged K/V tile feeds 2x mma.
+// Q lives entirely in registers (staged through the sK slab pre-loop); grid y = n_head/2.
+// Requires n_head even and an even GQA group (n_head/n_head_kv) so a pair never
+// straddles kv groups (host-guarded); nkv=1 MQA is the extreme case.
+extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512_sp16h2(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    constexpr int HEAD_DIM  = 512;
+    constexpr int HD_KTILES = HEAD_DIM / K_STEP;      // 32
+    constexpr int NW        = 4;
+    constexpr int NH2       = 2;                      // heads per CTA
+    constexpr int QUART     = HEAD_DIM / NW;          // 128 V/O dims per WARP
+    constexpr int O_NBLK    = QUART / N_KEYS;         // 16 CTileH per warp per head
+    constexpr int KT_Q      = HD_KTILES / NW;         // 8 kt per warp (GEMM0 split-K)
+    const int warp = threadIdx.y;                     // 0..3
+    const int lane = threadIdx.x;
+    const int head0   = blockIdx.y * NH2;
+    const int kv_head = head0 / (n_head / n_head_kv);   // shared by the pair (even group)
+    const int qrow_base = blockIdx.x * SP_M_ROWS;
+    if (head0 >= n_head || qrow_base >= T) return;
+    const int nqw = min(SP_M_ROWS, T - qrow_base);
+    const int d_base = warp * QUART;
+
+    extern __shared__ char smem_raw512h2[];
+    __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw512h2;            // BK*HEAD_DIM (Q scratch pre-loop)
+    __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM (f16 bytes)
+    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // NH2*SP_M_ROWS*BK
+    float* sS = (float*)(sP + NH2*SP_M_ROWS*BK);                  // NH2*NW*SP_M_ROWS*BK partials
+    float* sL = sS + NH2*NW*SP_M_ROWS*BK;                         // NH2*SP_M_ROWS
+
+    const int causal_i = causal;
+    const int q_pos0  = (T_kv - T) + qrow_base;
+    const int bt  = warp*WARP_SZ + lane;
+    const int bsz = NW*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+    constexpr int QCH = HEAD_DIM / 8;
+    const int q_pos_max = (T_kv - T) + qrow_base + (SP_M_ROWS - 1);
+
+    auto cp_rows = [&](__nv_bfloat16* dst, const __nv_bfloat16* src, int k0p) {
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * HEAD_DIM;
+            fa_cp_async_16((int4*)dst + kk*QCH + (dc ^ (kk & 7)), (const int4*)(src + rowo) + dc);
+        }
+    };
+    auto sync_rows = [&](__nv_bfloat16* dst, const __nv_bfloat16* src, int k0p, int nkp) {
+        for (int i = bt; i < BK*QCH; i += bsz) {
+            int kk = i / QCH, dc = i % QCH;
+            const size_t rowo = ((size_t)(k0p + kk) * n_head_kv + kv_head) * HEAD_DIM;
+            ((int4*)dst)[kk*QCH + (dc ^ (kk & 7))] = (kk < nkp) ? ((const int4*)(src + rowo))[dc] : zero4;
+        }
+    };
+
+    // ---- Q -> registers for BOTH heads, staged through the sK slab (freed before K0) ----
+    ATile Qf[NH2][KT_Q];
+    #pragma unroll
+    for (int h = 0; h < NH2; ++h) {
+        for (int i = bt; i < SP_M_ROWS*QCH; i += bsz) {
+            int r = i / QCH, dc = i % QCH;
+            ((int4*)sK)[r*QCH + (dc ^ (r & 7))] = (qrow_base + r < T)
+                ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head0 + h) * HEAD_DIM))[dc]
+                : zero4;
+        }
+        __syncthreads();
+        #pragma unroll
+        for (int kt0 = 0; kt0 < KT_Q; ++kt0) {
+            ld_A_sw(Qf[h][kt0], sK, 0, (warp*KT_Q + kt0)*2, HEAD_DIM/8);
+        }
+        __syncthreads();
+    }
+    bool k_async = (T_kv >= BK);
+    if (k_async) { cp_rows(sK, K, 0); }
+    fa_cp_commit();
+
+    CTileH O_acc[NH2][O_NBLK];
+    #pragma unroll
+    for (int h = 0; h < NH2; ++h) {
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) { O_acc[h][c].x[0]=0u; O_acc[h][c].x[1]=0u; }
+    }
+    float m_lo[NH2] = {NEG_INF, NEG_INF}, m_hi[NH2] = {NEG_INF, NEG_INF};
+    float l_lo[NH2] = {0.0f, 0.0f},       l_hi[NH2] = {0.0f, 0.0f};
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += BK) {
+        const int nk = min(BK, T_kv - k0);
+        if (causal_i && k0 > q_pos_max) break;
+
+        fa_cp_wait<0>();
+        __syncthreads();
+        if (!k_async) { sync_rows(sK, K, k0, nk); __syncthreads(); }
+        const bool v_async = (nk == BK);
+        if (v_async) { cp_rows(sV, V, k0); }
+        fa_cp_commit();
+        if (!v_async) { sync_rows(sV, V, k0, nk); }
+
+        // ---- GEMM0 both heads over the ONE staged K tile ----
+        CTile Sc[NH2][BK/N_KEYS];
+        #pragma unroll
+        for (int h = 0; h < NH2; ++h) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                Sc[h][g].x[0]=Sc[h][g].x[1]=Sc[h][g].x[2]=Sc[h][g].x[3]=0.0f;
+            }
+        }
+        for (int kg = 0; kg < BK; kg += 2*N_KEYS) {
+            CTile C00, C01, C10, C11;   // [head][lo/hi]
+            C00.x[0]=C00.x[1]=C00.x[2]=C00.x[3]=0.0f;
+            C01.x[0]=C01.x[1]=C01.x[2]=C01.x[3]=0.0f;
+            C10.x[0]=C10.x[1]=C10.x[2]=C10.x[3]=0.0f;
+            C11.x[0]=C11.x[1]=C11.x[2]=C11.x[3]=0.0f;
+            #pragma unroll 8
+            for (int kt0 = 0; kt0 < KT_Q; ++kt0) {
+                const int kt = warp*KT_Q + kt0;
+                ATile Kt;
+                ld_A_sw(Kt, sK, kg, kt*2, HEAD_DIM/8);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C00, Qf[0][kt0], Blo);
+                mma_bf16(C01, Qf[0][kt0], Bhi);
+                mma_bf16(C10, Qf[1][kt0], Blo);
+                mma_bf16(C11, Qf[1][kt0], Bhi);
+            }
+            Sc[0][kg/N_KEYS + 0] = C00;
+            Sc[0][kg/N_KEYS + 1] = C01;
+            Sc[1][kg/N_KEYS + 0] = C10;
+            Sc[1][kg/N_KEYS + 1] = C11;
+        }
+        {
+            #pragma unroll
+            for (int h = 0; h < NH2; ++h) {
+                float* sSw = sS + (h*NW + warp)*SP_M_ROWS*BK;
+                #pragma unroll
+                for (int g = 0; g < BK/N_KEYS; ++g) {
+                    sSw[r_lo*BK + g*N_KEYS + c0 + 0] = Sc[h][g].x[0];
+                    sSw[r_lo*BK + g*N_KEYS + c0 + 1] = Sc[h][g].x[1];
+                    sSw[r_hi*BK + g*N_KEYS + c0 + 0] = Sc[h][g].x[2];
+                    sSw[r_hi*BK + g*N_KEYS + c0 + 1] = Sc[h][g].x[3];
+                }
+            }
+        }
+        __syncthreads();
+        {
+            int kn = k0 + BK;                          // next-K overlaps combine..GEMM1
+            k_async = !(causal_i && kn > q_pos_max) && kn < T_kv && (T_kv - kn >= BK);
+            if (k_async) { cp_rows(sK, K, kn); }
+            fa_cp_commit();
+        }
+        #pragma unroll
+        for (int h = 0; h < NH2; ++h) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    const int row = (l < 2) ? r_lo : r_hi;
+                    const int col = g*N_KEYS + c0 + (l & 1);
+                    float acc = 0.0f;
+                    #pragma unroll
+                    for (int w = 0; w < NW; ++w)
+                        acc += sS[(h*NW + w)*SP_M_ROWS*BK + row*BK + col];
+                    Sc[h][g].x[l] = acc;
+                }
+            }
+        }
+
+        // ---- softmax per head (replicated per warp); interior tiles mask-free ----
+        const bool boundary = (nk < BK) || (causal_i && (k0 + BK - 1) > q_pos0);
+        float alpha_lo_h[NH2], alpha_hi_h[NH2];
+        #pragma unroll
+        for (int h = 0; h < NH2; ++h) {
+            float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+            if (boundary) {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    int col = g*N_KEYS + c0 + (l & 1);
+                    int row = (l < 2) ? r_lo : r_hi;
+                    int q_pos = q_pos0 + row;
+                    float sv = Sc[h][g].x[l] * scale;
+                    if (col >= nk) sv = NEG_INF;
+                    if (causal_i && (k0 + col) > q_pos) sv = NEG_INF;
+                    Sc[h][g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+            } else {
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float sv = Sc[h][g].x[l] * scale;
+                    Sc[h][g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+            }
+            s_tile_max_lo = row_max4(s_tile_max_lo);
+            s_tile_max_hi = row_max4(s_tile_max_hi);
+            float m_new_lo = fmaxf(m_lo[h], s_tile_max_lo);
+            float m_new_hi = fmaxf(m_hi[h], s_tile_max_hi);
+            alpha_lo_h[h] = (m_lo[h] == NEG_INF) ? 0.0f : exp2f((m_lo[h] - m_new_lo) * LOG2E);
+            alpha_hi_h[h] = (m_hi[h] == NEG_INF) ? 0.0f : exp2f((m_hi[h] - m_new_hi) * LOG2E);
+            float l_part_lo = 0.0f, l_part_hi = 0.0f;
+            #pragma unroll
+            for (int g = 0; g < BK/N_KEYS; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float mn = (l < 2) ? m_new_lo : m_new_hi;
+                    float sv = Sc[h][g].x[l];
+                    float pv = (sv == NEG_INF) ? 0.0f : exp2f((sv - mn) * LOG2E);
+                    Sc[h][g].x[l] = pv;
+                    if (l < 2) l_part_lo += pv; else l_part_hi += pv;
+                }
+            }
+            l_part_lo = row_sum4(l_part_lo);
+            l_part_hi = row_sum4(l_part_hi);
+            l_lo[h] = l_lo[h] * alpha_lo_h[h] + l_part_lo;
+            l_hi[h] = l_hi[h] * alpha_hi_h[h] + l_part_hi;
+            m_lo[h] = m_new_lo; m_hi[h] = m_new_hi;
+        }
+
+        if (warp == 0) {
+            __half* sPh = (__half*)sP;
+            #pragma unroll
+            for (int h = 0; h < NH2; ++h) {
+                __half* sPhh = sPh + h*SP_M_ROWS*BK;
+                #pragma unroll
+                for (int g = 0; g < BK/N_KEYS; ++g) {
+                    sPhh[r_lo*BK + g*N_KEYS + c0 + 0] = __float2half(Sc[h][g].x[0]);
+                    sPhh[r_lo*BK + g*N_KEYS + c0 + 1] = __float2half(Sc[h][g].x[1]);
+                    sPhh[r_hi*BK + g*N_KEYS + c0 + 0] = __float2half(Sc[h][g].x[2]);
+                    sPhh[r_hi*BK + g*N_KEYS + c0 + 1] = __float2half(Sc[h][g].x[3]);
+                }
+            }
+        }
+        {   // register-only rescale between P store and the fused sync
+            #pragma unroll
+            for (int h = 0; h < NH2; ++h) {
+                const __half2 alo = __float2half2_rn(alpha_lo_h[h]);
+                const __half2 ahi = __float2half2_rn(alpha_hi_h[h]);
+                #pragma unroll
+                for (int c = 0; c < O_NBLK; ++c) {
+                    __half2 lo = __hmul2(*(__half2*)&O_acc[h][c].x[0], alo);
+                    __half2 hi = __hmul2(*(__half2*)&O_acc[h][c].x[1], ahi);
+                    O_acc[h][c].x[0] = *(unsigned*)&lo;
+                    O_acc[h][c].x[1] = *(unsigned*)&hi;
+                }
+            }
+        }
+        fa_cp_wait<1>();                              // V complete (next-K may still fly)
+        __syncthreads();                              // one sync: sP visible AND V landed
+
+        // ---- GEMM1 both heads over the ONE staged V tile ----
+        #pragma unroll
+        for (int h = 0; h < NH2; ++h) {
+            ATile Ap[BK/K_STEP];
+            #pragma unroll
+            for (int kk = 0; kk < BK; kk += K_STEP)
+                ld_A(Ap[kk/K_STEP], sP + h*SP_M_ROWS*BK + kk, BK/2);
+            for (int d0 = 0; d0 < QUART; d0 += 2*N_KEYS) {
+                #pragma unroll
+                for (int kk = 0; kk < BK; kk += K_STEP) {
+                    ATile Bt;
+                    ld_A_trans_sw(Bt, sV, kk, (d_base + d0)/8, HEAD_DIM/8);
+                    BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                    BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                    mma_f16acc(O_acc[h][(d0/N_KEYS) + 0], Ap[kk/K_STEP], Blo);
+                    mma_f16acc(O_acc[h][(d0/N_KEYS) + 1], Ap[kk/K_STEP], Bhi);
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+    if (warp == 0 && c0 == 0) {
+        #pragma unroll
+        for (int h = 0; h < NH2; ++h) {
+            sL[h*SP_M_ROWS + r_lo] = l_lo[h];
+            sL[h*SP_M_ROWS + r_hi] = l_hi[h];
+        }
+    }
+    __syncthreads();
+
+    #pragma unroll
+    for (int h = 0; h < NH2; ++h) {
+        #pragma unroll
+        for (int c = 0; c < O_NBLK; ++c) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                int r = CTile::get_i(l);
+                int d = c*N_KEYS + CTile::get_j(l);
+                if (r < nqw) {
+                    float linv = (sL[h*SP_M_ROWS + r] > 0.0f) ? (1.0f / sL[h*SP_M_ROWS + r]) : 0.0f;
+                    const __half2 h2v = *(const __half2*)&O_acc[h][c].x[l / 2];
+                    const float ov = __half2float((l & 1) ? __high2half(h2v) : __low2half(h2v));
+                    O[((size_t)(qrow_base + r) * n_head + head0 + h) * HEAD_DIM + d_base + d]
+                        = ov * linv;
+                }
+            }
+        }
+    }
+}
+
 // 4-warp evolution of sp16: GEMM0 split-K 4-way (per-warp partial buffers, one sync),
 // GEMM1 split 4 x 128 O-dims. Same f16-P/V numeric door; own partial-sum order.
 // 2 warps left the SM issue-starved at 1 CTA/SM — this doubles active warps for +6KB smem.
@@ -2752,6 +3064,13 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
     }
     __syncthreads();
 
+    // Q fragments are k0-invariant: load this warp's 8 kt once, never re-touch sQ.
+    ATile Qf[KT_Q];
+    #pragma unroll
+    for (int kt0 = 0; kt0 < KT_Q; ++kt0) {
+        ld_A_sw(Qf[kt0], sQ, 0, (warp*KT_Q + kt0)*2, HEAD_DIM/8);
+    }
+
     CTileH O_acc[O_NBLK];
     #pragma unroll
     for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=0u; O_acc[c].x[1]=0u; }
@@ -2783,13 +3102,12 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
             #pragma unroll 8
             for (int kt0 = 0; kt0 < KT_Q; ++kt0) {
                 const int kt = warp*KT_Q + kt0;
-                ATile Qf, Kt;
-                ld_A_sw(Qf, sQ, 0, kt*2, HEAD_DIM/8);
+                ATile Kt;
                 ld_A_sw(Kt, sK, kg, kt*2, HEAD_DIM/8);
                 BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
                 BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
-                mma_bf16(C0, Qf, Blo);
-                mma_bf16(C1, Qf, Bhi);
+                mma_bf16(C0, Qf[kt0], Blo);
+                mma_bf16(C1, Qf[kt0], Bhi);
             }
             Sc[kg/N_KEYS + 0] = C0;
             Sc[kg/N_KEYS + 1] = C1;
@@ -2824,8 +3142,11 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
             }
         }
 
-        // ---- register softmax (identical per warp — same summed scores) ----
+        // ---- register softmax (identical per warp — same summed scores); interior
+        // tiles (full, fully below every row's diagonal) compile mask-free (mech#3) ----
+        const bool boundary = (nk < BK) || (causal_i && (k0 + BK - 1) > q_pos0);
         float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        if (boundary) {
         #pragma unroll
         for (int g = 0; g < BK/N_KEYS; ++g) {
             #pragma unroll
@@ -2840,6 +3161,18 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
                 if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
                 else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
             }
+        }
+        } else {
+        #pragma unroll
+        for (int g = 0; g < BK/N_KEYS; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float s = Sc[g].x[l] * scale;
+                Sc[g].x[l] = s;
+                if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, s);
+                else       s_tile_max_hi = fmaxf(s_tile_max_hi, s);
+            }
+        }
         }
         s_tile_max_lo = row_max4(s_tile_max_lo);
         s_tile_max_hi = row_max4(s_tile_max_hi);
@@ -2875,9 +3208,7 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
                 sPh[r_hi*BK + g*N_KEYS + c0 + 1] = __float2half(Sc[g].x[3]);
             }
         }
-        __syncthreads();
-
-        {
+        {   // register-only rescale sits between P store and the fused sync
             const __half2 alo = __float2half2_rn(alpha_lo);
             const __half2 ahi = __float2half2_rn(alpha_hi);
             #pragma unroll
@@ -2888,20 +3219,21 @@ extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 1) fa_prefill_bf16_hd512
                 O_acc[c].x[1] = *(unsigned*)&hi;
             }
         }
-
         fa_cp_wait<1>();                              // V complete (next-K may still fly)
-        __syncthreads();
+        __syncthreads();                              // one sync: sP visible AND V landed
         // ---- GEMM1: warp w owns O[:, d_base .. d_base+128) ----
+        ATile Ap[BK/K_STEP];                          // P fragments: load once per tile
+        #pragma unroll
+        for (int kk = 0; kk < BK; kk += K_STEP) ld_A(Ap[kk/K_STEP], sP + kk, BK/2);
         for (int d0 = 0; d0 < QUART; d0 += 2*N_KEYS) {
             #pragma unroll
             for (int kk = 0; kk < BK; kk += K_STEP) {
-                ATile A; ATile Bt;
-                ld_A(A, sP + kk, BK/2);
+                ATile Bt;
                 ld_A_trans_sw(Bt, sV, kk, (d_base + d0)/8, HEAD_DIM/8);
                 BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
                 BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
-                mma_f16acc(O_acc[(d0/N_KEYS) + 0], A, Blo);
-                mma_f16acc(O_acc[(d0/N_KEYS) + 1], A, Bhi);
+                mma_f16acc(O_acc[(d0/N_KEYS) + 0], Ap[kk/K_STEP], Blo);
+                mma_f16acc(O_acc[(d0/N_KEYS) + 1], Ap[kk/K_STEP], Bhi);
             }
         }
     }
