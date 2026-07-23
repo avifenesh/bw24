@@ -1,24 +1,35 @@
-temp: 55
+temp: 58
 == kernel-check (PDL arms live)
-ALL GREEN: kernels match CPU reference.
-== kernel-check PDL=0 (rollback arm)
 ALL GREEN: kernels match CPU reference.
 == argmax x4
 -- gemma-4-12b-it-qat-q4_0.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=2.225e0  MATCH
 -- gemma-4-31B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=1.182e0  MATCH
 -- gemma-4-26B_q4_0-it.gguf
+prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
 -- gemma-4-E4B_q4_0-it.gguf
-== pdl on/off token identity 12B
-generated 32 tokens in 0.357s = 89.76 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.121s) [stop: MaxNew]
+prefill argmax=623  decode argmax=623  logit maxdiff=1.107e0  MATCH
+== pdl on/off token identity 12B (on first, off second)
+generated 32 tokens in 0.355s = 90.22 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.123s) [stop: MaxNew]
+generated 32 tokens in 0.358s = 89.47 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
 == graph stream gate
+GRAPH-GATE: eager 88.26 tok/s | graph 84.45 tok/s | stream 96/96 IDENTICAL
 == tg128 pair 12B (llama then bw24, cooldowns)
+temp: 60
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.86 ± 0.55 |
+generated 128 tokens in 1.407s = 90.98 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
 temp: 57
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.08 ± 0.60 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         90.10 ± 0.51 |
+generated 128 tokens in 1.408s = 90.93 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.122s) [stop: MaxNew]
 temp: 57
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.67 ± 0.28 |
-temp: 57
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         92.01 ± 0.30 |
+generated 128 tokens in 1.405s = 91.11 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.121s) [stop: MaxNew]
 == no-harm singles (31B/26B/E4B tg)
 temp: 56
-temp: 56
-temp: 56
-PDLWAVEA GATE COMPLETE Thu Jul 23 07:08:40 PM UTC 2026
+generated 128 tokens in 3.152s = 40.61 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.314s) [stop: MaxNew]
+temp: 59
+generated 128 tokens in 0.654s = 195.86 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.287s) [stop: MaxNew]
+temp: 58
+generated 128 tokens in 0.654s = 195.69 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.499s) [stop: MaxNew]
+PDLWAVEA GATE COMPLETE Thu Jul 23 07:26:15 PM UTC 2026

@@ -820,6 +820,14 @@ impl Engine {
         self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// PDL wave-A seam: the mmvq matvec PDL launches only (the six glue kernels keep
+    /// their own BW24_PDL master seam). BW24_PDL_MMVQ=0 reverts wave-A alone — the
+    /// per-model no-harm bisect knob.
+    pub fn pdl_mmvq_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_PDL_MMVQ").map(|v| v != "0").unwrap_or(true))
+    }
+
     pub fn pdl_on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("BW24_PDL").map(|v| v != "0").unwrap_or(true))
@@ -4653,7 +4661,7 @@ impl Engine {
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
         // PDL wave-A (2026-07-23): the mr1 kernel carries BW24_PDL_ENTRY; only that
         // variant may take the programmatic-serialization launch.
-        if mr1 && Self::pdl_on() {
+        if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
             let s = &self.gpu.stream;
@@ -4732,7 +4740,7 @@ impl Engine {
         let (oo0, oo1, oo2) = (o0 as i32, o1 as i32, o2 as i32);
         let (r0, r1, r2) = (rb0 as i64, rb1 as i64, rb2 as i64);
         // PDL wave-A: identical to the owned twin (capture-lane parity).
-        if mr1 && Self::pdl_on() {
+        if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
             let s = &self.gpu.stream;
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
@@ -4804,7 +4812,7 @@ impl Engine {
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
         // PDL wave-A: mr1 kernel carries BW24_PDL_ENTRY.
-        if mr1 && Self::pdl_on() {
+        if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
             let s = &self.gpu.stream;
@@ -4872,7 +4880,7 @@ impl Engine {
         let (oo0, oo1) = (o0 as i32, o1 as i32);
         let (r0, r1) = (rb0 as i64, rb1 as i64);
         // PDL wave-A: identical to the owned twin (capture-lane parity).
-        if mr1 && Self::pdl_on() {
+        if mr1 && Self::pdl_on() && Self::pdl_mmvq_on() {
             use cudarc::driver::{DevicePtr, DevicePtrMut};
             let s = &self.gpu.stream;
             let (p0, _g0) = b0.device_ptr(s); let (p1, _g1) = b1.device_ptr(s);
@@ -5312,7 +5320,7 @@ impl Engine {
         if qtype == QT_NVFP4 || qtype == QT_F8_E4M3 {
             b.arg(bytes).arg(aq).arg(ad).arg(&mut *y).arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&scale);
             unsafe { b.launch(cfg)?; }
-        } else if Self::pdl_on()
+        } else if Self::pdl_on() && Self::pdl_mmvq_on()
             && matches!(name, "qmatvec_q4_0_mmvq_rp" | "qmatvec_q6_K_mmvq") {
             // PDL wave-A (2026-07-23): the two decode-hot single-matvec kernels carry
             // BW24_PDL_ENTRY — grid launches while the producer drains. ONLY the marked
