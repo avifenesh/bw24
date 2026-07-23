@@ -1,0 +1,60 @@
+== gates
+ALL GREEN: kernels match CPU reference.
+gemma-4-12b-it-qat-q4_0.gguf D1736: prefill argmax=623  decode argmax=623  logit maxdiff=2.438e0  MATCH
+gemma-4-31B_q4_0-it.gguf D1736: prefill argmax=623  decode argmax=623  logit maxdiff=1.031e0  MATCH
+gemma-4-26B_q4_0-it.gguf D1736: prefill argmax=623  decode argmax=623  logit maxdiff=4.738e0  MATCH
+gemma-4-E4B_q4_0-it.gguf D1736: prefill argmax=623  decode argmax=623  logit maxdiff=1.107e0  MATCH
+31B D512: prefill argmax=6571  decode argmax=6571  logit maxdiff=7.263e0  MATCH
+12B D512: prefill argmax=236761  decode argmax=236761  logit maxdiff=5.722e0  MATCH
+== board pairs N=3 (cooled per-arm)
+== model: gemma-4-12b-it-qat-q4_0.gguf
+temp: 58  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    pp512 @ d512 |      4142.88 ± 40.24 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |   pp1736 @ d512 |     3847.12 ± 127.55 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.39 ± 0.27 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.1213s = 4220.0 tok/s (pp512)
+prefill 1736 tok in 0.4220s = 4113.8 tok/s (pp1736)
+generated 128 tokens in 1.431s = 89.45 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.123s) [stop: MaxNew]
+temp: 57  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    pp512 @ d512 |      4121.02 ± 39.38 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |   pp1736 @ d512 |     3854.59 ± 111.95 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.50 ± 0.27 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.1214s = 4217.1 tok/s (pp512)
+prefill 1736 tok in 0.4258s = 4076.8 tok/s (pp1736)
+generated 128 tokens in 1.430s = 89.49 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.123s) [stop: MaxNew]
+temp: 57  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    pp512 @ d512 |      4125.66 ± 34.74 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |   pp1736 @ d512 |     3853.81 ± 110.53 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |    tg128 @ d512 |         91.35 ± 0.27 |
+temp: 56  plimit: 150.00W
+prefill 512 tok in 0.1212s = 4225.5 tok/s (pp512)
+prefill 1736 tok in 0.4221s = 4112.9 tok/s (pp1736)
+generated 128 tokens in 1.431s = 89.45 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.123s) [stop: MaxNew]
+== model: gemma-4-31B_q4_0-it.gguf
+temp: 57  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    pp512 @ d512 |      1624.48 ± 10.56 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |   pp1736 @ d512 |       1505.29 ± 2.40 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.50 ± 0.08 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3157s = 1621.8 tok/s (pp512)
+prefill 1736 tok in 1.1040s = 1572.4 tok/s (pp1736)
+generated 128 tokens in 3.193s = 40.09 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.319s) [stop: MaxNew]
+temp: 59  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    pp512 @ d512 |       1621.35 ± 8.49 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |   pp1736 @ d512 |       1502.94 ± 0.28 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.45 ± 0.07 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3164s = 1618.3 tok/s (pp512)
+prefill 1736 tok in 1.1076s = 1567.4 tok/s (pp1736)
+generated 128 tokens in 3.192s = 40.09 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.320s) [stop: MaxNew]
+temp: 60  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    pp512 @ d512 |       1623.34 ± 7.49 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |   pp1736 @ d512 |       1502.18 ± 0.88 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |    tg128 @ d512 |         39.42 ± 0.06 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3163s = 1618.5 tok/s (pp512)
+prefill 1736 tok in 1.1045s = 1571.7 tok/s (pp1736)
+generated 128 tokens in 3.194s = 40.08 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.320s) [stop: MaxNew]
+BATTERY V7 COMPLETE Thu Jul 23 12:51:34 PM UTC 2026
