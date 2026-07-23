@@ -1,0 +1,8 @@
+temp: 55
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+
+thread 'main' (3755290) panicked at crates/bw24-engine/src/lib.rs:618:33:
+kernel fa_decode_combine_f32 not in the kf8vf8 flash fatbin
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+DECGRAPH GATE COMPLETE Thu Jul 23 05:08:45 AM UTC 2026

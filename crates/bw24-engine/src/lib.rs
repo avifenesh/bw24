@@ -609,13 +609,17 @@ impl Engine {
     }
 
     /// Kernel from the FP8-GLOBALS (kf8vf8) flash module — gemma global-layer arm only.
+    /// Format-AGNOSTIC kernels (e.g. fa_decode_combine_f32) are not compiled into the
+    /// per-format fatbins; fall back to the base modules for those.
     fn func_g(&self, name: &str) -> CudaFunction {
         let m = self.flash_g.get_or_init(|| {
             self.gpu.ctx.load_module(cudarc::nvrtc::Ptx::from_file(FLASH_FATBIN_KF8VF8))
                 .expect("load kf8vf8 flash fatbin (fp8-globals arm)")
         });
-        m.load_function(name)
-            .unwrap_or_else(|_| panic!("kernel {name} not in the kf8vf8 flash fatbin"))
+        match m.load_function(name) {
+            Ok(f) => f,
+            Err(_) => self.func(name),
+        }
     }
 
     fn func(&self, name: &str) -> CudaFunction {
