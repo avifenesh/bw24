@@ -3790,14 +3790,22 @@ impl HybridModel {
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rms_norm_qkv_rope(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                            &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
-                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
-        e.append_kv_quantized_dc(&sl.k, &sl.v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                 (!swa && crate::Engine::gkv_on())
-                                     || (swa && crate::Engine::wkv_on()))?;
+        let kv_fp8 = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+        if crate::Engine::qkv_append_on() {
+            // append fold (2026-07-23): mirrors dc_into.
+            e.rms_norm_qkv_rope_append_dc(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(),
+                fa.k_norm.float_data(), &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
+                pos_d, nh, nkv, base, 1.0, ff, eps,
+                &mut kvl.k, &mut kvl.v, &kvl.len_d, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        } else {
+            e.rms_norm_qkv_rope(&sl.q0, &sl.k0, &sl.v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                &aux.ones, &mut sl.q, &mut sl.k, &mut sl.v, hd, nh, nkv,
+                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            e.append_kv_quantized_dc(&sl.k, &sl.v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                     kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                     kv_fp8)?;
+        }
         e.inc_seqlen(&mut kvl.len_d)?;
         let (b_swa, b_glob) = cap_bucket_max.expect("slotted step is capture-only");
         let k_view = e.view_u8(&kvl.k, kvl.k.len());
@@ -3929,12 +3937,21 @@ impl HybridModel {
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                            &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
-                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
-        e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
-                                 kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
+        let kv_fp8 = (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on());
+        if crate::Engine::qkv_append_on() {
+            // append fold (2026-07-23): norm+rope+cache-append in ONE launch.
+            e.rms_norm_qkv_rope_append_dc(&q0, &k0, &v0, fa.q_norm.float_data(),
+                fa.k_norm.float_data(), &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                pos_d, nh, nkv, base, 1.0, ff, eps,
+                &mut kvl.k, &mut kvl.v, &kvl.len_d, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        } else {
+            e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                                &aux.ones, &mut q, &mut k, &mut v, hd, nh, nkv,
+                                pos_d, nh, nkv, base, 1.0, ff, eps)?;
+            e.append_kv_quantized_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d,
+                                     kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, kv_fp8)?;
+        }
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
         // combine-q8 emit carrier (wave-5b m=1 port): rows arms fill this; the tail then

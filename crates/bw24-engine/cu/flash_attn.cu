@@ -468,6 +468,82 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_rows_dc(
     }
 }
 
+// ===== FUSED norm+rope+append (m=1 decode, 2026-07-23) =====================
+// One launch replaces rms_norm_qkv_rope_f32 (kernels.cu) + append_quantize_kv_q8_0_q5_1_dc.
+// Norm+rope math is the kernels.cu kernel VERBATIM (same reduce, same rope pair math,
+// early returns restructured into guards so all threads reach the append barrier);
+// the append tail is quant_K_block/quant_V_block at the SAME element->lane mapping the
+// standalone appender uses (stride == blockDim == 0 mod 32 keeps each warp on one
+// aligned 32-block per iteration). Compiled per KV format like the appenders.
+extern "C" __global__ void rms_norm_qkv_rope_append_dc_f32(
+        const float* __restrict__ q, const float* __restrict__ k, const float* __restrict__ v,
+        const float* __restrict__ wq, const float* __restrict__ wk, const float* __restrict__ wv,
+        float* __restrict__ dq, float* __restrict__ dk, float* __restrict__ dv,
+        int ncols, int rq, int rk,
+        const int* __restrict__ pos, int nh_q, int nh_k,
+        float theta_scale, float freq_scale, const float* __restrict__ ff,
+        float eps,
+        uint8_t* __restrict__ Kc, uint8_t* __restrict__ Vc,
+        const int* __restrict__ t_dev, long k_tok_bytes, long v_tok_bytes)
+{
+    BW24_PDL_ENTRY();
+    int row = blockIdx.x;
+    const float* xr; const float* w; float* dr;
+    int seg; int seg_r;
+    if (row < rq)           { seg = 0; seg_r = row;           xr = q + (size_t)row * ncols;   w = wq; dr = dq + (size_t)row * ncols; }
+    else if (row < rq + rk) { seg = 1; seg_r = row - rq;      xr = k + (size_t)seg_r * ncols; w = wk; dr = dk + (size_t)seg_r * ncols; }
+    else                    { seg = 2; seg_r = row - rq - rk; xr = v + (size_t)seg_r * ncols; w = wv; dr = dv + (size_t)seg_r * ncols; }
+    int tid = threadIdx.x;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float x = xr[i]; sum += x * x; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale * w[i];
+    __syncthreads();                        // normed row visible before the rope read
+    if (seg != 2) {
+        // rope_neox on the normed row (n_dims == ncols == head_dim; math verbatim).
+        int half = ncols / 2;
+        int j = tid;
+        if (j < half) {
+            int tok = (seg == 0) ? seg_r / nh_q : seg_r / nh_k;
+            float theta = (float)pos[tok] * powf(theta_scale, (float)j) * freq_scale;
+            if (ff) theta = (float)pos[tok] * powf(theta_scale, (float)j) / ff[j] * freq_scale;
+            float c = cosf(theta), sn = sinf(theta);
+            float x0 = dr[j];
+            float x1 = dr[j + half];
+            dr[j]        = x0 * c - x1 * sn;
+            dr[j + half] = x0 * sn + x1 * c;
+        }
+    }
+    __syncthreads();                        // post-rope row visible before the append read
+    // append tail (k/v rows only): the SAME quant warp programs at the SAME token element
+    // indices the standalone appender uses. t=1 decode: one new token at slot t_dev[0].
+    if (seg == 0) return;
+    const int t = t_dev[0];
+    if (seg == 1) {
+        for (int i = tid; i < ncols; i += blockDim.x) {
+            int eidx = seg_r * ncols + i;
+            quant_K_block(dr[i], tid & 31,
+                          Kc + (size_t)t * k_tok_bytes + (size_t)(eidx >> 5) * K_BLK_B);
+        }
+    } else {
+        for (int i = tid; i < ncols; i += blockDim.x) {
+            int eidx = seg_r * ncols + i;
+            quant_V_block(dr[i], tid & 31,
+                          Vc + (size_t)t * v_tok_bytes + (size_t)(eidx >> 5) * V_BLK_B);
+        }
+    }
+}
+
 // SINGLE-BLOCK dc append with a FUSED counter inc (E4B glue wave 5c): t=1 row append +
 // len_d += 1 in ONE launch — kills the separate inc_i32 per own-KV layer. One block so the
 // t_dev read (all threads, before any write) strictly precedes the inc (thread 0, after

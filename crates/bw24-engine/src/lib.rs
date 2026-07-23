@@ -820,6 +820,13 @@ impl Engine {
         self.verify_exact.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// m=1 norm+rope+append fold seam (2026-07-23): BW24_QKV_APPEND=0 reverts to the
+    /// fused-norm-rope + standalone-append pair (the exact-oracle bisect arm).
+    pub fn qkv_append_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BW24_QKV_APPEND").map(|v| v != "0").unwrap_or(true))
+    }
+
     /// PDL wave-B1a seam: the four dense-glue kernels (rms_norm_f32, add_rms_norm_f32,
     /// add_scale_rms_norm_q8_1, quantize_q8_1). BW24_PDL_WB=0 reverts alone.
     pub fn pdl_wb_on() -> bool {
@@ -4106,6 +4113,79 @@ impl Engine {
                        .arg(&mut *q).arg(&mut *k).arg(&mut *v)
                        .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
                        .arg(&theta_scale).arg(&freq_scale).arg(&null).arg(&eps);
+                      unsafe { b.launch(cfg)?; } }
+        }
+        Ok(())
+    }
+
+    /// FUSED norm+rope+APPEND (m=1 decode, 2026-07-23): one launch replaces the
+    /// rms_norm_qkv_rope + append_kv_quantized_dc pair. Kernel lives in the flash fatbins
+    /// (format-flavored quant tail) — `g` must mirror the append path's flavor exactly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rms_norm_qkv_rope_append_dc(&self, q0: &CudaSlice<f32>, k0: &CudaSlice<f32>,
+                             v0: &CudaSlice<f32>,
+                             wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
+                             q: &mut CudaSlice<f32>, k: &mut CudaSlice<f32>, v: &mut CudaSlice<f32>,
+                             head_dim: usize, rq: usize, rk: usize,
+                             pos: &CudaSlice<i32>, nh_q: usize, nh_k: usize,
+                             base: f32, freq_scale: f32, ff: Option<&CudaSlice<f32>>, eps: f32,
+                             kc: &mut CudaSlice<u8>, vc: &mut CudaSlice<u8>,
+                             t_dev: &CudaSlice<i32>, k_tok_bytes: usize, v_tok_bytes: usize,
+                             g: bool)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        let rows = rq + rk + rk;
+        let theta_scale = base.powf(-2.0 / head_dim as f32);
+        let (nc, rqi, rki, nhq, nhk) = (head_dim as i32, rq as i32, rk as i32, nh_q as i32, nh_k as i32);
+        let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (p0, _a0) = q0.device_ptr(s); let (p1, _a1) = k0.device_ptr(s);
+            let (p2, _a2) = v0.device_ptr(s);
+            let (pwq, _a3) = wq.device_ptr(s); let (pwk, _a4) = wk.device_ptr(s);
+            let (pwv, _a5) = wv.device_ptr(s);
+            let (pq, _a6) = q.device_ptr_mut(s); let (pk, _a7) = k.device_ptr_mut(s);
+            let (pv, _a8) = v.device_ptr_mut(s);
+            let (pp, _a9) = pos.device_ptr(s);
+            let pff: u64 = match ff { Some(t) => { let (p, _gg) = t.device_ptr(s); p as u64 }
+                                      None => 0 };
+            let (pkc, _a10) = kc.device_ptr_mut(s); let (pvc, _a11) = vc.device_ptr_mut(s);
+            let (pt, _a12) = t_dev.device_ptr(s);
+            let mut ps = [
+                &p0 as *const _ as *mut std::ffi::c_void, &p1 as *const _ as *mut _,
+                &p2 as *const _ as *mut _, &pwq as *const _ as *mut _,
+                &pwk as *const _ as *mut _, &pwv as *const _ as *mut _,
+                &pq as *const _ as *mut _, &pk as *const _ as *mut _,
+                &pv as *const _ as *mut _, &nc as *const _ as *mut _,
+                &rqi as *const _ as *mut _, &rki as *const _ as *mut _,
+                &pp as *const _ as *mut _, &nhq as *const _ as *mut _,
+                &nhk as *const _ as *mut _, &theta_scale as *const _ as *mut _,
+                &freq_scale as *const _ as *mut _, &pff as *const _ as *mut _,
+                &eps as *const _ as *mut _, &pkc as *const _ as *mut _,
+                &pvc as *const _ as *mut _, &pt as *const _ as *mut _,
+                &ktb as *const _ as *mut _, &vtb as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl_flash(g, "rms_norm_qkv_rope_append_dc_f32",
+                                           (rows as u32, 1, 1), (rms_block(), 1, 1), &mut ps)?; }
+            return Ok(());
+        }
+        let f = if g { self.func_g("rms_norm_qkv_rope_append_dc_f32") }
+                else { self.func("rms_norm_qkv_rope_append_dc_f32") };
+        let cfg = LaunchConfig { grid_dim: (rows as u32, 1, 1), block_dim: (rms_block(), 1, 1), shared_mem_bytes: 0 };
+        let mut b = self.gpu.stream.launch_builder(&f);
+        match ff {
+            Some(t) => { b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
+                          .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                          .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                          .arg(&theta_scale).arg(&freq_scale).arg(t).arg(&eps)
+                          .arg(&mut *kc).arg(&mut *vc).arg(t_dev).arg(&ktb).arg(&vtb);
+                         unsafe { b.launch(cfg)?; } }
+            None => { let null: u64 = 0;
+                      b.arg(q0).arg(k0).arg(v0).arg(wq).arg(wk).arg(wv)
+                       .arg(&mut *q).arg(&mut *k).arg(&mut *v)
+                       .arg(&nc).arg(&rqi).arg(&rki).arg(pos).arg(&nhq).arg(&nhk)
+                       .arg(&theta_scale).arg(&freq_scale).arg(&null).arg(&eps)
+                       .arg(&mut *kc).arg(&mut *vc).arg(t_dev).arg(&ktb).arg(&vtb);
                       unsafe { b.launch(cfg)?; } }
         }
         Ok(())
