@@ -1535,9 +1535,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let sc=cpu.iter().map(|x|x.abs()).fold(0.0,f32::max).max(1e-3); let rel=d/sc;
                 println!("fa_prefill_w T={t} Tkv={tkv} w={wnd}: rel={rel:.2e} {}",
                          if rel<2e-2 {"OK"} else {fails+=1;"FAIL"});
-                let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
-                println!("fa_prefill_w bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
-                         gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+                // The SWA hp door (BW24_FAW_HP + BW24_FA_F16PV) swaps the bf16 arm for the
+                // f16-P/V h2 kernel — a different numeric class; the oracle band above is
+                // its gate and bit-identity does not apply.
+                let hp_door = bw24_engine::fa_f16pv_on() && bw24_engine::faw_hp_on();
+                if hp_door {
+                    println!("fa_prefill_w bf16-stage T={t}: SKIPPED (hp door numeric class)");
+                } else {
+                    let nbad = gf.iter().zip(gb.iter()).filter(|(a,b)| a.to_bits()!=b.to_bits()).count();
+                    println!("fa_prefill_w bf16-stage T={t}: bit-mismatch {nbad}/{} {}",
+                             gf.len(), if nbad==0 {"OK"} else {fails+=1;"FAIL"});
+                }
             }
         }
         // --- hd512 FA prefill (gemma4 globals, MQA nkv=1): CPU-oracle rel gate on BOTH stage

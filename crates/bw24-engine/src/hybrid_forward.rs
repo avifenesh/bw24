@@ -2840,10 +2840,17 @@ impl HybridModel {
         let mut qb = e.alloc_uninit::<u8>(if emit { t * nh * hd * 2 } else { 1 })?;
         let mut kb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
         let mut vb = e.alloc_uninit::<u8>(if emit { t * nkv * hd * 2 } else { 1 })?;
+        // f16-P/V door: emit V as f16 straight from the norm when this layer's FA consumer
+        // reads f16 — kills the per-layer bf16->f16 re-encode (1.4GB/pass on 31B SWA).
+        let v_f16 = emit && crate::fa_f16pv_on() && match hd {
+            512 => true,
+            256 => swa && crate::faw_hp_on() && nh % 2 == 0 && (nh / nkv) % 2 == 0,
+            _ => false,
+        };
         if emit {
             e.rms_norm_qkv_w4b(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
                                &aux.ones, &mut q, &mut k, &mut v, &mut vb,
-                               hd, nh * t, nkv * t, eps)?;
+                               hd, nh * t, nkv * t, eps, v_f16)?;
         } else {
             e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
                            &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
@@ -2874,7 +2881,7 @@ impl HybridModel {
         if swa && t > win {
             if hd == 256 && std::env::var("BW24_NOFA").is_err() {
                 if emit { e.fa_prefill_w_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
-                                             scale, true, win)?; }
+                                             scale, true, win, v_f16)?; }
                 else { e.fa_prefill_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true,
                                       win)?; }
             } else {
@@ -2884,7 +2891,7 @@ impl HybridModel {
             e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
         } else if hd == 512 && std::env::var("BW24_NOFA").is_err() {
             if emit { e.fa_prefill_hd512_pre(&qb, &kb, &vb, &mut attn, hd, nh, nkv, t, t,
-                                             scale, true)?; }
+                                             scale, true, v_f16)?; }
             else { e.fa_prefill_hd512(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?; }
         } else {
             e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;

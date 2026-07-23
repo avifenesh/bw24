@@ -3225,7 +3225,7 @@ impl Engine {
                         wq: &CudaSlice<f32>, wk: &CudaSlice<f32>, wv: &CudaSlice<f32>,
                         dq: &mut CudaSlice<f32>, dk: &mut CudaSlice<f32>, dv: &mut CudaSlice<f32>,
                         dvb: &mut CudaSlice<u8>,
-                        ncols: usize, rq: usize, rk: usize, eps: f32)
+                        ncols: usize, rq: usize, rk: usize, eps: f32, vf16: bool)
                         -> Result<(), Box<dyn std::error::Error>> {
         assert!(ncols % 4 == 0 && rq + 2 * rk >= 64);
         let f = self.func("rms_norm_qkv_w4b_f32");
@@ -3234,9 +3234,10 @@ impl Engine {
             grid_dim: (rows.div_ceil(8), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0,
         };
         let (nc, rqi, rki, rvi, e) = (ncols as i32, rq as i32, rk as i32, rk as i32, eps);
+        let vf = vf16 as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(q).arg(k).arg(v).arg(wq).arg(wk).arg(wv).arg(dq).arg(dk).arg(dv).arg(&mut *dvb)
-         .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e);
+         .arg(&nc).arg(&rqi).arg(&rki).arg(&rvi).arg(&e).arg(&vf);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }
@@ -5764,22 +5765,26 @@ impl Engine {
     pub fn fa_prefill_w_pre(&self, qb: &CudaSlice<u8>, kb: &CudaSlice<u8>, vb: &CudaSlice<u8>,
                             o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
                             n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
-                            window: usize)
+                            window: usize, v_f16: bool)
                             -> Result<(), Box<dyn std::error::Error>> {
         const BLOCK_Q: usize = 64; const BK: usize = 32;
         debug_assert_eq!(head_dim, 256);
         let hp = fa_f16pv_on() && faw_hp_on() && n_head % 2 == 0
             && (n_head / n_head_kv) % 2 == 0;
+        debug_assert!(!v_f16 || hp, "f16 V emitted but the SWA hp arm is off");
         if hp {
             const BLOCK_QH: usize = 32;
-            // V bytes must be f16 for the h2 stamp; pooled scratch (stream-ordered reuse).
-            let n = t_kv * n_head_kv * head_dim;
+            // V bytes must be f16 for the h2 stamp; producer normally emits f16 (v_f16),
+            // else re-encode through the pooled scratch (stream-ordered reuse).
             let mut vguard = self.fa_vf16_scratch.lock().unwrap();
-            if vguard.as_ref().map(|b| b.len() < n * 2).unwrap_or(true) {
-                *vguard = Some(self.alloc_uninit::<u8>(n * 2)?);
-            }
-            self.bf16_to_f16_into(vb, n, vguard.as_mut().unwrap())?;
-            let vh = vguard.as_ref().unwrap();
+            let vh: &CudaSlice<u8> = if v_f16 { vb } else {
+                let n = t_kv * n_head_kv * head_dim;
+                if vguard.as_ref().map(|b| b.len() < n * 2).unwrap_or(true) {
+                    *vguard = Some(self.alloc_uninit::<u8>(n * 2)?);
+                }
+                self.bf16_to_f16_into(vb, n, vguard.as_mut().unwrap())?;
+                vguard.as_ref().unwrap()
+            };
             let f = self.func("fa_prefill_w_bf16_p1h2");
             let shmem = (2 * (2 * BK * head_dim + 2 * BLOCK_QH * BK)
                        + 4 * (2 * BLOCK_QH)) as u32;
@@ -5983,7 +5988,8 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub fn fa_prefill_hd512_pre(&self, qb: &CudaSlice<u8>, kb: &CudaSlice<u8>, vb: &CudaSlice<u8>,
                                 o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize,
-                                n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool)
+                                n_head_kv: usize, t: usize, t_kv: usize, scale: f32, causal: bool,
+                                v_f16: bool)
                                 -> Result<(), Box<dyn std::error::Error>> {
         debug_assert_eq!(head_dim, 512);
         const SP_M: usize = 16; const BKS: usize = 32;
@@ -5993,8 +5999,10 @@ impl Engine {
         let f16pv = fa_f16pv_on();
         let nw = if f16pv { fa512_wide_warps() } else { 2 };
         let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
+        debug_assert!(!v_f16 || f16pv, "f16 V emitted without the door on");
         let mut vguard = self.fa_vf16_scratch.lock().unwrap();
-        let vref: &CudaSlice<u8> = if f16pv {
+        let vref: &CudaSlice<u8> = if f16pv && !v_f16 {
+            // Fallback re-encode (producer emitted bf16); the emit lane normally hands f16.
             let n = t_kv * n_head_kv * head_dim;
             let need = n * 2;
             if vguard.as_ref().map(|b| b.len() < need).unwrap_or(true) {
