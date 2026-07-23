@@ -201,6 +201,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | `BW24_FA512_W4=1` | 4-warp sp16 without head-pairing (GEMM0 split-K 4-way + cp.async) — measured net-negative on the 150W laptop (clock tax), superseded by the hp arm | opt-in probe arm 2026-07-23 |
 | `BW24_FA512_HP=0` | hd512 head-pair rollback to the 2-warp sp16 kernel | hp DEFAULT 2026-07-23 (laptop kernel 10.2->3.0ms) |
 | `BW24_FAW_HP=0` | SWA head-pair rollback to the per-head p1 stamp | hp DEFAULT 2026-07-23 (SWA kernel 870->677us) |
+| `BW24_MMQ_SK=0` | xy-tiling-only MMQ prefill GEMM (no stream-k below 90% wave efficiency) | stream-k DEFAULT 2026-07-23 (12B pp512 +3.3%, pp1736 +1.0%) |
 | `BW24_MOE_Q8=0` | Stage-A f32-dequant expert kernels — restores BYTE-identity for the MOE_GATE oracle | dp4a experts 2026-07-06 (+22%) |
 | `BW24_MOE_Q8_KQ=0` | exclude k-quant arms from the q8 expert dot set | 2026-07-06 (+9 tok/s 35B) |
 | `BW24_MOE_DEC=0` | `_em` per-token re-decode expert dot (no decode-once) | dec default 2026-07-05 (3.34x 35B prefill) |

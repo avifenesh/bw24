@@ -522,10 +522,12 @@ impl Engine {
             let (w_p, _gw) = bytes.device_ptr(stream);
             let (y_p, _gy) = y.device_ptr_mut(stream);
             let (s_p, _gs) = scratch.device_ptr(stream);
-            // Stream-k arm (BW24_MMQ_SK=1, opt-in): small-batch tail-wave fix — the sk entry
-            // itself falls back to tiling at >=90% wave efficiency. Band-class fold order.
+            // Stream-k arm (DEFAULT since 2026-07-23; BW24_MMQ_SK=0 reverts to xy-tiling):
+            // small-batch tail-wave fix — the sk entry itself falls back to (bit-identical)
+            // tiling at >=90% wave efficiency. Band-class fold order below that. Gate: 12B
+            // pp512 +3.3% (1.005x vs llama), pp1736 +1.0%; 31B +0.5%; D512 sentinel MATCH.
             static SK_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let sk = *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK").as_deref() == Ok("1"));
+            let sk = *SK_ON.get_or_init(|| std::env::var("BW24_MMQ_SK").as_deref() != Ok("0"));
             let rc = if sk {
                 let mut fx = MMQ_FIXUP_SLOT.lock().unwrap();
                 if fx.is_none() {

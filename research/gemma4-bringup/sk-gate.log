@@ -1,2 +1,38 @@
 temp: 53
 == kernel-check (sk arm)
+ALL GREEN: kernels match CPU reference.
+== llama pp512
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     4173.69 ± 146.12 |
+== gemma-4-12b-it-qat-q4_0.gguf
+-- default:
+prefill 512 tok in 0.1257s = 4073.6 tok/s (pp512)
+-- sk:
+prefill argmax=236761  decode argmax=236761  logit maxdiff=5.722e0  MATCH
+prefill 512 tok in 0.1217s = 4207.8 tok/s (pp512)
+-- default:
+prefill 512 tok in 0.1263s = 4053.3 tok/s (pp512)
+-- sk:
+prefill argmax=236761  decode argmax=236761  logit maxdiff=5.722e0  MATCH
+prefill 512 tok in 0.1222s = 4188.9 tok/s (pp512)
+-- pp1736 default:
+prefill 1736 tok in 0.4261s = 4074.1 tok/s (pp1736)
+-- pp1736 sk:
+prefill argmax=623  decode argmax=623  logit maxdiff=2.919e0  MATCH
+prefill 1736 tok in 0.4220s = 4113.7 tok/s (pp1736)
+== gemma-4-31B_q4_0-it.gguf
+-- default:
+prefill argmax=12705  decode argmax=6571  logit maxdiff=1.394e1  MISMATCH
+-- sk:
+prefill argmax=6571  decode argmax=6571  logit maxdiff=6.374e0  MATCH
+prefill 512 tok in 0.3289s = 1556.5 tok/s (pp512)
+-- default:
+prefill argmax=12705  decode argmax=6571  logit maxdiff=1.394e1  MISMATCH
+-- sk:
+prefill argmax=6571  decode argmax=6571  logit maxdiff=6.374e0  MATCH
+prefill 512 tok in 0.3295s = 1554.0 tok/s (pp512)
+-- pp1736 default:
+prefill 1736 tok in 1.1567s = 1500.8 tok/s (pp1736)
+-- pp1736 sk:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.106e0  MATCH
+prefill 1736 tok in 1.1514s = 1507.7 tok/s (pp1736)
+SK GATE COMPLETE Thu Jul 23 11:29:26 AM UTC 2026
