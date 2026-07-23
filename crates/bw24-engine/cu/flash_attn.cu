@@ -2962,6 +2962,267 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
     }
 }
 
+// Gen-3 hd512 stamp (llama get_config_ampere 512/512/ncols=64 geometry, mech#6+#9+#12):
+// 8 q-rows x 8 heads per CTA (ncols2=8 — the whole GQA group shares ONE staged K/V chunk),
+// Q in smem (64KB, re-read per chunk), K/V staged in 256-dim chunks through ONE aliased
+// 16KB slab, synchronous loads (nstages=1 — no smem left for double-buffering), 8 warps,
+// occupancy 1. f16 P + f16 P@V accumulation (door class); KQ/softmax stay f32, and the
+// kt consumption order matches sp16h2 exactly (chunking changes WHEN dims arrive, not the
+// accumulation order). Packed m16 tiles = 2 heads x 8 rows; lo/hi fragment quads are the
+// SAME q position on the two heads, so causal masks are shared. Host guards:
+// n_head % 8 == 0 and (n_head / n_head_kv) % 8 == 0 (the 8-block never straddles kv groups).
+extern "C" __global__ void __launch_bounds__(8*WARP_SZ, 1) fa_prefill_bf16_hd512_h8(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    constexpr int HEAD_DIM = 512;
+    constexpr int NR       = 8;                       // q-rows per CTA
+    constexpr int NH8      = 8;                       // heads per CTA
+    constexpr int NROWS    = NR * NH8;                // 64 packed rows = 4 m16 tiles
+    constexpr int CHUNK    = 256;                     // K/V dims per staged chunk
+    constexpr int CCH      = CHUNK / 8;               // int4 chunks per staged key row (32)
+    constexpr int QCH      = HEAD_DIM / 8;            // int4 chunks per Q row (64)
+    constexpr int O_NBLK   = 32;                      // 2 chunks x 16 CTileH (256 dims/warp)
+    const int warp = threadIdx.y;                     // 0..7
+    const int lane = threadIdx.x;
+    const int rt   = warp >> 1;                       // row-tile 0..3 (2 heads each)
+    const int kh   = warp & 1;                        // 16-key half within the 32-key tile
+    const int head0 = blockIdx.y * NH8;
+    const int kv_head = head0 / (n_head / n_head_kv);
+    const int qrow_base = blockIdx.x * NR;
+    if (head0 >= n_head || qrow_base >= T) return;
+
+    extern __shared__ char smem_raw512h8[];
+    __nv_bfloat16* sQ  = (__nv_bfloat16*)smem_raw512h8;           // NROWS*HEAD_DIM (64KB)
+    __nv_bfloat16* sKV = sQ + NROWS*HEAD_DIM;                      // 32*CHUNK slab (K then V)
+    float* sS = (float*)(sKV + 32*CHUNK);                          // NROWS*32 scores
+    __half* sP = (__half*)(sS + NROWS*32);                         // NROWS*32 probs
+    float* sL = (float*)(sP + NROWS*32);                           // NROWS
+
+    const int causal_i = causal;
+    const int q_pos0 = (T_kv - T) + qrow_base;
+    const int q_pos_max = q_pos0 + (NR - 1);
+    const int bt  = warp*WARP_SZ + lane;
+    const int bsz = 8*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+
+    // ---- stage the 64 packed Q rows once (row p = tile rt, head-sub, q-offset) ----
+    for (int i = bt; i < NROWS*QCH; i += bsz) {
+        int pr = i / QCH, dc = i % QCH;
+        int prt = pr / 16, rin = pr % 16, hs = rin / 8, qo = rin % 8;
+        int grow = qrow_base + qo;
+        int hh = head0 + prt*2 + hs;
+        ((int4*)sQ)[pr*QCH + (dc ^ (pr & 7))] = (grow < T)
+            ? ((const int4*)(Q + ((size_t)grow * n_head + hh) * HEAD_DIM))[dc]
+            : zero4;
+    }
+    __syncthreads();
+
+    CTileH O_acc[O_NBLK];
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=0u; O_acc[c].x[1]=0u; }
+    float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+    const int r_lo = lane / 4;                        // head-A row (q_off), head-B is r_lo+8
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += 32) {
+        const int nk = min(32, T_kv - k0);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- GEMM0 over two synchronous 256-dim K chunks; scores accumulate in regs ----
+        CTile C0, C1;                                 // this warp: tile rt x its 16 keys
+        C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+        C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+        #pragma unroll
+        for (int ch = 0; ch < 2; ++ch) {
+            for (int i = bt; i < 32*CCH; i += bsz) {
+                int kk = i / CCH, dc = i % CCH;
+                const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM
+                                  + (size_t)ch * CHUNK;
+                ((int4*)sKV)[kk*CCH + (dc ^ (kk & 7))] = (kk < nk)
+                    ? ((const int4*)(K + rowo))[dc] : zero4;
+            }
+            __syncthreads();
+            #pragma unroll 8
+            for (int kt0 = 0; kt0 < CHUNK/K_STEP; ++kt0) {
+                ATile Qf, Kt;
+                ld_A_sw(Qf, sQ, rt*16, ch*(CHUNK/8) + kt0*2, QCH);
+                ld_A_sw(Kt, sKV, kh*16, kt0*2, CCH);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf, Blo);
+                mma_bf16(C1, Qf, Bhi);
+            }
+            __syncthreads();                          // slab free before restage
+        }
+
+        // ---- publish this warp's 16-key scores; softmax reads full 32-key rows ----
+        {
+            float* sSw = sS + (size_t)rt*16*32;
+            const int kb = kh*16;
+            sSw[r_lo*32 + kb + c0 + 0] = C0.x[0];
+            sSw[r_lo*32 + kb + c0 + 1] = C0.x[1];
+            sSw[(r_lo+8)*32 + kb + c0 + 0] = C0.x[2];
+            sSw[(r_lo+8)*32 + kb + c0 + 1] = C0.x[3];
+            sSw[r_lo*32 + kb + 8 + c0 + 0] = C1.x[0];
+            sSw[r_lo*32 + kb + 8 + c0 + 1] = C1.x[1];
+            sSw[(r_lo+8)*32 + kb + 8 + c0 + 0] = C1.x[2];
+            sSw[(r_lo+8)*32 + kb + 8 + c0 + 1] = C1.x[3];
+        }
+        __syncthreads();
+
+        // ---- full-row register softmax (replicated across the tile's warp pair);
+        // lo/hi quads are the SAME q position on the two packed heads ----
+        CTile Sc[4];
+        {
+            const float* sSw = sS + (size_t)rt*16*32;
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                Sc[g].x[0] = sSw[r_lo*32 + g*8 + c0 + 0];
+                Sc[g].x[1] = sSw[r_lo*32 + g*8 + c0 + 1];
+                Sc[g].x[2] = sSw[(r_lo+8)*32 + g*8 + c0 + 0];
+                Sc[g].x[3] = sSw[(r_lo+8)*32 + g*8 + c0 + 1];
+            }
+        }
+        const bool boundary = (nk < 32) || (causal_i && (k0 + 31) > q_pos0 + r_lo);
+        float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        if (boundary) {
+            const int q_pos = q_pos0 + r_lo;          // shared by both packed heads
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    int col = g*8 + c0 + (l & 1);
+                    float sv = Sc[g].x[l] * scale;
+                    if (col >= nk) sv = NEG_INF;
+                    if (causal_i && (k0 + col) > q_pos) sv = NEG_INF;
+                    Sc[g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+        } else {
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float sv = Sc[g].x[l] * scale;
+                    Sc[g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+        }
+        s_tile_max_lo = row_max4(s_tile_max_lo);
+        s_tile_max_hi = row_max4(s_tile_max_hi);
+        float m_new_lo = fmaxf(m_lo, s_tile_max_lo);
+        float m_new_hi = fmaxf(m_hi, s_tile_max_hi);
+        float alpha_lo = (m_lo == NEG_INF) ? 0.0f : exp2f((m_lo - m_new_lo) * LOG2E);
+        float alpha_hi = (m_hi == NEG_INF) ? 0.0f : exp2f((m_hi - m_new_hi) * LOG2E);
+        float l_part_lo = 0.0f, l_part_hi = 0.0f;
+        #pragma unroll
+        for (int g = 0; g < 4; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float mn = (l < 2) ? m_new_lo : m_new_hi;
+                float sv = Sc[g].x[l];
+                float pv = (sv == NEG_INF) ? 0.0f : exp2f((sv - mn) * LOG2E);
+                Sc[g].x[l] = pv;
+                if (l < 2) l_part_lo += pv; else l_part_hi += pv;
+            }
+        }
+        l_part_lo = row_sum4(l_part_lo);
+        l_part_hi = row_sum4(l_part_hi);
+        l_lo = l_lo * alpha_lo + l_part_lo;
+        l_hi = l_hi * alpha_hi + l_part_hi;
+        m_lo = m_new_lo; m_hi = m_new_hi;
+
+        // P: each warp stores its own 16-key half (g = kh*2, kh*2+1)
+        {
+            __half* sPw = sP + (size_t)rt*16*32;
+            #pragma unroll
+            for (int gg = 0; gg < 2; ++gg) {
+                const int g = kh*2 + gg;
+                sPw[r_lo*32 + g*8 + c0 + 0] = __float2half(Sc[g].x[0]);
+                sPw[r_lo*32 + g*8 + c0 + 1] = __float2half(Sc[g].x[1]);
+                sPw[(r_lo+8)*32 + g*8 + c0 + 0] = __float2half(Sc[g].x[2]);
+                sPw[(r_lo+8)*32 + g*8 + c0 + 1] = __float2half(Sc[g].x[3]);
+            }
+        }
+        {
+            const __half2 alo = __float2half2_rn(alpha_lo);
+            const __half2 ahi = __float2half2_rn(alpha_hi);
+            #pragma unroll
+            for (int c = 0; c < O_NBLK; ++c) {
+                __half2 lo = __hmul2(*(__half2*)&O_acc[c].x[0], alo);
+                __half2 hi = __hmul2(*(__half2*)&O_acc[c].x[1], ahi);
+                O_acc[c].x[0] = *(unsigned*)&lo;
+                O_acc[c].x[1] = *(unsigned*)&hi;
+            }
+        }
+        __syncthreads();                              // sP visible; sKV free for V
+
+        // ---- GEMM1 over two synchronous 256-dim V chunks; warp owns 128 dims per chunk ----
+        #pragma unroll
+        for (int ch = 0; ch < 2; ++ch) {
+            for (int i = bt; i < 32*CCH; i += bsz) {
+                int kk = i / CCH, dc = i % CCH;
+                const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM
+                                  + (size_t)ch * CHUNK;
+                ((int4*)sKV)[kk*CCH + (dc ^ (kk & 7))] = (kk < nk)
+                    ? ((const int4*)(V + rowo))[dc] : zero4;
+            }
+            __syncthreads();
+            ATile Ap[2];
+            #pragma unroll
+            for (int kk = 0; kk < 32; kk += K_STEP)
+                ld_A(Ap[kk/K_STEP], (const __nv_bfloat16*)sP + (size_t)rt*16*32 + kk, 16);
+            const int d_base = kh * 128;              // this warp's dims within the chunk
+            for (int d0 = 0; d0 < 128; d0 += 2*N_KEYS) {
+                #pragma unroll
+                for (int kk = 0; kk < 32; kk += K_STEP) {
+                    ATile Bt;
+                    ld_A_trans_sw(Bt, sKV, kk, (d_base + d0)/8, CCH);
+                    BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                    BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                    mma_f16acc(O_acc[ch*16 + (d0/N_KEYS) + 0], Ap[kk/K_STEP], Blo);
+                    mma_f16acc(O_acc[ch*16 + (d0/N_KEYS) + 1], Ap[kk/K_STEP], Bhi);
+                }
+            }
+            __syncthreads();                          // slab free (next V chunk / next K)
+        }
+    }
+
+    if (kh == 0 && c0 == 0) {
+        sL[rt*16 + r_lo] = l_lo;
+        sL[rt*16 + r_lo + 8] = l_hi;
+    }
+    __syncthreads();
+
+    // ---- epilogue: packed row p -> (head, q-row); dims = ch*256 + kh*128 + d ----
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) {
+        const int ch = c / 16;
+        const int dt = c % 16;
+        #pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int rr = CTile::get_i(l);                 // packed row within the m16 tile
+            int d  = ch*CHUNK + kh*128 + dt*N_KEYS + CTile::get_j(l);
+            int hs = rr / 8, qo = rr % 8;
+            int grow = qrow_base + qo;
+            if (grow < T) {
+                const int p = rt*16 + rr;
+                float linv = (sL[p] > 0.0f) ? (1.0f / sL[p]) : 0.0f;
+                const __half2 h2v = *(const __half2*)&O_acc[c].x[l / 2];
+                const float ov = __half2float((l & 1) ? __high2half(h2v) : __low2half(h2v));
+                O[((size_t)grow * n_head + head0 + rt*2 + hs) * HEAD_DIM + d] = ov * linv;
+            }
+        }
+    }
+}
+
 // Head-pair (MQA ncols2=2, llama fattn-mma:561) evolution of sp16w4: nkv=1 means every
 // head reads IDENTICAL K/V — pack 2 heads per CTA so each staged K/V tile feeds 2x mma.
 // Q lives entirely in registers (staged through the sK slab pre-loop); grid y = n_head/2.

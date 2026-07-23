@@ -174,6 +174,14 @@ pub fn fa_f16pv_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() != Ok("0"))
 }
 
+/// Gen-3 hd512 arm (BW24_FA512_H8=1, experiment): ncols2=8 — the whole GQA group per CTA,
+/// Q in smem, chunked synchronous K/V through one aliased slab, 8 warps (llama 512/512/64
+/// config). Needs n_head % 8 == 0 and (n_head/n_head_kv) % 8 == 0.
+pub fn fa512_h8_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA512_H8").as_deref() == Ok("1"))
+}
+
 /// hd512 head-pair arm (DEFAULT since stamp v4; BW24_FA512_HP=0 reverts to sp16): GQA
 /// ncols2=2 — 2 heads per CTA share each staged K/V tile, Q register-resident. Engages
 /// when n_head is even and the GQA group (n_head/n_head_kv) is even.
@@ -5999,6 +6007,7 @@ impl Engine {
         let f16pv = fa_f16pv_on();
         let nw = if f16pv { fa512_wide_warps() } else { 2 };
         let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
+        let h8 = f16pv && fa512_h8_on() && n_head % 8 == 0 && (n_head / n_head_kv) % 8 == 0;
         debug_assert!(!v_f16 || f16pv, "f16 V emitted without the door on");
         let mut vguard = self.fa_vf16_scratch.lock().unwrap();
         let vref: &CudaSlice<u8> = if f16pv && !v_f16 {
@@ -6012,7 +6021,8 @@ impl Engine {
             self.bf16_to_f16_into(vb, n, dst)?;
             vguard.as_ref().unwrap()
         } else { vb };
-        let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+        let f = self.func(if h8 { "fa_prefill_bf16_hd512_h8" }
+                          else if hp { "fa_prefill_bf16_hd512_sp16h2" }
                           else { match (f16pv, nw) {
                               (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
                               (true, _) => "fa_prefill_bf16_hd512_sp16",
@@ -6020,7 +6030,10 @@ impl Engine {
                           } });
         let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
         // h2 drops sQ (Q register-resident) and doubles sP/sS/sL for the head pair.
-        let shmem = if hp {
+        // h8: sQ 64 rows + one 32x256 K/V slab + sS/sP 64x32 + sL (llama-geometry fit).
+        let shmem = if h8 {
+            (2 * (64 * head_dim + 32 * 256) + 4 * (64 * 32) + 2 * (64 * 32) + 4 * 64) as u32
+        } else if hp {
             (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
                + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
         } else {
@@ -6029,10 +6042,13 @@ impl Engine {
         };
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
-        let grid_y = if hp { (n_head / 2) as u32 } else { n_head as u32 };
+        let grid_y = if h8 { (n_head / 8) as u32 }
+                     else if hp { (n_head / 2) as u32 } else { n_head as u32 };
+        let (grid_x, bwarps) = if h8 { ((t as u32).div_ceil(8), 8u32) }
+                               else { ((t as u32).div_ceil(SP_M as u32), nwarp as u32) };
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32).div_ceil(SP_M as u32), grid_y, 1),
-            block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
+            grid_dim: (grid_x, grid_y, 1),
+            block_dim: (32, bwarps, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
@@ -6059,14 +6075,18 @@ impl Engine {
             const SP_M: usize = 16; const BKS: usize = 32;
             let nw = if f16pv { fa512_wide_warps() } else { 2 };
             let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
-            let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+            let h8 = f16pv && fa512_h8_on() && n_head % 8 == 0 && (n_head / n_head_kv) % 8 == 0;
+            let f = self.func(if h8 { "fa_prefill_bf16_hd512_h8" }
+                              else if hp { "fa_prefill_bf16_hd512_sp16h2" }
                               else { match (f16pv, nw) {
                                   (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
                                   (true, _) => "fa_prefill_bf16_hd512_sp16",
                                   _ => "fa_prefill_bf16_hd512_sp",
                               } });
             let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
-            let shmem = if hp {
+            let shmem = if h8 {
+                (2 * (64 * head_dim + 32 * 256) + 4 * (64 * 32) + 2 * (64 * 32) + 4 * 64) as u32
+            } else if hp {
                 (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
                    + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
             } else {
@@ -6075,10 +6095,13 @@ impl Engine {
             };
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
-            let grid_y = if hp { (n_head / 2) as u32 } else { n_head as u32 };
+            let grid_y = if h8 { (n_head / 8) as u32 }
+                         else if hp { (n_head / 2) as u32 } else { n_head as u32 };
+            let (grid_x, bwarps) = if h8 { ((t as u32).div_ceil(8), 8u32) }
+                                   else { ((t as u32).div_ceil(SP_M as u32), nwarp as u32) };
             let cfg = LaunchConfig {
-                grid_dim: ((t as u32).div_ceil(SP_M as u32), grid_y, 1),
-                block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
+                grid_dim: (grid_x, grid_y, 1),
+                block_dim: (32, bwarps, 1), shared_mem_bytes: shmem,
             };
             let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                                 t as i32, t_kv as i32, causal as i32);
