@@ -4064,7 +4064,9 @@ impl HybridModel {
                     let pos_ref = &mut pos_d;
                     let cache_ref = &mut *cache;
                     let slots_ref = &mut slots;
-                    e.capture_graph_retained(|e| {
+                    e.capture_graph_retained_flags(
+                        cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD,
+                        |e| {
                         // self-feeding: the argmax writes token_d itself.
                         let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
                         let sl = unsafe { &mut *(slots_ref as *mut G4DcSlots) };

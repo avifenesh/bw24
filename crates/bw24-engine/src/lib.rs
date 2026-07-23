@@ -7449,11 +7449,25 @@ impl Engine {
     /// and the capture is kept alive in the returned keeper — hold it as long as the graph
     /// replays (transients returning to the pool get reused by unrelated work and corrupt
     /// replays; the draft-graph root cause). Model-generic, next capture reuses it.
-    pub fn capture_graph_retained<F>(&self, mut step: F)
+    pub fn capture_graph_retained<F>(&self, step: F)
         -> Result<(cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>), Box<dyn std::error::Error>>
         where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
     {
-        use cudarc::driver::sys::{CUstreamCaptureMode, CUgraphInstantiate_flags};
+        use cudarc::driver::sys::CUgraphInstantiate_flags;
+        self.capture_graph_retained_flags(
+            CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH, step)
+    }
+
+    /// Retained capture with an explicit instantiate flag. ALLOC-FREE captured graphs
+    /// (zero mem nodes — the gemma slotted door) should pass UPLOAD instead of
+    /// AUTO_FREE_ON_LAUNCH: the auto-free flag's launch-time mem-pool scan was measured at
+    /// ~0.25us/node (205us on the 826-node step) even with nothing to free.
+    pub fn capture_graph_retained_flags<F>(&self,
+        flags: cudarc::driver::sys::CUgraphInstantiate_flags, mut step: F)
+        -> Result<(cudarc::driver::CudaGraph, Vec<Box<dyn std::any::Any + Send>>), Box<dyn std::error::Error>>
+        where F: FnMut(&Engine) -> Result<(), Box<dyn std::error::Error>>
+    {
+        use cudarc::driver::sys::CUstreamCaptureMode;
         // KEEP scope = WARMUPS ONLY (2026-07-13): keep_if_capturing retains via
         // CudaSlice::clone, which is a device ALLOC + D2D COPY on the stream — clones made
         // while the capture region is open become dead copy NODES replayed every launch
@@ -7472,7 +7486,7 @@ impl Engine {
             self.gpu.stream.synchronize()?;
             self.gpu.stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)?;
             let r = step(self);
-            let g = self.gpu.stream.end_capture(CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH);
+            let g = self.gpu.stream.end_capture(flags);
             r?;
             let graph = g?.ok_or("capture produced no graph (stream was not capturing)")?;
             graph.upload()?;
