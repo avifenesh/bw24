@@ -854,6 +854,37 @@ impl Engine {
         }
     }
 
+    /// PDL wave-B2: flash-module PDL functions. `g` selects the kf8vf8 flavor — the
+    /// caller MUST pass the SAME flavor its builder launch would resolve (fa_func/func_g
+    /// mirror); the flavors differ semantically (KV byte formats), a wrong-module launch
+    /// writes wrong bytes silently.
+    fn pdl_func_flash(&self, g: bool, name: &'static str)
+        -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
+        use cudarc::driver::sys as cu;
+        static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        static GMOD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        static FNS: std::sync::Mutex<Option<std::collections::HashMap<(bool, &'static str), usize>>> =
+            std::sync::Mutex::new(None);
+        let load = |path: &str| -> usize {
+            let bytes = std::fs::read(path).expect("flash fatbin (pdl)");
+            let mut m: cu::CUmodule = std::ptr::null_mut();
+            let r = unsafe { cu::cuModuleLoadData(&mut m, bytes.as_ptr() as *const std::ffi::c_void) };
+            assert!(r == cu::CUresult::CUDA_SUCCESS, "pdl flash module load: {r:?}");
+            m as usize
+        };
+        let module = if g { *GMOD.get_or_init(|| load(FLASH_FATBIN_KF8VF8)) }
+                     else { *BASE.get_or_init(|| load(FLASH_FATBIN_PATH)) };
+        let mut fns = FNS.lock().unwrap();
+        let map = fns.get_or_insert_with(Default::default);
+        if let Some(&f) = map.get(&(g, name)) { return Ok(f as cu::CUfunction); }
+        let cname = std::ffi::CString::new(name)?;
+        let mut f: cu::CUfunction = std::ptr::null_mut();
+        let r = unsafe { cu::cuModuleGetFunction(&mut f, module as cu::CUmodule, cname.as_ptr()) };
+        if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("pdl_func_flash {name} (g={g}): {r:?}").into()); }
+        map.insert((g, name), f as usize);
+        Ok(f)
+    }
+
     fn pdl_func(&self, name: &'static str) -> Result<cudarc::driver::sys::CUfunction, Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
         static MODULE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -896,6 +927,32 @@ impl Engine {
     /// # Safety
     /// `params` must match the kernel's exact parameter list (order, types, count) —
     /// a mismatch corrupts the launch silently.
+    /// Flash-module twin of `launch_pdl` — `g` picks the kf8vf8 flavor (must mirror the
+    /// builder path's fa_func/func_g choice exactly).
+    ///
+    /// # Safety
+    /// Same contract as `launch_pdl`.
+    unsafe fn launch_pdl_flash(&self, g: bool, name: &'static str, grid: (u32, u32, u32),
+                               block: (u32, u32, u32), params: &mut [*mut std::ffi::c_void])
+                               -> Result<(), Box<dyn std::error::Error>> {
+        use cudarc::driver::sys as cu;
+        let f = self.pdl_func_flash(g, name)?;
+        let mut attr = cu::CUlaunchAttribute {
+            id: cu::CUlaunchAttributeID::CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION,
+            pad: [0; 4],
+            value: cu::CUlaunchAttributeValue { programmaticStreamSerializationAllowed: 1 },
+        };
+        let cfg = cu::CUlaunchConfig {
+            gridDimX: grid.0, gridDimY: grid.1, gridDimZ: grid.2,
+            blockDimX: block.0, blockDimY: block.1, blockDimZ: block.2,
+            sharedMemBytes: 0, hStream: self.gpu.stream.cu_stream(),
+            attrs: &mut attr, numAttrs: 1,
+        };
+        let r = unsafe { cu::cuLaunchKernelEx(&cfg, f, params.as_mut_ptr(), std::ptr::null_mut()) };
+        if r != cu::CUresult::CUDA_SUCCESS { return Err(format!("launch_pdl_flash {name}: {r:?}").into()); }
+        Ok(())
+    }
+
     unsafe fn launch_pdl(&self, name: &'static str, grid: (u32, u32, u32), block: (u32, u32, u32),
                          params: &mut [*mut std::ffi::c_void])
                          -> Result<(), Box<dyn std::error::Error>> {
@@ -1525,11 +1582,29 @@ impl Engine {
                                   kv_dim_k: usize, kv_dim_v: usize,
                                   k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                                -> Result<(), Box<dyn std::error::Error>> {
-        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc") } else { self.func("append_quantize_kv_q8_0_q5_1_dc") };
         let nblk = (kv_dim_k.max(kv_dim_v) / 32) as u32;
-        let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let (kdk, kdv) = (kv_dim_k as i32, kv_dim_v as i32);
         let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        // PDL wave-B2: flash-module flavor mirrors the builder path's g flag exactly.
+        if Self::pdl_on() && Self::pdl_wb_on() {
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pk, _g0) = k_row.device_ptr(s); let (pv, _g1) = v_row.device_ptr(s);
+            let (pkc, _g2) = kc.device_ptr_mut(s); let (pvc, _g3) = vc.device_ptr_mut(s);
+            let (pt, _g4) = t_dev.device_ptr(s);
+            let mut ps = [
+                &pk as *const _ as *mut std::ffi::c_void, &pv as *const _ as *mut _,
+                &pkc as *const _ as *mut _, &pvc as *const _ as *mut _,
+                &pt as *const _ as *mut _, &kdk as *const _ as *mut _,
+                &kdv as *const _ as *mut _, &ktb as *const _ as *mut _,
+                &vtb as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl_flash(g, "append_quantize_kv_q8_0_q5_1_dc",
+                                           (nblk, 1, 1), (32, 1, 1), &mut ps)?; }
+            return Ok(());
+        }
+        let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc") } else { self.func("append_quantize_kv_q8_0_q5_1_dc") };
+        let cfg = LaunchConfig { grid_dim: (nblk, 1, 1), block_dim: (32, 1, 1), shared_mem_bytes: 0 };
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(k_row).arg(v_row).arg(kc).arg(vc).arg(t_dev).arg(&kdk).arg(&kdv).arg(&ktb).arg(&vtb);
         unsafe { b.launch(cfg)?; }
@@ -7273,6 +7348,27 @@ impl Engine {
                 if let Some((oq, od)) = q8_out.as_mut() {
                     // wave-5b port (2026-07-23, t=1 decode only): q8-emitting dc combine.
                     debug_assert!(t == 1, "rows q8 emit is a t=1 decode arm");
+                    if Self::pdl_on() && Self::pdl_wb_on() {
+                        // wave-B2: flavor mirrors fa_func (hd512 + gkv → kf8vf8).
+                        use cudarc::driver::{DevicePtr, DevicePtrMut};
+                        let s = &self.gpu.stream;
+                        let (po, _g0) = part_o.device_ptr(s); let (pm, _g1) = part_m.device_ptr(s);
+                        let (pl, _g2) = part_l.device_ptr(s);
+                        let (pq, _g3) = oq.device_ptr_mut(s); let (pd, _g4) = od.device_ptr_mut(s);
+                        let (pb, _g5) = bd.device_ptr(s);
+                        let mut ps = [
+                            &po as *const _ as *mut std::ffi::c_void, &pm as *const _ as *mut _,
+                            &pl as *const _ as *mut _, &pq as *const _ as *mut _,
+                            &pd as *const _ as *mut _, &hd as *const _ as *mut _,
+                            &nh as *const _ as *mut _, &pb as *const _ as *mut _,
+                            &plus_g as *const _ as *mut _, &nspm as *const _ as *mut _,
+                            &spk as *const _ as *mut _,
+                        ];
+                        unsafe { self.launch_pdl_flash(Self::gkv_on(),
+                            "fa_decode_combine_rows_dc_q8_1",
+                            cfg2.grid_dim, cfg2.block_dim, &mut ps)?; }
+                        continue;
+                    }
                     let fc = self.fa_func("fa_decode_combine_rows_dc_q8_1", head_dim);
                     let mut b2 = self.gpu.stream.launch_builder(&fc);
                     b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut **oq).arg(&mut **od)
@@ -7410,6 +7506,24 @@ impl Engine {
         if let Some((oq, od)) = q8_out {
             // wave-5b port (2026-07-23): q8-emitting combine — the t=1 decode's wo matvec
             // consumes the pair directly; the standalone quantize launch folds away.
+            if Self::pdl_on() && Self::pdl_wb_on() {
+                // wave-B2: flavor mirrors the builder's wg choice.
+                use cudarc::driver::{DevicePtr, DevicePtrMut};
+                let s = &self.gpu.stream;
+                let (po, _g0) = part_o.device_ptr(s); let (pm, _g1) = part_m.device_ptr(s);
+                let (pl, _g2) = part_l.device_ptr(s);
+                let (pq, _g3) = oq.device_ptr_mut(s); let (pd, _g4) = od.device_ptr_mut(s);
+                let mut ps = [
+                    &po as *const _ as *mut std::ffi::c_void, &pm as *const _ as *mut _,
+                    &pl as *const _ as *mut _, &pq as *const _ as *mut _,
+                    &pd as *const _ as *mut _, &hd as *const _ as *mut _,
+                    &nh as *const _ as *mut _, &nspm as *const _ as *mut _,
+                    &spk as *const _ as *mut _, &wini as *const _ as *mut _,
+                ];
+                unsafe { self.launch_pdl_flash(wg, "fa_decode_combine_rows_w_q8_1",
+                                               cfg2.grid_dim, cfg2.block_dim, &mut ps)?; }
+                return Ok(());
+            }
             let fc = if wg { self.func_g("fa_decode_combine_rows_w_q8_1") }
                      else { self.func("fa_decode_combine_rows_w_q8_1") };
             let mut b2 = self.gpu.stream.launch_builder(&fc);

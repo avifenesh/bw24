@@ -54,6 +54,14 @@
 #include <cuda_fp8.h>
 #include <cstdint>
 
+// PDL entry (same contract as kernels.cu): only kernels carrying this macro may take a
+// CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION launch. sm_90+ only.
+#if !defined(BW24_PORTABLE_CUDA) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#define BW24_PDL_ENTRY() cudaGridDependencySynchronize()
+#else
+#define BW24_PDL_ENTRY()
+#endif
+
 #define WARP_SZ 32
 // HEAD_DIM (2026-07-07): no longer a global #define — the FA prefill kernels are
 // template<int HD> bodies stamped at BOTH 256 (qwen35 class, the original names) and
@@ -504,6 +512,7 @@ extern "C" __global__ void append_quantize_kv_q8_0_q5_1_dc(
         int kv_dim_k, int kv_dim_v,
         long k_tok_bytes, long v_tok_bytes)
 {
+    BW24_PDL_ENTRY();
     const int t    = t_dev[0];             // <-- the ONLY change vs the host-int kernel
     const int b    = blockIdx.x;
     const int lane = threadIdx.x;
@@ -6584,6 +6593,7 @@ extern "C" __global__ void fa_decode_combine_rows_dc_q8_1(
         int head_dim, int n_head, const int* __restrict__ t_kv_base_dev, int base_plus,
         int n_splits_max, int split_keys)
 {
+    BW24_PDL_ENTRY();
     const int head     = blockIdx.x;
     const int r        = blockIdx.y;
     const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
@@ -6622,6 +6632,7 @@ extern "C" __global__ void fa_decode_combine_rows_w_q8_1(
         float* __restrict__ out_d,
         int head_dim, int n_head, int n_splits_max, int split_keys, int window)
 {
+    BW24_PDL_ENTRY();
     const int head     = blockIdx.x;
     const int r        = blockIdx.y;
     const int n_splits = (window + split_keys - 1) / split_keys;

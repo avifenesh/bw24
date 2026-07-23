@@ -143,7 +143,9 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 | flag | revert semantics | provenance |
 |---|---|---|
 | `BW24_FAST=0` | Stage-A f32-dequant matvec class — THE correctness oracle | default-on 2026-07-08 (env-law retirement) |
-| `BW24_PDL=0` | plain `cuLaunchKernel` for the six grid-dep-synced glue kernels (no programmatic stream serialization) | default-on 2026-07-13; E4B +1.0-1.2%, 26B/31B/qwen flat; SASS-audited entry syncs |
+| `BW24_PDL=0` | plain `cuLaunchKernel` for ALL PDL-attributed kernels (master seam: the six glue kernels + every later wave) | default-on 2026-07-13; E4B +1.0-1.2%, 26B/31B/qwen flat; SASS-audited entry syncs |
+| `BW24_PDL_MMVQ=0` | revert PDL wave-A alone: the four decode-hot mmvq matvec kernels (`q4_0_mmvq_rp`, `fused2_mr1_rp`, `fused3_mr1_rp`, `q6_K_mmvq`) | default-on 2026-07-23; 12B +0.19%, E4B A/B positive, 31B/26B flat |
+| `BW24_PDL_WB=0` | revert PDL wave-B alone: dense-glue quartet (rms_norm_f32, add_rms_norm_f32, add_scale_rms_norm_q8_1, quantize_q8_1) + flash trio (append_kv dc, the two q8 rows-combines) | default-on 2026-07-23; B1a 12B +0.61% |
 | `BW24_WPF=0` | no wo-plane L2 prefetch across the E4B fa window | default-on 2026-07-13; +0.65% E4B; 26B/31B probed flat/negative and NOT wired |
 | `BW24_F2B=0` | separate per-tensor b-tier verify launches (no segmented-grid qkv/gate+up fusion) | default-on 2026-07-13; 31B depth +5%, short +3.9%, 26B +0.9%; bit-exact (VERIFY-GATE 0.000e0) |
 | `BW24_MMVQ=0` | dp4a matvec class (m=1 AND batched verify switch together — dispatch-parity law) | default-on 2026-07-08; parity fix 2026-07-07 |
