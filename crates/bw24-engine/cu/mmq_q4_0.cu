@@ -36,6 +36,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 
 // ======================= ggml constants/macros (vendored) =======================
 #define WARP_SIZE 32
@@ -684,15 +685,13 @@ template <bool need_check, bool is_rp>
 static int mmq_q4_0_launch_sk(const char * W, const char * W_d, const int * y_q, float * y,
                               float * fixup_scratch,
                               int in_f, int out_f, int n_tokens, cudaStream_t st) {
+    if (fixup_scratch == nullptr) {
+        return mmq_q4_0_launch<need_check, is_rp>(W, W_d, y_q, y, in_f, out_f, n_tokens, st);
+    }
+    const int nsm = mmq_nsm();
     const int nty = (out_f    + MMQ_Y - 1) / MMQ_Y;
     const int ntx = (n_tokens + MMQ_X - 1) / MMQ_X;
     const int ntiles = nty * ntx;
-    const int nsm = mmq_nsm();
-    const int waves = (ntiles + nsm - 1) / nsm;
-    const int eff_pct = 100 * ntiles / (nsm * waves);
-    if (eff_pct >= 90 || fixup_scratch == nullptr) {
-        return mmq_q4_0_launch<need_check, is_rp>(W, W_d, y_q, y, in_f, out_f, n_tokens, st);
-    }
     const int stride_row_x    = in_f / QK4_0;
     const int blocks_per_ne00 = in_f / QK4_0;
     const int stride_col_dst  = out_f;
@@ -719,6 +718,73 @@ static int mmq_q4_0_launch_sk(const char * W, const char * W_d, const int * y_q,
     return 0;
 }
 
+// ---- shape-keyed sk-vs-tiling autotune (2026-07-23): the winner is SHAPE-dependent, not a
+// global efficiency threshold (31B pp1736 +3.6% with sk-always, 12B -1.8%). First call per
+// (in_f, out_f, m-bucket) times both forms with events and caches the winner; the chosen
+// arm re-runs last so y always holds the cached arm's numerics (deterministic per shape).
+// Single GPU worker owns this path — plain statics suffice.
+struct MmqSkChoice { int in_f, out_f, mb; int use_sk; };
+static MmqSkChoice sk_cache[96];
+static int sk_cache_n = 0;
+
+template <bool need_check, bool is_rp>
+static int mmq_launch_either(bool sk, const char * W, const char * W_d, const int * y_q,
+                             float * y, float * fx, int in_f, int out_f, int n_tokens,
+                             cudaStream_t st) {
+    if (sk) {
+        return mmq_q4_0_launch_sk<need_check, is_rp>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+    }
+    return mmq_q4_0_launch<need_check, is_rp>(W, W_d, y_q, y, in_f, out_f, n_tokens, st);
+}
+
+template <bool need_check, bool is_rp>
+static int mmq_gemm_autotuned(const char * W, const char * W_d, const int * y_q, float * y,
+                              float * fx, int in_f, int out_f, int n_tokens, cudaStream_t st) {
+    int mb = 1; while (mb < n_tokens) { mb <<= 1; }        // pow2 m-bucket
+    for (int i = 0; i < sk_cache_n; ++i) {
+        if (sk_cache[i].in_f == in_f && sk_cache[i].out_f == out_f && sk_cache[i].mb == mb) {
+            return mmq_launch_either<need_check, is_rp>(sk_cache[i].use_sk != 0,
+                W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+        }
+    }
+    // miss: time both (3 reps each after 1 warmup), cache, re-run the winner last.
+    float ms_tile = 0.0f, ms_sk = 0.0f;
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0); cudaEventCreate(&e1);
+    int rc = 0;
+    for (int form = 0; form < 2 && rc == 0; ++form) {
+        const bool sk = form == 1;
+        rc = mmq_launch_either<need_check, is_rp>(sk, W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+        if (rc != 0) { break; }
+        cudaEventRecord(e0, st);
+        for (int r = 0; r < 3 && rc == 0; ++r) {
+            rc = mmq_launch_either<need_check, is_rp>(sk, W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+        }
+        cudaEventRecord(e1, st);
+        cudaEventSynchronize(e1);
+        float ms = 0.0f; cudaEventElapsedTime(&ms, e0, e1);
+        if (sk) { ms_sk = ms; } else { ms_tile = ms; }
+    }
+    cudaEventDestroy(e0); cudaEventDestroy(e1);
+    if (rc != 0) { return rc; }
+    const bool use_sk = ms_sk < ms_tile;
+    static int dbg = -1;
+    if (dbg < 0) { const char * ev = getenv("BW24_MMQ_SK_DEBUG"); dbg = ev && ev[0] == '1'; }
+    if (dbg) {
+        fprintf(stderr, "[mmq-sk] in_f=%d out_f=%d mb=%d tile=%.3fms sk=%.3fms -> %s\n",
+                in_f, out_f, mb, ms_tile / 3.0f, ms_sk / 3.0f, use_sk ? "SK" : "TILE");
+    }
+    if (sk_cache_n < (int)(sizeof(sk_cache)/sizeof(sk_cache[0]))) {
+        sk_cache[sk_cache_n++] = MmqSkChoice{in_f, out_f, mb, use_sk ? 1 : 0};
+    }
+    // y currently holds the sk result (form 1 ran last); re-run tiling if it won.
+    if (!use_sk) {
+        return mmq_launch_either<need_check, is_rp>(false, W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+    }
+    return 0;
+}
+
+
 extern "C" {
 
 // Fixup scratch bytes for the stream-k GEMM (one [MMQ_X x MMQ_Y] f32 slot per SM).
@@ -726,7 +792,7 @@ size_t bw24_mmq_q4_0_fixup_bytes(void) {
     return (size_t) mmq_nsm() * MMQ_X * MMQ_Y * sizeof(float);
 }
 
-// Stream-k GEMM entry: tiling when wave efficiency >= 90%, else stream-k + fixup.
+// Stream-k GEMM entry: shape-autotuned sk-vs-tiling (BW24_MMQ_SK=0 upstream reverts wholesale).
 int bw24_mmq_q4_0_gemm_sk(const void * W_q4_0, const void * act_scratch, float * y,
                           void * fixup_scratch,
                           int in_f, int out_f, int n_tokens, void * stream, int rp) {
@@ -736,14 +802,25 @@ int bw24_mmq_q4_0_gemm_sk(const void * W_q4_0, const void * act_scratch, float *
     const char * W  = (const char *) W_q4_0;
     const char * W_d = W + (size_t) out_f * (size_t) (in_f / QK4_0) * 16;
     float * fx = (float *) fixup_scratch;
+    if (fx == nullptr) {
+        // no scratch -> tiling only
+        if (rp) {
+            return need_check
+                ? mmq_q4_0_launch<true,  true>(W, W_d, y_q, y, in_f, out_f, n_tokens, st)
+                : mmq_q4_0_launch<false, true>(W, W_d, y_q, y, in_f, out_f, n_tokens, st);
+        }
+        return need_check
+            ? mmq_q4_0_launch<true,  false>(W, nullptr, y_q, y, in_f, out_f, n_tokens, st)
+            : mmq_q4_0_launch<false, false>(W, nullptr, y_q, y, in_f, out_f, n_tokens, st);
+    }
     if (rp) {
         return need_check
-            ? mmq_q4_0_launch_sk<true,  true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st)
-            : mmq_q4_0_launch_sk<false, true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
+            ? mmq_gemm_autotuned<true,  true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st)
+            : mmq_gemm_autotuned<false, true>(W, W_d, y_q, y, fx, in_f, out_f, n_tokens, st);
     }
     return need_check
-        ? mmq_q4_0_launch_sk<true,  false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st)
-        : mmq_q4_0_launch_sk<false, false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st);
+        ? mmq_gemm_autotuned<true,  false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st)
+        : mmq_gemm_autotuned<false, false>(W, nullptr, y_q, y, fx, in_f, out_f, n_tokens, st);
 }
 
 // Bytes needed for the quantized activation buffer (block_q8_1_mmq stream): caller pre-allocs.
