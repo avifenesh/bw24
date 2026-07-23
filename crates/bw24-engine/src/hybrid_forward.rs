@@ -3711,7 +3711,8 @@ impl HybridModel {
                                          pos_d: &mut CudaSlice<i32>, embd_gpu: &CudaSlice<u8>,
                                          embd_qt: i32, embd_rb: usize, cache: &mut Cache,
                                          n_vocab: usize, cap_bucket_max: Option<(usize, usize)>,
-                                         sl: &mut G4DcSlots, tok_out: &mut CudaSlice<u32>)
+                                         sl: &mut G4DcSlots, tok_out: &mut CudaSlice<u32>,
+                                         ring: Option<(&mut CudaSlice<u32>, usize)>)
                                          -> Result<(), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
@@ -3746,6 +3747,12 @@ impl HybridModel {
         }
         self.gemma4_suppress(e, &mut sl.logits, 1)?;
         e.argmax_token_device_into(&sl.logits, tok_out, n_vocab)?;
+        if let Some((ring, base)) = ring {
+            // in-graph token parking: slot = (pos - base) % ring.len(); the door drains
+            // with ONE sync per chunk instead of a per-token dtoh (the launch-serialization
+            // fix — llama's 885us/launch overlaps GPU work because nothing waits per token).
+            e.plain_tok_ring(tok_out, pos_d, base, ring)?;
+        }
         e.inc_seqlen(pos_d)?;
         if cap_bucket_max.is_none() { cache.pos += 1; }
         Ok(())
@@ -4020,6 +4027,12 @@ impl HybridModel {
         // ALLOC-FREE capture: persistent transient slots — the captured graph carries zero
         // mem nodes (the 226us/launch tax). Slots must outlive every cached graph.
         let mut slots = self.g4_dc_slots(e)?;
+        // Chunked replay ring: tokens park on-device; ONE drain sync per chunk. ring_base is
+        // baked at the door entry (the modulo keeps every capture valid indefinitely).
+        const RING: usize = 64;
+        const DRAIN: usize = 16;
+        let mut ring = e.stream().alloc_zeros::<u32>(RING)?;
+        let ring_base = prompt_pos;
         let mut out = Vec::with_capacity(max_new);
         let mut reason = StopReason::MaxNew;
         let mut next = first_token;
@@ -4064,15 +4077,17 @@ impl HybridModel {
                     let pos_ref = &mut pos_d;
                     let cache_ref = &mut *cache;
                     let slots_ref = &mut slots;
+                    let ring_ref = &mut ring;
                     e.capture_graph_retained_flags(
-                        cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_UPLOAD,
+                        cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_USE_NODE_PRIORITY,
                         |e| {
                         // self-feeding: the argmax writes token_d itself.
                         let tok_in = unsafe { &*(tok_ref as *const CudaSlice<u32>) };
                         let sl = unsafe { &mut *(slots_ref as *mut G4DcSlots) };
+                        let rg = unsafe { &mut *(ring_ref as *mut CudaSlice<u32>) };
                         self.gemma4_decode_step_dc_slotted(e, tok_in, pos_ref, embd_gpu, qt, rb,
                                                            cache_ref, n_vocab, Some(bucket_max),
-                                                           sl, tok_ref)
+                                                           sl, tok_ref, Some((rg, ring_base)))
                     })?
                 };
                 cache.rollback(e, &snap, 0)?;
@@ -4091,10 +4106,52 @@ impl HybridModel {
                 graphs.insert(key, graph);
                 captures += 1;
             }
-            graphs.get(&key).unwrap().0.launch()?;
-            cache.pos += 1;
-            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += 1; }
-            next = e.dtoh_u32_one(&token_d)?;
+            // CHUNKED REPLAY: enqueue up to DRAIN launches back-to-back (the ~200us host
+            // cost of each cuGraphLaunch overlaps the PREVIOUS launch's ~11ms GPU work),
+            // then ONE sync + ring drain. The chunk must stay inside this bucket key and
+            // the budget; capture warmups already emitted their tokens through the ring.
+            let mut chunk = 1usize;
+            while chunk < DRAIN && out.len() + chunk < max_new {
+                let t_next = cache.pos + 1 + chunk;
+                let key_s2 = if t_next > win { (true, usize::MAX) }
+                             else { e.fa_bucket_key(t_next, hd_s, nkv_s, crate::Engine::wkv_on()) };
+                let key_g2 = if t_next >= f512 {
+                    (true, (t_next + 1).next_power_of_two().max(f512 * 2))
+                } else { e.fa_bucket_key(t_next, hd_g, nkv_g, false) };
+                if (key_s2, key_g2, t_next >= f512, t_next > win) != key { break; }
+                chunk += 1;
+            }
+            let g = &graphs.get(&key).unwrap().0;
+            for _ in 0..chunk { g.launch()?; }
+            e.stream().synchronize()?;
+            let ringh = e.dtoh_u32(&ring)?;
+            for j in 0..chunk {
+                let pos_j = cache.pos + j;
+                let tok_j = ringh[(pos_j - ring_base) % RING];
+                cache.pos += 0; // advanced below in one shot
+                if j + 1 == chunk { next = tok_j; }
+                else {
+                    out.push(tok_j);
+                    if eos.contains(&tok_j) || !on_token(tok_j) {
+                        reason = if eos.contains(&tok_j) { StopReason::Eos }
+                                 else { StopReason::Callback };
+                        // roll device/host state back to the stop point.
+                        let keep = cache.pos + j + 1;
+                        e.set_i32_one(&mut pos_d, keep as i32)?;
+                        for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+                            e.set_i32_one(&mut kvl.len_d, keep as i32)?;
+                            kvl.len = keep;
+                        }
+                        cache.pos = keep;
+                        if std::env::var("BW24_GRAPH_STATS").is_ok() {
+                            eprintln!("[gemma-graph] captures={captures} buckets={}", graphs.len());
+                        }
+                        return Ok((out, reason));
+                    }
+                }
+            }
+            cache.pos += chunk;
+            for kvl in cache.kv.iter_mut().filter_map(|k| k.as_mut()) { kvl.len += chunk; }
         }
         if std::env::var("BW24_GRAPH_STATS").is_ok() {
             eprintln!("[gemma-graph] captures={captures} buckets={}", graphs.len());
