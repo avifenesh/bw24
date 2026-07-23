@@ -1,39 +1,45 @@
 == model: gemma-4-12b-it-qat-q4_0.gguf
-temp-pre: 56
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3966.78 ± 169.23 |
+temp-pre: 57
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3963.00 ± 171.46 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4426s = 3922.3 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 0.4491s = 3865.6 tok/s (pp1736)
-temp-pre: 60
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3938.48 ± 159.57 |
+prefill 1736 tok in 0.4562s = 3805.6 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=2.379e0  MATCH
+prefill 1736 tok in 0.4568s = 3800.7 tok/s (pp1736)
+temp-pre: 62
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3810.25 ± 131.26 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4444s = 3906.5 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 0.4490s = 3866.6 tok/s (pp1736)
-temp-pre: 61
-| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3940.40 ± 180.46 |
+prefill 1736 tok in 0.4590s = 3782.0 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=2.379e0  MATCH
+prefill 1736 tok in 0.4726s = 3673.5 tok/s (pp1736)
+temp-pre: 62
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3931.72 ± 151.21 |
 prefill argmax=623  decode argmax=623  logit maxdiff=2.862e0  MATCH
-prefill 1736 tok in 0.4456s = 3896.1 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 0.4504s = 3854.7 tok/s (pp1736)
+prefill 1736 tok in 0.4469s = 3884.5 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=2.379e0  MATCH
+prefill 1736 tok in 0.4529s = 3833.1 tok/s (pp1736)
 == model: gemma-4-31B_q4_0-it.gguf
-temp-pre: 61
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1553.40 ± 0.99 |
+temp-pre: 62
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1511.45 ± 5.64 |
 prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2059s = 1439.6 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 1.3176s = 1317.6 tok/s (pp1736)
-temp-pre: 63
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1549.44 ± 0.15 |
-prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2178s = 1425.6 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 1.3279s = 1307.3 tok/s (pp1736)
+prefill 1736 tok in 1.2073s = 1438.0 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.074e0  MATCH
+prefill 1736 tok in 1.2781s = 1358.3 tok/s (pp1736)
 temp-pre: 64
-| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.89 ± 1.07 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1547.35 ± 1.15 |
 prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
-prefill 1736 tok in 1.2147s = 1429.1 tok/s (pp1736)
-fi-arm:
-prefill 1736 tok in 1.2992s = 1336.2 tok/s (pp1736)
-PRINT COMPLETE Wed Jul 22 11:15:40 PM UTC 2026
+prefill 1736 tok in 1.2567s = 1381.3 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.074e0  MATCH
+prefill 1736 tok in 1.3873s = 1251.3 tok/s (pp1736)
+temp-pre: 66
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |      1526.21 ± 17.16 |
+prefill argmax=623  decode argmax=623  logit maxdiff=9.584e-1  MATCH
+prefill 1736 tok in 1.3000s = 1335.4 tok/s (pp1736)
+f16pv-arm:
+prefill argmax=623  decode argmax=623  logit maxdiff=1.074e0  MATCH
+prefill 1736 tok in 1.4161s = 1225.9 tok/s (pp1736)
+PRINT COMPLETE Thu Jul 23 12:05:43 AM UTC 2026

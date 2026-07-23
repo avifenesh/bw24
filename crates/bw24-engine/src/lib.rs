@@ -174,6 +174,16 @@ pub fn fa_f16pv_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() == Ok("1"))
 }
 
+/// 4-warp sp16 experiment arm (BW24_FA512_W4=1, requires the f16pv door): GEMM0 split-K
+/// 4-way + GEMM1 4x128 O-dims. Own partial-sum order — oracle-band gated. Returns warp
+/// count (2 = base sp16). 8-warp arm measured NEGATIVE 2026-07-23 (jsonl) and removed.
+pub fn fa512_wide_warps() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| match std::env::var("BW24_FA512_W4").as_deref() {
+        Ok("1") => 4, _ => 2,
+    })
+}
+
 /// hd-512 vec crossover floor (BW24_FA512_MIN, default 512) — shared by fa_decode dispatch
 /// and the gemma global-layer rows/parity call sites.
 pub fn fa512_min_tkv() -> usize {
@@ -5908,18 +5918,23 @@ impl Engine {
         // class); KQ/softmax/rescale-band/final-normalize stay f32. Own numeric config —
         // battery-gated. V bytes must be f16 for the sp16 kernel (stage/ldmatrix are typeless).
         let f16pv = fa_f16pv_on();
+        let nw = if f16pv { fa512_wide_warps() } else { 2 };
         let vh; let vref: &CudaSlice<u8> = if f16pv {
             vh = self.bf16_to_f16(vb, t_kv * n_head_kv * head_dim)?; &vh
         } else { vb };
-        let f = self.func(if f16pv { "fa_prefill_bf16_hd512_sp16" }
-                          else { "fa_prefill_bf16_hd512_sp" });
+        let f = self.func(match (f16pv, nw) {
+            (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
+            (true, _) => "fa_prefill_bf16_hd512_sp16",
+            _ => "fa_prefill_bf16_hd512_sp",
+        });
+        let (nwarp, npart) = if nw > 2 { (nw, nw) } else { (2, 1) };
         let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
-                   + 4 * (SP_M * BKS + SP_M)) as u32;
+                   + 4 * (npart * SP_M * BKS + SP_M)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
         let cfg = LaunchConfig {
             grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
-            block_dim: (32, 2, 1), shared_mem_bytes: shmem,
+            block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                             t as i32, t_kv as i32, causal as i32);
@@ -5944,15 +5959,20 @@ impl Engine {
             // smem: sQ[16][512] + sK[32][512] + sV[32][512] + sP[16][32] (bf16) + sS[16][32]+sL f32.
             // f16pv: sp16 kernel — f16 P + f16 P@V accum, V operand encoded f16.
             const SP_M: usize = 16; const BKS: usize = 32;
-            let f = self.func(if f16pv { "fa_prefill_bf16_hd512_sp16" }
-                              else { "fa_prefill_bf16_hd512_sp" });
+            let nw = if f16pv { fa512_wide_warps() } else { 2 };
+            let f = self.func(match (f16pv, nw) {
+                (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
+                (true, _) => "fa_prefill_bf16_hd512_sp16",
+                _ => "fa_prefill_bf16_hd512_sp",
+            });
+            let (nwarp, npart) = if nw > 2 { (nw, nw) } else { (2, 1) };
             let shmem = (2 * (SP_M * head_dim + 2 * BKS * head_dim + SP_M * BKS)
-                       + 4 * (SP_M * BKS + SP_M)) as u32;
+                       + 4 * (npart * SP_M * BKS + SP_M)) as u32;
             use cudarc::driver::sys::CUfunction_attribute_enum as A;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
             let cfg = LaunchConfig {
                 grid_dim: ((t as u32).div_ceil(SP_M as u32), n_head as u32, 1),
-                block_dim: (32, 2, 1), shared_mem_bytes: shmem,
+                block_dim: (32, nwarp as u32, 1), shared_mem_bytes: shmem,
             };
             let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32,
                                                 t as i32, t_kv as i32, causal as i32);
