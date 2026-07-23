@@ -139,9 +139,10 @@ latency reporting, fused multi-row IQ3_S/Q4_K kernels (currently generic fallbac
 | 4 | 0.85 | **6.32 (campaign best; 5.93 before fusing, +6.6%)** | PASS |
 | 6 | 0.82 | 5.72 | PASS |
 | 8 | 0.78 | 5.53 | PASS |
-| 3 | 0.90 | 3.72 — suspect outlier (band 6.33-6.40; unguarded mid-run interference), rerun queued | PASS |
+| 3 | 0.90 | **6.92 (campaign best — guarded rerun; the first run's 3.72 was mid-run interference)** | PASS |
 
-The optimum moved m=2 -> m=3 -> m=4 across M1 -> M2/M3 -> fused-M4, tracking each
+Fused-M4 scoreboard: m=3 6.92 / m=4 6.32 / m=6 5.72 / m=8 5.53 — 1.56x the single-stream
+ceiling at the m=3 optimum. The optimum moved m=2 -> m=3/m=4 across M1 -> fused-M4, tracking each
 amortization increment. Past m=4 the binding costs are (a) residency given back through
 stream-state frac headroom and (b) per-stream attention/glue, which scales linearly with m —
 batched attention (the fa_decode_rows block-diagonal seam from the recon) is the next
