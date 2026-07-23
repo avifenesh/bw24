@@ -391,6 +391,8 @@ pub struct Engine {
     /// f16-P/V door: pooled V re-encode buffer (bf16->f16) for the hd512 _pre path. Lazy-grow;
     /// per-call cudaMalloc was a laptop-regression suspect (VRAM pressure, 31B nkv=4 = 4x bytes).
     fa_vf16_scratch: Mutex<Option<CudaSlice<u8>>>,
+    /// name -> resolved CudaFunction (capture-safe lookups; see `func`).
+    fn_cache: Mutex<std::collections::HashMap<String, CudaFunction>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
     /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
@@ -562,6 +564,7 @@ impl Engine {
                   router_stage: Mutex::new(None),
                   fp8_scratch: Mutex::new(None),
                   fa_vf16_scratch: Mutex::new(None),
+                  fn_cache: Mutex::new(Default::default()),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -616,21 +619,30 @@ impl Engine {
             self.gpu.ctx.load_module(cudarc::nvrtc::Ptx::from_file(FLASH_FATBIN_KF8VF8))
                 .expect("load kf8vf8 flash fatbin (fp8-globals arm)")
         });
-        match m.load_function(name) {
+        let key = format!("g:{name}");
+        if let Some(f) = self.fn_cache.lock().unwrap().get(&key) { return f.clone(); }
+        let f = match m.load_function(name) {
             Ok(f) => f,
             Err(_) => self.func(name),
-        }
+        };
+        self.fn_cache.lock().unwrap().insert(key, f.clone());
+        f
     }
 
     fn func(&self, name: &str) -> CudaFunction {
-        self.module.load_function(name)
+        // Resolution cache: cuModuleGetFunction fails inside a CUDA-graph capture region,
+        // so capture-time lookups MUST be host-memory hits (warmups populate the cache).
+        if let Some(f) = self.fn_cache.lock().unwrap().get(name) { return f.clone(); }
+        let f = self.module.load_function(name)
             .or_else(|_| self.hybrid.load_function(name))
             .or_else(|_| self.qmatvec.load_function(name))
             .or_else(|_| self.flash.load_function(name))
             .or_else(|_| self.gemm.load_function(name))
             .or_else(|_| self.router.load_function(name))
             .or_else(|_| self.sample.load_function(name))
-            .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"))
+            .unwrap_or_else(|_| panic!("kernel {name} not in any fatbin"));
+        self.fn_cache.lock().unwrap().insert(name.to_string(), f.clone());
+        f
     }
 
     /// Scatter trimmed draft logits into full-vocab space: dst = -inf everywhere, then
