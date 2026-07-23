@@ -1,0 +1,35 @@
+== model: gemma-4-12b-it-qat-q4_0.gguf
+temp: 56  plimit: 150.00W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     2344.85 ± 443.90 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |      3773.95 ± 15.84 |
+temp: 58  plimit: 175.00W
+prefill 512 tok in 0.1231s = 4157.9 tok/s (pp512)
+prefill 1736 tok in 0.4288s = 4049.0 tok/s (pp1736)
+temp: 60  plimit: 175.00W
+temp: 59  plimit: 175.00W
+temp: 70  plimit: 147.21W
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |           pp512 |     4072.92 ± 142.77 |
+| gemma4 ?B Q4_0                 |   6.48 GiB |    11.91 B | CUDA       |  99 |   1 |          pp1736 |     3800.52 ± 206.97 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.1214s = 4217.0 tok/s (pp512)
+prefill 1736 tok in 0.4217s = 4116.6 tok/s (pp1736)
+== model: gemma-4-31B_q4_0-it.gguf
+temp: 58  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1589.03 ± 43.04 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1526.25 ± 0.13 |
+temp: 57  plimit: 150.00W
+prefill 512 tok in 0.3162s = 1619.1 tok/s (pp512)
+prefill 1736 tok in 1.1037s = 1572.9 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1577.16 ± 68.49 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1526.01 ± 0.00 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3166s = 1616.9 tok/s (pp512)
+prefill 1736 tok in 1.1059s = 1569.8 tok/s (pp1736)
+temp: 61  plimit: 150.00W
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |           pp512 |      1576.98 ± 66.07 |
+| gemma4 31B Q4_0                |  16.42 GiB |    30.70 B | CUDA       |  99 |   1 |          pp1736 |       1525.84 ± 0.09 |
+temp: 58  plimit: 150.00W
+prefill 512 tok in 0.3164s = 1618.0 tok/s (pp512)
+prefill 1736 tok in 1.1034s = 1573.3 tok/s (pp1736)
+BATTERY V8 COMPLETE Thu Jul 23 01:06:21 PM UTC 2026
