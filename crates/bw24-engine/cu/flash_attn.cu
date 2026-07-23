@@ -7792,6 +7792,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w(
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int window)
 {
+    BW24_PDL_ENTRY();
     const int r        = blockIdx.z;             // query row (verify column)
     const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;      // per-row causal bound
     // WINDOWED twin (gemma R6): every row attends exactly `window` keys; split geometry and
@@ -7969,6 +7970,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_w_sp(
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int window)
 {
+    BW24_PDL_ENTRY();
     const int r        = blockIdx.z;             // query row (verify column)
     const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;      // per-row causal bound
     // WINDOWED twin (gemma R6): every row attends exactly `window` keys; split geometry and
@@ -8772,6 +8774,7 @@ extern "C" __global__ void fa_decode_vec_q_rows_v4_512_tb(
         float scale, int n_splits_max, int split_keys,
         long k_tok_bytes, long v_tok_bytes, int n_rows)
 {
+    BW24_PDL_ENTRY();
     const int kv_head = blockIdx.x;
     const int split   = blockIdx.y;
     const int gqa  = n_head / n_head_kv;

@@ -940,10 +940,20 @@ impl Engine {
     /// # Safety
     /// Same contract as `launch_pdl`.
     unsafe fn launch_pdl_flash(&self, g: bool, name: &'static str, grid: (u32, u32, u32),
-                               block: (u32, u32, u32), params: &mut [*mut std::ffi::c_void])
+                               block: (u32, u32, u32), smem: u32,
+                               params: &mut [*mut std::ffi::c_void])
                                -> Result<(), Box<dyn std::error::Error>> {
         use cudarc::driver::sys as cu;
         let f = self.pdl_func_flash(g, name)?;
+        if smem > 0 {
+            // mirror the builder path's opt-in ceiling (idempotent host-side set).
+            let r = unsafe { cu::cuFuncSetAttribute(f,
+                cu::CUfunction_attribute_enum::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                smem as i32) };
+            if r != cu::CUresult::CUDA_SUCCESS {
+                return Err(format!("pdl smem attr {name}: {r:?}").into());
+            }
+        }
         let mut attr = cu::CUlaunchAttribute {
             id: cu::CUlaunchAttributeID::CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION,
             pad: [0; 4],
@@ -952,7 +962,7 @@ impl Engine {
         let cfg = cu::CUlaunchConfig {
             gridDimX: grid.0, gridDimY: grid.1, gridDimZ: grid.2,
             blockDimX: block.0, blockDimY: block.1, blockDimZ: block.2,
-            sharedMemBytes: 0, hStream: self.gpu.stream.cu_stream(),
+            sharedMemBytes: smem, hStream: self.gpu.stream.cu_stream(),
             attrs: &mut attr, numAttrs: 1,
         };
         let r = unsafe { cu::cuLaunchKernelEx(&cfg, f, params.as_mut_ptr(), std::ptr::null_mut()) };
@@ -1607,7 +1617,7 @@ impl Engine {
                 &vtb as *const _ as *mut _,
             ];
             unsafe { self.launch_pdl_flash(g, "append_quantize_kv_q8_0_q5_1_dc",
-                                           (nblk, 1, 1), (32, 1, 1), &mut ps)?; }
+                                           (nblk, 1, 1), (32, 1, 1), 0, &mut ps)?; }
             return Ok(());
         }
         let f = if g { self.func_g("append_quantize_kv_q8_0_q5_1_dc") } else { self.func("append_quantize_kv_q8_0_q5_1_dc") };
@@ -4166,7 +4176,7 @@ impl Engine {
                 &ktb as *const _ as *mut _, &vtb as *const _ as *mut _,
             ];
             unsafe { self.launch_pdl_flash(g, "rms_norm_qkv_rope_append_dc_f32",
-                                           (rows as u32, 1, 1), (rms_block(), 1, 1), &mut ps)?; }
+                                           (rows as u32, 1, 1), (rms_block(), 1, 1), 0, &mut ps)?; }
             return Ok(());
         }
         let f = if g { self.func_g("rms_norm_qkv_rope_append_dc_f32") }
@@ -7396,6 +7406,32 @@ impl Engine {
                     let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
                     let plus_g = plus + r0 as i32;
                     let nr = t_g as i32;
+                    if Self::pdl_on() && Self::pdl_wb_on() {
+                        // wave-B2b: flavor mirrors fa_func(fname, 512) = gkv.
+                        use cudarc::driver::{DevicePtr, DevicePtrMut};
+                        let s = &self.gpu.stream;
+                        let (pq, _b0) = q_g.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
+                        let (pv, _b2) = v.device_ptr(s);
+                        let (po, _b3) = part_o.device_ptr_mut(s);
+                        let (pm, _b4) = part_m.device_ptr_mut(s);
+                        let (pl, _b5) = part_l.device_ptr_mut(s);
+                        let (pb, _b6) = bd.device_ptr(s);
+                        let mut ps = [
+                            &pq as *const _ as *mut std::ffi::c_void, &pk as *const _ as *mut _,
+                            &pv as *const _ as *mut _, &po as *const _ as *mut _,
+                            &pm as *const _ as *mut _, &pl as *const _ as *mut _,
+                            &hd as *const _ as *mut _, &nh as *const _ as *mut _,
+                            &nhkv as *const _ as *mut _, &pb as *const _ as *mut _,
+                            &plus_g as *const _ as *mut _, &scale as *const _ as *mut _,
+                            &nspm as *const _ as *mut _, &spk as *const _ as *mut _,
+                            &ktb as *const _ as *mut _, &vtb as *const _ as *mut _,
+                            &nr as *const _ as *mut _,
+                        ];
+                        unsafe { self.launch_pdl_flash(Self::gkv_on(),
+                            "fa_decode_vec_q_rows_v4_512_tb",
+                            (n_head_kv as u32, n_splits_g as u32, 1), (32, gqa, 1),
+                            shmem, &mut ps)?; }
+                    } else {
                     let cfg_tb = LaunchConfig {
                         grid_dim: (n_head_kv as u32, n_splits_g as u32, 1),
                         block_dim: (32, gqa, 1), shared_mem_bytes: shmem };
@@ -7403,6 +7439,7 @@ impl Engine {
                      .arg(&hd).arg(&nh).arg(&nhkv).arg(bd).arg(&plus_g).arg(&scale).arg(&nspm).arg(&spk)
                      .arg(&ktb).arg(&vtb).arg(&nr);
                     unsafe { b.launch(cfg_tb)?; }
+                    }
                 } else if head_dim == 512 {
                     let (bd, plus) = base_dev.expect("hd512 rows twin requires a device base counter");
                     let plus_g = plus + r0 as i32;
@@ -7446,7 +7483,7 @@ impl Engine {
                         ];
                         unsafe { self.launch_pdl_flash(Self::gkv_on(),
                             "fa_decode_combine_rows_dc_q8_1",
-                            cfg2.grid_dim, cfg2.block_dim, &mut ps)?; }
+                            cfg2.grid_dim, cfg2.block_dim, 0, &mut ps)?; }
                         continue;
                     }
                     let fc = self.fa_func("fa_decode_combine_rows_dc_q8_1", head_dim);
@@ -7549,9 +7586,34 @@ impl Engine {
         let sp2 = gqa <= 4 && fa_v4_at(window)
             && std::env::var("BW24_FA_SPW2").as_deref() != Ok("0");
         if sp2 {
+            let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
+            if Self::pdl_on() && Self::pdl_wb_on() {
+                // wave-B2b: flavor mirrors wg.
+                use cudarc::driver::{DevicePtr, DevicePtrMut};
+                let s = &self.gpu.stream;
+                let (pq, _b0) = q.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
+                let (pv, _b2) = v.device_ptr(s);
+                let (po, _b3) = part_o.device_ptr_mut(s);
+                let (pm, _b4) = part_m.device_ptr_mut(s);
+                let (pl, _b5) = part_l.device_ptr_mut(s);
+                let (pb, _b6) = base_dev.device_ptr(s);
+                let mut ps = [
+                    &pq as *const _ as *mut std::ffi::c_void, &pk as *const _ as *mut _,
+                    &pv as *const _ as *mut _, &po as *const _ as *mut _,
+                    &pm as *const _ as *mut _, &pl as *const _ as *mut _,
+                    &hd as *const _ as *mut _, &nh as *const _ as *mut _,
+                    &nhkv as *const _ as *mut _, &pb as *const _ as *mut _,
+                    &base_plus as *const _ as *mut _, &scale as *const _ as *mut _,
+                    &nspm as *const _ as *mut _, &spk as *const _ as *mut _,
+                    &ktb as *const _ as *mut _, &vtb as *const _ as *mut _,
+                    &wini as *const _ as *mut _,
+                ];
+                unsafe { self.launch_pdl_flash(wg, "fa_decode_vec_q_rows_v4_w_sp",
+                    (n_head_kv as u32, n_splits_max as u32, t as u32), (32, gqa + 1, 1),
+                    sh, &mut ps)?; }
+            } else {
             let f = if wg { self.func_g("fa_decode_vec_q_rows_v4_w_sp") }
                     else { self.func("fa_decode_vec_q_rows_v4_w_sp") };
-            let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
             f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, sh as i32)?;
             let cfg = LaunchConfig { grid_dim: (n_head_kv as u32, n_splits_max as u32, t as u32),
                 block_dim: (32, gqa + 1, 1), shared_mem_bytes: sh };
@@ -7560,6 +7622,33 @@ impl Engine {
              .arg(&hd).arg(&nh).arg(&nhkv).arg(base_dev).arg(&base_plus).arg(&scale).arg(&nspm).arg(&spk)
              .arg(&ktb).arg(&vtb).arg(&wini);
             unsafe { b.launch(cfg)?; }
+            }
+        } else {
+        if fa_v4_at(window) && Self::pdl_on() && Self::pdl_wb_on() {
+            // wave-B2b: the v4_w pick only (smem/reg twins stay builder-launched).
+            let sh = (11520 + 32 * head_dim * if wg { 1 } else { 2 }) as u32;
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let s = &self.gpu.stream;
+            let (pq, _b0) = q.device_ptr(s); let (pk, _b1) = k.device_ptr(s);
+            let (pv, _b2) = v.device_ptr(s);
+            let (po, _b3) = part_o.device_ptr_mut(s);
+            let (pm, _b4) = part_m.device_ptr_mut(s);
+            let (pl, _b5) = part_l.device_ptr_mut(s);
+            let (pb, _b6) = base_dev.device_ptr(s);
+            let mut ps = [
+                &pq as *const _ as *mut std::ffi::c_void, &pk as *const _ as *mut _,
+                &pv as *const _ as *mut _, &po as *const _ as *mut _,
+                &pm as *const _ as *mut _, &pl as *const _ as *mut _,
+                &hd as *const _ as *mut _, &nh as *const _ as *mut _,
+                &nhkv as *const _ as *mut _, &pb as *const _ as *mut _,
+                &base_plus as *const _ as *mut _, &scale as *const _ as *mut _,
+                &nspm as *const _ as *mut _, &spk as *const _ as *mut _,
+                &ktb as *const _ as *mut _, &vtb as *const _ as *mut _,
+                &wini as *const _ as *mut _,
+            ];
+            unsafe { self.launch_pdl_flash(wg, "fa_decode_vec_q_rows_v4_w",
+                (n_head_kv as u32, n_splits_max as u32, t as u32), (32, gqa, 1),
+                sh, &mut ps)?; }
         } else {
         let pick = |name: &str| if wg { self.func_g(name) } else { self.func(name) };
         let (f, sh) = if fa_v4_at(window) {
@@ -7581,6 +7670,7 @@ impl Engine {
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
         }
+        }
         let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
                 block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
         if let Some((oq, od)) = q8_out {
@@ -7601,7 +7691,7 @@ impl Engine {
                     &spk as *const _ as *mut _, &wini as *const _ as *mut _,
                 ];
                 unsafe { self.launch_pdl_flash(wg, "fa_decode_combine_rows_w_q8_1",
-                                               cfg2.grid_dim, cfg2.block_dim, &mut ps)?; }
+                                               cfg2.grid_dim, cfg2.block_dim, 0, &mut ps)?; }
                 return Ok(());
             }
             let fc = if wg { self.func_g("fa_decode_combine_rows_w_q8_1") }
