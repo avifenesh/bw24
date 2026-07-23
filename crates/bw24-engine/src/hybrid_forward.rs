@@ -4097,12 +4097,14 @@ impl HybridModel {
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // E4B wave-3 fold (2026-07-23 decode-dust port): q/k/v norms + q/k rope in ONE
+        // launch — rope math verbatim on the normed rows; V ones-rms, never roped.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         // append at the DEVICE slot; the counter advances by t on-device.
         e.append_kv_quantized_rows_dc(&k, &v, &mut kvl.k, &mut kvl.v, &kvl.len_d, t,
@@ -4208,12 +4210,14 @@ impl HybridModel {
         let mut q = e.uninit(t * nh * hd)?;
         let mut k = e.uninit(t * nkv * hd)?;
         let mut v = e.uninit(t * nkv * hd)?;
-        e.rms_norm_qkv(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(), &aux.ones,
-                       &mut q, &mut k, &mut v, hd, nh * t, nkv * t, eps)?;
+        // E4B wave-3 fold (2026-07-23 decode-dust port): q/k/v norms + q/k rope in ONE
+        // launch — rope math verbatim on the normed rows; V ones-rms, never roped.
         let ff = if swa { None } else {
             Some(aux.rope_freqs.as_ref().expect("gemma4 global rope needs rope_freqs.weight"))
         };
-        e.rope_neox2(&mut q, &mut k, pos_d, hd, hd, nh, nkv, t, base, 1.0, ff)?;
+        e.rms_norm_qkv_rope(&q0, &k0, &v0, fa.q_norm.float_data(), fa.k_norm.float_data(),
+                            &aux.ones, &mut q, &mut k, &mut v, hd, nh * t, nkv * t,
+                            pos_d, nh, nkv, base, 1.0, ff, eps)?;
         let kvl = cache.kv[il].as_mut().unwrap();
         let base_len = kvl.len;
         e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
