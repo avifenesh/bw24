@@ -1,0 +1,17 @@
+    Memory Throughput                 %        40.48
+    DRAM Throughput                   %         6.53
+    Duration                         ms         5.02
+    Compute (SM) Throughput           %        33.20
+    SM Busy                        %        33.20
+    Memory Throughput                           Gbyte/s        32.85
+    Mem Busy                                          %        40.48
+    L2 Hit Rate                                       %        97.02
+    Registers Per Thread             register/thread             247
+    Block Limit Barriers                  block           24
+    Block Limit SM                        block           24
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block            1
+    Block Limit Warps                     block           12
+    Theoretical Occupancy                     %         8.33
+    Achieved Occupancy                        %         8.33
+NCU512 COMPLETE Thu Jul 23 10:16:08 AM UTC 2026

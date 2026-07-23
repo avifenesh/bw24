@@ -174,6 +174,14 @@ pub fn fa_f16pv_on() -> bool {
     *ON.get_or_init(|| std::env::var("BW24_FA_F16PV").as_deref() != Ok("0"))
 }
 
+/// h2c occupancy arm (BW24_FA512_HC=1, experiment): head-pair with chunked K/V through
+/// one 16KB slab + key-split GEMM0 — ~22KB smem, 2 CTAs/SM (ncu: sp16h2 sat at 33% SM
+/// busy, 1 CTA/SM). Same guards as hp.
+pub fn fa512_hc_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("BW24_FA512_HC").as_deref() == Ok("1"))
+}
+
 /// hd512 head-pair arm (DEFAULT since stamp v4; BW24_FA512_HP=0 reverts to sp16): GQA
 /// ncols2=2 — 2 heads per CTA share each staged K/V tile, Q register-resident. Engages
 /// when n_head is even and the GQA group (n_head/n_head_kv) is even.
@@ -6028,6 +6036,7 @@ impl Engine {
         let f16pv = fa_f16pv_on();
         let nw = if f16pv { fa512_wide_warps() } else { 2 };
         let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
+        let hc = hp && fa512_hc_on();
         debug_assert!(!v_f16 || f16pv, "f16 V emitted without the door on");
         let mut vguard = self.fa_vf16_scratch.lock().unwrap();
         let vref: &CudaSlice<u8> = if f16pv && !v_f16 {
@@ -6041,7 +6050,8 @@ impl Engine {
             self.bf16_to_f16_into(vb, n, dst)?;
             vguard.as_ref().unwrap()
         } else { vb };
-        let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+        let f = self.func(if hc { "fa_prefill_bf16_hd512_h2c" }
+                          else if hp { "fa_prefill_bf16_hd512_sp16h2" }
                           else { match (f16pv, nw) {
                               (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
                               (true, _) => "fa_prefill_bf16_hd512_sp16",
@@ -6049,7 +6059,10 @@ impl Engine {
                           } });
         let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
         // h2 drops sQ (Q register-resident) and doubles sP/sS/sL for the head pair.
-        let shmem = if hp {
+        // h2c: one 32x256 K/V slab + sP/sS/sL only (occupancy-2 fit).
+        let shmem = if hc {
+            (2 * (32 * 256 + 2 * SP_M * BKS) + 4 * (2 * SP_M * BKS + 2 * SP_M)) as u32
+        } else if hp {
             (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
                + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
         } else {
@@ -6088,14 +6101,18 @@ impl Engine {
             const SP_M: usize = 16; const BKS: usize = 32;
             let nw = if f16pv { fa512_wide_warps() } else { 2 };
             let hp = f16pv && fa512_hp_on() && n_head % 2 == 0 && (n_head / n_head_kv) % 2 == 0;
-            let f = self.func(if hp { "fa_prefill_bf16_hd512_sp16h2" }
+            let hc = hp && fa512_hc_on();
+            let f = self.func(if hc { "fa_prefill_bf16_hd512_h2c" }
+                              else if hp { "fa_prefill_bf16_hd512_sp16h2" }
                               else { match (f16pv, nw) {
                                   (true, 4) => "fa_prefill_bf16_hd512_sp16w4",
                                   (true, _) => "fa_prefill_bf16_hd512_sp16",
                                   _ => "fa_prefill_bf16_hd512_sp",
                               } });
             let (nwarp, npart) = if hp { (4usize, 4usize) } else if nw > 2 { (nw, nw) } else { (2, 1) };
-            let shmem = if hp {
+            let shmem = if hc {
+                (2 * (32 * 256 + 2 * SP_M * BKS) + 4 * (2 * SP_M * BKS + 2 * SP_M)) as u32
+            } else if hp {
                 (2 * (2 * BKS * head_dim + 2 * SP_M * BKS)
                    + 4 * (2 * npart * SP_M * BKS + 2 * SP_M)) as u32
             } else {

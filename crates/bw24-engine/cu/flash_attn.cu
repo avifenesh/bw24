@@ -2962,6 +2962,272 @@ extern "C" __global__ void __launch_bounds__(N_WARPS_512*WARP_SZ, 1) fa_prefill_
     }
 }
 
+// h2c: occupancy rebuild of sp16h2 (ncu 2026-07-23: 33% SM busy at 1 CTA/SM, smem-blocked
+// at 84KB). Keeps the h2 shape (2 heads/CTA share K/V, 16 q-rows, Q register-resident) but
+// stages K/V in 256-dim chunks through ONE 16KB slab and splits GEMM0 by KEYS (each warp
+// owns 16 keys at full depth — no cross-warp partial buffer). smem ~22KB -> 2 CTAs/SM,
+// 8 warps. Synchronous chunk loads: occupancy replaces intra-kernel overlap (the h8 lesson
+// inverted — its Q-in-smem re-reads were the regression, not the chunking).
+// Same f16-P/V door class; per-warp full-depth accumulation is a band-class partial order.
+extern "C" __global__ void __launch_bounds__(4*WARP_SZ, 2) fa_prefill_bf16_hd512_h2c(
+        const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    constexpr int HEAD_DIM = 512;
+    constexpr int NH2      = 2;
+    constexpr int CHUNK    = 256;
+    constexpr int CCH      = CHUNK / 8;               // int4 chunks per staged key row (32)
+    constexpr int QCH      = HEAD_DIM / 8;
+    constexpr int O_NBLK   = 32;                      // 2 chunks x 16 tiles (128 dims/chunk)
+    const int warp = threadIdx.y;                     // 0..3
+    const int lane = threadIdx.x;
+    const int hw   = warp >> 1;                       // head member of the pair
+    const int kh   = warp & 1;                        // 16-key half of the 32-key tile
+    const int head0   = blockIdx.y * NH2;
+    const int head    = head0 + hw;
+    const int kv_head = head0 / (n_head / n_head_kv); // pair-shared (even-group guard)
+    const int qrow_base = blockIdx.x * SP_M_ROWS;
+    if (head0 >= n_head || qrow_base >= T) return;
+    const int nqw = min(SP_M_ROWS, T - qrow_base);
+
+    extern __shared__ char smem_raw512h2c[];
+    __nv_bfloat16* sKV = (__nv_bfloat16*)smem_raw512h2c;          // 32*CHUNK slab (16KB)
+    __half* sP = (__half*)(sKV + 32*CHUNK);                        // NH2*SP_M_ROWS*32
+    float* sS = (float*)(sP + NH2*SP_M_ROWS*32);                   // NH2*SP_M_ROWS*32 scores
+    float* sL = sS + NH2*SP_M_ROWS*32;                             // NH2*SP_M_ROWS
+
+    const int causal_i = causal;
+    const int q_pos0  = (T_kv - T) + qrow_base;
+    const int q_pos_max = q_pos0 + (SP_M_ROWS - 1);
+    const int bt  = warp*WARP_SZ + lane;
+    const int bsz = 4*WARP_SZ;
+    const int4 zero4 = make_int4(0, 0, 0, 0);
+
+    // ---- Q -> registers, both chunks, this warp's head; staged through the sKV slab
+    // (16 rows x 512 = 16KB fits the slab exactly; two head passes, sync between) ----
+    ATile Qf[2][CHUNK/K_STEP];
+    #pragma unroll
+    for (int h = 0; h < NH2; ++h) {
+        for (int i = bt; i < SP_M_ROWS*QCH; i += bsz) {
+            int r = i / QCH, dc = i % QCH;
+            ((int4*)sKV)[r*QCH + (dc ^ (r & 7))] = (qrow_base + r < T)
+                ? ((const int4*)(Q + ((size_t)(qrow_base + r) * n_head + head0 + h) * HEAD_DIM))[dc]
+                : zero4;
+        }
+        __syncthreads();
+        if (h == hw) {
+            #pragma unroll
+            for (int ch = 0; ch < 2; ++ch)
+                #pragma unroll
+                for (int kt0 = 0; kt0 < CHUNK/K_STEP; ++kt0)
+                    ld_A_sw(Qf[ch][kt0], sKV, 0, ch*(CHUNK/8) + kt0*2, QCH);
+        }
+        __syncthreads();
+    }
+
+    CTileH O_acc[O_NBLK];
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) { O_acc[c].x[0]=0u; O_acc[c].x[1]=0u; }
+    float m_lo = NEG_INF, m_hi = NEG_INF, l_lo = 0.0f, l_hi = 0.0f;
+    const int r_lo = lane / 4;
+    const int r_hi = r_lo + 8;
+    const int c0   = (lane % 4) * 2;
+
+    for (int k0 = 0; k0 < T_kv; k0 += 32) {
+        const int nk = min(32, T_kv - k0);
+        if (causal_i && k0 > q_pos_max) break;
+
+        // ---- GEMM0 over two synchronous 256-dim K chunks; each warp: its head x its
+        // 16 keys x full depth — scores accumulate in regs, no partial buffer ----
+        CTile C0, C1;
+        C0.x[0]=C0.x[1]=C0.x[2]=C0.x[3]=0.0f;
+        C1.x[0]=C1.x[1]=C1.x[2]=C1.x[3]=0.0f;
+        #pragma unroll
+        for (int ch = 0; ch < 2; ++ch) {
+            for (int i = bt; i < 32*CCH; i += bsz) {
+                int kk = i / CCH, dc = i % CCH;
+                const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM
+                                  + (size_t)ch * CHUNK;
+                ((int4*)sKV)[kk*CCH + (dc ^ (kk & 7))] = (kk < nk)
+                    ? ((const int4*)(K + rowo))[dc] : zero4;
+            }
+            __syncthreads();
+            #pragma unroll 8
+            for (int kt0 = 0; kt0 < CHUNK/K_STEP; ++kt0) {
+                ATile Kt;
+                ld_A_sw(Kt, sKV, kh*16, kt0*2, CCH);
+                BTile Blo; Blo.x[0]=Kt.x[0]; Blo.x[1]=Kt.x[2];
+                BTile Bhi; Bhi.x[0]=Kt.x[1]; Bhi.x[1]=Kt.x[3];
+                mma_bf16(C0, Qf[ch][kt0], Blo);
+                mma_bf16(C1, Qf[ch][kt0], Bhi);
+            }
+            __syncthreads();                          // slab free before restage
+        }
+
+        // ---- publish this warp's 16-key scores; softmax reads full 32-key rows ----
+        {
+            float* sSw = sS + (size_t)hw*SP_M_ROWS*32;
+            const int kb = kh*16;
+            sSw[r_lo*32 + kb + c0 + 0] = C0.x[0];
+            sSw[r_lo*32 + kb + c0 + 1] = C0.x[1];
+            sSw[r_hi*32 + kb + c0 + 0] = C0.x[2];
+            sSw[r_hi*32 + kb + c0 + 1] = C0.x[3];
+            sSw[r_lo*32 + kb + 8 + c0 + 0] = C1.x[0];
+            sSw[r_lo*32 + kb + 8 + c0 + 1] = C1.x[1];
+            sSw[r_hi*32 + kb + 8 + c0 + 0] = C1.x[2];
+            sSw[r_hi*32 + kb + 8 + c0 + 1] = C1.x[3];
+        }
+        __syncthreads();
+
+        // ---- full-row register softmax (replicated across each head's warp pair) ----
+        CTile Sc[4];
+        {
+            const float* sSw = sS + (size_t)hw*SP_M_ROWS*32;
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                Sc[g].x[0] = sSw[r_lo*32 + g*8 + c0 + 0];
+                Sc[g].x[1] = sSw[r_lo*32 + g*8 + c0 + 1];
+                Sc[g].x[2] = sSw[r_hi*32 + g*8 + c0 + 0];
+                Sc[g].x[3] = sSw[r_hi*32 + g*8 + c0 + 1];
+            }
+        }
+        const bool boundary = (nk < 32) || (causal_i && (k0 + 31) > q_pos0);
+        float s_tile_max_lo = NEG_INF, s_tile_max_hi = NEG_INF;
+        if (boundary) {
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    int col = g*8 + c0 + (l & 1);
+                    int row = (l < 2) ? r_lo : r_hi;
+                    int q_pos = q_pos0 + row;
+                    float sv = Sc[g].x[l] * scale;
+                    if (col >= nk) sv = NEG_INF;
+                    if (causal_i && (k0 + col) > q_pos) sv = NEG_INF;
+                    Sc[g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+        } else {
+            #pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                #pragma unroll
+                for (int l = 0; l < 4; ++l) {
+                    float sv = Sc[g].x[l] * scale;
+                    Sc[g].x[l] = sv;
+                    if (l < 2) s_tile_max_lo = fmaxf(s_tile_max_lo, sv);
+                    else       s_tile_max_hi = fmaxf(s_tile_max_hi, sv);
+                }
+            }
+        }
+        s_tile_max_lo = row_max4(s_tile_max_lo);
+        s_tile_max_hi = row_max4(s_tile_max_hi);
+        float m_new_lo = fmaxf(m_lo, s_tile_max_lo);
+        float m_new_hi = fmaxf(m_hi, s_tile_max_hi);
+        float alpha_lo = (m_lo == NEG_INF) ? 0.0f : exp2f((m_lo - m_new_lo) * LOG2E);
+        float alpha_hi = (m_hi == NEG_INF) ? 0.0f : exp2f((m_hi - m_new_hi) * LOG2E);
+        float l_part_lo = 0.0f, l_part_hi = 0.0f;
+        #pragma unroll
+        for (int g = 0; g < 4; ++g) {
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                float mn = (l < 2) ? m_new_lo : m_new_hi;
+                float sv = Sc[g].x[l];
+                float pv = (sv == NEG_INF) ? 0.0f : exp2f((sv - mn) * LOG2E);
+                Sc[g].x[l] = pv;
+                if (l < 2) l_part_lo += pv; else l_part_hi += pv;
+            }
+        }
+        l_part_lo = row_sum4(l_part_lo);
+        l_part_hi = row_sum4(l_part_hi);
+        l_lo = l_lo * alpha_lo + l_part_lo;
+        l_hi = l_hi * alpha_hi + l_part_hi;
+        m_lo = m_new_lo; m_hi = m_new_hi;
+
+        // P: each warp stores its own 16-key half of its head's rows
+        {
+            __half* sPw = sP + (size_t)hw*SP_M_ROWS*32;
+            #pragma unroll
+            for (int gg = 0; gg < 2; ++gg) {
+                const int g = kh*2 + gg;
+                sPw[r_lo*32 + g*8 + c0 + 0] = __float2half(Sc[g].x[0]);
+                sPw[r_lo*32 + g*8 + c0 + 1] = __float2half(Sc[g].x[1]);
+                sPw[r_hi*32 + g*8 + c0 + 0] = __float2half(Sc[g].x[2]);
+                sPw[r_hi*32 + g*8 + c0 + 1] = __float2half(Sc[g].x[3]);
+            }
+        }
+        {
+            const __half2 alo = __float2half2_rn(alpha_lo);
+            const __half2 ahi = __float2half2_rn(alpha_hi);
+            #pragma unroll
+            for (int c = 0; c < O_NBLK; ++c) {
+                __half2 lo = __hmul2(*(__half2*)&O_acc[c].x[0], alo);
+                __half2 hi = __hmul2(*(__half2*)&O_acc[c].x[1], ahi);
+                O_acc[c].x[0] = *(unsigned*)&lo;
+                O_acc[c].x[1] = *(unsigned*)&hi;
+            }
+        }
+        __syncthreads();                              // sP visible; sKV free for V
+
+        // ---- GEMM1 over two synchronous 256-dim V chunks; warp: its head x 128 dims ----
+        #pragma unroll
+        for (int ch = 0; ch < 2; ++ch) {
+            for (int i = bt; i < 32*CCH; i += bsz) {
+                int kk = i / CCH, dc = i % CCH;
+                const size_t rowo = ((size_t)(k0 + kk) * n_head_kv + kv_head) * HEAD_DIM
+                                  + (size_t)ch * CHUNK;
+                ((int4*)sKV)[kk*CCH + (dc ^ (kk & 7))] = (kk < nk)
+                    ? ((const int4*)(V + rowo))[dc] : zero4;
+            }
+            __syncthreads();
+            ATile Ap[2];
+            #pragma unroll
+            for (int kk = 0; kk < 32; kk += K_STEP)
+                ld_A(Ap[kk/K_STEP], (const __nv_bfloat16*)sP + (size_t)hw*SP_M_ROWS*32 + kk, 16);
+            const int d_base = kh * 128;
+            for (int d0 = 0; d0 < 128; d0 += 2*N_KEYS) {
+                #pragma unroll
+                for (int kk = 0; kk < 32; kk += K_STEP) {
+                    ATile Bt;
+                    ld_A_trans_sw(Bt, sKV, kk, (d_base + d0)/8, CCH);
+                    BTile Blo; Blo.x[0]=Bt.x[0]; Blo.x[1]=Bt.x[2];
+                    BTile Bhi; Bhi.x[0]=Bt.x[1]; Bhi.x[1]=Bt.x[3];
+                    mma_f16acc(O_acc[ch*16 + (d0/N_KEYS) + 0], Ap[kk/K_STEP], Blo);
+                    mma_f16acc(O_acc[ch*16 + (d0/N_KEYS) + 1], Ap[kk/K_STEP], Bhi);
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    if (kh == 0 && c0 == 0) {
+        sL[hw*SP_M_ROWS + r_lo] = l_lo;
+        sL[hw*SP_M_ROWS + r_hi] = l_hi;
+    }
+    __syncthreads();
+
+    #pragma unroll
+    for (int c = 0; c < O_NBLK; ++c) {
+        const int ch = c / 16;
+        const int dt = c % 16;
+        #pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int r = CTile::get_i(l);
+            int d = ch*CHUNK + kh*128 + dt*N_KEYS + CTile::get_j(l);
+            if (r < nqw) {
+                float linv = (sL[hw*SP_M_ROWS + r] > 0.0f)
+                    ? (1.0f / sL[hw*SP_M_ROWS + r]) : 0.0f;
+                const __half2 h2v = *(const __half2*)&O_acc[c].x[l / 2];
+                const float ov = __half2float((l & 1) ? __high2half(h2v) : __low2half(h2v));
+                O[((size_t)(qrow_base + r) * n_head + head) * HEAD_DIM + d] = ov * linv;
+            }
+        }
+    }
+}
+
 // Head-pair (MQA ncols2=2, llama fattn-mma:561) evolution of sp16w4: nkv=1 means every
 // head reads IDENTICAL K/V — pack 2 heads per CTA so each staged K/V tile feeds 2x mma.
 // Q lives entirely in registers (staged through the sK slab pre-loop); grid y = n_head/2.
