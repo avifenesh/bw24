@@ -3567,7 +3567,7 @@ impl HybridModel {
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1, scale,
                              kvl.k_tok_bytes, kvl.v_tok_bytes, Some((&kvl.len_d, -1)), false,
-                             false)?;
+                             false, None)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         // windowed regime: SAME rows_w kernel as verify with t=1 (parity law — see verify_attn).
@@ -3578,7 +3578,7 @@ impl HybridModel {
             let base = kvl.len as i32;
             e.i32_set_k(&mut kvl.len_d, base)?;
             e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1, 1, scale,
-                               win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             return Ok(e.matmul(&fa.wo, &attn, 1)?);
         }
         let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
@@ -3804,21 +3804,29 @@ impl HybridModel {
         let v_view = e.view_u8(&kvl.v, kvl.v.len());
         let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
         let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
+        // combine-q8 emit (wave-5b m=1 port): the rows arms quantize inside the combine —
+        // the standalone quantize launch runs only on the non-rows fallback. MUST mirror
+        // the dc_into arm branch-for-branch (stream gate).
+        let mut fa_q8 = false;
         if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
             e.fa_decode_rows(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, b_glob - 1,
                              1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                             Some((&kvl.len_d, -1)), false, false)?;
+                             Some((&kvl.len_d, -1)), false, false,
+                             Some((&mut sl.zq, &mut sl.zd)))?;
+            fa_q8 = true;
         } else if swa && b_swa > win && hd == 256 && rows_on {
             e.fa_decode_rows_w(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv,
                                &kvl.len_d, -1, 1, scale, win,
-                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               kvl.k_tok_bytes, kvl.v_tok_bytes,
+                               Some((&mut sl.zq, &mut sl.zd)))?;
+            fa_q8 = true;
         } else {
             let b = if swa { b_swa } else { b_glob };
             e.fa_decode_dc(&sl.q, &k_view, &v_view, &mut sl.attn, hd, nh, nkv, &kvl.len_d, b,
                            scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
                            swa && crate::Engine::wkv_on())?;
         }
-        {
+        if !fa_q8 {
             let aq = unsafe { &*(&sl.attn as *const CudaSlice<f32>) };
             e.quantize_q8_1_into(aq, 1, nh * hd, &mut sl.zq, &mut sl.zd)?;
         }
@@ -3929,6 +3937,9 @@ impl HybridModel {
                                  kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes, (!swa && crate::Engine::gkv_on()) || (swa && crate::Engine::wkv_on()))?;
         e.inc_seqlen(&mut kvl.len_d)?;
         let mut attn = e.uninit(nh * hd)?;
+        // combine-q8 emit carrier (wave-5b m=1 port): rows arms fill this; the tail then
+        // rides g4_matvec_m1_into instead of matmul's internal quantize.
+        let mut fa_q8: Option<(CudaSlice<i8>, CudaSlice<f32>)> = None;
         // Weight prefetch NOT wired here (26B/31B/qwen probes 2026-07-13: 26B flat
         // 196.6/196.0 vs 196.4/196.1 — MoE ffn dilutes wo; 31B −0.2% — dense decode sits
         // at the DRAM wall, no idle window to front-load into). E4B keeps the arm
@@ -3946,16 +3957,22 @@ impl HybridModel {
                     // dc: len_d is live (inc_seqlen) — device-len rides it, plus=-1.
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows(&q, &kp, &vp, &mut attn, hd, nh, nkv, kvl.len - 1, 1,
                                      scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false, false)?;
+                                     Some((&kvl.len_d, -1)), false, false,
+                                     Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else if swa && kvl.len > win && hd == 256
                     && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                     // windowed regime: SAME rows_w kernel as verify, t=1 (parity law).
                     let kp = e.view_u8(&kvl.k, kvl.len * kvl.k_tok_bytes);
                     let vp = e.view_u8(&kvl.v, kvl.len * kvl.v_tok_bytes);
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows_w(&q, &kp, &vp, &mut attn, hd, nh, nkv, &kvl.len_d, -1,
-                                       1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else {
                     let (off_tok, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) }
                                           else { (0, kvl.len) };
@@ -3978,13 +3995,19 @@ impl HybridModel {
                 let rows_on = std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0");
                 let win = self.cfg.gemma4.as_ref().unwrap().sliding_window as usize;
                 if !swa && hd == 512 && b_glob >= crate::fa512_min_tkv() && rows_on {
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, b_glob - 1,
                                      1, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                     Some((&kvl.len_d, -1)), false, false)?;
+                                     Some((&kvl.len_d, -1)), false, false,
+                                     Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else if swa && b_swa > win && hd == 256 && rows_on {
+                    let (mut aq8, mut ad8) = e.uninit_q8_pair(nh * hd)?;
                     e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                        &kvl.len_d, -1, 1, scale, win,
-                                       kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                       kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                       Some((&mut aq8, &mut ad8)))?;
+                    fa_q8 = Some((aq8, ad8));
                 } else {
                     let b = if swa { b_swa } else { b_glob };
                     e.fa_decode_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, b,
@@ -3992,6 +4015,13 @@ impl HybridModel {
                                    swa && crate::Engine::wkv_on())?;
                 }
             }
+        }
+        // combine-q8 emit (wave-5b m=1 port): the rows arms produced the wo activation pair
+        // in-combine — ride the slotted arm's exact matvec route (parity by construction).
+        if let Some((aq8, ad8)) = fa_q8 {
+            let mut y = e.uninit(fa.wo.out_features())?;
+            self.g4_matvec_m1_into(e, &fa.wo, &aq8, &ad8, &mut y)?;
+            return Ok(y);
         }
         Ok(e.matmul(&fa.wo, &attn, 1)?)
     }
@@ -4434,7 +4464,7 @@ impl HybridModel {
             // still holds the pre-append len; row r's T_kv = ctr + r + 1).
             e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
                                &kvl.len_d, 0, t, scale, win,
-                               kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
         } else if hd == 512 && hint + t < crate::fa512_min_tkv() {
             // globals UNDER the fa512 crossover: eager runs the per-row fa_decode_kvmod
             // fallback there (parity with t=1 decode) — mirror it with per-row fa_decode_dc
@@ -4466,7 +4496,7 @@ impl HybridModel {
             // sizes splits — upper bound; splits beyond the device len exit in-kernel).
             e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, hint, t, scale,
                              kvl.k_tok_bytes, kvl.v_tok_bytes,
-                             Some((&kvl.len_d, 0)), false, false)?;
+                             Some((&kvl.len_d, 0)), false, false, None)?;
         } else {
             // hd256 under-window: v4 device-len rows twin.
             e.fa_decode_rows_dc(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
@@ -4549,7 +4579,7 @@ impl HybridModel {
                 e.fa_decode_rows(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, base_len, t,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
                                  Some((&kvl.len_d, 0)), false,
-                                 swa && crate::Engine::wkv_on())?;
+                                 swa && crate::Engine::wkv_on(), None)?;
             } else {
                 // hd256: the SAME v4_dc symbol the burst verify launches (PARITY LAW — the
                 // host-base rows_v4 twin compiles apart from v4_dc and the two-symbol split
@@ -4575,7 +4605,7 @@ impl HybridModel {
             let v_view = e.view_u8(&kvl.v, (base_len + t) * kvl.v_tok_bytes);
             e.i32_set_k(&mut kvl.len_d, base_len as i32)?;
             e.fa_decode_rows_w(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, &kvl.len_d, 0,
-                               t, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                               t, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             return Ok(e.matmul(&fa.wo, &attn, t)?);
         }
         for i in 0..t {
@@ -4599,7 +4629,7 @@ impl HybridModel {
                 let vp = e.view_u8(&kvl.v, avail * kvl.v_tok_bytes);
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows_w(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, &kvl.len_d, 0,
-                                   1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                                   1, scale, win, kvl.k_tok_bytes, kvl.v_tok_bytes, None)?;
             } else if !swa && hd == 512 && avail >= crate::fa512_min_tkv()
                 && std::env::var("BW24_GEMMA_ROWS_W").as_deref() != Ok("0") {
                 let kp = e.view_u8(&kvl.k, avail * kvl.k_tok_bytes);
@@ -4607,7 +4637,7 @@ impl HybridModel {
                 e.i32_set_k(&mut kvl.len_d, (avail - 1) as i32)?;
                 e.fa_decode_rows(&q_one, &kp, &vp, &mut a_one, hd, nh, nkv, avail - 1, 1,
                                  scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
-                                 Some((&kvl.len_d, 0)), false, false)?;
+                                 Some((&kvl.len_d, 0)), false, false, None)?;
             } else {
                 e.fa_decode_kvmod(&q_one, &k_view, &v_view, &mut a_one, hd, nh, nkv, t_kv, scale,
                             kvl.k_tok_bytes, kvl.v_tok_bytes, swa && crate::Engine::wkv_on())?;

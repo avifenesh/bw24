@@ -527,6 +527,7 @@ impl HybridModel {
                         win,
                         kvl.k_tok_bytes,
                         kvl.v_tok_bytes,
+                        None,
                     )?;
                 } else {
                     e.fa_decode_dc(

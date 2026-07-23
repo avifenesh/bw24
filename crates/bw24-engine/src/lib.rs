@@ -3254,6 +3254,13 @@ impl Engine {
 
     /// Public f32 uninitialized scratch (see `alloc_uninit`). For decode/forward scratch a kernel
     /// fully overwrites. SAFETY: producing kernel must write every element before any read.
+    /// Uninitialized q8_1 activation pair (int8 + per-32 scales) — the fa combine q8-emit
+    /// consumers alloc through this (m=1 decode arms).
+    pub fn uninit_q8_pair(&self, n: usize)
+        -> Result<(CudaSlice<i8>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        Ok((self.alloc_uninit::<i8>(n)?, self.alloc_uninit::<f32>(n / 32)?))
+    }
+
     pub fn uninit(&self, n: usize) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         self.alloc_uninit::<f32>(n)
     }
@@ -6983,7 +6990,10 @@ impl Engine {
                           // this layer's cache is e4m3 (gemma windowed under wkv): resolve the
                           // hd256 rows kernel from the kf8vf8 module. PER-CALL — a global env
                           // check here hijacked qwen/kernel-check hd256 rows (8 FAILs, 230ebbe).
-                          g: bool)
+                          g: bool,
+                          // t=1 decode arm only: emit (int8, per-32 scales) from the dc combine
+                          // (hd512 path) — the standalone quantize launch folds away.
+                          mut q8_out: Option<(&mut CudaSlice<i8>, &mut CudaSlice<f32>)>)
                           -> Result<(), Box<dyn std::error::Error>> {
         debug_assert!(base_len + 1 >= fa_vec_min_tkv() && head_dim <= 512 && head_dim % 32 == 0);
         let t_kv_max = base_len + t;                       // LAST row's key bound
@@ -7159,12 +7169,25 @@ impl Engine {
                 // per-row n_splits derives from the SAME counter the rows kernel read.
                 let (bd, plus) = base_dev.unwrap();
                 let plus_g = plus + r0 as i32;
+                if let Some((oq, od)) = q8_out.as_mut() {
+                    // wave-5b port (2026-07-23, t=1 decode only): q8-emitting dc combine.
+                    debug_assert!(t == 1, "rows q8 emit is a t=1 decode arm");
+                    let fc = self.fa_func("fa_decode_combine_rows_dc_q8_1", head_dim);
+                    let mut b2 = self.gpu.stream.launch_builder(&fc);
+                    b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut **oq).arg(&mut **od)
+                      .arg(&hd).arg(&nh).arg(bd).arg(&plus_g).arg(&nspm).arg(&spk);
+                    unsafe { b2.launch(cfg2)?; }
+                    continue;
+                }
                 let fc = self.fa_func("fa_decode_combine_rows_dc", head_dim);
                 let mut b2 = self.gpu.stream.launch_builder(&fc);
                 b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
                   .arg(bd).arg(&plus_g).arg(&nspm).arg(&spk);
                 unsafe { b2.launch(cfg2)?; }
             } else {
+                // q8 emit is wired for the hd512 dc-combine arm only — a Some here would
+                // leave the caller's pair unwritten (consumer would read garbage).
+                assert!(q8_out.is_none(), "rows q8 emit requires the hd512 dc combine");
                 let fc = self.func("fa_decode_combine_rows");
                 let mut b2 = self.gpu.stream.launch_builder(&fc);
                 b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(&mut o_g).arg(&hd).arg(&nh)
@@ -7183,7 +7206,8 @@ impl Engine {
                             v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
                             head_dim: usize, n_head: usize, n_head_kv: usize,
                             base_dev: &CudaSlice<i32>, base_plus: i32, t: usize, scale: f32,
-                            window: usize, k_tok_bytes: usize, v_tok_bytes: usize)
+                            window: usize, k_tok_bytes: usize, v_tok_bytes: usize,
+                            q8_out: Option<(&mut CudaSlice<i8>, &mut CudaSlice<f32>)>)
                             -> Result<(), Box<dyn std::error::Error>> {
         // DEVICE-LEN (graph arc step 1, 2026-07-11): the causal base rides an i32 counter
         // (kernel T_kv = dev[0] + base_plus + r + 1) so depth graphs can replay with len
@@ -7280,10 +7304,21 @@ impl Engine {
          .arg(&ktb).arg(&vtb).arg(&wini);
         unsafe { b.launch(cfg)?; }
         }
-        let (fc, cfg2) = (if wg { self.func_g("fa_decode_combine_rows_w") }
-                          else { self.func("fa_decode_combine_rows_w") },
-            LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
-                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 });
+        let cfg2 = LaunchConfig { grid_dim: (n_head as u32, t as u32, 1),
+                block_dim: (head_dim as u32, 1, 1), shared_mem_bytes: 0 };
+        if let Some((oq, od)) = q8_out {
+            // wave-5b port (2026-07-23): q8-emitting combine — the t=1 decode's wo matvec
+            // consumes the pair directly; the standalone quantize launch folds away.
+            let fc = if wg { self.func_g("fa_decode_combine_rows_w_q8_1") }
+                     else { self.func("fa_decode_combine_rows_w_q8_1") };
+            let mut b2 = self.gpu.stream.launch_builder(&fc);
+            b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(oq).arg(od).arg(&hd).arg(&nh)
+              .arg(&nspm).arg(&spk).arg(&wini);
+            unsafe { b2.launch(cfg2)?; }
+            return Ok(());
+        }
+        let fc = if wg { self.func_g("fa_decode_combine_rows_w") }
+                 else { self.func("fa_decode_combine_rows_w") };
         let mut b2 = self.gpu.stream.launch_builder(&fc);
         b2.arg(&*part_o).arg(&*part_m).arg(&*part_l).arg(o).arg(&hd).arg(&nh)
           .arg(&nspm).arg(&spk).arg(&wini);

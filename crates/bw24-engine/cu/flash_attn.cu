@@ -6572,6 +6572,87 @@ extern "C" __global__ void fa_decode_combine_rows(
     O[((size_t)r * n_head + head) * head_dim + tid] = o * linv;
 }
 
+// ===== q8_1-emitting rows-combine twins (wave-5b recipe, m=1 decode wiring 2026-07-23) =====
+// Merge loops verbatim from their f32 twins above; the epilogue is quantize_q8_1's exact
+// per-32 recipe (amax shfl over the 32-lane group, d = amax/127, __float2int_rn) applied to
+// the SAME o*linv values at the SAME element index — the standalone quantize launch and the
+// f32 O round-trip disappear. Only the t=1 decode arms consume these; verify keeps f32.
+extern "C" __global__ void fa_decode_combine_rows_dc_q8_1(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, signed char* __restrict__ out_q,
+        float* __restrict__ out_d,
+        int head_dim, int n_head, const int* __restrict__ t_kv_base_dev, int base_plus,
+        int n_splits_max, int split_keys)
+{
+    const int head     = blockIdx.x;
+    const int r        = blockIdx.y;
+    const int T_kv     = t_kv_base_dev[0] + base_plus + r + 1;
+    const int n_splits = (T_kv + split_keys - 1) / split_keys;
+    const int tid      = threadIdx.x;
+    if (head >= n_head || tid >= head_dim) return;
+    const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pO = partO + ((size_t)r * n_head + head) * n_splits_max * head_dim;
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, pM[s]);
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = pM[s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += pL[s] * w;
+        o += pO[(size_t)s * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    float v = o * linv;
+    float amax = fabsf(v);
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+    float d = amax / 127.0f;
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    int gidx = (int)(((size_t)r * n_head + head) * head_dim) + tid;
+    out_q[gidx] = (signed char)__float2int_rn(v * id);
+    if ((tid & 31) == 0) out_d[gidx >> 5] = d;
+}
+
+extern "C" __global__ void fa_decode_combine_rows_w_q8_1(
+        const float* __restrict__ partO, const float* __restrict__ partM,
+        const float* __restrict__ partL, signed char* __restrict__ out_q,
+        float* __restrict__ out_d,
+        int head_dim, int n_head, int n_splits_max, int split_keys, int window)
+{
+    const int head     = blockIdx.x;
+    const int r        = blockIdx.y;
+    const int n_splits = (window + split_keys - 1) / split_keys;
+    const int tid      = threadIdx.x;
+    if (head >= n_head || tid >= head_dim) return;
+    const float* pM = partM + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pL = partL + ((size_t)r * n_head + head) * n_splits_max;
+    const float* pO = partO + ((size_t)r * n_head + head) * n_splits_max * head_dim;
+    float m = NEG_INF;
+    for (int s = 0; s < n_splits; ++s) m = fmaxf(m, pM[s]);
+    float l = 0.0f, o = 0.0f;
+    for (int s = 0; s < n_splits; ++s) {
+        float ms = pM[s];
+        if (ms == NEG_INF) continue;
+        float w = exp2f((ms - m) * LOG2E);
+        l += pL[s] * w;
+        o += pO[(size_t)s * head_dim + tid] * w;
+    }
+    float linv = (l > 0.0f) ? (1.0f / l) : 0.0f;
+    float v = o * linv;
+    float amax = fabsf(v);
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, off));
+    float d = amax / 127.0f;
+    float id = d > 0.0f ? 1.0f / d : 0.0f;
+    int gidx = (int)(((size_t)r * n_head + head) * head_dim) + tid;
+    out_q[gidx] = (signed char)__float2int_rn(v * id);
+    if ((tid & 31) == 0) out_d[gidx >> 5] = d;
+}
+
 
 // ===================== FA V4: KEY-PER-LANE SCORE PHASE (2026-07-10) =====================
 // fa_v3 at d6257 runs at 14% of bytes-wall — latency-bound on the reduce-per-key structure:

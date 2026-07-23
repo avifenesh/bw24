@@ -1,0 +1,29 @@
+== E4B interleaved N=3+3
+temp: 60  arm: e4b-on-1
+generated 128 tokens in 0.654s = 195.64 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.503s) [stop: MaxNew]
+temp: 57  arm: e4b-off-1
+generated 128 tokens in 0.663s = 193.20 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.504s) [stop: MaxNew]
+temp: 56  arm: e4b-on-2
+generated 128 tokens in 0.661s = 193.65 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.507s) [stop: MaxNew]
+temp: 57  arm: e4b-off-2
+generated 128 tokens in 0.670s = 191.04 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.513s) [stop: MaxNew]
+temp: 58  arm: e4b-on-3
+generated 128 tokens in 0.656s = 195.01 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.525s) [stop: MaxNew]
+temp: 58  arm: e4b-off-3
+DIED:
+[gemma4-e4b] per-layer-embed model detected (n_epl=256, row 10752) — first-light forward (eager decode + prime); dc/graph/spec unwired (HANDOVER-E4B.md)
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+== 12B interleaved N=2+2
+temp: 58  arm: g12-on-1
+DIED:
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+temp: 65  arm: g12-off-1
+DIED:
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+temp: 66  arm: g12-on-2
+DIED:
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+temp: 58  arm: g12-off-2
+generated 128 tokens in 1.469s = 87.11 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.131s) [stop: MaxNew]
+== 26B 1+1
+temp: 57  arm: g26-on-1
