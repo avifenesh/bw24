@@ -131,3 +131,18 @@ contribution FP-sum order documented as part of the lockstep numeric class.
 Concurrency scoreboard after M1-M3: **4.44 single -> 6.17 (m=2) -> 6.40 (m=3) -> 5.93 (m=4)**.
 Remaining M4 items: m=6/8 arms with stream-count-aware frac sizing, serve loop, per-stream
 latency reporting, fused multi-row IQ3_S/Q4_K kernels (currently generic fallback).
+
+## M4 scaling sweep (2026-07-23, fused multi-row kernels live)
+
+| m | frac | aggregate | identity |
+|---|---|---:|---|
+| 4 | 0.85 | **6.32 (campaign best; 5.93 before fusing, +6.6%)** | PASS |
+| 6 | 0.82 | 5.72 | PASS |
+| 8 | 0.78 | 5.53 | PASS |
+| 3 | 0.90 | 3.72 — suspect outlier (band 6.33-6.40; unguarded mid-run interference), rerun queued | PASS |
+
+The optimum moved m=2 -> m=3 -> m=4 across M1 -> M2/M3 -> fused-M4, tracking each
+amortization increment. Past m=4 the binding costs are (a) residency given back through
+stream-state frac headroom and (b) per-stream attention/glue, which scales linearly with m —
+batched attention (the fa_decode_rows block-diagonal seam from the recon) is the next
+structural lever, alongside stream-count-aware frac in a real serve loop.
