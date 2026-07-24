@@ -49,17 +49,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(32);
 
-    let text = std::env::var("BW24_PROMPT")
-        .unwrap_or_else(|_| "Explain speculative decoding briefly.".to_string());
+    // BW24_PROMPTS_FILE: one prompt per line, cycled across streams — the honest
+    // mixed-workload regime (same-prompt streams route identically and overstate expert
+    // overlap). Default: BW24_PROMPT for every stream (the identity-gate regime).
+    let texts: Vec<String> = match std::env::var("BW24_PROMPTS_FILE") {
+        Ok(path) => std::fs::read_to_string(&path)?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(_) => vec![std::env::var("BW24_PROMPT")
+            .unwrap_or_else(|_| "Explain speculative decoding briefly.".to_string())],
+    };
+    if texts.is_empty() {
+        return Err("BW24_PROMPTS_FILE contains no prompts".into());
+    }
     let tok = Tokenizer::from_hf_dir(&tok_dir)
         .map_err(|err| format!("HF tokenizer init failed: {err}"))?;
-    let to_encode = if std::env::var("BW24_CHAT").is_ok() {
-        tok.apply_chat_template(&[("user", text.as_str())], true)
-    } else {
-        text.clone()
-    };
-    let prompt = tok.encode(&to_encode, true);
-    println!("prompt tokens: {} (m={m} streams, n_new={n_new})", prompt.len());
+    let chat = std::env::var("BW24_CHAT").is_ok();
+    let prompts: Vec<Vec<u32>> = (0..m)
+        .map(|s| {
+            let text = &texts[s % texts.len()];
+            let to_encode = if chat {
+                tok.apply_chat_template(&[("user", text.as_str())], true)
+            } else {
+                text.clone()
+            };
+            tok.encode(&to_encode, true)
+        })
+        .collect();
+    let identical_prompts = prompts.windows(2).all(|w| w[0] == w[1]);
+    println!(
+        "prompts: {} distinct across m={m} streams (lens {:?}), n_new={n_new}",
+        texts.len().min(m),
+        prompts.iter().map(Vec::len).collect::<Vec<_>>()
+    );
 
     // Residency: restore the freeze profile (mandatory here — a profiling warmup would need
     // its own generate pass; lockstep assumes the profile exists from a run-gen session).
@@ -73,14 +97,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     e.stream().synchronize()?;
 
-    // Prime each stream's cache over the shared prompt (tokenwise, the frozen-serving path).
-    let max_ctx = prompt.len() + n_new + 8;
+    // Prime each stream's cache over its own prompt (tokenwise, the frozen-serving path).
     let mut caches = Vec::with_capacity(m);
     let mut last_logits: Vec<Vec<f32>> = Vec::with_capacity(m);
-    for _ in 0..m {
+    for prompt in &prompts {
+        let max_ctx = prompt.len() + n_new + 8;
         let mut cache = bw24_engine::cache::Cache::new(&e, &model.cfg, max_ctx)?;
         let mut dec = Vec::new();
-        for &token in &prompt {
+        for &token in prompt {
             dec = model.decode_step(&e, token, &mut cache)?;
         }
         caches.push(cache);
@@ -117,13 +141,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (s, out) in outputs.iter().enumerate() {
         println!("stream {s}: {out:?}");
     }
-    let identical = outputs.windows(2).all(|w| w[0] == w[1]);
-    println!(
-        "stream-identity gate: {}",
-        if identical { "PASS (all streams identical)" } else { "FAIL" }
-    );
-    if !identical {
-        std::process::exit(1);
+    if identical_prompts {
+        let identical = outputs.windows(2).all(|w| w[0] == w[1]);
+        println!(
+            "stream-identity gate: {}",
+            if identical { "PASS (all streams identical)" } else { "FAIL" }
+        );
+        if !identical {
+            std::process::exit(1);
+        }
+    } else {
+        println!("stream-identity gate: SKIP (distinct prompts)");
     }
     Ok(())
 }
