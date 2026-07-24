@@ -206,3 +206,34 @@ The remaining mechanisms are different in kind: batched block-diagonal attention
 (fa_decode_rows seam) shrinks the per-stream GPU serial share, and a real serve loop gets
 continuous batching (prefill-under-decode phase overlap), which lockstep cannot express.
 Identical-batch regimes keep their 6.9 aggregate win; single-stream keeps 6.0.
+
+## M4a batched full-attention projections (2026-07-25, battn-*.log) — FLAT, door left open
+
+Built `full_attn_decode_batched`: a generic m-band primitive splitting the mixer by what the
+hardware cares about — WEIGHT-BOUND work (q/k/v + output projections) runs once at m because
+all streams share the same weights, KV-bound work (append, fa_decode) stays per stream. Reuses
+the existing m-band kernels (`matmul_q8_fused3_t`, `matmul_pre`) and `copy_view_into`; the
+elementwise ops needed no new kernels (`rms_norm` takes nrows=m*n_head, `rope_neox` takes
+n_tokens=m with a per-stream position vector, `q_gate_split` takes t=m).
+
+| arm (mixed prompts, tail-Q2_K, 2x8 executors) | off | on |
+|---|---:|---:|
+| m=2 | 4.72 | 4.72 |
+| m=3 | 5.35 | 5.24 |
+
+Correctness: same-prompt m=2 tokens bit-identical between arms (PASS) — per-row quantize/norm,
+per-token rope, and the same m-band kernels spec verify is gated on.
+
+Verdict FLAT/slightly negative; predicted +10% did not appear. Mechanism: full-attn is the
+minority layer type in this hybrid (GDN/linear dominates the 80 layers), so the m-band
+weight-read saving covers few layers, and on exactly those layers the path gives up the
+per-stream norm->q8_1 fusion (a measured +3% lever) and adds gather/scatter copies. Gain and
+loss cancel. This is also consistent with the campaign's standing finding that decode matvec
+is latency-bound at low m rather than weight-bandwidth-bound.
+
+`BW24_LOCKSTEP_BATCH_ATTN` defaults OFF and is documented as an explicitly-blocked
+experimental door. The primitive stays in-tree deliberately: a continuous-batching serve loop
+batches across *requests* at higher m, where there is no fused per-stream alternative to lose
+and the m-band weight read is the whole point. Extending the same split to the GDN layers
+would be the only way to test the lever at full coverage — worth doing only inside that serve
+loop, not in lockstep.
