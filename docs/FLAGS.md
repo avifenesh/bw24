@@ -249,6 +249,7 @@ These exist because correctness discipline needs a same-binary oracle. Each is a
 
 | flag | door | block |
 |---|---|---|
+| `BW24_LOCKSTEP_BATCH_ATTN=1` | batched m-band full-attention mixer for multi-stream lockstep decode: q/k/v + output projections run once at m (streams share weights), KV-bound work stays per stream. Bit-identical (same-prompt m=2 token-exact vs the per-stream path) | MEASURED FLAT 2026-07-25: m=2 4.72/4.72, m=3 5.24 vs 5.35. Full-attn is the minority layer type in the Hy3 hybrid, so the weight-read saving covers few layers and is cancelled by the norm->q8_1 fusion this path forgoes plus its gather/scatter copies. Primitive retained for a continuous-batching serve loop (batching across requests at higher m, no fused alternative to lose) |
 | `BW24_MMQ=1` (+`BW24_RP=0`) | native W4A4 FP4 MMQ prefill — 1.03–1.06x llama, 1.4–1.76x our default (2026-07-08) | EXACTNESS-BLOCKED: e2m1 activation grid forks argmax/text on long real prompts (p3 reject reproduced 2026-07-07 + 2026-07-08; agent-loop 1/8 self-consistency FAIL). Speed-mode candidate, never default |
 | `BW24_FP4=1` | hand-rolled W4A4 GEMM in `matmul` (decode/mid-m band) | same accuracy class (maxdiff ~1.0 vs W4A8 0.159); explicit speed/accuracy tradeoff only |
 | `BW24_FP4_CUTLASS` (+build `BW24_CUTLASS`) | CUTLASS sm120 NVFP4 GEMM for m>=128 prefill (`BW24_FP4_CUTLASS_OTF=1` = per-call repack, no resident VRAM doubling) | same W4A4 exactness block + resident repack ~doubles NVFP4 weight VRAM (OOMs 27B/24GB) |
