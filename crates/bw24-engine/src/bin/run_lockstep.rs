@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut next: Vec<u32> = last_logits.iter().map(|l| argmax(l)).collect();
     let mut outputs: Vec<Vec<u32>> = (0..m).map(|_| Vec::with_capacity(n_new)).collect();
 
+    let cpu_before = e.cpu_expert_stats();
     let t0 = std::time::Instant::now();
     for _ in 0..n_new {
         for (s, &t) in next.iter().enumerate() {
@@ -138,6 +139,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total as f64 / dt,
         n_new as f64 / dt
     );
+    if let (Some(before), Some(after)) = (cpu_before, e.cpu_expert_stats()) {
+        println!(
+            "CPU experts DECODE-WINDOW: calls={} experts={} backend_wall={:.3}s \
+             RAM_hits={} RAM_misses={} RAM_fills={:.2} GB io={:.3}s compute={:.3}s",
+            after.0.saturating_sub(before.0),
+            after.1.saturating_sub(before.1),
+            (after.2.saturating_sub(before.2)) as f64 / 1e9,
+            after.3.saturating_sub(before.3),
+            after.4.saturating_sub(before.4),
+            (after.5.saturating_sub(before.5)) as f64 / 1e9,
+            (after.8.saturating_sub(before.8)) as f64 / 1e9,
+            (after.10.saturating_sub(before.10)) as f64 / 1e9,
+        );
+    }
     for (s, out) in outputs.iter().enumerate() {
         println!("stream {s}: {out:?}");
     }

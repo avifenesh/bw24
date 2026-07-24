@@ -187,3 +187,22 @@ the in-call serial io (each call still reads-then-computes). This compounds with
 tail-Q2_K requant (-22% miss bytes) — the io the executors serialize on shrinks by the same
 fraction. BW24_CPU_EXPERT_EXECUTORS default stays 1 (winners-only: parity is not a win);
 the serve-loop arm flips it when the compound clears the bar.
+
+## Compound arms on the demoted artifact (2026-07-24, compound*/compound2*/compound3* logs)
+
+Confound round first: frac 0.88 silently broke freeze-profile fidelity (6431 blocks restaged
+into 6302 slots — 129 evicted during restage) and the executor receipt's 2x4 thread shape
+does not transfer to the demoted artifact (io shrank, so calls are compute-bound: 2x4 = 3.42
+vs 2x8 = 4.80 at m=2). Method note: profile-bearing arms must keep the profile's frac; the
+harness now prints the CPU decode-window counters so no arm runs blind.
+
+Honest mixed scoreboard on tail-Q2_K (frac 0.90, t8): m=1 5.45 / m=2 4.80 / **m=3 5.29** /
+executors 2-vs-1 +2.8%. In-call pipeline at fractional volume (third falsification): m=2
+3.01, m=3 5.09 — backend wall inflates again (11.6 -> 19.2 s at m=2); the in-call overlap
+mechanism is dead on this fabric at every tested volume and stays retired permanently.
+
+Standing: mixed-workload concurrency ceilings at ~parity with single-stream under lockstep.
+The remaining mechanisms are different in kind: batched block-diagonal attention
+(fa_decode_rows seam) shrinks the per-stream GPU serial share, and a real serve loop gets
+continuous batching (prefill-under-decode phase overlap), which lockstep cannot express.
+Identical-batch regimes keep their 6.9 aggregate win; single-stream keeps 6.0.
