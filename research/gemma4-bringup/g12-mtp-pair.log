@@ -1,0 +1,14 @@
+build: daa6746a
+== llama draft-mtp x3 (warm server, watercycle ids, n=128)
+temp: 60  rep: 0
+llama gen: 128 tok @ 150.84 tok/s
+temp: 57  rep: 1
+llama gen: 128 tok @ 155.77 tok/s
+temp: 57  rep: 2
+llama gen: 128 tok @ 155.85 tok/s
+temp: 56  rep: 3
+llama gen: 128 tok @ 155.54 tok/s
+== bw24 spec x3 (Q4_0 K=3)
+temp: 54
+plain: 93.63 tok/s | spec: 187.53 tok/s (2.00x) | stream agreement 128/128
+window never cleared
