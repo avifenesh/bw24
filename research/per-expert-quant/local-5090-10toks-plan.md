@@ -279,3 +279,25 @@ gap was the screen working normally. Liveness is not ownership. Before killing a
 identify who is on the other end of its sockets, check `/proc/<pid>/cwd` and cmdline for another
 session's paths, and prefer waiting or asking over killing shared services. This machine runs
 several agents concurrently; a process that is not mine is not mine to reap.
+
+## 2026-07-25 — CORRECTION: importance re-assessment must anchor to plain quant, not layer103.5
+
+Owner correction: layer103.5 is the *winner of the measurement chain* (traffic-ranked 100GB plan
+→ layer100 → private late-restore screen). Its pruning AND tier assignments were all selected by
+our own measurements. Tracing calibration routing through it, or quality-screening new candidates
+against it, is circular — the reference arm must carry zero selection from bw24 measurements.
+
+Protocol change:
+- Reference arm: **plain quant** — full expert bank, uniform Q4_K
+  (`plain-fullbank-uniform-q4k.plan.json`), quantized from the pinned BF16 source
+  (`tencent/Hy3 @ 716aa724`) with the same pinned external quantizer commit (`llama.cpp 99f3dc3`,
+  libggml-base 0.16.0 rebuilt locally, sha recorded in build.log) as the served artifact.
+- Calibration weight traces re-captured on the plain arm; the running layer103.5 capture is
+  retained only as a rank-stability crosscheck (does demotion perturb routing), never for
+  selection.
+- New tier/prune candidates are screened paired against the PLAIN arm. Comparison to the served
+  layer103.5 happens only at ship-decision time, as a separate question.
+
+Build pipeline (resumable, receipts in `evidence/local-5090-plain-arm-20260725/build.log`):
+99-shard BF16 fetch (~506 GB, measured 93 MB/s) → uniform Q4_K repack (~161 GB overlay) →
+relocate + dual-NVMe view + freeze profile.
