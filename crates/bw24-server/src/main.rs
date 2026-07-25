@@ -18,7 +18,7 @@
 //! `+draft.gguf` attaches that model's regime draft — docs/DRAFT-REGIME.md).
 //! Defaults to the BASE-4 test pair (main=27B, judge=9B) if unset. BW24_ADDR sets the bind addr.
 
-mod lanes;
+pub(crate) mod lanes { pub use bw24_lanes::*; }
 mod worker;
 
 use std::sync::Arc;

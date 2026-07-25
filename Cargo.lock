@@ -116,6 +116,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bw24-lanes"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bw24-probe"
 version = "0.0.0"
 dependencies = [
@@ -138,6 +145,7 @@ dependencies = [
  "axum",
  "bw24-engine",
  "bw24-gguf",
+ "bw24-lanes",
  "bw24-tokenizer",
  "futures-core",
  "serde",
