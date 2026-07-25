@@ -320,3 +320,32 @@ tail-Q2_K demotion that made Q2_K the dominant CPU-side format. It also means a 
 intra-call split would be fragile — the split wants to be dynamic (both teams pulling experts
 from a shared atomic counter), which self-balances across formats and core types with no
 cross-team barrier.
+
+### Intra-call P/E split: REJECTED, and the microbench that predicted it was measuring the wrong regime
+
+Built the single-stream analog — `ComputeTeams` in the companion: persistent pinned per-core-group
+teams pulling experts from a shared atomic counter, dynamic hand-out so no cross-team barrier.
+Correctness was fine (ALL GREEN, oracle-identical, inert when unset). Performance was not:
+
+| arm (m=1, tail-Q2_K) | tok/s | CPU compute |
+|---|---:|---:|
+| P only (8 thr) | 5.43 / 5.41 | 2.915 / 2.946 s |
+| P + 8E teams | 4.96 / 4.86 | 3.360 / 3.509 s |
+| P + 14E teams | 4.09 | 4.646 s |
+
+Compute got monotonically WORSE as E-cores were added — the opposite of the prediction. Mechanism:
+expert weights stream from RAM (16.79 GB of fills per run), so the loop is memory-bandwidth-bound;
+E-cores add no bandwidth, only contention for the same controller, plus a per-expert OMP region
+entry that replaced whole-subset worksharing. Code reverted under winners-only.
+
+METHOD LESSON (the important part): the P-vs-E microbench that motivated this used
+`cpu_native_check`'s fixture, which repeats a single weight row and therefore fits in cache. It
+measured ALU throughput in a cache-hot regime and reported E16 > P8 — a ratio that simply does not
+transfer to the bandwidth-bound production path. A microbench must reproduce the memory regime of
+the path it is used to predict, or its ratios are decoration. This is the same "micro != e2e" trap
+the KV-fp8 receipt recorded, in a new costume.
+
+Reconciling with the executor win: pinned executors pay (+11%) because the E team computes ANOTHER
+stream's experts while the P team is blocked on io — E-cores fill otherwise-idle time. Intra-call
+teams lose because both teams contend for the same bandwidth on the SAME call's experts. E-cores
+are useful here for overlap, not for parallel bandwidth-bound throughput.

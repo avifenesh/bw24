@@ -413,6 +413,23 @@ fn ffi_expert(expert: &OwnedExpert) -> CpuExpertV2 {
 }
 
 fn execute(job: CpuJob) -> Result<Vec<f32>, String> {
+    // A pinned executor sizes its OMP team to its own core group, overriding the job's
+    // process-wide thread count (set at prepare time, before the executor is known).
+    let width = EXECUTOR_THREADS.with(|slot| slot.get());
+    let job = if width > 0 {
+        match job {
+            CpuJob::Token(mut j) => {
+                j.threads = width;
+                CpuJob::Token(j)
+            }
+            CpuJob::Rows(mut j) => {
+                j.threads = width;
+                CpuJob::Rows(j)
+            }
+        }
+    } else {
+        job
+    };
     match job {
         CpuJob::Token(job) => execute_token(job),
         CpuJob::Rows(job) => execute_rows(job),
@@ -500,30 +517,134 @@ fn execute_token(job: CpuExpertJob) -> Result<Vec<f32>, String> {
     Ok(output)
 }
 
+/// Per-executor OMP width, set on the executor thread so `execute` can size its team to the
+/// core group that thread is pinned to (heterogeneous groups want different widths).
+thread_local! {
+    static EXECUTOR_THREADS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Parse `"0-7;8-15"` (semicolon-separated core lists, each `a-b` or `a,b,c`) into cpu sets.
+fn parse_cpusets(spec: &str) -> Result<Vec<Vec<usize>>, String> {
+    let mut groups = Vec::new();
+    for group in spec.split(';').filter(|g| !g.trim().is_empty()) {
+        let mut cpus = Vec::new();
+        for part in group.split(',') {
+            let part = part.trim();
+            match part.split_once('-') {
+                Some((lo, hi)) => {
+                    let (lo, hi) = (
+                        lo.trim().parse::<usize>().map_err(|_| format!("bad cpu range {part:?}"))?,
+                        hi.trim().parse::<usize>().map_err(|_| format!("bad cpu range {part:?}"))?,
+                    );
+                    if lo > hi || hi >= 4096 {
+                        return Err(format!("bad cpu range {part:?}"));
+                    }
+                    cpus.extend(lo..=hi);
+                }
+                None => cpus.push(
+                    part.parse::<usize>().map_err(|_| format!("bad cpu id {part:?}"))?,
+                ),
+            }
+        }
+        if cpus.is_empty() {
+            return Err(format!("empty cpu group in {spec:?}"));
+        }
+        groups.push(cpus);
+    }
+    if groups.is_empty() {
+        return Err(format!("no cpu groups in {spec:?}"));
+    }
+    Ok(groups)
+}
+
+fn pin_current_thread(cpus: &[usize]) {
+    // SAFETY: zeroed cpu_set_t then CPU_SET of validated ids; affinity applies to this thread.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        for &cpu in cpus {
+            libc::CPU_SET(cpu, &mut set);
+        }
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+    }
+}
+
 fn start_executor() -> Result<CpuExecutor, String> {
     // BW24_CPU_EXPERT_EXECUTORS > 1 (lane-3 cross-stream overlap): several worker threads
     // drain one queue, so stream A's expert compute runs under stream B's reads. Callers
     // should split BW24_CPU_EXPERT_THREADS across executors (each companion call spawns its
     // own OMP team). Default 1 = the established serial behavior.
-    let executors = std::env::var("BW24_CPU_EXPERT_EXECUTORS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|&n| (1..=8).contains(&n))
-        .unwrap_or(1);
+    //
+    // BW24_CPU_EXPERT_EXECUTOR_CPUSETS="0-7;8-15" pins each executor to its own core group —
+    // ASYMMETRIC partitioning, the shape the 2026-07-23 receipt identified as the only viable
+    // way to use heterogeneous cores: one OMP team per group, so a slow group never straggles
+    // a fast group's barrier (naive widening of ONE team across P+E cores measured
+    // catastrophic: compute 2.8 -> 5.2 s at 16 threads, 14.6 s at 20). Executor count follows
+    // the group count when set, and each team is sized to its group unless
+    // BW24_CPU_EXPERT_EXECUTOR_THREADS="8;16" overrides per group.
+    // NOTE: a global GOMP_CPU_AFFINITY overrides per-thread affinity for OMP teams — leave it
+    // unset (and widen the process taskset) for the pinning to take effect.
+    let cpusets = match std::env::var("BW24_CPU_EXPERT_EXECUTOR_CPUSETS") {
+        Ok(spec) if !spec.trim().is_empty() => Some(parse_cpusets(&spec)?),
+        _ => None,
+    };
+    let group_threads = match std::env::var("BW24_CPU_EXPERT_EXECUTOR_THREADS") {
+        Ok(spec) if !spec.trim().is_empty() => Some(
+            spec.split(';')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().parse::<i32>().map_err(|_| format!("bad thread count {s:?}")))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        _ => None,
+    };
+    let executors = match &cpusets {
+        Some(groups) => groups.len(),
+        None => std::env::var("BW24_CPU_EXPERT_EXECUTORS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&n| (1..=8).contains(&n))
+            .unwrap_or(1),
+    };
+    if let Some(groups) = &cpusets {
+        let widths: Vec<String> = groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let t = group_threads
+                    .as_ref()
+                    .and_then(|v| v.get(i).copied())
+                    .unwrap_or(g.len() as i32);
+                format!("{}cpus/{}thr", g.len(), t)
+            })
+            .collect();
+        eprintln!("[bw24] cpu expert executors pinned: {}", widths.join(" + "));
+    }
     let (sender, receiver) = std::sync::mpsc::sync_channel::<CpuRequest>(executors.max(1));
     let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
     for index in 0..executors {
         let receiver = std::sync::Arc::clone(&receiver);
+        let cpus = cpusets.as_ref().map(|g| g[index].clone());
+        let threads = group_threads
+            .as_ref()
+            .and_then(|v| v.get(index).copied())
+            .or_else(|| cpus.as_ref().map(|c| c.len() as i32));
         std::thread::Builder::new()
             .name(format!("bw24-cpu-executor-{index}"))
-            .spawn(move || loop {
-                let request = {
-                    let guard = receiver.lock().expect("cpu executor queue poisoned");
-                    guard.recv()
-                };
-                let Ok(request) = request else { return };
-                let result = execute(request.job);
-                let _ = request.reply.send(result);
+            .spawn(move || {
+                if let Some(cpus) = &cpus {
+                    pin_current_thread(cpus);
+                }
+                if let Some(threads) = threads {
+                    EXECUTOR_THREADS.with(|slot| slot.set(threads));
+                }
+                loop {
+                    let request = {
+                        let guard = receiver.lock().expect("cpu executor queue poisoned");
+                        guard.recv()
+                    };
+                    let Ok(request) = request else { return };
+                    let result = execute(request.job);
+                    let _ = request.reply.send(result);
+                }
             })
             .map_err(|error| format!("cannot start persistent CPU expert executor: {error}"))?;
     }
