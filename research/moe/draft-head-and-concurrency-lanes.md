@@ -259,3 +259,45 @@ single-stream in the CLI harness, it cannot beat it in the server either.
 
 The engine-side pieces stay ready for the day that changes (`decode_step_lockstep`,
 grouped-MoE, the m-band mixer, per-session caches already in the right shape).
+
+## Asymmetric P/E core partitioning (2026-07-25) — first round + the single-stream design
+
+Topology (kernel hybrid masks): `cpu_core` = 0-7 (8 P), `cpu_atom` = 8-23 (16 E). Every
+measurement in this campaign so far ran expert compute on the 8 P-cores only; the 16 E-cores
+carried at most io threads.
+
+Built per-executor pinning: `BW24_CPU_EXPERT_EXECUTOR_CPUSETS="0-7;8-15"` gives each executor
+its own core group and sizes its OMP team to that group (`BW24_CPU_EXPERT_EXECUTOR_THREADS`
+overrides). This is the shape the 2026-07-23 receipt said was the only viable way to use
+heterogeneous cores — ONE team per group, so a slow group never straggles a fast group's
+barrier. Naive widening of a single team across P+E measured catastrophic (compute 2.8 -> 5.2 s
+at 16 threads, 14.6 s at 20).
+
+First round, m=3 mixed prompts on tail-Q2_K:
+
+| arm | aggregate |
+|---|---:|
+| baseline (P only, 2 executors x 8 thr) | 5.30, 4.94 |
+| **P + 8E (2 groups)** | **5.74** |
+| P + 14E (3 groups: 8P + 8E + 6E) | 5.10 |
+
+E-cores contribute: P+8E beats both baseline runs. Baseline spread is ~7%, so a confirmation
+round (pe8 x2 + baseline + a single 14-core E team) is running before the number is claimed.
+The 3-group arm being worse is instructive: with m=3 streams and 3 executors, the weak 6-core
+group takes a whole call and becomes the critical path — heterogeneous executors want FEWER
+groups than in-flight calls so the shared queue can self-balance.
+
+### Next: intra-call P/E split (the single-stream lever)
+
+Executors only help when several calls are in flight, so this round cannot move single-stream
+(one companion call at a time). The single-stream version is to split ONE call's expert set
+across two pinned teams. It is structurally clean because expert e's whole chain (gate/up ->
+SwiGLU -> down-activation quantize -> down) depends only on expert e: partition experts, run
+`compute_expert_stages(subset)` on each pinned team concurrently, join, then accumulate in
+expert-index order exactly as now. No cross-team barrier, and bit-identity holds by
+construction since accumulation order is independent of which team computed a row.
+
+Open question the microbench answers first: the P:E throughput ratio at these shapes, which
+sets the split. A rough 8-P-core vs 8-E-core team ratio near 1:0.55 would put the balance
+around 5:3 of routed experts and cut CPU compute ~35%. Granularity is coarse (only 4-8 CPU
+experts per call), so the split must be measured, not assumed.
