@@ -237,3 +237,25 @@ batches across *requests* at higher m, where there is no fused per-stream altern
 and the m-band weight read is the whole point. Extending the same split to the GDN layers
 would be the only way to test the lever at full coverage — worth doing only inside that serve
 loop, not in lockstep.
+
+## Serve-loop batching: NOT INDICATED on this workload (2026-07-25 design note)
+
+Mapped `bw24-server` before building continuous batching. The scheduler already admits up to
+`MAX_ACTIVE = 4` sessions and round-robins them (`worker.rs:277-288`), each session owning its
+own `Cache` — so m concurrent requests today cost m independent forward passes, i.e. aggregate
+throughput ~= the single-stream rate (6.0 tok/s on tail-Q2_K), split across sessions.
+
+Batched lockstep at mixed prompts measures 5.35 aggregate at m=3 and 4.72 at m=2 — BELOW that
+round-robin baseline. Wiring `decode_step_lockstep` into the scheduler would therefore make the
+server slower, for the reason the distinct-prompt correction already established: concurrent
+requests route to disjoint expert sets, so every added stream costs nearly a full expert
+io+compute load and batching only adds coordination on top. Request batching pays when streams
+SHARE weights they would otherwise re-read; here the shared part (dense trunk) is the small
+part and the unshared part (experts) is the wall.
+
+So the serve loop is not the lever. The precondition for revisiting it is CPU-expert throughput
+that scales with m — i.e. the asymmetric P+E executor work below. If concurrency cannot beat
+single-stream in the CLI harness, it cannot beat it in the server either.
+
+The engine-side pieces stay ready for the day that changes (`decode_step_lockstep`,
+grouped-MoE, the m-band mixer, per-session caches already in the right shape).
