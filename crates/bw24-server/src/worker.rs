@@ -60,6 +60,8 @@ pub struct Request {
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
     pub trace_id: Option<String>,
+    /// yield lane (x-lane header; default interactive). Drives admission + prefill budgets.
+    pub lane: crate::lanes::Lane,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -108,6 +110,8 @@ const REUSE_MIN_PREFIX: usize = 16;
 
 struct Session {
     model: String,
+    /// yield lane — admission class + prefill budget bucket + batch priority.
+    lane: crate::lanes::Lane,
     /// legacy tokenwise cache — None on the spec path (SpecSession owns its own caches; the
     /// double-alloc cost 2GB/128k-session and OOM'd the 27B serve — fixed 2026-07-05).
     cache: Option<Cache>,
@@ -150,6 +154,7 @@ pub fn run(
     models: Vec<(String, String, Option<String>)>,
     rx: Receiver<Cmd>,
     ready_tx: Sender<Result<Vec<String>, String>>,
+    metrics: crate::lanes::SharedMetrics,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
     let engine = match Engine::new(0) {
@@ -245,6 +250,16 @@ pub fn run(
     let mut reuse: HashMap<String, Vec<ReuseEntry>> = HashMap::new();
     let mut spec_reuse: HashMap<String, Vec<SpecReuseEntry>> = HashMap::new();
 
+    // ---- lane machinery (ARCHITECTURE-H100.md B3): policy from env, engine-truth step stats ----
+    let policy = crate::lanes::LanePolicy::from_env();
+    let mut step_stats = crate::lanes::StepStats::new(
+        std::env::var("BW24_LANE_WINDOW_S").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0));
+    let mut lane_admitted = [0u64; 3];
+    let mut lane_shed = [0u64; 3];
+    let mut lane_completed = [0u64; 3];
+    let mut lane_tokens = [0u64; 3];
+    let mut last_batch = 0usize;
+
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
         //    otherwise poll non-blocking so the decode loop keeps interleaving.
@@ -264,32 +279,162 @@ pub fn run(
             }
         }
 
-        // 2. Admit queued requests into free slots (up to MAX_ACTIVE).
+        // 2. LANE ADMISSION (yield gate, engine-side): interactive always admitted up to its
+        //    cap; judge/harvest gated on the measured interactive step p99 vs their SLO
+        //    fraction. Shed = immediate retryable error (HTTP 429 at the handler) — dark-lane
+        //    work is NEVER queued inside the engine (the B2 lesson: the engine queue is where
+        //    the tail dies). Legacy MAX_ACTIVE applies to the interactive lane.
         let max_active = if confidence_trace_enabled() { 1 } else { MAX_ACTIVE };
-        while active.len() < max_active {
-            let Some(req) = queue.pop_front() else { break };
+        let mut requeue: std::collections::VecDeque<Box<Request>> = Default::default();
+        while let Some(req) = queue.pop_front() {
+            let lane = req.lane;
+            let lane_count = active.iter().filter(|s| s.lane == lane).count();
+            let cap = if lane == crate::lanes::Lane::Interactive {
+                max_active.min(policy.max_sessions[0])
+            } else {
+                policy.max_sessions[lane.idx()]
+            };
+            if lane_count >= cap {
+                if lane == crate::lanes::Lane::Interactive {
+                    requeue.push_back(req);   // interactive waits (FIFO), never shed
+                } else {
+                    lane_shed[lane.idx()] += 1;
+                    let _ = req.tx.send(Event::Error(format!(
+                        "shed:{}:lane at capacity, retry", lane.as_str())));
+                }
+                continue;
+            }
+            if !policy.admit(lane, &mut step_stats) {
+                lane_shed[lane.idx()] += 1;
+                let _ = req.tx.send(Event::Error(format!(
+                    "shed:{}:interactive p99 over budget, retry", lane.as_str())));
+                continue;
+            }
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, *req) {
-                Ok(s) => active.push(s),
+                Ok(s) => { lane_admitted[lane.idx()] += 1; active.push(s); }
                 Err((tx, msg)) => { let _ = tx.send(Event::Error(msg)); }
             }
         }
+        queue = requeue;
 
-        // 3. One round-robin pass: step every active session by exactly ONE decode_step.
+        // 3. The tick. Three phases (BW24_SERVE_BATCH=0 restores legacy round-robin):
+        //    (a) spec sessions burst solo (spec x batch composition is a later lane);
+        //    (b) prefilling sessions prime under PER-LANE token budgets — interactive at the
+        //        full tick chunk, judge/harvest only within their dark-lane budgets (this
+        //        replaces vLLM's single global chunked-prefill knob and its baseline-p99 tax);
+        //    (c) decoding sessions advance through BATCHED steps: sample+emit host-side, then
+        //        decode_step_batch over survivors in chunks of <= 8, interactive rows first.
+        let batching = std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
         let mut finished: Vec<usize> = Vec::new();
-        for i in 0..active.len() {
-            match step_session(&engine, &loaded, &mut active[i]) {
-                Ok(true) => {}                 // still running
-                Ok(false) => finished.push(i), // retired this tick
-                Err(err) => {
-                    let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
-                    finished.push(i);
+        if !batching {
+            for i in 0..active.len() {
+                match step_session(&engine, &loaded, &mut active[i]) {
+                    Ok(true) => {}
+                    Ok(false) => finished.push(i),
+                    Err(err) => {
+                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        finished.push(i);
+                    }
                 }
             }
+        } else {
+            // (a) spec bursts
+            for i in 0..active.len() {
+                if active[i].spec.is_some() {
+                    match step_session(&engine, &loaded, &mut active[i]) {
+                        Ok(true) => {}
+                        Ok(false) => finished.push(i),
+                        Err(err) => {
+                            let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                            finished.push(i);
+                        }
+                    }
+                }
+            }
+            // (b) prefill under per-lane budgets
+            let mut budgets = policy.prefill_budget;
+            for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
+                let s = &mut active[i];
+                if s.spec.is_some() || s.prefill_done { continue; }
+                let li = s.lane.idx();
+                if budgets[li] == 0 { continue; }
+                match prefill_tick(&engine, &loaded, s, budgets[li]) {
+                    Ok(consumed) => budgets[li] = budgets[li].saturating_sub(consumed),
+                    Err(err) => {
+                        let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                        finished.push(i);
+                    }
+                }
+            }
+            // (c) batched decode, interactive rows first
+            let t_decode = Instant::now();
+            let mut decoding: Vec<usize> = (0..active.len())
+                .filter(|&i| !finished.contains(&i)
+                        && active[i].spec.is_none() && active[i].prefill_done
+                        && active[i].cache.is_some())
+                .collect();
+            decoding.sort_by_key(|&i| active[i].lane.idx());
+            let mut had_interactive = false;
+            // sample + emit + stop checks (host); survivors carry their next token
+            let mut ready: Vec<(usize, u32)> = Vec::new();
+            for &i in &decoding {
+                let (cont, next) = advance_sample_emit(&loaded, &mut active[i]);
+                match (cont, next) {
+                    (false, _) => finished.push(i),
+                    (true, Some(t)) => {
+                        had_interactive |= active[i].lane == crate::lanes::Lane::Interactive;
+                        ready.push((i, t));
+                    }
+                    (true, None) => {} // nothing to do this tick
+                }
+            }
+            // batched steps in chunks of <= 8 (the exactness-tier cap), same model per chunk
+            for chunk in group_chunks(&active, &ready) {
+                let toks: Vec<u32> = chunk.iter().map(|&(_, t)| t).collect();
+                let idxs: Vec<usize> = chunk.iter().map(|&(i, _)| i).collect();
+                let model_name = active[idxs[0]].model.clone();
+                let lm = &loaded[&model_name];
+                let logits = {
+                    // split-borrow: pull the caches out via split_at_mut-style indexing
+                    let mut caches: Vec<&mut Cache> = Vec::with_capacity(idxs.len());
+                    // SAFETY: idxs are unique indices into `active`; we take disjoint &mut.
+                    let base = active.as_mut_ptr();
+                    for &i in &idxs {
+                        let s = unsafe { &mut *base.add(i) };
+                        caches.push(s.cache.as_mut().unwrap());
+                    }
+                    lm.model.decode_step_batch(&engine, &toks, &mut caches)
+                };
+                match logits {
+                    Ok(rows) => {
+                        for (k, &i) in idxs.iter().enumerate() {
+                            active[i].last_logits = rows[k].clone();
+                            active[i].fed.push(toks[k]);
+                            lane_tokens[active[i].lane.idx()] += 1;
+                        }
+                    }
+                    Err(err) => {
+                        for &i in &idxs {
+                            let _ = active[i].tx.send(Event::Error(format!("batch step: {err}")));
+                            finished.push(i);
+                        }
+                    }
+                }
+            }
+            // record the interactive TPOT ground truth (only ticks that decoded interactive)
+            if had_interactive {
+                step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
+            }
+            last_batch = ready.len();
         }
         // retire finished sessions (reverse order so indices stay valid). Long-enough sessions
         // park their (fed, cache, last_logits) in the reuse pool instead of dropping the cache.
+        finished.sort_unstable();
+        finished.dedup();
         for &i in finished.iter().rev() {
             let s = active.remove(i);
+            lane_completed[s.lane.idx()] += 1;
             if let Some(sess) = s.spec {
                 if sess.committed.len() >= REUSE_MIN_PREFIX && sess.next_pred.is_some() {
                     // skip the leading BOS when rendering: the client's prompt STRING never
@@ -312,6 +457,16 @@ pub fn run(
                     });
                 }
             }
+        }
+        // publish lane metrics (worker owns the counters; axum reads the snapshot)
+        if let Ok(mut m) = metrics.lock() {
+            m.admitted = lane_admitted;
+            m.shed = lane_shed;
+            m.completed = lane_completed;
+            m.tokens_out = lane_tokens;
+            m.step_p50_ms = step_stats.p(50.0).unwrap_or(0.0);
+            m.step_p99_ms = step_stats.p(99.0).unwrap_or(0.0);
+            m.batch_size_last = last_batch;
         }
         if !finished.is_empty() && std::env::var("BW24_SPILL_STATS").as_deref() == Ok("1") {
             if let Some((reads, bytes, errors, short, fallbacks, waits, ring_full)) =
@@ -524,6 +679,7 @@ fn admit(
     };
     Ok(Session {
         model: req.model,
+        lane: req.lane,
         cache,
         sampler,
         spec,
@@ -590,6 +746,95 @@ fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
 ///   - prefill phase: consume ONE prompt token via decode_step, accept it into the sampler.
 ///   - decode phase: sample from last_logits, accept, stream the token, check EOS/stop/ctx, then
 ///     run ONE decode_step to produce the next logits.
+/// One prefill tick for a session under a lane token budget. Returns tokens consumed.
+/// Same chunking laws as step_session's prefill phase (PRIME_MIN_T floor, tail handling).
+fn prefill_tick(
+    engine: &Engine,
+    loaded: &HashMap<String, LoadedModel>,
+    s: &mut Session,
+    budget: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let lm = &loaded[&s.model];
+    let q = s.prefill_queue.len();
+    if q == 0 {
+        s.prefill_done = true;
+        return Ok(0);
+    }
+    let mut consumed = 0usize;
+    if !confidence_trace_enabled()
+        && q >= bw24_engine::hybrid_forward::PRIME_MIN_T.max(2)
+        && budget >= bw24_engine::hybrid_forward::PRIME_MIN_T
+    {
+        let mut take = q.min(budget);
+        if q - take > 0 && q - take < bw24_engine::hybrid_forward::PRIME_MIN_T {
+            take = if q <= budget { q } else { take };
+        }
+        let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
+        let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
+        s.last_logits = l;
+        for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
+        consumed = take;
+    } else if let Some(tok) = s.prefill_queue.pop_front() {
+        s.last_logits = lm.model.decode_step(engine, tok, s.cache.as_mut().unwrap())?;
+        if let Some(&target) = s.prefill_queue.front() {
+            write_confidence_trace(s, tok, target, &s.last_logits)?;
+        }
+        s.fed.push(tok);
+        s.sampler.accept(tok);
+        consumed = 1;
+    }
+    if s.prefill_queue.is_empty() { s.prefill_done = true; }
+    Ok(consumed)
+}
+
+/// The decode tick's HOST half: sample from last_logits, emit the token, run the stop
+/// battery. Returns (continue?, Some(next_token) to feed the next step). Extracted from
+/// step_session so the batched scheduler can drive many sessions into ONE engine step.
+fn advance_sample_emit(
+    loaded: &HashMap<String, LoadedModel>,
+    s: &mut Session,
+) -> (bool, Option<u32>) {
+    let lm = &loaded[&s.model];
+    if s.generated.len() >= s.budget {
+        finish(s, StopReason::MaxNew);
+        return (false, None);
+    }
+    let next = s.sampler.sample(&s.last_logits);
+    s.sampler.accept(next);
+    s.generated.push(next);
+    if s.params.eos.contains(&next) {
+        finish(s, StopReason::Eos);
+        return (false, None);
+    }
+    let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+    let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+    let full = String::from_utf8_lossy(&decoded);
+    let _ = s.tx.send(Event::Token { id: next, text: delta });
+    if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
+        finish(s, StopReason::Callback);
+        return (false, None);
+    }
+    if s.cache.as_ref().map(|c| c.pos >= c.max_ctx).unwrap_or(false) {
+        finish(s, StopReason::ContextFull);
+        return (false, None);
+    }
+    (true, Some(next))
+}
+
+/// Group ready (session_idx, token) pairs into batched-step chunks: same model, <= 8 rows
+/// (the exactness-tier cap), input order preserved (caller sorted interactive first).
+fn group_chunks(active: &[Session], ready: &[(usize, u32)]) -> Vec<Vec<(usize, u32)>> {
+    let mut chunks: Vec<Vec<(usize, u32)>> = Vec::new();
+    for &(i, t) in ready {
+        let model = &active[i].model;
+        match chunks.last_mut() {
+            Some(c) if c.len() < 8 && active[c[0].0].model == *model => c.push((i, t)),
+            _ => chunks.push(vec![(i, t)]),
+        }
+    }
+    chunks
+}
+
 fn step_session(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
@@ -819,15 +1064,18 @@ fn finish(s: &Session, reason: StopReason) {
 
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
 /// command Sender (clone into the axum state) + the list of loaded model names.
-pub fn spawn(models: Vec<(String, String, Option<String>)>) -> Result<(Sender<Cmd>, Arc<Vec<String>>), String> {
+pub fn spawn(models: Vec<(String, String, Option<String>)>)
+    -> Result<(Sender<Cmd>, Arc<Vec<String>>, crate::lanes::SharedMetrics), String> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
+    let metrics: crate::lanes::SharedMetrics = Default::default();
+    let m2 = metrics.clone();
     std::thread::Builder::new()
         .name("bw24-gpu-worker".into())
-        .spawn(move || run(models, cmd_rx, ready_tx))
+        .spawn(move || run(models, cmd_rx, ready_tx, m2))
         .map_err(|e| format!("spawn worker thread: {e}"))?;
     match ready_rx.recv() {
-        Ok(Ok(names)) => Ok((cmd_tx, Arc::new(names))),
+        Ok(Ok(names)) => Ok((cmd_tx, Arc::new(names), metrics)),
         Ok(Err(err)) => Err(err),
         Err(_) => Err("worker died during init".into()),
     }
