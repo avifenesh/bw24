@@ -1132,6 +1132,101 @@ extern "C" __global__ void ssm_conv1d_fused_decode_f32(
     #pragma unroll
     for (int j = 0; j < 8; j++) if (j < pad) st[j] = win[1 + j];
 }
+// ==== B2' batched decode state ops (ARCHITECTURE-H100.md B1/B2) ====
+// One launch serves B sequences. Per-seq recurrent state lives at per-cache pointers
+// (host ping-pong swaps them), so the batched kernels take DEVICE POINTER ARRAYS [B]
+// built per step. Batched activations are row-major [B, ...] from the batched
+// projections. Bodies are the single-seq kernels VERBATIM per sequence — bit-identical
+// per row (same accumulation order); only the launch geometry changes.
+
+extern "C" __global__ void ssm_conv1d_fused_decode_b_f32(
+        const float* __restrict__ qkv_cols,           // [B, conv_dim] row-major
+        float* const* __restrict__ conv_states,       // [B] device ptrs, each [conv_dim, pad]
+        const float* __restrict__ w,                  // shared [d_conv, conv_dim]
+        float* __restrict__ conv_outs,                // [B, conv_dim]
+        int conv_dim, int d_conv) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int b = blockIdx.z;
+    if (c >= conv_dim) return;
+    const float* qkv_col = qkv_cols + (size_t)b * conv_dim;
+    float* conv_out = conv_outs + (size_t)b * conv_dim;
+    int pad = d_conv - 1;
+    float* st = conv_states[b] + (size_t)c * pad;
+    const float* wc = w + (size_t)c * d_conv;
+    float win[8];
+    #pragma unroll
+    for (int j = 0; j < 8; j++) win[j] = (j < pad) ? st[j] : 0.0f;
+    win[pad] = qkv_col[c];
+    float wreg[8];
+    #pragma unroll
+    for (int j = 0; j < 8; j++) wreg[j] = (j < d_conv) ? wc[j] : 0.0f;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) acc += win[j] * wreg[j];
+    conv_out[c] = silu(acc);
+    #pragma unroll
+    for (int j = 0; j < 8; j++) if (j < pad) st[j] = win[1 + j];
+}
+
+extern "C" __global__ void gdn_prep_decode_b_f32(
+        const float* __restrict__ conv_outs,   // [B, conv_dim]
+        const float* __restrict__ beta_raws,   // [B, num_v]
+        const float* __restrict__ alphas,      // [B, num_v]
+        const float* __restrict__ dt_bias,     // shared [num_v]
+        const float* __restrict__ a,           // shared [num_v]
+        float* __restrict__ q_l2, float* __restrict__ k_l2, float* __restrict__ v_g,
+        float* __restrict__ beta, float* __restrict__ g_log,   // [B, ...] rows
+        int d_state, int num_v, int num_k, int key_dim, float eps, int conv_dim) {
+    int vh = blockIdx.x;
+    int b = blockIdx.z;
+    if (vh >= num_v) return;
+    int warp = threadIdx.y;
+    int lane = threadIdx.x;
+    int kh = vh % num_k;
+    const float* conv_out = conv_outs + (size_t)b * conv_dim;
+    const float* beta_raw = beta_raws + (size_t)b * num_v;
+    const float* alpha = alphas + (size_t)b * num_v;
+    size_t vrow = (size_t)b * num_v * d_state;
+
+    if (warp == 2) {
+        const float* src = conv_out + 2 * key_dim + (size_t)vh * d_state;
+        float* dst = v_g + vrow + (size_t)vh * d_state;
+        for (int i = lane; i < d_state; i += 32) dst[i] = src[i];
+        return;
+    }
+    if (warp == 3) {
+        if (lane == 0) {
+            beta[(size_t)b * num_v + vh] = 1.0f / (1.0f + expf(-beta_raw[vh]));
+            float x = alpha[vh] + dt_bias[vh];
+            float sp = (x > 20.0f) ? x : log1pf(expf(x));
+            g_log[(size_t)b * num_v + vh] = a[vh] * sp;
+        }
+        return;
+    }
+    const float* src = conv_out + (warp == 0 ? 0 : key_dim) + (size_t)kh * d_state;
+    float* dst = (warp == 0 ? q_l2 : k_l2) + vrow + (size_t)vh * d_state;
+    float sum = 0.0f;
+    for (int i = lane; i < d_state; i += 32) { float v = src[i]; sum += v * v; }
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    sum = __shfl_sync(0xffffffff, sum, 0);
+    float scale = rsqrtf(sum + eps);
+    for (int i = lane; i < d_state; i += 32) dst[i] = src[i] * scale;
+}
+
+// Batched T=1 GDN scan: grid (H, B, S_v/COLS_PER_BLOCK) — blockIdx.y picks the sequence
+// (free axis; the template uses x=head, z=col-group). Per-seq state in/out pointer arrays.
+extern "C" __global__ void gdn_scan_s128_b(
+        const float* q, const float* k, const float* v, const float* g, const float* beta,
+        const float* const* state_ins, float* const* state_outs,
+        float* o, int H, float scale) {
+    int b = blockIdx.y;
+    size_t row = (size_t)b * H * 128;      // [B, H*S_v] activation rows (T=1)
+    size_t sc = (size_t)b * H;             // [B, H] scalar rows
+    gdn_scan_kernel<128, 32>(q + row, k + row, v + row, g + sc, beta + sc,
+                             state_ins[b], state_outs[b], o + row, H, 1, scale);
+}
+
 // MoE grouped-prefill gather/scatter kernels (A2 prototype — RESIDENT case).
 // These are appended to hybrid.cu (same fatbin).
 

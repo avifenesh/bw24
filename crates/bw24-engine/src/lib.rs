@@ -6831,6 +6831,72 @@ impl Engine {
         Ok(())
     }
 
+    // ==== B2' batched decode state ops (decode_batch.rs) ====
+    // Per-seq state pointers ride device u64 arrays (views into the per-step pointer table).
+    // Bodies are the single-seq kernels per sequence — bit-identical per row.
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ssm_conv1d_fused_decode_b(
+        &self, qkv_cols: &CudaSlice<f32>, conv_state_ptrs: &cudarc::driver::CudaView<u64>,
+        w: &CudaSlice<f32>, conv_outs: &mut CudaSlice<f32>, conv_dim: usize, d_conv: usize,
+        b_n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("ssm_conv1d_fused_decode_b_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (((conv_dim + 255) / 256) as u32, 1, b_n as u32),
+            block_dim: (256, 1, 1), shared_mem_bytes: 0,
+        };
+        let (cd, dc) = (conv_dim as i32, d_conv as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(qkv_cols).arg(conv_state_ptrs).arg(w).arg(conv_outs).arg(&cd).arg(&dc);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_prep_decode_b(
+        &self, conv_outs: &CudaSlice<f32>, beta_raws: &CudaSlice<f32>, alphas: &CudaSlice<f32>,
+        dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+        q_l2: &mut CudaSlice<f32>, k_l2: &mut CudaSlice<f32>, v_g: &mut CudaSlice<f32>,
+        beta: &mut CudaSlice<f32>, g_log: &mut CudaSlice<f32>,
+        d_state: usize, num_v: usize, num_k: usize, key_dim: usize, eps: f32,
+        conv_dim: usize, b_n: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_prep_decode_b_f32");
+        let cfg = LaunchConfig {
+            grid_dim: (num_v as u32, 1, b_n as u32),
+            block_dim: (32, 4, 1), shared_mem_bytes: 0,
+        };
+        let (ds, nv, nk, kd, cd) =
+            (d_state as i32, num_v as i32, num_k as i32, key_dim as i32, conv_dim as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(conv_outs).arg(beta_raws).arg(alphas).arg(dt_bias).arg(a)
+         .arg(q_l2).arg(k_l2).arg(v_g).arg(beta).arg(g_log)
+         .arg(&ds).arg(&nv).arg(&nk).arg(&kd).arg(&eps).arg(&cd);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_scan_s128_batched(
+        &self, q: &CudaSlice<f32>, k: &CudaSlice<f32>, v: &CudaSlice<f32>,
+        g: &CudaSlice<f32>, beta: &CudaSlice<f32>,
+        state_in_ptrs: &cudarc::driver::CudaView<u64>,
+        state_out_ptrs: &cudarc::driver::CudaView<u64>,
+        o: &mut CudaSlice<f32>, n_head: usize, b_n: usize, scale: f32)
+        -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("gdn_scan_s128_b");
+        const S_V: u32 = 128; const WARP: u32 = 32; const COLS_PER_BLOCK: u32 = 4;
+        let cfg = LaunchConfig {
+            grid_dim: (n_head as u32, b_n as u32, S_V / COLS_PER_BLOCK),
+            block_dim: (WARP, COLS_PER_BLOCK, 1), shared_mem_bytes: 0,
+        };
+        let h = n_head as i32;
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(q).arg(k).arg(v).arg(g).arg(beta).arg(state_in_ptrs).arg(state_out_ptrs)
+         .arg(o).arg(&h).arg(&scale);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
     /// A4 seam: chunked WY GDN prefill. DEFAULT ON (`BW24_GDN_CHUNKED=0` = rollback to the
     /// sequential scan). Flipped 2026-07-04 with the full battery green: kernel-check ALL
     /// GREEN x {9B, 27B} incl the f64-truth chunk gates; run-gen argmax 82==82 both models

@@ -61,6 +61,39 @@ impl HybridModel {
         let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
         let pos_d = e.htod_i32(&pos_v)?;
 
+        // Per-step STATE POINTER TABLE (one H2D): for every linear layer, [conv x B]
+        // [ssm_in x B][ssm_out x B] device addresses. The batched state kernels read their
+        // sequence's pointer from these arrays — states stay per-cache (no pooling refactor),
+        // yet conv/prep/scan collapse from 3xB launches per layer to 3. Rebuilt every step
+        // because the ssm ping-pong swaps pointers host-side after each scan.
+        let mut lin_base: Vec<Option<usize>> = vec![None; self.layers.len()];
+        let mut ptrs: Vec<u64> = Vec::new();
+        {
+            use cudarc::driver::DevicePtr;
+            let s = &e.gpu.stream;
+            for (il, layer) in self.layers.iter().enumerate() {
+                if matches!(layer.mixer, Mixer::Linear(_)) {
+                    lin_base[il] = Some(ptrs.len());
+                    for c in caches.iter() {
+                        let rl = c.recur[il].as_ref().unwrap();
+                        let (p, _g) = rl.conv_state.device_ptr(s);
+                        ptrs.push(p as u64);
+                    }
+                    for c in caches.iter() {
+                        let rl = c.recur[il].as_ref().unwrap();
+                        let (p, _g) = rl.ssm_state.device_ptr(s);
+                        ptrs.push(p as u64);
+                    }
+                    for c in caches.iter() {
+                        let rl = c.recur[il].as_ref().unwrap();
+                        let (p, _g) = rl.ssm_state_alt.device_ptr(s);
+                        ptrs.push(p as u64);
+                    }
+                }
+            }
+        }
+        let ptr_table = if ptrs.is_empty() { None } else { Some(e.htod_u64(&ptrs)?) };
+
         // Embed all B tokens -> x [B, n_embd] (host gather, one H2D).
         let mut x = e.htod(&self.embd.gather(n_embd, tokens))?;
 
@@ -168,39 +201,34 @@ impl HybridModel {
                     let beta_raw = e.matmul_pre(&la.ssm_beta, &hq, &hd, &xn, b_n)?;
                     let alpha = e.matmul_pre(&la.ssm_alpha, &hq, &hd, &xn, b_n)?;
 
-                    // ---- per-seq recurrent state ops ----
+                    // ---- batched recurrent state ops (3 launches for all B sequences) ----
+                    let base = lin_base[il].expect("linear layer missing from pointer table");
+                    let table = ptr_table.as_ref().expect("pointer table missing");
+                    let conv_view = table.slice(base..base + b_n);
+                    let in_view = table.slice(base + b_n..base + 2 * b_n);
+                    let out_view = table.slice(base + 2 * b_n..base + 3 * b_n);
+                    let mut conv_outs = e.uninit(b_n * conv_dim)?;
+                    e.ssm_conv1d_fused_decode_b(&qkv_mixed, &conv_view,
+                                                la.ssm_conv1d.float_data(), &mut conv_outs,
+                                                conv_dim, d_conv, b_n)?;
+                    let mut q_l2 = e.uninit(b_n * value_dim)?;
+                    let mut k_l2 = e.uninit(b_n * value_dim)?;
+                    let mut v_gd = e.uninit(b_n * value_dim)?;
+                    let mut beta_b = e.uninit(b_n * num_v)?;
+                    let mut g_log = e.uninit(b_n * num_v)?;
+                    e.gdn_prep_decode_b(&conv_outs, &beta_raw, &alpha,
+                                        la.ssm_dt.float_data(), la.ssm_a.float_data(),
+                                        &mut q_l2, &mut k_l2, &mut v_gd, &mut beta_b, &mut g_log,
+                                        d_state, num_v, num_k, key_dim, eps, conv_dim, b_n)?;
                     let mut o_all = e.uninit(b_n * value_dim)?;
-                    for (bi, cache) in caches.iter_mut().enumerate() {
+                    e.gdn_scan_s128_batched(&q_l2, &k_l2, &v_gd, &g_log, &beta_b,
+                                            &in_view, &out_view, &mut o_all,
+                                            num_v, b_n, gdn_scale)?;
+                    // ping-pong: scan wrote each seq's alt buffer; swap host handles (the
+                    // NEXT step's table rebuild picks up the new canonical pointers).
+                    for cache in caches.iter_mut() {
                         let rl = cache.recur[il].as_mut().unwrap();
-                        let mut qkv_row = e.uninit(conv_dim)?;
-                        e.dtod_copy_view(
-                            &qkv_mixed.slice(bi * conv_dim..(bi + 1) * conv_dim), &mut qkv_row)?;
-                        let mut conv_out = e.uninit(conv_dim)?;
-                        e.ssm_conv1d_fused_decode(&qkv_row, &mut rl.conv_state,
-                                                  la.ssm_conv1d.float_data(), &mut conv_out,
-                                                  conv_dim, d_conv)?;
-                        let mut b_row = e.uninit(num_v)?;
-                        e.dtod_copy_view(&beta_raw.slice(bi * num_v..(bi + 1) * num_v), &mut b_row)?;
-                        let mut a_row = e.uninit(num_v)?;
-                        e.dtod_copy_view(&alpha.slice(bi * num_v..(bi + 1) * num_v), &mut a_row)?;
-                        let mut q_l2 = e.uninit(value_dim)?;
-                        let mut k_l2 = e.uninit(value_dim)?;
-                        let mut v_gd = e.uninit(value_dim)?;
-                        let mut beta = e.uninit(num_v)?;
-                        let mut g_log = e.uninit(num_v)?;
-                        e.gdn_prep_decode(&conv_out, &b_row, &a_row,
-                                          la.ssm_dt.float_data(), la.ssm_a.float_data(),
-                                          &mut q_l2, &mut k_l2, &mut v_gd, &mut beta, &mut g_log,
-                                          d_state, num_v, num_k, key_dim, eps)?;
-                        let mut o_row = e.uninit(value_dim)?;
-                        {
-                            let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
-                            e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta,
-                                            ssm_state, ssm_state_alt, &mut o_row,
-                                            num_v, 1, gdn_scale)?;
-                        }
                         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
-                        e.dtod_copy_into(&o_row, &mut o_all, bi * value_dim)?;
                     }
 
                     // ---- batched gated norm + out-projection ----
