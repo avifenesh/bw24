@@ -146,31 +146,75 @@ impl HybridModel {
                     e.matmul(&fa.wo, &attn_g, b_n)?
                 }
                 Mixer::Linear(la) => {
-                    // v1: per-seq loop through the EXISTING single-seq GDN/conv path with
-                    // row views of the batched norm+quantize outputs. The recurrent state is
-                    // per-sequence dense state — batching it is a kernel change (blockIdx.z
-                    // over a state array), scheduled with the paged-KV work, not here.
-                    let mut mixed = e.uninit(b_n * n_embd)?;
-                    let hq_row_bytes = hq.len() / b_n;
-                    let hd_row_len = hd.len() / b_n;
+                    // v2 (the B-scaling fix): the GDN mixer's PROJECTIONS carry the layer's
+                    // weight mass — batch them at m=B so wqkv/gate/beta/alpha/ssm_out stream
+                    // ONCE per step instead of once per sequence. Only the recurrent state ops
+                    // (fused conv ring, gdn prep, gdn scan) stay per-seq — they are state-bound
+                    // micro-kernels, not weight readers. Composition unchanged vs v1 (matmul_pre
+                    // == fused2 per (tensor,row); _bN mmvq per-row == m=1): same numeric config.
+                    let ssm = cfg.ssm.as_ref().expect("linear mixer requires ssm cfg");
+                    let d_state = ssm.state_size as usize;
+                    let num_k = ssm.group_count as usize;
+                    let num_v = ssm.time_step_rank as usize;
+                    let d_conv = ssm.conv_kernel as usize;
+                    let key_dim = d_state * num_k;
+                    let value_dim = d_state * num_v;
+                    let conv_dim = key_dim * 2 + value_dim;
+                    let gdn_scale = 1.0 / (d_state as f32).sqrt();
+
+                    // ---- batched projections (the weight win) ----
+                    let qkv_mixed = e.matmul_pre(&la.wqkv, &hq, &hd, &xn, b_n)?;
+                    let z = e.matmul_pre(&la.wqkv_gate, &hq, &hd, &xn, b_n)?;
+                    let beta_raw = e.matmul_pre(&la.ssm_beta, &hq, &hd, &xn, b_n)?;
+                    let alpha = e.matmul_pre(&la.ssm_alpha, &hq, &hd, &xn, b_n)?;
+
+                    // ---- per-seq recurrent state ops ----
+                    let mut o_all = e.uninit(b_n * value_dim)?;
                     for (bi, cache) in caches.iter_mut().enumerate() {
-                        let mut xn_row = e.uninit(n_embd)?;
-                        e.dtod_copy_view(&xn.slice(bi * n_embd..(bi + 1) * n_embd), &mut xn_row)?;
-                        let mut hq_row = e.uninit_i8(hq_row_bytes)?;
-                        e.dtod_copy_view_i8(
-                            &hq.slice(bi * hq_row_bytes..(bi + 1) * hq_row_bytes), &mut hq_row)?;
-                        let mut hd_row = e.uninit(hd_row_len)?;
+                        let rl = cache.recur[il].as_mut().unwrap();
+                        let mut qkv_row = e.uninit(conv_dim)?;
                         e.dtod_copy_view(
-                            &hd.slice(bi * hd_row_len..(bi + 1) * hd_row_len), &mut hd_row)?;
-                        let out_row = if self.mixer_in_q8_1_fast(e, &layer.mixer) {
-                            self.linear_attn_decode_pre(e, la, &xn_row, &hq_row, &hd_row,
-                                                        cache, il, false)?
-                        } else {
-                            self.linear_attn_decode(e, la, &xn_row, cache, il)?
-                        };
-                        e.dtod_copy_into(&out_row, &mut mixed, bi * n_embd)?;
+                            &qkv_mixed.slice(bi * conv_dim..(bi + 1) * conv_dim), &mut qkv_row)?;
+                        let mut conv_out = e.uninit(conv_dim)?;
+                        e.ssm_conv1d_fused_decode(&qkv_row, &mut rl.conv_state,
+                                                  la.ssm_conv1d.float_data(), &mut conv_out,
+                                                  conv_dim, d_conv)?;
+                        let mut b_row = e.uninit(num_v)?;
+                        e.dtod_copy_view(&beta_raw.slice(bi * num_v..(bi + 1) * num_v), &mut b_row)?;
+                        let mut a_row = e.uninit(num_v)?;
+                        e.dtod_copy_view(&alpha.slice(bi * num_v..(bi + 1) * num_v), &mut a_row)?;
+                        let mut q_l2 = e.uninit(value_dim)?;
+                        let mut k_l2 = e.uninit(value_dim)?;
+                        let mut v_gd = e.uninit(value_dim)?;
+                        let mut beta = e.uninit(num_v)?;
+                        let mut g_log = e.uninit(num_v)?;
+                        e.gdn_prep_decode(&conv_out, &b_row, &a_row,
+                                          la.ssm_dt.float_data(), la.ssm_a.float_data(),
+                                          &mut q_l2, &mut k_l2, &mut v_gd, &mut beta, &mut g_log,
+                                          d_state, num_v, num_k, key_dim, eps)?;
+                        let mut o_row = e.uninit(value_dim)?;
+                        {
+                            let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
+                            e.gdn_scan_s128(&q_l2, &k_l2, &v_gd, &g_log, &beta,
+                                            ssm_state, ssm_state_alt, &mut o_row,
+                                            num_v, 1, gdn_scale)?;
+                        }
+                        std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
+                        e.dtod_copy_into(&o_row, &mut o_all, bi * value_dim)?;
                     }
-                    mixed
+
+                    // ---- batched gated norm + out-projection ----
+                    if e.uses_q8_1_fast(&la.ssm_out) {
+                        let (gq, gd) = e.gated_rmsnorm_q8_1(&o_all, la.ssm_norm.float_data(),
+                                                            &z, d_state, b_n * num_v, eps)?;
+                        let g0 = e.zeros(0)?;
+                        e.matmul_pre(&la.ssm_out, &gq, &gd, &g0, b_n)?
+                    } else {
+                        let mut gn = e.uninit(b_n * value_dim)?;
+                        e.gated_rmsnorm(&o_all, la.ssm_norm.float_data(), &z, &mut gn,
+                                        d_state, b_n * num_v, eps)?;
+                        e.matmul(&la.ssm_out, &gn, b_n)?
+                    }
                 }
             };
 
