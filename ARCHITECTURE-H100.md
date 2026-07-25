@@ -169,6 +169,12 @@ Per-step admission planner replacing MAX_ACTIVE round-robin:
 - Lane server LIVE: 14 concurrent sessions (4 interactive + 4 judge 2k-prompts
   + 6 harvest) — interactive p99 32.6 ms < 50 ms SLO at full mixed load,
   per-lane accounting exact, shed path 429, /yield/metrics engine-truth.
+- **Serving-regime B-curve (ctx=512, N=3 medians, 2026-07-26):** B=1 148.8 /
+  B=2 236.2 / B=4 367.8 / **B=8 487.2 tok/s aggregate (3.27×)** — the earlier
+  306 figure was a short-prompt artifact (prompts under fa_vec_min_tkv profiled
+  the f32 attention fallback at 21% of step time; nsys). BW24_BVAR sweep at
+  m=8: auto≈base (490 vs 489) — the picker is fine; the residual efficiency
+  gap (~30-35% of peak BW in mmvq_b8) lives inside the b8 kernel (ncu next).
 
 ## 4. Phase C — the wgmma lane (the 3-4× decode headroom)
 
