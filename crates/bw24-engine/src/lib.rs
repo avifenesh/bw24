@@ -13,6 +13,7 @@ pub mod hybrid;
 pub mod hybrid_forward;
 pub mod cache;
 pub mod decode;
+pub mod decode_batch;
 pub mod spec;
 pub mod gemma_spec;
 pub mod round_stream;
@@ -1525,6 +1526,35 @@ impl Engine {
         let mut dst = self.gpu.stream.alloc_zeros::<f32>(src.len())?;
         self.gpu.stream.memcpy_dtod(src, &mut dst)?;
         Ok(dst)
+    }
+
+    /// D2D row extraction: copy a view (e.g. one row of a [B, n] batch buffer) into `dst`.
+    /// Stream-ordered, async — decode_batch's per-sequence row plumbing.
+    pub fn dtod_copy_view(&self, src: &cudarc::driver::CudaView<f32>, dst: &mut CudaSlice<f32>)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_dtod(src, dst)?;
+        Ok(())
+    }
+
+    /// D2D i8 twin of `dtod_copy_view` (q8_1 activation rows).
+    pub fn dtod_copy_view_i8(&self, src: &cudarc::driver::CudaView<i8>, dst: &mut CudaSlice<i8>)
+                             -> Result<(), Box<dyn std::error::Error>> {
+        self.gpu.stream.memcpy_dtod(src, dst)?;
+        Ok(())
+    }
+
+    /// D2D row placement: copy `src` into `dst[offset .. offset+src.len()]`.
+    pub fn dtod_copy_into(&self, src: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, offset: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let n = src.len();
+        let mut dv = dst.slice_mut(offset..offset + n);
+        self.gpu.stream.memcpy_dtod(src, &mut dv)?;
+        Ok(())
+    }
+
+    /// Uninitialized i8 device buffer (decode_batch q8_1 row scratch).
+    pub fn uninit_i8(&self, n: usize) -> Result<CudaSlice<i8>, Box<dyn std::error::Error>> {
+        self.alloc_uninit::<i8>(n)
     }
 
     /// Resident-quantized linear (Stage-A: f32 dequant-in-kernel). y[m,out]=x[m,in]@W[out,in]^T.

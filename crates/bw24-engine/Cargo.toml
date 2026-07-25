@@ -135,3 +135,11 @@ path = "src/bin/fa_ab_bench.rs"
 [[bin]]
 name = "frspec-rank"
 path = "src/bin/frspec_rank.rs"
+
+[[bin]]
+name = "decode-batch-gate"
+path = "src/bin/decode_batch_gate.rs"
+
+[[bin]]
+name = "decode-batch-bench"
+path = "src/bin/decode_batch_bench.rs"
