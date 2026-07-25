@@ -739,6 +739,17 @@ impl HybridModel {
         // acceptance; no new syncs. Policy sweep (short chat, N=1 each): floor1/cap3 239.2
         // vs fixed-K3 231.1 (+3.5%, accept .52->.58); floor2 and cap4/5 all worse.
         let adapt = std::env::var("BW24_SPEC_ADAPT").as_deref() != Ok("0");
+        // ADAPTIVE FLOOR default is per-model (BW24_SPEC_ADAPT_FLOOR overrides): the floor-1
+        // policy collapses to shallow drafts after any miss and pays a slow re-deepen; on
+        // models with an expensive verify step the deep-draft upside dwarfs the wasted-draft
+        // cost. Measured 2026-07-25 (chat cell, own-gen trim, N=3 on 31B / N=1 grid + probe
+        // on 12B): 31B floor=4 K=5 120.2 vs floor=1 103.8 (+15.7%); 12B floor=3 K=3 214.9
+        // vs floor=1 200.6 (+7.1%). 26B/E4B keep floor=1 (the 2026-07-10 sweep measured
+        // floor=2 worse there — cheap verify, wasted drafts dominate).
+        let adapt_floor_default: usize =
+            if self.cfg.n_embd >= 5000 { 4 } else if self.cfg.n_embd >= 3500 { 3 } else { 1 };
+        let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(adapt_floor_default);
         // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
         // The historical cap>=8 "crash" was two host bugs, both fixed 2026-07-12: round 1
         // ran UNCLAMPED (`kc = k` — verify t=K+1 entered the b16 tier while it was gated)
@@ -919,8 +930,6 @@ impl HybridModel {
                     let scr = self.verify_stream_scratch(e, k_cap + 1)?;
                     burst_state = Some((bufs, fill_dummy, ptrs, scr));
                 }
-                let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
-                    .and_then(|v| v.parse().ok()).unwrap_or(1);
                 // entry: `last` is the pending token (emitted at drain), h is the seed.
                 let (bufs, fill_dummy, ptrs, scr) = burst_state.as_mut().unwrap();
                 let n_rows = cache.kv.len() + 1;
@@ -1380,18 +1389,14 @@ impl HybridModel {
             // corrections-only learning measured +0.5 acceptance pts, jsonl 2026-07-19).
             trim_adapt_learn(e, d, &vam)?;
             if adapt {
-                let floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1);
-                kc = (m + 1).clamp(floor.min(k_cap), k_cap);
+                kc = (m + 1).clamp(adapt_floor.min(k_cap), k_cap);
                 // confidence cut (BW24_SPEC_PMIN > 0): next round drafts no deeper than one
                 // past the first low-confidence draft of THIS round (llama's p-min class,
                 // one round late — the zero-sync enqueue stays intact). One extra tiny dtoh.
                 if pmin > 0.0 {
                     let ph = e.dtoh(&p_d)?;
                     if let Some(fl) = ph[..kr].iter().position(|&p| p < pmin) {
-                        kc = kc.min((fl + 1).max(floor.min(k_cap)));
+                        kc = kc.min((fl + 1).max(adapt_floor.min(k_cap)));
                     }
                 }
             }

@@ -1,0 +1,2 @@
+build: 960c4c30+tree  known: K3f1 200.7 | K3f3 214.9 | K4f3 226.9 | K4f4 240.5
+12B K5 f4 temp 58: plain: 90.57 tok/s | spec: 240.84 tok/s (2.66x) | stream agreement 128/128

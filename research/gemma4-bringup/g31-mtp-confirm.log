@@ -1,0 +1,21 @@
+build: 960c4c30
+== 31B winners N=3 interleaved
+K5 floor4 rep1  temp 54: plain: 41.48 tok/s | spec: 118.63 tok/s (2.86x) | stream agreement 128/128
+K6 floor4 rep1  temp 56: plain: 41.48 tok/s | spec: 114.64 tok/s (2.76x) | stream agreement 128/128
+K4 fixed rep1  temp 57: plain: 41.48 tok/s | spec: 112.30 tok/s (2.71x) | stream agreement 128/128
+K5 floor4 rep2  temp 56: plain: 41.52 tok/s | spec: 120.18 tok/s (2.89x) | stream agreement 128/128
+K6 floor4 rep1  temp 56: plain: 41.52 tok/s | spec: 114.75 tok/s (2.76x) | stream agreement 128/128
+K4 fixed rep1  temp 56: plain: 41.51 tok/s | spec: 112.50 tok/s (2.71x) | stream agreement 128/128
+K5 floor4 rep3  temp 56: plain: 41.50 tok/s | spec: 120.25 tok/s (2.90x) | stream agreement 128/128
+K6 floor4 rep1  temp 56: plain: 41.52 tok/s | spec: 114.73 tok/s (2.76x) | stream agreement 128/128
+K4 fixed rep1  temp 58: plain: 41.48 tok/s | spec: 112.44 tok/s (2.71x) | stream agreement 128/128
+== 12B floor probe (transfer check)
+12B K3 floor2  temp 56: plain: 93.57 tok/s | spec: 209.32 tok/s (2.24x) | stream agreement 128/128
+12B K3 floor3  temp 56: plain: 93.18 tok/s | spec: 214.93 tok/s (2.31x) | stream agreement 128/128
+12B K4 floor3  temp 58: plain: 93.31 tok/s | spec: 226.85 tok/s (2.43x) | stream agreement 128/128
+12B K4 floor4  temp 58: plain: 93.46 tok/s | spec: 240.54 tok/s (2.57x) | stream agreement 128/128
+== official llama 31B re-pair (n-max=4 warm, x3) same window as winners
+llama rep1: 99.78 tok/s
+llama rep2: 99.58 tok/s
+llama rep3: 99.17 tok/s
+CONFIRM COMPLETE Sat Jul 25 08:06:35 PM UTC 2026
