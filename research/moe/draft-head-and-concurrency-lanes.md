@@ -349,3 +349,43 @@ Reconciling with the executor win: pinned executors pay (+11%) because the E tea
 stream's experts while the P team is blocked on io — E-cores fill otherwise-idle time. Intra-call
 teams lose because both teams contend for the same bandwidth on the SAME call's experts. E-cores
 are useful here for overlap, not for parallel bandwidth-bound throughput.
+
+## Lane 3 CLOSURE (2026-07-25): concurrency ends at parity; the runtime is at its floor
+
+Final honest numbers, mixed prompts (the only regime that represents real serving):
+
+| | tok/s |
+|---|---:|
+| single-stream | 6.0 (run-gen) / 5.4 (lockstep m=1 path) |
+| mixed m=3, pinned P+E executors | **5.74** |
+| identical-batch m=3 (shared routing) | 6.9 |
+
+Pinned executors took mixed concurrency from ~0.88x to ~0.96x of single-stream — a real +11%,
+but it does not cross 1.0x. Every batching mechanism built for this lane (lockstep, grouped MoE,
+multi-row ABI, fused multi-row kernels, m-band attention) is correct and gated, and none of them
+makes m concurrent DISTINCT requests cheaper than running them one after another, because
+concurrent requests route to disjoint expert sets: each added stream costs a nearly-full expert
+load, and only coordination is shared. Concurrency wins only in the identical-batch regime.
+
+The runtime as a whole is now at its floor, and the budget says why:
+
+- **compute 50%** of the step — the paired AVX-VNNI kernels are at the ISA ceiling. This CPU
+  exposes `avx_vnni` only: no AVX-512, no AMX (consumer Arrow Lake). No wider instruction exists.
+- **io 34%** — 8.45 GB/s effective against a measured ~9.6 GB/s dual-NVMe practical ceiling, i.e.
+  88% of the device. Storage backends (io_uring et al.) cannot add bandwidth that is not there.
+- **GPU+glue 16%** — long since at SOL for this decode shape.
+
+So the remaining distance to 10 tok/s cannot come from the runtime. It has to come from moving
+BYTES or TOKENS:
+
+1. **Artifact axis** — fewer bytes per expert. This is the only lever with a proven large win:
+   the tail-Q2_K demotion cut the io wall 37% and gave +23% single-stream (4.8 -> 6.0). Two or
+   three further demotion steps of that size reach 10, with a model-quality cost that must be
+   measured per step, not assumed. Requires the five-arm quality discipline, not a runtime knob.
+2. **Draft head** — a head clearing the 0.80 acceptance bar turns K=4 spec into a ~1.3-1.5x
+   multiplier on whatever the runtime does. The gating framework is built and proven (it lifted
+   the shipped head 48% -> 77%); the head itself needs training compute the local rig cannot
+   supply.
+
+Both are owner decisions — one spends model quality, the other spends money. The engine work
+that would consume either is already in place.
