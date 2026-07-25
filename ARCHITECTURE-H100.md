@@ -95,6 +95,14 @@ need quant-specific or checkpoint-specific traffic. Every step lands with the
 Rust predicate split: `portable_cuda` (89) vs `sm90a` (90a, portable + hopper
 MMA subset on) so 89 stays honest.
 
+**MEASURED (2026-07-26, commit 1b7cdad8, H100 box, N=5):** A1+A2+A3 landed as
+one flip (`bw24_hopper_mma`). kernel-check ALL GREEN, 34 policy tests pass.
+Prime 2048 tok: **5.15 s → 0.230 s (22×, ~8.9k tok/s prefill)** — TTFT target
+(≤300 ms) met before any wgmma work. Decode 179.4 tok/s median — unchanged
+(path untouched, as predicted). Prefill now ~25% of vLLM's 35k tok/s (was
+1.1%). A4 (MMQ A/B) and A5 (FP8 Lt, needs an F8 checkpoint) remain open;
+run-spec n/a on this checkpoint (no MTP head).
+
 ## 3. Phase B — the batched, lane-scheduled serving engine (the core build)
 
 ### B1. Paged KV pool (replaces single-sequence Cache)
