@@ -8,18 +8,28 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BW24_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=BW24_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(bw24_portable_cuda)");
+    println!("cargo:rustc-check-cfg=cfg(bw24_hopper_mma)");
     println!("cargo:rustc-check-cfg=cfg(bw24_cutlass)");
     let cuda_arch = std::env::var("BW24_CUDA_ARCH").unwrap_or_else(|_| "120a".into());
     assert!(matches!(cuda_arch.as_str(), "120a" | "100a" | "90a" | "89"),
             "BW24_CUDA_ARCH must be 120a (default), 100a (B200), 90a (Hopper boot), or 89 (portable eval)");
     // Hopper boot arch rides the portable-CUDA correctness path: sm_90a SASS, no
     // sm_120a/sm_100a MMA kinds. Tuned wgmma paths are a separate later lane.
+    // Phase A (ARCHITECTURE-H100.md): 90a additionally re-enables the portable-PTX
+    // tensor-core paths the boot lane gated off — int8 mma.m16n8k32/k16.s8, bf16
+    // m16n8k16, ldmatrix, cp.async are sm_80-class and run natively on Hopper.
+    // The sm_120a/sm_100a-only MMA kinds (mxf4nvf4, kind::f8f6f4) stay dead: their
+    // launchers remain fail-closed stubs on this arch.
     let portable = matches!(cuda_arch.as_str(), "89" | "90a");
+    let hopper_mma = cuda_arch == "90a";
     assert!(!(cuda_arch != "120a" && std::env::var_os("BW24_CUTLASS").is_some()),
             "BW24_CUTLASS is sm_120a-only and cannot be enabled for this CUDA architecture");
     let gencode = format!("arch=compute_{cuda_arch},code=sm_{cuda_arch}");
     if portable {
         println!("cargo:rustc-cfg=bw24_portable_cuda");
+    }
+    if hopper_mma {
+        println!("cargo:rustc-cfg=bw24_hopper_mma");
     }
 
     for (src, env) in [("cu/kernels.cu", "BW24_ENGINE_FATBIN"), ("cu/hybrid.cu", "BW24_HYBRID_FATBIN"),
@@ -32,6 +42,9 @@ fn main() {
         let mut args = vec!["-gencode", &gencode, "-O3", "--fatbin"];
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1");
+        }
+        if hopper_mma {
+            args.push("-DBW24_HOPPER_MMA=1");
         }
         // The hand-written mxf4nvf4 block-scale MMA in qmatvec_gemm.cu is an sm_120a
         // instruction encoding. B200 (sm_100a) uses the accuracy-safe NVFP4 W4A8 int8
@@ -60,6 +73,9 @@ fn main() {
         ];
         if portable {
             args.push("-DBW24_PORTABLE_CUDA=1".to_string());
+        }
+        if hopper_mma {
+            args.push("-DBW24_HOPPER_MMA=1".to_string());
         }
         args.extend([
             format!("-DBW24_KV_KFMT={kfmt}"), format!("-DBW24_KV_VFMT={vfmt}"),

@@ -417,7 +417,7 @@ extern "C" __global__ void gdn_chunk_cumgate_f32(
 // the block's 32 q/k j-rows live in smem (+1 row pad -> even-row reads land on distinct
 // banks). P is written FULL-width: zeros above the diagonal — K5's rectangular inner loop
 // relies on P[j][i>j] == 0. grid (NC, H, ceil(C/32)), block 256.
-#if !defined(BW24_PORTABLE_CUDA)
+#if !defined(BW24_PORTABLE_CUDA) || defined(BW24_HOPPER_MMA)
 extern "C" __global__ void gdn_chunk_attn_f32(
         const float* __restrict__ q, const float* __restrict__ k,
         const float* __restrict__ gcum, const float* __restrict__ beta,

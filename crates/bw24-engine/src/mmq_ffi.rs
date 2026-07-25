@@ -191,7 +191,7 @@ impl Engine {
     /// `mmq_w4a8_enabled`): NVFP4 needs in_f % 64 == 0, Q4_K/Q5_K need in_f % 256 == 0.
     pub fn mmq_supports(&self, w: &crate::model::GpuTensor) -> bool {
         use crate::model::GpuTensor;
-        if cfg!(bw24_portable_cuda) {
+        if crate::portable_mma_gated() {
             return false;
         }
         let mmq_opt_in = std::env::var("BW24_MMQ").is_ok();
@@ -200,12 +200,16 @@ impl Engine {
             // remap, bit-identical output — mmq_nvfp4_w4a8.cu load_tiles_nvfp4_w4a8<is_rp>).
             // The W4A4 loader (mmq_fp4.cu load_tiles_nvfp4_nvfp4) reads 36B GGUF blocks only,
             // so an rp weight with W4A8 disabled falls through to the rp-ported int8 GEMM.
+            // NVFP4 W4A8/W4A4 launchers use .kind::f8f6f4 / mxf4nvf4 tile MMA — sm_100a+/
+            // sm_120a-only. On every portable build (incl. the 90a Hopper-MMA lane) they are
+            // fail-closed link stubs (build.rs), so never offer them here.
             GpuTensor::Quant { qtype, rp, .. } if *qtype == crate::QT_NVFP4 && *rp => {
-                mmq_w4a8_enabled() && w.in_features() % 64 == 0
+                !cfg!(bw24_portable_cuda) && mmq_w4a8_enabled() && w.in_features() % 64 == 0
             }
             // GGUF-layout NVFP4 (BW24_RP=0): W4A8 (default-on) or the explicit W4A4 opt-in.
             GpuTensor::Quant { qtype, .. } if *qtype == crate::QT_NVFP4 => {
-                (mmq_w4a8_enabled() || mmq_opt_in) && w.in_features() % 64 == 0
+                !cfg!(bw24_portable_cuda) && (mmq_w4a8_enabled() || mmq_opt_in)
+                    && w.in_features() % 64 == 0
             }
             GpuTensor::Quant { qtype, .. }
                 if *qtype == crate::QT_Q4_K || *qtype == crate::QT_Q5_K =>

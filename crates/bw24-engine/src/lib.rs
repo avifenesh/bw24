@@ -56,16 +56,27 @@ const SAMPLE_FATBIN_PATH: &str = env!("BW24_SAMPLE_FATBIN");
 /// `-D`-tuned fatbin per process with NO rust rebuild. Unset at runtime => the
 /// compile-time default (zero behavior change).
 fn gemm_fatbin_path() -> String {
-    assert!(!(cfg!(bw24_portable_cuda) && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
+    assert!(!(portable_mma_gated() && std::env::var_os("BW24_GEMM_FATBIN").is_some()),
             "BW24_GEMM_FATBIN overrides are not allowed in the portable CUDA lane");
     std::env::var("BW24_GEMM_FATBIN").unwrap_or_else(|_| GEMM_FATBIN_PATH.to_string())
 }
 
-/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a.  Keep the policy in a
-/// pure helper so the portable dispatch guard can be regression-tested without constructing an
+/// Phase A (ARCHITECTURE-H100.md): sm_90a re-enables the portable-PTX tensor-core paths
+/// (int8 mma.m16n8k32/k16.s8, bf16 m16n8k16, ldmatrix, cp.async — all sm_80-class, native
+/// on Hopper) that the portable boot lane gates off. Dispatch guards that used to test
+/// `cfg!(bw24_portable_cuda)` test this instead; sm_89 keeps the pure-portable behavior.
+/// The sm_120a/sm_100a-only MMA kinds (mxf4nvf4, kind::f8f6f4) are NOT covered — their
+/// launchers stay fail-closed stubs on 90a and their dispatch arms stay arch-gated.
+pub(crate) const fn portable_mma_gated() -> bool {
+    cfg!(bw24_portable_cuda) && !cfg!(bw24_hopper_mma)
+}
+
+/// The legacy quantized prefill GEMMs are tuned and validated for sm_120a; sm_90a re-admits
+/// them through the Hopper-MMA lane (int8 m16n8k32.s8 is sm_80-class PTX).  Keep the policy
+/// in a pure helper so the dispatch guard can be regression-tested without constructing an
 /// Engine or allocating a GPU tensor.
-const fn legacy_quant_gemm_allowed(portable_cuda: bool, no_gemm: bool) -> bool {
-    !portable_cuda && !no_gemm
+const fn legacy_quant_gemm_allowed(portable_cuda: bool, hopper_mma: bool, no_gemm: bool) -> bool {
+    (!portable_cuda || hopper_mma) && !no_gemm
 }
 
 // ---- KV-cache format selection (kvbytes lane, 2026-07-08; default OFF = daily config) ----
@@ -5268,6 +5279,7 @@ impl Engine {
         use crate::model::GpuTensor;
         if !legacy_quant_gemm_allowed(
             cfg!(bw24_portable_cuda),
+            cfg!(bw24_hopper_mma),
             std::env::var_os("BW24_NO_GEMM").is_some(),
         ) {
             return false;
@@ -5577,7 +5589,7 @@ impl Engine {
                       o: &mut CudaSlice<f32>, head_dim: usize, n_head: usize, n_head_kv: usize,
                       t: usize, t_kv: usize, scale: f32, causal: bool)
                       -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive(q, k, v, o, head_dim, n_head, n_head_kv,
                                    t, t_kv, scale, causal);
         }
@@ -5622,7 +5634,7 @@ impl Engine {
                            t: usize, t_kv: usize, scale: f32, causal: bool,
                            k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                            -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
                                                   t, t_kv, scale, causal,
                                                   k_tok_bytes, v_tok_bytes);
@@ -5665,7 +5677,7 @@ impl Engine {
                               t: usize, t_kv: usize, scale: f32, causal: bool,
                               k_tok_bytes: usize, v_tok_bytes: usize, g: bool)
                               -> Result<(), Box<dyn std::error::Error>> {
-        if cfg!(bw24_portable_cuda) {
+        if portable_mma_gated() {
             return self.sdpa_naive_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
                                                   t, t_kv, scale, causal,
                                                   k_tok_bytes, v_tok_bytes);
@@ -6846,7 +6858,7 @@ impl Engine {
             b.arg(g).arg(&mut gcum).arg(&hi).arg(&ti).arg(&ci);
             unsafe { b.launch(cfg)?; }
         }
-        if c <= 64 && !cfg!(bw24_portable_cuda) {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
+        if c <= 64 && !portable_mma_gated() {   // K2 register-tiled (2x2 outputs/thread, whole-chunk smem k tile)
             let f = self.func("gdn_chunk_attn_f32");
             let jt = ((c + 31) / 32) as u32;
             let cfg = LaunchConfig { grid_dim: (nc as u32, h as u32, jt), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
@@ -7149,16 +7161,28 @@ mod target_dispatch_tests {
     use super::legacy_quant_gemm_allowed;
 
     #[test]
-    fn legacy_quant_gemm_is_blackwell_only_and_honors_the_escape_hatch() {
-        assert!(legacy_quant_gemm_allowed(false, false));
-        assert!(!legacy_quant_gemm_allowed(true, false));
-        assert!(!legacy_quant_gemm_allowed(false, true));
-        assert!(!legacy_quant_gemm_allowed(true, true));
+    fn legacy_quant_gemm_arch_policy_honors_the_escape_hatch() {
+        // sm_120a native lane
+        assert!(legacy_quant_gemm_allowed(false, false, false));
+        assert!(!legacy_quant_gemm_allowed(false, false, true));
+        // pure portable lane (sm_89): gated
+        assert!(!legacy_quant_gemm_allowed(true, false, false));
+        assert!(!legacy_quant_gemm_allowed(true, false, true));
+        // Hopper-MMA lane (sm_90a): portable build, int8-MMA GEMM re-admitted
+        assert!(legacy_quant_gemm_allowed(true, true, false));
+        assert!(!legacy_quant_gemm_allowed(true, true, true));
     }
 
-    #[cfg(bw24_portable_cuda)]
+    #[cfg(all(bw24_portable_cuda, not(bw24_hopper_mma)))]
     #[test]
     fn portable_build_disables_legacy_quant_gemm_without_an_env_override() {
-        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), false));
+        assert!(!legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), cfg!(bw24_hopper_mma), false));
+    }
+
+    #[cfg(bw24_hopper_mma)]
+    #[test]
+    fn hopper_mma_build_re_admits_legacy_quant_gemm() {
+        assert!(legacy_quant_gemm_allowed(cfg!(bw24_portable_cuda), cfg!(bw24_hopper_mma), false));
+        assert!(super::portable_mma_gated() == false);
     }
 }
