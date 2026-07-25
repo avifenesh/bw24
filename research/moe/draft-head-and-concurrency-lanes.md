@@ -453,3 +453,27 @@ Consequences:
 - Spec would pay again only where verify positions SHARE experts (a dense model, or an MoE whose
   routing is stable across adjacent tokens) or where expert bytes are resident rather than
   spilled — i.e. on hardware whose HBM holds the bank.
+
+## RE-BASELINE IN PROGRESS (2026-07-25) — which numbers in this file are void
+
+Owner direction: re-baseline everything on Layer103.5, the served candidate. Nearly all
+performance work recorded above was measured on the tail-Q2_K build, which is NOT adopted.
+Explicitly VOID as descriptions of the served artifact, pending re-measurement:
+
+- single-stream 6.0 tok/s, and the m=1 budget (io 34% / compute 50% / GPU 16%)
+- the mixed-concurrency table (m=2 4.72 / m=3 5.35) and the executor-shape sweep (t8 vs t4)
+- the asymmetric P+E executor result (+11%, 5.74/5.73/5.77 vs 5.30/4.94/5.27)
+- the intra-call P/E teams rejection numbers (2.93 -> 3.43 -> 4.65 s compute)
+- the batched m-band attention flat result (4.72/4.72, 5.24 vs 5.35)
+- the artifact-headroom and ceiling tables derived from that budget
+
+What survives the artifact change, because it is structural rather than numeric:
+- spec cannot pay at any head quality (100% acceptance measured 0.97x) — the verify-position
+  disjoint-expert wall is a property of MoE spill, not of one quantization
+- request batching cannot beat round-robin for distinct prompts, same reason
+- in-call io/compute overlap regresses (three falsifications, two artifacts)
+- prediction-guided prefetch is scissored by lead-time vs precision
+- E-cores help by filling idle time, not by adding bandwidth-bound throughput
+- compute is at the `avx_vnni` ISA ceiling; there is no wider instruction on this part
+
+Re-measured numbers land in `evidence/local-5090-layer103p5-rebase-20260725/`.
