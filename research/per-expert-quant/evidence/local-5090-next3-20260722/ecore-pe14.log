@@ -1,0 +1,42 @@
+loaded Hy3 (80 trunk layers)
+prompts: 3 distinct across m=3 streams (lens [45, 30, 27]), n_new=32
+[moe-cache] size-aware fixed slots: 6445 slots in 5 classes, 13.98 GB / 13.98 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 6445 slots, 6431 resident blocks; 2072 complete experts, 75 one-projection fragments, 70 two-projection fragments (215 stranded blocks)
+[moe-cache] freeze profile restored: 6431/6431 blocks restaged from /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/freeze-dual-tq.txt
+[bw24] cpu expert executors pinned: 8cpus/8thr + 8cpus/8thr + 6cpus/6thr
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=28.25 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+lockstep m=3: 96 tokens in 18.836s = 5.10 tok/s aggregate, 1.70 tok/s per stream
+CPU experts DECODE-WINDOW: calls=9611 experts=35804 backend_wall=35.635s RAM_hits=68101 RAM_misses=32414 RAM_fills=70.55 GB io=13.478s compute=21.382s
+stream 0: [40129, 316, 244, 1970, 716, 39098, 883, 14839, 503, 12509, 279, 1244, 1970, 24674, 496, 32215, 107669, 503, 539, 18696, 1970, 58138, 9042, 45164, 41116, 503, 280, 244, 1970, 28462, 26367, 11816]
+stream 1: [3946, 316, 244, 3686, 7164, 958, 369, 92067, 1230, 15196, 12076, 341, 5211, 252, 21466, 2326, 280, 21466, 5766, 2859, 286, 1438, 6515, 185, 1699, 21466, 119360, 4771, 11, 273, 2156, 300]
+stream 2: [628, 7157, 15924, 617, 16318, 493, 6406, 70768, 8726, 3288, 289, 5649, 106896, 11, 402, 252, 4004, 6989, 675, 18471, 252, 2021, 1860, 255, 506, 24421, 765, 665, 7125, 47194, 289, 252]
+stream-identity gate: SKIP (distinct prompts)
+[bw24-cpu-cache] hits=153556 misses=69623 hit_rate=68.80% read_GB=152.387 resident_GB=21.473
+[bw24-cpu-profile] calls=17626 prepare=1.474004s io=24.678338s insert=0.116832s compute=44.727598s read_projections=69623 read_GB=152.387 stage_entry=8.988200s stage_cached=28.867615s stage_missing=2.318736s stage_accum=0.449432s prefetch_projections=0 prefetch_GB=0.000
+	Command being timed: "taskset --cpu-list 0-21 env BW24_LOCKSTEP_M=3 BW24_NGEN=32 BW24_CHAT=1 BW24_PROMPTS_FILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/prompts-mixed.txt BW24_CPU_EXPERT_PIPELINE=0 BW24_CPU_EXPERT_FREEZE_PROFILE=/tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/freeze-dual-tq.txt BW24_MOE_CACHE=1 BW24_MOE_SIZE_AWARE=1 BW24_MOE_LFU=1 BW24_MOE_LFU_DECAY=1.0 BW24_MOE_VRAM_FRAC=0.90 BW24_MOE_HARD_VRAM_FRAC=0.90 BW24_SPILL_IO=direct BW24_SPILL_PREAD_DEPTH=32 BW24_SPILL_WORKER_EXPERT_WINDOW=8 BW24_CPU_EXPERT_LIB=/home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so BW24_CPU_EXPERT_IO_THREADS=8 BW24_CPU_EXPERT_CACHE_GB=20 BW24_CPU_EXPERT_RESERVE_GB=4 BW24_CPU_EXPERT_IO=direct BW24_CPU_EXPERT_MIRROR_MAP=/home/avifenesh/.local/share/bw24-models/hy3-tailq2k-mirror/inode-alternates.tsv BW24_CPU_EXPERT_EXECUTOR_CPUSETS=0-7;8-15;16-21 BW24_CPU_EXPERT_THREADS=8 /home/avifenesh/projects/bw24-hy3lane/target/release/run_lockstep /home/avifenesh/.local/share/bw24-models/hy3-tailq2k-dual-nvme"
+	User time (seconds): 304.26
+	System time (seconds): 52.58
+	Percent of CPU this job got: 154%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 3:51.12
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 27906660
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3408189
+	Minor (reclaiming a frame) page faults: 14966070
+	Voluntary context switches: 5032263
+	Involuntary context switches: 36666
+	Swaps: 0
+	File system inputs: 359343616
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

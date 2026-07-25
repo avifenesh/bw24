@@ -1,0 +1,178 @@
+{
+  "by_task": {
+    "humaneval_instruct": {
+      "passed": 11,
+      "total": 14
+    }
+  },
+  "format": "bw24-hourish-code-score-v1",
+  "input_files": [
+    {
+      "path": "/inputs/shards/humaneval_instruct/layer103p5-base/samples_humaneval_instruct_2026-07-24T06-27-22.873344.jsonl",
+      "sha256": "e5e8085975d392d1ec0e41ac7741423f2bceccc36df80e9d530bd3ed70557b25"
+    }
+  ],
+  "limits": {
+    "address_space_bytes": 536870912,
+    "cpu_seconds": 5,
+    "wall_seconds": 10
+  },
+  "passed": 11,
+  "samples": [
+    {
+      "doc_hash": "17bc532adebaaef58a55116b14873bda8f57943391ff15054e5f2e676f2c716c",
+      "doc_id": 27,
+      "passed": true,
+      "prompt_hash": "b0d76d427b88d73be7fce6ac466496f0610b0c42401435b958123fa190d85b33",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "ca28b426e2d5df5f0b9456331bdcb1e834847f703fe224bbfb15457a11493324",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "23badfef12b14a2b60fe1444f362ccd41b0ea76b82a54a937fdd14e56218958f",
+      "doc_id": 32,
+      "passed": false,
+      "prompt_hash": "02050af80db242433d0ff3b23d339f691d2bcf7c55528a4bf58d5f6a0ee9b739",
+      "returncode": 1,
+      "stderr_tail": "Traceback (most recent call last):\n  File \"/tmp/bw24-code-2rz7358y/candidate.py\", line 54, in <module>\n    check(find_zero)\n  File \"/tmp/bw24-code-2rz7358y/candidate.py\", line 50, in check\n    solution = candidate(copy.deepcopy(coeffs))\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/bw24-code-2rz7358y/candidate.py\", line 25, in find_zero\n    import numpy as np\nModuleNotFoundError: No module named 'numpy'\n",
+      "target_hash": "b3c5ba36199e5d555d98044daec2dc380dc089241011c25a958248bb6f3a3909",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "337bb7672b1407dea52b989bc19dba6f6aa1d9b54297b4e0e5c457b2eee8f03a",
+      "doc_id": 53,
+      "passed": true,
+      "prompt_hash": "0f9ad833e204e9abeb12d6115dedd8d7ed56d0486d9945fc5802662e06ed0e57",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "9a113b14d319d9ff63198d87503c696e119bd9685529474d16f57a0190bd8c46",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "fa7bff20205266ec32e55f72ae95be86a878f2d2f67194665f282c6c4195e0b4",
+      "doc_id": 54,
+      "passed": true,
+      "prompt_hash": "08023054acf3f1acc8daf99874a2ef3df66b23034a6e25c99e63affef58bc123",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "efcab4edecd71bd7bb31099cc4b3e620d0f6df6f715a1083ab5e9930b4c69011",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "d7c7000e5aaf3363bb8b5ab3b10f2eda55c38744aabcea53ae8794ec2c572eaa",
+      "doc_id": 68,
+      "passed": true,
+      "prompt_hash": "2592ea1d625a1454e9a390da04cb440f0c52e59dea0dd27cf1f8c492cda424d9",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "da541766e2702be7c1819dd4070ad144837bb187b7ec47f2fb638d340a182352",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "72867938597e0888d539884526840491d28c5e187cd3764dfc7500cda06d39ca",
+      "doc_id": 73,
+      "passed": false,
+      "prompt_hash": "3c4d6c8e328a78768d699aef9f2cdb4f040f4908ac602980cc0b0f432dcb1752",
+      "returncode": 1,
+      "stderr_tail": "Traceback (most recent call last):\n  File \"/tmp/bw24-code-s288ou46/candidate.py\", line 42, in <module>\n    check(smallest_change)\n  File \"/tmp/bw24-code-s288ou46/candidate.py\", line 30, in check\n    assert candidate([1,2,3,5,4,7,9,6]) == 4\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/tmp/bw24-code-s288ou46/candidate.py\", line 17, in smallest_change\n    for i in range(n-arg):\n                     ^^^\nNameError: name 'arg' is not defined. Did you mean: 'arr'?\n",
+      "target_hash": "080ed20feaa442104c1a48bd21405561c62762a86658ff7673a28e4bad27f135",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "d5c94a7e98ee8e102a93755d513543501378e46af3cdd5e2fb61970083080d29",
+      "doc_id": 85,
+      "passed": true,
+      "prompt_hash": "ac561a936be86994df8f35700e60116fd550f76f1afe5978a5b835fbf8799d18",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "6d0f1b7059ff1cb28e6ec7568ab78cdb15b837d370c4a42f2859c1e46f8351df",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "e8e2db7473e014da222dd73f1a2ae191ad2fd67858fac6add3c93a7ba9390f5f",
+      "doc_id": 96,
+      "passed": true,
+      "prompt_hash": "8d80b103e4cc542c60f55516b9a324cc652f856f369f87ddaf786ca28c0253a6",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "8691465950196214867ad1103b9c51d73d5ad6e8bd92ff55e7f8a168ee53d018",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "98a38ba16cd55f2306a1e80c47739d143b371685d65c32d90759bdda525c3c7f",
+      "doc_id": 115,
+      "passed": true,
+      "prompt_hash": "ec685d2e3e7944c8dfb9e0eff29a922fdab6ff6ba9d742e9ec4f7e908897b7c3",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "6b05d6d053642909824ec70335b4bff685d2a4186b23db0d54f0dcf6bffb0ec6",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "909bd72d83734ec6fe21df6787e58b609aaeb066f7852f1cae94819b43b2aab1",
+      "doc_id": 116,
+      "passed": true,
+      "prompt_hash": "4620639a7230c4f02f9a6706fd99227896f8ccf8dead787d4e0ab87523bfed99",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "e4cf2a900e2dfcc268a6b1dc66c40c46bde2924ad5fe85423ffff9a84f0f4e50",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "d8c50d7a79f898b4f85e3b7ef023b7fc6f2d40bb215c27700bccbef112e055d0",
+      "doc_id": 119,
+      "passed": true,
+      "prompt_hash": "54855ca6342410bc1575dd987d8ec1aa8f53a996692cec4240e0c5d1b9e60979",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "4fb2bf2841fcc0cbb301ab4b41b223fd26b56b06f4ac7e216615fa41262b73b2",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "ace6d42109326e350d19ace034b7ac0f93d81008ed0e97ba2c98e4602060a336",
+      "doc_id": 127,
+      "passed": false,
+      "prompt_hash": "398b31163902ac2d3d478a152f4490556e1dd4f951ae51b1ad1db86d570cef8a",
+      "returncode": 1,
+      "stderr_tail": "Traceback (most recent call last):\n  File \"/tmp/bw24-code-i67jb111/candidate.py\", line 60, in <module>\n    check(intersection)\n  File \"/tmp/bw24-code-i67jb111/candidate.py\", line 49, in check\n    assert candidate((-1, 1), (0, 4)) == \"NO\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+      "target_hash": "07e73d92f953140aacc415ee441d6befc16a164881e8f87d8de1e81db1cb6302",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "74ef2dd85a142e4fc8346061feafddb389498ca31bb3947c7ede5d2534fed5e7",
+      "doc_id": 135,
+      "passed": true,
+      "prompt_hash": "033ed655f4abac7b1d6ecf7188f25abf6bffb5114760d780d602b78b41ef75ca",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "5179b68f1e97c3df722967652597adc86dd1ef0ab373a31fe0249e110e35a1fd",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    },
+    {
+      "doc_hash": "422e338aa846b244b7661a99a7beef1939aaa9b7ac646ae8ab4c432e46d84c3a",
+      "doc_id": 142,
+      "passed": true,
+      "prompt_hash": "bf465ca7d41f5142fc1fec2f0d10736b7469a8db5bf7ff33c05af9a8574c87f4",
+      "returncode": 0,
+      "stderr_tail": "",
+      "target_hash": "1b3f494764436ca3fafab5236c7f2cd598cfac92d008ad2a42d4ccd8f1e9b50b",
+      "task": "humaneval_instruct",
+      "timed_out": false
+    }
+  ],
+  "total": 14
+}

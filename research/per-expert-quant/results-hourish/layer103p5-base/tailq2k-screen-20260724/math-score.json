@@ -1,0 +1,384 @@
+{
+  "by_task": {
+    "hendrycks_math500": {
+      "passed": 13,
+      "total": 32
+    }
+  },
+  "format": "bw24-hourish-math-score-v1",
+  "input_files": [
+    {
+      "path": "/inputs/shards/hendrycks_math500/layer103p5-base/samples_hendrycks_math500_2026-07-24T11-59-37.755663.jsonl",
+      "sha256": "62a7b1471f1ed544a1447c7047439a6a943e68b5024f1673e2551dc698387f22"
+    }
+  ],
+  "passed": 13,
+  "policy": {
+    "answer_selection": "first_nonempty_line_then_same_line_answer_clause",
+    "later_lines_ignored": true,
+    "max_answer_chars": 4096,
+    "verification_timeout_seconds": 5
+  },
+  "samples": [
+    {
+      "answer": "28",
+      "doc_hash": "fca42b024c87cb629ca49d25d7fbf28b608ac0973a2f0708eb8df81a26d431df",
+      "doc_id": 18,
+      "method": "normalized_literal",
+      "normalized_answer": "28",
+      "passed": true,
+      "prompt_hash": "d605fec77d100b575b571c6a7be96c40b89e2e917a92e48fbf6d6061f360daf2",
+      "target_hash": "59e19706d51d39f66711c2653cd7eb1291c94d9b55eb14bda74ce4dc636d015a",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "We need the constant term in the expansion of \\((10x^3 - \\frac{1}{2x^2})^5\\)",
+      "doc_hash": "a4629d176be6cc025b26cb0853faf01f34e58068335ece687b768c258d61bb87",
+      "doc_id": 34,
+      "method": "none",
+      "normalized_answer": "Weneedtheconstanttermintheexpansionof\\((10x^3-\\frac{1}{2x^2})^5\\)",
+      "passed": false,
+      "prompt_hash": "a863a26692bfb6ea9f10d806ffa1089f2450724ee839eb189186296b2c3b6692",
+      "target_hash": "5f9c2b683e6727c0e75e270de5d76c491873c8da897f9e84d16d2cd42c23fc10",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "6",
+      "doc_hash": "4b7d6125bb95060b0c0e2c8909c0216368332dd2931491b1abbc3e224e747362",
+      "doc_id": 46,
+      "method": "normalized_literal",
+      "normalized_answer": "6",
+      "passed": true,
+      "prompt_hash": "f987a809f7cca375b30b60d06fd41cfaea725e2a02ae32272567f429eea7d4ef",
+      "target_hash": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "11",
+      "doc_hash": "f75f43dc650063edb031b208a554a7ebcd06acd0fa41a0856c253a9da7bb9f90",
+      "doc_id": 56,
+      "method": "normalized_literal",
+      "normalized_answer": "11",
+      "passed": true,
+      "prompt_hash": "b4681715f9a98a6f58b243a07dcd0adf781ad0d838c01f1fc274483d23924d54",
+      "target_hash": "4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "Let's break down the problem. The figure skater starts facing north. She spins to her right. Spinning to the right means she is turning clockwise if we consider a top-down view: facing north, a right turn is towards east. But let's be careful: \"spin to her right\" means she rotates her body to the right (clockwise from above). Starting facing north. A 90-degree right spin would face east. A 180-degree right spin would face south. A 270-degree right spin would face west. A 360-degree right spin would face north again",
+      "doc_hash": "ed9ea9faec1d917cf67f35314d22ae7dffb77e5e09a9a6dd1fe340a571de1f13",
+      "doc_id": 97,
+      "method": "none",
+      "normalized_answer": "Let'sbreakdowntheproblem.Thefigureskaterstartsfacingnorth.Shespinstoherright.Spinningtotherightmeanssheisturningclockwiseifweconsideratop-downview:facingnorth,arightturnistowardseast.Butlet'sbecareful:\"spintoherright\"meanssherotatesherbodytotheright(clockwisefromabove).Startingfacingnorth.A90-degreerightspinwouldfaceeast.A180-degreerightspinwouldfacesouth.A270-degreerightspinwouldfacewest.A360-degreerightspinwouldfacenorthagain",
+      "passed": false,
+      "prompt_hash": "525aa726ff6a9307f113f6c935c4e81d5b791431412c9b4c7723c3c16c3291ef",
+      "target_hash": "d57691e805199a68007b622511d15611e4ea4e7cfd36d275b9ae333e49199cfb",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "8!/(3!2!) = 3360",
+      "doc_hash": "e9b75e5004e880b4c62f38195b2e953b36806e5e53911787399804c084e762a9",
+      "doc_id": 115,
+      "method": "none",
+      "normalized_answer": "8!/(3!2!)=3360",
+      "passed": false,
+      "prompt_hash": "06ffb27c379ecd97fa0a9d7e649f4b2e1f94bff18ecb012ddbabe519a21bac8d",
+      "target_hash": "9c19f29d0e6fefa21eec58f6ff4d0cf807b63d0ed146f1fea0874506b66c35ee",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$\\frac{1}{137}+i$",
+      "doc_hash": "a0b80551db130fc1d1f2b677d003b423a8eaf3efad61e84c028ad00dacf9163a",
+      "doc_id": 126,
+      "method": "none",
+      "normalized_answer": "\\frac{1}{137}+i",
+      "passed": false,
+      "prompt_hash": "7d2bb96cd5f86d9a4abed47daf3948be327b4d4d3b3019a4db27ba25e6565096",
+      "target_hash": "e3dcf3317356c80ad50ed0b1409cda675d03344487bcb01a9d96ee7299811efd",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$\\sqrt{42}$",
+      "doc_hash": "858202ff52392f071f39ccd504f09f2d1bf906dd0539461f14fdda31df2c1a8f",
+      "doc_id": 143,
+      "method": "none",
+      "normalized_answer": "\\sqrt{42}",
+      "passed": false,
+      "prompt_hash": "964f0ed483562b1df606954f64011b02fe7ccc09187ce13b63066c373c7ad614",
+      "target_hash": "f169e584d7842632744cb27fd795223ffe91f1f9a8fc0ad3ab5e1338f72afbc6",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "At $t=2$, $x = 2^3 + 7 = 15$ and $y = -3(2)^2 - 6(2) - 5 = -29$. The point is $(15, -29)$",
+      "doc_hash": "ef7d5cdc95d77209a9897006d874f88466b07ef449fb8ea335807d4a497b8aca",
+      "doc_id": 144,
+      "method": "math_verify",
+      "normalized_answer": "At$t=2$,$x=2^3+7=15$and$y=-3(2)^2-6(2)-5=-29$.Thepointis$(15,-29)$",
+      "passed": true,
+      "prompt_hash": "48634945752c1d2e3266deeb2e5b762e940d1ea74d4b1c2edf7825844f0b8819",
+      "target_hash": "d3dc4e863c3440f2a1972d6841ad4c08b88c90bc0790d9c59c75b5156805bc7e",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "36",
+      "doc_hash": "626c0684607e3f90b66b0a545cb01936f495cd44e623adb3925e5c1626e51775",
+      "doc_id": 152,
+      "method": "none",
+      "normalized_answer": "36",
+      "passed": false,
+      "prompt_hash": "61813d2583a0d777ca2e0af41ed2480817f492f8d85c343c13af855379d48035",
+      "target_hash": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "Let the first term be $a$ and the common difference be $d$. Then $a+3d=2 0 0$ and $a+7d=5 0 0$. Subtracting the two equations gives $4d=3 0 0$, so $d=7 5$. This means that $a+3(7 5)=2 0 0$, so $a=2 0 0-2 2 5=-2 5$. The sixth term is $-2 5+5(7 5)=-2 5+3 7 5=3 5 0$. The answer is 350",
+      "doc_hash": "261c5ad39d29e6eca1d4d49d86672308a8dee48f350cfaa099fc7f154bcc5881",
+      "doc_id": 172,
+      "method": "math_verify",
+      "normalized_answer": "Letthefirsttermbe$a$andthecommondifferencebe$d$.Then$a+3d=200$and$a+7d=500$.Subtractingthetwoequationsgives$4d=300$,so$d=75$.Thismeansthat$a+3(75)=200$,so$a=200-225=-25$.Thesixthtermis$-25+5(75)=-25+375=350$.Theansweris350",
+      "passed": true,
+      "prompt_hash": "92b9d7764afd3095ea65148a16bca72e68e59d3bd7214180d8ad6b78425dbe23",
+      "target_hash": "deeeb5df3f2cee6bf4e597a8a3a878a6ce49b932b9e90b416922d4499f54fae6",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "3",
+      "doc_hash": "edb7bb18eb6e58864b69a9df60042cc998babd1b31fbcd4d420b4663bccbf072",
+      "doc_id": 173,
+      "method": "none",
+      "normalized_answer": "3",
+      "passed": false,
+      "prompt_hash": "960e66ea45a334318185de3486d569ebd10632e7cb15f05beccebd13623ef0a2",
+      "target_hash": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "2",
+      "doc_hash": "f67f1ad1f7f1d154b73318ca057830aa70bdf15da362f1e861a044f7244e4bda",
+      "doc_id": 175,
+      "method": "none",
+      "normalized_answer": "2",
+      "passed": false,
+      "prompt_hash": "0c5d60b4142493f0da88cef913c64585981360fa0bfb9ac8c0d1c479dd450a66",
+      "target_hash": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$\\frac{2^1}{2^2 \\cdot 5^7} = \\frac{1}{2^1 \\cdot 5^7} = \\frac{1}{10 \\cdot 5^6} = \\frac{1}{10 \\cdot 15625} = \\frac{1}{156250} = 0.0000064$",
+      "doc_hash": "08c45a919c0e13c3bd5c90e810ee056790783b2077cfbb6f27f3058737277e9d",
+      "doc_id": 176,
+      "method": "none",
+      "normalized_answer": "\\frac{2^1}{2^2\\cdot5^7}=\\frac{1}{2^1\\cdot5^7}=\\frac{1}{10\\cdot5^6}=\\frac{1}{10\\cdot15625}=\\frac{1}{156250}=0.0000064",
+      "passed": false,
+      "prompt_hash": "3f145c45ad970f3b0ce97358d494dd5ade5c9a7be03127e062691d42507ba5fe",
+      "target_hash": "7c5c315e9e1f5fff91ee31440534895bc407fda5e0efd30c36eb456a011eeffd",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "90",
+      "doc_hash": "9cad0f0fff962b677f084c38a9b4cb796ed9879c5ad25bd09224e4c1ba6e3993",
+      "doc_id": 229,
+      "method": "normalized_literal",
+      "normalized_answer": "90",
+      "passed": true,
+      "prompt_hash": "fdd680b8dc7b34ea610a531c3739db4934eca012326159d88b64ed5c05ca9688",
+      "target_hash": "69f59c273b6e669ac32a6dd5e1b2cb63333d8b004f9696447aee2d422ce63763",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "6",
+      "doc_hash": "460d23c9b5c1b69f1a063ffabd35110c59b99459eb6e9363c766553ffeaa2db9",
+      "doc_id": 269,
+      "method": "normalized_literal",
+      "normalized_answer": "6",
+      "passed": true,
+      "prompt_hash": "0f55194a3fb0dcf4078f100956ba253ef2038d49841711c50eb81e16a1a19ca0",
+      "target_hash": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "We need compute (2b - a) \u00d7 (3c + a). Use bilinearity of cross product (over vectors in R^3). Expand:",
+      "doc_hash": "e3731912e81044e939a95c8127180224a6c9a4d80b2c53d5c6d428017d6512e5",
+      "doc_id": 298,
+      "method": "none",
+      "normalized_answer": "Weneedcompute(2b-a)\u00d7(3c+a).Usebilinearityofcrossproduct(overvectorsinR^3).Expand:",
+      "passed": false,
+      "prompt_hash": "01b3da8299409c9056fa8a4176add0de53dea0bace90ec9de771cdb250f1167a",
+      "target_hash": "0eeec90b8a56bdaa4d2ed932a2c8359b6cfc227f219ca50e878a1919b99fa11b",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "63",
+      "doc_hash": "9290b7bf0566b7e9788da2b52cd5ffcee32d66d1adbcf43856e3802e22aa499f",
+      "doc_id": 299,
+      "method": "normalized_literal",
+      "normalized_answer": "63",
+      "passed": true,
+      "prompt_hash": "f67221c10ef2b80eedf6ab78fb5716715c1127714d6b6266f5703b95a64c2dd3",
+      "target_hash": "da4ea2a5506f2693eae190d9360a1f31793c98a1adade51d93533a6f520ace1c",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "6.3",
+      "doc_hash": "67535b5749ddbd24685b37af3e2796b395e06b13b82595095853c5501abe717e",
+      "doc_id": 301,
+      "method": "none",
+      "normalized_answer": "6.3",
+      "passed": false,
+      "prompt_hash": "29702f25bd8c4ebd684f2a00fba8518d55ce5811933eaef691fc77693b6f3d6c",
+      "target_hash": "e306da026f6e355997e32d2a0187ae9287dedfdcfb95978576bb51072e6297fd",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "1/4",
+      "doc_hash": "89adc2d234920070f4206f8430471d3ba868f6edd3db2e439f6eb341305f34e3",
+      "doc_id": 362,
+      "method": "normalized_literal",
+      "normalized_answer": "\\frac{1}{4}",
+      "passed": true,
+      "prompt_hash": "d136cb33580b3445d6dc575b606ae1119c56ff9ddcef79884955165876884a55",
+      "target_hash": "3de3f031cb11635ec2b58c78302b38c1eaffa43058d34a9c25257c1787211ffb",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "31",
+      "doc_hash": "66346e6c8257d9290ddb2bfc25af4757e8ed387825a318fd85d51aec3b7c50eb",
+      "doc_id": 368,
+      "method": "normalized_literal",
+      "normalized_answer": "31",
+      "passed": true,
+      "prompt_hash": "b8eb3aafd4b9172a6b3dc3bd352065e488c379332c8e88fc9b93880fd1ed77d9",
+      "target_hash": "eb1e33e8a81b697b75855af6bfcdbcbf7cbbde9f94962ceaec1ed8af21f5a50f",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "4",
+      "doc_hash": "6dd457ba64d5a9be7945ace92e379ec9fbaf6a8db5ae467b38a4db1ad87edb82",
+      "doc_id": 406,
+      "method": "none",
+      "normalized_answer": "4",
+      "passed": false,
+      "prompt_hash": "b665631a219dcb73361661c9c98f3da91383c2f43080a56a5e520f732306d74a",
+      "target_hash": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$\\begin{pmatrix} -1 \\\\ 4 \\end{pmatrix}$",
+      "doc_hash": "4a76f810aa92b7c7ff386a8b2ac93180c75963a2f2b353e6281d4020a92b1cda",
+      "doc_id": 408,
+      "method": "none",
+      "normalized_answer": "\\begin{pmatrix}-1\\\\4\\end{pmatrix}",
+      "passed": false,
+      "prompt_hash": "85b5bebc597f98338d0cc0e3be32d78daa2e84ecd9e47bd9c9fa143353ee746c",
+      "target_hash": "b1cc42473453db15c6e400f5cdc3c6d597940f0bad60aeeca741ad9b9470b7b3",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "0",
+      "doc_hash": "0f5f158f228260c8bbfb49a172869c30119de4da50c6972d11d5d9559fa1dcd7",
+      "doc_id": 415,
+      "method": "none",
+      "normalized_answer": "0",
+      "passed": false,
+      "prompt_hash": "357eb7d356c2b0605fe059c626ff02304cb98f78ceb5d06690927b51b0782ee4",
+      "target_hash": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "4",
+      "doc_hash": "3f0140f119b21403f5e659715e95c5231b041d2c0b5f44a7e3867ff1d457a01b",
+      "doc_id": 438,
+      "method": "normalized_literal",
+      "normalized_answer": "4",
+      "passed": true,
+      "prompt_hash": "28f22f9e0a92db1eafd34debab91ee9cd9e6e1b6f3b0d49acc8e953466de1874",
+      "target_hash": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "\u301012\u3011",
+      "doc_hash": "1d3188d75072aed6edfd6be69369f631ba76fffedfc783c3ec70ef41135434be",
+      "doc_id": 443,
+      "method": "none",
+      "normalized_answer": "\u301012\u3011",
+      "passed": false,
+      "prompt_hash": "17d4b4c48579da59e4ec5ecd4eaf32e5b23f2d03bada809f4d653bfbdc7616d0",
+      "target_hash": "811786ad1ae74adfdd20dd0372abaaebc6246e343aebd01da0bfc4c02bf0106c",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$\\frac{1}{2}-\\frac{1}{2k}$ if $k\\ge1$, and $\\frac{k}{2}-\\frac{1}{2k}$ if $k\\le1$",
+      "doc_hash": "f6f758b4172779c64793976a585572cca5d3507cf69fcee72b2fb10b4251bdad",
+      "doc_id": 444,
+      "method": "none",
+      "normalized_answer": "\\frac{1}{2}-\\frac{1}{2k}$if$k\\ge1$,and$\\frac{k}{2}-\\frac{1}{2k}$if$k\\le1",
+      "passed": false,
+      "prompt_hash": "284ed158eb3a237058c2d660ff838b4247ab8f6b4c2e69a3b1ce6e90797a2d91",
+      "target_hash": "e7e9536310cdba7ff948771f791cefe32f99b73c608778c9660db79e4926e9f9",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "Let the two-digit number be $10a+b$ where $a$ is the tens digit and $b$ is the units digit. The sum of digits is $a+b=13$. The difference between the number and its reverse is $|10a+b-(10b+a)|=|9a-9b|=9|a-b|=27$, so $|a-b|=3$. Solving $a+b=13$ and $a-b=3$ gives $a=8,b=5$ (or $a-b=-3$ gives $a=5,b=8$). The original number is $85$ or $58$, and the reversed number is $58$ or $85$. Their sum is $85+58=143$. The answer is $143$",
+      "doc_hash": "9a6f019fc292dfd293e85606b235dec00d2227a78f1aee78c73529b2aca84f3c",
+      "doc_id": 452,
+      "method": "math_verify",
+      "normalized_answer": "Letthetwo-digitnumberbe$10a+b$where$a$isthetensdigitand$b$istheunitsdigit.Thesumofdigitsis$a+b=13$.Thedifferencebetweenthenumberanditsreverseis$|10a+b-(10b+a)|=|9a-9b|=9|a-b|=27$,so$|a-b|=3$.Solving$a+b=13$and$a-b=3$gives$a=8,b=5$(or$a-b=-3$gives$a=5,b=8$).Theoriginalnumberis$85$or$58$,andthereversednumberis$58$or$85$.Theirsumis$85+58=143$.Theansweris$143$",
+      "passed": true,
+      "prompt_hash": "b9d704445d92ede6e968629f23d94b22e8dbf037dadc1f6da323132f6ff425de",
+      "target_hash": "d6f0c71ef0c88e45e4b3a2118fcb83b0def392d759c901e9d755d0e879028727",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "-2",
+      "doc_hash": "3cb5abb5720f10def017686db6789f5959efae7c029cf079d7317e7dd7bdbc68",
+      "doc_id": 456,
+      "method": "none",
+      "normalized_answer": "-2",
+      "passed": false,
+      "prompt_hash": "03037ee28a454c09cdd822ad0aca1d850e3a100ec65d26a8ddbf4719d13cdbcd",
+      "target_hash": "eff4fabb9a2ae30b537ffec67ab8b6956d979f68ef3fae37a99d784b93477bc3",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "$x = 3$",
+      "doc_hash": "929a5e4547253bcd4718548a240157ec3d0ca4a530e00fcd529e752c046f996d",
+      "doc_id": 464,
+      "method": "none",
+      "normalized_answer": "x=3",
+      "passed": false,
+      "prompt_hash": "3e3944716abf2fe52fbcb3d96197ffb8fba371df897f8ca3cac5b733f8e26f30",
+      "target_hash": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "84.0",
+      "doc_hash": "775e99adfca672293b8435861dec82328c8dda9751835af7ccbdae47899759ef",
+      "doc_id": 471,
+      "method": "math_verify",
+      "normalized_answer": "84.0",
+      "passed": true,
+      "prompt_hash": "fc20dc3868f20f51b71f26f819863842ca714aed08c75e9220d6b860766094fe",
+      "target_hash": "44c8031cb036a7350d8b9b8603af662a4b9cdbd2f96e8d5de5af435c9c35da69",
+      "task": "hendrycks_math500"
+    },
+    {
+      "answer": "\\boxed{\\frac{2n+1}{2n-1}}",
+      "doc_hash": "c7ca4a92e23eee5fc80e0080598f4a1496493e6531fcde068122d3423be6bc7b",
+      "doc_id": 481,
+      "method": "none",
+      "normalized_answer": "\\frac{2n+1}{2n-1}",
+      "passed": false,
+      "prompt_hash": "b5a4451a183b8674b470fc165fd8705e8d1b7e83754a70b789464c61f335c295",
+      "target_hash": "5270b8f15ca0fe0c14861a99f06c3319d88cdabd264442114f6a1e332276a3a7",
+      "task": "hendrycks_math500"
+    }
+  ],
+  "total": 32,
+  "versions": {
+    "antlr4-python3-runtime": "4.11.0",
+    "latex2sympy2-extended": "1.11.0",
+    "math-verify": "0.9.0",
+    "mpmath": "1.3.0",
+    "sympy": "1.14.0"
+  }
+}

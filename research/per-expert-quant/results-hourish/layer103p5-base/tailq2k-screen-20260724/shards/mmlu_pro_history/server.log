@@ -1,0 +1,116 @@
+[server] starting; models config = [("layer103p5-base", "/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme", None)]
+[worker] Engine ready (BW24_FAST=true)
+[worker] loading model "layer103p5-base" <- /home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme
+[worker]   loaded "layer103p5-base": 81 layers, eos=120025
+[server] worker ready; serving models: ["layer103p5-base"]
+[server] listening on http://127.0.0.1:8080
+[spill-pread] enabled: depth=8 buffer_bytes=6684672 total_pinned_bytes=53477376 (bounded worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spill-pread] falling back to mmap: worker read ring is busy
+[spill-pread] falling back to mmap: worker read ring is busy
+[spill-pread] falling back to mmap: worker read ring is busy
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=38.06 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spill-pread] snapshot reads=312851 bytes=821046607872 errors=0 short_reads=0 fallbacks=712 buffer_waits=300249 ring_full=12282
+[moe-cache] snapshot hits=0 misses=313563 hit_rate=0.000 staged_bytes=822688481280 slots=1674
+[spill-pread] snapshot reads=451544 bytes=1184871628800 errors=0 short_reads=0 fallbacks=1237 buffer_waits=425043 ring_full=22061
+[moe-cache] snapshot hits=0 misses=452781 hit_rate=0.000 staged_bytes=1187789684736 slots=1674
+[spill-pread] snapshot reads=817304 bytes=2142313119744 errors=0 short_reads=0 fallbacks=1840 buffer_waits=777008 ring_full=31672
+[moe-cache] snapshot hits=0 misses=819144 hit_rate=0.000 staged_bytes=2146624634880 slots=1674
+[spill-pread] snapshot reads=1816639 bytes=4776155578368 errors=0 short_reads=0 fallbacks=2270 buffer_waits=1761762 ring_full=39849
+[moe-cache] snapshot hits=0 misses=1818909 hit_rate=0.000 staged_bytes=4781503561728 slots=1674
+[spill-pread] snapshot reads=2815647 bytes=7420975939584 errors=0 short_reads=0 fallbacks=2460 buffer_waits=2745421 ring_full=45202
+[moe-cache] snapshot hits=0 misses=2818107 hit_rate=0.000 staged_bytes=7426788851712 slots=1674
+[spill-pread] snapshot reads=3814606 bytes=10048136724480 errors=0 short_reads=0 fallbacks=2801 buffer_waits=3729718 ring_full=52472
+[moe-cache] snapshot hits=0 misses=3817407 hit_rate=0.000 staged_bytes=10054750912512 slots=1674
+[spill-pread] snapshot reads=4227594 bytes=11137808793600 errors=0 short_reads=0 fallbacks=3063 buffer_waits=4128003 ring_full=58902
+[moe-cache] snapshot hits=0 misses=4230657 hit_rate=0.000 staged_bytes=11145038905344 slots=1674
+[spill-pread] snapshot reads=5226377 bytes=13779579912192 errors=0 short_reads=0 fallbacks=3421 buffer_waits=5112356 ring_full=66013
+[moe-cache] snapshot hits=0 misses=5229798 hit_rate=0.000 staged_bytes=13787643936768 slots=1674
+[spill-pread] snapshot reads=6224275 bytes=16395564662784 errors=0 short_reads=0 fallbacks=3731 buffer_waits=6096002 ring_full=72235
+[moe-cache] snapshot hits=0 misses=6228006 hit_rate=0.000 staged_bytes=16404372209664 slots=1674
+[spill-pread] snapshot reads=7222750 bytes=19018866032640 errors=0 short_reads=0 fallbacks=4052 buffer_waits=7080046 ring_full=79085
+[moe-cache] snapshot hits=0 misses=7226802 hit_rate=0.000 staged_bytes=19028429635584 slots=1674
+[spill-pread] snapshot reads=8054321 bytes=21206709583872 errors=0 short_reads=0 fallbacks=4195 buffer_waits=7896485 ring_full=83467
+[moe-cache] snapshot hits=0 misses=8058516 hit_rate=0.000 staged_bytes=21216596459520 slots=1674
+[spill-pread] snapshot reads=8244414 bytes=21705340354560 errors=0 short_reads=0 fallbacks=4224 buffer_waits=8072471 ring_full=85700
+[moe-cache] snapshot hits=0 misses=8248638 hit_rate=0.000 staged_bytes=21715294076928 slots=1674
+[spill-pread] snapshot reads=8421891 bytes=22172705439744 errors=0 short_reads=0 fallbacks=4278 buffer_waits=8235401 ring_full=88158
+[moe-cache] snapshot hits=0 misses=8426169 hit_rate=0.000 staged_bytes=22182784892928 slots=1674
+[spill-pread] snapshot reads=8936266 bytes=23528408629248 errors=0 short_reads=0 fallbacks=4325 buffer_waits=8735717 ring_full=90577
+[moe-cache] snapshot hits=0 misses=8940591 hit_rate=0.000 staged_bytes=23538605948928 slots=1674
+[spill-pread] snapshot reads=9449661 bytes=24875107516416 errors=0 short_reads=0 fallbacks=5265 buffer_waits=9236383 ring_full=102266
+[moe-cache] snapshot hits=0 misses=9454926 hit_rate=0.000 staged_bytes=24887478091776 slots=1674
+[spill-pread] snapshot reads=9961135 bytes=26227524796416 errors=0 short_reads=0 fallbacks=5366 buffer_waits=9733310 ring_full=105681
+[moe-cache] snapshot hits=0 misses=9966501 hit_rate=0.000 staged_bytes=26240126631936 slots=1674
+[spill-pread] snapshot reads=10470712 bytes=27571255050240 errors=0 short_reads=0 fallbacks=5429 buffer_waits=10229267 ring_full=108192
+[moe-cache] snapshot hits=0 misses=10476141 hit_rate=0.000 staged_bytes=27584004980736 slots=1674
+[spill-pread] snapshot reads=10666900 bytes=28089874120704 errors=0 short_reads=0 fallbacks=5438 buffer_waits=10412066 ring_full=109811
+[moe-cache] snapshot hits=0 misses=10672338 hit_rate=0.000 staged_bytes=28102643269632 slots=1674
+[spill-pread] snapshot reads=10699037 bytes=28174790688768 errors=0 short_reads=0 fallbacks=5509 buffer_waits=10430451 ring_full=112445
+[moe-cache] snapshot hits=0 misses=10704546 hit_rate=0.000 staged_bytes=28187726413824 slots=1674
+[spill-pread] snapshot reads=10848452 bytes=28568525832192 errors=0 short_reads=0 fallbacks=5515 buffer_waits=10567150 ring_full=113918
+[moe-cache] snapshot hits=0 misses=10853967 hit_rate=0.000 staged_bytes=28581473943552 slots=1674
+[spill-pread] snapshot reads=11356882 bytes=29911863066624 errors=0 short_reads=0 fallbacks=5528 buffer_waits=11062629 ring_full=115730
+[moe-cache] snapshot hits=0 misses=11362410 hit_rate=0.000 staged_bytes=29924840767488 slots=1674
+[spill-pread] snapshot reads=11675884 bytes=30754777300992 errors=0 short_reads=0 fallbacks=5528 buffer_waits=11370489 ring_full=116821
+[moe-cache] snapshot hits=0 misses=11681412 hit_rate=0.000 staged_bytes=30767755001856 slots=1674
+[spill-pread] snapshot reads=12184673 bytes=32097550811136 errors=0 short_reads=0 fallbacks=5551 buffer_waits=11865965 ring_full=118767
+[moe-cache] snapshot hits=0 misses=12190224 hit_rate=0.000 staged_bytes=32110582775808 slots=1674
+[spill-pread] snapshot reads=12217612 bytes=32184587943936 errors=0 short_reads=0 fallbacks=5552 buffer_waits=11886671 ring_full=120026
+[moe-cache] snapshot hits=0 misses=12223164 hit_rate=0.000 staged_bytes=32197623250944 slots=1674
+[spill-pread] snapshot reads=12245107 bytes=32257208500224 errors=0 short_reads=0 fallbacks=5552 buffer_waits=11902925 ring_full=120856
+[moe-cache] snapshot hits=0 misses=12250659 hit_rate=0.000 staged_bytes=32270243807232 slots=1674
+[spill-pread] snapshot reads=12291745 bytes=32381100392448 errors=0 short_reads=0 fallbacks=5552 buffer_waits=11938080 ring_full=121937
+[moe-cache] snapshot hits=0 misses=12297297 hit_rate=0.000 staged_bytes=32394135699456 slots=1674
+[spill-pread] snapshot reads=12797005 bytes=33706999922688 errors=0 short_reads=0 fallbacks=5552 buffer_waits=12431970 ring_full=122878
+[moe-cache] snapshot hits=0 misses=12802557 hit_rate=0.000 staged_bytes=33720035229696 slots=1674
+[spill-pread] snapshot reads=13303045 bytes=35044424466432 errors=0 short_reads=0 fallbacks=5552 buffer_waits=12926140 ring_full=123891
+[moe-cache] snapshot hits=0 misses=13308597 hit_rate=0.000 staged_bytes=35057459773440 slots=1674
+[spill-pread] snapshot reads=13808887 bytes=36367908618240 errors=0 short_reads=0 fallbacks=5552 buffer_waits=13420431 ring_full=124929
+[moe-cache] snapshot hits=0 misses=13814439 hit_rate=0.000 staged_bytes=36380943925248 slots=1674
+[spill-pread] snapshot reads=14316265 bytes=37705956802560 errors=0 short_reads=0 fallbacks=5552 buffer_waits=13915211 ring_full=126153
+[moe-cache] snapshot hits=0 misses=14321817 hit_rate=0.000 staged_bytes=37718992109568 slots=1674
+[spill-pread] snapshot reads=14342452 bytes=37774982086656 errors=0 short_reads=0 fallbacks=5552 buffer_waits=13930850 ring_full=126971
+[moe-cache] snapshot hits=0 misses=14348004 hit_rate=0.000 staged_bytes=37788017393664 slots=1674
+[spill-pread] snapshot reads=14625196 bytes=38522680934400 errors=0 short_reads=0 fallbacks=5552 buffer_waits=14202696 ring_full=127779
+[moe-cache] snapshot hits=0 misses=14630748 hit_rate=0.000 staged_bytes=38535716241408 slots=1674
+[spill-pread] snapshot reads=14652271 bytes=38594474999808 errors=0 short_reads=0 fallbacks=5552 buffer_waits=14218617 ring_full=128666
+[moe-cache] snapshot hits=0 misses=14657823 hit_rate=0.000 staged_bytes=38607510306816 slots=1674
+[spill-pread] snapshot reads=14678824 bytes=38664828321792 errors=0 short_reads=0 fallbacks=5552 buffer_waits=14234316 ring_full=129548
+[moe-cache] snapshot hits=0 misses=14684376 hit_rate=0.000 staged_bytes=38677863628800 slots=1674
+[spill-pread] snapshot reads=15184357 bytes=39990076932096 errors=0 short_reads=0 fallbacks=5552 buffer_waits=14728347 ring_full=130459
+[moe-cache] snapshot hits=0 misses=15189909 hit_rate=0.000 staged_bytes=40003112239104 slots=1674
+[spill-pread] snapshot reads=15689326 bytes=41321416998912 errors=0 short_reads=0 fallbacks=5552 buffer_waits=15222069 ring_full=131378
+[moe-cache] snapshot hits=0 misses=15694878 hit_rate=0.000 staged_bytes=41334452305920 slots=1674
+[spill-pread] snapshot reads=15713326 bytes=41384883585024 errors=0 short_reads=0 fallbacks=5552 buffer_waits=15236625 ring_full=132125
+[moe-cache] snapshot hits=0 misses=15718878 hit_rate=0.000 staged_bytes=41397918892032 slots=1674
+[spill-pread] snapshot reads=15999289 bytes=42140466757632 errors=0 short_reads=0 fallbacks=5552 buffer_waits=15513036 ring_full=132863
+[moe-cache] snapshot hits=0 misses=16004841 hit_rate=0.000 staged_bytes=42153502064640 slots=1674
+[spill-pread] snapshot reads=16501093 bytes=43463909130240 errors=0 short_reads=0 fallbacks=5552 buffer_waits=16005384 ring_full=133580
+[moe-cache] snapshot hits=0 misses=16506645 hit_rate=0.000 staged_bytes=43476944437248 slots=1674
+[spill-pread] snapshot reads=16589215 bytes=43697464000512 errors=0 short_reads=0 fallbacks=5552 buffer_waits=16084313 ring_full=134378
+[moe-cache] snapshot hits=0 misses=16594767 hit_rate=0.000 staged_bytes=43710499307520 slots=1674
+[spill-pread] snapshot reads=16616173 bytes=43769015697408 errors=0 short_reads=0 fallbacks=5552 buffer_waits=16102364 ring_full=135122
+[moe-cache] snapshot hits=0 misses=16621725 hit_rate=0.000 staged_bytes=43782051004416 slots=1674
+[spill-pread] snapshot reads=16657105 bytes=43877704335360 errors=0 short_reads=0 fallbacks=5552 buffer_waits=16135124 ring_full=135773
+[moe-cache] snapshot hits=0 misses=16662657 hit_rate=0.000 staged_bytes=43890739642368 slots=1674
+[spill-pread] snapshot reads=17159802 bytes=45203179094016 errors=0 short_reads=0 fallbacks=5553 buffer_waits=16627933 ring_full=136605
+[moe-cache] snapshot hits=0 misses=17165355 hit_rate=0.000 staged_bytes=45216216465408 slots=1674
+[spill-pread] snapshot reads=17660139 bytes=46522548830208 errors=0 short_reads=0 fallbacks=5553 buffer_waits=17119765 ring_full=137321
+[moe-cache] snapshot hits=0 misses=17665692 hit_rate=0.000 staged_bytes=46535586201600 slots=1674
+[spill-pread] snapshot reads=18160442 bytes=47843571793920 errors=0 short_reads=0 fallbacks=5554 buffer_waits=17611639 ring_full=138072
+[moe-cache] snapshot hits=0 misses=18165996 hit_rate=0.000 staged_bytes=47856612507648 slots=1674
+[spill-pread] snapshot reads=18658970 bytes=49145108299776 errors=0 short_reads=0 fallbacks=5554 buffer_waits=18102733 ring_full=138752
+[moe-cache] snapshot hits=0 misses=18664524 hit_rate=0.000 staged_bytes=49158149013504 slots=1674
+[spill-pread] snapshot reads=18902264 bytes=49777797758976 errors=0 short_reads=0 fallbacks=7537 buffer_waits=18306666 ring_full=173323
+[moe-cache] snapshot hits=0 misses=18909801 hit_rate=0.000 staged_bytes=49795576086528 slots=1674
+[spill-pread] snapshot reads=19097271 bytes=50285870678016 errors=0 short_reads=0 fallbacks=9549 buffer_waits=18461706 ring_full=204868
+[moe-cache] snapshot hits=0 misses=19106820 hit_rate=0.000 staged_bytes=50308474355712 slots=1674
+[spill-pread] snapshot reads=19267641 bytes=50730554179584 errors=0 short_reads=0 fallbacks=11472 buffer_waits=18593070 ring_full=234280
+[moe-cache] snapshot hits=0 misses=19279113 hit_rate=0.000 staged_bytes=50757805326336 slots=1674
+[spill-pread] snapshot reads=19426537 bytes=51145128984576 errors=0 short_reads=0 fallbacks=13493 buffer_waits=18713796 ring_full=263626
+[moe-cache] snapshot hits=0 misses=19440030 hit_rate=0.000 staged_bytes=51177210494976 slots=1674
+[spill-pread] snapshot reads=19574461 bytes=51530907156480 errors=0 short_reads=0 fallbacks=15395 buffer_waits=18836985 ring_full=290274
+[moe-cache] snapshot hits=0 misses=19589856 hit_rate=0.000 staged_bytes=51567526920192 slots=1674

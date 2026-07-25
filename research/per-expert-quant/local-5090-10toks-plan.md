@@ -207,3 +207,42 @@ regime noise; its +15% compute counter-move did not reproduce.
 
 Single-stream standing: 4.82 -> ~6.0. Ship gate: the 115-question hourish screen on both
 arms; the artifact does not promote on perf alone.
+
+## Artifact-axis headroom, measured (2026-07-25) — and a correction
+
+I recommended "artifact first" on an estimate of ~7.0-7.5 tok/s, assuming two or three further
+demotion steps of the size that delivered +23%. That estimate was WRONG: I did not check the
+artifact's current tier composition before quoting it. Checking it:
+
+| | pre-demotion | post-demotion (current) |
+|---|---:|---:|
+| Q2_K | 49.5% | **90.7%** |
+| IQ3_S / IQ4_XS / Q4_K / Q8_0 | 50.5% | 9.3% |
+
+The tail-Q2_K step already captured essentially the whole demotion axis. Demoting ALL remaining
+non-Q2_K projections is worth **-4.86% expert bytes -> -1.65% step -> +1.7% tok/s**, and costs a
+~32 GB BF16 fetch plus quality on the 917 expert-pairs deliberately held at higher precision —
+the most sensitive experts in the plan. Least gain, most quality risk: rejected without running.
+
+### The hard ceiling this exposes
+
+Single-stream step budget is io 34% / compute 50% / GPU+glue 16%, with compute at the
+`avx_vnni` ISA ceiling (no AVX-512, no AMX on this part) and io at 88% of the dual-NVMe
+device ceiling. So:
+
+| scenario | tok/s |
+|---|---:|
+| eliminate ALL io (artifact axis absolute cap) | 9.1 |
+| draft head at 1.4x (exact, no quality cost) | 8.4 |
+| draft head + full remaining demotion | 8.5 |
+| halve io AND compute — needs ~halving the expert bank AGAIN (REAP50 -> ~25% of original) | 10.3 |
+
+**10 tok/s single-stream is not reachable on this box at acceptable model quality.** Bytes alone
+cannot do it: even zero io caps at 9.1, because compute and GPU are already at their floors. The
+only arithmetic that reaches 10 requires halving the expert bank a second time, which is a
+different product, not a tuning step.
+
+The honest best achievable here is **~8.4-8.5 tok/s**, via a draft head clearing the 0.80
+acceptance bar — the one lever that multiplies tokens instead of degrading the model, since
+speculative decode is exactness-preserving. Everything needed to consume such a head (gating
+framework, K-sweep harness, serve path) is already built and proven.

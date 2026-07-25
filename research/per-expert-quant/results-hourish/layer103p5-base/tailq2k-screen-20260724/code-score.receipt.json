@@ -1,0 +1,21 @@
+{
+  "expected_sample_count": 14,
+  "format": "bw24-hourish-code-score-receipt-v1",
+  "image": "bw24-hourish-code-score:50e05a058065bc41",
+  "image_id": "sha256:9e3b57ff1cbb077bc8cf9ffc863d3b46b80a20762a5f0ae5922a8f0a153547c1",
+  "output": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/code-score.json",
+  "output_sha256": "b931c2c1941994fd87ab9d8b04657465b7a197ed582e60f1f08b4c74fd7f9dca",
+  "panel_lock_sha256": "770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1",
+  "run_dir": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724",
+  "sandbox": {
+    "capabilities": "all dropped",
+    "cpu_shares": 2,
+    "cpus": 1,
+    "memory_bytes": 805306368,
+    "network": "none",
+    "no_new_privileges": true,
+    "pids_limit": 32,
+    "read_only_root": true
+  },
+  "tool_sha256": "50e05a058065bc41da5d4bfe3dc63ed98b3c601dff9dc8346e11dd2b52e152b8"
+}

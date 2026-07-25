@@ -1,0 +1,94 @@
+{
+  "arm": "layer103p5-base",
+  "artifact": "/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme",
+  "artifact_identity_file": "/home/avifenesh/.local/share/bw24-models/hy3-layer103p5-dual-nvme/manifest.json",
+  "artifact_identity_sha256": "b8bdd684a0112312f3714024b97b9c18c8a3e7e474cbd7111f6f6021be6a644c",
+  "base_url": "http://127.0.0.1:8080/v1/completions",
+  "bw24_commit": "ebf8c1cea6a2d352a3783f06e0523f16cb2f6035",
+  "completed_successfully": true,
+  "completed_utc": "2026-07-24T09:45:48Z",
+  "declared_serve_spec": "0",
+  "declared_spill_io": "worker",
+  "declared_spill_pread_depth": "8",
+  "declared_spill_stats": "1",
+  "elapsed_seconds": 1085.236509387,
+  "eval_timeout_s": 43200,
+  "evaluator_exit_code": 0,
+  "limit": null,
+  "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+  "max_gen_toks_override": 256,
+  "model": "layer103p5-base",
+  "moe_cache_delta": {
+    "hits": 0,
+    "misses": 552876,
+    "staged_bytes": 1437085630464
+  },
+  "moe_cache_snapshot_end": {
+    "hits": 0,
+    "misses": 20142732,
+    "slots": 1674,
+    "staged_bytes": 53004612550656
+  },
+  "moe_cache_snapshot_start": {
+    "hits": 0,
+    "misses": 19589856,
+    "slots": 1674,
+    "staged_bytes": 51567526920192
+  },
+  "num_concurrent": 1,
+  "nvidia_smi": "NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 24463 MiB",
+  "panel_lock_sha256": "770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1",
+  "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+  "predict_only": false,
+  "runtime_identity_sha256": null,
+  "runtime_kind": "bw24",
+  "samples": {
+    "mmlu_pro_other": [
+      69,
+      93,
+      673,
+      705,
+      736
+    ]
+  },
+  "samples_sha256": "0b59dc021227f2583f8d062e666498c9507a79087e706f9e24f423d28c861d8a",
+  "server_binary": "/home/avifenesh/projects/bw24-hy3lane/target/release/bw24-server",
+  "server_binary_sha256": "ddbd09480fbc4a2dc80487439582da6f1898af2490164fe242a217ab84fc323f",
+  "server_log": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/mmlu_pro_other/server.log",
+  "server_log_sha256": "f9762e4584c6a9ad26217b57071ae88887f7514c1405b722d074ff6383c4949a",
+  "server_log_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/_control/tailq2k-screen-20260724/layer103p5-base/attempt-20260723T223352Z-1098867/server.log",
+  "shard_id": "mmlu_pro_other",
+  "spill_delta": {
+    "buffer_waits": 486050,
+    "bytes": 1426888998912,
+    "errors": 0,
+    "fallbacks": 4334,
+    "reads": 548542,
+    "ring_full": 65778,
+    "short_reads": 0
+  },
+  "spill_snapshot_end": {
+    "buffer_waits": 19323035,
+    "bytes": 52957796155392,
+    "errors": 0,
+    "fallbacks": 19729,
+    "reads": 20123003,
+    "ring_full": 356052,
+    "short_reads": 0
+  },
+  "spill_snapshot_start": {
+    "buffer_waits": 18836985,
+    "bytes": 51530907156480,
+    "errors": 0,
+    "fallbacks": 15395,
+    "reads": 19574461,
+    "ring_full": 290274,
+    "short_reads": 0
+  },
+  "started_utc": "2026-07-24T09:27:43Z",
+  "suite": "candidate",
+  "tasks": [
+    "mmlu_pro_other"
+  ],
+  "tee_exit_code": 0
+}

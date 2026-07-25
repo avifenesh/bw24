@@ -1,0 +1,30 @@
+2026-07-24:01:36:47 INFO     [_cli.run:388] Selected Tasks: ['humaneval_instruct']
+2026-07-24:01:36:47 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:01:36:47 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 512} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:01:36:47 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:01:36:47 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:01:36:47 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:01:36:47 INFO     [models.api_models:200] Using tokenizer None
+Downloading builder script: 0.00B [00:00, ?B/s]Downloading builder script: 9.18kB [00:00, 39.1MB/s]
+Downloading extra modules: 0.00B [00:00, ?B/s]Downloading extra modules: 6.10kB [00:00, 30.9MB/s]
+Generating test split:   0%|          | 0/164 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 164/164 [00:00<00:00, 63579.43 examples/s]
+2026-07-24:01:36:52 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:01:36:52 INFO     [evaluator_utils:480] Task: humaneval_instruct (humaneval/humaneval_instruct.yaml)
+2026-07-24:01:36:52 INFO     [evaluator:314] humaneval_instruct: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 512, 'do_sample': False}
+2026-07-24:01:36:52 INFO     [evaluator:319] Processing humaneval_instruct in output-only mode. Metrics will not be calculated!
+2026-07-24:01:36:52 INFO     [evaluator:483] Evaluating examples for tasks ['humaneval_instruct']
+2026-07-24:01:36:52 INFO     [api.task:312] Building contexts for humaneval_instruct on rank 0...
+2026-07-24:01:36:52 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+  0%|          | 0/14 [00:00<?, ?it/s]100%|██████████| 14/14 [00:00<00:00, 1695.74it/s]
+2026-07-24:01:36:52 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:01:36:52 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/14 [00:00<?, ?it/s]2026-07-24:01:36:52 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   7%|▋         | 1/14 [08:31<1:50:52, 511.76s/it]Requesting API:  14%|█▍        | 2/14 [12:06<1:07:24, 337.04s/it]Requesting API:  21%|██▏       | 3/14 [22:35<1:26:14, 470.45s/it]Requesting API:  29%|██▊       | 4/14 [54:09<2:52:03, 1032.34s/it]Requesting API:  36%|███▌      | 5/14 [1:28:14<3:29:36, 1397.43s/it]Requesting API:  43%|████▎     | 6/14 [2:01:51<3:34:24, 1608.09s/it]Requesting API:  50%|█████     | 7/14 [2:14:20<2:34:51, 1327.42s/it]Requesting API:  57%|█████▋    | 8/14 [2:48:13<2:35:11, 1551.99s/it]Requesting API:  64%|██████▍   | 9/14 [3:21:22<2:20:42, 1688.58s/it]Requesting API:  71%|███████▏  | 10/14 [3:54:35<1:58:50, 1782.61s/it]Requesting API:  79%|███████▊  | 11/14 [4:22:30<1:27:28, 1749.59s/it]Requesting API:  86%|████████▌ | 12/14 [4:28:21<44:08, 1324.10s/it]  Requesting API:  93%|█████████▎| 13/14 [4:33:47<17:01, 1021.71s/it]Requesting API: 100%|██████████| 14/14 [4:50:30<00:00, 1016.08s/it]Requesting API: 100%|██████████| 14/14 [4:50:30<00:00, 1245.02s/it]
+2026-07-24:06:27:22 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+2026-07-24:06:27:22 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:06:27:22 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/humaneval_instruct/layer103p5-base/*.jsonl
+local-completions ({'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 512}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks       |Version|  Filter   |n-shot|Metric|   |Value|   |Stderr|
+|------------------|------:|-----------|-----:|------|---|----:|---|------|
+|humaneval_instruct|      4|create_test|     0|bypass|↑  |  999|±  |   N/A|
+

@@ -1,0 +1,294 @@
+starting hourish shard: arm=layer103p5-base task=humaneval_instruct samples={"humaneval_instruct":[27,32,53,54,68,73,85,96,115,116,119,127,135,142]}
+lm-eval 97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176: dataset revisions pinned (9 datasets, 9 files changed)
+Using CPython 3.12.13
+Creating virtual environment at: research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/.venv
+Activate with: source research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/.venv/bin/activate
+Using Python 3.12.13 environment at: research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/.venv
+Resolved 71 packages in 1.16s
+   Building lm-eval @ file:///home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2
+Downloading hf-xet (4.2MiB)
+Downloading pandas (10.5MiB)
+Downloading aiohttp (1.7MiB)
+ Downloaded aiohttp
+ Downloaded hf-xet
+ Downloaded pandas
+      Built lm-eval @ file:///home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2
+Prepared 9 packages in 1.40s
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 71 packages in 324ms
+ + absl-py==2.5.0
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.3
+ + aiosignal==1.4.0
+ + anyio==4.14.2
+ + attrs==26.1.0
+ + certifi==2026.7.22
+ + chardet==6.0.0.post1
+ + charset-normalizer==3.4.9
+ + click==8.4.2
+ + colorama==0.4.6
+ + dataproperty==1.1.1
+ + datasets==5.0.0
+ + defusedxml==0.7.1
+ + dill==0.4.1
+ + evaluate==0.4.6
+ + filelock==3.32.0
+ + frozenlist==1.8.0
+ + fsspec==2026.4.0
+ + h11==0.16.0
+ + hf-xet==1.5.2
+ + httpcore==1.0.9
+ + httpx==0.28.1
+ + huggingface-hub==1.24.0
+ + idna==3.18
+ + immutabledict==4.3.1
+ + jinja2==3.1.6
+ + joblib==1.5.3
+ + langdetect==1.0.9
+ + lm-eval==0.4.13.dev0 (from file:///home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2)
+ + lxml==6.1.1
+ + markupsafe==3.0.3
+ + mbstrdecoder==1.1.5
+ + more-itertools==11.1.0
+ + multidict==6.7.1
+ + multiprocess==0.70.19
+ + narwhals==2.24.0
+ + nltk==3.10.0
+ + numpy==2.5.1
+ + packaging==26.2
+ + pandas==3.0.5
+ + pathvalidate==3.3.1
+ + portalocker==3.2.0
+ + propcache==0.5.2
+ + pyarrow==25.0.0
+ + pytablewriter==1.2.1
+ + python-dateutil==2.9.0.post0
+ + pytz==2026.2
+ + pyyaml==6.0.3
+ + regex==2026.7.19
+ + requests==2.34.2
+ + rouge-score==0.1.2
+ + sacrebleu==2.6.0
+ + scikit-learn==1.9.0
+ + scipy==1.18.0
+ + setuptools==83.0.0
+ + six==1.17.0
+ + sqlitedict==2.1.0
+ + tabledata==1.3.5
+ + tabulate==0.10.0
+ + tcolorpy==0.1.7
+ + tenacity==9.1.4
+ + threadpoolctl==3.6.0
+ + tiktoken==0.13.0
+ + tqdm==4.69.0
+ + typepy==1.3.5
+ + typing-extensions==4.16.0
+ + urllib3==2.7.0
+ + word2number==1.1
+ + xxhash==3.8.1
+ + yarl==1.24.5
+2026-07-24:01:36:47 INFO     [_cli.run:388] Selected Tasks: ['humaneval_instruct']
+2026-07-24:01:36:47 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:01:36:47 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 512} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:01:36:47 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:01:36:47 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:01:36:47 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:01:36:47 INFO     [models.api_models:200] Using tokenizer None
+Downloading builder script: 0.00B [00:00, ?B/s]Downloading builder script: 9.18kB [00:00, 39.1MB/s]
+Downloading extra modules: 0.00B [00:00, ?B/s]Downloading extra modules: 6.10kB [00:00, 30.9MB/s]
+Generating test split:   0%|          | 0/164 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 164/164 [00:00<00:00, 63579.43 examples/s]
+2026-07-24:01:36:52 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:01:36:52 INFO     [evaluator_utils:480] Task: humaneval_instruct (humaneval/humaneval_instruct.yaml)
+2026-07-24:01:36:52 INFO     [evaluator:314] humaneval_instruct: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 512, 'do_sample': False}
+2026-07-24:01:36:52 INFO     [evaluator:319] Processing humaneval_instruct in output-only mode. Metrics will not be calculated!
+2026-07-24:01:36:52 INFO     [evaluator:483] Evaluating examples for tasks ['humaneval_instruct']
+2026-07-24:01:36:52 INFO     [api.task:312] Building contexts for humaneval_instruct on rank 0...
+2026-07-24:01:36:52 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+  0%|          | 0/14 [00:00<?, ?it/s]100%|██████████| 14/14 [00:00<00:00, 1695.74it/s]
+2026-07-24:01:36:52 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:01:36:52 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/14 [00:00<?, ?it/s]2026-07-24:01:36:52 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   7%|▋         | 1/14 [08:31<1:50:52, 511.76s/it]Requesting API:  14%|█▍        | 2/14 [12:06<1:07:24, 337.04s/it]Requesting API:  21%|██▏       | 3/14 [22:35<1:26:14, 470.45s/it]Requesting API:  29%|██▊       | 4/14 [54:09<2:52:03, 1032.34s/it]Requesting API:  36%|███▌      | 5/14 [1:28:14<3:29:36, 1397.43s/it]Requesting API:  43%|████▎     | 6/14 [2:01:51<3:34:24, 1608.09s/it]Requesting API:  50%|█████     | 7/14 [2:14:20<2:34:51, 1327.42s/it]Requesting API:  57%|█████▋    | 8/14 [2:48:13<2:35:11, 1551.99s/it]Requesting API:  64%|██████▍   | 9/14 [3:21:22<2:20:42, 1688.58s/it]Requesting API:  71%|███████▏  | 10/14 [3:54:35<1:58:50, 1782.61s/it]Requesting API:  79%|███████▊  | 11/14 [4:22:30<1:27:28, 1749.59s/it]Requesting API:  86%|████████▌ | 12/14 [4:28:21<44:08, 1324.10s/it]  Requesting API:  93%|█████████▎| 13/14 [4:33:47<17:01, 1021.71s/it]Requesting API: 100%|██████████| 14/14 [4:50:30<00:00, 1016.08s/it]Requesting API: 100%|██████████| 14/14 [4:50:30<00:00, 1245.02s/it]
+2026-07-24:06:27:22 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+2026-07-24:06:27:22 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:06:27:22 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/humaneval_instruct/layer103p5-base/*.jsonl
+local-completions ({'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 512}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks       |Version|  Filter   |n-shot|Metric|   |Value|   |Stderr|
+|------------------|------:|-----------|-----:|------|---|----:|---|------|
+|humaneval_instruct|      4|create_test|     0|bypass|↑  |  999|±  |   N/A|
+
+starting hourish shard: arm=layer103p5-base task=hendrycks_math500 samples={"hendrycks_math500":[18,34,46,56,97,115,126,143,144,152,172,173,175,176,229,269,298,299,301,362,368,406,408,415,438,443,444,452,456,464,471,481]}
+lm-eval 97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176: dataset revisions pinned (9 datasets, 0 files changed)
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.code-score
+#1 transferring dockerfile: 331B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+#2 DONE 3.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/3] FROM docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+#4 resolve docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 6.17kB done
+#5 DONE 0.0s
+
+#6 [2/3] COPY score_hourish_code.py /usr/local/bin/score-hourish-code
+#6 CACHED
+
+#7 [3/3] RUN chmod 0555 /usr/local/bin/score-hourish-code
+#7 CACHED
+
+#8 exporting to image
+#8 exporting layers done
+#8 exporting manifest sha256:cd8a91ab5401d97d41cf8262864b3a7f7464dec0e5aca68721eb232d1f869963 done
+#8 exporting config sha256:83f42da27d0b83576f193e9ea07fbe17d0d69bcb53a8d073ddd7be7471a156c1 done
+#8 exporting attestation manifest sha256:a1c8712a820115c0eb8853e7e94c1c74ce7220b70303861060bd81230eb88e42 done
+#8 exporting manifest list sha256:9e3b57ff1cbb077bc8cf9ffc863d3b46b80a20762a5f0ae5922a8f0a153547c1 done
+#8 naming to docker.io/library/bw24-hourish-code-score:50e05a058065bc41 done
+#8 unpacking to docker.io/library/bw24-hourish-code-score:50e05a058065bc41 0.0s done
+#8 DONE 0.1s
+2026-07-24:06:27:27 INFO     [_cli.run:388] Selected Tasks: ['hendrycks_math500']
+2026-07-24:06:27:27 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:06:27:27 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 256} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:06:27:27 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:06:27:27 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:06:27:27 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:06:27:27 INFO     [models.api_models:200] Using tokenizer None
+/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/lm_eval/tasks/hendrycks_math/utils.py:199: SyntaxWarning: invalid escape sequence '\%'
+  string = string.replace("\%", "")  # noqa: W605
+code score complete: /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/code-score.json
+Map:   0%|          | 0/500 [00:00<?, ? examples/s]Map: 100%|██████████| 500/500 [00:00<00:00, 26369.32 examples/s]
+2026-07-24:06:27:29 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:06:27:29 INFO     [evaluator_utils:480] Task: hendrycks_math500 (hendrycks_math/hendrycks_math500.yaml)
+2026-07-24:06:27:29 INFO     [evaluator:314] hendrycks_math500: Using gen_kwargs: {'until': ['Problem:'], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 256}
+2026-07-24:06:27:29 INFO     [evaluator:483] Evaluating examples for tasks ['hendrycks_math500']
+2026-07-24:06:27:29 INFO     [api.task:312] Building contexts for hendrycks_math500 on rank 0...
+2026-07-24:06:27:29 INFO     [api.task:589] hendrycks_math500: Evaluating on 32 examples
+  0%|          | 0/32 [00:00<?, ?it/s]100%|██████████| 32/32 [00:00<00:00, 3323.04it/s]
+2026-07-24:06:27:29 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:06:27:29 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/32 [00:00<?, ?it/s]2026-07-24:06:27:29 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   3%|▎         | 1/32 [16:48<8:41:13, 1008.83s/it]Requesting API:   6%|▋         | 2/32 [31:58<7:55:16, 950.55s/it] Requesting API:   9%|▉         | 3/32 [48:51<7:53:10, 978.98s/it]Requesting API:  12%|█▎        | 4/32 [55:07<5:45:51, 741.12s/it]Requesting API:  16%|█▌        | 5/32 [55:41<3:38:44, 486.09s/it]Requesting API:  19%|█▉        | 6/32 [1:00:18<2:59:49, 414.99s/it]Requesting API:  22%|██▏       | 7/32 [1:17:33<4:17:23, 617.73s/it]Requesting API:  25%|██▌       | 8/32 [1:28:18<4:10:31, 626.30s/it]Requesting API:  28%|██▊       | 9/32 [1:45:58<4:52:00, 761.77s/it]Requesting API:  31%|███▏      | 10/32 [1:46:38<3:17:40, 539.10s/it]Requesting API:  34%|███▍      | 11/32 [1:47:08<2:14:09, 383.32s/it]Requesting API:  38%|███▊      | 12/32 [1:48:21<1:36:17, 288.86s/it]Requesting API:  41%|████      | 13/32 [2:06:17<2:46:59, 527.33s/it]Requesting API:  44%|████▍     | 14/32 [2:24:12<3:27:50, 692.81s/it]Requesting API:  47%|████▋     | 15/32 [2:42:01<3:48:25, 806.19s/it]Requesting API:  50%|█████     | 16/32 [3:00:08<3:57:32, 890.78s/it]Requesting API:  53%|█████▎    | 17/32 [3:00:39<2:38:00, 632.02s/it]Requesting API:  56%|█████▋    | 18/32 [3:10:32<2:24:45, 620.36s/it]Requesting API:  59%|█████▉    | 19/32 [3:11:03<1:36:02, 443.25s/it]Requesting API:  62%|██████▎   | 20/32 [3:11:33<1:03:50, 319.22s/it]Requesting API:  66%|██████▌   | 21/32 [3:29:29<1:40:12, 546.58s/it]Requesting API:  69%|██████▉   | 22/32 [3:47:52<1:58:53, 713.38s/it]Requesting API:  72%|███████▏  | 23/32 [3:48:21<1:16:11, 507.92s/it]Requesting API:  75%|███████▌  | 24/32 [3:58:28<1:11:42, 537.76s/it]Requesting API:  78%|███████▊  | 25/32 [4:16:34<1:21:55, 702.22s/it]Requesting API:  81%|████████▏ | 26/32 [4:19:24<54:15, 542.63s/it]  Requesting API:  84%|████████▍ | 27/32 [4:20:00<32:33, 390.66s/it]Requesting API:  88%|████████▊ | 28/32 [4:21:09<19:36, 294.16s/it]Requesting API:  91%|█████████ | 29/32 [4:39:12<26:32, 530.85s/it]Requesting API:  94%|█████████▍| 30/32 [4:56:55<23:00, 690.41s/it]Requesting API:  97%|█████████▋| 31/32 [5:14:30<13:19, 799.87s/it]Requesting API: 100%|██████████| 32/32 [5:32:08<00:00, 877.11s/it]Requesting API: 100%|██████████| 32/32 [5:32:08<00:00, 622.75s/it]
+2026-07-24:11:59:37 INFO     [api.task:589] hendrycks_math500: Evaluating on 32 examples
+2026-07-24:11:59:37 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:11:59:37 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/hendrycks_math500/layer103p5-base/*.jsonl
+local-completions ({'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 256}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks      |Version|Filter|n-shot|  Metric   |   |Value |   |Stderr|
+|-----------------|------:|------|-----:|-----------|---|-----:|---|-----:|
+|hendrycks_math500|      1|none  |     0|exact_match|↑  |0.1562|±  |0.0652|
+
+starting hourish shard: arm=layer103p5-base task=mmlu_pro_history samples={"mmlu_pro_history":[16,173,177,245,320]}
+lm-eval 97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176: dataset revisions pinned (9 datasets, 0 files changed)
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.math-score
+#1 transferring dockerfile: 499B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+#2 DONE 1.3s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/5] FROM docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+#4 resolve docker.io/library/python:3.12-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b 0.0s done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 8.94kB done
+#5 DONE 0.0s
+
+#6 [4/5] COPY score_hourish_math.py /usr/local/bin/score-hourish-math
+#6 CACHED
+
+#7 [2/5] COPY math-score-requirements.lock.txt /tmp/requirements.txt
+#7 CACHED
+
+#8 [3/5] RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt     && rm /tmp/requirements.txt
+#8 CACHED
+
+#9 [5/5] RUN chmod 0555 /usr/local/bin/score-hourish-math
+#9 CACHED
+
+#10 exporting to image
+#10 exporting layers done
+#10 exporting manifest sha256:07ba581858236220e0ef0f6b11cc4434abf22d833820da89caab39b9fb65df87 done
+#10 exporting config sha256:6d613cb044624a3415b8a70470bc87ce47ec00c4cc55b5a9220ca3af44d463f4 done
+#10 exporting attestation manifest sha256:57619031818a2ea3a19120466276edb4860ebdc2347242b406b9d81dd5856848 done
+#10 exporting manifest list sha256:4eea71e96b96c8d5c4671396b852e2920c9398027eba1bf1dd654edaaec314f9 done
+#10 naming to docker.io/library/bw24-hourish-math-score:81c5abd3dd55acc6 done
+#10 unpacking to docker.io/library/bw24-hourish-math-score:81c5abd3dd55acc6 done
+#10 DONE 0.0s
+math score complete: /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/math-score.json
+2026-07-24:11:59:42 INFO     [_cli.run:388] Selected Tasks: ['mmlu_pro_history']
+2026-07-24:11:59:42 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:11:59:42 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 256} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:11:59:42 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:11:59:42 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:11:59:42 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:11:59:42 INFO     [models.api_models:200] Using tokenizer None
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 21465.22 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 167161.42 examples/s]
+2026-07-24:11:59:44 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:11:59:44 INFO     [evaluator_utils:480] Task: mmlu_pro_history (mmlu_pro/mmlu_pro_history.yaml)
+2026-07-24:11:59:44 INFO     [evaluator:314] mmlu_pro_history: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 256, 'do_sample': False, 'temperature': 0.0}
+2026-07-24:11:59:44 INFO     [evaluator:483] Evaluating examples for tasks ['mmlu_pro_history']
+2026-07-24:11:59:44 INFO     [api.task:312] Building contexts for mmlu_pro_history on rank 0...
+2026-07-24:11:59:44 INFO     [api.task:589] mmlu_pro_history: Evaluating on 5 examples
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 3440.77it/s]
+2026-07-24:11:59:44 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:11:59:44 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/5 [00:00<?, ?it/s]2026-07-24:11:59:44 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:  20%|██        | 1/5 [07:35<30:23, 455.84s/it]Requesting API:  40%|████      | 2/5 [13:30<19:49, 396.34s/it]Requesting API:  60%|██████    | 3/5 [18:30<11:44, 352.42s/it]Requesting API:  80%|████████  | 4/5 [23:11<05:24, 324.23s/it]Requesting API: 100%|██████████| 5/5 [27:58<00:00, 310.66s/it]Requesting API: 100%|██████████| 5/5 [27:58<00:00, 335.66s/it]
+2026-07-24:12:27:42 INFO     [api.task:589] mmlu_pro_history: Evaluating on 5 examples
+2026-07-24:12:27:42 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:12:27:42 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/mmlu_pro_history/layer103p5-base/*.jsonl
+local-completions ({'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 256}), limit: None, num_fewshot: None, batch_size: 1
+| Tasks |Version|    Filter    |n-shot|  Metric   |   |Value|   |Stderr|
+|-------|------:|--------------|-----:|-----------|---|----:|---|-----:|
+|history|    3.1|custom-extract|     5|exact_match|↑  |  0.6|±  |0.2449|
+
+starting hourish shard: arm=layer103p5-base task=mmlu_pro_other samples={"mmlu_pro_other":[69,93,673,705,736]}
+lm-eval 97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176: dataset revisions pinned (9 datasets, 0 files changed)
+2026-07-24:12:27:47 INFO     [_cli.run:388] Selected Tasks: ['mmlu_pro_other']
+2026-07-24:12:27:47 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:12:27:47 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 256} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:12:27:47 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:12:27:47 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:12:27:47 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:12:27:47 INFO     [models.api_models:200] Using tokenizer None
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 19334.95 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 169697.05 examples/s]
+2026-07-24:12:27:49 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:12:27:49 INFO     [evaluator_utils:480] Task: mmlu_pro_other (mmlu_pro/mmlu_pro_other.yaml)
+2026-07-24:12:27:49 INFO     [evaluator:314] mmlu_pro_other: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 256, 'do_sample': False, 'temperature': 0.0}
+2026-07-24:12:27:49 INFO     [evaluator:483] Evaluating examples for tasks ['mmlu_pro_other']
+2026-07-24:12:27:49 INFO     [api.task:312] Building contexts for mmlu_pro_other on rank 0...
+2026-07-24:12:27:49 INFO     [api.task:589] mmlu_pro_other: Evaluating on 5 examples
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 3491.76it/s]
+2026-07-24:12:27:49 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:12:27:49 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/5 [00:00<?, ?it/s]2026-07-24:12:27:49 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:  20%|██        | 1/5 [03:15<13:03, 195.77s/it]Requesting API:  40%|████      | 2/5 [06:50<10:20, 206.77s/it]Requesting API:  60%|██████    | 3/5 [09:36<06:16, 188.22s/it]Requesting API:  80%|████████  | 4/5 [14:49<03:57, 237.53s/it]Requesting API: 100%|██████████| 5/5 [17:59<00:00, 220.25s/it]Requesting API: 100%|██████████| 5/5 [17:59<00:00, 215.82s/it]
+2026-07-24:12:45:48 INFO     [api.task:589] mmlu_pro_other: Evaluating on 5 examples
+2026-07-24:12:45:48 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:12:45:48 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/layer103p5-base/tailq2k-screen-20260724/shards/mmlu_pro_other/layer103p5-base/*.jsonl
+local-completions ({'model': 'layer103p5-base', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 256}), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|    Filter    |n-shot|  Metric   |   |Value|   |Stderr|
+|-----|------:|--------------|-----:|-----------|---|----:|---|-----:|
+|other|    3.1|custom-extract|     5|exact_match|↑  |  0.6|±  |0.2449|
+
+all hourish generation shards complete: layer103p5-base/tailq2k-screen-20260724
+hourish arm complete: layer103p5-base/tailq2k-screen-20260724

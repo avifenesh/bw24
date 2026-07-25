@@ -1,0 +1,29 @@
+2026-07-24:12:48:43 INFO     [_cli.run:388] Selected Tasks: ['humaneval_instruct']
+2026-07-24:12:48:43 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-24:12:48:43 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 512} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-24:12:48:43 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'tailq2k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-24:12:48:43 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-24:12:48:43 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-24:12:48:43 INFO     [models.api_models:200] Using tokenizer None
+Downloading builder script: 0.00B [00:00, ?B/s]Downloading builder script: 9.18kB [00:00, 43.6MB/s]
+Downloading extra modules: 0.00B [00:00, ?B/s]Downloading extra modules: 6.10kB [00:00, 33.1MB/s]
+2026-07-24:12:48:47 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-24:12:48:47 INFO     [evaluator_utils:480] Task: humaneval_instruct (humaneval/humaneval_instruct.yaml)
+2026-07-24:12:48:47 INFO     [evaluator:314] humaneval_instruct: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 512, 'do_sample': False}
+2026-07-24:12:48:47 INFO     [evaluator:319] Processing humaneval_instruct in output-only mode. Metrics will not be calculated!
+2026-07-24:12:48:47 INFO     [evaluator:483] Evaluating examples for tasks ['humaneval_instruct']
+2026-07-24:12:48:47 INFO     [api.task:312] Building contexts for humaneval_instruct on rank 0...
+2026-07-24:12:48:47 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+  0%|          | 0/14 [00:00<?, ?it/s]100%|██████████| 14/14 [00:00<00:00, 1696.92it/s]
+2026-07-24:12:48:47 INFO     [evaluator:585] Running generate_until requests
+2026-07-24:12:48:47 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/14 [00:00<?, ?it/s]2026-07-24:12:48:47 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   7%|▋         | 1/14 [10:42<2:19:18, 642.97s/it]Requesting API:  14%|█▍        | 2/14 [37:22<4:01:07, 1205.65s/it]Requesting API:  21%|██▏       | 3/14 [1:06:36<4:26:58, 1456.27s/it]Requesting API:  29%|██▊       | 4/14 [1:33:36<4:13:28, 1520.84s/it]Requesting API:  36%|███▌      | 5/14 [1:37:12<2:37:32, 1050.29s/it]Requesting API:  43%|████▎     | 6/14 [2:07:02<2:53:32, 1301.62s/it]Requesting API:  50%|█████     | 7/14 [2:37:20<2:51:34, 1470.66s/it]Requesting API:  57%|█████▋    | 8/14 [3:07:32<2:37:55, 1579.18s/it]Requesting API:  64%|██████▍   | 9/14 [3:12:43<1:38:33, 1182.68s/it]Requesting API:  71%|███████▏  | 10/14 [3:33:16<1:19:52, 1198.15s/it]Requesting API:  79%|███████▊  | 11/14 [4:00:53<1:06:56, 1338.75s/it]Requesting API:  86%|████████▌ | 12/14 [4:08:41<35:47, 1073.85s/it]  Requesting API:  93%|█████████▎| 13/14 [4:25:55<17:41, 1061.64s/it]Requesting API: 100%|██████████| 14/14 [4:26:50<00:00, 757.80s/it] Requesting API: 100%|██████████| 14/14 [4:26:50<00:00, 1143.64s/it]
+2026-07-24:17:15:38 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+2026-07-24:17:15:38 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-24:17:15:38 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/tailq2k/tailq2k-screen-20260724/shards/humaneval_instruct/tailq2k/*.jsonl
+local-completions ({'model': 'tailq2k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 512}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks       |Version|  Filter   |n-shot|Metric|   |Value|   |Stderr|
+|------------------|------:|-----------|-----:|------|---|----:|---|------|
+|humaneval_instruct|      4|create_test|     0|bypass|↑  |  999|±  |   N/A|
+
