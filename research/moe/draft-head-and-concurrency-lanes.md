@@ -477,3 +477,26 @@ What survives the artifact change, because it is structural rather than numeric:
 - compute is at the `avx_vnni` ISA ceiling; there is no wider instruction on this part
 
 Re-measured numbers land in `evidence/local-5090-layer103p5-rebase-20260725/`.
+
+## Layer103.5 re-baseline (2026-07-25, evidence/local-5090-layer103p5-rebase-20260725/)
+
+Served-artifact numbers, N=3 (lockstep harness, freeze-profile restore):
+
+| | value |
+|---|---|
+| single-stream m=1 | 4.17 / 4.29 / 4.50 — median **4.29** |
+| m=1 step budget (7.4 s window) | io 2.90 s (**39%**), CPU compute 3.5 s (47%), GPU+glue ~1.0 s (14%) |
+| mixed m=3, serial executors | 3.90 / 3.95 |
+| mixed m=3, pinned P+E executors | **4.44 / 4.42 (+13%)** |
+
+Two findings that OPEN doors rather than close them:
+
+1. **Pinned-executor win transfers to the served artifact** (+13%, reproducible), and takes
+   mixed m=3 to ~parity-plus vs single-stream (4.43 vs 4.29 median). Concurrency on the served
+   candidate is no longer a loss.
+2. **io is 39% of the served step** (vs 34% on the demoted build) — the byte axis is WIDE open
+   here. The demotion mechanism is proven (+23% throughput on the experiment) and failed only
+   because it was applied bluntly (ALL 4841 tail pairs to Q2_K → code 8/14). The manifest
+   carries per-layer calibration importance sidecars: an IMPORTANCE-GUIDED partial demotion
+   (bottom slice of the tail only, screened per step) is the open path to a quality-passing
+   byte win on the served candidate.
