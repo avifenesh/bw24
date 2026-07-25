@@ -301,3 +301,14 @@ Protocol change:
 Build pipeline (resumable, receipts in `evidence/local-5090-plain-arm-20260725/build.log`):
 99-shard BF16 fetch (~506 GB, measured 93 MB/s) → uniform Q4_K repack (~161 GB overlay) →
 relocate + dual-NVMe view + freeze profile.
+
+### Tier correction: uniform Q3_K, not Q4_K
+
+Q4_K is an EXTERNAL quantizer type — `prepare_mixed_expert_repack.py` requires a plan-bound quant
+sensitivity map with per-layer private importance sidecars for external types
+(`ValueError: ['Q4_K'] require a plan-bound quant sensitivity map`, build.log). Uniform plans must
+not consume calibration traces, so uniform Q4_K is structurally blocked — correctly. The plain arm
+uses uniform Q3_K instead: in-tree exact quantizer (no calibration input), sanctioned tier palette,
+already served by the runtime, ~123 GB payload fits the /data dual-NVMe mirror. Q8_0 rejected
+(~282 GB breaks the mirror budget, screens ~2x slower); NVFP4 rejected (no proven CPU spill
+kernel on the local rig). Uniform degradation is noise, not bias, for routed-mass ranking.

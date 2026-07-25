@@ -6,8 +6,8 @@ LANE=/home/avifenesh/projects/bw24-hy3lane
 STAGE=$HOME/.local/share/bw24-staging/hy3-bf16-full
 GGML_WT=$HOME/.local/share/bw24-staging/llama-99f3dc3
 REV=716aa7241bd6d95896be4ebfc761162a9c4d49ef
-PLAN=$LANE/research/per-expert-quant/plain-fullbank-uniform-q4k.plan.json
-OUT=$HOME/.local/share/bw24-staging/hy3-plain-q4k-overlay
+PLAN=$LANE/research/per-expert-quant/plain-fullbank-uniform-q3k.plan.json
+OUT=$HOME/.local/share/bw24-staging/hy3-plain-q3k-overlay
 EV=$LANE/research/per-expert-quant/evidence/local-5090-plain-arm-20260725
 LOG=$EV/build.log
 mkdir -p $STAGE $EV $OUT
