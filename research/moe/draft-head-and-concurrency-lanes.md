@@ -281,8 +281,10 @@ First round, m=3 mixed prompts on tail-Q2_K:
 | **P + 8E (2 groups)** | **5.74** |
 | P + 14E (3 groups: 8P + 8E + 6E) | 5.10 |
 
-E-cores contribute: P+8E beats both baseline runs. Baseline spread is ~7%, so a confirmation
-round (pe8 x2 + baseline + a single 14-core E team) is running before the number is claimed.
+CONFIRMED (N=3 each): **P+8E 5.74 / 5.73 / 5.77** (spread 0.7%) vs **baseline 5.30 / 4.94 /
+5.27** — **+11%**, and the pinned arm is markedly more reproducible than the P-only baseline.
+A single 14-core E team (`0-7;8-21`) measured 5.29, i.e. back at baseline: 8 E-cores in a
+second group is the knee, and piling more cores into one E team does not pay.
 The 3-group arm being worse is instructive: with m=3 streams and 3 executors, the weak 6-core
 group takes a whole call and becomes the critical path — heterogeneous executors want FEWER
 groups than in-flight calls so the shared queue can self-balance.
@@ -301,3 +303,20 @@ Open question the microbench answers first: the P:E throughput ratio at these sh
 sets the split. A rough 8-P-core vs 8-E-core team ratio near 1:0.55 would put the balance
 around 5:3 of routed experts and cut CPU compute ~35%. Granularity is coarse (only 4-8 CPU
 experts per call), so the split must be measured, not assumed.
+
+### P vs E throughput on the real expert kernels (microbench, cpu_native_check)
+
+Relative to an 8-thread P team (higher = faster):
+
+| qtype | P8 (0-7) | E8 (8-15) | E16 (8-23) |
+|---|---:|---:|---:|
+| Q2_K | 1.00 | 0.77 | **1.10** |
+| IQ3_S | 1.00 | 0.50 | 0.81 |
+
+Two things follow. First, 16 E-cores out-throughput 8 P-cores on Q2_K — E silicon is not a
+rounding error on this workload. Second, the ratio is format-dependent (Q2_K's cheap 2-bit
+decode suits E-cores; IQ3_S's grid gathers do not), which compounds favourably with the
+tail-Q2_K demotion that made Q2_K the dominant CPU-side format. It also means a STATIC
+intra-call split would be fragile — the split wants to be dynamic (both teams pulling experts
+from a shared atomic counter), which self-balances across formats and core types with no
+cross-team barrier.
