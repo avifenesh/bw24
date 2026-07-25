@@ -112,10 +112,13 @@ impl LanePolicy {
         Self {
             slo_p99_ms: f("BW24_SLO_P99_MS", 50.0),
             shed_at: [f32::INFINITY, f("BW24_SHED_JUDGE", 1.00), f("BW24_SHED_HARVEST", 0.90)],
+            // Dark-lane budgets are PER-TICK STALL BOUNDS, not throughput knobs: a 2048-tok
+            // judge chunk = ~230 ms of decode starvation per tick (measured 2026-07-26,
+            // native-judge battery: p99 17.6 -> 282 ms at 1 req/s). 256 tok ≈ 30 ms bound.
             prefill_budget: [
                 u("BW24_PREFILL_TICK", 1024),
-                u("BW24_PREFILL_JUDGE", 2048),
-                u("BW24_PREFILL_HARVEST", 512),
+                u("BW24_PREFILL_JUDGE", 256),
+                u("BW24_PREFILL_HARVEST", 256),
             ],
             max_sessions: [
                 u("BW24_LANE_MAX_INTERACTIVE", 4),
@@ -127,9 +130,18 @@ impl LanePolicy {
 
     /// The yield gate: interactive always; judge/harvest against the measured interactive
     /// p99 vs their SLO fraction. No signal yet (cold estimator) => admit, like the sidecar.
-    pub fn admit(&self, lane: Lane, stats: &mut StepStats) -> bool {
+    ///
+    /// `starved` closes the estimator's blind spot (2026-07-26 native-judge battery, rates
+    /// 4-8: interactive decoded ZERO tokens, so no p99 samples arrived, the window aged out,
+    /// and the cold-start rule kept admitting judges into total starvation). The worker sets
+    /// it when interactive work EXISTS but no interactive decode tick has run within the SLO
+    /// age — starvation IS an SLO breach even though the estimator can't see it.
+    pub fn admit(&self, lane: Lane, stats: &mut StepStats, starved: bool) -> bool {
         if lane == Lane::Interactive {
             return true;
+        }
+        if starved {
+            return false;
         }
         match stats.p(99.0) {
             Some(p99) => p99 < self.slo_p99_ms * self.shed_at[lane.idx()],

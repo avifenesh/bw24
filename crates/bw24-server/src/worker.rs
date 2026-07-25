@@ -259,6 +259,8 @@ pub fn run(
     let mut lane_completed = [0u64; 3];
     let mut lane_tokens = [0u64; 3];
     let mut last_batch = 0usize;
+    // Starvation sentinel (estimator blind spot): last time an interactive session decoded.
+    let mut last_interactive_decode = Instant::now();
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
@@ -304,7 +306,11 @@ pub fn run(
                 }
                 continue;
             }
-            if !policy.admit(lane, &mut step_stats) {
+            let interactive_waiting = active.iter()
+                .any(|s| s.lane == crate::lanes::Lane::Interactive);
+            let starved = interactive_waiting
+                && last_interactive_decode.elapsed().as_secs_f32() * 1000.0 > policy.slo_p99_ms;
+            if !policy.admit(lane, &mut step_stats, starved) {
                 lane_shed[lane.idx()] += 1;
                 let _ = req.tx.send(Event::Error(format!(
                     "shed:{}:interactive p99 over budget, retry", lane.as_str())));
@@ -351,16 +357,17 @@ pub fn run(
                     }
                 }
             }
-            // (b) prefill under per-lane budgets
+            // (b) INTERACTIVE prefill only (TTFT priority, full tick chunk). Dark-lane
+            // prefill runs AFTER decode (phase d) so a judge prime can never sit between
+            // an interactive stream and its next token (the 282ms-p99 lesson, 2026-07-26).
             let mut budgets = policy.prefill_budget;
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
-                let li = s.lane.idx();
-                if budgets[li] == 0 { continue; }
-                match prefill_tick(&engine, &loaded, s, budgets[li]) {
-                    Ok(consumed) => budgets[li] = budgets[li].saturating_sub(consumed),
+                if s.lane != crate::lanes::Lane::Interactive { continue; }
+                match prefill_tick(&engine, &loaded, s, budgets[0]) {
+                    Ok(_) => {}
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
                         finished.push(i);
@@ -425,8 +432,25 @@ pub fn run(
             // record the interactive TPOT ground truth (only ticks that decoded interactive)
             if had_interactive {
                 step_stats.record(t_decode.elapsed().as_secs_f32() * 1000.0);
+                last_interactive_decode = Instant::now();
             }
             last_batch = ready.len();
+            // (d) dark-lane prefill, bounded per tick: judge/harvest primes consume their
+            // stall-bound budgets only after every decoding stream has advanced.
+            for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
+                let s = &mut active[i];
+                if s.spec.is_some() || s.prefill_done { continue; }
+                let li = s.lane.idx();
+                if li == 0 || budgets[li] == 0 { continue; }
+                match prefill_tick(&engine, &loaded, s, budgets[li]) {
+                    Ok(consumed) => budgets[li] = budgets[li].saturating_sub(consumed),
+                    Err(err) => {
+                        let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                        finished.push(i);
+                    }
+                }
+            }
         }
         // retire finished sessions (reverse order so indices stay valid). Long-enough sessions
         // park their (fed, cache, last_logits) in the reuse pool instead of dropping the cache.
