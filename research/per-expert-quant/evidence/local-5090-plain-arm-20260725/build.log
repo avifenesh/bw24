@@ -1,0 +1,412 @@
+=== plain_arm_build start 2026-07-25T16:41:49Z ===
+Preparing worktree (detached HEAD 99f3dc322)
+HEAD is now at 99f3dc322 server: honour per-request reasoning_budget_tokens in chat completions (#23116)
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+CMAKE_BUILD_TYPE=Release
+-- Found Git: /usr/bin/git (found version "2.53.0")
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/cc
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Found OpenMP_C: -fopenmp (found version "4.5")
+-- Found OpenMP_CXX: -fopenmp (found version "4.5")
+-- Found OpenMP: TRUE (found version "4.5")
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native 
+-- ggml version: 0.16.0
+-- ggml commit:  99f3dc322
+-- Found OpenSSL: /usr/lib/x86_64-linux-gnu/libcrypto.so (found version "3.5.5")
+-- Performing Test OPENSSL_VERSION_SUPPORTED
+-- Performing Test OPENSSL_VERSION_SUPPORTED - Success
+-- OpenSSL found: 3.5.5
+-- Generating embedded license file for target: llama-app
+-- Configuring done (1.0s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/avifenesh/.local/share/bw24-staging/llama-99f3dc3/build-cpu
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[ 66%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[ 66%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[ 66%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[ 66%] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[100%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[100%] Linking CXX shared library ../../bin/libggml-base.so
+[100%] Built target ggml-base
+lrwxrwxrwx 1 avifenesh avifenesh     17 Jul 25 19:41 build-cpu/bin/libggml-base.so -> libggml-base.so.0
+lrwxrwxrwx 1 avifenesh avifenesh     22 Jul 25 19:41 build-cpu/bin/libggml-base.so.0 -> libggml-base.so.0.16.0
+-rwxrwxr-x 1 avifenesh avifenesh 931008 Jul 25 19:41 build-cpu/bin/libggml-base.so.0.16.0
+GGML_LIB=/home/avifenesh/.local/share/bw24-staging/llama-99f3dc3/build-cpu/bin/libggml-base.so.0.16.0 sha256=7717256b60a9c9ff51e372cae8b10e4cb1baf8d412e4d76dc9b8515e4f793016
+shard 01 done 16:44:10 free=1156G
+shard 02 done 16:46:23 free=1150G
+shard 03 done 16:48:33 free=1143G
+shard 04 done 16:50:46 free=1136G
+shard 05 done 16:52:59 free=1129G
+shard 06 done 16:53:21 free=1128G
+shard 07 done 16:55:33 free=1122G
+shard 08 done 17:06:14 free=1115G
+shard 09 done 17:09:28 free=1108G
+shard 10 done 17:11:43 free=1101G
+shard 11 done 17:14:05 free=1095G
+shard 12 done 17:14:26 free=1094G
+shard 13 done 17:16:42 free=1087G
+shard 14 done 17:18:55 free=1080G
+shard 15 done 17:21:10 free=1073G
+shard 16 done 17:23:22 free=1067G
+shard 17 done 17:25:32 free=1060G
+shard 18 done 17:25:53 free=1059G
+shard 19 done 17:29:33 free=1052G
+shard 20 done 17:31:46 free=1045G
+shard 21 done 17:34:04 free=1039G
+shard 22 done 17:35:26 free=1032G
+shard 23 done 17:37:40 free=1025G
+shard 24 done 17:38:03 free=1024G
+shard 25 done 17:40:13 free=1017G
+shard 26 done 17:42:27 free=1011G
+shard 27 done 17:44:37 free=1004G
+shard 28 done 17:47:02 free=997G
+shard 29 done 17:48:31 free=990G
+shard 30 done 17:48:51 free=989G
+shard 31 done 17:51:03 free=983G
+shard 32 done 17:52:38 free=976G
+shard 33 done 17:54:50 free=969G
+shard 34 done 17:56:13 free=962G
+shard 35 done 17:57:34 free=956G
+shard 36 done 17:58:43 free=955G
+shard 37 done 18:04:05 free=948G
+shard 38 done 18:06:16 free=941G
+shard 39 done 18:07:41 free=934G
+shard 40 done 18:09:07 free=928G
+shard 41 done 18:11:23 free=921G
+shard 42 done 18:11:44 free=920G
+shard 43 done 18:13:57 free=913G
+shard 44 done 18:16:12 free=907G
+shard 45 done 18:17:45 free=900G
+shard 46 done 18:19:57 free=893G
+shard 47 done 18:21:21 free=887G
+shard 48 done 18:21:40 free=886G
+shard 49 done 18:23:17 free=879G
+shard 50 done 18:25:40 free=872G
+shard 51 done 18:28:00 free=865G
+shard 52 done 18:30:05 free=859G
+shard 53 done 18:31:45 free=852G
+shard 54 done 18:32:04 free=851G
+shard 55 done 18:33:27 free=844G
+shard 56 done 18:34:54 free=837G
+shard 57 done 18:36:27 free=831G
+shard 58 done 18:44:29 free=824G
+shard 59 done 18:46:43 free=817G
+shard 60 done 18:47:02 free=816G
+shard 61 done 18:48:28 free=809G
+shard 62 done 18:50:44 free=803G
+shard 63 done 18:52:56 free=796G
+shard 64 done 18:54:22 free=789G
+shard 65 done 18:55:48 free=782G
+shard 66 done 18:56:00 free=781G
+shard 67 done 18:58:11 free=775G
+shard 68 done 19:00:24 free=768G
+shard 69 done 19:07:19 free=761G
+shard 70 done 19:09:37 free=754G
+shard 71 done 19:11:02 free=748G
+shard 72 done 19:11:21 free=747G
+shard 73 done 19:12:55 free=740G
+shard 74 done 19:15:15 free=733G
+shard 75 done 19:16:43 free=727G
+shard 76 done 19:18:59 free=720G
+shard 77 done 19:20:20 free=713G
+shard 78 done 19:20:41 free=712G
+shard 79 done 19:23:23 free=705G
+shard 80 done 19:31:46 free=699G
+shard 81 done 19:34:09 free=692G
+shard 82 done 19:36:23 free=685G
+shard 83 done 19:38:33 free=678G
+shard 84 done 19:38:52 free=677G
+shard 85 done 19:41:10 free=671G
+shard 86 done 19:42:39 free=664G
+shard 87 done 19:44:09 free=657G
+shard 88 done 19:46:20 free=650G
+shard 89 done 19:47:51 free=644G
+shard 90 done 19:48:09 free=643G
+shard 91 done 19:48:15 free=642G
+shard 92 done 19:50:26 free=636G
+shard 93 done 19:51:47 free=629G
+shard 94 done 19:57:58 free=622G
+shard 95 done 19:59:21 free=615G
+shard 96 done 20:03:31 free=611G
+shard 97 done 20:04:00 free=609G
+shard 98 done 20:04:18 free=608G
+shard 99 done 20:04:34 free=607G
+DOWNLOAD COMPLETE 557G
+Traceback (most recent call last):
+  File "/home/avifenesh/projects/bw24-hy3lane/tools/prepare_mixed_expert_repack.py", line 1056, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/avifenesh/projects/bw24-hy3lane/tools/prepare_mixed_expert_repack.py", line 1047, in main
+    prepare(args)
+    ~~~~~~~^^^^^^
+  File "/home/avifenesh/projects/bw24-hy3lane/tools/prepare_mixed_expert_repack.py", line 595, in prepare
+    bridge, importance_receipts = _external_quantization_context(plan, assignments, args)
+                                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/avifenesh/projects/bw24-hy3lane/tools/prepare_mixed_expert_repack.py", line 327, in _external_quantization_context
+    raise ValueError(f"{external} require a plan-bound quant sensitivity map")
+ValueError: ['Q4_K'] require a plan-bound quant sensitivity map
+REPACK FAILED rc=1
+=== plain_arm_build start 2026-07-25T20:06:25Z ===
+GGML_LIB=/home/avifenesh/.local/share/bw24-staging/llama-99f3dc3/build-cpu/bin/libggml-base.so.0.16.0 sha256=7717256b60a9c9ff51e372cae8b10e4cb1baf8d412e4d76dc9b8515e4f793016
+DOWNLOAD COMPLETE 557G
+layer=01 proj=gate experts=192 bytes=0.519G
+layer=01 proj=up   experts=192 bytes=0.519G
+layer=01 proj=down experts=192 bytes=0.519G
+layer=02 proj=gate experts=192 bytes=0.519G
+layer=02 proj=up   experts=192 bytes=0.519G
+layer=02 proj=down experts=192 bytes=0.519G
+layer=03 proj=gate experts=192 bytes=0.519G
+layer=03 proj=up   experts=192 bytes=0.519G
+layer=03 proj=down experts=192 bytes=0.519G
+layer=04 proj=gate experts=192 bytes=0.519G
+layer=04 proj=up   experts=192 bytes=0.519G
+layer=04 proj=down experts=192 bytes=0.519G
+layer=05 proj=gate experts=192 bytes=0.519G
+layer=05 proj=up   experts=192 bytes=0.519G
+layer=05 proj=down experts=192 bytes=0.519G
+layer=06 proj=gate experts=192 bytes=0.519G
+layer=06 proj=up   experts=192 bytes=0.519G
+layer=06 proj=down experts=192 bytes=0.519G
+layer=07 proj=gate experts=192 bytes=0.519G
+layer=07 proj=up   experts=192 bytes=0.519G
+layer=07 proj=down experts=192 bytes=0.519G
+layer=08 proj=gate experts=192 bytes=0.519G
+layer=08 proj=up   experts=192 bytes=0.519G
+layer=08 proj=down experts=192 bytes=0.519G
+layer=09 proj=gate experts=192 bytes=0.519G
+layer=09 proj=up   experts=192 bytes=0.519G
+layer=09 proj=down experts=192 bytes=0.519G
+layer=10 proj=gate experts=192 bytes=0.519G
+layer=10 proj=up   experts=192 bytes=0.519G
+layer=10 proj=down experts=192 bytes=0.519G
+layer=11 proj=gate experts=192 bytes=0.519G
+layer=11 proj=up   experts=192 bytes=0.519G
+layer=11 proj=down experts=192 bytes=0.519G
+layer=12 proj=gate experts=192 bytes=0.519G
+layer=12 proj=up   experts=192 bytes=0.519G
+layer=12 proj=down experts=192 bytes=0.519G
+layer=13 proj=gate experts=192 bytes=0.519G
+layer=13 proj=up   experts=192 bytes=0.519G
+layer=13 proj=down experts=192 bytes=0.519G
+layer=14 proj=gate experts=192 bytes=0.519G
+layer=14 proj=up   experts=192 bytes=0.519G
+layer=14 proj=down experts=192 bytes=0.519G
+layer=15 proj=gate experts=192 bytes=0.519G
+layer=15 proj=up   experts=192 bytes=0.519G
+layer=15 proj=down experts=192 bytes=0.519G
+layer=16 proj=gate experts=192 bytes=0.519G
+layer=16 proj=up   experts=192 bytes=0.519G
+layer=16 proj=down experts=192 bytes=0.519G
+layer=17 proj=gate experts=192 bytes=0.519G
+layer=17 proj=up   experts=192 bytes=0.519G
+layer=17 proj=down experts=192 bytes=0.519G
+layer=18 proj=gate experts=192 bytes=0.519G
+layer=18 proj=up   experts=192 bytes=0.519G
+layer=18 proj=down experts=192 bytes=0.519G
+layer=19 proj=gate experts=192 bytes=0.519G
+layer=19 proj=up   experts=192 bytes=0.519G
+layer=19 proj=down experts=192 bytes=0.519G
+layer=20 proj=gate experts=192 bytes=0.519G
+layer=20 proj=up   experts=192 bytes=0.519G
+layer=20 proj=down experts=192 bytes=0.519G
+layer=21 proj=gate experts=192 bytes=0.519G
+layer=21 proj=up   experts=192 bytes=0.519G
+layer=21 proj=down experts=192 bytes=0.519G
+layer=22 proj=gate experts=192 bytes=0.519G
+layer=22 proj=up   experts=192 bytes=0.519G
+layer=22 proj=down experts=192 bytes=0.519G
+layer=23 proj=gate experts=192 bytes=0.519G
+layer=23 proj=up   experts=192 bytes=0.519G
+layer=23 proj=down experts=192 bytes=0.519G
+layer=24 proj=gate experts=192 bytes=0.519G
+layer=24 proj=up   experts=192 bytes=0.519G
+layer=24 proj=down experts=192 bytes=0.519G
+layer=25 proj=gate experts=192 bytes=0.519G
+layer=25 proj=up   experts=192 bytes=0.519G
+layer=25 proj=down experts=192 bytes=0.519G
+layer=26 proj=gate experts=192 bytes=0.519G
+layer=26 proj=up   experts=192 bytes=0.519G
+layer=26 proj=down experts=192 bytes=0.519G
+layer=27 proj=gate experts=192 bytes=0.519G
+layer=27 proj=up   experts=192 bytes=0.519G
+layer=27 proj=down experts=192 bytes=0.519G
+layer=28 proj=gate experts=192 bytes=0.519G
+layer=28 proj=up   experts=192 bytes=0.519G
+layer=28 proj=down experts=192 bytes=0.519G
+layer=29 proj=gate experts=192 bytes=0.519G
+layer=29 proj=up   experts=192 bytes=0.519G
+layer=29 proj=down experts=192 bytes=0.519G
+layer=30 proj=gate experts=192 bytes=0.519G
+layer=30 proj=up   experts=192 bytes=0.519G
+layer=30 proj=down experts=192 bytes=0.519G
+layer=31 proj=gate experts=192 bytes=0.519G
+layer=31 proj=up   experts=192 bytes=0.519G
+layer=31 proj=down experts=192 bytes=0.519G
+layer=32 proj=gate experts=192 bytes=0.519G
+layer=32 proj=up   experts=192 bytes=0.519G
+layer=32 proj=down experts=192 bytes=0.519G
+layer=33 proj=gate experts=192 bytes=0.519G
+layer=33 proj=up   experts=192 bytes=0.519G
+layer=33 proj=down experts=192 bytes=0.519G
+layer=34 proj=gate experts=192 bytes=0.519G
+layer=34 proj=up   experts=192 bytes=0.519G
+layer=34 proj=down experts=192 bytes=0.519G
+layer=35 proj=gate experts=192 bytes=0.519G
+layer=35 proj=up   experts=192 bytes=0.519G
+layer=35 proj=down experts=192 bytes=0.519G
+layer=36 proj=gate experts=192 bytes=0.519G
+layer=36 proj=up   experts=192 bytes=0.519G
+layer=36 proj=down experts=192 bytes=0.519G
+layer=37 proj=gate experts=192 bytes=0.519G
+layer=37 proj=up   experts=192 bytes=0.519G
+layer=37 proj=down experts=192 bytes=0.519G
+layer=38 proj=gate experts=192 bytes=0.519G
+layer=38 proj=up   experts=192 bytes=0.519G
+layer=38 proj=down experts=192 bytes=0.519G
+layer=39 proj=gate experts=192 bytes=0.519G
+layer=39 proj=up   experts=192 bytes=0.519G
+layer=39 proj=down experts=192 bytes=0.519G
+layer=40 proj=gate experts=192 bytes=0.519G
+layer=40 proj=up   experts=192 bytes=0.519G
+layer=40 proj=down experts=192 bytes=0.519G
+layer=41 proj=gate experts=192 bytes=0.519G
+layer=41 proj=up   experts=192 bytes=0.519G
+layer=41 proj=down experts=192 bytes=0.519G
+layer=42 proj=gate experts=192 bytes=0.519G
+layer=42 proj=up   experts=192 bytes=0.519G
+layer=42 proj=down experts=192 bytes=0.519G
+layer=43 proj=gate experts=192 bytes=0.519G
+layer=43 proj=up   experts=192 bytes=0.519G
+layer=43 proj=down experts=192 bytes=0.519G
+layer=44 proj=gate experts=192 bytes=0.519G
+layer=44 proj=up   experts=192 bytes=0.519G
+layer=44 proj=down experts=192 bytes=0.519G
+layer=45 proj=gate experts=192 bytes=0.519G
+layer=45 proj=up   experts=192 bytes=0.519G
+layer=45 proj=down experts=192 bytes=0.519G
+layer=46 proj=gate experts=192 bytes=0.519G
+layer=46 proj=up   experts=192 bytes=0.519G
+layer=46 proj=down experts=192 bytes=0.519G
+layer=47 proj=gate experts=192 bytes=0.519G
+layer=47 proj=up   experts=192 bytes=0.519G
+layer=47 proj=down experts=192 bytes=0.519G
+layer=48 proj=gate experts=192 bytes=0.519G
+layer=48 proj=up   experts=192 bytes=0.519G
+layer=48 proj=down experts=192 bytes=0.519G
+layer=49 proj=gate experts=192 bytes=0.519G
+layer=49 proj=up   experts=192 bytes=0.519G
+layer=49 proj=down experts=192 bytes=0.519G
+layer=50 proj=gate experts=192 bytes=0.519G
+layer=50 proj=up   experts=192 bytes=0.519G
+layer=50 proj=down experts=192 bytes=0.519G
+layer=51 proj=gate experts=192 bytes=0.519G
+layer=51 proj=up   experts=192 bytes=0.519G
+layer=51 proj=down experts=192 bytes=0.519G
+layer=52 proj=gate experts=192 bytes=0.519G
+layer=52 proj=up   experts=192 bytes=0.519G
+layer=52 proj=down experts=192 bytes=0.519G
+layer=53 proj=gate experts=192 bytes=0.519G
+layer=53 proj=up   experts=192 bytes=0.519G
+layer=53 proj=down experts=192 bytes=0.519G
+layer=54 proj=gate experts=192 bytes=0.519G
+layer=54 proj=up   experts=192 bytes=0.519G
+layer=54 proj=down experts=192 bytes=0.519G
+layer=55 proj=gate experts=192 bytes=0.519G
+layer=55 proj=up   experts=192 bytes=0.519G
+layer=55 proj=down experts=192 bytes=0.519G
+layer=56 proj=gate experts=192 bytes=0.519G
+layer=56 proj=up   experts=192 bytes=0.519G
+layer=56 proj=down experts=192 bytes=0.519G
+layer=57 proj=gate experts=192 bytes=0.519G
+layer=57 proj=up   experts=192 bytes=0.519G
+layer=57 proj=down experts=192 bytes=0.519G
+layer=58 proj=gate experts=192 bytes=0.519G
+layer=58 proj=up   experts=192 bytes=0.519G
+layer=58 proj=down experts=192 bytes=0.519G
+layer=59 proj=gate experts=192 bytes=0.519G
+layer=59 proj=up   experts=192 bytes=0.519G
+layer=59 proj=down experts=192 bytes=0.519G
+layer=60 proj=gate experts=192 bytes=0.519G
+layer=60 proj=up   experts=192 bytes=0.519G
+layer=60 proj=down experts=192 bytes=0.519G
+layer=61 proj=gate experts=192 bytes=0.519G
+layer=61 proj=up   experts=192 bytes=0.519G
+layer=61 proj=down experts=192 bytes=0.519G
+layer=62 proj=gate experts=192 bytes=0.519G
+layer=62 proj=up   experts=192 bytes=0.519G
+layer=62 proj=down experts=192 bytes=0.519G
+layer=63 proj=gate experts=192 bytes=0.519G
+layer=63 proj=up   experts=192 bytes=0.519G
+layer=63 proj=down experts=192 bytes=0.519G
+layer=64 proj=gate experts=192 bytes=0.519G
+layer=64 proj=up   experts=192 bytes=0.519G
+layer=64 proj=down experts=192 bytes=0.519G
+layer=65 proj=gate experts=192 bytes=0.519G
+layer=65 proj=up   experts=192 bytes=0.519G
+layer=65 proj=down experts=192 bytes=0.519G
+layer=66 proj=gate experts=192 bytes=0.519G
+layer=66 proj=up   experts=192 bytes=0.519G
+layer=66 proj=down experts=192 bytes=0.519G
+layer=67 proj=gate experts=192 bytes=0.519G
+layer=67 proj=up   experts=192 bytes=0.519G
+layer=67 proj=down experts=192 bytes=0.519G
+layer=68 proj=gate experts=192 bytes=0.519G
+layer=68 proj=up   experts=192 bytes=0.519G
+layer=68 proj=down experts=192 bytes=0.519G
+layer=69 proj=gate experts=192 bytes=0.519G
+layer=69 proj=up   experts=192 bytes=0.519G
+layer=69 proj=down experts=192 bytes=0.519G
+layer=70 proj=gate experts=192 bytes=0.519G
+layer=70 proj=up   experts=192 bytes=0.519G
+layer=70 proj=down experts=192 bytes=0.519G
+layer=71 proj=gate experts=192 bytes=0.519G
+layer=71 proj=up   experts=192 bytes=0.519G
+layer=71 proj=down experts=192 bytes=0.519G
+layer=72 proj=gate experts=192 bytes=0.519G
+layer=72 proj=up   experts=192 bytes=0.519G
+layer=72 proj=down experts=192 bytes=0.519G
+layer=73 proj=gate experts=192 bytes=0.519G
+layer=73 proj=up   experts=192 bytes=0.519G
+layer=73 proj=down experts=192 bytes=0.519G
+layer=74 proj=gate experts=192 bytes=0.519G
+layer=74 proj=up   experts=192 bytes=0.519G
+layer=74 proj=down experts=192 bytes=0.519G
+layer=75 proj=gate experts=192 bytes=0.519G
+layer=75 proj=up   experts=192 bytes=0.519G
+layer=75 proj=down experts=192 bytes=0.519G
+layer=76 proj=gate experts=192 bytes=0.519G
+layer=76 proj=up   experts=192 bytes=0.519G
+layer=76 proj=down experts=192 bytes=0.519G
+layer=77 proj=gate experts=192 bytes=0.519G
+layer=77 proj=up   experts=192 bytes=0.519G
+layer=77 proj=down experts=192 bytes=0.519G
+layer=78 proj=gate experts=192 bytes=0.519G
+layer=78 proj=up   experts=192 bytes=0.519G
+layer=78 proj=down experts=192 bytes=0.519G
+layer=79 proj=gate experts=192 bytes=0.519G
+layer=79 proj=up   experts=192 bytes=0.519G
+layer=79 proj=down experts=192 bytes=0.519G
+wrote /home/avifenesh/.local/share/bw24-staging/hy3-plain-q3k-overlay/manifest.json (45504 expert projections)
+PLAIN ARM OVERLAY DONE 115G

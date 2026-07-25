@@ -312,3 +312,19 @@ uses uniform Q3_K instead: in-tree exact quantizer (no calibration input), sanct
 already served by the runtime, ~123 GB payload fits the /data dual-NVMe mirror. Q8_0 rejected
 (~282 GB breaks the mirror budget, screens ~2x slower); NVFP4 rejected (no proven CPU spill
 kernel on the local rig). Uniform degradation is noise, not bias, for routed-mass ranking.
+
+### Plain arm BUILT + serving assets ready (2026-07-25 late)
+
+- Overlay: 45,504 expert projections (15,168 experts x 3, full bank), uniform Q3_K, 115 GiB,
+  built from the complete 99-shard BF16 source (557 GiB staged) with the in-tree exact quantizer;
+  per-file completion receipts + manifest in `/data/ai-ml/hf-models/hy3-plain-q3k-overlay` (payload
+  now lives inside the runtime dir).
+- Runtime: `/data/ai-ml/hf-models/hy3-plain-q3k-runtime` (relocated view, source fingerprints
+  verified against the pinned sparse-source). Dual-NVMe: view at
+  `~/.local/share/bw24-models/hy3-plain-q3k-dual-nvme` (118 files copied to root, 61.8 GB) +
+  root mirror (119 verified copies + 118 hard links, 123 GB, `inode-alternates.tsv`) — every
+  byte on both devices, same split-read layout as the served candidate.
+- 103.5 crosscheck capture COMPLETE: 24/24 prompts traced (rank-stability evidence only).
+- Plain-arm calibration capture LAUNCHED: same methodology/env as the 103.5 capture (only
+  model/map/paths swapped), 24 private prompts, resumable, waits for foreign-GPU idle.
+- BF16 staging retained on root NVMe for candidate surgery (task 3); 378G root / 157G data free.
