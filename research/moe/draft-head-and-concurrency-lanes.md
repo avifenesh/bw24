@@ -389,3 +389,31 @@ BYTES or TOKENS:
 
 Both are owner decisions — one spends model quality, the other spends money. The engine work
 that would consume either is already in place.
+
+## Lane 1: HF survey (2026-07-25) — no ready head exists for Hy3
+
+Searched the Hub for an existing draft/EAGLE head before committing to training:
+
+- **No EAGLE/EAGLE3 head for `hy_v3` exists.** The ecosystem has EAGLE3 drafters for Qwen3.6-35B-A3B,
+  MiniMax-M2.7, gemma-4-26B, step-3.5-flash, MiniCPM-SALA and others — none for Hy3/Hunyuan.
+  Heads are architecture- and vocabulary-specific (Hy3: hidden 4096, vocab 120832), so none transfer.
+- **`canada-quant/hy3-w4a16-mtp`** is tagged `mtp`/`speculative-decoding`, but it is a W4A16 GPTQ
+  quantization of full Hy3 that PRESERVES the stock layer-80 MTP head; its listed datasets are
+  llmcompressor calibration data, not draft-head training data. Same head we already serve.
+- **`num_nextn_predict_layers = 1`** in the pinned source config — the model ships exactly one MTP
+  layer and we already use it. No unused speculative capacity.
+
+Conclusion: training is required, and it is self-distillation rather than architecture search.
+
+### The mismatch hypothesis (why a trained head should clear the bar, not just tie it)
+
+The stock MTP head was trained against the ORIGINAL full-precision, full-expert Hy3. What we serve
+is REAP50-pruned (half the expert bank removed) and 90.7% Q2_K. The head therefore predicts a model
+that is not the one verifying, and every such disagreement is a rejected draft. Self-distillation
+against OUR artifact removes exactly that error source — which is why the ceiling for a trained head
+is meaningfully above the stock head's 74-77%, not marginally.
+
+Measuring the mismatch directly: acceptance at K=4/PMIN=0.8 on the demoted artifact we now serve vs
+the pre-demotion Layer103.5 artifact (the gated sweep's 74-77% was measured on the latter). A drop
+on the demoted artifact quantifies the cost the demotion silently imposed on spec, and establishes
+the true baseline any trained head must beat.
