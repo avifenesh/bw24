@@ -161,6 +161,15 @@ Per-step admission planner replacing MAX_ACTIVE round-robin:
 - Streaming path unchanged for clients; lane metrics endpoint added;
   graceful backpressure = shed responses at the edge.
 
+**MEASURED (2026-07-26, commits 855162ae/f42fd94e/05f90270, H100 box):**
+- decode_step_batch v1+v2: exactness battery ALL GREEN (strict bit-identity
+  under equalized composition; config-mode argmax authority + bit-checked
+  B=8 isolation). B=8 aggregate 306 tok/s (2.10×); remaining scaling gap =
+  per-seq state-kernel launches → pooled state + blockIdx.z batching (B1 lane).
+- Lane server LIVE: 14 concurrent sessions (4 interactive + 4 judge 2k-prompts
+  + 6 harvest) — interactive p99 32.6 ms < 50 ms SLO at full mixed load,
+  per-lane accounting exact, shed path 429, /yield/metrics engine-truth.
+
 ## 4. Phase C — the wgmma lane (the 3-4× decode headroom)
 
 New kernels, guarded `bw24_hopper_mma`, tuned for 132 SM / 228 KB smem / HBM3:
