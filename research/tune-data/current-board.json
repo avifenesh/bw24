@@ -1,5 +1,5 @@
 {
- "updated": "2026-07-24",
+ "updated": "2026-07-25",
  "rig": "RTX 5090 Laptop",
  "protocol": "N=2+ medians, both engines interleaved in the same thermal window on the same rig, same exact prompts, no flags (tuned paths are defaults); plain/depth rows from the 2026-07-09 validity-gated cold-start rebaseline, spec rows re-paired 2026-07-18, Gemma card rows from the 2026-07-15 best-vs-best re-audit. Full per-run logs: research/tune-data/ (Qwen) and research/gemma4-bringup/ (Gemma) \u2014 every win and every loss; Gemma 12B plain row from the 2026-07-24 official N=5 cell stamp (research/gemma4-bringup/g12tg-cellstamp.log)",
  "plain_decode": {
@@ -23,7 +23,7 @@
   ]
  },
  "speculative": {
-  "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature).",
+  "context": "MTP head, both engines at their measured best config, re-paired 2026-07-18. Columns: short-code / medium-code (greedy temp-0, field-standard bounded protocol) / long-agentic SAMPLED (temp 0.7 seed 42, chat-templated, well-formed prompt \u2014 rejection-sampling spec decode, distribution-exact; llama at matched temperature). Gemma chat-cell spec rows (12B/31B, 2026-07-25) are BEST-vs-BEST: bw24 at its K optimum (12B K=3, 31B K=4) against llama at its own --spec-draft-n-max optimum (12B 2, 31B 4), both swept; N=3 medians, watercycle chat prompt, n_predict 128, temp 0.",
   "rows": [
    {
     "model": "Qwen3.5-9B (K=3 + own-gen trimmed draft)",
@@ -94,6 +94,12 @@
    "llama": 92.36
   },
   {
+   "model": "Gemma-4 12B chat (K=3 MTP + own-gen trim)",
+   "bw24": 200.7,
+   "llama": 176.3,
+   "spec": true
+  },
+  {
    "model": "Gemma-4 26B-A4B QAT Q4_0 (GGUF)",
    "bw24": 199.7,
    "llama": 187.6
@@ -108,6 +114,12 @@
    "model": "Gemma-4 31B dense 1.7k ctx (K=6 MTP + trim)",
    "bw24": 97.3,
    "llama": 83.9,
+   "spec": true
+  },
+  {
+   "model": "Gemma-4 31B chat (K=4 MTP + own-gen trim)",
+   "bw24": 103.8,
+   "llama": 99.4,
    "spec": true
   },
   {
