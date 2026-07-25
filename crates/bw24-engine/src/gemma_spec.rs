@@ -742,12 +742,13 @@ impl HybridModel {
         // ADAPTIVE FLOOR default is per-model (BW24_SPEC_ADAPT_FLOOR overrides): the floor-1
         // policy collapses to shallow drafts after any miss and pays a slow re-deepen; on
         // models with an expensive verify step the deep-draft upside dwarfs the wasted-draft
-        // cost. Measured 2026-07-25 (chat cell, own-gen trim, N=3 on 31B / N=1 grid + probe
-        // on 12B): 31B floor=4 K=5 120.2 vs floor=1 103.8 (+15.7%); 12B floor=3 K=3 214.9
-        // vs floor=1 200.6 (+7.1%). 26B/E4B keep floor=1 (the 2026-07-10 sweep measured
-        // floor=2 worse there — cheap verify, wasted drafts dominate).
-        let adapt_floor_default: usize =
-            if self.cfg.n_embd >= 5000 { 4 } else if self.cfg.n_embd >= 3500 { 3 } else { 1 };
+        // cost. Measured 2026-07-25 (chat cell, own-gen trim; peak grids both models):
+        // 31B K=5 floor=4 120.2 vs floor=1 103.8 (+15.7%, N=3; floor 5-6 falls off);
+        // 12B K=4-5 floor=4 240.5-240.8 vs floor=1 200.6 (+20%, floor 5+ falls off).
+        // The floor clamps to k_cap, so shallow-K callers are unaffected. 26B/E4B keep
+        // floor=1 (the 2026-07-10 sweep measured floor=2 worse there — cheap verify,
+        // wasted drafts dominate).
+        let adapt_floor_default: usize = if self.cfg.n_embd >= 3500 { 4 } else { 1 };
         let adapt_floor: usize = std::env::var("BW24_SPEC_ADAPT_FLOOR").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(adapt_floor_default);
         // cap ceiling 7 by default; BW24_SPEC_CAPMAX opens the b16 verify tier (t=9..16).
