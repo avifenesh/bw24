@@ -417,3 +417,39 @@ Measuring the mismatch directly: acceptance at K=4/PMIN=0.8 on the demoted artif
 the pre-demotion Layer103.5 artifact (the gated sweep's 74-77% was measured on the latter). A drop
 on the demoted artifact quantifies the cost the demotion silently imposed on spec, and establishes
 the true baseline any trained head must beat.
+
+## Lane 1 KILLED by measurement (2026-07-25): spec cannot pay on this model, at ANY head quality
+
+Before spending on training, measured acceptance and net speed at K=4 / PMIN=0.8 on both builds:
+
+| arm | acceptance | net vs plain |
+|---|---|---:|
+| layer103.5 (served candidate) | 16/20 = **80.0%** — clears the 0.80 bar | **0.97x** |
+| tail-Q2_K | 13/13 = **100.0%** | **0.97x** |
+
+**A 100% acceptance run produced no speedup.** That single number ends the lane: head quality is
+not the binding constraint, so a better head cannot help.
+
+The arithmetic, on the 100% arm: 13 verify rounds at K=4 committed 64 tokens in 14.143 s =
+1.088 s/round. Plain decode is 63 tokens in 13.656 s = 0.217 s/token, so five sequential tokens
+cost 1.084 s. A K=4 verify round costs EXACTLY what decoding its tokens one at a time costs —
+zero amortization, to within 0.4%.
+
+Mechanism, and it is the wall this campaign has hit from three directions now: each verify
+position routes its own top-8 experts, consecutive positions route to largely DISJOINT experts,
+and the CPU expert path serves them sequentially. Verify cost therefore scales with K+1 and
+exactly cancels the token gain. Speculative decode is multi-position batching, so it fails for
+the same reason multi-stream batching failed (distinct-prompt correction) and for the same
+reason prefetch failed (the io the experts need is not shared) — on a spill-bound MoE, anything
+that processes more token positions per pass pays full expert freight for each one.
+
+Consequences:
+- **Do not fund draft-head training.** The projected 1.3-1.5x was wrong; the measured ceiling
+  with a perfect head is ~1.0x. The gating framework, K-sweeps and serve path stay as correct,
+  working machinery — they simply have nothing to win here.
+- The earlier ceiling table's "draft head -> 8.4 tok/s" row is WITHDRAWN. Corrected: spec
+  contributes nothing, so the honest ceiling is whatever bytes and cores give, i.e. today's
+  served throughput.
+- Spec would pay again only where verify positions SHARE experts (a dense model, or an MoE whose
+  routing is stable across adjacent tokens) or where expert bytes are resident rather than
+  spilled — i.e. on hardware whose HBM holds the bank.
