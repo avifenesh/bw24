@@ -246,3 +246,36 @@ The honest best achievable here is **~8.4-8.5 tok/s**, via a draft head clearing
 acceptance bar — the one lever that multiplies tokens instead of degrading the model, since
 speculative decode is exactness-preserving. Everything needed to consume such a head (gating
 framework, K-sweep harness, serve path) is already built and proven.
+
+## CORRECTION (2026-07-25): the served candidate is Layer103.5, not tail-Q2_K
+
+Owner direction: stay on the Layer103.5 base candidate. The tail-Q2_K demotion is an
+experiment, not the served artifact, and it is NOT adopted.
+
+Its paired quality screen (run `tailq2k-screen-20260724`, frozen panel) says why:
+
+| arm | humaneval_instruct | hendrycks_math500 |
+|---|---:|---:|
+| layer103p5-base (served) | **11/14** | 13/32 |
+| tailq2k (candidate) | **8/14** | shard incomplete |
+
+The demoted build lost 3 of 14 on the completed code shard. Small sample, but paired and
+directional, and the throughput win it was bought with (+23%) does not license a quality
+regression on the served candidate. Not promoted; the screen is not being resumed because the
+decision no longer depends on it.
+
+Consequence for this document: every "standing" number I quoted from the tail-Q2_K build —
+6.0 tok/s single-stream, the io 34% / compute 50% / GPU 16% budget, the ceiling table, and the
+"artifact axis exhausted" verdict — was measured on the UNADOPTED artifact and does not describe
+what we serve. The served Layer103.5 baseline is ~4.8-5.4 tok/s with a larger io share (it is
+49.5% Q2_K, not 90.7%). The artifact axis is therefore NOT exhausted on the served candidate;
+it is unexercised there, and the one step that was tried failed quality.
+
+## PROCESS (2026-07-25): ownership check before killing anything
+
+I killed a `bw24-server` that another agent's 5-hour quality screen was driving, at 31/32
+samples, because an established-but-idle socket looked like a stall. At 573 s/sample that idle
+gap was the screen working normally. Liveness is not ownership. Before killing any process:
+identify who is on the other end of its sockets, check `/proc/<pid>/cwd` and cmdline for another
+session's paths, and prefer waiting or asking over killing shared services. This machine runs
+several agents concurrently; a process that is not mine is not mine to reap.

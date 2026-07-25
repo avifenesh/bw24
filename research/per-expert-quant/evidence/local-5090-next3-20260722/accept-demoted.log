@@ -1,0 +1,14 @@
+loaded bw24-repack (81 layers, nextn=1)
+text prompt (140 chars, chat-templated) -> 45 tokens
+prompt tokens: [120000, 120044, 70830, 277, 9002, 647, 497, 25, 5130, 25152, 1326, 120006, 55327, 1244, 16678, 289, 32215, 107669, 539, 18696, 55647, 9042, 45164, 41116, 280, 244, 2921, 14965, 11367, 13239, 1726, 82, 2438, 11, 2761, 12728, 289, 9448, 8686, 7758, 46896, 13, 120007, 120029, 120030]
+[moe-cache] size-aware fixed slots: 6146 slots in 5 classes, 13.86 GB / 13.86 GB budget
+[spill-pread] enabled: depth=32 buffer_bytes=6684672 total_pinned_bytes=213909504 (bounded O_DIRECT worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[moe-cache] residency frozen: 6146 slots, 6146 resident blocks; 1953 complete experts, 89 one-projection fragments, 99 two-projection fragments (287 stranded blocks)
+[moe-cache] freeze profile restored: 6431/6431 blocks restaged from /tmp/claude-1000/-home-avifenesh-projects-bw24/85f57f8d-b160-4461-b97c-cef54c245f7c/scratchpad/freeze-dual-tq.txt
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=25.64 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+
+[generate]   63 tok in 13.656s = 4.61 tok/s (gen-only; this run's prime 13.026s)
+  tokens: [40129, 316, 244, 1970, 716, 8002, 7919, 2438, 503, 279, 1244, 1970, 24674, 496, 32215, 107669, 503, 539, 712, 35299, 9, 252, 1970, 58138, 9042, 45164, 41116, 503, 369, 8205, 280, 244, 1970, 28462, 14965, 11367, 13239, 1726, 82, 341, 37483, 36, 8, 2438, 503, 1119, 13604, 1320, 16268, 1320, 978, 53, 104242, 739, 575, 6652, 280, 6910, 5033, 13, 286, 42866, 1219, 206]
