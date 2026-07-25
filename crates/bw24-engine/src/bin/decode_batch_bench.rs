@@ -32,15 +32,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("loaded {} ({} layers); steps={steps} reps={reps} batches={batches:?}",
              g.arch().unwrap_or("?"), model.layers.len());
 
-    let ctx = 64 + (steps + 8) * (reps + 1);
+    let ctx_extra: usize = rest.iter().position(|a| a == "--ctx")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(512);
+    let ctx = ctx_extra + 8 * 7 + 64 + (steps + 8) * (reps + 1);
     let mut results: Vec<(usize, f64, f64)> = Vec::new();
 
     for &b_n in &batches {
         // Fresh caches per batch size; prompts >= 16 tokens (PRIME_MIN_T), distinct.
         let mut caches: Vec<Cache> = Vec::new();
         let mut toks: Vec<u32> = Vec::new();
+        // Prompts sized to the SERVING regime (default 512 tokens; --ctx overrides): short
+        // prompts under fa_vec_min_tkv silently fall to the f32 attention path and skew the
+        // step profile (2026-07-26 nsys finding: fa_decode_f32 at 21% on 24-tok prompts).
+        let prompt_t: usize = rest.iter().position(|a| a == "--ctx")
+            .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(512);
         for i in 0..b_n {
-            let prompt: Vec<u32> = (0..24 + i as u32 * 7)
+            let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
                 .map(|j| 55 + i as u32 * 97 + j * 31).collect();
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
             let _ = model.prime_cache(&e, &prompt, &mut c)?;

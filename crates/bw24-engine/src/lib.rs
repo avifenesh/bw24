@@ -5187,7 +5187,20 @@ impl Engine {
                                 mcols: usize, scale: f32, rp: bool)
                                 -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         const ROWS_PER_BLOCK: u32 = 4;
-        let variant = self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp);
+        // TUNE SEAM (H100 lane): BW24_BVAR forces the batched-variant pick for the whole
+        // process — the auto heuristics were tuned on sm_120 (82 SMs / 858 GB/s) and the
+        // sm_90a re-tune sweeps this seam empirically. Layout variants stay safe: an rp
+        // weight keeps its rp-layout kernel family regardless of the override.
+        let forced: Option<&'static str> = {
+            static V: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            V.get_or_init(|| std::env::var("BW24_BVAR").ok())
+                .as_deref()
+                .map(|s| Box::leak(s.to_string().into_boxed_str()) as &'static str)
+        };
+        let variant = match forced {
+            Some(v) if !rp || v.contains("rp") => v,
+            _ => self.batched_variant(m, in_f, out_f, qtype, row_bytes, mcols, rp),
+        };
         let base_name = Self::batched_kernel_name(qtype, mcols)
             .ok_or_else(|| format!("qmatvec_mmvq_batched: no kernel for qtype {qtype} mcols {mcols}"))?;
         // b16 tier (t=9..16 verify): only base/_rp b16 kernels are compiled — the b2..b8
