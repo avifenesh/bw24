@@ -576,3 +576,22 @@ STRATEGIC COROLLARY: vLLM's remaining prefill edge (35k vs 16.7k) is
 STRUCTURAL, not GEMM-rate — fused epilogues/norms into GEMMs, TC attention,
 fewer launches, graphs. The remaining roadmap is exactly the three structural
 arcs: FA3 staging redesign, GDN K4 bf16-mma, prefill graph capture.
+
+**GDN K4 bf16-mma arc — KERNEL PROVEN (2026-07-26, tools/bench_gdn_k4.cu):**
+v2 measures **68.3us vs the shipped f32 K4's 119.4us (1.75x)** at the real
+dims (H=32, T=512, C=32, D=128 — harness calibrated: v0 port reproduces the
+engine's ~130us). Design: M state lives in mma accumulator FRAGMENTS across
+all chunks (16 f32/thread; bC fold = register scale); step A (Y = U - W.M)
+and step B (M += ys^T.k) are m16n8k16 bf16 warp-tiled GEMMs (FA's proven
+ldmatrix helpers); W and k arrive PRE-CONVERTED bf16 (engine: K3 casts W on
+store for free; k gets one mirror pass) through a 2-deep cp.async ring —
+the probe showed synchronous global->bf16 staging was 72us of v1's 133.
+Numerics: operands round to bf16 per chunk, state carry stays f32 —
+rel 1.3e-2 vs CPU ref on hostile (exploding) synthetic data; a change WITHIN
+the gated chunked prefill config (BW24_GDN_CHUNKED), arbitrated by the
+BW24_GDN_DIFF oracle + argmax battery on adoption.
+Debug ledger: (1) B operands must be [n][k] in smem — Mb mirror goes NATURAL
+[col][i] (no transpose!), kb needs ld_A_trans (both are FA GEMM0/PV patterns);
+(2) remaining known slack: Ssnap fragment-scatter ~15us (stage via smem later).
+Engine integration next: K3 bf16-W store, k bf16 mirror, BW24_GDN_MMA seam,
+oracle + battery. Projected prime: K4 2.8 -> ~1.6ms (+4% pp512).
