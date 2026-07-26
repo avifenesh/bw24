@@ -4884,6 +4884,13 @@ impl Engine {
         // Q4_0 split-plane rp: mr2 default; BW24_Q40_MR=1 reaches the mr1 rp twin
         // (2026-07-13 — the tall-input/short-output tail-quantization probe).
         if qtype == QT_Q4_0 && rp && mr != 1 { mr = 2; }
+        // Q8_0 rp (H100 lane): mr2 default (the m=1 latency lever — 2 rows/warp doubles
+        // bytes in flight); BW24_Q80_MR=1 keeps the single-row rp twin for A/B.
+        if qtype == QT_Q8_0 && rp {
+            static Q80MR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            mr = *Q80MR.get_or_init(|| std::env::var("BW24_Q80_MR").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(2));
+        }
         let name = match (qtype, mr, rp) {
             (QT_NVFP4, 2, false) => "qmatvec_nvfp4_mmvq_mr2",
             (QT_NVFP4, 2, true)  => "qmatvec_nvfp4_mmvq_mr2_rp",
@@ -4891,6 +4898,7 @@ impl Engine {
             (QT_Q4_0, 1, true)   => "qmatvec_q4_0_mmvq_rp",
             (QT_Q4_0, _, true)   => "qmatvec_q4_0_mmvq_mr2_rp",
             (QT_Q5_K, 2, _) => if q5_il { "qmatvec_q5_K_mmvq_mr2_il" } else { "qmatvec_q5_K_mmvq_mr2" },
+            (QT_Q8_0, 2, true) => "qmatvec_q8_0_mmvq_mr2_rp",
             (QT_Q8_0, _, true) => "qmatvec_q8_0_mmvq_rp",
             (QT_Q8_0, _, _) => "qmatvec_q8_0_mmvq",
             (QT_Q4_K, _, _) => "qmatvec_q4_K_mmvq",
