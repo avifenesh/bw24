@@ -344,3 +344,12 @@ rows ~0.5ms, attention+combine, state ops, argmax-248k, embed). Next
 instruments: nsys graph-node timing; next levers: further norm-chain fusion,
 combine batching, device argmax split tuning. Session A/B improved to +34%
 (234.0 vs 174.5 eager on the 48-tok-prompt shape).
+
+**Graph-serving LIVE (2026-07-26, commits b90cae99..190ba549):** single-session
+lane serving real HTTP at **217 tok/s for long generations** (512 tok; +20% vs
+eager serving, 62% of wall end-to-end incl. HTTP+prime). Promotion gated at
+BW24_GS_MIN=384 tokens (capture+snapshot ~340ms one-time = ~330-tok
+break-even); degrade-to-batched live-validated with 3 concurrent clients
+(correct output through the cache handoff). Serve-mode flags OnceLock'd,
+metrics publish throttled. Remaining serving polish: ~0.2s fixed per-request
+setup on the short path; capture-cost reduction would move break-even down.
