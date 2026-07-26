@@ -500,3 +500,43 @@ Two findings that OPEN doors rather than close them:
    carries per-layer calibration importance sidecars: an IMPORTANCE-GUIDED partial demotion
    (bottom slice of the tail only, screened per step) is the open path to a quality-passing
    byte win on the served candidate.
+
+## 2026-07-26 — Predictor-lane reopen gate: MEASURED SHUT (trained-predictor ceiling)
+
+Owner asked why the predictor direction was left; the closure receipts were re-tested with better
+data and a trained predictor instead of the old naive one. Data: 8 held-out-split calibration
+prompts through the served layer103.5 artifact, per-position routing recovered from sequential
+prefill traces (position-major, 79 layers x ~480 positions each; 3,812 positions total; prefill
+routing is computation-identical to decode routing at the same position). Harness:
+`research/moe/route_predictability_ceiling.py`; raw output
+`evidence/local-5090-layer103p5-rebase-20260725/route-predictability-decode-103p5.txt`; traces
+archived at `/data/ai-ml/hf-models/bw24-local-evidence/decode-trace-103p5.tar.zst` (sha receipt
+committed).
+
+The metric that decides prefetch value is precision on NON-RESIDENT experts (top-48-per-layer
+static residency excluded — hits on resident experts need no prefetch). Trained co-occurrence
+tables vs static-frequency baseline, prompt-level holdout:
+
+| axis | lead | overall p@8 (cooc/persist) | non-resident-only |
+| --- | --- | --- | --- |
+| cross-layer d=1 | ~2 ms | 33.0% | 2.6% |
+| cross-layer d=8 | ~20 ms | 31.0% | 1.4% |
+| cross-layer d=32 | ~80 ms | 28.1% | 0.2% |
+| cross-token lag=1 | ~200 ms | 32.0% | 21.1% |
+| cross-token lag=2 | ~400 ms | 27.4% | 16.1% |
+| cross-token lag=4 | ~800 ms | 22.8% | 11.7% |
+
+Readings:
+- Cross-layer signal about non-resident experts is ~zero (0.2-2.6%): what the shallow layers
+  route tells you almost nothing about which COLD experts the deep layers will pull. The old
+  lane's short-lead precision came from resident experts — bytes that were already there.
+- The best long-lead signal anywhere is lag-1 same-layer persistence at 21% non-resident
+  precision: a prefetcher acting on it wastes ~4 of every 5 speculative bytes, on a fabric where
+  concurrent-DMA interference already falsified overlap three times.
+- The reopen bar (far above the old 10-34% band at usable lead) is not met by a trained
+  predictor either. The scissors are a property of Hy3 routing, not of the old predictor's
+  quality. Lane stays closed; receipts reinforced.
+
+Reopen conditions unchanged: io headroom appearing (hardware), or a fundamentally different
+signal source (e.g. a trained router-forecast head — which re-enters draft-head economics that
+died at 0.97x with 100% acceptance).

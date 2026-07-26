@@ -31,11 +31,19 @@ def parse_runs(paths):
     """-> list of R[token, layer, expert] uint8 route tensors (token = position order)."""
     runs = []
     for path in paths:
+        # Trace `t` is the forward index, not the position: sequential prefill writes one
+        # line per position per layer, all stamped with the same t, in position-major order.
+        # Recover the position as the per-layer occurrence count (decode lines then continue
+        # the count seamlessly).
         per_tok = defaultdict(dict)
+        seen = defaultdict(int)
         with open(path) as fh:
             for line in fh:
-                layer_s, t_s, pairs = line.split(" ", 2)
-                per_tok[int(t_s)][int(layer_s)] = [
+                layer_s, _t_s, pairs = line.split(" ", 2)
+                layer = int(layer_s)
+                pos = seen[layer]
+                seen[layer] += 1
+                per_tok[pos][layer] = [
                     int(p.split(":")[0]) for p in pairs.strip().split(",")
                 ]
         toks = sorted(per_tok)

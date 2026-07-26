@@ -1,0 +1,28 @@
+8 runs (3812 positions), 6 train / 2 test, 80 layers
+axis A d=1 (lead ~2 ms):
+  freq: precision@8 21.7%  |  non-resident-only 0.0% (198037 miss slots)
+  cooc: precision@8 33.0%  |  non-resident-only 2.6% (198037 miss slots)
+axis A d=2 (lead ~5 ms):
+  freq: precision@8 21.7%  |  non-resident-only 0.0% (195126 miss slots)
+  cooc: precision@8 32.6%  |  non-resident-only 2.4% (195126 miss slots)
+axis A d=4 (lead ~10 ms):
+  freq: precision@8 21.8%  |  non-resident-only 0.0% (189974 miss slots)
+  cooc: precision@8 32.1%  |  non-resident-only 2.0% (189974 miss slots)
+axis A d=8 (lead ~20 ms):
+  freq: precision@8 22.0%  |  non-resident-only 0.0% (179007 miss slots)
+  cooc: precision@8 31.0%  |  non-resident-only 1.4% (179007 miss slots)
+axis A d=16 (lead ~40 ms):
+  freq: precision@8 22.4%  |  non-resident-only 0.0% (157015 miss slots)
+  cooc: precision@8 30.0%  |  non-resident-only 0.7% (157015 miss slots)
+axis A d=32 (lead ~80 ms):
+  freq: precision@8 22.1%  |  non-resident-only 0.0% (116788 miss slots)
+  cooc: precision@8 28.1%  |  non-resident-only 0.2% (116788 miss slots)
+axis B lag=1 tokens (lead ~200 ms at m=1):
+  freq: precision@8 21.2%  |  non-resident-only 0.0% (186475 miss slots)
+  persist: precision@8 32.0%  |  non-resident-only 21.1% (186475 miss slots)
+axis B lag=2 tokens (lead ~400 ms at m=1):
+  freq: precision@8 21.2%  |  non-resident-only 0.0% (185916 miss slots)
+  persist: precision@8 27.4%  |  non-resident-only 16.1% (185916 miss slots)
+axis B lag=4 tokens (lead ~800 ms at m=1):
+  freq: precision@8 21.3%  |  non-resident-only 0.0% (184725 miss slots)
+  persist: precision@8 22.8%  |  non-resident-only 11.7% (184725 miss slots)
