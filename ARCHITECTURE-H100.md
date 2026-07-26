@@ -537,3 +537,19 @@ tiles, same math order -> bit-identical, no new numeric config). GDN K4 by
 contrast measures 59.6% memory SOL at 130us — much closer to its config's
 wall; its upgrade stays the bf16-mma rewrite (numeric-config class).
 FA pipeline arc projected: 625us -> plausibly 150-250us/launch = +8-10% pp512.
+
+**Phase D extraction CLOSED (2026-07-26):** the shared-crate scoreboard —
+- bw24-lanes ✓ (lane types, admission, budgets — serving consumes it)
+- bw24-sampling ✓ (host sampler + device Philox behind one trait)
+- bw24-validate ✓ (protocol core: maxdiff/rel banding, deterministic pr vectors,
+  N-median runner, GateTally ALL-GREEN contract; 4 gate bins ported verbatim;
+  fa_sanitize's 16-bit pr variant deliberately stays local — different vectors)
+- bw24-kv ✓ (dual cache + KV format policy behind the KvDev seam. The documented
+  "Engine-trait blocker" dissolved on measurement: the cache uses exactly 7
+  device ops — zeros/uninit/alloc_u8/htod_i32/clone_dtod/copy_into/set_i32_one —
+  so the seam is that trait, not an engine-wide abstraction. Engine impl
+  delegates to inherent methods; every call site unchanged via re-export.)
+- bw24-cuda-util ✗ REFUTED as speculative: bw24-probe's "duplication" is 64
+  lines of raw cudarc idiom appropriate to a probe; no shared body exists.
+  Extraction law ("never speculatively") applies.
+All gates green on box after each move (validate-h100 + graph-session token-exact).
