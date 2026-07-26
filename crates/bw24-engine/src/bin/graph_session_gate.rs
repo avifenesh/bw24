@@ -39,6 +39,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dt = t0.elapsed().as_secs_f64();
     let sess_tps = (steps - 1) as f64 / dt;
 
+    // BW24_GS_PROF=1: decompose the step — fa_apply vs launch+sync vs token D2H.
+    // Fresh session (the main gate consumed its budget).
+    if std::env::var("BW24_GS_PROF").as_deref() == Ok("1") {
+        let (mut sess, _first) = model.graph_session_new(&e, &prompt, 80)?;
+        let (mut t_apply, mut t_launch, mut t_d2h) = (0.0f64, 0.0f64, 0.0f64);
+        let n = 64.min(sess.bucket_max.saturating_sub(sess.cache.pos + 2));
+        for _ in 0..n {
+            let t0 = std::time::Instant::now();
+            sess.prof_apply(&e)?;
+            t_apply += t0.elapsed().as_secs_f64();
+            let t0 = std::time::Instant::now();
+            sess.prof_launch()?;
+            t_launch += t0.elapsed().as_secs_f64();
+            let t0 = std::time::Instant::now();
+            let _ = sess.prof_read(&e)?;
+            t_d2h += t0.elapsed().as_secs_f64();
+        }
+        println!("prof over {n}: fa_apply {:.0}us  launch(async) {:.0}us  d2h+sync {:.0}us  per step",
+                 t_apply / n as f64 * 1e6, t_launch / n as f64 * 1e6, t_d2h / n as f64 * 1e6);
+    }
+
     let ok = ref_out == out;
     println!("gate (session vs generate_graph, {steps} tokens): {}",
              if ok { "PASS" } else { "FAIL" });

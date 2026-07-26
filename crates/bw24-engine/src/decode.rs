@@ -53,6 +53,25 @@ impl GraphSession {
         }
         e.dtoh_u32_one(&self.gs.token_d)
     }
+
+    /// Profiling decomposition of step() (graph-session-gate BW24_GS_PROF): the three
+    /// phases exposed separately. prof_launch is ASYNC (no sync) — prof_read carries the
+    /// sync+D2H. Advances the session exactly like step().
+    pub fn prof_apply(&mut self, _e: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+        crate::graph_update::fa_apply(&self.graph, &mut self.plan, self.cache.pos + 1,
+                                      crate::fa_split_keys)
+    }
+    pub fn prof_launch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph.launch()?;
+        self.cache.pos += 1;
+        for kvl in self.cache.kv.iter_mut().filter_map(|k| k.as_mut()) {
+            kvl.len += 1;
+        }
+        Ok(())
+    }
+    pub fn prof_read(&mut self, e: &Engine) -> Result<u32, Box<dyn std::error::Error>> {
+        e.dtoh_u32_one(&self.gs.token_d)
+    }
 }
 
 impl GraphDecodeState {
