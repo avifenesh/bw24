@@ -364,7 +364,7 @@ pub fn run(
             // (b) INTERACTIVE prefill only (TTFT priority, full tick chunk). Dark-lane
             // prefill runs AFTER decode (phase d) so a judge prime can never sit between
             // an interactive stream and its next token (the 282ms-p99 lesson, 2026-07-26).
-            let mut budgets = policy.prefill_budget;
+            let budgets = policy.prefill_budget;
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
                 let s = &mut active[i];
