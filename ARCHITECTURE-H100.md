@@ -639,3 +639,18 @@ variable there — doc'd in the bin).
 Battery (coupled pair default): validate-h100 ALL GREEN, graph-session
 token-exact, state-carry IDENTICAL x2 seeds, 3-prompt streams IDENTICAL to
 f32, argmax MATCH. Night cumulative: pp512 8674 -> 17786 (+105%).
+
+**FA BF16-KV staging (2026-07-26): +11% pp512, BIT-IDENTICAL, default ON.**
+The FA3-lite the ncu evidence was pointing at all along: the kernel already
+rounds K/V to bf16 during staging (64 scalar f32 loads + converts per thread —
+the 67%-of-stalls long-scoreboard). Pre-converting K/V to bf16 mirrors
+(f32_to_bf16_bulk, 2 launches per fa_prefill call) feeds the SAME
+__float2bfloat16 values into the SAME mma -> outputs bit-identical (verified:
+argmax + logit maxdiff lines byte-equal across arms); staging becomes 8 int4
+vector copies per thread. fa_prefill_bf16kv_pp twins (body templated on
+BF16KV); BW24_FA_BF16KV=0 reverts. pp512 17777 -> 19718 (+11%).
+NIGHT CUMULATIVE: 8674 -> 19718 (+127%); prefill now ~56% of vLLM's 35k.
+The three refuted FA occupancy probes stand; the remaining FA headroom is the
+full FA3 producer/consumer redesign (cp.async ring on the now-bf16 tiles is
+the next increment — the mirrors make it a plain byte ring, no convert).
+Remaining arcs: FA cp.async ring, prefill graph capture, K2/K3/conv GDN passes.

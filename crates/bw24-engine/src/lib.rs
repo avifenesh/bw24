@@ -5804,9 +5804,36 @@ impl Engine {
         // other head_dims to sdpa_naive before reaching here.
         let hd_sfx = fa_hd_suffix(head_dim)?;
         let floor = std::env::var("BW24_FA_FLOOR").is_ok();
-        let f = self.func(&format!("fa_prefill_f32{}{}{hd_sfx}",
-                                   if floor { "" } else { "_pp" },
-                                   if floor { "" } else { w2_sfx }));
+        // BF16-KV staging lane (2026-07-26, default ON): the kernel converts K/V to bf16
+        // during staging anyway — pre-converting to bf16 mirrors is BIT-IDENTICAL (same
+        // __float2bfloat16 values into the same mma) and turns the 67%-of-stalls scalar
+        // staging into int4 vector copies. BW24_FA_BF16KV=0 reverts.
+        let bf16kv = !floor && !w2
+            && std::env::var("BW24_FA_BF16KV").as_deref() != Ok("0");
+        let (kb16, vb16) = if bf16kv {
+            let n = t_kv * n_head_kv * head_dim;
+            let mut kb = self.alloc_u8_uninit(n * 2)?;
+            let mut vb = self.alloc_u8_uninit(n * 2)?;
+            let fcv = self.func("f32_to_bf16_bulk");
+            let ni = n as i64;
+            let cfgc = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
+            let mut b = self.gpu.stream.launch_builder(&fcv);
+            b.arg(k).arg(&mut kb).arg(&ni);
+            unsafe { b.launch(cfgc)?; }
+            let mut b = self.gpu.stream.launch_builder(&fcv);
+            b.arg(v).arg(&mut vb).arg(&ni);
+            unsafe { b.launch(cfgc)?; }
+            (Some(kb), Some(vb))
+        } else {
+            (None, None)
+        };
+        let f = self.func(&if bf16kv {
+            format!("fa_prefill_bf16kv_pp{hd_sfx}")
+        } else {
+            format!("fa_prefill_f32{}{}{hd_sfx}",
+                    if floor { "" } else { "_pp" },
+                    if floor { "" } else { w2_sfx })
+        });
         // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
         //   = bf16*(2*BK*hd + block_q*BK) + f32*(block_q*BK + 2*block_q)
         let shmem = (2 * (2 * BK * head_dim + block_q * BK)
@@ -5819,7 +5846,12 @@ impl Engine {
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);
-        b.arg(q).arg(k).arg(v).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
+        b.arg(q);
+        match (&kb16, &vb16) {
+            (Some(kb), Some(vb)) => { b.arg(kb).arg(vb); }
+            _ => { b.arg(k).arg(v); }
+        }
+        b.arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

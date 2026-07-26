@@ -785,7 +785,7 @@ static __device__ __forceinline__ float row_sum4(float v) {
 // unchanged per-warp math: each query row still walks the same KV tiles in the same
 // order, so outputs are BIT-IDENTICAL to NW=4 — a pure coverage/occupancy trade
 // (K/V staging traffic doubles; mem SOL was 9.2%, plenty of headroom).
-template<int HD, int NW = N_WARPS>
+template<int HD, int NW = N_WARPS, bool BF16KV = false>
 static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
@@ -842,12 +842,32 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
             if (causal_i && k0 > q_pos_max) break;
 
             const int bt = warp*WARP_SZ + lane;
-            for (int i = bt; i < BK*HEAD_DIM; i += NW*WARP_SZ) {
-                int kk = i / HEAD_DIM, d = i % HEAD_DIM;
-                float kv = (kk < nk) ? K[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
-                float vv = (kk < nk) ? V[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
-                sK[i] = __float2bfloat16(kv);
-                sV[i] = __float2bfloat16(vv);
+            if constexpr (BF16KV) {
+                // BF16-KV mirrors (2026-07-26, ncu: 67% of stall cycles were this staging as
+                // 64 scalar f32 loads+converts per thread): the producers pre-convert K/V to
+                // bf16 ONCE (identical __float2bfloat16 values -> BIT-IDENTICAL outputs);
+                // staging becomes 8x int4 vector copies per thread.
+                const __nv_bfloat16* Kb = (const __nv_bfloat16*)K;
+                const __nv_bfloat16* Vb = (const __nv_bfloat16*)V;
+                for (int i8 = bt; i8 < BK*HEAD_DIM/8; i8 += NW*WARP_SZ) {
+                    int kk = (i8 * 8) / HEAD_DIM, d = (i8 * 8) % HEAD_DIM;
+                    if (kk < nk) {
+                        *(int4*)(sK + i8*8) = *(const int4*)(Kb + ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d);
+                        *(int4*)(sV + i8*8) = *(const int4*)(Vb + ((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d);
+                    } else {
+                        int4 z = make_int4(0,0,0,0);
+                        *(int4*)(sK + i8*8) = z;
+                        *(int4*)(sV + i8*8) = z;
+                    }
+                }
+            } else {
+                for (int i = bt; i < BK*HEAD_DIM; i += NW*WARP_SZ) {
+                    int kk = i / HEAD_DIM, d = i % HEAD_DIM;
+                    float kv = (kk < nk) ? K[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
+                    float vv = (kk < nk) ? V[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
+                    sK[i] = __float2bfloat16(kv);
+                    sV[i] = __float2bfloat16(vv);
+                }
             }
             __syncthreads();
 
@@ -1018,6 +1038,24 @@ extern "C" __global__ void __launch_bounds__(2*WARP_SZ, 2) fa_prefill_f32_pp_w2_
         float scale, int causal)
 {
     fa_prefill_f32_pp_body<128, 2>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+// BF16-KV twins (bit-identical to the f32-staged kernel: producers pre-convert with the
+// same __float2bfloat16; staging becomes vectorized). K/V args carry bf16 bytes.
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_pp(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<256, N_WARPS, true>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_pp_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<128, N_WARPS, true>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
 }
 
 // ===================================================================== //
