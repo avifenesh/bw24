@@ -524,3 +524,16 @@ REMAINING ARCS (each multi-day, evidence attached in this ledger):
 3. Prefill CUDA-graph capture (gap floor ~12% remains).
 4. cutlass int8 per-row-epilogue GEMM (vLLM's numeric config) if 1-3 exhaust.
 Standing vs vLLM: decode 101%, prefill ~48% (16.8k vs 35k) — was 1.1% at boot.
+
+**FA prefill ncu diagnosis (2026-07-26, arc #2 sharpened):** fa_prefill_f32_pp
+at T=512: SM throughput 3.6%, memory 9.2% — pure latency exposure. ncu full:
+255 regs/thread (the P0a/P0b Q-in-reg + O-in-reg design) -> Block Limit
+Registers = 2, theoretical occupancy 12.5%, ACHIEVED 6.25% (grid 128 CTAs on
+132 SMs, <1 wave, 4 warps/SM effectively); 67% of stall cycles = long
+scoreboard on the synchronous f32->bf16 K/V stage-to-smem. mma m16 pins 16
+query rows/warp, so occupancy can't come from smaller tiles — the fix is
+HIDING the latency: software-pipeline / double-buffer the K/V staging (same
+tiles, same math order -> bit-identical, no new numeric config). GDN K4 by
+contrast measures 59.6% memory SOL at 130us — much closer to its config's
+wall; its upgrade stays the bf16-mma rewrite (numeric-config class).
+FA pipeline arc projected: 625us -> plausibly 150-250us/launch = +8-10% pp512.
