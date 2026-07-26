@@ -463,12 +463,9 @@ pub fn run(
                 if li == 0 || budgets[li] == 0 { continue; }
                 let chunk = budgets[li].min(adaptive_cap);
                 if chunk < bw24_engine::hybrid_forward::PRIME_MIN_T { break; }
-                match prefill_tick(&engine, &loaded, s, chunk) {
-                    Ok(consumed) => budgets[li] = budgets[li].saturating_sub(consumed),
-                    Err(err) => {
-                        let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
-                        finished.push(i);
-                    }
+                if let Err(err) = prefill_tick(&engine, &loaded, s, chunk) {
+                    let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                    finished.push(i);
                 }
                 break; // one dark chunk per tick — the headroom budget is tick-global
             }
