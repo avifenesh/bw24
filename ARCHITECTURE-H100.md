@@ -766,3 +766,31 @@ accepting the floor. Fusion KEPT (bit-identical, less traffic, groundwork:
 the fp16-operand plumbing is what a graphed prime wants anyway).
 All gates green (validate, graph-session, prime-batch); serving short-burst
 9334 tok/s (9689 band).
+
+## Task #14 design v2 — prime graph capture IS tractable (pad-to-bucket analysis)
+
+The 50-kernel device-length estimate was WRONG. With prompts PADDED to a
+bucket (graph shape fully static), the causal structure absorbs the pads:
+- FA prefill: real query i attends keys <= i — all REAL rows. Pad-query
+  outputs are garbage and DISCARDED. No kernel change.
+- GEMMs/norms/elementwise: token-parallel; pad rows compute garbage, harmless.
+- GDN recurrence is the crux — pads would UPDATE state. But the update law is
+  state' = exp(g)*state + beta*(...): forcing beta[pad]=0 AND g_log[pad]=0
+  makes pads IDENTITY steps. ONE tiny mask kernel (reads true_len from a
+  device int) after the beta/g_log producers.
+Device-length spots (the ONLY dynamic scalars): (1) that beta/g mask,
+(2) conv ring writeback must take rows [true_len-pad, true_len) not the pad
+tail — device-int variant of the ring update, (3) KV len_d finalize = host
+memcpy after replay (rows beyond true_len sit inert past len), (4) last-token
+logits row = device-index gather before lm_head.
+Session pointers: the fresh-prime graph touches the cache ONLY via KV append
+(K, V, len_d), conv ring, ssm_state/alt — ~5 ptrs x 32 layers = one ~1.3KB
+device pointer TABLE, memcpy'd per replay (kernels index the table; the
+decode pointer-table precedent is decode_step_batch's u64 tables).
+Capture: once per (bucket, model) at server start (~340ms x buckets
+{128,256,384,512} ~ 1.4s startup); replay = memcpy table+tokens+len, ONE
+cuGraphLaunch. Waste <= 25% on bucket padding (policy: nearest bucket >= T;
+below 128 the batch-prime path already dominates).
+Gate: graphed prime vs eager prime — per-seq argmax + decode-stream + state
+maxdiff battery (prime-batch-gate pattern). Prize: the 3.7ms/prime gap floor
+(~15%) + host freed for scheduling.
