@@ -794,3 +794,24 @@ below 128 the batch-prime path already dominates).
 Gate: graphed prime vs eager prime — per-seq argmax + decode-stream + state
 maxdiff battery (prime-batch-gate pattern). Prize: the 3.7ms/prime gap floor
 (~15%) + host freed for scheduling.
+
+**Task #14 implementation state (2026-07-26, next increment = capture smoke):**
+`Engine::capture_graph_retained` (the decode-graph machinery) takes the prime
+closure as-is ONCE a capture-safe prime variant exists. Constraints audited:
+- prime_chunk's `e.htod_i32(&pos)` must HOIST out (H2D inside capture bakes a
+  node reading a dropped host Vec — replay UAF); pos_d becomes a param.
+- the tail `e.dtoh(&logits)` must go device-resident (return CudaSlice; the
+  worker reads it post-replay) — same for h_seed/hidden.
+- `cache.pos += t` is HOST state — advance outside the closure.
+- KV append position: the batched append takes pos as a HOST int — baked 0 is
+  CORRECT for fresh-prime graphs (the only graphed class; continuation stays
+  eager).
+- warmup pool stability + capture_keep retention already handled by
+  capture_graph_retained (draft-graph precedent).
+INCREMENT ORDER: (1) prime_chunk_captured (capture-safe copy, ~70 lines) +
+smoke bin proving the ~900-launch prime captures + replays byte-equal on a
+fixed cache (riskiest unknown: cuBLASLt fp16 + cp.async under RELAXED capture
+— Lt plan cache is warm after warmups, no events in the call);
+(2) the 4 device-length pieces + beta/g pad mask; (3) pointer table variants
+(append/conv/gdn-state); (4) per-bucket capture at server start + worker
+replay path + prime-graph-gate. Prize: 3.7ms/prime (~15%) + freed host.
