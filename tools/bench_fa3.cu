@@ -1128,6 +1128,7 @@ fa3_v8(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
     extern __shared__ char smem[];
     const int wg = threadIdx.x / 128;          // 0,1 consumers; 2 producer
     const int tid = threadIdx.x % 128;
+
     char* bQ = smem + (wg < 2 ? wg : 0) * 32768;
     char* bK[2] = { smem + 65536, smem + 65536 + 32768 };
     char* bV[2] = { smem + 131072, smem + 131072 + 32768 };
@@ -1141,7 +1142,8 @@ fa3_v8(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
     const int n_tiles = (kv_end_all + 63) / 64;
 
     if (wg == 2) {
-        // ---- producer ----
+        // ---- producer (setmaxnreg contract: release to 24; probe-verified) ----
+        asm volatile("setmaxnreg.dec.sync.aligned.u32 24;");
         for (int t = 0; t < n_tiles; t++) {
             const int b = t & 1;
             if (t >= 2) bar_sync(4 + b, 384);
@@ -1170,7 +1172,8 @@ fa3_v8(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
         return;
     }
 
-    // ---- consumers (v5 shape) ----
+    // ---- consumers (v5 shape; acquire 240 — post-inc region, probe-verified) ----
+    asm volatile("setmaxnreg.inc.sync.aligned.u32 240;");
     if (q0 < T) {
         for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
             int r = seg / (D / 8), s8v = seg % (D / 8);

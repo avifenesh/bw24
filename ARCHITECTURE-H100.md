@@ -1344,3 +1344,19 @@ annotation before the next attempt). Harness scoreboard: v5 999us == engine
 993us stands; v6/v7/v8a refuted with mechanisms. Everything else on the
 official lane is at its measured wall; the lane sits at 77.6% of vLLM with
 this one arc open.
+
+**FA3 v8b/v8c + setmaxnreg contract CRACKED (2026-07-27).** The contract
+(tools/probe_setmaxnreg.cu, probe-verified on the box): __launch_bounds__
+caps the ENTRY count (168x384 = the full file, passes the launch check, which
+is static-entry x threads — setmaxnreg does NOT relax it); setmaxnreg.dec/inc
+redistribute the fixed CTA pool at runtime; ptxas REGION-ALLOCATES post-inc
+code above the entry count (0 spills at 192 live floats) — but only when the
+inc sits at the TOP of the consumer path (a shared-region if/else placement
+spilled 560B; v8b). v8c (clean regs, 12B spills): 1829us — the producer shape
+itself is refuted at this geometry: named-barrier round-trips (consumer FULL
+wait + producer cp.wait-then-EMPTY wait) serialize worse than v5's
+hardware-scoreboard soft pipelining. FA3 remaining recipe, three refutations
+narrower: TMA bulk-tensor with mbarrier completion (producer never self-waits)
++ >=3-deep rings + the cracked setmaxnreg split. v5 999us == engine 993us
+stands as the harness floor; official lane holds at 77.6% with this single
+arc open and every step of it evidence-priced.
