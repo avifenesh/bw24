@@ -48,6 +48,11 @@ pub enum GpuTensor {
         /// reads this when present (`_rp` twins; microprobe m=1 1.34x, m=3 1.17x, bitwise).
         /// None everywhere except where the arch-load hook opted in (VRAM cost = weight size).
         rp4: Option<CudaSlice<u8>>,
+        /// FP16 DEQUANT MIRROR (BW24_PP_F16=1, probe 2026-07-26): row-major fp16 of a 2D Q8_0
+        /// projection, built device-side at load (f16_ffi::build_q8_f16). `bytes` stay Q8_0 so
+        /// decode is untouched; the m>=16 prefill dispatch (cuBLASLt FP16 TN, 611-687 TF vs
+        /// MMQ's ~200 TF class) reads this. None unless the env is set (VRAM = 2 B/w extra).
+        f16: Option<CudaSlice<u8>>,
     },
     Float {
         data: CudaSlice<f32>,
@@ -254,7 +259,7 @@ impl GpuTensor {
                         rp: true,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None,
+                        fp8: None, f16: None,
                         rp4: None,
                     });
                 }
@@ -281,7 +286,7 @@ impl GpuTensor {
                         rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None,
+                        fp8: None, f16: None,
                         rp4: None,
                     });
                 }
@@ -452,6 +457,7 @@ impl GpuTensor {
                     cutlass,
                     fp8,
                     rp4: None,
+                    f16: None,
                 })
             }
             None => {
@@ -568,7 +574,7 @@ impl GpuTensor {
             rp,
             #[cfg(bw24_cutlass)]
             cutlass: None,
-            fp8: None,
+            fp8: None, f16: None,
             rp4: None,
         })
     }

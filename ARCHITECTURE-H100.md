@@ -456,3 +456,31 @@ probe — fp16-dequant GEMM (resident fp16 mirror + cuBLASLt, or in-kernel
 dequant + fp16 wgmma full-K f32-accum, which streams with ZERO mid-loop acc
 reads). Precedent: BW24_PP_FP8 (620-795TF) / BW24_FP4 opt-in seams; gate =
 argmax battery + logit tolerance, not bit-identity.
+
+**FP16-mirror prefill — the fold-free swing (2026-07-26, PROMOTED default on
+the Hopper lane):** the wgmma verdict pointed the way: the per-32 fold law is
+the wall, so lift the operand format instead of fighting the pipe. Probe
+(tools/bench_lt_f16.cu): cuBLASLt FP16 TN runs 611-687 TF at the m=512 model
+shapes = 3.2-3.7x the MMQ class per launch. Engine arm (BW24_PP_F16,
+fp8_prefill.cu pattern): resident fp16 dequant mirror of every 2D Q8_0
+projection built device-side at load (f16_ffi::build_q8_f16, budget
+BW24_PP_F16_BUDGET_MB default 32GB, layer-order prefix), dispatch in
+matmul/matmul_pre m>=16 arms AFTER fp8, BEFORE MMQ. Decode (m<16) untouched —
+decode==verify law holds by construction.
+
+Numeric config (explicit, gated): int8 part exact in fp16 (7 mantissa bits
+into 11); rounding at d*q products + activation f32->fp16 cast (NO per-32
+rescale on the act side). Battery: kernel-check f16 case rel <= 6.5e-3
+(band 1e-2) ALL GREEN; run-gen argmax MATCH p1/p2/p3; greedy streams
+IDENTICAL to MMQ config on all three; serving smoke (600-tok prompt) coherent.
+
+MEASURED (N=5 medians, 9B-Q8_0):
+- pp512:  8674 -> 15626 tok/s (+80%)
+- pp2048: 8260 -> 14543 tok/s (+76%)  [the old "0.230s prime" -> 0.141s]
+- VRAM: 18.1 -> 31.8GB served (mirror ~2B/w on 2D Q8_0 trunk) — 80GB lane feature
+- validate-h100.sh ALL GATES GREEN; batch curve unchanged (decode path untouched)
+
+Default ON under bw24_hopper_mma (BW24_PP_F16=0 reverts to MMQ; =1 forces on
+smaller rigs at their own VRAM risk). MMQ stays the exact-config fallback and
+the portable default. Next prefill ceiling: FA prefill 9.3% + GDN chunk
+kernels now dominate prime — new profile needed for the next target.

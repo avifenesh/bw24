@@ -322,7 +322,7 @@ impl GemmaDraft {
                         ne: vec![in_f as u64, d2t.len() as u64], scale: 1.0, rp: false,
                         #[cfg(bw24_cutlass)]
                         cutlass: None,
-                        fp8: None, rp4: None,
+                        fp8: None, rp4: None, f16: None,
                     }, Some(d2t), trim_adapt)
                 }
                 None => (load_t(e, &src, "token_embd.weight")?, None, None),

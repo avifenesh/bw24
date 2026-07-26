@@ -645,6 +645,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 && out_f % 64 == 0 && in_f % 32 == 0 {
                 Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?)
             } else { None };
+            let f16_mirror = if gt == bw24_engine::QT_Q8_0 && in_f % 32 == 0 {
+                Some(e.build_q8_f16_raw(&wd, in_f, out_f)?)
+            } else { None };
             for tt in [16usize, 64, 128, 512] {
                 let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -668,6 +671,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let relw = dw / scale;
                     println!("GEMM {tname} wgmma T={tt}: rel={relw:.2e} {}",
                              if relw < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
+                if let Some(m16) = &f16_mirror {
+                    // FP16-mirror GEMM (BW24_PP_F16 numeric config): fp16 products + f32
+                    // accumulate vs the s32-exact + per-32 f32-fold law — a WIDER band than
+                    // the int8 arms by design (rounding at d*q and the activation cast).
+                    let yf = e.dtoh(&e.qmatvec_gemm_f16_raw(m16, &xd, tt, in_f, out_f)?)?;
+                    let df = maxdiff(&yb, &yf);
+                    let relf = df / scale;
+                    println!("GEMM {tname} f16 T={tt}: rel={relf:.2e} {}",
+                             if relf < 1e-2 { "OK" } else { fails += 1; "FAIL" });
                 }
             }
         }

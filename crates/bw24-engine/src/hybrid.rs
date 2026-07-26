@@ -1063,6 +1063,9 @@ impl HybridModel {
                 let mut mir = |w: &mut crate::model::GpuTensor| -> Result<(), Box<dyn std::error::Error>> {
                     let before = matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. });
                     e_ref.build_q8_rp4(w)?;
+                    if crate::f16_ffi::pp_f16_enabled() {
+                        e_ref.build_q8_f16(w)?;
+                    }
                     if !before && matches!(w, crate::model::GpuTensor::Quant { rp4: Some(_), .. }) {
                         nmir += 1;
                     }

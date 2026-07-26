@@ -40,6 +40,7 @@ mod spill_pread;
 #[cfg(bw24_cutlass)]
 pub mod cutlass_ffi;
 pub mod mmq_ffi;
+pub mod f16_ffi;
 pub mod fp8_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");
@@ -377,6 +378,7 @@ pub struct Engine {
     /// workspace, allocated once and grown to the largest prefill m*k (see fp8_ffi.rs). `None`
     /// until the first FP8 prefill GEMM; Mutex guards lazy build/grow only (matches cutlass_scratch).
     fp8_scratch: Mutex<Option<crate::fp8_ffi::Fp8Scratch>>,
+    f16_scratch: Mutex<Option<crate::f16_ffi::F16Scratch>>,
     /// RANK1 LEVER (parallel argmax): resident pass-1 partials scratch (part_v[NB] f32, part_i[NB] i32),
     /// allocated ONCE on first parallel-argmax call and reused. Stable pointers so the 2-pass argmax
     /// is CUDA-graph-capturable (the buffer is referenced by both captured passes; lazy-allocated
@@ -547,6 +549,7 @@ impl Engine {
                   prime_deqw_ws: Mutex::new(None),
                   router_stage: Mutex::new(None),
                   fp8_scratch: Mutex::new(None),
+                  f16_scratch: Mutex::new(None),
                   #[cfg(bw24_cutlass)]
                   cutlass_scratch: Mutex::new(None) })
     }
@@ -3656,7 +3659,7 @@ impl Engine {
             ne: vec![w0.in_features() as u64, (o0 + o1 + o2) as u64], scale: 1.0, rp: false,
             #[cfg(bw24_cutlass)]
             cutlass: None,
-            fp8: None, rp4: None,
+            fp8: None, rp4: None, f16: None,
         }))
     }
 
@@ -4018,6 +4021,9 @@ impl Engine {
         // (amax/448) folded with weight_scale in-GEMM. Prefill only; decode keeps Q8_0 untouched.
         if m >= GEMM_M_THRESHOLD {
             if let Some(y) = self.try_fp8_gemm(w, x, m)? { return Ok(y); }
+            // FP16-mirror prefill (BW24_PP_F16=1, probe 2026-07-26: 3.2-3.7x the MMQ class).
+            // Mirror presence IS the gate (only built under the env). Decode never reaches here.
+            if let Some(y) = self.try_f16_gemm(w, x, m)? { return Ok(y); }
         }
         if m >= GEMM_M_THRESHOLD && out_f >= GEMM_MIN_OUT_F && self.mmq_supports(w) {
             return self.qmatvec_mmq(w, x, m);
@@ -4166,6 +4172,8 @@ impl Engine {
         // f32 activation (per-batch e4m3 quant differs from q8_1), so x_fallback not aq/ad.
         if m >= 16 && !self.verify_exact_on() {
             if let Some(y) = self.try_fp8_gemm(w, x_fallback, m)? { return Ok(y); }
+            // FP16-mirror prefill (same arm as `matmul` — fp16 wants the RAW f32 activation).
+            if let Some(y) = self.try_f16_gemm(w, x_fallback, m)? { return Ok(y); }
         }
         // VENDORED llama MMQ prefill GEMMs (NVFP4 W4A8 default-on; W4A4/k-quant behind BW24_MMQ=1
         // — policy in mmq_supports) — use the RAW f32 activation (their own internal quant:
