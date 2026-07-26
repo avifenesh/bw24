@@ -19,6 +19,11 @@ pub struct PrimeSlabs {
     pub xb: CudaSlice<f32>,
     pub h16: CudaSlice<u8>,
     pub z16: CudaSlice<u8>,
+    /// piecewise boundary slabs (increment 2): GEMM outputs land here so the
+    /// downstream captured segments see fixed addresses.
+    pub gate: CudaSlice<f32>,     // t * n_ff_max
+    pub up: CudaSlice<f32>,       // t * n_ff_max
+    pub ffn_out: CudaSlice<f32>,  // t * n_embd
 }
 
 
@@ -403,6 +408,9 @@ impl HybridModel {
                 xb: e.uninit(t * n_embd)?,
                 h16: e.alloc_u8_uninit(t * n_embd * 2)?,
                 z16: e.alloc_u8_uninit(t * n_embd * 2)?,
+                gate: e.uninit(t * n_ff_max)?,
+                up: e.uninit(t * n_ff_max)?,
+                ffn_out: e.uninit(t * n_embd)?,
             });
         }
         Ok(g)
@@ -439,16 +447,17 @@ impl HybridModel {
             None
         };
         let mut x_own;   // fallback storage when slabs are off
-        let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<(&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<u8>, &mut CudaSlice<u8>)>);
+        type SlabRefs<'a> = (&'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>);
+        let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<SlabRefs>);
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
                 let slabs = g.as_mut().unwrap();
                 e.copy_into(&mut slabs.xa, 0, &x_embed, t * n_embd)?;
-                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, .. } = slabs;
+                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, .. } = slabs;
                 x_cur = xa;
                 x_nxt = xb;
-                sl = Some((h, x1, z, act, h16, z16));
+                sl = Some((h, x1, z, act, h16, z16, gate, up, ffn_out));
             }
             None => {
                 x_own = x_embed;
@@ -458,27 +467,30 @@ impl HybridModel {
                 sl = None;
             }
         }
-        let (slab_h, slab_x1, slab_z, slab_act, slab_h16, slab_z16) = match sl {
-            Some(t6) => (Some(t6.0), Some(t6.1), Some(t6.2), Some(t6.3), Some(t6.4), Some(t6.5)),
-            None => (None, None, None, None, None, None),
-        };
         let mut alloc_h; let mut alloc_x1; let mut alloc_z; let mut alloc_act;
         let mut alloc_h16; let mut alloc_z16;
+        let mut alloc_gate; let mut alloc_up; let mut alloc_fo;
         let (h, x1, z, act): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>);
         let (h16, z16): (&mut CudaSlice<u8>, &mut CudaSlice<u8>);
-        match (slab_h, slab_x1, slab_z, slab_act, slab_h16, slab_z16) {
-            (Some(a), Some(b), Some(c), Some(d), Some(e16), Some(f16b)) => {
+        let (sl_gate, sl_up, sl_fo): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>);
+        match sl {
+            Some((a, b, c, d, e16, f16b, g, u, fo)) => {
                 h = a; x1 = b; z = c; act = d; h16 = e16; z16 = f16b;
+                sl_gate = g; sl_up = u; sl_fo = fo;
             }
-            _ => {
+            None => {
                 alloc_h = e.uninit(t * n_embd)?;
                 alloc_x1 = e.uninit(t * n_embd)?;
                 alloc_z = e.uninit(t * n_embd)?;
                 alloc_act = e.uninit(t * n_ff_max)?;
                 alloc_h16 = e.alloc_u8_uninit(t * n_embd * 2)?;
                 alloc_z16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                alloc_gate = e.uninit(t * n_ff_max)?;
+                alloc_up = e.uninit(t * n_ff_max)?;
+                alloc_fo = e.uninit(t * n_embd)?;
                 h = &mut alloc_h; x1 = &mut alloc_x1; z = &mut alloc_z; act = &mut alloc_act;
                 h16 = &mut alloc_h16; z16 = &mut alloc_z16;
+                sl_gate = &mut alloc_gate; sl_up = &mut alloc_up; sl_fo = &mut alloc_fo;
             }
         }
         for (il, layer) in self.layers.iter().enumerate() {
@@ -499,30 +511,40 @@ impl HybridModel {
                 e.rms_norm(x1, layer.post_attn_norm.float_data(), z, n_embd, t, eps)?;
             }
             let zx16 = if f16fuse { Some(&*z16) } else { None };
-            let ffn_out = match &layer.ffn {
+            match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let mut g2 = match zx16 {
-                        Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], z, xh, t)?,
-                        None => e.matmul_group(&[ffn_gate, ffn_up], z, t)?,
-                    };
-                    let up = g2.pop().unwrap();
-                    let gate = g2.pop().unwrap();
-                    Self::ffn_act(e, &self.cfg, &gate, &up, act, t * n_ff)?;
-                    let act_view = e.view(act, t * n_ff);
-                    let act_owned;
-                    let act_ref: &CudaSlice<f32> = if n_ff == n_ff_max {
-                        &*act
-                    } else {
-                        // slab wider than this layer's n_ff: matmul reads t*n_ff rows —
-                        // leading prefix is exactly the data (contiguous) — pass the slab.
-                        let _ = act_view; act_owned = (); let _ = act_owned; &*act
-                    };
-                    e.matmul(ffn_down, act_ref, t)?
+                    // gate/up INTO boundary slabs (piecewise increment 2); fall back to
+                    // the allocating group + copy when a mirror is missing.
+                    let mut into_ok = false;
+                    if let Some(xh) = zx16 {
+                        into_ok = e.try_f16_gemm_pre_into(ffn_gate, xh, t, sl_gate)?
+                            && e.try_f16_gemm_pre_into(ffn_up, xh, t, sl_up)?;
+                    }
+                    if !into_ok {
+                        let mut g2 = match zx16 {
+                            Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], z, xh, t)?,
+                            None => e.matmul_group(&[ffn_gate, ffn_up], z, t)?,
+                        };
+                        let up_y = g2.pop().unwrap();
+                        let gate_y = g2.pop().unwrap();
+                        e.copy_into(sl_gate, 0, &gate_y, t * n_ff)?;
+                        e.copy_into(sl_up, 0, &up_y, t * n_ff)?;
+                    }
+                    Self::ffn_act(e, &self.cfg, sl_gate, sl_up, act, t * n_ff)?;
+                    // down GEMM into the ffn_out slab (f16 arm; fallback copies)
+                    let xh_act = e.f16_act(act, t * n_ff)?;
+                    if !e.try_f16_gemm_pre_into(ffn_down, &xh_act, t, sl_fo)? {
+                        let y = e.matmul(ffn_down, &*act, t)?;
+                        e.copy_into(sl_fo, 0, &y, t * n_embd)?;
+                    }
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, z, t, il as u16)?,
-            };
-            e.add(x1, &ffn_out, x_nxt, t * n_embd)?;
+                crate::hybrid::Ffn::Moe(m) => {
+                    let y = self.moe_ffn_il(e, m, z, t, il as u16)?;
+                    e.copy_into(sl_fo, 0, &y, t * n_embd)?;
+                }
+            }
+            e.add(x1, sl_fo, x_nxt, t * n_embd)?;
             std::mem::swap(&mut x_cur, &mut x_nxt);
         }
         // hidden-stack return: clone the final x out of the slab
