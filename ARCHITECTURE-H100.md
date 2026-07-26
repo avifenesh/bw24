@@ -1431,3 +1431,17 @@ softmax + full kernel (v2-v5, parity floor 999us), setmaxnreg contract
 v10 = assemble TMA staging into the v5 two-consumer shape (Q/K via swizzled
 maps; V^T needs a transposed map or keeps scalar staging) — zero unknowns
 remain, only assembly and the interleaved verdict.
+
+**FA3 v10: THE KERNEL WINS (2026-07-27) — 883us vs the shipped 993us (+12.5%),
+correct at all T.** TMA swizzled Q/K inside the v5 two-consumer shape: 3D
+tensor maps (dims {D,heads,T}, box {64,1,64}, SWIZZLE_128B), single-thread
+TMA issue per ring stage with expect-tx mbarriers (EMPTY re-arm guards),
+swizzled S-phase descriptors (mode=1/SBO=1024, k16 slice = atom+j*32), V^T
+cooperative-scalar and the PV path canonical as before. Harness ladder:
+2872 (v3) -> 2327 (v4) -> 999 (v5, parity) -> 883 (v10, +12.5% over the
+engine kernel). Projected official-lane slice: FA 7.9 -> ~7.0ms (~+1.1% lane)
+BEFORE the remaining v10 headroom (V^T staging via a transposed map, 3-deep
+ring, C7515-free shapes now applicable in a winning structure).
+NEXT: engine integration behind BW24_FA3 (per-call cuTensorMapEncodeTiled on
+the mirror buffers ~us-scale host cost x8 layers; the greedy-stream battery +
+interleaved A/B arbitrate), then the vl (batched) twin via grid.z.

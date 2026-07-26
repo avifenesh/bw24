@@ -1512,6 +1512,230 @@ fa3_v9(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
     }
 }
 
+// ---- v10: TMA swizzled Q/K inside the v5 shape. Single thread issues TMA per ring
+// stage (expect-tx mbarrier); V^T stays cooperative-scalar (transpose); PV path keeps
+// canonical descriptors. Swizzle pairing per probe_tma: mode=1, SBO=1024, LBO ignored,
+// k16 slice = atom base + j*32.
+#include <cuda.h>
+__device__ __forceinline__ void v10_mbar_init(void* mbar, unsigned count) {
+    unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
+    asm volatile("mbarrier.init.shared.b64 [%0], %1;" :: "r"(a), "r"(count));
+}
+__device__ __forceinline__ void v10_expect_tx(void* mbar, unsigned bytes) {
+    unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
+    asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;" :: "r"(a), "r"(bytes));
+}
+__device__ __forceinline__ void v10_arrive(void* mbar) {
+    unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
+    asm volatile("mbarrier.arrive.shared.b64 _, [%0];" :: "r"(a));
+}
+__device__ __forceinline__ void v10_wait(void* mbar, unsigned phase) {
+    unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
+    unsigned done = 0;
+    while (!done) {
+        asm volatile("{\n.reg .pred p;\n"
+                     "mbarrier.try_wait.parity.shared.b64 p, [%1], %2;\n"
+                     "selp.b32 %0, 1, 0, p;\n}"
+                     : "=r"(done) : "r"(a), "r"(phase));
+    }
+}
+__device__ __forceinline__ void v10_tma3d(const CUtensorMap* map, void* dst,
+                                          int c0, int c1, int c2, void* mbar) {
+    unsigned d = (unsigned)__cvta_generic_to_shared(dst);
+    unsigned b = (unsigned)__cvta_generic_to_shared(mbar);
+    asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes "
+                 "[%0], [%1, {%2, %3, %4}], [%5];"
+                 :: "r"(d), "l"(map), "r"(c0), "r"(c1), "r"(c2), "r"(b) : "memory");
+}
+__device__ __forceinline__ unsigned long long v10_desc_swz(const void* p) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(p);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((1024u >> 4) & 0x3FFF) << 32;   // SBO=1024, LBO=0
+    d |= (unsigned long long)1 << 62;                          // 128B swizzle
+    return d;
+}
+
+extern "C" __global__ void __launch_bounds__(256, 1)
+fa3_v10(const __grid_constant__ CUtensorMap tQ, const __grid_constant__ CUtensorMap tK,
+        const __nv_bfloat16* __restrict__ V, float* __restrict__ O,
+        int T, int H, int HKV, int D, float scale) {
+    extern __shared__ char smem[];
+    const int wg = threadIdx.x / 128;
+    const int tid = threadIdx.x % 128;
+    char* bQ = smem + wg * 32768;
+    char* bK[2] = { smem + 65536, smem + 65536 + 32768 };
+    char* bV[2] = { smem + 131072, smem + 131072 + 32768 };
+    char* bP = smem + 196608 + wg * 8192;
+    unsigned long long* mFull = (unsigned long long*)(smem + 212992);
+    unsigned long long* mEmpty = mFull + 2;
+    const int q0 = (blockIdx.x * 2 + wg) * 64;
+    const int head = blockIdx.y;
+    const int kvh = head / (H / HKV);
+
+    if (threadIdx.x == 0) {
+        v10_mbar_init(&mFull[0], 1); v10_mbar_init(&mFull[1], 1);
+        v10_mbar_init(&mEmpty[0], 256); v10_mbar_init(&mEmpty[1], 256);
+        asm volatile("fence.proxy.async.shared::cta;");
+    }
+    __syncthreads();
+
+    const int blk_q_end = (blockIdx.x * 2 + 1) * 64;
+    const int kv_end_all = blk_q_end + 64 <= T ? blk_q_end + 64 : T;
+    const int n_tiles = (kv_end_all + 63) / 64;
+    const int kv_end_own = q0 + 64 <= T ? q0 + 64 : T;
+    const int n_own = q0 < T ? (kv_end_own + 63) / 64 : 0;
+
+    // prologue: thread 0 issues Q (both WGs) + K(0) on FULL[0]
+    if (threadIdx.x == 0) {
+        v10_expect_tx(&mFull[0], 2 * 32768 + 32768);
+        for (int a = 0; a < 4; a++) {
+            v10_tma3d(&tQ, smem + a * 8192, a * 64, head, (blockIdx.x * 2) * 64, &mFull[0]);
+            v10_tma3d(&tQ, smem + 32768 + a * 8192, a * 64, head, (blockIdx.x * 2 + 1) * 64, &mFull[0]);
+            v10_tma3d(&tK, bK[0] + a * 8192, a * 64, kvh, 0, &mFull[0]);
+        }
+    }
+    // V(0) cooperative
+    {
+        for (int idx = threadIdx.x; idx < 64 * D; idx += 256) {
+            int r = idx / D, c = idx % D;
+            int stv = r / 16, kkv = r % 16;
+            size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
+            *(__nv_bfloat16*)(bV[0] + offv) = (r < T)
+                ? V[((size_t)r * HKV + kvh) * D + c] : __float2bfloat16(0.0f);
+        }
+    }
+    __syncthreads();
+
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    float m[2] = {-1e30f, -1e30f};
+    float l[2] = {0.0f, 0.0f};
+    float oacc[4][32];
+    #pragma unroll
+    for (int nb = 0; nb < 4; nb++)
+        #pragma unroll
+        for (int i = 0; i < 32; i++) oacc[nb][i] = 0.0f;
+
+    for (int t = 0; t < n_tiles; t++) {
+        const int k0 = t * 64;
+        const int cur = t & 1;
+        const bool active = t < n_own;
+        v10_wait(&mFull[cur], (t >> 1) & 1);
+        asm volatile("fence.proxy.async.shared::cta;");
+        // issue K(t+1) (stage freed two tiles ago; EMPTY guards reuse)
+        if (threadIdx.x == 0 && t + 1 < n_tiles) {
+            if (t + 1 >= 2) v10_wait(&mEmpty[cur ^ 1], ((t - 1) >> 1) & 1);
+            v10_expect_tx(&mFull[cur ^ 1], 32768);
+            for (int a = 0; a < 4; a++)
+                v10_tma3d(&tK, bK[cur ^ 1] + a * 8192, a * 64, kvh, (t + 1) * 64, &mFull[cur ^ 1]);
+        }
+        if (active) {
+            float acc[32];
+            wgmma_fence();
+            for (int st = 0; st < D / 16; st++) {
+                unsigned long long da = v10_desc_swz(bQ + (st / 4) * 8192 + (st % 4) * 32);
+                unsigned long long db = v10_desc_swz(bK[cur] + (st / 4) * 8192 + (st % 4) * 32);
+                wgmma_m64n64k16_bf16(acc, da, db, st == 0 ? 0 : 1);
+            }
+            wgmma_commit();
+            wgmma_wait<0>();
+            float mn[2] = {m[0], m[1]};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = q0 + r0 + ((i % 4) / 2) * 8;
+                int cc = k0 + c0 + (i / 4) * 8 + (i % 2);
+                acc[i] = (cc <= rr && cc < T) ? acc[i] * scale : -1e30f;
+                int half = (i % 4) / 2;
+                if (acc[i] > mn[half]) mn[half] = acc[i];
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                mn[0] = fmaxf(mn[0], __shfl_xor_sync(0xffffffffu, mn[0], o));
+                mn[1] = fmaxf(mn[1], __shfl_xor_sync(0xffffffffu, mn[1], o));
+            }
+            float alpha[2] = {expf(m[0] - mn[0]), expf(m[1] - mn[1])};
+            if (m[0] == -1e30f) alpha[0] = 0.0f;
+            if (m[1] == -1e30f) alpha[1] = 0.0f;
+            m[0] = mn[0]; m[1] = mn[1];
+            float ladd[2] = {0.0f, 0.0f};
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int half = (i % 4) / 2;
+                float pv = expf(acc[i] - m[half]);
+                acc[i] = pv;
+                ladd[half] += pv;
+            }
+            #pragma unroll
+            for (int o = 1; o <= 2; o <<= 1) {
+                ladd[0] += __shfl_xor_sync(0xffffffffu, ladd[0], o);
+                ladd[1] += __shfl_xor_sync(0xffffffffu, ladd[1], o);
+            }
+            l[0] = l[0] * alpha[0] + ladd[0];
+            l[1] = l[1] * alpha[1] + ladd[1];
+            #pragma unroll
+            for (int nb = 0; nb < 4; nb++)
+                #pragma unroll
+                for (int i = 0; i < 32; i++) oacc[nb][i] *= alpha[(i % 4) / 2];
+            #pragma unroll
+            for (int i = 0; i < 32; i++) {
+                int rr = r0 + ((i % 4) / 2) * 8;
+                int cc = c0 + (i / 4) * 8 + (i % 2);
+                int st = cc / 16, kk = cc % 16;
+                size_t off = (size_t)st * 2048 + (rr / 8) * 256 + (kk / 8) * 128 + (rr % 8) * 16 + (kk % 8) * 2;
+                *(__nv_bfloat16*)(bP + off) = __float2bfloat16(acc[i]);
+            }
+            bar_sync(6 + wg, 128);
+            asm volatile("fence.proxy.async.shared::cta;");
+            wgmma_fence();
+            for (int st = 0; st < 4; st++) {
+                unsigned long long da = make_desc(bP + st * 2048, 128, 256);
+                #pragma unroll
+                for (int nb = 0; nb < 4; nb++) {
+                    unsigned long long db = make_desc(bV[cur] + st * 8192 + nb * 64 * 32, 128, 256);
+                    wgmma_m64n64k16_bf16(oacc[nb], da, db, 1);
+                }
+            }
+            wgmma_commit();
+            wgmma_wait<0>();
+        }
+        // V(t+1) cooperative into the other stage, then flag EMPTY for K reuse
+        if (t + 1 < n_tiles) {
+            int k1 = (t + 1) * 64;
+            for (int idx = threadIdx.x; idx < 64 * D; idx += 256) {
+                int r = idx / D, c = idx % D;
+                int stv = r / 16, kkv = r % 16;
+                size_t offv = (size_t)stv * 8192 + (c / 8) * 256 + (kkv / 8) * 128 + (c % 8) * 16 + (kkv % 8) * 2;
+                int gr = k1 + r;
+                *(__nv_bfloat16*)(bV[cur ^ 1] + offv) = (gr < T)
+                    ? V[((size_t)gr * HKV + kvh) * D + c] : __float2bfloat16(0.0f);
+            }
+        }
+        __syncthreads();
+        v10_arrive(&mEmpty[cur]);
+    }
+    if (q0 < T) {
+        float il[2] = {l[0] > 0.0f ? 1.0f / l[0] : 0.0f, l[1] > 0.0f ? 1.0f / l[1] : 0.0f};
+        #pragma unroll
+        for (int nb = 0; nb < 4; nb++)
+            #pragma unroll
+            for (int i = 0; i < 32; i += 4) {
+                int n8 = i / 4;
+                int cc = nb * 64 + c0 + n8 * 8;
+                int ra = q0 + r0, rb = q0 + r0 + 8;
+                if (ra < T) {
+                    O[((size_t)ra * H + head) * D + cc + 0] = oacc[nb][i + 0] * il[0];
+                    O[((size_t)ra * H + head) * D + cc + 1] = oacc[nb][i + 1] * il[0];
+                }
+                if (rb < T) {
+                    O[((size_t)rb * H + head) * D + cc + 0] = oacc[nb][i + 2] * il[1];
+                    O[((size_t)rb * H + head) * D + cc + 1] = oacc[nb][i + 3] * il[1];
+                }
+            }
+    }
+}
+
 int main() {
     const int D = 256;
     // hostile-ish operands
@@ -1608,6 +1832,22 @@ int main() {
             int shmem7 = 172032 + 512;
             int shmem8 = 212992;
             int shmem9 = 212992 + 64;
+            int shmem10 = 212992 + 64;
+            CUtensorMap tQm, tKm;
+            {
+                cuuint64_t gdq[3] = { (cuuint64_t)D, (cuuint64_t)H, (cuuint64_t)T };
+                cuuint64_t gsq[2] = { (cuuint64_t)D * 2, (cuuint64_t)H * D * 2 };
+                cuuint32_t bxq[3] = { 64, 1, 64 };
+                cuuint32_t esq[3] = { 1, 1, 1 };
+                if (cuTensorMapEncodeTiled(&tQm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, (void*)dq,
+                        gdq, gsq, bxq, esq, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+                        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)) { printf("tQ encode fail\n"); exit(1); }
+                cuuint64_t gdk[3] = { (cuuint64_t)D, (cuuint64_t)HKV, (cuuint64_t)T };
+                cuuint64_t gsk[2] = { (cuuint64_t)D * 2, (cuuint64_t)HKV * D * 2 };
+                if (cuTensorMapEncodeTiled(&tKm, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, (void*)dk,
+                        gdk, gsk, bxq, esq, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+                        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE)) { printf("tK encode fail\n"); exit(1); }
+            }
             CK(cudaFuncSetAttribute(fa3_v3, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem));
             CK(cudaFuncSetAttribute(fa3_v4, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem4));
             CK(cudaFuncSetAttribute(fa3_v5, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem5));
@@ -1615,9 +1855,10 @@ int main() {
             CK(cudaFuncSetAttribute(fa3_v7, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem7));
             CK(cudaFuncSetAttribute(fa3_v8, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem8));
             CK(cudaFuncSetAttribute(fa3_v9, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem9));
+            CK(cudaFuncSetAttribute(fa3_v10, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem10));
             dim3 grid((T + 63) / 64, H);
             dim3 grid5((T + 127) / 128, H);
-            fa3_v9<<<grid5, 384, shmem9>>>(dq, dk, dv, dout, T, H, HKV, D, scale);
+            fa3_v10<<<grid5, 256, shmem10>>>(tQm, tKm, dv, dout, T, H, HKV, D, scale);
             CK(cudaDeviceSynchronize());
             if (T != 2048) {
                 float* ho = (float*)malloc(nq * 4);
@@ -1741,6 +1982,13 @@ int main() {
                 CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
                 CK(cudaEventElapsedTime(&ms, a, b2));
                 printf("v9 T=2048: %.0fus/call (async producer, mbarriers)\n", ms * 50.0);
+                for (int i = 0; i < 3; i++) fa3_v10<<<grid5, 256, shmem10>>>(tQm, tKm, dv, dout, T, H, HKV, D, scale);
+                CK(cudaDeviceSynchronize());
+                CK(cudaEventRecord(a));
+                for (int i = 0; i < 20; i++) fa3_v10<<<grid5, 256, shmem10>>>(tQm, tKm, dv, dout, T, H, HKV, D, scale);
+                CK(cudaEventRecord(b2)); CK(cudaEventSynchronize(b2));
+                CK(cudaEventElapsedTime(&ms, a, b2));
+                printf("v10 T=2048: %.0fus/call (TMA swizzled Q/K in the v5 shape)\n", ms * 50.0);
             }
             cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
             free(q); free(k); free(vv);
