@@ -225,8 +225,9 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let gate = e.matmul(ffn_gate, &z, t)?;
-                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
                     let mut act = e.zeros(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
@@ -278,8 +279,9 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let gate = e.matmul(ffn_gate, &z, t)?;
-                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
                     let mut act = e.zeros(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
@@ -395,8 +397,9 @@ impl HybridModel {
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let gate = e.matmul(ffn_gate, &z, t)?;
-                    let up = e.matmul(ffn_up, &z, t)?;
+                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, t)?;
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
                     let mut act = e.zeros(t * n_ff)?;
                     Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
@@ -451,7 +454,11 @@ impl HybridModel {
         // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
         // would read 2x out of bounds. `gated` keys both the split and the sigmoid epilogue.
         let gated = cfg.attn_out_gate();
-        let qf = e.matmul(&fa.wq, h, t)?;
+        // grouped: one f16 activation convert feeds q/k/v (matmul_group)
+        let mut g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        let v = g3.pop().unwrap();
+        let mut k = g3.pop().unwrap();
+        let qf = g3.pop().unwrap();
         let (mut q, gate) = if gated {
             let mut q = e.zeros(t * n_head * head_dim)?;
             let mut gate = e.zeros(t * n_head * head_dim)?;
@@ -460,8 +467,6 @@ impl HybridModel {
         } else {
             (qf, None)
         };
-        let mut k = e.matmul(&fa.wk, h, t)?;
-        let v = e.matmul(&fa.wv, h, t)?;
 
         let mut qn = e.zeros(t * n_head * head_dim)?;
         e.rms_norm(&q, fa.q_norm.float_data(), &mut qn, head_dim, n_head * t, eps)?;
@@ -566,10 +571,12 @@ impl HybridModel {
         debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
 
         // NORMAL prefill dispatch (GEMM at m>=16) — same as linear_attn/forward_last.
-        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;       // [T, conv_dim] token-major
-        let z = e.matmul(&la.wqkv_gate, h, t)?;          // [T, value_dim]
-        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
-        let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
+        // grouped: one f16 activation convert feeds all four projections (matmul_group)
+        let mut g4 = e.matmul_group(&[&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha], h, t)?;
+        let alpha = g4.pop().unwrap();                   // [T, num_v]
+        let beta_raw = g4.pop().unwrap();                // [T, num_v]
+        let z = g4.pop().unwrap();                       // [T, value_dim]
+        let qkv_mixed = g4.pop().unwrap();               // [T, conv_dim] token-major
 
         // conv with CARRIED ring state + ring roll (state read + final-window write-back).
         let rl = cache.recur[il].as_mut().unwrap();
@@ -624,7 +631,11 @@ impl HybridModel {
         // qwen35: wq output = head_dim*2*n_head (fused [q|gate] per head). M3/Hy3: NO output
         // gate — wq out = n_head*head_dim, no split (see prime-path note).
         let gated = cfg.attn_out_gate();
-        let qf = e.matmul(&fa.wq, h, t)?;
+        // grouped: one f16 activation convert feeds q/k/v (matmul_group)
+        let mut g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        let v = g3.pop().unwrap();
+        let mut k = g3.pop().unwrap();
+        let qf = g3.pop().unwrap();
         let (mut q, gate) = if gated {
             let mut q = e.zeros(t * n_head * head_dim)?;
             let mut gate = e.zeros(t * n_head * head_dim)?;
@@ -633,8 +644,6 @@ impl HybridModel {
         } else {
             (qf, None)
         };
-        let mut k = e.matmul(&fa.wk, h, t)?;
-        let v = e.matmul(&fa.wv, h, t)?;
 
         // QK-norm (per head_dim row), then partial RoPE.
         let mut qn = e.zeros(t * n_head * head_dim)?;
@@ -693,10 +702,12 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
 
         // projections
-        let qkv_mixed = e.matmul(&la.wqkv, h, t)?;       // [T, conv_dim] token-major
-        let z = e.matmul(&la.wqkv_gate, h, t)?;          // [T, value_dim]
-        let beta_raw = e.matmul(&la.ssm_beta, h, t)?;    // [T, num_v]
-        let alpha = e.matmul(&la.ssm_alpha, h, t)?;      // [T, num_v]
+        // grouped: one f16 activation convert feeds all four projections (matmul_group)
+        let mut g4 = e.matmul_group(&[&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha], h, t)?;
+        let alpha = g4.pop().unwrap();                   // [T, num_v]
+        let beta_raw = g4.pop().unwrap();                // [T, num_v]
+        let z = g4.pop().unwrap();                       // [T, value_dim]
+        let qkv_mixed = g4.pop().unwrap();               // [T, conv_dim] token-major
 
         // conv + GDN repack, FUSED (2026-07-03): ssm_conv1d_gdn reads qkv_mixed [T, conv_dim]
         // token-major DIRECTLY (causal window rows t-pad..t, rows<0 = zero prefill state), applies

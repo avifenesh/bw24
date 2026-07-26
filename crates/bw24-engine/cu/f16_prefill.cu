@@ -76,28 +76,30 @@ cublasLtHandle_t g_lt16 = nullptr;
 std::map<std::tuple<int, int, int>, F16Plan>* g_plans16 = nullptr;  // leaked (process-lifetime)
 }  // namespace
 
-// One FP16 prefill GEMM: y[m,n] row-major = x[m,k] @ W[n,k]^T, f32 accumulate/output.
-// Col-major view: D[n,m] = A^T(W as k x n, opT) * B(xh as k x m, opN), lda=ldb=k, ldd=n.
-// Returns 0 ok; 1xxxx = cudaError from the convert; 2xxxx = no heuristic; 3xxxx = matmul status.
-extern "C" int bw24_f16_pp_gemm(
-    const void* w_f16,      // device [n, k] row-major fp16 mirror
-    const float* x_f32,     // device [m, k] row-major f32 activation
-    void* xh_f16,           // device scratch [m, k] fp16 (fully overwritten)
-    float* y_f32,           // device out [m, n] row-major f32 (fully overwritten)
-    int m, int n, int k,
-    void* ws, size_t ws_bytes,
-    void* stream_v) {
+// Standalone f32->fp16 activation convert (grouped-dispatch entry: hybrid layers run 2-4
+// GEMMs on ONE activation — convert once, feed bw24_f16_pp_gemm_pre per weight).
+extern "C" int bw24_f16_cvt(const float* x_f32, void* xh_f16, size_t nelem, void* stream_v) {
     cudaStream_t stream = (cudaStream_t)stream_v;
-
-    size_t nelem = (size_t)m * (size_t)k;
     const int threads = 256;
     size_t want = (nelem + threads - 1) / threads;
     int blocks = (int)(want < 1024 ? want : 1024);
     if (blocks < 1) blocks = 1;
     bw24_f16_cvt_kernel<<<blocks, threads, 0, stream>>>(x_f32, (__half*)xh_f16, nelem);
     cudaError_t ce = cudaGetLastError();
-    if (ce != cudaSuccess) return 10000 + (int)ce;
+    return ce == cudaSuccess ? 0 : 10000 + (int)ce;
+}
 
+// One FP16 prefill GEMM: y[m,n] row-major = x[m,k] @ W[n,k]^T, f32 accumulate/output.
+// Col-major view: D[n,m] = A^T(W as k x n, opT) * B(xh as k x m, opN), lda=ldb=k, ldd=n.
+// Returns 0 ok; 1xxxx = cudaError from the convert; 2xxxx = no heuristic; 3xxxx = matmul status.
+extern "C" int bw24_f16_pp_gemm_pre(
+    const void* w_f16,      // device [n, k] row-major fp16 mirror
+    const void* xh_f16,     // device [m, k] fp16 activation (pre-converted)
+    float* y_f32,           // device out [m, n] row-major f32 (fully overwritten)
+    int m, int n, int k,
+    void* ws, size_t ws_bytes,
+    void* stream_v) {
+    cudaStream_t stream = (cudaStream_t)stream_v;
     std::lock_guard<std::mutex> guard(g_mu16);
     if (!g_lt16) {
         cublasStatus_t s = cublasLtCreate(&g_lt16);
@@ -135,4 +137,13 @@ extern "C" int bw24_f16_pp_gemm(
                                       ws, ws_bytes, stream);
     if (s != CUBLAS_STATUS_SUCCESS) return 30000 + (int)s;
     return 0;
+}
+
+// Combined convert + GEMM (the single-consumer path and the kernel-check raw entry).
+extern "C" int bw24_f16_pp_gemm(
+    const void* w_f16, const float* x_f32, void* xh_f16, float* y_f32,
+    int m, int n, int k, void* ws, size_t ws_bytes, void* stream_v) {
+    int rc = bw24_f16_cvt(x_f32, xh_f16, (size_t)m * (size_t)k, stream_v);
+    if (rc != 0) return rc;
+    return bw24_f16_pp_gemm_pre(w_f16, xh_f16, y_f32, m, n, k, ws, ws_bytes, stream_v);
 }

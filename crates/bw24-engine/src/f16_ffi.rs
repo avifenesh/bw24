@@ -31,6 +31,25 @@ unsafe extern "C" {
         ws_bytes: usize,
         stream: *mut core::ffi::c_void,
     ) -> i32;
+    /// Standalone f32->fp16 convert (grouped dispatch: one convert feeds N GEMMs).
+    fn bw24_f16_cvt(
+        x_f32: *const f32,
+        xh_f16: *mut core::ffi::c_void,
+        nelem: usize,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
+    /// GEMM on a PRE-CONVERTED fp16 activation (see bw24_f16_cvt).
+    fn bw24_f16_pp_gemm_pre(
+        w_f16: *const core::ffi::c_void,
+        xh_f16: *const core::ffi::c_void,
+        y_f32: *mut f32,
+        m: i32,
+        n: i32,
+        k: i32,
+        ws: *mut core::ffi::c_void,
+        ws_bytes: usize,
+        stream: *mut core::ffi::c_void,
+    ) -> i32;
     /// GGUF Q8_0 34B blocks -> row-major fp16 mirror (load-time).
     fn bw24_q8_0_dequant_f16(
         w_q8: *const core::ffi::c_void,
@@ -146,6 +165,93 @@ impl crate::Engine {
             .into());
         }
         Ok(y)
+    }
+
+    /// f32 -> fp16 activation convert into a fresh buffer (matmul_group: ONE convert feeds
+    /// every mirror-carrying weight in the group; the standalone per-GEMM converts were ~250
+    /// launches/prime of gap-cluster fuel, nsys 2026-07-26).
+    pub fn f16_act(
+        &self,
+        x: &CudaSlice<f32>,
+        nelem: usize,
+    ) -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        let mut xh = self.alloc_u8_uninit(nelem * 2)?;
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (x_p, _gx) = x.device_ptr(stream);
+            let (h_p, _gh) = xh.device_ptr_mut(stream);
+            unsafe {
+                bw24_f16_cvt(
+                    x_p as *const f32,
+                    h_p as *mut core::ffi::c_void,
+                    nelem,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("bw24_f16_cvt rc={rc}").into());
+        }
+        Ok(xh)
+    }
+
+    /// FP16 GEMM on a pre-converted activation — the matmul_group arm. Same contract as
+    /// `try_f16_gemm` minus the convert.
+    pub fn try_f16_gemm_pre(
+        &self,
+        w: &crate::model::GpuTensor,
+        xh: &CudaSlice<u8>,
+        m: usize,
+    ) -> Result<Option<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let (w16, ne, scale) = match w {
+            GpuTensor::Quant {
+                f16: Some(w16),
+                ne,
+                scale,
+                ..
+            } => (w16, ne, *scale),
+            _ => return Ok(None),
+        };
+        let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
+        // workspace from the shared scratch (xh is caller-owned here)
+        let mut guard = self.f16_scratch.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(F16Scratch {
+                xh: self.alloc_u8_uninit(2)?,
+                ws: self.alloc_u8_uninit(F16_WS_BYTES)?,
+                cap_xh: 2,
+            });
+        }
+        let s = guard.as_mut().unwrap();
+        let mut y = self.uninit(m * out_f)?;
+        let rc = {
+            let stream = &self.gpu.stream;
+            let (w_p, _gw) = w16.device_ptr(stream);
+            let (h_p, _gh) = xh.device_ptr(stream);
+            let (y_p, _gy) = y.device_ptr_mut(stream);
+            let (ws_p, _gws) = s.ws.device_ptr_mut(stream);
+            unsafe {
+                bw24_f16_pp_gemm_pre(
+                    w_p as *const core::ffi::c_void,
+                    h_p as *const core::ffi::c_void,
+                    y_p as *mut f32,
+                    m as i32,
+                    out_f as i32,
+                    in_f as i32,
+                    ws_p as *mut core::ffi::c_void,
+                    F16_WS_BYTES,
+                    stream.cu_stream() as *mut core::ffi::c_void,
+                )
+            }
+        };
+        if rc != 0 {
+            return Err(format!("bw24_f16_pp_gemm_pre rc={rc} (m={m} n={out_f} k={in_f})").into());
+        }
+        if scale != 1.0 {
+            self.scale_inplace(&mut y, scale, m * out_f)?;
+        }
+        Ok(Some(y))
     }
 
     /// Raw fp16 mirror build from GGUF Q8_0 device bytes (gates/benches; also the loader's

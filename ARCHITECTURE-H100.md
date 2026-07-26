@@ -484,3 +484,21 @@ Default ON under bw24_hopper_mma (BW24_PP_F16=0 reverts to MMQ; =1 forces on
 smaller rigs at their own VRAM risk). MMQ stays the exact-config fallback and
 the portable default. Next prefill ceiling: FA prefill 9.3% + GDN chunk
 kernels now dominate prime — new profile needed for the next target.
+
+**matmul_group / convert-once (2026-07-26, kept, perf-NEUTRAL):** grouped the
+7 shared-activation call-site families (GDN 4-tuple, attn q/k/v, ffn gate/up)
+through `matmul_group` — the f16 arm converts the activation once per group
+(saves ~160 cvt launches/prime). Measured pp512 15626 -> 15391 -> 15545 across
+runs = one noise band; the gap clusters were NOT cvt-bound (they sit at layer
+boundaries before rms_norm — host submission cadence, not launch count).
+Kept: no regression, and one-xh-per-group is the shape a future prefill graph
+capture wants. Honest-neutral, recorded per the launch-collapse precedent.
+
+Prime anatomy at 15.5k tok/s (per-prime, nsys): fp16 GEMMs ~10ms @660TF
+(near HW for Lt-heuristic), GDN chunk family ~5.9ms, elementwise+norms ~5.4ms,
+FA prefill f32 ~3.2ms, launch gaps ~7.5ms over ~1030 launches. vLLM prefill
+ref 35k tok/s (w8a8 int8 GEMMs ~1300TF class + fused epilogues). Next arcs
+ranked: (1) GDN chunk kernels to their wall (18%), (2) FA prefill tensor-core
+port (10%, FA3-class arc), (3) norm/add fusion + prefill graph capture for the
+gap structure (22%), (4) cutlass int8 per-row epilogue GEMM (the vLLM numeric
+config) if (1)-(3) exhaust.

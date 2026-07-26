@@ -5419,6 +5419,37 @@ impl Engine {
         Ok(None)
     }
 
+    /// Grouped matmul: several weights consuming ONE activation (hybrid layers: the GDN
+    /// 4-tuple wqkv/gate/beta/alpha, attention q/k/v, ffn gate/up). Semantics identical to
+    /// calling `matmul` per weight; the f16-mirror arm converts the activation ONCE for the
+    /// whole group instead of once per GEMM (the standalone converts were ~250 launches/prime
+    /// of small-kernel gap fuel — nsys 2026-07-26). Any member without a mirror (or with a
+    /// different in_f) falls back to its own `matmul` — behavior unchanged.
+    pub fn matmul_group(&self, ws: &[&crate::model::GpuTensor], x: &CudaSlice<f32>, m: usize)
+                        -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+        use crate::model::GpuTensor;
+        let mut out = Vec::with_capacity(ws.len());
+        let any_mirror = ws.iter().any(|w| matches!(w, GpuTensor::Quant { f16: Some(_), .. }));
+        if m >= 16 && any_mirror && !self.verify_exact_on() {
+            let in_f = ws[0].in_features();
+            let xh = self.f16_act(x, m * in_f)?;
+            for w in ws {
+                if w.in_features() == in_f {
+                    if let Some(y) = self.try_f16_gemm_pre(w, &xh, m)? {
+                        out.push(y);
+                        continue;
+                    }
+                }
+                out.push(self.matmul(w, x, m)?);
+            }
+            return Ok(out);
+        }
+        for w in ws {
+            out.push(self.matmul(w, x, m)?);
+        }
+        Ok(out)
+    }
+
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
     /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. NVFP4 needs in_f % 64 == 0.
     /// DEFAULT-ON (2026-06-28): measured pp512 9B-NVFP4 = 1413 tok/s WITH this GEMM vs 298 with the
