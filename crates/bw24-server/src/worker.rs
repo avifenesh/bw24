@@ -291,7 +291,11 @@ pub fn run(
         while let Some(req) = queue.pop_front() {
             let lane = req.lane;
             let lane_count = active.iter().filter(|s| s.lane == lane).count();
-            let cap = if lane == crate::lanes::Lane::Interactive {
+            // Batched scheduling decouples concurrency from batch width (decode runs
+            // ceil(N/8) chunks per tick) — the lane policy owns the cap. The legacy
+            // MAX_ACTIVE bound applies only in round-robin mode (BW24_SERVE_BATCH=0).
+            let batching_on = std::env::var("BW24_SERVE_BATCH").map(|v| v != "0").unwrap_or(true);
+            let cap = if lane == crate::lanes::Lane::Interactive && !batching_on {
                 max_active.min(policy.max_sessions[0])
             } else {
                 policy.max_sessions[lane.idx()]
@@ -435,6 +439,15 @@ pub fn run(
                 last_interactive_decode = Instant::now();
             }
             last_batch = ready.len();
+            // BW24_TICK_TRACE=1: per-tick phase timing to stderr (diagnosis only).
+            if std::env::var("BW24_TICK_TRACE").as_deref() == Ok("1") {
+                let n_int = active.iter().filter(|s| s.lane == crate::lanes::Lane::Interactive).count();
+                let n_j = active.iter().filter(|s| s.lane == crate::lanes::Lane::Judge).count();
+                let n_pref = active.iter().filter(|s| !s.prefill_done).count();
+                eprintln!("[tick] act={} int={} judge={} priming={} ready={} decode_ms={:.1}",
+                          active.len(), n_int, n_j, n_pref, ready.len(),
+                          t_decode.elapsed().as_secs_f32() * 1000.0);
+            }
             // (d) dark-lane prefill, bounded per tick: judge/harvest primes consume their
             // stall-bound budgets only after every decoding stream has advanced.
             for i in 0..active.len() {

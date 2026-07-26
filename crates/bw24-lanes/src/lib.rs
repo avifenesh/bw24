@@ -120,8 +120,13 @@ impl LanePolicy {
                 u("BW24_PREFILL_JUDGE", 256),
                 u("BW24_PREFILL_HARVEST", 256),
             ],
+            // Interactive cap sizes CONCURRENCY, not batching (decode runs multiple <=8-row
+            // chunks per tick). 2026-07-26 battery: cap 4 vs 32 closed-loop clients made
+            // QUEUE WAIT the interactive bottleneck (client streams starved in FIFO while
+            // the engine idled at p99 17.8ms) — the cap must admit the whole protected set;
+            // aggregate decode throughput is the real limit, enforced by the SLO estimator.
             max_sessions: [
-                u("BW24_LANE_MAX_INTERACTIVE", 4),
+                u("BW24_LANE_MAX_INTERACTIVE", 32),
                 u("BW24_LANE_MAX_JUDGE", 4),
                 u("BW24_LANE_MAX_HARVEST", 8),
             ],
