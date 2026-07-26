@@ -1405,3 +1405,17 @@ kernel-check + prime-batch green. Measured: batched +0.17% (4/5, inside
 noise); single-seq arithmetic ~+0.6% at T=2048 (one 33MB re-read saved per
 site x64, below the ms display floor). KEPT: bit-identical, strictly less
 traffic and launches — the launch-diet class.
+
+**TMA foundation PROVEN (2026-07-27, tools/probe_tma.cu): MATCH first run.**
+Host cuTensorMapEncodeTiled (2D bf16, box 64x64, no swizzle) + __grid_constant__
+CUtensorMap + cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::
+complete_tx::bytes + mbarrier.arrive.expect_tx / try_wait.parity — byte-exact
+box load verified. EVERY primitive for FA3 v10 is now individually proven in
+this repo: wgmma bf16 descriptors + canonical staging (bench_fa3 v1), online
+softmax fragment plumbing (v2), the full kernel (v3-v5, parity), setmaxnreg
+contract (probe_setmaxnreg), mbarrier producer signaling incl. .noinc
+(bench_fa3 v9), TMA (probe_tma). Remaining v10 assembly: swizzled tensor maps
+(SWIZZLE_128B) paired with swizzle-mode wgmma descriptors (desc bits 62-63,
+iterate LBO/SBO with the existing QK^T probe exactly as the canonical layout
+was cracked), TMA staging inside the v5 2-consumer shape (no third warpgroup —
+that lesson is paid for). This is the sole open arc on the sole trailing lane.
