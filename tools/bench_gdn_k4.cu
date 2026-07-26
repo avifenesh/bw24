@@ -521,7 +521,7 @@ static void cpu_ref(const float* k, const float* gcum, const float* beta,
 
 int main(int argc, char** argv) {
     const int H = argc > 1 ? atoi(argv[1]) : 32;
-    const int T = 512, C = 32, D = GDN_D;
+    const int T = argc > 2 ? atoi(argv[2]) : 512, C = 32, D = GDN_D;
     const int NC = (T + C - 1) / C;
     printf("GDN K4 harness: H=%d T=%d C=%d D=%d NC=%d\n", H, T, C, D, NC);
     srand(7);

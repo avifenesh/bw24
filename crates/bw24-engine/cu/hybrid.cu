@@ -1302,3 +1302,213 @@ extern "C" __global__ void reduce_slots_f32(
         dst[i] = acc;
     }
 }
+
+// ===================================================================================
+// K4-MMA (BW24_GDN_MMA opt-in seam, 2026-07-26 — tools/bench_gdn_k4.cu arc, harness
+// verdict 68.3us vs the f32 K4's 119.4 = 1.75x at (H=32,T=512,C=32)): the chunked WY
+// state pass with M resident in mma accumulator fragments, step A/B as m16n8k16 bf16
+// warp tiles, W/k pre-converted bf16 through a 2-deep cp.async ring. REQUIRES C == 32
+// (the Rust seam guards). Numerics: bf16 operand rounding WITHIN the gated chunked
+// config — BW24_GDN_DIFF oracle + argmax battery arbitrate. mma helpers duplicated
+// from flash_attn.cu (k4-prefixed; cu TUs are separate fatbins, no shared header).
+#if !defined(BW24_PORTABLE_CUDA) || defined(BW24_HOPPER_MMA)
+#include <cuda_bf16.h>
+namespace k4mma {
+struct CTile { float x[4]; };
+struct ATile { nv_bfloat162 x[4]; };
+struct BTile { nv_bfloat162 x[2]; };
+static __device__ __forceinline__ void ld_A(ATile& t, const __nv_bfloat16* xs0, int stride_pairs, int lane){
+    int* xi = (int*)t.x;
+    const unsigned* xs = (const unsigned*)xs0 + (lane % 16)*stride_pairs + (lane / 16)*4;
+    unsigned addr = (unsigned)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
+        : "=r"(xi[0]),"=r"(xi[1]),"=r"(xi[2]),"=r"(xi[3]) : "r"(addr));
+}
+static __device__ __forceinline__ void ld_A_trans(ATile& t, const __nv_bfloat16* xs0, int stride_pairs, int lane){
+    int* xi = (int*)t.x;
+    const unsigned* xs = (const unsigned*)xs0 + (lane % 16)*stride_pairs + (lane / 16)*4;
+    unsigned addr = (unsigned)__cvta_generic_to_shared(xs);
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0,%1,%2,%3}, [%4];"
+        : "=r"(xi[0]),"=r"(xi[2]),"=r"(xi[1]),"=r"(xi[3]) : "r"(addr));
+}
+static __device__ __forceinline__ void mma_bf16(CTile& D, const ATile& A, const BTile& B){
+    const int* Ax=(const int*)A.x; const int* Bx=(const int*)B.x; float* Dx=D.x;
+    asm("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+        : "+f"(Dx[0]),"+f"(Dx[1]),"+f"(Dx[2]),"+f"(Dx[3])
+        : "r"(Ax[0]),"r"(Ax[1]),"r"(Ax[2]),"r"(Ax[3]),"r"(Bx[0]),"r"(Bx[1]));
+}
+}  // namespace k4mma
+using k4mma::CTile; using k4mma::ATile; using k4mma::BTile;
+using k4mma::ld_A; using k4mma::ld_A_trans; using k4mma::mma_bf16;
+#define MB_PAD 40
+
+// bulk f32 -> bf16 convert (the W/k mirrors the mma K4 consumes; float4-vectorized).
+extern "C" __global__ void f32_to_bf16_bulk(const float* __restrict__ x,
+                                            __nv_bfloat16* __restrict__ o, long n) {
+    long base = (blockIdx.x * (long)blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 v = *(const float4*)(x + base);
+        o[base + 0] = __float2bfloat16(v.x);
+        o[base + 1] = __float2bfloat16(v.y);
+        o[base + 2] = __float2bfloat16(v.z);
+        o[base + 3] = __float2bfloat16(v.w);
+    } else {
+        for (long i = base; i < n; i++) o[i] = __float2bfloat16(x[i]);
+    }
+}
+
+// ---------------- v2: v1 + bf16 W/k inputs + cp.async double-buffered staging ----------------
+// Probe verdict on v1: synchronous global->bf16 staging = 72us of 133 (54%); Ssnap 15us.
+// v2 takes W and k PRE-CONVERTED to bf16 (engine side: K3 casts W on store for free; k gets
+// a bf16 mirror pass) and pipelines the 8KB tiles through a 2-deep cp.async ring.
+__device__ __forceinline__ void cp_async16_g(void* dst, const void* src, int src_size) {
+    unsigned d = (unsigned)__cvta_generic_to_shared(dst);
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(d), "l"(src), "r"(src_size));
+}
+__device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;"); }
+template<int N> __device__ __forceinline__ void cp_wait() {
+    asm volatile("cp.async.wait_group %0;" :: "n"(N));
+}
+
+extern "C" __global__ void __launch_bounds__(256, 2)
+gdn_chunk_state_mma(const __nv_bfloat16* __restrict__ kb16, const float* __restrict__ gcum,
+                     const float* __restrict__ beta,
+                     const float* __restrict__ U, const __nv_bfloat16* __restrict__ Wb16,
+                     float* __restrict__ Y, float* __restrict__ Ssnap,
+                     const float* __restrict__ state_in, float* __restrict__ state_out,
+                     int H, int T, int C) {
+    constexpr int D = GDN_D;
+    constexpr int COLS = 32;
+    const int h = blockIdx.x;
+    const int col0 = blockIdx.y * COLS;
+    const int tid = threadIdx.x;
+    const int warp = tid / 32, lane = tid % 32;
+
+    __shared__ __nv_bfloat16 Wb[2][32 * D];
+    __shared__ __nv_bfloat16 kb[2][32 * D];
+    __shared__ __nv_bfloat16 Mb[32 * (D + 8)];
+    constexpr int MB_STR = D + 8;
+    __shared__ __nv_bfloat16 ys[32 * MB_PAD];
+    __shared__ float gk[32];
+
+    const int fr = lane / 4, fc = (lane % 4) * 2;
+    const int mh = warp / 4, nq = warp % 4;
+    CTile Macc[4];
+    #pragma unroll
+    for (int t4 = 0; t4 < 4; t4++)
+        #pragma unroll
+        for (int l = 0; l < 4; l++) {
+            int col = mh * 16 + fr + ((l < 2) ? 0 : 8);
+            int i = nq * 32 + t4 * 8 + fc + (l & 1);
+            Macc[t4].x[l] = state_in[((size_t)h * D + col0 + col) * D + i];
+        }
+
+    const int NC = (T + C - 1) / C;
+    // stage(chunk, buf): W tile 32xD bf16 (8KB) + k tile (8KB) = 8 x 16B per thread
+    // zfill guards: W rows exist for the full nc*C buffer; k rows past T zero-fill
+    #define V2_STAGE(c_, buf_) do {                                                       \
+        int t0_ = (c_) * C;                                                               \
+        for (int idx = tid; idx < 32 * D / 8; idx += 256) {                               \
+            int r = idx / (D / 8), seg = idx % (D / 8);                                   \
+            cp_async16_g(&Wb[buf_][r * D + seg * 8],                                      \
+                         Wb16 + (((size_t)(c_) * H + h) * C + r) * D + seg * 8, 16);      \
+            cp_async16_g(&kb[buf_][r * D + seg * 8],                                      \
+                         kb16 + ((size_t)(t0_ + r) * H + h) * D + seg * 8,                \
+                         (t0_ + r < T) ? 16 : 0);                                         \
+        }                                                                                 \
+        cp_commit();                                                                      \
+    } while (0)
+
+    V2_STAGE(0, 0);
+    for (int c = 0; c < NC; c++) {
+        const int t0 = c * C;
+        const int Cc = min(C, T - t0);
+        const int cur = c & 1;
+        // chunk top: Ssnap + Mb mirror + gk (independent of the in-flight stage)
+        float* sc_out = Ssnap + ((size_t)c * H + h) * D * D;
+        #pragma unroll
+        for (int t4 = 0; t4 < 4; t4++)
+            #pragma unroll
+            for (int l = 0; l < 4; l++) {
+                int col = mh * 16 + fr + ((l < 2) ? 0 : 8);
+                int i = nq * 32 + t4 * 8 + fc + (l & 1);
+                sc_out[(size_t)i * D + col0 + col] = Macc[t4].x[l];
+                Mb[col * MB_STR + i] = __float2bfloat16(Macc[t4].x[l]);
+            }
+        if (tid < Cc) {
+            float gC = gcum[(size_t)(t0 + Cc - 1) * H + h];
+            gk[tid] = expf(gC - gcum[(size_t)(t0 + tid) * H + h])
+                    * beta[(size_t)(t0 + tid) * H + h];
+        } else if (tid < 32) {
+            gk[tid] = 0.0f;
+        }
+        cp_wait<0>();
+        __syncthreads();
+        if (c + 1 < NC) V2_STAGE(c + 1, cur ^ 1);
+
+        // step A
+        {
+            const int mj = warp / 4, colg = (warp % 4) / 2, half = warp % 2;
+            CTile Sc; Sc.x[0] = Sc.x[1] = Sc.x[2] = Sc.x[3] = 0.0f;
+            #pragma unroll
+            for (int k16 = 0; k16 < D / 16; k16++) {
+                ATile A;
+                ld_A(A, Wb[cur] + (mj * 16) * D + k16 * 16, D / 2, lane);
+                ATile Bt;
+                ld_A(Bt, Mb + (colg * 16) * MB_STR + k16 * 16, MB_STR / 2, lane);
+                BTile B;
+                if (half == 0) { B.x[0] = Bt.x[0]; B.x[1] = Bt.x[2]; }
+                else           { B.x[0] = Bt.x[1]; B.x[1] = Bt.x[3]; }
+                mma_bf16(Sc, A, B);
+            }
+            #pragma unroll
+            for (int l = 0; l < 4; l++) {
+                int j = mj * 16 + fr + ((l < 2) ? 0 : 8);
+                int col = colg * 16 + half * 8 + fc + (l & 1);
+                if (j < Cc) {
+                    float u = U[(((size_t)c * H + h) * C + j) * D + col0 + col];
+                    float y = u - Sc.x[l];
+                    Y[(((size_t)c * H + h) * C + j) * D + col0 + col] = y;
+                    ys[j * MB_PAD + col] = __float2bfloat16(y * gk[j]);
+                } else {
+                    ys[j * MB_PAD + col] = __float2bfloat16(0.0f);
+                }
+            }
+        }
+        __syncthreads();
+
+        // step B
+        const float bC = expf(gcum[(size_t)(t0 + Cc - 1) * H + h]);
+        #pragma unroll
+        for (int t4 = 0; t4 < 4; t4++)
+            #pragma unroll
+            for (int l = 0; l < 4; l++) Macc[t4].x[l] *= bC;
+        #pragma unroll
+        for (int k16 = 0; k16 < 2; k16++) {
+            ATile A;
+            ld_A_trans(A, ys + (k16 * 16) * MB_PAD + mh * 16, MB_PAD / 2, lane);
+            #pragma unroll
+            for (int p2 = 0; p2 < 2; p2++) {
+                ATile Bt;
+                ld_A_trans(Bt, kb[cur] + (k16 * 16) * D + nq * 32 + p2 * 16, D / 2, lane);
+                BTile Blo, Bhi;
+                Blo.x[0] = Bt.x[0]; Blo.x[1] = Bt.x[2];
+                Bhi.x[0] = Bt.x[1]; Bhi.x[1] = Bt.x[3];
+                mma_bf16(Macc[p2 * 2 + 0], A, Blo);
+                mma_bf16(Macc[p2 * 2 + 1], A, Bhi);
+            }
+        }
+        __syncthreads();
+    }
+    #pragma unroll
+    for (int t4 = 0; t4 < 4; t4++)
+        #pragma unroll
+        for (int l = 0; l < 4; l++) {
+            int col = mh * 16 + fr + ((l < 2) ? 0 : 8);
+            int i = nq * 32 + t4 * 8 + fc + (l & 1);
+            state_out[((size_t)h * D + col0 + col) * D + i] = Macc[t4].x[l];
+        }
+}
+
+
+#endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA

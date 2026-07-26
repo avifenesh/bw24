@@ -7155,7 +7155,41 @@ impl Engine {
                 }
             }
         }
-        {   // K4 (sequential over chunks inside; blocks col-partition the state)
+        // K4-MMA seam (BW24_GDN_MMA=1, OPT-IN; harness verdict 1.75x — tools/bench_gdn_k4.cu,
+        // ledger 2026-07-26): M in mma accumulator fragments, bf16 W/k mirrors through a
+        // cp.async ring. C==32 only (the kernel's tile). Battery: pp512 +3.5% (17286),
+        // argmax MATCH x3, greedy streams identical, oracle out mean_rel ~1e-4 — BUT the
+        // kernel-check f64-truth STATE pin (2.5e-4) reads 4.25e-1 on hostile synthetics:
+        // the recurrent state (which feeds decode/continuation) is where bf16 rounding
+        // accumulates. Default stays f32 until a state-carry battery (long-context chunked
+        // prime -> long decode, multi-turn continuation) proves no drift. The mma config
+        // has its own kernel-check pin (band 8e-2/8e-1) so it stays regression-guarded.
+        let gdn_mma = !portable_mma_gated() && c == 32
+            && std::env::var("BW24_GDN_MMA").as_deref() == Ok("1");
+        if gdn_mma {
+            let nw = nc * h * c * D;
+            let nk = t * h * D;
+            let mut wb16 = self.alloc_u8_uninit(nw * 2)?;
+            let mut kb16 = self.alloc_u8_uninit(nk * 2)?;
+            {
+                let f = self.func("f32_to_bf16_bulk");
+                let (n1, n2) = (nw as i64, nk as i64);
+                let cfg1 = LaunchConfig::for_num_elems((nw as u32).div_ceil(4));
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(&w).arg(&mut wb16).arg(&n1);
+                unsafe { b.launch(cfg1)?; }
+                let cfg2 = LaunchConfig::for_num_elems((nk as u32).div_ceil(4));
+                let mut b = self.gpu.stream.launch_builder(&f);
+                b.arg(k).arg(&mut kb16).arg(&n2);
+                unsafe { b.launch(cfg2)?; }
+            }
+            let f = self.func("gdn_chunk_state_mma");
+            let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(&kb16).arg(&gcum).arg(beta).arg(&u).arg(&wb16).arg(&mut y).arg(&mut ssnap)
+             .arg(state_in).arg(&mut *state_out).arg(&hi).arg(&ti).arg(&ci);
+            unsafe { b.launch(cfg)?; }
+        } else {   // K4 (sequential over chunks inside; blocks col-partition the state)
             let f = self.func("gdn_chunk_state_f32");
             let cfg = LaunchConfig { grid_dim: (h as u32, NSPLIT, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let mut b = self.gpu.stream.launch_builder(&f);

@@ -415,6 +415,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("gdn_chunked  T={t:3} C={c:3} vs f64-truth: out seq={ro_s:.2e}/chunk={ro_c:.2e} \
                       state seq={rs_s:.2e}/chunk={rs_c:.2e} {}",
                      if ok { "OK" } else { fails += 1; "FAIL" });
+            // K4-MMA config pin (BW24_GDN_MMA opt-in, c==32 only): its OWN band — bf16
+            // operand rounding measures ~4.3e-2 out / ~4.3e-1 state vs f64 truth on these
+            // hostile synthetics (2026-07-26). The band guards the mma config against
+            // REGRESSIONS; the f32 pin above stays the default's safety line.
+            if c == 32 && cfg!(bw24_hopper_mma) {
+                // SAFETY: single-threaded gate binary; the seam reads the env per call.
+                unsafe { std::env::set_var("BW24_GDN_MMA", "1"); }
+                let mut so_m = e.zeros(s_v * s_v * h)?; let mut o_m = e.zeros(s_v * h * t)?;
+                e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut so_m, &mut o_m, h, t, scale, c)?;
+                unsafe { std::env::remove_var("BW24_GDN_MMA"); }
+                let (ro_m, rs_m) = (relerr(&o64, &e.dtoh(&o_m)?), relerr(&s64, &e.dtoh(&so_m)?));
+                let okm = ro_m < 8e-2 && rs_m < 8e-1;
+                println!("gdn_chunked  T={t:3} C={c:3} MMA config pin: out={ro_m:.2e} state={rs_m:.2e} {}",
+                         if okm { "OK" } else { fails += 1; "FAIL" });
+            }
         }
     }
 

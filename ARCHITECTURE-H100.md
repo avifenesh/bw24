@@ -595,3 +595,17 @@ Debug ledger: (1) B operands must be [n][k] in smem — Mb mirror goes NATURAL
 (2) remaining known slack: Ssnap fragment-scatter ~15us (stage via smem later).
 Engine integration next: K3 bf16-W store, k bf16 mirror, BW24_GDN_MMA seam,
 oracle + battery. Projected prime: K4 2.8 -> ~1.6ms (+4% pp512).
+
+**GDN K4-MMA engine integration (2026-07-26): landed OPT-IN, promotion gated
+on a state-carry battery.** Engine kernel gdn_chunk_state_mma (hybrid.cu,
+k4mma helpers) + f32_to_bf16_bulk mirrors + BW24_GDN_MMA seam (C==32 only).
+Battery: pp512 16694 -> 17286 (+3.5%), argmax MATCH x3, greedy streams
+identical, oracle out mean_rel ~1e-4. HOWEVER the kernel-check f64-truth
+STATE pin (2.5e-4) reads 4.25e-1 under mma on hostile synthetics — bf16
+rounding accumulates in the recurrent state, which feeds decode and session
+continuation; 16-token battery windows cannot rule out long-generation drift.
+DEFAULT STAYS f32-chunked (its tight pin untouched); the mma config got its
+OWN kernel-check pin (out<8e-2, state<8e-1 — regression guard, measured
+4.30e-2/4.25e-1). PROMOTION CRITERION: long-context chunked prime -> long
+decode + multi-turn continuation battery showing no stream drift vs f32.
+Ragged-T edge verified clean in harness (T=200/488 in band).
