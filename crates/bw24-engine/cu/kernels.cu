@@ -1366,10 +1366,28 @@ extern "C" __global__ void rope_neox_ff_f32(float* __restrict__ x, const int* __
 }
 
 // ---- elementwise ----
+// float4-vectorized (H100 sweep 2026-07-26: scalar version ran 43us at m=512 ffn width vs a
+// ~20us BW floor). Same op per element, same order — BIT-IDENTICAL to the scalar form; the
+// tail loop covers n % 4 (thread grid covers ceil(n/4) lanes of 4).
 extern "C" __global__ void silu_mul_f32(const float* __restrict__ gate, const float* __restrict__ up,
                                         float* __restrict__ dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) { float g = gate[i]; dst[i] = (g / (1.0f + expf(-g))) * up[i]; }
+    int i4 = blockIdx.x * blockDim.x + threadIdx.x;
+    int base = i4 * 4;
+    if (base + 3 < n) {
+        float4 g = *(const float4*)(gate + base);
+        float4 u = *(const float4*)(up + base);
+        float4 o;
+        o.x = (g.x / (1.0f + expf(-g.x))) * u.x;
+        o.y = (g.y / (1.0f + expf(-g.y))) * u.y;
+        o.z = (g.z / (1.0f + expf(-g.z))) * u.z;
+        o.w = (g.w / (1.0f + expf(-g.w))) * u.w;
+        *(float4*)(dst + base) = o;
+    } else {
+        for (int i = base; i < n; i++) {
+            float g = gate[i];
+            dst[i] = (g / (1.0f + expf(-g))) * up[i];
+        }
+    }
 }
 // FFN SwiGLU epilogue fusion (RANK3 LEVER 2). Folds the per-tensor NVFP4 macro-scale of the gate
 // and up matmuls INTO the silu*mul, removing the two separate `scale_f32` launches per dense FFN
@@ -1427,10 +1445,17 @@ extern "C" __global__ void silu_mul_scaled_q8_1(
     if (lane == 0) out_d[warp] = d;
 }
 
+// float4-vectorized (elementwise -> bit-identical; H100 sweep 2026-07-26). Tail in-kernel.
 extern "C" __global__ void add_f32(const float* __restrict__ a, const float* __restrict__ b,
                                    float* __restrict__ dst, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = a[i] + b[i];
+    int base = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 x = *(const float4*)(a + base);
+        float4 y = *(const float4*)(b + base);
+        *(float4*)(dst + base) = make_float4(x.x + y.x, x.y + y.y, x.z + y.z, x.w + y.w);
+    } else {
+        for (int i = base; i < n; i++) dst[i] = a[i] + b[i];
+    }
 }
 // y[i] *= s. NVFP4 per-tensor macro-scale broadcast over the whole matmul output.
 extern "C" __global__ void scale_f32(float* __restrict__ y, float s, int n) {

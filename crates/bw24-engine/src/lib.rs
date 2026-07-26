@@ -3889,7 +3889,8 @@ impl Engine {
     pub fn silu_mul(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                     -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("silu_mul_f32");
-        let cfg = LaunchConfig::for_num_elems(n as u32);
+        // float4 kernel: one thread per 4 elements (tail handled in-kernel)
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(gate).arg(up).arg(dst).arg(&ni);
@@ -3957,7 +3958,8 @@ impl Engine {
     pub fn add(&self, a: &CudaSlice<f32>, b_in: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("add_f32");
-        let cfg = LaunchConfig::for_num_elems(n as u32);
+        // float4 kernel: one thread per 4 elements (tail handled in-kernel)
+        let cfg = LaunchConfig::for_num_elems((n as u32).div_ceil(4));
         let ni = n as i32;
         let mut bld = self.gpu.stream.launch_builder(&f);
         bld.arg(a).arg(b_in).arg(dst).arg(&ni);

@@ -30,11 +30,22 @@
 // ---- device kernels -------------------------------------------------------------------------
 
 // f32 -> fp16 elementwise (activations; fp16 max 65504 >> activation range, no scale needed).
+// float4/half4-vectorized grid-stride (elementwise -> bit-identical; H100 sweep 2026-07-26).
 extern "C" __global__ void bw24_f16_cvt_kernel(const float* __restrict__ x,
                                                __half* __restrict__ o, size_t n) {
-    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n;
-         i += (size_t)gridDim.x * blockDim.x)
-        o[i] = __float2half(x[i]);
+    size_t n4 = n / 4;
+    for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n4;
+         i += (size_t)gridDim.x * blockDim.x) {
+        float4 v = *(const float4*)(x + i * 4);
+        __half2 lo = __floats2half2_rn(v.x, v.y);
+        __half2 hi = __floats2half2_rn(v.z, v.w);
+        *(__half2*)(o + i * 4) = lo;
+        *(__half2*)(o + i * 4 + 2) = hi;
+    }
+    // tail (n % 4) by the first threads
+    size_t t0 = n4 * 4;
+    size_t tid = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
+    if (tid < n - t0) o[t0 + tid] = __float2half(x[t0 + tid]);
 }
 
 // GGUF Q8_0 (34B blocks: half d + 32 int8) -> row-major fp16. One thread per 32-block.
