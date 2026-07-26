@@ -123,6 +123,13 @@ struct Session {
     /// allocation on this path (kept to avoid restructuring admit; ~small VRAM overhead until
     /// a follow-up drops it). committed == every token whose state the spec caches hold.
     spec: Option<bw24_engine::spec::SpecSession>,
+    /// SINGLE-SESSION CUDA-GRAPH serving (2026-07-26, +34% measured at B=1): a greedy
+    /// interactive session admitted ALONE rides GraphSession replay (one step/tick, 4B
+    /// D2H). Degrades to the batched-eager path the moment a second session admits —
+    /// legal because dc==eager is bit-identical, so the graph cache continues seamlessly.
+    graph: Option<bw24_engine::decode::GraphSession>,
+    /// The token produced by the last graph step (next INPUT; emitted on the next tick).
+    graph_pending: Option<u32>,
     /// Live acceptance telemetry (hqmtp axis-D): cumulative drafted/accepted across the
     /// session's bursts, logged per burst so serve-regime acceptance-vs-context is measurable.
     spec_drafted: usize,
@@ -348,6 +355,78 @@ pub fn run(
                 }
             }
         } else {
+            // (a0) SINGLE-SESSION GRAPH LANE (BW24_SERVE_GS=0 disables). Promote a lone cold
+            // greedy interactive session to GraphSession replay (+34% at B=1); degrade back
+            // to batched-eager the moment concurrency arrives (dc==eager bit-identity makes
+            // the cache handoff seamless).
+            let gs_on = std::env::var("BW24_SERVE_GS").map(|v| v != "0").unwrap_or(true);
+            if gs_on && active.len() > 1 {
+                for i in 0..active.len() {
+                    if active[i].graph.is_none() { continue; }
+                    let s = &mut active[i];
+                    let g = s.graph.take().unwrap();
+                    s.cache = Some(g.cache);
+                    if let Some(pend) = s.graph_pending.take() {
+                        let (cont, _) = advance_token_emit(&loaded, s, pend);
+                        if !cont {
+                            finished.push(i);
+                        } else {
+                            let lm = &loaded[&s.model];
+                            match lm.model.decode_step(&engine, pend, s.cache.as_mut().unwrap()) {
+                                Ok(l) => { s.last_logits = l; s.fed.push(pend); }
+                                Err(err) => {
+                                    let _ = s.tx.send(Event::Error(format!("degrade: {err}")));
+                                    finished.push(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if gs_on && active.len() == 1 && !finished.contains(&0) {
+                let s = &mut active[0];
+                if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
+                    && s.lane == crate::lanes::Lane::Interactive
+                    && !s.prefill_done && s.fed.is_empty() && s.generated.is_empty()
+                {
+                    let prompt: Vec<u32> = s.prefill_queue.drain(..).collect();
+                    let lm = &loaded[&s.model];
+                    match lm.model.graph_session_new(&engine, &prompt, s.budget + 2) {
+                        Ok((g, first)) => {
+                            s.cache = None; // graph owns its cache now
+                            s.graph = Some(g);
+                            s.graph_pending = Some(first);
+                            s.prefill_done = true;
+                            for &t in &prompt { s.fed.push(t); s.sampler.accept(t); }
+                        }
+                        Err(err) => {
+                            // fall back to the normal chunked-prefill path
+                            eprintln!("[graph-serve] promote failed ({err}); eager path serves");
+                            s.prefill_queue = prompt.into_iter().collect();
+                            s.prefill_done = false;
+                        }
+                    }
+                }
+                // step the (possibly just-promoted) graph session: one token per tick
+                let s = &mut active[0];
+                if let Some(pend) = s.graph_pending.take() {
+                    let t_g = Instant::now();
+                    let (cont, _) = advance_token_emit(&loaded, s, pend);
+                    if !cont {
+                        finished.push(0);
+                    } else {
+                        s.fed.push(pend);
+                        let g = s.graph.as_mut().unwrap();
+                        match g.step(&engine) {
+                            Ok(next) => { s.graph_pending = Some(next); }
+                            Err(_) => { finish(s, StopReason::MaxNew); finished.push(0); }
+                        }
+                        lane_tokens[0] += 1;
+                        step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
+                        last_interactive_decode = Instant::now();
+                    }
+                }
+            }
             // (a) spec bursts
             for i in 0..active.len() {
                 if active[i].spec.is_some() {
@@ -729,6 +808,8 @@ fn admit(
         cache,
         sampler,
         spec,
+        graph: None,
+        graph_pending: None,
         spec_drafted: 0,
         spec_accepted: 0,
         last_logits: seed_logits,
@@ -865,6 +946,36 @@ fn advance_sample_emit(
         return (false, None);
     }
     (true, Some(next))
+}
+
+/// Token-driven twin of `advance_sample_emit` for the graph lane: the token was produced
+/// by the DEVICE argmax (greedy), so there is no sampling — accept, emit, stop battery.
+/// Returns (continue?, ()).
+fn advance_token_emit(
+    loaded: &HashMap<String, LoadedModel>,
+    s: &mut Session,
+    tok: u32,
+) -> (bool, ()) {
+    let lm = &loaded[&s.model];
+    if s.generated.len() >= s.budget {
+        finish(s, StopReason::MaxNew);
+        return (false, ());
+    }
+    s.sampler.accept(tok);
+    s.generated.push(tok);
+    if s.params.eos.contains(&tok) {
+        finish(s, StopReason::Eos);
+        return (false, ());
+    }
+    let decoded = lm.tok.decode_bytes_special(&s.generated, true);
+    let delta = utf8_delta(&decoded, &mut s.emitted_bytes);
+    let full = String::from_utf8_lossy(&decoded);
+    let _ = s.tx.send(Event::Token { id: tok, text: delta });
+    if !s.stop_strings.is_empty() && s.stop_strings.iter().any(|ss| full.contains(ss.as_str())) {
+        finish(s, StopReason::Callback);
+        return (false, ());
+    }
+    (true, ())
 }
 
 /// Group ready (session_idx, token) pairs into batched-step chunks: same model, <= 8 rows
