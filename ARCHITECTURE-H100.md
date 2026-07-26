@@ -1220,3 +1220,17 @@ batched B=6 T=152 20235 vs 18777 (5/5). Full battery green; serving rounds
 observed at 45ms/912tok (20.3k) live.
 OFFICIAL LANE: prefill T=2048 = 23,406 tok/s (75.4% of vLLM's 31,036, was
 69%); TTFT 87.5ms. Batched prime cumulative: 13441 -> 20235 (+50.5%).
+
+**l2 prefill v2 (2026-07-26, round 27): +2.3% official lane / +2.1% batched,
+interleaved 5/5 + 3/3.** The 256-thread strided l2 ran 918GB/s on 128-col rows
+(half the block idle, scalar loads). l2_norm_pp_v2_f32 + gdn_l2_v2_vl:
+warp-per-row, one float4 per lane, shuffle reduce — NUMERIC CONFIG
+(explicit+gated BW24_L2_V2, GDN-chunked/mma precedent; reduction tree order
+changes). Arbitration: greedy streams MATCH v2-vs-strided (T~200+64 and the
+promotion battery 2048-prime -> 128-decode on 2 prompts); kernel-check green.
+decode-batch gate1 (config-mode) flipped at step 1 under the v2 prime — the
+EXACT documented mma-precedent nuisance (strict bit-gate + gate2 PASS) — fixed
+by pinning BW24_L2_V2=0 in the gate's prime alongside BW24_GDN_MMA=0; validate
++ decode-batch ALL GREEN after. PREFILL-ONLY (decode keeps l2_norm_decode).
+OFFICIAL LANE: prefill T=2048 = 23,814 tok/s (76.7% of vLLM); batched prime
+20,718 (cumulative 13441 -> 20718, +54.1%).

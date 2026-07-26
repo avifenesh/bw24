@@ -716,6 +716,28 @@ extern "C" __global__ void l2_norm_f32(const float* __restrict__ x, float* __res
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale;
 }
 
+// l2_norm PREFILL v2 (round 27): warp-per-row float4 — d_state=128 cols = exactly one
+// float4 per lane, warp-shuffle reduce, float4 store. The 256-block strided kernel ran
+// at 918GB/s (half the threads idle on 128-col rows). NUMERIC CONFIG (explicit+gated,
+// BW24_L2_V2, the GDN-chunked/mma precedent): the reduction tree order differs from
+// l2_norm_f32 — arbitration = greedy-stream/argmax battery, not bit-identity. The same
+// values feed K2/K4 either way at ~1e-7 relative. PREFILL-ONLY: decode keeps
+// l2_norm_decode (decode==verify law untouched).
+extern "C" __global__ void l2_norm_pp_v2_f32(const float* __restrict__ x, float* __restrict__ dst,
+                                             int ncols, int nrows, float eps) {
+    int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (row >= nrows) return;
+    int lane = threadIdx.x & 31;
+    const float* xr = x + (size_t)row * ncols;
+    float4 v = *(const float4*)(xr + lane * 4);
+    float sum = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    float scale = rsqrtf(sum + eps);
+    float4 o4 = make_float4(v.x * scale, v.y * scale, v.z * scale, v.w * scale);
+    *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
+}
+
 // ---- RoPE NEOX (full or partial). Pairs x[i] with x[i+n_dims/2]; dims >= n_dims copied. ----
 // data layout: [head_dim, n_heads, n_tokens] (head_dim fastest). pos: [n_tokens].
 // One thread per (pair i0/2, head, token). grid.x = n_heads*n_tokens, threads = head_dim/2.

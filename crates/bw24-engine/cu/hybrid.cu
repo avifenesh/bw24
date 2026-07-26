@@ -2017,6 +2017,24 @@ extern "C" __global__ void gdn_l2_vl(gdnprepvl_t v, int ncols, int num_v, float 
     for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale;
 }
 
+// l2 v2 varlen twin (same numeric config as l2_norm_pp_v2_f32; warp-per-row float4).
+extern "C" __global__ void gdn_l2_v2_vl(gdnprepvl_t v, int ncols, int num_v, float eps) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (row >= num_v * sq.T) return;
+    const float* x = blockIdx.y == 0 ? sq.q_g : sq.k_g;
+    float* dst = blockIdx.y == 0 ? sq.q_l2 : sq.k_l2;
+    int lane = threadIdx.x & 31;
+    const float* xr = x + (size_t)row * ncols;
+    float4 val = *(const float4*)(xr + lane * 4);
+    float sum = val.x * val.x + val.y * val.y + val.z * val.z + val.w * val.w;
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    float scale = rsqrtf(sum + eps);
+    float4 o4 = make_float4(val.x * scale, val.y * scale, val.z * scale, val.w * scale);
+    *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
+}
+
 // fused sigmoid(beta_raw) + glog(alpha) — both elementwise over [T, H].
 extern "C" __global__ void gdn_gate_prep_vl(gdnprepvl_t v, const float* __restrict__ dt_bias,
                                             const float* __restrict__ a, int H) {

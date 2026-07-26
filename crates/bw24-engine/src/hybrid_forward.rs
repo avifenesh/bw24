@@ -1369,9 +1369,9 @@ impl HybridModel {
             e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         }
         let mut q_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        e.l2_norm_pp(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        e.l2_norm_pp(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
         let mut beta = e.uninit(t * num_v)?;
         e.sigmoid_v(beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;

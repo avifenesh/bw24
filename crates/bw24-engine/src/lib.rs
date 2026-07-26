@@ -3861,6 +3861,27 @@ impl Engine {
     }
 
     /// L2 norm per row (head_dim), no weight.
+    /// PREFILL l2 dispatch (round 27): the warp-per-row float4 v2 when the numeric-config
+    /// seam allows (BW24_L2_V2, default ON, d_state==128 only); else the strided kernel.
+    pub fn l2_v2_on(ncols: usize) -> bool {
+        ncols == 128 && std::env::var("BW24_L2_V2").as_deref() != Ok("0")
+    }
+
+    pub fn l2_norm_pp(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
+                      eps: f32) -> Result<(), Box<dyn std::error::Error>> {
+        if Self::l2_v2_on(ncols) {
+            let f = self.func("l2_norm_pp_v2_f32");
+            let rows_per_block = 8u32;   // 256 threads = 8 warps = 8 rows
+            let cfg = LaunchConfig { grid_dim: ((nrows as u32).div_ceil(rows_per_block), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (nc, nr, e) = (ncols as i32, nrows as i32, eps);
+            let mut b = self.gpu.stream.launch_builder(&f);
+            b.arg(x).arg(dst).arg(&nc).arg(&nr).arg(&e);
+            unsafe { b.launch(cfg)?; }
+            return Ok(());
+        }
+        self.l2_norm(x, dst, ncols, nrows, eps)
+    }
+
     pub fn l2_norm(&self, x: &CudaSlice<f32>, dst: &mut CudaSlice<f32>, ncols: usize, nrows: usize,
                    eps: f32) -> Result<(), Box<dyn std::error::Error>> {
         let f = self.func("l2_norm_f32");
@@ -7746,7 +7767,14 @@ impl Engine {
             lb.arg(&v).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
             unsafe { lb.launch(cfg)?; }
         }
-        {
+        if Self::l2_v2_on(d_state) {
+            let f = self.func("gdn_l2_v2_vl");
+            let cfg = LaunchConfig { grid_dim: ((max_t * num_v as u32).div_ceil(8), 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, num_v as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        } else {
             let f = self.func("gdn_l2_vl");
             let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
             let (dsi, nvi) = (d_state as i32, num_v as i32);

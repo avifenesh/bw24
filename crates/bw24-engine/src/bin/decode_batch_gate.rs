@@ -47,6 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // by its kernel-check pin + the state-carry battery + run-gen argmax gates.
     // SAFETY: single-threaded gate binary; the GDN seam reads the env per call.
     unsafe { std::env::set_var("BW24_GDN_MMA", "0"); }
+    // Same rationale for the l2 prefill v2 config (round 27): its primed state shifts
+    // the same near-tie logits at step 1. Gate tests DECODE; prime stays pinned f32-class.
+    unsafe { std::env::set_var("BW24_L2_V2", "0"); }
     let e = Engine::new(0)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;
