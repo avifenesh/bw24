@@ -1012,3 +1012,44 @@ piecewise arc proper): segment the slab-resident layer loop at GEMM
 boundaries, capture the deterministic custom-kernel segments per bucket
 against the slabs, replay interleaved with eager Lt calls — the vLLM-validated
 pattern; slabs give every segment fixed IO addresses for free.
+
+## Piecewise prime graphs — full segmentation design (2026-07-26, build-ready)
+
+Segments contain ONLY cache-free deterministic kernels; EAGER between: every
+Lt GEMM, plus the three cache-touching kernels (conv ring update, GDN K4
+state pass, KV append) — so segments replay against SESSION caches with no
+pointer machinery at all (the monolithic arc's cache problem disappears).
+
+Per-layer sequence (E = eager, S = captured segment):
+  S-glue:  [prev-add + attn_norm_f16out]                 (x1,ffn_out -> x_nxt, h, h16)
+  E:       qkv / gdn4 GEMM group (xh = h16 slab)         -> proj slabs
+  GDN:  S-prep: [conv-window + repack + l2 x2 + sigmoid + glog + K1 + K2 + K3]
+        E:      conv-ring update; K4-mma (cache state)
+        S-out:  [K5-mma + gated_rmsnorm]                 -> gn slab
+  ATTN: S-attn: [q_gate_split + qk-norms + rope + fa_prefill(+gate)]
+        E:      KV append
+  E:       wo / ssm_out GEMM -> mixed slab
+  S-mid:   [add + post_norm_f16out]                      (x_cur,mixed -> x1, z, z16)
+  E:       gate/up group -> gate/up slabs
+  S-act:   [ffn_act]                                     -> act slab
+  E:       down GEMM -> ffn_out slab
+Launches/layer: ~16 captured into 4-5 graph launches + ~8 eager calls.
+
+SLAB INVENTORY (all sized at bucket x dim, ~200MB total at bucket 512):
+existing 7 (h/x1/z/act/x-pingpong/h16/z16) + boundary slabs: GDN projs
+(qkv_mixed 8192, z_g 4096, beta/alpha 2x num_v), attn projs (qf/k/v),
+conv_out, q_g/k_g/v_g, q_l2/k_l2, beta/g_log, gcum, A/P (nc*h*c*c), U/W/Y
+(nc*h*c*128), ssnap (nc*h*128*128), gn, attn_g, mixed, gate, up, ffn_out.
+GEMM `_into` variants (write into slab views — the FFI already takes y
+pointers; only the Rust wrappers allocate) for: matmul_group_xh, matmul,
+try_f16_gemm_pre.
+Capture: ~4 segments x 32 layers x buckets at ~1-3ms each ~= 0.5s boot per
+bucket. Replay submits each segment in ONE cuGraphLaunch — attacking the
+measured submission-cadence floor directly (the three launch-COUNT neutrals
+do not apply: count reduction never fixed cadence; single-call submission
+does — vLLM's piecewise pattern on this exact model/GPU is the existence
+proof). Projected reclaim ~2-2.5ms/prime (+8-10% pp512) with ZERO numeric
+change (all captured kernels address-deterministic; Lt untouched, and slabs
+already froze its operands).
+Gate: piecewise-vs-eager bit-identity (same kernels, same buffers, same
+order — this one CAN be a bit-gate, unlike the monolithic config).
