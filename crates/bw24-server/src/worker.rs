@@ -457,8 +457,96 @@ pub fn run(
             // prefill runs AFTER decode (phase d) so a judge prime can never sit between
             // an interactive stream and its next token (the 282ms-p99 lesson, 2026-07-26).
             let budgets = policy.prefill_budget;
+            // task #13 (2026-07-26): BATCH fresh short interactive primes across sessions —
+            // one concat trunk, GEMMs at m = sum_T. Measured regime (prime-batch-gate --bench):
+            // +80% at B=8 T=64, +44-49% at T=128, crossover ~T=320 (above it, single primes
+            // win — per-seq m already at the GEMM plateau). Gate: prime-batch-gate ALL GREEN
+            // (per-seq argmax + decode-stream equality). BW24_PRIME_BATCH=1 disables.
+            let (cand, held) = 'pb: loop {
+                let pb_max: usize = std::env::var("BW24_PRIME_BATCH").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(4);
+                let pb_maxt: usize = std::env::var("BW24_PRIME_BATCH_MAX_T").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(320);
+                let min_t = bw24_engine::hybrid_forward::PRIME_MIN_T.max(2);
+                let mut cand: Vec<usize> = Vec::new();
+                let mut cand_model: Option<String> = None;
+                if pb_max >= 2 && !confidence_trace_enabled() {
+                    for i in 0..active.len() {
+                        if finished.contains(&i) { continue; }
+                        let s = &active[i];
+                        let ql = s.prefill_queue.len();
+                        if s.spec.is_none() && !s.prefill_done && s.graph.is_none()
+                            && s.lane == crate::lanes::Lane::Interactive
+                            && s.fed.is_empty()
+                            && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+                            && ql >= min_t && ql <= pb_maxt && ql <= budgets[0]
+                            && cand_model.as_ref().is_none_or(|m| *m == s.model)
+                        {
+                            cand_model.get_or_insert_with(|| s.model.clone());
+                            cand.push(i);
+                            if cand.len() == pb_max { break; }
+                        }
+                    }
+                }
+                // BATCH-FORMATION HOLD: a lone fresh candidate that arrived <hold_ms ago is
+                // deferred (skipped by the single-prime loop below via the same predicate NOT
+                // firing — it stays queued) so staggered arrivals can coalesce. Telemetry
+                // 2026-07-26: without the hold only 25% of a 32-concurrent burst batched
+                // (ticks ~1ms, arrivals staggered). TTFT cost <= hold_ms on a ~40ms prime.
+                let hold_ms: u64 = std::env::var("BW24_PRIME_BATCH_HOLD_MS").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(4);
+                let mut held = false;
+                if cand.len() == 1 && hold_ms > 0 {
+                    let s = &active[cand[0]];
+                    if s.t0.elapsed().as_millis() < hold_ms as u128 {
+                        held = true;
+                    }
+                }
+                let mut fired = false;
+                if cand.len() >= 2 {
+                    let prompts: Vec<Vec<u32>> = cand.iter()
+                        .map(|&i| active[i].prefill_queue.drain(..).collect())
+                        .collect();
+                    let prompt_refs: Vec<&[u32]> = prompts.iter().map(|p| p.as_slice()).collect();
+                    let mut cache_refs: Vec<&mut bw24_engine::cache::Cache> = active.iter_mut()
+                        .enumerate()
+                        .filter(|(i, _)| cand.contains(i))
+                        .map(|(_, s)| s.cache.as_mut().unwrap())
+                        .collect();
+                    let lm = &loaded[cand_model.as_ref().unwrap()];
+                    let t_pb = Instant::now();
+                    match lm.model.prime_cache_batch(&engine, &prompt_refs, &mut cache_refs) {
+                        Ok(outs) => {
+                            let toks: usize = prompts.iter().map(|p| p.len()).sum();
+                            eprintln!("[prime-batch] B={} tokens={} in {:.1}ms",
+                                      cand.len(), toks, t_pb.elapsed().as_secs_f64() * 1e3);
+                            for ((&i, prompt), (l, _h, _x)) in
+                                cand.iter().zip(&prompts).zip(outs)
+                            {
+                                let s = &mut active[i];
+                                s.last_logits = l;
+                                for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
+                                s.prefill_done = true;
+                            }
+                            fired = true;
+                        }
+                        Err(err) => {
+                            // fall back: restore queues, the per-session path serves this tick
+                            eprintln!("[prime-batch] failed ({err}); single primes serve");
+                            for (&i, prompt) in cand.iter().zip(&prompts) {
+                                active[i].prefill_queue = prompt.iter().copied().collect();
+                            }
+                        }
+                    }
+                }
+                // ROUNDS (telemetry 2026-07-26: a tick with 8 pending batched 4 and
+                // single-primed the rest): keep batching while >= 2 candidates remain.
+                if fired { continue 'pb; }
+                break 'pb (cand, held);
+            };
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
+                if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
                 if s.lane != crate::lanes::Lane::Interactive { continue; }

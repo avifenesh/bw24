@@ -738,3 +738,16 @@ else single-prime — exactly the serving mix (chat prompts are mostly short;
 the aggregate serving prefill number was measured on 937-token prompts, i.e.
 the UNFAVORABLE side; the favorable side was previously WORSE than measured).
 Next: worker tick integration + serving re-measurement.
+
+**Task #13 increment 3 (2026-07-26): worker batch-prime LANDED, +21.6% serving
+throughput at the short-prompt load.** Tick phase (b) collects fresh short
+interactive prefills (T in [PRIME_MIN_T, BW24_PRIME_BATCH_MAX_T=320], same
+model, budget-fitting) and dispatches prime_cache_batch in ROUNDS of up to
+BW24_PRIME_BATCH=4; a lone fresh candidate holds up to
+BW24_PRIME_BATCH_HOLD_MS=4 so staggered arrivals coalesce (TTFT cost <= 4ms).
+Debug ledger (telemetry-driven): v1 fired on only 25% of a 32-concurrent burst
+(arrivals staggered across ~1ms ticks) -> the hold; then a tick with 8 pending
+batched 4 and SINGLE-primed the rest -> rounds. Final: 98% of burst tokens
+batched (14288/14592). Serving A/B (96 x 152-tok, conc 32, max_tokens=1):
+off 7971 -> on 9689 tok/s (+21.6%). Long prompts (937t > MAX_T) byte-unchanged
+(17188 vs 17189). prime-batch-gate + validate-h100 ALL GREEN.
