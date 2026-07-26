@@ -1,0 +1,8 @@
+build: c8f3e14e  bw24 K4 floor2 vs llama n-max=3
+llama rep1: 296.09 tok/s
+llama rep2: 297.98 tok/s
+llama rep3: 298.58 tok/s
+bw24 rep1 temp 55: spec: 327.84 tok/s accept-rate=0.698 stream agreement 128/128 
+bw24 rep1 temp 55: spec: 328.13 tok/s accept-rate=0.698 stream agreement 128/128 
+bw24 rep1 temp 54: spec: 328.53 tok/s accept-rate=0.698 stream agreement 128/128 
+G26 PAIR COMPLETE Sun Jul 26 09:44:42 PM UTC 2026

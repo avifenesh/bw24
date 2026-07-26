@@ -1,0 +1,24 @@
+build: c8f3e14e  board row: 267 vs llama 271 (0.99x)
+== phase 1: bw24 K x floor grid (short cell)
+K4 f1: spec: 307.04 tok/s accept-rate=0.669 
+K4 f2: spec: 329.47 tok/s accept-rate=0.698 
+K4 f3: spec: 314.57 tok/s accept-rate=0.629 
+K5 f1: spec: 307.71 tok/s accept-rate=0.654 
+K5 f2: spec: 325.39 tok/s accept-rate=0.664 
+K5 f3: spec: 311.16 tok/s accept-rate=0.610 
+K6 f1: spec: 304.80 tok/s accept-rate=0.644 
+K6 f2: spec: 322.07 tok/s accept-rate=0.650 
+K6 f3: spec: 307.91 tok/s accept-rate=0.597 
+K7 f1: spec: 301.71 tok/s accept-rate=0.639 
+K7 f2: spec: 319.90 tok/s accept-rate=0.640 
+K7 f3: spec: 307.70 tok/s accept-rate=0.589 
+== phase 2: llama draft-mtp n-max sweep (26B short)
+llama n-max=2 rep1: 275.05 tok/s
+llama n-max=2 rep2: 274.50 tok/s
+llama n-max=3 rep1: 296.28 tok/s
+llama n-max=3 rep2: 299.05 tok/s
+llama n-max=4 rep1: 262.07 tok/s
+llama n-max=4 rep2: 262.29 tok/s
+llama n-max=5 rep1: 243.73 tok/s
+llama n-max=5 rep2: 244.75 tok/s
+G26 SHORT PHASES 1+2 COMPLETE Sun Jul 26 09:37:12 PM UTC 2026
