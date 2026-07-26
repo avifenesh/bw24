@@ -5424,6 +5424,40 @@ impl Engine {
         Ok(out)
     }
 
+    /// Cross-request grouped matmul (task #13): run ONE projection group over the
+    /// CONCATENATION of several sequences' activations (m = sum of per-seq rows — the
+    /// GEMM-batch win vLLM gets from continuous batching), then split each output back
+    /// into per-seq buffers. Zero view plumbing: gather/scatter are stream-ordered D2D
+    /// copies (~us at prime sizes). NUMERIC CONFIG NOTE: a GEMM at m=sum tiles K
+    /// differently than per-seq GEMMs — argmax-gated like every prefill GEMM change.
+    pub fn matmul_group_multi(&self, ws: &[&crate::model::GpuTensor],
+                              xs: &[&CudaSlice<f32>], ms: &[usize])
+                              -> Result<Vec<Vec<CudaSlice<f32>>>, Box<dyn std::error::Error>> {
+        assert_eq!(xs.len(), ms.len());
+        let in_f = ws[0].in_features();
+        let total: usize = ms.iter().sum();
+        let mut xcat = self.uninit(total * in_f)?;
+        let mut off = 0usize;
+        for (x, &m) in xs.iter().zip(ms) {
+            self.copy_into(&mut xcat, off * in_f, x, m * in_f)?;
+            off += m;
+        }
+        let ys = self.matmul_group(ws, &xcat, total)?;
+        let mut out: Vec<Vec<CudaSlice<f32>>> = (0..xs.len()).map(|_| Vec::new()).collect();
+        for (w, y) in ws.iter().zip(ys) {
+            let out_f = w.out_features();
+            let mut off = 0usize;
+            for (s, &m) in ms.iter().enumerate() {
+                let mut ys_s = self.uninit(m * out_f)?;
+                let src = y.slice(off * out_f..(off + m) * out_f);
+                self.gpu.stream.memcpy_dtod(&src, &mut ys_s)?;
+                out[s].push(ys_s);
+                off += m;
+            }
+        }
+        Ok(out)
+    }
+
     /// True if `w`'s qtype has a batched tensor-core GEMM kernel (the prefill T>1 root fix).
     /// Only the 4 daily-hot dtypes: Q8_0, Q4_K, Q6_K, NVFP4. NVFP4 needs in_f % 64 == 0.
     /// DEFAULT-ON (2026-06-28): measured pp512 9B-NVFP4 = 1413 tok/s WITH this GEMM vs 298 with the

@@ -443,6 +443,18 @@ impl HybridModel {
     fn full_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                        pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // PROJ/CORE SPLIT (task #13, 2026-07-26): the q/k/v group projection is hoisted so
+        // the cross-request batch driver can run it at m = sum_T over concatenated tokens;
+        // this single-seq path composes proj+core identically (byte-for-byte the old body).
+        let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        self.full_attn_prime_core(e, fa, g3, pos_d, t, cache, il)
+    }
+
+    /// Everything after the q/k/v projections (split/QK-norm/RoPE/FA/gate/append + wo).
+    /// `g3` = matmul_group([wq, wk, wv]) output rows for THIS sequence.
+    fn full_attn_prime_core(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+                            pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                            -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
@@ -454,8 +466,6 @@ impl HybridModel {
         // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
         // would read 2x out of bounds. `gated` keys both the split and the sigmoid epilogue.
         let gated = cfg.attn_out_gate();
-        // grouped: one f16 activation convert feeds q/k/v (matmul_group)
-        let mut g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
         let v = g3.pop().unwrap();
         let mut k = g3.pop().unwrap();
         let qf = g3.pop().unwrap();
@@ -557,6 +567,15 @@ impl HybridModel {
     fn linear_attn_prime(&self, e: &Engine, la: &LinearAttnLayer, h: &CudaSlice<f32>, t: usize,
                          cache: &mut Cache, il: usize)
                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        // PROJ/CORE SPLIT (task #13): see full_attn_prime — same hoist for the GDN 4-tuple.
+        let g4 = e.matmul_group(&[&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha], h, t)?;
+        self.linear_attn_prime_core(e, la, g4, t, cache, il)
+    }
+
+    /// Everything after the GDN 4-tuple projections (conv/chunk stack/gated norm + ssm_out).
+    fn linear_attn_prime_core(&self, e: &Engine, la: &LinearAttnLayer, mut g4: Vec<CudaSlice<f32>>,
+                              t: usize, cache: &mut Cache, il: usize)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let ssm = cfg.ssm.as_ref().unwrap();
         let d_state = ssm.state_size as usize;       // 128
@@ -570,9 +589,6 @@ impl HybridModel {
         let scale = 1.0 / (d_state as f32).sqrt();
         debug_assert!(t >= d_conv - 1, "stateful conv needs T >= pad (PRIME_MIN_T gates)");
 
-        // NORMAL prefill dispatch (GEMM at m>=16) — same as linear_attn/forward_last.
-        // grouped: one f16 activation convert feeds all four projections (matmul_group)
-        let mut g4 = e.matmul_group(&[&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha], h, t)?;
         let alpha = g4.pop().unwrap();                   // [T, num_v]
         let beta_raw = g4.pop().unwrap();                // [T, num_v]
         let z = g4.pop().unwrap();                       // [T, value_dim]
