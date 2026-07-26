@@ -5793,22 +5793,29 @@ impl Engine {
         // 4.32->3.47, wait 1.99->1.45, per-call ~577us->~440us (1.31x) at flat 12.1% warps /
         // 255 regs / 2 CTAs (occupancy preserved). Bit-safe: 9B+27B argmax MATCH, rel 2.55e-3
         // vs floor 3.03e-3. BW24_FA_FLOOR reverts to the serialized-softmax floor kernel.
-        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        const BK: usize = 32;
+        // W2 lane (BW24_FA_PP_W2=1, ncu 2026-07-26): 2-warp/32-row CTA tile doubles grid.x —
+        // bit-identical per-row math, pure coverage trade for the 6.25%-occupancy starvation.
+        let w2 = std::env::var("BW24_FA_PP_W2").as_deref() == Ok("1");
+        let (block_q, warps, w2_sfx): (usize, u32, &str) =
+            if w2 { (32, 2, "_w2") } else { (64, 4, "") };
         // hd128 twins (2026-07-07): the prefill kernels are template-stamped at 256 (original
         // names, dispatch unchanged) and 128 (`_hd128`, the MiniMax-M3 class). Callers gate
         // other head_dims to sdpa_naive before reaching here.
         let hd_sfx = fa_hd_suffix(head_dim)?;
         let floor = std::env::var("BW24_FA_FLOOR").is_ok();
-        let f = self.func(&format!("fa_prefill_f32{}{hd_sfx}", if floor { "" } else { "_pp" }));
+        let f = self.func(&format!("fa_prefill_f32{}{}{hd_sfx}",
+                                   if floor { "" } else { "_pp" },
+                                   if floor { "" } else { w2_sfx }));
         // persistent smem: bf16*(sK + sV + sP) + f32*(sS + sM + sL)
-        //   = bf16*(2*BK*hd + BLOCK_Q*BK) + f32*(BLOCK_Q*BK + 2*BLOCK_Q)
-        let shmem = (2 * (2 * BK * head_dim + BLOCK_Q * BK)
-                   + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32;
+        //   = bf16*(2*BK*hd + block_q*BK) + f32*(block_q*BK + 2*block_q)
+        let shmem = (2 * (2 * BK * head_dim + block_q * BK)
+                   + 4 * (block_q * BK + 2 * block_q)) as u32;
         use cudarc::driver::sys::CUfunction_attribute_enum as A;
         f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
         let cfg = LaunchConfig {
-            grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
-            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            grid_dim: ((t as u32 + block_q as u32 - 1) / block_q as u32, n_head as u32, 1),
+            block_dim: (32, warps, 1), shared_mem_bytes: shmem,
         };
         let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
         let mut b = self.gpu.stream.launch_builder(&f);

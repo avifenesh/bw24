@@ -553,3 +553,13 @@ FA pipeline arc projected: 625us -> plausibly 150-250us/launch = +8-10% pp512.
   lines of raw cudarc idiom appropriate to a probe; no shared body exists.
   Extraction law ("never speculatively") applies.
 All gates green on box after each move (validate-h100 + graph-session token-exact).
+
+**FA prefill W2 probe (2026-07-26, REFUTED at T=512):** the 2-warp/32-row CTA
+variant (grid.x x2, bit-identical per-row math) measured pp512 15452 vs 16677
+default — the doubled K/V staging traffic + halved per-CTA warps cost more
+than the coverage gain. THIRD refuted FA hypothesis (after MINBLOCKS 3/4):
+this kernel is at a real local optimum; the remaining path is the FA3-class
+producer/consumer redesign (TMA staging + warp specialization). Seam kept
+(BW24_FA_PP_W2=1): at dark-lane chunk sizes (T=256 -> grid 64 CTAs, half the
+SMs idle) W2's coverage argument doubles — an untested SERVING-side hypothesis
+the lane battery should arbitrate, not pp512.

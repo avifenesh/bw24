@@ -779,7 +779,13 @@ static __device__ __forceinline__ float row_sum4(float v) {
     return v;   // all 4 lanes of the quad hold the row sum
 }
 
-template<int HD>
+// NW = warps per CTA (W2 lane, 2026-07-26): the ncu verdict pinned this kernel at 6.25%
+// achieved occupancy with grid (T/64, n_head) — at serving chunk sizes (T<=512) the grid
+// starves 132 SMs. NW=2 halves the CTA tile (32 query rows) and DOUBLES grid.x at
+// unchanged per-warp math: each query row still walks the same KV tiles in the same
+// order, so outputs are BIT-IDENTICAL to NW=4 — a pure coverage/occupancy trade
+// (K/V staging traffic doubles; mem SOL was 9.2%, plenty of headroom).
+template<int HD, int NW = N_WARPS>
 static __device__ __forceinline__ void fa_prefill_f32_pp_body(
         const float* __restrict__ Q, const float* __restrict__ K,
         const float* __restrict__ V, float* __restrict__ O,
@@ -789,11 +795,12 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     constexpr int HEAD_DIM  = HD;
     constexpr int HD_KTILES = HD / K_STEP;
     constexpr int O_NBLK    = HD / N_KEYS;
+    constexpr int BQ        = M_ROWS * NW;   // CTA query-row tile (BQ at NW=4)
     const int warp = threadIdx.y;
     const int lane = threadIdx.x;
     const int head    = blockIdx.y;
     const int kv_head = head / (n_head / n_head_kv);
-    const int q_base  = blockIdx.x * BLOCK_Q;
+    const int q_base  = blockIdx.x * BQ;
     const int qrow_base = q_base + warp*M_ROWS;
     if (head >= n_head || q_base >= T) return;
     const int nqw = min(M_ROWS, T - qrow_base);
@@ -801,12 +808,12 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
     extern __shared__ char smem_raw[];
     __nv_bfloat16* sK = (__nv_bfloat16*)smem_raw;                 // BK*HEAD_DIM
     __nv_bfloat16* sV = sK + BK*HEAD_DIM;                         // BK*HEAD_DIM
-    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // BLOCK_Q*BK
-    // sS retained ONLY as the alpha broadcast slot (BLOCK_Q f32 is enough but
+    __nv_bfloat16* sP = sV + BK*HEAD_DIM;                         // BQ*BK
+    // sS retained ONLY as the alpha broadcast slot (BQ f32 is enough but
     // keep the same layout offsets so the launcher smem calc is unchanged).
-    float* sS = (float*)(sP + BLOCK_Q*BK);                        // BLOCK_Q*BK f32
-    float* sM = sS + BLOCK_Q*BK;                                  // BLOCK_Q f32
-    float* sL = sM + BLOCK_Q;                                     // BLOCK_Q f32
+    float* sS = (float*)(sP + BQ*BK);                        // BQ*BK f32
+    float* sM = sS + BQ*BK;                                  // BQ f32
+    float* sL = sM + BQ;                                     // BQ f32
     __nv_bfloat16* sPw = sP + warp*M_ROWS*BK;
     float* sMw = sM + warp*M_ROWS;
     float* sLw = sL + warp*M_ROWS;
@@ -831,11 +838,11 @@ static __device__ __forceinline__ void fa_prefill_f32_pp_body(
 
         for (int k0 = 0; k0 < T_kv; k0 += BK) {
             const int nk = min(BK, T_kv - k0);
-            const int q_pos_max = (T_kv - T) + q_base + (BLOCK_Q - 1);
+            const int q_pos_max = (T_kv - T) + q_base + (BQ - 1);
             if (causal_i && k0 > q_pos_max) break;
 
             const int bt = warp*WARP_SZ + lane;
-            for (int i = bt; i < BK*HEAD_DIM; i += N_WARPS*WARP_SZ) {
+            for (int i = bt; i < BK*HEAD_DIM; i += NW*WARP_SZ) {
                 int kk = i / HEAD_DIM, d = i % HEAD_DIM;
                 float kv = (kk < nk) ? K[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
                 float vv = (kk < nk) ? V[((size_t)(k0 + kk) * n_head_kv + kv_head) * head_dim + d] : 0.0f;
@@ -994,6 +1001,23 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, 2) fa_prefill_f32_
         float scale, int causal)
 {
     fa_prefill_f32_pp_body<128>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+// W2 twins: 2 warps / 32-row CTA tile (see the NW doc on the body). Same math, bit-identical.
+extern "C" __global__ void __launch_bounds__(2*WARP_SZ, 2) fa_prefill_f32_pp_w2(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<256, 2>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
+}
+extern "C" __global__ void __launch_bounds__(2*WARP_SZ, 2) fa_prefill_f32_pp_w2_hd128(
+        const float* __restrict__ Q, const float* __restrict__ K,
+        const float* __restrict__ V, float* __restrict__ O,
+        int head_dim, int n_head, int n_head_kv, int T, int T_kv,
+        float scale, int causal)
+{
+    fa_prefill_f32_pp_body<128, 2>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
 }
 
 // ===================================================================== //
