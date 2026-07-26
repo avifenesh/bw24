@@ -12,6 +12,41 @@
 
 #define CK(x) do { cudaError_t e = (x); if (e) { printf("CUDA %s @%d\n", cudaGetErrorString(e), __LINE__); exit(1);} } while (0)
 
+// ldg twin of qmatvec_q8_0_mmvq_rp: identical program, plain cached loads instead of
+// __ldcs streaming hints — the wide-shape 80%-of-peak A/B (does the streaming hint help
+// or hurt on H100's 50MB L2 when the weight re-walks every token?).
+extern "C" __global__ void bench_q8_rp_ldg(
+        const unsigned char* __restrict__ W, const signed char* __restrict__ aq,
+        const float* __restrict__ ad, float* __restrict__ y,
+        int in_f, int out_f, int m, long row_bytes) {
+    (void)row_bytes;
+    int o = blockIdx.x * BW24_MMVQ_ROWS + threadIdx.y;
+    int t = blockIdx.y;
+    if (o >= out_f || t >= m) return;
+    int lane = threadIdx.x;
+    int nblk = in_f / 32;
+    const unsigned char* wq; const unsigned short* wd;
+    q8_0_rp_planes(W, out_f, o, nblk, &wq, &wd);
+    const signed char* arow = aq + (size_t)t * in_f;
+    const float* adrow = ad + (size_t)t * nblk;
+    float acc = 0.0f;
+    for (int blk = lane; blk < nblk; blk += 32) {
+        int4 w01 = __ldg((const int4*)(wq + (size_t)blk * 32));
+        int4 w23 = __ldg((const int4*)(wq + (size_t)blk * 32 + 16));
+        int wi[8] = { w01.x, w01.y, w01.z, w01.w, w23.x, w23.y, w23.z, w23.w };
+        float dw = half_to_float(wd[blk]);
+        const int4* aq16 = (const int4*)(arow + blk * 32);
+        int4 a01 = aq16[0], a23 = aq16[1];
+        int aq4[8] = { a01.x, a01.y, a01.z, a01.w, a23.x, a23.y, a23.z, a23.w };
+        int sumi = 0;
+        #pragma unroll
+        for (int k = 0; k < 8; k++) sumi = dp4a(wi[k], aq4[k], sumi);
+        acc += dw * adrow[blk] * (float)sumi;
+    }
+    acc = warp_reduce_sum(acc);
+    if (lane == 0) y[(size_t)t * out_f + o] = acc;
+}
+
 int main() {
     // (in_f, out_f, label) — the 9B trunk decode shapes (per-layer) + lm_head.
     struct Shape { int in_f, out_f; const char* label; };
@@ -49,18 +84,25 @@ int main() {
         CK(cudaDeviceSynchronize());
         cudaEvent_t a, b; CK(cudaEventCreate(&a)); CK(cudaEventCreate(&b));
         const int REPS = 200;
-        CK(cudaEventRecord(a));
-        for (int i = 0; i < REPS; i++)
-            qmatvec_q8_0_mmvq_rp<<<grid, block>>>(W, aq, ad, y, s.in_f, s.out_f, 1, 0);
-        CK(cudaEventRecord(b));
-        CK(cudaEventSynchronize(b));
-        float ms; CK(cudaEventElapsedTime(&ms, a, b));
-        double us = ms * 1000.0 / REPS;
+        double us_v[2];
+        for (int v = 0; v < 2; v++) {
+            CK(cudaEventRecord(a));
+            for (int i = 0; i < REPS; i++) {
+                if (v == 0) qmatvec_q8_0_mmvq_rp<<<grid, block>>>(W, aq, ad, y, s.in_f, s.out_f, 1, 0);
+                else        bench_q8_rp_ldg<<<grid, block>>>(W, aq, ad, y, s.in_f, s.out_f, 1, 0);
+            }
+            CK(cudaEventRecord(b));
+            CK(cudaEventSynchronize(b));
+            float ms; CK(cudaEventElapsedTime(&ms, a, b));
+            us_v[v] = ms * 1000.0 / REPS;
+        }
+        double us = us_v[0];
         double gbs = wbytes / (us * 1e3);
         int blocks = grid.x;
         double waves = blocks / (double)(p.multiProcessorCount * 4); // ~4 CTAs/SM at 128thr
-        printf("%-18s in=%6d out=%7d  %8.1f us  %7.1f GB/s (%4.1f%% peak)  blocks=%6d waves~%.2f\n",
-               s.label, s.in_f, s.out_f, us, gbs, 100.0 * gbs / peak_gbs, blocks, waves);
+        printf("%-18s in=%6d out=%7d  ldcs %7.1f us (%5.1f%% pk)  ldg %7.1f us (%+5.1f%%)  blocks=%6d waves~%.2f\n",
+               s.label, s.in_f, s.out_f, us, 100.0 * gbs / peak_gbs,
+               us_v[1], 100.0 * (us_v[0] - us_v[1]) / us_v[0], blocks, waves);
         cudaFree(W); cudaFree(aq); cudaFree(ad); cudaFree(y);
     }
     return 0;

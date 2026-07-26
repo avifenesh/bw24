@@ -303,3 +303,10 @@ the shape is 4 launches/token. Confirms the ledger rule: e2e A/Bs resolve
 nothing below ~2%; per-shape microbench is the instrument. The one remaining
 >5% m=1 lever is the GRAPH-SERVING integration (+14% measured standalone):
 worker sessions on generate_graph + device sampling — an integration arc.
+
+**Load-policy A/B (2026-07-26, per-shape tool):** __ldcs streaming beats plain
+ldg by 13-37% on all weight-heavy shapes (+1.2% ldg only on lm_head) — load
+policy exonerated. Wide-shape 80% decomposes as wave-quantization tail (5.8
+waves at 3072 blocks ≈ 14%) + residual; next testable fix = persistent-CTA
+row loop (grid = exact fill, per-row program unchanged = legal). ffn_down at
+95.7%, squares at 97%, lm_head 90% — five of eight shapes effectively AT wall.
