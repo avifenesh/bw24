@@ -25,6 +25,9 @@
 #ifndef TRANS_B
 #define TRANS_B 0     // canonical K-major core layout for both operands (s8-probe proven)
 #endif
+#ifndef V9_REGS
+#define V9_REGS 240
+#endif
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -1383,7 +1386,7 @@ fa3_v9(const __nv_bfloat16* __restrict__ Q, const __nv_bfloat16* __restrict__ K,
     }
 
     // ---- consumers ----
-    asm volatile("setmaxnreg.inc.sync.aligned.u32 240;");
+    asm volatile("setmaxnreg.inc.sync.aligned.u32 " STR(V9_REGS) ";");
     if (q0 < T) {
         for (int seg = tid; seg < 64 * (D / 8); seg += 128) {
             int r = seg / (D / 8), s8v = seg % (D / 8);

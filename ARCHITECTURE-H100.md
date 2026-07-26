@@ -1379,3 +1379,20 @@ TMA+128B-swizzle to cut the staging instructions the producer exists to hide.
 Foundations (descriptors, canonical staging, online softmax, GQA, setmaxnreg
 contract, mbarrier signaling incl. the .noinc lesson) are all proven in
 tools/bench_fa3.cu and reusable for ANY future warp-specialized kernel.
+
+**FA3 reg-sweep coda (2026-07-27): C7515 is STRUCTURAL to setmaxnreg, not the
+reg value (240/216/192 all fire it; timing flat 1826-1831us). Decisive
+cross-comparison already in the ledger: v8a (NO setmaxnreg, 560B spills) =
+1562us BEATS v8c/v9 (setmaxnreg, clean regs) = 1830us — the setmaxnreg
+instruction's presence degrades ptxas's wgmma pipelining by MORE than the
+spills it prevents. COMPILER FINDING PINNED for all future warp-specialized
+work on this toolchain (CUDA 13.1): setmaxnreg + interleaved scalar
+accumulator defs = serialized wgmma chains; CUTLASS avoids this by keeping
+consumer mainloops scalar-free between wgmma stages (P pre-scaled, alpha via
+smem multipliers folded into operands). Producer/consumer at this tile
+geometry: 6 variants refuted; v5 (2 consumer WGs, cooperative staging,
+999us == engine 993us) is the definitive shape for this generation. Remaining
+FA3 paths, priced: (a) C7515-free consumer bodies (fold alpha into P before
+restage — P' = P, O-rescale via a separate smem-staged multiply outside the
+wgmma window), (b) TMA+128B-swizzle inside the v5 shape. The official lane
+holds at 77.6% with this as the sole open arc.
