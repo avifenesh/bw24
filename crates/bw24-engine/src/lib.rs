@@ -45,6 +45,7 @@ mod spill_pread;
 pub mod cutlass_ffi;
 pub mod mmq_ffi;
 pub mod f16_ffi;
+pub mod prime_graph;
 pub mod fp8_ffi;
 
 const FATBIN_PATH: &str = env!("BW24_ENGINE_FATBIN");

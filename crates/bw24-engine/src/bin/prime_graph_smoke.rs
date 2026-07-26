@@ -120,7 +120,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("replay {r}: {ms:.2}ms  argmax={a} (eager {a_ref})  maxdiff {md:.3e}  {}",
                      if ok { "MATCH" } else { "MISMATCH" });
         }
-        println!("{}", if all_ok { "ALL GREEN: prime-graph smoke (manual capture)" } else { "SMOKE FAILED" });
+            // state diff vs the eager cache (same-m case must be bit-zero; padded cases show
+        // the GEMM-shape numeric band)
+        let (mut mc, mut ms) = (0f32, 0f32);
+        for il in 0..c_ref.recur.len() {
+            if let (Some(re), Some(rg)) = (&c_ref.recur[il], &c_g.recur[il]) {
+                let a = e.dtoh(&re.conv_state)?; let b = e.dtoh(&rg.conv_state)?;
+                mc = mc.max(a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max));
+                let a = e.dtoh(&re.ssm_state)?; let b = e.dtoh(&rg.ssm_state)?;
+                ms = ms.max(a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max));
+            }
+        }
+        println!("scratch-vs-eager state: conv max {mc:.3e}  ssm max {ms:.3e}");
+    println!("{}", if all_ok { "ALL GREEN: prime-graph smoke (manual capture)" } else { "SMOKE FAILED" });
         return Ok(());
     }
 }

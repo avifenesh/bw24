@@ -19,6 +19,10 @@ name = "gemma-gate"
 path = "src/bin/gemma_gate.rs"
 
 [[bin]]
+name = "prime-graph-gate"
+path = "src/bin/prime_graph_gate.rs"
+
+[[bin]]
 name = "prime-graph-smoke"
 path = "src/bin/prime_graph_smoke.rs"
 

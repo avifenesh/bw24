@@ -880,3 +880,24 @@ Capture 13-15ms; replay 23.2-24.0ms. Remaining = the serving WRAPPER only:
 PrimeGraph { graph, scratch cache, x_in/pos_d/len_d/outs } per bucket at
 boot, copy-out into session caches (design v3), worker route below the
 batch-prime threshold, prime-graph-gate formalization.
+
+**Task #14 gate status (2026-07-26): padded replays GREEN end-to-end; exact-
+bucket-length has ONE pinned defect.** prime-graph-gate (eager-vs-graphed
+prime + copy-out + 16-step decode streams): T=47/128/300 all MATCH through
+decode; copy-out fidelity byte-exact (session==scratch 0.000e0). Findings:
+- CONTROL (eager-vs-eager, pool-shifted): streams MATCH — eager is address-
+  robust; the graph arm is its own numeric config (keeper-era pool layout ->
+  baked Lt addresses -> a different valid rounding; the keeperless smoke
+  measured 0.000e0, the retained capture does not).
+- Gate convention adopted: prefill argmax MATCH hard + decode divergence
+  before step 12 fails (decode_batch config-gate precedent). Smoke-prompt
+  T=512 drifts at step 14 = accepted class.
+- REMAINING DEFECT: T == bucket with prompt-A diverges at STEP 2 with conv
+  max 4.9e-1 (prompt-B: 4.3e-2 / step-14) — prompt-dependent magnitude at
+  exact length only; conv-implicated; a real localized bug, NOT the drift
+  class. Next bisection: per-LAYER conv/ssm diff at T=512 + T=511 (one pad)
+  to isolate the t==bucket edge.
+- KEEPER LAW confirmed for primes: capture without the retained keeper leaves
+  graph-baked pool addresses reissuable (the earlier corruption class).
+SAFE SERVING SUBSET AVAILABLE NOW: replay only for T < bucket (strict pads) —
+all green; exact-length primes stay eager pending the fix.
