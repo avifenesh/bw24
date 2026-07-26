@@ -383,3 +383,14 @@ methodology; day-to-day regime shift. Cross-arm conclusions use only the same-da
   same hot Q8_0 protection) and screen it paired against layer103.5 directly. That is the
   byte-matched question the owner directives (no pruning, reuse NVFP4-study evidence) point at,
   and it is a separate build+screen cycle awaiting owner call.
+
+### 2026-07-27 — byte-matched fused rebuild: KILLED BY ARITHMETIC (no build)
+
+Owner pushback taken: predict before building. The 78G full-bank fused idea dies on row-byte
+arithmetic from banked data (no GPU, no build): a full 15,168-expert bank at the pure Q2_K floor
+is 15,168 x 84 = 1,274,112 row-byte units — still ~110% of the served layer103.5 bank
+(1,157,786). Byte-matching the served candidate with a full bank is impossible at any tier mix,
+and even approaching it puts ~90% of routed mass on Q2_K — the blanket-demotion design that
+already failed quality (8/14). Without pruning (owner-ruled-out, and measured bad) the artifact
+axis at the served byte budget is CLOSED. layer103.5 stays served; remaining throughput lanes are
+system lanes on the served artifact.
