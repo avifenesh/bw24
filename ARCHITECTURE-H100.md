@@ -266,3 +266,13 @@ Next frontier (evidence-ranked): (1) fa_prefill bf16 mainloop perf on H100
 (2) m=1 latency class (186→352 wall: cp.async staged weight ring);
 (3) fa_decode_combine batching (64 launches/step at B=8);
 (4) remaining shared extraction (bw24-validate, bw24-sampling, bw24-kv).
+
+**m=1 ncu verdict (2026-07-26, qmatvec_q8_0_mmvq_rp on H100):** issue every
+6-9 cycles, 0.16-0.29 eligible of ~7.5 active warps/scheduler (49% occupancy,
+grid-limited on small out_f shapes) — long-scoreboard stall on the weight
+stream. k-split (rpks) is BANNED (decode==verify FP-order law); the legal
+lever is the rpca recipe (cp.async double-buffered weight ring, same
+accumulation order = bit-identical): port q8_0_mmvq_rp -> _rpca next.
+Expected class: NVFP4 rpca's long_scoreboard fix; target is the 250-300
+tok/s band en route to the 334-345 wall goal (which likely also needs the
+fused-launch family widened to rp).
