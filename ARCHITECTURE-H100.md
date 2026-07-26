@@ -722,3 +722,19 @@ DESIGN (decode_step_batch precedent, applied to prime):
 - EXPECTED: GEMM m 512->2048 lifts the 10.3ms GEMM slice toward the ceiling
   (+15-25% aggregate prefill), amortizes the per-tick fixed costs; stacks
   with task #14 (graphs) toward the 35k lane target.
+
+**Task #13 increment 2 (2026-07-26): prime_cache_batch LANDED + regime mapped.**
+Driver: trunk (embed/norms/adds/ffn/projection groups) on CONCAT tokens
+(m = sum_T); stateful mixer cores per seq on split projection buffers (D2D).
+prime-batch-gate ALL GREEN (uneven lengths: per-seq prefill argmax MATCH +
+16-step decode streams MATCH vs individual primes). MEASURED REGIME (N=5):
+  B=8 T=64:  5034 -> 9073 tok/s  (+80.2%)
+  B=8 T=128: 8741 -> 13009 tok/s (+48.8%)
+  B=4 T=128: 8859 -> 12783 tok/s (+44.3%)
+  B=4 T=512: 17980 -> 16326 tok/s (-9.2%)  <- per-seq m already at plateau;
+    split/gather copies eat the margin. Crossover ~T=256-384.
+POLICY: batch prefills when per-seq T <= BW24_PRIME_BATCH_MAX_T (default 320),
+else single-prime — exactly the serving mix (chat prompts are mostly short;
+the aggregate serving prefill number was measured on 937-token prompts, i.e.
+the UNFAVORABLE side; the favorable side was previously WORSE than measured).
+Next: worker tick integration + serving re-measurement.

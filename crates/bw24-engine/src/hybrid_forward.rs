@@ -435,6 +435,127 @@ impl HybridModel {
         Ok((e.dtoh(&logits)?, h_seed, if crate::spec::spec_hpost() { hn } else { x }))
     }
 
+    /// Cross-request BATCHED fresh prime (task #13, design in ARCHITECTURE-H100.md): the
+    /// trunk's token-parallel ops (embed, norms, adds, ffn, projection GROUPS) run once on
+    /// the CONCATENATION of B sequences — GEMMs at m = sum_T, the continuous-batching win
+    /// the serving-lane bench attributed the remaining vLLM gap to. The stateful mixer
+    /// CORES (QK-norm/RoPE/FA/append, conv/GDN scans) run per sequence on split projection
+    /// buffers (D2D row copies; the mixers' own out-projections stay per-seq this
+    /// increment). FRESH primes only (cache.pos == 0 asserted; continuation stays single).
+    /// NUMERIC CONFIG: a concat GEMM tiles K differently than per-seq GEMMs — same class
+    /// as every prefill GEMM change; prime_batch_gate arbitrates (argmax + stream battery).
+    pub fn prime_cache_batch(&self, e: &Engine, prompts: &[&[u32]], caches: &mut [&mut Cache])
+                             -> Result<Vec<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let b = prompts.len();
+        assert!(b >= 1 && b == caches.len());
+        for c in caches.iter() {
+            assert!(c.pos == 0, "prime_cache_batch: FRESH primes only (continuation stays single)");
+        }
+        let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
+        for &t in &ts { assert!(t >= PRIME_MIN_T, "prime_cache_batch needs T >= {PRIME_MIN_T}"); }
+        let total: usize = ts.iter().sum();
+        let offs: Vec<usize> = ts.iter().scan(0usize, |a, &t| { let o = *a; *a += t; Some(o) }).collect();
+        // per-seq positions (fresh: 0..T_s)
+        let pos_ds: Vec<CudaSlice<i32>> = ts.iter()
+            .map(|&t| e.htod_i32(&(0..t as i32).collect::<Vec<_>>()))
+            .collect::<Result<_, _>>()?;
+        // split a concat [total, dim] buffer into per-seq copies
+        let split = |e: &Engine, y: &CudaSlice<f32>, dim: usize|
+                     -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+            let mut out = Vec::with_capacity(b);
+            for s in 0..b {
+                let mut ys = e.uninit(ts[s] * dim)?;
+                e.copy_view_into(&mut ys, 0, &y.slice(offs[s] * dim..(offs[s] + ts[s]) * dim), ts[s] * dim)?;
+                out.push(ys);
+            }
+            Ok(out)
+        };
+
+        let cat_tokens: Vec<u32> = prompts.iter().flat_map(|p| p.iter().copied()).collect();
+        let mut x = self.embed(e, &cat_tokens)?;   // [total, n_embd]
+        for (il, layer) in self.layers.iter().enumerate() {
+            let mut h = e.uninit(total * n_embd)?;
+            e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, total, eps)?;
+            // mixer: projection GROUP on the concat (m = total), stateful core per seq
+            let mut mixed = e.uninit(total * n_embd)?;
+            match &layer.mixer {
+                Mixer::Full(fa) => {
+                    let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], &h, total)?;
+                    let mut parts: Vec<Vec<CudaSlice<f32>>> = (0..b).map(|_| Vec::new()).collect();
+                    for (w, y) in [&fa.wq, &fa.wk, &fa.wv].iter().zip(g3) {
+                        for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
+                            parts[s].push(ys);
+                        }
+                    }
+                    for (s, g3s) in parts.into_iter().enumerate() {
+                        let m = self.full_attn_prime_core(e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
+                        e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                    }
+                }
+                Mixer::Linear(la) => {
+                    let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
+                    let g4 = e.matmul_group(&ws, &h, total)?;
+                    let mut parts: Vec<Vec<CudaSlice<f32>>> = (0..b).map(|_| Vec::new()).collect();
+                    for (w, y) in ws.iter().zip(g4) {
+                        for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
+                            parts[s].push(ys);
+                        }
+                    }
+                    for (s, g4s) in parts.into_iter().enumerate() {
+                        let m = self.linear_attn_prime_core(e, la, g4s, ts[s], caches[s], il)?;
+                        e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                    }
+                }
+            }
+            let mut x1 = e.uninit(total * n_embd)?;
+            e.add(&x, &mixed, &mut x1, total * n_embd)?;
+            let mut z = e.uninit(total * n_embd)?;
+            e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, total, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let mut g2 = e.matmul_group(&[ffn_gate, ffn_up], &z, total)?;
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
+                    let mut act = e.uninit(total * n_ff)?;
+                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, total * n_ff)?;
+                    e.matmul(ffn_down, &act, total)?
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, total, il as u16)?,
+            };
+            let mut x2 = e.uninit(total * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, total * n_embd)?;
+            x = x2;
+        }
+        // epilogue per seq (identical math to prime_chunk: norm all rows, lm_head on last row)
+        let mut hn = e.uninit(total * n_embd)?;
+        e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, total, eps)?;
+        let mut out = Vec::with_capacity(b);
+        for s in 0..b {
+            let last0 = (offs[s] + ts[s] - 1) * n_embd;
+            let mut h_seed = e.uninit(n_embd)?;
+            if !crate::spec::spec_hpost() {
+                e.copy_view_into(&mut h_seed, 0, &x.slice(last0..last0 + n_embd), n_embd)?;
+            } else {
+                e.copy_view_into(&mut h_seed, 0, &hn.slice(last0..last0 + n_embd), n_embd)?;
+            }
+            let mut hlast = e.uninit(n_embd)?;
+            e.copy_view_into(&mut hlast, 0, &hn.slice(last0..last0 + n_embd), n_embd)?;
+            let logits = e.matmul(&self.output, &hlast, 1)?;
+            caches[s].pos += ts[s];
+            let hidden = if crate::spec::spec_hpost() {
+                split(e, &hn, n_embd)?.swap_remove(s)
+            } else {
+                split(e, &x, n_embd)?.swap_remove(s)
+            };
+            out.push((e.dtoh(&logits)?, h_seed, hidden));
+        }
+        Ok(out)
+    }
+
     /// `full_attn` (batched prefill mixer) + the cache side-effect: append the T post-RoPE K/V
     /// rows into the resident quantized KV cache (q8_0 K / q5_1 V) and advance len/len_d. Row
     /// bytes are BIT-IDENTICAL to the decode append (same per-warp quant kernel per row; the

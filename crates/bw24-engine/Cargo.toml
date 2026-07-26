@@ -19,6 +19,10 @@ name = "gemma-gate"
 path = "src/bin/gemma_gate.rs"
 
 [[bin]]
+name = "prime-batch-gate"
+path = "src/bin/prime_batch_gate.rs"
+
+[[bin]]
 name = "kernel-check"
 path = "src/bin/kernel_check.rs"
 
