@@ -1249,3 +1249,18 @@ config. Gates: kernel-check, prime-batch b=6/8, decode-batch, validate,
 graph-session ALL GREEN.
 OFFICIAL LANE: prefill T=2048 = 24,094 tok/s (77.6% of vLLM), TTFT 85ms;
 batched prime 20,875 (cumulative 13441 -> 20875, +55.3%).
+
+**FA3 arc OPENED (2026-07-26, round 28): wgmma QK^T tile PROVEN.** Fresh
+evidence re-priced the FA rewrite at the official lane shape: fa_prefill at
+T=2048 runs 993us/layer = ~3.5% of bf16 TC peak, ncu 11.6% occupancy / 255
+regs (register-bound — the refuted occupancy probes could never fix this; only
+wgmma's smem-operand reads remove the Q/K register residency). setmaxnreg +
+wgmma applies cleanly here: bf16 FA has NO per-block scale folds (the C7514
+serialization verdict was specific to Q8 W4A8). tools/bench_fa3.cu (K4/K5
+harness playbook): v1 warpgroup m64n64k16 QK^T tile vs CPU ref = MATCH
+(1.75e-4) with the s8-probe-proven canonical core-matrix staging (8x16B cores,
+element (r,kk) at (r/8)*256+(kk/8)*128+(r%8)*16+(kk%8)*2; desc lead=128
+stride=256; trans 0,0). Remaining harness steps: softmax fragment plumbing ->
+PV wgmma (P bf16 canonical restage) -> online rescale/causal/GQA -> pipelined
+kernel -> BW24_FA3 engine seam. Target: >=3x on the 7.9ms FA slice (+6-7%
+official lane).
