@@ -1484,3 +1484,14 @@ same d*q math, greedy streams MATCH device-vs-host. BW24_EMBED_DEV=0 reverts.
 Full battery green. The lane is now within 6.4% of vLLM with GEMMs (52% of
 kernel time) at their probe-refuted ceiling; remaining mapped: de-broadcast
 (~1.5ms), gaps (~1.4ms), K4 Ssnap (~0.4ms), FA3 batched twin (serving).
+
+**Lt algo sweep at m=2048 (2026-07-27): GEMM ceiling RECONFIRMED at the lane's
+real shape.** Heuristic #0 (the engine's pick) is optimal or within jitter on
+5/6 shapes; gate/up (k=4096,n=11008) shows algo#2 ~4% inside noise (re-time
+variance +-2-9% on the same algo). No algo-cache warranted. The official-lane
+GEMM slice (36.4ms, 52% of kernel time) stands at its dtype-refuted ceiling.
+LANE MAP to parity (70ms vs vLLM's 66): de-broadcast q/k (~1.2ms,
+bit-identical, wide edit across conv-scatter/l2/K2/K4/K5 + vl twins), gap
+floor (~1.4 of 2.4ms), K4 Ssnap smem staging (~0.4ms) — sum ~= 3ms => ~99%.
+The last ~1% is vLLM's int8-vs-fp16 GEMM edge at these shapes, refused by the
+accuracy laws (per-block-scale walls, probes on file).
