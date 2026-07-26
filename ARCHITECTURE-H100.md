@@ -998,3 +998,17 @@ the Lt calls stay exactly as they are. vLLM's own stack validates the
 approach on this model/GPU. This is a sub-week arc: segment the captured
 trunk at GEMM boundaries, capture each segment once per bucket, replay
 segments interleaved with eager GEMM calls.
+
+**Prime activation slabs (2026-07-26): LANDED, honest-neutral standalone,
+piecewise foundation in place.** The eager prime's seven trunk transients
+(h/x1/z/act/x-pingpong/h16/z16) live in resident per-model slabs
+(BW24_PRIME_SLABS=0 reverts): ~224 fewer alloc/free API calls per prime and
+FROZEN Lt operand addresses (nvjet variant selection now run-to-run stable —
+the property piecewise segment capture requires). pp512 19,826 vs 19,984
+slab-less = the third independent launch-diet NEUTRAL (the finding stands:
+the floor is submission cadence, not call count). All gates green (validate,
+graph-session, prime-batch, argmax MATCH, same output text). NEXT (the
+piecewise arc proper): segment the slab-resident layer loop at GEMM
+boundaries, capture the deterministic custom-kernel segments per bucket
+against the slabs, replay interleaved with eager Lt calls — the vLLM-validated
+pattern; slabs give every segment fixed IO addresses for free.

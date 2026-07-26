@@ -651,6 +651,13 @@ pub struct HybridModel {
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
     pub gemma4_aux: Option<GemmaAux>,
+    /// PRIME ACTIVATION SLABS (piecewise-graph foundation, 2026-07-26): the layer loop's
+    /// seven trunk transients live in RESIDENT per-model buffers instead of per-call pool
+    /// allocs — kills ~224 alloc/free API calls per prime AND freezes the Lt GEMM operand
+    /// addresses (nvjet's alignment-variant kernels become run-to-run stable once their
+    /// pointers stop moving). Sized on first prime to the largest T seen; Mutex = lazy init
+    /// only (single GPU worker).
+    pub prime_slabs: std::sync::Mutex<Option<crate::hybrid_forward::PrimeSlabs>>,
 }
 
 impl HybridModel {
@@ -1202,6 +1209,7 @@ impl HybridModel {
             mtp,
             embd_gpu: std::sync::OnceLock::new(),
             gemma4_aux,
+            prime_slabs: std::sync::Mutex::new(None),
         };
         e.configure_moe_cache_layout(model.moe_cache_block_sizes());
         if force_embd_gpu {

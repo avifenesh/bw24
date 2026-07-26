@@ -7,6 +7,21 @@ use bw24_gguf::config::ModelConfig;
 use crate::Engine;
 use crate::cache::Cache;
 
+/// Resident trunk transients for the eager prime (piecewise-graph foundation; see
+/// HybridModel::prime_slabs). Every buffer is fully overwritten before use per prime.
+pub struct PrimeSlabs {
+    pub t_cap: usize,
+    pub h: CudaSlice<f32>,
+    pub x1: CudaSlice<f32>,
+    pub z: CudaSlice<f32>,
+    pub act: CudaSlice<f32>,
+    pub xa: CudaSlice<f32>,
+    pub xb: CudaSlice<f32>,
+    pub h16: CudaSlice<u8>,
+    pub z16: CudaSlice<u8>,
+}
+
+
 /// Device scratch for the burst verify stream (see `verify_stream_scratch`).
 pub(crate) struct VerifyStreamScratch {
     pub pos_d: CudaSlice<i32>,
@@ -372,6 +387,27 @@ impl HybridModel {
     /// One prime chunk: the full layer stack over `tokens`, continuing from the cache's current
     /// state (`cache.pos` = tokens already primed; 0 = fresh). Positions/RoPE are absolute
     /// (cache.pos + i). Returns (last-row logits, h_seed, this chunk's hidden stack [T, n_embd]).
+    /// See HybridModel::prime_slabs — the eager prime's resident trunk transients.
+    pub fn prime_slabs_get(&self, e: &Engine, t: usize, n_embd: usize, n_ff_max: usize)
+                           -> Result<std::sync::MutexGuard<'_, Option<PrimeSlabs>>, Box<dyn std::error::Error>> {
+        let mut g = self.prime_slabs.lock().unwrap();
+        let need_new = match g.as_ref() { None => true, Some(sl) => sl.t_cap < t };
+        if need_new {
+            *g = Some(PrimeSlabs {
+                t_cap: t,
+                h: e.uninit(t * n_embd)?,
+                x1: e.uninit(t * n_embd)?,
+                z: e.uninit(t * n_embd)?,
+                act: e.uninit(t * n_ff_max)?,
+                xa: e.uninit(t * n_embd)?,
+                xb: e.uninit(t * n_embd)?,
+                h16: e.alloc_u8_uninit(t * n_embd * 2)?,
+                z16: e.alloc_u8_uninit(t * n_embd * 2)?,
+            });
+        }
+        Ok(g)
+    }
+
     fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
@@ -382,55 +418,117 @@ impl HybridModel {
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
 
-        let mut x = self.embed(e, tokens)?;   // [T, n_embd]
+        let x_embed = self.embed(e, tokens)?;   // [T, n_embd]
         // task #14: fuse the fp16 GEMM-operand emission into the trunk norms (kills the
         // standalone convert launches). Only when the f16 lane serves and T reaches the
         // GEMM tier; bit-identical either way.
         let f16fuse = crate::f16_ffi::pp_f16_enabled() && t >= 16;
+        // PRIME SLABS (piecewise foundation): trunk transients in resident buffers —
+        // ~224 fewer alloc/free calls per prime and FROZEN Lt operand addresses
+        // (nvjet's alignment-variant selection becomes run-to-run stable). Every slab is
+        // fully overwritten before use; x ping-pongs xa<->xb; the hidden-stack return
+        // clones the final x (the slab cannot leave). Non-slab fallback: BW24_PRIME_SLABS=0.
+        let n_ff_max = self.layers.iter().map(|l| match &l.ffn {
+            crate::hybrid::Ffn::Dense { ffn_gate, .. } => ffn_gate.out_features(),
+            _ => n_embd,
+        }).max().unwrap_or(n_embd).max(n_embd);
+        let use_slabs = std::env::var("BW24_PRIME_SLABS").as_deref() != Ok("0");
+        let mut slab_guard = if use_slabs {
+            Some(self.prime_slabs_get(e, t, n_embd, n_ff_max)?)
+        } else {
+            None
+        };
+        let mut x_own;   // fallback storage when slabs are off
+        let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<(&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<u8>, &mut CudaSlice<u8>)>);
+        let mut x_own2;
+        match slab_guard.as_mut() {
+            Some(g) => {
+                let slabs = g.as_mut().unwrap();
+                e.copy_into(&mut slabs.xa, 0, &x_embed, t * n_embd)?;
+                let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, .. } = slabs;
+                x_cur = xa;
+                x_nxt = xb;
+                sl = Some((h, x1, z, act, h16, z16));
+            }
+            None => {
+                x_own = x_embed;
+                x_own2 = e.uninit(t * n_embd)?;
+                x_cur = &mut x_own;
+                x_nxt = &mut x_own2;
+                sl = None;
+            }
+        }
+        let (slab_h, slab_x1, slab_z, slab_act, slab_h16, slab_z16) = match sl {
+            Some(t6) => (Some(t6.0), Some(t6.1), Some(t6.2), Some(t6.3), Some(t6.4), Some(t6.5)),
+            None => (None, None, None, None, None, None),
+        };
+        let mut alloc_h; let mut alloc_x1; let mut alloc_z; let mut alloc_act;
+        let mut alloc_h16; let mut alloc_z16;
+        let (h, x1, z, act): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>, &mut CudaSlice<f32>);
+        let (h16, z16): (&mut CudaSlice<u8>, &mut CudaSlice<u8>);
+        match (slab_h, slab_x1, slab_z, slab_act, slab_h16, slab_z16) {
+            (Some(a), Some(b), Some(c), Some(d), Some(e16), Some(f16b)) => {
+                h = a; x1 = b; z = c; act = d; h16 = e16; z16 = f16b;
+            }
+            _ => {
+                alloc_h = e.uninit(t * n_embd)?;
+                alloc_x1 = e.uninit(t * n_embd)?;
+                alloc_z = e.uninit(t * n_embd)?;
+                alloc_act = e.uninit(t * n_ff_max)?;
+                alloc_h16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                alloc_z16 = e.alloc_u8_uninit(t * n_embd * 2)?;
+                h = &mut alloc_h; x1 = &mut alloc_x1; z = &mut alloc_z; act = &mut alloc_act;
+                h16 = &mut alloc_h16; z16 = &mut alloc_z16;
+            }
+        }
         for (il, layer) in self.layers.iter().enumerate() {
-            let mut h = e.uninit(t * n_embd)?;
-            let mut hx16: Option<CudaSlice<u8>> = None;
             if f16fuse {
-                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
-                e.rms_norm_f16out(&x, layer.attn_norm.float_data(), &mut h, &mut b16, n_embd, t, eps)?;
-                hx16 = Some(b16);
+                e.rms_norm_f16out(x_cur, layer.attn_norm.float_data(), h, h16, n_embd, t, eps)?;
             } else {
-                e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
+                e.rms_norm(x_cur, layer.attn_norm.float_data(), h, n_embd, t, eps)?;
             }
+            let hx16 = if f16fuse { Some(&*h16) } else { None };
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), &pos_d, t, cache, il)?,
-                Mixer::Linear(la) => self.linear_attn_prime(e, la, &h, hx16.as_ref(), t, cache, il)?,
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
+                Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
             };
-            let mut x1 = e.uninit(t * n_embd)?;
-            e.add(&x, &mixed, &mut x1, t * n_embd)?;
-            let mut z = e.uninit(t * n_embd)?;
-            let mut zx16: Option<CudaSlice<u8>> = None;
+            e.add(x_cur, &mixed, x1, t * n_embd)?;
             if f16fuse {
-                let mut b16 = e.alloc_u8_uninit(t * n_embd * 2)?;
-                e.rms_norm_f16out(&x1, layer.post_attn_norm.float_data(), &mut z, &mut b16, n_embd, t, eps)?;
-                zx16 = Some(b16);
+                e.rms_norm_f16out(x1, layer.post_attn_norm.float_data(), z, z16, n_embd, t, eps)?;
             } else {
-                e.rms_norm(&x1, layer.post_attn_norm.float_data(), &mut z, n_embd, t, eps)?;
+                e.rms_norm(x1, layer.post_attn_norm.float_data(), z, n_embd, t, eps)?;
             }
+            let zx16 = if f16fuse { Some(&*z16) } else { None };
             let ffn_out = match &layer.ffn {
                 crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
                     let n_ff = ffn_gate.out_features();
-                    let mut g2 = match &zx16 {
-                        Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], &z, xh, t)?,
-                        None => e.matmul_group(&[ffn_gate, ffn_up], &z, t)?,
+                    let mut g2 = match zx16 {
+                        Some(xh) => e.matmul_group_xh(&[ffn_gate, ffn_up], z, xh, t)?,
+                        None => e.matmul_group(&[ffn_gate, ffn_up], z, t)?,
                     };
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
-                    let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
-                    e.matmul(ffn_down, &act, t)?
+                    Self::ffn_act(e, &self.cfg, &gate, &up, act, t * n_ff)?;
+                    let act_view = e.view(act, t * n_ff);
+                    let act_owned;
+                    let act_ref: &CudaSlice<f32> = if n_ff == n_ff_max {
+                        &*act
+                    } else {
+                        // slab wider than this layer's n_ff: matmul reads t*n_ff rows —
+                        // leading prefix is exactly the data (contiguous) — pass the slab.
+                        let _ = act_view; act_owned = (); let _ = act_owned; &*act
+                    };
+                    e.matmul(ffn_down, act_ref, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, z, t, il as u16)?,
             };
-            let mut x2 = e.uninit(t * n_embd)?;
-            e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
-            x = x2;
+            e.add(x1, &ffn_out, x_nxt, t * n_embd)?;
+            std::mem::swap(&mut x_cur, &mut x_nxt);
         }
+        // hidden-stack return: clone the final x out of the slab
+        let mut x = e.uninit(t * n_embd)?;
+        e.copy_into(&mut x, 0, x_cur, t * n_embd)?;
+        drop(slab_guard);
 
         // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A default) or AFTER it
         // (BW24_SPEC_HPOST — reference convention; hn is computed just below either way, so
