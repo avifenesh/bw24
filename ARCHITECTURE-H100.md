@@ -1155,3 +1155,16 @@ f32_to_bf16 helper; batched core order = per-seq prep + k-mirror -> vl K1-K3
 prime-batch b=4/b=8 uneven). Cumulative batched-prime this round:
 13441 (pre-#16) -> 14976 (+11.4%). NEXT (increment 3): varlen prep
 (conv-with-ring-table, repack, l2, sigmoid/glog) + gated-norm tail.
+
+**Varlen GDN increment 3 (2026-07-26): FULL varlen core — +13.1% batched prime
+interleaved 5/5 (median 16022 vs 14171).** The whole GDN mixer core is now 13
+launches for the entire batch regardless of B: gdnprep_t table + vl twins for
+conv(+ring, per-seq ring pointers in-table), repack, fused l2 (grid.y picks
+q/k), fused gate-prep (sigmoid+glog one pass), bf16 mirrors (gdn_mirror_vl over
+the gdnseq_t table), and the gated-norm(+f16out) tail — composing with vl
+K1-K5. Per-block/element math identical everywhere (bit-gateable); tail vl
+requires f16out (else per-seq fallback norm). Gates green (kernel-check,
+prime-batch b=4/b=8 uneven). ROUND-26 CUMULATIVE batched serving-shape prime:
+13441 -> 16022 (+19.2%: scatter-elim +6.1%, vl-K4/K5 +2.3%, vl-K1-K3 +3%,
+vl-prep/tail +7.3%). NOTE: the B=4-12 concat plateau was measured with per-seq
+cores — varlen changes B-scaling; re-sweep before touching serving policy.

@@ -1843,4 +1843,164 @@ extern "C" __global__ void gdn_chunk_solve32_vl(gdnvl_t v, int H, int C) {
     gdn_chunk_solve_kernel<32>(s.v, s.k, s.a, s.gcum, s.U, s.w, H, s.T, blockIdx.x);
 }
 
+// ---- task #18 increment 3: varlen PREP + TAIL (one launch per stage for all B seqs).
+// Every twin reproduces the per-seq kernel's per-element/per-block math exactly; only
+// the grid gains a seq dim with T-guards, so the whole chain stays bit-gateable.
+typedef struct {
+    const float* qkv;          // [T, conv_dim] token-major view (concat row offset)
+    float* conv_state;         // resident per-seq ring
+    float* conv_out;           // [conv_dim, T]
+    float* q_g; float* k_g; float* v_g;
+    float* q_l2; float* k_l2;
+    const float* beta_raw; const float* alpha;
+    float* beta; float* g_log;
+    const float* o;            // K5 output (tail input)
+    const float* z;            // post-norm gate view (concat row offset)
+    float* gn; __half* gn16;   // tail outputs
+    int T; int pad_;
+} gdnprep_t;
+typedef struct { gdnprep_t s[8]; } gdnprepvl_t;
+
+extern "C" __global__ void ssm_conv1d_tm_state_vl(gdnprepvl_t v, const float* __restrict__ w,
+                                                  int conv_dim, int d_conv) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    int t = blockIdx.y;
+    if (c >= conv_dim || t >= sq.T) return;
+    int pad = d_conv - 1;
+    const float* wc = w + (size_t)c * d_conv;
+    const float* st = sq.conv_state + (size_t)c * pad;
+    float acc = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 8; j++) {
+        if (j < d_conv) {
+            int tt = t - pad + j;
+            float xv = (tt >= 0) ? sq.qkv[(size_t)tt * conv_dim + c]
+                                 : st[pad + tt];
+            acc += xv * wc[j];
+        }
+    }
+    sq.conv_out[(size_t)c * sq.T + t] = silu(acc);
+}
+
+extern "C" __global__ void ssm_conv_ring_update_vl(gdnprepvl_t v, int conv_dim, int d_conv) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int pad = d_conv - 1;
+    if (idx >= conv_dim * pad) return;
+    int c = idx / pad;
+    int j = idx % pad;
+    int tt = sq.T - pad + j;
+    sq.conv_state[(size_t)c * pad + j] = sq.qkv[(size_t)tt * conv_dim + c];
+}
+
+extern "C" __global__ void qkv_to_gdn_repack_vl(gdnprepvl_t v, int d_state, int num_v,
+                                                int num_k, int key_dim) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)sq.T * num_v * d_state;
+    if (idx >= total) return;
+    int i  = idx % d_state;
+    int vh = (idx / d_state) % num_v;
+    int tt = idx / ((long)d_state * num_v);
+    int head_k = d_state;
+    int kh = vh % num_k;
+    long qc = (long)kh * head_k + i;
+    long kc = (long)key_dim + (long)kh * head_k + i;
+    long vc = (long)2 * key_dim + (long)vh * d_state + i;
+    sq.q_g[idx] = sq.conv_out[qc * sq.T + tt];
+    sq.k_g[idx] = sq.conv_out[kc * sq.T + tt];
+    sq.v_g[idx] = sq.conv_out[vc * sq.T + tt];
+}
+
+// fused q+k l2 (grid.y: 0 = q, 1 = k) — the reduction body IS l2_norm_f32's (block 256).
+extern "C" __global__ void gdn_l2_vl(gdnprepvl_t v, int ncols, int num_v, float eps) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int row = blockIdx.x;
+    if (row >= num_v * sq.T) return;
+    const float* x = blockIdx.y == 0 ? sq.q_g : sq.k_g;
+    float* dst = blockIdx.y == 0 ? sq.q_l2 : sq.k_l2;
+    int tid = threadIdx.x;
+    const float* xr = x + (size_t)row * ncols; float* dr = dst + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v2 = xr[i]; sum += v2 * v2; }
+    __shared__ float s[32];
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o = 16; o > 0; o >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) dr[i] = xr[i] * scale;
+}
+
+// fused sigmoid(beta_raw) + glog(alpha) — both elementwise over [T, H].
+extern "C" __global__ void gdn_gate_prep_vl(gdnprepvl_t v, const float* __restrict__ dt_bias,
+                                            const float* __restrict__ a, int H) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= H * sq.T) return;
+    sq.beta[idx] = 1.0f / (1.0f + expf(-sq.beta_raw[idx]));
+    int h = idx % H;
+    float x = sq.alpha[idx] + dt_bias[h];
+    float sp = (x > 20.0f) ? x : log1pf(expf(x));
+    sq.g_log[idx] = a[h] * sp;
+}
+
+// varlen bf16 mirrors over the gdnseq_t table: k (q_l2's sibling k_l2 -> kb16) and w -> wb16.
+// float4 body == f32_to_bf16_bulk per element.
+extern "C" __global__ void gdn_mirror_vl(gdnvl_t v, int elems_per_t, int which) {
+    const gdnseq_t sq = v.s[blockIdx.z];
+    long n = which == 0 ? (long)sq.T * elems_per_t
+                        : (long)sq.nc * elems_per_t * 32;   // w: nc*H*C*D with elems_per_t = H*D
+    const float* x = which == 0 ? sq.k : sq.w;
+    __nv_bfloat16* o = (__nv_bfloat16*)(which == 0 ? (void*)sq.kb16 : (void*)sq.Wb16);
+    long base = ((long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 val = *(const float4*)(x + base);
+        o[base + 0] = __float2bfloat16(val.x);
+        o[base + 1] = __float2bfloat16(val.y);
+        o[base + 2] = __float2bfloat16(val.z);
+        o[base + 3] = __float2bfloat16(val.w);
+    } else {
+        for (long i = base; i < n; i++) o[i] = __float2bfloat16(x[i]);
+    }
+}
+
+// varlen gated-norm tail (+f16out): per-row body == gated_rmsnorm_f16out_f32 (block 128).
+extern "C" __global__ void gated_rmsnorm_f16out_vl(gdnprepvl_t v, const float* __restrict__ w,
+                                                   int ncols, int num_v, float eps) {
+    const gdnprep_t sq = v.s[blockIdx.z];
+    int row = blockIdx.x;
+    if (row >= num_v * sq.T) return;
+    int tid = threadIdx.x;
+    const float* orow = sq.o + (size_t)row * ncols;
+    const float* zrow = sq.z + (size_t)row * ncols;
+    float* drow = sq.gn + (size_t)row * ncols;
+    __half* hrow = sq.gn16 + (size_t)row * ncols;
+    float sum = 0.0f;
+    for (int i = tid; i < ncols; i += blockDim.x) { float v2 = orow[i]; sum += v2 * v2; }
+    __shared__ float s[32];
+    for (int o2 = 16; o2 > 0; o2 >>= 1) sum += __shfl_down_sync(0xffffffff, sum, o2);
+    if ((tid & 31) == 0) s[tid >> 5] = sum;
+    __syncthreads();
+    if (tid < 32) {
+        float v2 = (tid < (blockDim.x + 31) / 32) ? s[tid] : 0.0f;
+        for (int o2 = 16; o2 > 0; o2 >>= 1) v2 += __shfl_down_sync(0xffffffff, v2, o2);
+        if (tid == 0) s[0] = v2;
+    }
+    __syncthreads();
+    float scale = rsqrtf(s[0] / ncols + eps);
+    for (int i = tid; i < ncols; i += blockDim.x) {
+        float zz = zrow[i];
+        float ov = (orow[i] * scale * w[i]) * (zz / (1.0f + expf(-zz)));
+        drow[i] = ov;
+        hrow[i] = __float2half(ov);
+    }
+}
+
 #endif  // !BW24_PORTABLE_CUDA || BW24_HOPPER_MMA

@@ -1248,66 +1248,91 @@ impl HybridModel {
                     t, caches[s], il, None)
             }).collect();
         }
-        // stage 1: per-seq prep (conv/repack/l2/sigmoid/glog) + buffer allocs + the
-        // k mirror (independent of K1-K3); the w mirror waits for varlen K3.
-        let mut preps = Vec::with_capacity(b);
-        let mut pres = Vec::with_capacity(b);
-        for s in 0..b {
-            let (o, t) = (offs[s], ts[s]);
-            let prep = self.linear_attn_gdn_prep(
-                e, la,
-                &g4[0].slice(o * conv_dim..(o + t) * conv_dim),
-                &g4[2].slice(o * num_v..(o + t) * num_v),
-                &g4[3].slice(o * num_v..(o + t) * num_v),
-                t, caches[s], il, None)?;
-            let mut bufs = e.gdn_chunk_alloc(num_v, t, c)?;
-            e.f32_to_bf16(&prep.k_l2, &mut bufs.kb16, t * num_v * 128)?;
-            preps.push(prep);
-            pres.push(bufs);
+        // increment 3: the ENTIRE core is varlen — allocs only per seq, then 13 launches
+        // total for the whole batch: [conv, ring, repack, l2(q+k), gate-prep] +
+        // [k-mirror, K1, K2, K3, w-mirror, K4, K5] + [gated-norm tail].
+        struct SeqBufs {
+            conv_out: CudaSlice<f32>, q_g: CudaSlice<f32>, k_g: CudaSlice<f32>, v_g: CudaSlice<f32>,
+            q_l2: CudaSlice<f32>, k_l2: CudaSlice<f32>, beta: CudaSlice<f32>, g_log: CudaSlice<f32>,
+            gn: CudaSlice<f32>, gn16: CudaSlice<u8>,
         }
-        // stage 2: varlen K1+K2+K3 (three launches), per-seq w mirrors, varlen K4+K5.
+        let d_conv = ssm.conv_kernel as usize;
+        let f16o = Self::f16out_on(e, 16);
+        let mut sb = Vec::with_capacity(b);
+        let mut pres = Vec::with_capacity(b);
+        for &t in ts.iter().take(b) {
+            sb.push(SeqBufs {
+                conv_out: e.uninit(conv_dim * t)?,
+                q_g: e.uninit(d_state * num_v * t)?,
+                k_g: e.uninit(d_state * num_v * t)?,
+                v_g: e.uninit(d_state * num_v * t)?,
+                q_l2: e.uninit(d_state * num_v * t)?,
+                k_l2: e.uninit(d_state * num_v * t)?,
+                beta: e.uninit(t * num_v)?,
+                g_log: e.uninit(t * num_v)?,
+                gn: e.uninit(d_state * num_v * t)?,
+                gn16: e.alloc_u8_uninit(d_state * num_v * t * 2)?,
+            });
+            pres.push(e.gdn_chunk_alloc(num_v, t, c)?);
+        }
+        let prep_args: Vec<crate::GdnPrepVl> = (0..b).map(|s| {
+            let (o, t) = (offs[s], ts[s]);
+            let rl = caches[s].recur[il].as_ref().unwrap();
+            crate::GdnPrepVl {
+                qkv: e.addr_f32v(&g4[0].slice(o * conv_dim..(o + t) * conv_dim)),
+                conv_state: e.addr_f32(&rl.conv_state),
+                conv_out: e.addr_f32(&sb[s].conv_out),
+                q_g: e.addr_f32(&sb[s].q_g), k_g: e.addr_f32(&sb[s].k_g), v_g: e.addr_f32(&sb[s].v_g),
+                q_l2: e.addr_f32(&sb[s].q_l2), k_l2: e.addr_f32(&sb[s].k_l2),
+                beta_raw: e.addr_f32v(&g4[2].slice(o * num_v..(o + t) * num_v)),
+                alpha: e.addr_f32v(&g4[3].slice(o * num_v..(o + t) * num_v)),
+                beta: e.addr_f32(&sb[s].beta), g_log: e.addr_f32(&sb[s].g_log),
+                o: e.addr_f32(&pres[s].o),
+                z: e.addr_f32v(&g4[1].slice(o * value_dim..(o + t) * value_dim)),
+                gn: e.addr_f32(&sb[s].gn), gn16: e.addr_u8(&sb[s].gn16),
+                t: t as i32, pad: 0,
+            }
+        }).collect();
         let args: Vec<crate::GdnSeqVl> = (0..b).map(|s| {
             let rl = caches[s].recur[il].as_ref().unwrap();
             crate::GdnSeqVl {
                 kb16: e.addr_u8(&pres[s].kb16), gcum: e.addr_f32(&pres[s].gcum),
-                beta: e.addr_f32(&preps[s].beta), u: e.addr_f32(&pres[s].u),
+                beta: e.addr_f32(&sb[s].beta), u: e.addr_f32(&pres[s].u),
                 wb16: e.addr_u8(&pres[s].wb16), y: e.addr_u8(&pres[s].y16),
                 ssnap: e.addr_u8(&pres[s].ssnap16),
                 state_in: e.addr_f32(&rl.ssm_state), state_out: e.addr_f32(&rl.ssm_state_alt),
-                q: e.addr_f32(&preps[s].q_l2), p: e.addr_f32(&pres[s].p),
+                q: e.addr_f32(&sb[s].q_l2), p: e.addr_f32(&pres[s].p),
                 o: e.addr_f32(&pres[s].o),
-                k: e.addr_f32(&preps[s].k_l2), v: e.addr_f32(&preps[s].v_g),
-                g: e.addr_f32(&preps[s].g_log), a: e.addr_f32(&pres[s].a),
+                k: e.addr_f32(&sb[s].k_l2), v: e.addr_f32(&sb[s].v_g),
+                g: e.addr_f32(&sb[s].g_log), a: e.addr_f32(&pres[s].a),
                 w: e.addr_f32(&pres[s].w),
                 t: ts[s] as i32, nc: pres[s].nc as i32,
             }
         }).collect();
+        e.gdn_prep_vl8(&prep_args, la.ssm_conv1d.float_data(), la.ssm_dt.float_data(),
+                       la.ssm_a.float_data(), conv_dim, d_conv, d_state, num_v, num_k, key_dim, eps)?;
+        e.gdn_mirror_vl8(&args, num_v, 0)?;
         e.gdn_chunk_k123_vl8(&args, num_v)?;
-        for bufs in pres.iter_mut() {
-            let n = bufs.nc * num_v * c * 128;
-            let (w_ref, wb16_ref) = (&bufs.w, &mut bufs.wb16);
-            e.f32_to_bf16(w_ref, wb16_ref, n)?;
-        }
+        e.gdn_mirror_vl8(&args, num_v, 1)?;
         e.gdn_chunk_vl8(&args, num_v, scale)?;
-        // stage 3: per-seq state swap + gated norm (+f16out twin for the out-GEMM)
+        if f16o {
+            e.gdn_tail_vl8(&prep_args, la.ssm_norm.float_data(), d_state, num_v, eps)?;
+        }
+        // per-seq state swap (+ non-f16out tail fallback)
         let mut out = Vec::with_capacity(b);
-        for s in 0..b {
+        for (s, bufs) in sb.into_iter().enumerate() {
             let rl = caches[s].recur[il].as_mut().unwrap();
             std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
             let (o, t) = (offs[s], ts[s]);
-            let z_v = g4[1].slice(o * value_dim..(o + t) * value_dim);
-            let mut gn = e.uninit(d_state * num_v * t)?;
-            let gn16 = if Self::f16out_on(e, t) {
-                let mut g16 = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
-                e.gated_rmsnorm_f16out_zv(&pres[s].o, la.ssm_norm.float_data(), &z_v, &mut gn, &mut g16,
-                                          d_state, num_v * t, eps)?;
-                Some(g16)
+            let SeqBufs { mut gn, gn16, .. } = bufs;
+            if f16o {
+                out.push((gn, Some(gn16)));
             } else {
+                let z_v = g4[1].slice(o * value_dim..(o + t) * value_dim);
                 e.gated_rmsnorm_zv(&pres[s].o, la.ssm_norm.float_data(), &z_v, &mut gn,
                                    d_state, num_v * t, eps)?;
-                None
-            };
-            out.push((gn, gn16));
+                out.push((gn, None));
+            }
         }
         Ok(out)
     }

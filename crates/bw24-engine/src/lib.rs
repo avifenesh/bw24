@@ -492,6 +492,23 @@ unsafe impl cudarc::driver::DeviceRepr for GdnSeqVl {}
 pub struct GdnVl8(pub [GdnSeqVl; 8]);
 unsafe impl cudarc::driver::DeviceRepr for GdnVl8 {}
 
+/// task #18 increment 3: per-seq PREP/TAIL args (CUDA `gdnprep_t`/`gdnprepvl_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GdnPrepVl {
+    pub qkv: u64, pub conv_state: u64, pub conv_out: u64,
+    pub q_g: u64, pub k_g: u64, pub v_g: u64,
+    pub q_l2: u64, pub k_l2: u64,
+    pub beta_raw: u64, pub alpha: u64, pub beta: u64, pub g_log: u64,
+    pub o: u64, pub z: u64, pub gn: u64, pub gn16: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GdnPrepVl8(pub [GdnPrepVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl8 {}
+
 /// task #18 increment 2: one sequence's FULL chunk-buffer set (alloc-only; the
 /// varlen K1-K5 chain fills them).
 pub struct GdnChunkBufs {
@@ -7500,6 +7517,106 @@ impl Engine {
             lb.arg(&v).arg(&hi).arg(&ci);
             unsafe { lb.launch(cfg)?; }
         }
+        Ok(())
+    }
+
+    /// task #18 increment 3: varlen PREP chain — conv(+ring) / repack / fused-l2 /
+    /// fused gate-prep, 5 launches for every sequence (per-element math identical
+    /// to the per-seq kernels; l2/gate fusions write disjoint outputs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn gdn_prep_vl8(&self, seqs: &[GdnPrepVl], conv_w: &CudaSlice<f32>,
+                        dt_bias: &CudaSlice<f32>, a: &CudaSlice<f32>,
+                        conv_dim: usize, d_conv: usize, d_state: usize,
+                        num_v: usize, num_k: usize, key_dim: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnPrepVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnPrepVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let (cdi, dci) = (conv_dim as i32, d_conv as i32);
+        {
+            let f = self.func("ssm_conv1d_tm_state_vl");
+            let cfg = LaunchConfig { grid_dim: ((conv_dim as u32).div_ceil(256), max_t, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(conv_w).arg(&cdi).arg(&dci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("ssm_conv_ring_update_vl");
+            let n = (conv_dim * (d_conv - 1)) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&cdi).arg(&dci);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("qkv_to_gdn_repack_vl");
+            let n = max_t * (num_v * d_state) as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi, nki, kdi) = (d_state as i32, num_v as i32, num_k as i32, key_dim as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&nki).arg(&kdi);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_l2_vl");
+            let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 2, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (dsi, nvi) = (d_state as i32, num_v as i32);
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(&dsi).arg(&nvi).arg(&eps);
+            unsafe { lb.launch(cfg)?; }
+        }
+        {
+            let f = self.func("gdn_gate_prep_vl");
+            let n = max_t * num_v as u32;
+            let cfg = LaunchConfig { grid_dim: (n.div_ceil(256), 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let nvi = num_v as i32;
+            let mut lb = self.gpu.stream.launch_builder(&f);
+            lb.arg(&v).arg(dt_bias).arg(a).arg(&nvi);
+            unsafe { lb.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// varlen bf16 mirrors over the gdnseq_t table (which: 0 = k_l2 -> kb16, 1 = w -> wb16).
+    pub fn gdn_mirror_vl8(&self, seqs: &[GdnSeqVl], n_head: usize, which: i32)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnVl8(packed);
+        let ept = (n_head * 128) as i32;
+        let max_n = seqs.iter().map(|s| if which == 0 { s.t as i64 * ept as i64 }
+                                        else { s.nc as i64 * ept as i64 * 32 }).max().unwrap();
+        let f = self.func("gdn_mirror_vl");
+        let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
+        let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(&ept).arg(&which);
+        unsafe { lb.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// varlen gated-norm tail (+f16out) — one launch replaces B gated_rmsnorm calls.
+    pub fn gdn_tail_vl8(&self, seqs: &[GdnPrepVl], norm_w: &CudaSlice<f32>,
+                        d_state: usize, num_v: usize, eps: f32)
+                        -> Result<(), Box<dyn std::error::Error>> {
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [GdnPrepVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = GdnPrepVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let f = self.func("gated_rmsnorm_f16out_vl");
+        // block_dim MUST match gated_rmsnorm's (128): the reduction tree order pins the scale
+        let cfg = LaunchConfig { grid_dim: (max_t * num_v as u32, 1, b as u32), block_dim: (128, 1, 1), shared_mem_bytes: 0 };
+        let (dsi, nvi) = (d_state as i32, num_v as i32);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(norm_w).arg(&dsi).arg(&nvi).arg(&eps);
+        unsafe { lb.launch(cfg)?; }
         Ok(())
     }
 
