@@ -51,6 +51,19 @@ if [ -n "$apps" ]; then
 else
     WINDOW_CLEAN=true
 fi
+# Per-cell recheck (2026-07-26): the entry-only check let a co-agent job that joined
+# MID-battery silently poison later cells (26b-spec-d1736 read accept 0.656 in a battery
+# whose entry was clean; 7 windowed re-runs read 0.846). Cells re-verify the window after
+# their reps and retry once instead of recording a contended row as evidence.
+window_free_now() {
+    local n=0 pid
+    while IFS=, read -r pid _; do
+        pid=$(echo "$pid" | tr -d ' '); [ -n "$pid" ] || continue
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qE -- "--embedding|llama-server" \
+            || n=$((n+1))
+    done < <(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null)
+    [ "$n" -eq 0 ]
+}
 LOAD=$(awk '{print $1}' /proc/loadavg)
 PROFILE=$(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo unknown)
 
@@ -108,7 +121,9 @@ run_cell() {
     local mp="$MODELS/$model"
     [ -f "$mp" ] || { echo "  $id: SKIP (no model)"; return 0; }
     local pfile; pfile=$(jq -r ".prompts[\"$prompt\"]" $MANIFEST)
-    local best_toks="0" accept="" tokround=""
+    local best_toks="0" accept="" tokround="" cell_try
+    for cell_try in 1 2; do
+    best_toks="0"; accept=""; tokround=""
     for _rep in 1 2; do
         local out toks
         if [ "$mode" = "plain" ]; then
@@ -125,6 +140,15 @@ run_cell() {
             tokround=$(echo "$out" | grep -oE "tok/round=[0-9.]+" | grep -oE "[0-9.]+" | tail -1 || true)
         fi
         awk -v a="$toks" -v b="$best_toks" 'BEGIN{exit !(a>b)}' && best_toks="$toks"
+    done
+    if window_free_now; then break; fi
+    if [ "$cell_try" = 1 ]; then
+        echo "  $id: window went DIRTY mid-cell — waiting + retrying once"
+        while ! window_free_now; do sleep 40; done
+    else
+        echo "  $id: DIRTY twice — recording with window_clean=false"
+        WINDOW_CLEAN=false
+    fi
     done
     [ "$best_toks" = "0" ] && { echo "  $id: FAIL (no reading)"; FAILS=$((FAILS+1)); return 0; }
 
