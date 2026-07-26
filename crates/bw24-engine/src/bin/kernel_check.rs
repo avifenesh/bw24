@@ -639,6 +639,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if t.ne.len() > 2 { continue; } // skip 3D MoE expert tensors here
             let raw = g.tensor_data(t); let row_bytes = raw.len() / out_f;
             let wd = e.htod_bytes(raw)?;
+            // H100 wgmma arm (task 8): mirror built once per tensor; compared vs the mma
+            // kernel inside the T loop (same numeric class -> same rel<1e-3 band).
+            let wgmma_mirror = if cfg!(bw24_hopper_mma) && gt == bw24_engine::QT_Q8_0
+                && out_f % 64 == 0 && in_f % 32 == 0 {
+                Some(e.build_q8_rp4_raw(&wd, in_f, out_f)?)
+            } else { None };
             for tt in [16usize, 64, 128, 512] {
                 let x: Vec<f32> = (0..tt * in_f).map(|i| pr(i + 71) * 0.1).collect();
                 let xd = e.htod(&x)?;
@@ -655,6 +661,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let rel = d / scale;
                 println!("GEMM {tname} [{:?}] T={tt}: rel={rel:.2e} {}", t.ggml_type,
                          if rel < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                if let Some(mirror) = &wgmma_mirror {
+                    let (aq, ad) = e.quantize_q8_1(&xd, tt, in_f)?;
+                    let yw = e.dtoh(&e.qmatvec_gemm_q8_0_wgmma_raw(mirror, &aq, &ad, tt, in_f, out_f)?)?;
+                    let dw = maxdiff(&yb, &yw);
+                    let relw = dw / scale;
+                    println!("GEMM {tname} wgmma T={tt}: rel={relw:.2e} {}",
+                             if relw < 1e-3 { "OK" } else { fails += 1; "FAIL" });
+                }
             }
         }
     }

@@ -269,6 +269,21 @@ impl Engine {
                 Ok(y)
             }
             q if q == crate::QT_Q8_0 => {
+                // wgmma arm (sm_90a, task 8): OPT-IN via BW24_WGMMA=1 — v0 measured 3845
+                // vs MMQ 8692 tok/s pp512 (2026-07-26 N=5), so MMQ stays the default until
+                // the pipelined wgmma wins. Reads the rp4 split-plane mirror + the engine's
+                // q8_1 activation planes. Same numeric class as MMQ (exact s32 per 32-block,
+                // one f32 fold per block, ascending K) — kernel-check tolerance-gated.
+                if cfg!(bw24_hopper_mma) && out_f % 64 == 0 && crate::wgmma_gemm_enabled() {
+                    if let GpuTensor::Quant { rp4: Some(m4), .. } = w {
+                        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+                        let mut y = self.qmatvec_gemm_q8_0_wgmma_raw(m4, &aq, &ad, m, in_f, out_f)?;
+                        if *scale != 1.0 {
+                            self.scale_inplace(&mut y, *scale, m * out_f)?;
+                        }
+                        return Ok(y);
+                    }
+                }
                 let mut y = self.qmatvec_mmq_q8_0_raw(bytes, x, m, in_f, out_f)?;
                 if *scale != 1.0 {
                     self.scale_inplace(&mut y, *scale, m * out_f)?;

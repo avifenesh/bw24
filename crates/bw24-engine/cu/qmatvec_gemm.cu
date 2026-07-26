@@ -1544,3 +1544,113 @@ extern "C" __global__ void __launch_bounds__(128, 4) qmatvec_gemm_nvfp4_fp4(
     qmatvec_gemm_mxf4_kernel(W, aq4, ad4, y, in_f, out_f, T, row_bytes);
 }
 #endif
+
+// ===== Q8_0 wgmma prefill GEMM (sm_90a Hopper lane, 2026-07-26 — ARCHITECTURE-H100.md
+// task 8). Weights = the split-plane rp mirror (int8 qplane rows + half dplane block
+// scales — the decode mirror doubles as the wgmma-native format). Activations = the
+// engine's q8_1 quantize output (int8 rows + f32 block scales). Per 32-K block: fresh
+// s32 wgmma accumulate (exact), f32 fold with wscale*ascale — the qmatvec_gemm
+// composition class with warpgroup MMA. Standalone-validated 2026-07-26: rel 1.6e-05
+// vs CPU ref, 179us vs the 688us int8-mma class on 4096x4096x512 (3.84x, unpipelined).
+// CORRECTNESS LAW: fence.proxy.async.shared::cta REQUIRED between the generic-proxy
+// smem writes and the async-proxy wgmma reads (undefined without it — the v0 bug).
+#if defined(BW24_HOPPER_MMA) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+__device__ __forceinline__ unsigned long long wg_make_desc(const void* smem_ptr,
+        unsigned lead_bytes, unsigned stride_bytes) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(smem_ptr);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((lead_bytes >> 4) & 0x3FFF) << 16;
+    d |= (unsigned long long)((stride_bytes >> 4) & 0x3FFF) << 32;
+    return d;
+}
+__device__ __forceinline__ void wg_m64n64k32_s8(int acc[32], unsigned long long da,
+                                                unsigned long long db, int scale_d) {
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n64k32.s32.s8.s8 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, p;\n}\n"
+        : "+r"(acc[0]), "+r"(acc[1]), "+r"(acc[2]), "+r"(acc[3]),
+          "+r"(acc[4]), "+r"(acc[5]), "+r"(acc[6]), "+r"(acc[7]),
+          "+r"(acc[8]), "+r"(acc[9]), "+r"(acc[10]), "+r"(acc[11]),
+          "+r"(acc[12]), "+r"(acc[13]), "+r"(acc[14]), "+r"(acc[15]),
+          "+r"(acc[16]), "+r"(acc[17]), "+r"(acc[18]), "+r"(acc[19]),
+          "+r"(acc[20]), "+r"(acc[21]), "+r"(acc[22]), "+r"(acc[23]),
+          "+r"(acc[24]), "+r"(acc[25]), "+r"(acc[26]), "+r"(acc[27]),
+          "+r"(acc[28]), "+r"(acc[29]), "+r"(acc[30]), "+r"(acc[31])
+        : "l"(da), "l"(db), "r"(scale_d));
+}
+extern "C" __global__ void __launch_bounds__(128, 1)
+qmatvec_gemm_q8_0_wgmma(const unsigned char* __restrict__ W,
+                        const signed char* __restrict__ aq,
+                        const float* __restrict__ ad, float* __restrict__ y,
+                        int in_f, int out_f, int m) {
+    int row0 = blockIdx.x * 64;
+    int col0 = blockIdx.y * 64;
+    if (row0 >= out_f || col0 >= m) return;
+    int tid = threadIdx.x;
+    int nblk = in_f / 32;
+    const signed char* qplane = (const signed char*)W;
+    const unsigned short* dplane = (const unsigned short*)(W + (size_t)out_f * nblk * 32);
+
+    __shared__ __align__(128) signed char sA[64 * 32];
+    __shared__ __align__(128) signed char sB[64 * 32];
+    float facc[32];
+    #pragma unroll
+    for (int i = 0; i < 32; i++) facc[i] = 0.0f;
+
+    for (int blk = 0; blk < nblk; blk++) {
+        {   // A: canonical K-major cores — core(i,j) at i*256 + j*128, row r at +r*16
+            int r = tid / 2, seg = tid % 2;
+            const signed char* src = qplane + (size_t)(row0 + r) * in_f + blk * 32 + seg * 16;
+            signed char* dst = sA + (r / 8) * 256 + seg * 128 + (r % 8) * 16;
+            *(int4*)dst = (row0 + r < out_f) ? *(const int4*)src : make_int4(0, 0, 0, 0);
+        }
+        {   // B: same canonical arrangement over tokens
+            int c = tid / 2, seg = tid % 2;
+            const signed char* src = aq + (size_t)(col0 + c) * in_f + blk * 32 + seg * 16;
+            signed char* dst = sB + (c / 8) * 256 + seg * 128 + (c % 8) * 16;
+            *(int4*)dst = (col0 + c < m) ? *(const int4*)src : make_int4(0, 0, 0, 0);
+        }
+        __syncthreads();
+        asm volatile("fence.proxy.async.shared::cta;");
+
+        int acc[32];
+        asm volatile("wgmma.fence.sync.aligned;");
+        unsigned long long da = wg_make_desc(sA, 128, 256);
+        unsigned long long db = wg_make_desc(sB, 128, 256);
+        wg_m64n64k32_s8(acc, da, db, 0);
+        asm volatile("wgmma.commit_group.sync.aligned;");
+        asm volatile("wgmma.wait_group.sync.aligned 0;");
+
+        float wsc[2];
+        {
+            int warp = tid / 32;
+            int r_base = warp * 16 + (tid % 32) / 4;
+            wsc[0] = __half2float(*(const __half*)&dplane[(size_t)(row0 + r_base) * nblk + blk]);
+            wsc[1] = __half2float(*(const __half*)&dplane[(size_t)(row0 + r_base + 8) * nblk + blk]);
+        }
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int n8 = i / 4, reg = i % 4;
+            int col = (tid % 4) * 2 + n8 * 8 + (reg % 2);
+            float bs = (col0 + col < m) ? ad[(size_t)(col0 + col) * nblk + blk] : 0.0f;
+            facc[i] += (float)acc[i] * wsc[reg / 2] * bs;
+        }
+        __syncthreads();
+    }
+    {
+        int warp = tid / 32;
+        int r_base = row0 + warp * 16 + (tid % 32) / 4;
+        #pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int n8 = i / 4, reg = i % 4;
+            int col = col0 + (tid % 4) * 2 + n8 * 8 + (reg % 2);
+            int row = r_base + (reg / 2) * 8;
+            if (row < out_f && col < m) y[(size_t)col * out_f + row] = facc[i];
+        }
+    }
+}
+#endif // BW24_HOPPER_MMA && sm_90a

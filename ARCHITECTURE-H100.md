@@ -417,3 +417,42 @@ core(i,j) = i*SBO(256) + j*LBO(128) + row*16, K-major no-swizzle) — the
 (cp.async or TMA), Q8_0 dequant-fold epilogue check vs qmatvec_gemm bit
 policy, engine dispatch at m>=16, kernel-check case, prime A/B (expect
 0.23s -> ~0.10-0.13s = prefill toward 60-80% of vLLM).
+
+**wgmma engine integration + the honest verdict (2026-07-26, task 8 closed
+for the exact path):** the "3.84×" was a BASELINE ERROR — the harness's
+"688µs MMQ ref" was a pp2048-shape figure; the real per-launch MMQ medians at
+m=512 (nsys per-shape, grid-dim split + duration clustering) are: wqkv
+4096→12288 253µs, mid→8192 168µs, square 4096² **84-99µs**, ffn_down
+11008→4096 ~247µs, gate/up 4096→11008 236µs, small→1024 82µs.
+
+Kernel ladder (all CORRECT, rel ≤5e-5 vs CPU ref; engine gate rel ~3e-7 vs
+MMQ on real GGUF tensors, kernel-check ALL GREEN):
+- v0 unpipelined 64×64: 516µs wqkv — e2e pp512 3845 vs MMQ 8692 tok/s (2.26× LOSS).
+- v1 64×128 single-acc: 246 regs → occupancy collapse, worse than v0.
+- v2a dual-acc via acc[2][32] runtime index → LOCAL MEMORY (256B stack): 1116µs. Fixed
+  by pair-unrolling (acc0/acc1 static): 157 regs, 459µs.
+- v3 = v2 + TRANSPOSED activation scales ([blk][tok], coalesced 16B cp.async): 414µs.
+  Untransposed engine layout costs ~15% (measured) — any engine port stages a
+  transposed twin.
+- v4 = 2-warpgroup ping-pong, shared A tile, N=128/CTA, __launch_bounds__(256,2):
+  wqkv 344µs, square 116µs, small 72µs. NSTAGE/LA sweep flat (4/2 fine).
+- CEILING PROBE (fold law lifted, scale_d=1 full-K s32): wqkv 313µs vs 120µs W-traffic
+  floor — even fold-free, the n64-class pipeline only reaches MMQ's level.
+
+ROOT CAUSE (architectural, not tuning): Q8_0's per-32-block scale fold reads
+wgmma accumulator registers every 32-K step; ptxas C7514 "wgmma serialized due
+to non-wgmma instructions reading accumulator registers" — the dual-acc
+overlap is compiled out, the warpgroup tensor pipe drains every block. The
+Ampere-style mma.m16n8k32 path (vendored MMQ) tolerates per-block folds via
+warp-level ILP; DeepGEMM-class fp8 kernels live with per-128 folds (4× fewer)
+plus SASS-level interleaving. Per-32 exact int8 block-scale GEMM on Hopper
+belongs to mma, not wgmma.
+
+VERDICT: v4 wins ONLY out_f=1024 (72 vs 82µs, ~0.8% of prime). BW24_WGMMA=1
+opt-in seam kept; MMQ stays default (N=5 pp512: MMQ 8692 vs wgmma-v0 3845 —
+law holds). Correctness stays pinned: kernel-check wgmma case is cfg-gated.
+NEXT SWING (prefill is still 60% MMQ at 178µs avg): non-exact numeric-config
+probe — fp16-dequant GEMM (resident fp16 mirror + cuBLASLt, or in-kernel
+dequant + fp16 wgmma full-K f32-accum, which streams with ZERO mid-loop acc
+reads). Precedent: BW24_PP_FP8 (620-795TF) / BW24_FP4 opt-in seams; gate =
+argmax battery + logit tolerance, not bit-identity.

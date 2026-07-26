@@ -153,6 +153,17 @@ fn k1_launch_override() -> Option<(u32, u32, u32)> {
     })
 }
 
+/// H100 wgmma prefill-GEMM seam (task 8, ARCHITECTURE-H100.md): OPT-IN (BW24_WGMMA=1).
+/// v0 verdict (2026-07-26, N=5 pp512 9B-Q8_0): wgmma 3845 tok/s vs MMQ 8692 — the
+/// standalone harness's "688us MMQ ref" was a pp2048-shape figure, so v0 (unpipelined,
+/// 64x64 tile, wait_group<0> every 32-K step) is ~3x SLOWER per launch at m=512 model
+/// shapes. Default stays MMQ until the pipelined version beats it N=5 (repo law).
+/// Correctness stays pinned regardless: kernel-check's wgmma case is cfg-gated, not env-gated.
+pub(crate) fn wgmma_gemm_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("BW24_WGMMA").as_deref() == Ok("1"))
+}
+
 /// TUNE SEAM: keys per FA-decode split (`BW24_FA_SPLIT` forces a fixed size; default 64). Smaller
 /// splits raise grid.y so grid = n_head_kv * n_splits fills the 82 SMs at short/mid ctx (vec path
 /// launches only n_head_kv=8 CTAs per split). Swept clock-locked 2026-07-03 (graph tg128): 32 beat
@@ -2139,6 +2150,15 @@ impl Engine {
         if *qtype != QT_Q8_0 || rp4.is_some() || ne.len() != 2 { return Ok(()); }
         let (in_f, out_f) = (ne[0] as usize, ne[1] as usize);
         if in_f % 32 != 0 || *row_bytes != (in_f / 32) * 34 { return Ok(()); }
+        *rp4 = Some(self.build_q8_rp4_raw(bytes, in_f, out_f)?);
+        Ok(())
+    }
+
+    /// Raw rp-mirror build for gates/benches: split GGUF Q8_0 bytes into the qplane+dplane
+    /// mirror without a GpuTensor (same kernel the loader path above uses).
+    pub fn build_q8_rp4_raw(&self, bytes: &CudaSlice<u8>, in_f: usize, out_f: usize)
+                            -> Result<CudaSlice<u8>, Box<dyn std::error::Error>> {
+        assert!(in_f % 32 == 0);
         let nblk = in_f / 32;
         let mut dst = self.alloc_uninit::<u8>(out_f * nblk * 34)?;
         let f = self.func("q8_0_split_rp_build");
@@ -2148,8 +2168,7 @@ impl Engine {
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(&*bytes).arg(&mut dst).arg(&of).arg(&nb);
         unsafe { b.launch(cfg)?; }
-        *rp4 = Some(dst);
-        Ok(())
+        Ok(dst)
     }
 
     /// IN-PLACE split-plane swap (the 31B dense arc): build the split layout and REPLACE the
@@ -5433,6 +5452,18 @@ impl Engine {
             GpuTensor::Quant { bytes, qtype, row_bytes, scale, rp, .. } => (bytes, *qtype, *row_bytes, *scale, *rp),
             _ => unreachable!("gemm_supports guaranteed Quant"),
         };
+        // wgmma arm (sm_90a, task 8): the m64n64k32 warpgroup kernel reads the rp4 split-plane
+        // mirror AS-IS (qplane rows = its A operand, the half dplane its scales) and the same
+        // (aq, ad) activation planes. Same numeric class as the mma kernel below (exact s32 per
+        // 32-block, one f32 scale fold per block, ascending K) — argmax/tolerance gated like
+        // every prefill GEMM, not bit-gated. BW24_WGMMA=0 restores the portable kernel.
+        if cfg!(bw24_hopper_mma) && qtype == QT_Q8_0 && out_f % 64 == 0 && wgmma_gemm_enabled() {
+            if let GpuTensor::Quant { rp4: Some(m4), .. } = w {
+                let mut y = self.qmatvec_gemm_q8_0_wgmma_raw(m4, aq, ad, m, in_f, out_f)?;
+                if scale != 1.0 { self.scale_inplace(&mut y, scale, m * out_f)?; }
+                return Ok(y);
+            }
+        }
         let name = match qtype {
             QT_Q8_0 => "qmatvec_gemm_q8_0", QT_Q4_K => "qmatvec_gemm_q4_K",
             QT_Q4_0 => if rp { "qmatvec_gemm_q4_0_rp" } else { "qmatvec_gemm_q4_0" },
@@ -5500,6 +5531,29 @@ impl Engine {
         let (inf, outf, mi, rb) = (in_f as i32, out_f as i32, m as i32, row_bytes as i64);
         let mut b = self.gpu.stream.launch_builder(&f);
         b.arg(bytes).arg(&aq).arg(&ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi).arg(&rb);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// H100 warpgroup GEMM raw entry (task 8): launch `qmatvec_gemm_q8_0_wgmma` on an rp4
+    /// split-plane mirror + pre-quantized (aq, ad) activation planes. One warpgroup (128 thr)
+    /// owns a 64x64 C tile; grid (out_f/64, ceil(m/64)). out_f % 64 == 0 REQUIRED (row loads
+    /// and dplane scale reads are unguarded); the token edge is guarded in-kernel.
+    /// Standalone harness verdict (tools/bench_q8_gemm_wgmma.cu, 4096x4096x512): rel 1.6e-05
+    /// vs CPU ref, 179us vs the portable mma kernel's 688us (3.84x, unpipelined).
+    pub fn qmatvec_gemm_q8_0_wgmma_raw(&self, rp4: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                       ad: &CudaSlice<f32>, m: usize, in_f: usize, out_f: usize)
+                                       -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        assert!(out_f % 64 == 0 && in_f % 32 == 0, "wgmma GEMM needs out_f%64==0, in_f%32==0");
+        let f = self.func("qmatvec_gemm_q8_0_wgmma");
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;  // full-overwrite GEMM output
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f / 64) as u32, (m as u32).div_ceil(64), 1),
+            block_dim: (128, 1, 1), shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi) = (in_f as i32, out_f as i32, m as i32);
+        let mut b = self.gpu.stream.launch_builder(&f);
+        b.arg(rp4).arg(aq).arg(ad).arg(&mut y).arg(&inf).arg(&outf).arg(&mi);
         unsafe { b.launch(cfg)?; }
         Ok(y)
     }
