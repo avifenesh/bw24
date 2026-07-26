@@ -385,8 +385,14 @@ pub fn run(
             }
             if gs_on && active.len() == 1 && !finished.contains(&0) {
                 let s = &mut active[0];
+                // Promote only generations long enough to amortize the one-time
+                // capture+snapshot (~340ms measured = ~330-token break-even at the
+                // 1.03ms/tok graph saving). Short requests stay eager-batched.
+                let gs_min: usize = std::env::var("BW24_GS_MIN").ok()
+                    .and_then(|v| v.parse().ok()).unwrap_or(384);
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
                     && s.lane == crate::lanes::Lane::Interactive
+                    && s.budget >= gs_min
                     && !s.prefill_done && s.fed.is_empty() && s.generated.is_empty()
                 {
                     let prompt: Vec<u32> = s.prefill_queue.drain(..).collect();
