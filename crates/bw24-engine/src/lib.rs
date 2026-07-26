@@ -509,6 +509,19 @@ unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl {}
 pub struct GdnPrepVl8(pub [GdnPrepVl; 8]);
 unsafe impl cudarc::driver::DeviceRepr for GdnPrepVl8 {}
 
+/// task #18 (attn side): per-seq varlen FA args (CUDA `faseq_t`/`favl_t`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct FaSeqVl {
+    pub q: u64, pub k16: u64, pub v16: u64, pub o: u64, pub kf: u64, pub vf: u64,
+    pub t: i32, pub pad: i32,
+}
+unsafe impl cudarc::driver::DeviceRepr for FaSeqVl {}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FaVl8(pub [FaSeqVl; 8]);
+unsafe impl cudarc::driver::DeviceRepr for FaVl8 {}
+
 /// task #18 increment 2: one sequence's FULL chunk-buffer set (alloc-only; the
 /// varlen K1-K5 chain fills them).
 pub struct GdnChunkBufs {
@@ -6037,6 +6050,52 @@ impl Engine {
         }
         b.arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz);
         unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// task #18 (attn side): varlen FA — bf16 K/V mirrors (2 launches) + ONE
+    /// fa_prefill_bf16kv launch for every fresh sequence. Same per-block math as the
+    /// per-seq path (bit-gateable). Caller guarantees: fresh causal (T_kv == T),
+    /// head_dim in {256, 128}, bf16kv lane on.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_vl8(&self, seqs: &[FaSeqVl], head_dim: usize, n_head: usize,
+                          n_head_kv: usize, scale: f32)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        const BK: usize = 32;
+        let b = seqs.len();
+        assert!(b >= 1 && b <= 8);
+        let mut packed = [FaSeqVl::default(); 8];
+        packed[..b].copy_from_slice(seqs);
+        let v = FaVl8(packed);
+        let max_t = seqs.iter().map(|s| s.t).max().unwrap() as u32;
+        let ept = (n_head_kv * head_dim) as i32;
+        {
+            let f = self.func("fa_mirror_vl");
+            let max_n = (max_t as i64) * ept as i64;
+            let blocks = ((max_n as u32).div_ceil(4)).div_ceil(256);
+            for which in 0..2i32 {
+                let cfg = LaunchConfig { grid_dim: (blocks, 1, b as u32), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+                let mut lb = self.gpu.stream.launch_builder(&f);
+                lb.arg(&v).arg(&ept).arg(&which);
+                unsafe { lb.launch(cfg)?; }
+            }
+        }
+        let hd_sfx = fa_hd_suffix(head_dim)?;
+        let f = self.func(&format!("fa_prefill_bf16kv_vl{hd_sfx}"));
+        let block_q = 64usize;
+        let kv_stages = 2usize;
+        let shmem = (2 * (kv_stages * 2 * BK * head_dim + block_q * BK)
+                   + 4 * (block_q * BK + 2 * block_q)) as u32;
+        use cudarc::driver::sys::CUfunction_attribute_enum as A;
+        f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+        let cfg = LaunchConfig {
+            grid_dim: (max_t.div_ceil(block_q as u32), n_head as u32, b as u32),
+            block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+        };
+        let (hd, nh, nhkv) = (head_dim as i32, n_head as i32, n_head_kv as i32);
+        let mut lb = self.gpu.stream.launch_builder(&f);
+        lb.arg(&v).arg(&hd).arg(&nh).arg(&nhkv).arg(&scale);
+        unsafe { lb.launch(cfg)?; }
         Ok(())
     }
 

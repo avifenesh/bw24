@@ -1087,6 +1087,48 @@ extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) f
     fa_prefill_f32_pp_body<128, N_WARPS, true>(Q, K, V, O, head_dim, n_head, n_head_kv, T, T_kv, scale, causal);
 }
 
+// ---- task #18 (attn side): varlen FA over B<=8 fresh sequences. One launch runs every
+// sequence's causal prefill attention (grid.z = seq; per-block math identical to the
+// per-seq launch — blockIdx.x/y semantics unchanged, tails guarded in-body). At serving
+// chunk sizes (T~152 -> 3 q-tiles x n_head CTAs) the per-seq grid starves the SMs; the
+// seq dim restores full-machine occupancy. fa_mirror_vl batches the bf16 K/V mirrors.
+typedef struct {
+    const float* q; const __nv_bfloat16* k16; const __nv_bfloat16* v16;
+    float* o; const float* kf; const float* vf;
+    int T; int pad_;
+} faseq_t;
+typedef struct { faseq_t s[8]; } favl_t;
+
+extern "C" __global__ void fa_mirror_vl(favl_t v, int elems_per_t, int which) {
+    const faseq_t sq = v.s[blockIdx.z];
+    long n = (long)sq.T * elems_per_t;
+    const float* x = which == 0 ? sq.kf : sq.vf;
+    __nv_bfloat16* o = (__nv_bfloat16*)(which == 0 ? sq.k16 : sq.v16);
+    long base = ((long)blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (base + 3 < n) {
+        float4 val = *(const float4*)(x + base);
+        o[base + 0] = __float2bfloat16(val.x);
+        o[base + 1] = __float2bfloat16(val.y);
+        o[base + 2] = __float2bfloat16(val.z);
+        o[base + 3] = __float2bfloat16(val.w);
+    } else {
+        for (long i = base; i < n; i++) o[i] = __float2bfloat16(x[i]);
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_vl(
+        favl_t v, int head_dim, int n_head, int n_head_kv, float scale) {
+    const faseq_t a = v.s[blockIdx.z];
+    fa_prefill_f32_pp_body<256, N_WARPS, true>(a.q, (const float*)a.k16, (const float*)a.v16, a.o,
+        head_dim, n_head, n_head_kv, a.T, a.T, scale, 1);
+}
+extern "C" __global__ void __launch_bounds__(N_WARPS*WARP_SZ, FA_PP_MINBLOCKS) fa_prefill_bf16kv_vl_hd128(
+        favl_t v, int head_dim, int n_head, int n_head_kv, float scale) {
+    const faseq_t a = v.s[blockIdx.z];
+    fa_prefill_f32_pp_body<128, N_WARPS, true>(a.q, (const float*)a.k16, (const float*)a.v16, a.o,
+        head_dim, n_head, n_head_kv, a.T, a.T, scale, 1);
+}
+
 // ===================================================================== //
 //  KERNEL 1b : fa_prefill_q  (quantized-cache prefill: q8_0 K / q5_1 V) //
 //  Identical to fa_prefill_f32 EXCEPT the stage-to-smem copy dequants    //

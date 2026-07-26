@@ -1178,3 +1178,15 @@ weight, 2.2ms at B=6) — the B last rows now gather into ONE m=B f16 GEMM + one
 DtoH (numeric class = prefill f16 GEMM; prime_batch_gate argmax battery
 arbitrates and stays GREEN at b=4/6/8). Also fixed the b^2 hidden-stack split.
 ROUND-26 CUMULATIVE batched serving-shape prime: 13441 -> 17265 (+28.4%).
+
+**Varlen FA (2026-07-26, task #18 attn side): +5.7% batched prime, interleaved
+5/5 (median 18273 vs 17295).** fa_prefill_bf16kv_vl(+_hd128): favl_t by-value
+table + grid.z seq dim over the SAME fa_prefill_f32_pp_body (per-block math
+identical — blockIdx.x/y semantics unchanged, tails guarded in-body);
+fa_mirror_vl batches the bf16 K/V mirrors (2 launches for the batch, was 2B).
+Engine core split: full_attn_prime_core_inner = pre_fa (split/norms/rope/
+append) + fa_dispatch + post_fa (single-seq path byte-identical recomposition);
+batch arm runs per-seq pre_fa -> ONE vl FA -> per-seq post_fa + wo-into-mixed.
+Fresh-only, bf16kv lane, hd 256/128; BW24_FA_VL=0 reverts. Gates green
+(kernel-check, prime-batch b=4/6/8 uneven). ROUND-26 CUMULATIVE batched
+serving-shape prime: 13441 -> 18273 (+35.9%).

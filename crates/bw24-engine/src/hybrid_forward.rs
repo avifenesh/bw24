@@ -38,6 +38,14 @@ pub struct PrimeSlabs {
 }
 
 
+/// task #18 (attn side): one sequence's pre-attention outputs (post-rope q/k, v, out-gate).
+pub(crate) struct AttnPre {
+    pub q: cudarc::driver::CudaSlice<f32>,
+    pub k: cudarc::driver::CudaSlice<f32>,
+    pub v: cudarc::driver::CudaSlice<f32>,
+    pub gate: Option<cudarc::driver::CudaSlice<f32>>,
+}
+
 /// task #18: one sequence's GDN prep outputs (the scan inputs).
 pub(crate) struct GdnPrep {
     pub q_l2: cudarc::driver::CudaSlice<f32>,
@@ -879,17 +887,67 @@ impl HybridModel {
                             parts[s].push(ys);
                         }
                     }
-                    for (s, g3s) in parts.into_iter().enumerate() {
-                        // task #16 gather removal: wo writes into `mixed` at offs[s] directly.
-                        let (attn_g, ag16) = self.full_attn_prime_core_inner(
-                            e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
-                        let mut done = false;
-                        if let Some(xh) = &ag16 {
-                            done = e.try_f16_gemm_pre_into_off(&fa.wo, xh, ts[s], &mut mixed, offs[s] * n_embd)?;
+                    // task #18 (attn side): ONE varlen FA launch for every fresh sequence
+                    // (per-seq FA at T~152 runs 3 q-tiles x n_head CTAs — SM-starved).
+                    // Same per-block math (bit-gateable); BW24_FA_VL=0 or a non-bf16kv
+                    // config falls back to the per-seq dispatch.
+                    let (n_head, n_head_kv, head_dim) =
+                        (self.cfg.n_head as usize, self.cfg.n_head_kv as usize, self.cfg.head_dim_k as usize);
+                    let fa_scale = 1.0 / (head_dim as f32).sqrt();
+                    let use_favl = (2..=8).contains(&b)
+                        && (head_dim == 256 || head_dim == 128)
+                        && std::env::var("BW24_NOFA").is_err()
+                        && std::env::var("BW24_FA_FLOOR").is_err()
+                        && std::env::var("BW24_FA_PP_W2").as_deref() != Ok("1")
+                        && std::env::var("BW24_FA_BF16KV").as_deref() != Ok("0")
+                        && std::env::var("BW24_FA_VL").as_deref() != Ok("0");
+                    if use_favl {
+                        let mut pres = Vec::with_capacity(b);
+                        for (s, g3s) in parts.into_iter().enumerate() {
+                            let (pre, base_len) = self.full_attn_prime_pre_fa(
+                                e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
+                            assert!(base_len == 0, "prime_cache_batch is fresh-only");
+                            pres.push(pre);
                         }
-                        if !done {
-                            let m = e.matmul(&fa.wo, &attn_g, ts[s])?;
-                            e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                        let mut attns = Vec::with_capacity(b);
+                        let mut mirrors = Vec::with_capacity(b);
+                        for &t in ts.iter().take(b) {
+                            attns.push(e.uninit(t * n_head * head_dim)?);
+                            let n = t * n_head_kv * head_dim;
+                            mirrors.push((e.alloc_u8_uninit(n * 2)?, e.alloc_u8_uninit(n * 2)?));
+                        }
+                        let fargs: Vec<crate::FaSeqVl> = (0..b).map(|s| crate::FaSeqVl {
+                            q: e.addr_f32(&pres[s].q), k16: e.addr_u8(&mirrors[s].0),
+                            v16: e.addr_u8(&mirrors[s].1), o: e.addr_f32(&attns[s]),
+                            kf: e.addr_f32(&pres[s].k), vf: e.addr_f32(&pres[s].v),
+                            t: ts[s] as i32, pad: 0,
+                        }).collect();
+                        e.fa_prefill_vl8(&fargs, head_dim, n_head, n_head_kv, fa_scale)?;
+                        for (s, attn) in attns.into_iter().enumerate() {
+                            let (attn_g, ag16) = self.full_attn_prime_post_fa(
+                                e, attn, &pres[s].gate, ts[s], n_head, head_dim)?;
+                            let mut done = false;
+                            if let Some(xh) = &ag16 {
+                                done = e.try_f16_gemm_pre_into_off(&fa.wo, xh, ts[s], &mut mixed, offs[s] * n_embd)?;
+                            }
+                            if !done {
+                                let m = e.matmul(&fa.wo, &attn_g, ts[s])?;
+                                e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                            }
+                        }
+                    } else {
+                        for (s, g3s) in parts.into_iter().enumerate() {
+                            // task #16 gather removal: wo writes into `mixed` at offs[s] directly.
+                            let (attn_g, ag16) = self.full_attn_prime_core_inner(
+                                e, fa, g3s, &pos_ds[s], ts[s], caches[s], il)?;
+                            let mut done = false;
+                            if let Some(xh) = &ag16 {
+                                done = e.try_f16_gemm_pre_into_off(&fa.wo, xh, ts[s], &mut mixed, offs[s] * n_embd)?;
+                            }
+                            if !done {
+                                let m = e.matmul(&fa.wo, &attn_g, ts[s])?;
+                                e.copy_into(&mut mixed, offs[s] * n_embd, &m, ts[s] * n_embd)?;
+                            }
                         }
                     }
                 }
@@ -1028,15 +1086,34 @@ impl HybridModel {
         Ok(e.matmul(&fa.wo, &attn_g, t)?)
     }
 
-    fn full_attn_prime_core_inner(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+    fn full_attn_prime_core_inner(&self, e: &Engine, fa: &FullAttnLayer, g3: Vec<CudaSlice<f32>>,
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                             -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_head = cfg.n_head as usize;
         let n_head_kv = cfg.n_head_kv as usize;
         let head_dim = cfg.head_dim_k as usize;
-        let eps = cfg.rms_eps;
         let scale = 1.0 / (head_dim as f32).sqrt();
+        let (pre, base_len) = self.full_attn_prime_pre_fa(e, fa, g3, pos_d, t, cache, il)?;
+        let AttnPre { q, k, v, gate } = pre;
+        let mut attn = e.uninit(t * n_head * head_dim)?;
+        self.full_attn_prime_fa_dispatch(e, &q, &k, &v, &mut attn, base_len, t, cache, il,
+                                         head_dim, n_head, n_head_kv, scale)?;
+        self.full_attn_prime_post_fa(e, attn, &gate, t, n_head, head_dim)
+    }
+
+    /// task #18 (attn side): projections tail through KV append — everything before the
+    /// attention kernel. Returns the post-rope q/k, v, optional out-gate, and the KV rows
+    /// present BEFORE this chunk's append (base_len; 0 == fresh).
+    #[allow(clippy::type_complexity)]
+    fn full_attn_prime_pre_fa(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+                            pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                            -> Result<(AttnPre, usize), Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_head = cfg.n_head as usize;
+        let n_head_kv = cfg.n_head_kv as usize;
+        let head_dim = cfg.head_dim_k as usize;
+        let eps = cfg.rms_eps;
 
         // qwen35 fuses [q|gate] per head in wq (2*head_dim stride); M3/Hy3 have NO output gate
         // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
@@ -1077,25 +1154,33 @@ impl HybridModel {
             e.set_i32_one(&mut kvl.len_d, new_len)?;
         }
 
-        // batched prefill attention. FRESH prime (no past KV): unchanged forward_last math over
-        // the f32 K/V of this batch. CONTINUATION chunk (past KV present): the chunk's queries
-        // must attend to [0 .. base+t) — run fa_prefill_view over the resident QUANTIZED cache
-        // (the spec-verify pattern; kernel's causal mask offsets by T_kv-T). Numerically this
-        // reads q8_0/q5_1-dequantized K/V for the past AND the current chunk — the same class as
-        // decode reading the cache; the run-gen/first-16 battery is the accuracy authority.
         let base_len = {
             let kvl = cache.kv[il].as_ref().unwrap();
             kvl.len - t   // KV rows present BEFORE this chunk's append above
         };
-        let mut attn = e.uninit(t * n_head * head_dim)?;
+        Ok((AttnPre { q, k, v, gate }, base_len))
+    }
+
+    /// batched prefill attention. FRESH prime (no past KV): unchanged forward_last math over
+    /// the f32 K/V of this batch. CONTINUATION chunk (past KV present): the chunk's queries
+    /// must attend to [0 .. base+t) — run fa_prefill_view over the resident QUANTIZED cache
+    /// (the spec-verify pattern; kernel's causal mask offsets by T_kv-T). Numerically this
+    /// reads q8_0/q5_1-dequantized K/V for the past AND the current chunk — the same class as
+    /// decode reading the cache; the run-gen/first-16 battery is the accuracy authority.
+    #[allow(clippy::too_many_arguments)]
+    fn full_attn_prime_fa_dispatch(&self, e: &Engine, q: &CudaSlice<f32>, k: &CudaSlice<f32>,
+                            v: &CudaSlice<f32>, attn: &mut CudaSlice<f32>, base_len: usize,
+                            t: usize, cache: &mut Cache, il: usize,
+                            head_dim: usize, n_head: usize, n_head_kv: usize, scale: f32)
+                            -> Result<(), Box<dyn std::error::Error>> {
         if base_len == 0 {
             // fa_prefill's smem layout is compile-time HEAD_DIM: stamped twins exist for 256
             // (qwen35) and 128 (M3, `_hd128` — 2026-07-07). Other dims would overrun the
             // runtime-sized allocation -> ILLEGAL_ADDRESS; fall to naive SDPA there.
             if std::env::var("BW24_NOFA").is_ok() || !(head_dim == 256 || head_dim == 128) {
-                e.sdpa_naive(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+                e.sdpa_naive(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             } else {
-                e.fa_prefill(&q, &k, &v, &mut attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
+                e.fa_prefill(q, k, v, attn, head_dim, n_head, n_head_kv, t, t, scale, true)?;
             }
         } else {
             let kvl = cache.kv[il].as_ref().unwrap();
@@ -1111,19 +1196,25 @@ impl HybridModel {
             // BW24_PRIME_DEQW=0 reverts to the inline-dequant kernel.
             let deqw = std::env::var("BW24_PRIME_DEQW").map(|v| v != "0").unwrap_or(true);
             if deqw {
-                e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                e.fa_prefill_view_ws(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
                                      t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
                                      crate::Engine::kv_fp8_on())?;
             } else {
-                e.fa_prefill_view(&q, &k_view, &v_view, &mut attn, head_dim, n_head, n_head_kv,
+                e.fa_prefill_view(q, &k_view, &v_view, attn, head_dim, n_head, n_head_kv,
                                   t, t_kv, scale, true, kvl.k_tok_bytes, kvl.v_tok_bytes,
                                   crate::Engine::kv_fp8_on())?;
             }
         }
+        Ok(())
+    }
 
-        // task #17: sig_mul_f16out fuses [sigmoid + mul + f16 convert] into one launch
-        // (bit-identical composition) and hands wo its fp16 operand directly.
-        let (attn_g, ag16) = match &gate {
+    /// task #17: sig_mul_f16out fuses [sigmoid + mul + f16 convert] into one launch
+    /// (bit-identical composition) and hands wo its fp16 operand directly.
+    fn full_attn_prime_post_fa(&self, e: &Engine, attn: CudaSlice<f32>,
+                            gate: &Option<CudaSlice<f32>>, t: usize,
+                            n_head: usize, head_dim: usize)
+                            -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
+        let (attn_g, ag16) = match gate {
             Some(gate) => {
                 let n = t * n_head * head_dim;
                 let mut ag = e.uninit(n)?;
