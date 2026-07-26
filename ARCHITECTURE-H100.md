@@ -1419,3 +1419,15 @@ contract (probe_setmaxnreg), mbarrier producer signaling incl. .noinc
 iterate LBO/SBO with the existing QK^T probe exactly as the canonical layout
 was cracked), TMA staging inside the v5 2-consumer shape (no third warpgroup —
 that lesson is paid for). This is the sole open arc on the sole trailing lane.
+
+**SWIZZLE PAIRING CRACKED (2026-07-27, probe_tma.cu sweep): TMA SWIZZLE_128B
+tiles pair with wgmma descriptors at swizzle-mode bits = 1 (bit 62), SBO=1024,
+LBO IGNORED (0/1/16/128 all MATCH, max_rel 8.2e-4), k16-slice selection via
+descriptor base + j*32 bytes within the 8KB atom. With this, EVERY v10
+primitive is individually proven: swizzled TMA loads (this probe), wgmma on
+swizzled tiles (this probe), canonical-layout wgmma (bench_fa3 v1), online
+softmax + full kernel (v2-v5, parity floor 999us), setmaxnreg contract
+(probe_setmaxnreg + the C7515 caveat), mbarrier signaling (v9 + .noinc).
+v10 = assemble TMA staging into the v5 two-consumer shape (Q/K via swizzled
+maps; V^T needs a transposed map or keeps scalar staging) — zero unknowns
+remain, only assembly and the interleaved verdict.

@@ -21,6 +21,10 @@ __device__ __forceinline__ void mbar_expect_tx(void* mbar, unsigned bytes) {
     unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
     asm volatile("mbarrier.arrive.expect_tx.shared.b64 _, [%0], %1;" :: "r"(a), "r"(bytes));
 }
+__device__ __forceinline__ void wgmma_fence_probe() { asm volatile("wgmma.fence.sync.aligned;"); }
+__device__ __forceinline__ void wgmma_commit_probe() { asm volatile("wgmma.commit_group.sync.aligned;"); }
+__device__ __forceinline__ void wgmma_wait_probe() { asm volatile("wgmma.wait_group.sync.aligned 0;"); }
+
 __device__ __forceinline__ void mbar_wait(void* mbar, unsigned phase) {
     unsigned a = (unsigned)__cvta_generic_to_shared(mbar);
     unsigned done = 0;
@@ -51,6 +55,95 @@ extern "C" __global__ void tma_smoke(const __grid_constant__ CUtensorMap tmap,
     mbar_wait(&mbar, 0);
     for (int i = threadIdx.x; i < 64 * 64; i += blockDim.x)
         out[i] = tile[i];
+}
+
+// ---- swizzle pairing probe: SWIZZLE_128B tensor map + swizzle-mode wgmma descriptor.
+// K-major bf16 tile 64x64-elem boxes; desc knobs -DSWZ_LBO -DSWZ_SBO (bytes), mode bits
+// fixed to 1 (128B). One wgmma k-step reads 32B columns inside the swizzled atom — the
+// sweep finds the LBO/SBO pair that makes S == QK^T (the canonical-layout crack, redux).
+#ifndef SWZ_LBO
+#define SWZ_LBO 1
+#endif
+#ifndef SWZ_SBO
+#define SWZ_SBO 64
+#endif
+__device__ __forceinline__ unsigned long long make_desc_swz(const void* smem_ptr,
+                                                            unsigned lead, unsigned stride) {
+    unsigned addr = (unsigned)__cvta_generic_to_shared(smem_ptr);
+    unsigned long long d = 0;
+    d |= (unsigned long long)((addr & 0x3FFFF) >> 4);
+    d |= (unsigned long long)((lead >> 4) & 0x3FFF) << 16;
+    d |= (unsigned long long)((stride >> 4) & 0x3FFF) << 32;
+    d |= (unsigned long long)1 << 62;   // swizzle mode 1 = 128B
+    return d;
+}
+__device__ __forceinline__ void wgmma64_swz(float acc[32], unsigned long long da,
+                                            unsigned long long db, int scale_d) {
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.bf16.bf16 "
+        "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
+        "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "
+        "%32, %33, p, 1, 1, 0, 0;\n}"
+        : "+f"(acc[0]),"+f"(acc[1]),"+f"(acc[2]),"+f"(acc[3]),"+f"(acc[4]),"+f"(acc[5]),"+f"(acc[6]),"+f"(acc[7]),
+          "+f"(acc[8]),"+f"(acc[9]),"+f"(acc[10]),"+f"(acc[11]),"+f"(acc[12]),"+f"(acc[13]),"+f"(acc[14]),"+f"(acc[15]),
+          "+f"(acc[16]),"+f"(acc[17]),"+f"(acc[18]),"+f"(acc[19]),"+f"(acc[20]),"+f"(acc[21]),"+f"(acc[22]),"+f"(acc[23]),
+          "+f"(acc[24]),"+f"(acc[25]),"+f"(acc[26]),"+f"(acc[27]),"+f"(acc[28]),"+f"(acc[29]),"+f"(acc[30]),"+f"(acc[31])
+        : "l"(da), "l"(db), "r"(scale_d));
+}
+
+extern "C" __global__ void tma_qk_swz(const __grid_constant__ CUtensorMap tq,
+                                      const __grid_constant__ CUtensorMap tk,
+                                      float* S) {
+    // Q,K tiles: 64 rows x 256 cols as 4 boxes of 64x64 elems each (8KB swizzled atoms)
+    __shared__ __align__(1024) __nv_bfloat16 sQ[64 * 256];
+    __shared__ __align__(1024) __nv_bfloat16 sK[64 * 256];
+    __shared__ __align__(8) unsigned long long mbar;
+    if (threadIdx.x == 0) {
+        mbar_init(&mbar, 1);
+        asm volatile("fence.proxy.async.shared::cta;");
+        mbar_expect_tx(&mbar, 2 * 64 * 256 * 2);
+        unsigned b = (unsigned)__cvta_generic_to_shared(&mbar);
+        for (int q = 0; q < 4; q++) {
+            unsigned tq_s = (unsigned)__cvta_generic_to_shared(sQ + q * 64 * 64);
+            unsigned tk_s = (unsigned)__cvta_generic_to_shared(sK + q * 64 * 64);
+            asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes "
+                         "[%0], [%1, {%2, %3}], [%4];" :: "r"(tq_s), "l"(&tq), "r"(q * 64), "r"(0), "r"(b) : "memory");
+            asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes "
+                         "[%0], [%1, {%2, %3}], [%4];" :: "r"(tk_s), "l"(&tk), "r"(q * 64), "r"(0), "r"(b) : "memory");
+        }
+    }
+    __syncthreads();
+    mbar_wait(&mbar, 0);
+    asm volatile("fence.proxy.async.shared::cta;");
+
+    float acc[32];
+    #pragma unroll
+    for (int i = 0; i < 32; i++) acc[i] = 0.0f;
+    wgmma_fence_probe();
+    // k-steps: 16 total; each swizzled 64x64 atom holds 4 k16 slices. Descriptor start
+    // per (atom q, slice j): atom base + j*32 bytes?? — the sweep's LBO/SBO arbitrate.
+    for (int q = 0; q < 4; q++) {
+        for (int j = 0; j < 4; j++) {
+            unsigned long long da = make_desc_swz((char*)(sQ + q * 64 * 64) + j * 32, SWZ_LBO, SWZ_SBO);
+            unsigned long long db = make_desc_swz((char*)(sK + q * 64 * 64) + j * 32, SWZ_LBO, SWZ_SBO);
+            wgmma64_swz(acc, da, db, (q == 0 && j == 0) ? 0 : 1);
+        }
+    }
+    wgmma_commit_probe();
+    wgmma_wait_probe();
+    const int tid = threadIdx.x;
+    const int warp = tid / 32, lane = tid % 32;
+    const int r0 = warp * 16 + lane / 4;
+    const int c0 = (lane % 4) * 2;
+    #pragma unroll
+    for (int i = 0; i < 32; i += 4) {
+        int n8 = i / 4;
+        S[(r0 + 0) * 64 + c0 + n8 * 8 + 0] = acc[i + 0];
+        S[(r0 + 0) * 64 + c0 + n8 * 8 + 1] = acc[i + 1];
+        S[(r0 + 8) * 64 + c0 + n8 * 8 + 0] = acc[i + 2];
+        S[(r0 + 8) * 64 + c0 + n8 * 8 + 1] = acc[i + 3];
+    }
 }
 
 int main() {
@@ -90,5 +183,53 @@ int main() {
             }
         }
     printf("TMA smoke: %s (box byte-compare, %d bad)\n", bad == 0 ? "MATCH" : "MISMATCH", bad);
-    return bad != 0;
+    if (bad) return 1;
+
+    // ---- swizzle QK^T probe: Q,K 64x256 bf16; S vs CPU ref ----
+    {
+        const int D = 256;
+        __nv_bfloat16 *hq = (__nv_bfloat16*)malloc(64 * D * 2), *hk = (__nv_bfloat16*)malloc(64 * D * 2);
+        srand(13);
+        for (int i = 0; i < 64 * D; i++) {
+            hq[i] = __float2bfloat16((rand() % 255 - 127) * 0.011f);
+            hk[i] = __float2bfloat16((rand() % 255 - 127) * 0.009f);
+        }
+        float* ref = (float*)malloc(64 * 64 * 4);
+        for (int r = 0; r < 64; r++)
+            for (int c = 0; c < 64; c++) {
+                float sv = 0;
+                for (int d = 0; d < D; d++)
+                    sv += __bfloat162float(hq[r * D + d]) * __bfloat162float(hk[c * D + d]);
+                ref[r * 64 + c] = sv;
+            }
+        __nv_bfloat16 *dq, *dk; float* dS;
+        CK(cudaMalloc(&dq, 64 * D * 2)); CK(cudaMalloc(&dk, 64 * D * 2)); CK(cudaMalloc(&dS, 64 * 64 * 4));
+        CK(cudaMemcpy(dq, hq, 64 * D * 2, cudaMemcpyHostToDevice));
+        CK(cudaMemcpy(dk, hk, 64 * D * 2, cudaMemcpyHostToDevice));
+        CUtensorMap tq, tk;
+        cuuint64_t gd[2] = { (cuuint64_t)D, 64 };
+        cuuint64_t gs[1] = { (cuuint64_t)D * 2 };
+        cuuint32_t bx[2] = { 64, 64 };
+        cuuint32_t es[2] = { 1, 1 };
+        CD(cuTensorMapEncodeTiled(&tq, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)dq, gd, gs, bx, es,
+                                  CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+                                  CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));
+        CD(cuTensorMapEncodeTiled(&tk, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)dk, gd, gs, bx, es,
+                                  CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B,
+                                  CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE));
+        tma_qk_swz<<<1, 128>>>(tq, tk, dS);
+        CK(cudaGetLastError());
+        CK(cudaDeviceSynchronize());
+        float* hS = (float*)malloc(64 * 64 * 4);
+        CK(cudaMemcpy(hS, dS, 64 * 64 * 4, cudaMemcpyDeviceToHost));
+        float mr = 0; int b2 = 0;
+        for (int i = 0; i < 64 * 64; i++) {
+            float rl = fabsf(hS[i] - ref[i]) / fmaxf(fabsf(ref[i]), 1e-3f);
+            if (rl > mr) mr = rl;
+            if (rl > 2e-2f) b2++;
+        }
+        printf("SWZ QK^T: max_rel %.3e bad %d %s (LBO=%d SBO=%d)\n", mr, b2,
+               b2 == 0 ? "MATCH" : "MISMATCH", SWZ_LBO, SWZ_SBO);
+        return b2 != 0;
+    }
 }
