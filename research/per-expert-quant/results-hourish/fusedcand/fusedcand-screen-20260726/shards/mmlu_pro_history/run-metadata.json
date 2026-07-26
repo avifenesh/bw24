@@ -1,0 +1,94 @@
+{
+  "arm": "fusedcand",
+  "artifact": "/home/avifenesh/.local/share/bw24-models/hy3-fused-cand-dual-nvme",
+  "artifact_identity_file": "/home/avifenesh/.local/share/bw24-models/hy3-fused-cand-dual-nvme/manifest.json",
+  "artifact_identity_sha256": "c37f3f5d48a3b84c81df2ba08c41703402f505858ce14efea4cb434639cb643d",
+  "base_url": "http://127.0.0.1:8080/v1/completions",
+  "bw24_commit": "952c1597cf9bc66b56fa5e65aa35e5208c060980",
+  "completed_successfully": true,
+  "completed_utc": "2026-07-26T16:13:26Z",
+  "declared_serve_spec": "0",
+  "declared_spill_io": "worker",
+  "declared_spill_pread_depth": "8",
+  "declared_spill_stats": "1",
+  "elapsed_seconds": 2516.9918927,
+  "eval_timeout_s": 43200,
+  "evaluator_exit_code": 0,
+  "limit": null,
+  "lm_eval_commit": "97a5e2c710e2b56b9dd48f367bb6fe87bbb2c176",
+  "max_gen_toks_override": 256,
+  "model": "fusedcand",
+  "moe_cache_delta": {
+    "hits": 0,
+    "misses": 1224030,
+    "staged_bytes": 3196392800256
+  },
+  "moe_cache_snapshot_end": {
+    "hits": 0,
+    "misses": 10837113,
+    "slots": 1676,
+    "staged_bytes": 29952257310720
+  },
+  "moe_cache_snapshot_start": {
+    "hits": 0,
+    "misses": 9613083,
+    "slots": 1676,
+    "staged_bytes": 26755864510464
+  },
+  "num_concurrent": 1,
+  "nvidia_smi": "NVIDIA GeForce RTX 5090 Laptop GPU, 595.71.05, 24463 MiB",
+  "panel_lock_sha256": "770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1",
+  "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+  "predict_only": false,
+  "runtime_identity_sha256": null,
+  "runtime_kind": "bw24",
+  "samples": {
+    "mmlu_pro_history": [
+      16,
+      173,
+      177,
+      245,
+      320
+    ]
+  },
+  "samples_sha256": "dadb88ecb1cfc12a6a22a02edcfb8a850b33539085cc15a61fea5a062be68a1a",
+  "server_binary": "/home/avifenesh/projects/bw24-hy3lane/target/release/bw24-server",
+  "server_binary_sha256": "bea07308ad3c2cdcd469d4820682658903eb54a48f89a64c8372a76df096bc06",
+  "server_log": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/fusedcand/fusedcand-screen-20260726/shards/mmlu_pro_history/server.log",
+  "server_log_sha256": "8475a8710eb452216d682aac3110568e808fb182cd8882b7e7a39416981a5fbf",
+  "server_log_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/_control/fusedcand-screen-20260726/fusedcand/attempt-20260726T101112Z-611369/server.log",
+  "shard_id": "mmlu_pro_history",
+  "spill_delta": {
+    "buffer_waits": 956146,
+    "bytes": 3145946185728,
+    "errors": 0,
+    "fallbacks": 19655,
+    "reads": 1204375,
+    "ring_full": 236715,
+    "short_reads": 0
+  },
+  "spill_snapshot_end": {
+    "buffer_waits": 9895735,
+    "bytes": 29879484432384,
+    "errors": 0,
+    "fallbacks": 27975,
+    "reads": 10809138,
+    "ring_full": 467445,
+    "short_reads": 0
+  },
+  "spill_snapshot_start": {
+    "buffer_waits": 8939589,
+    "bytes": 26733538246656,
+    "errors": 0,
+    "fallbacks": 8320,
+    "reads": 9604763,
+    "ring_full": 230730,
+    "short_reads": 0
+  },
+  "started_utc": "2026-07-26T15:31:29Z",
+  "suite": "candidate",
+  "tasks": [
+    "mmlu_pro_history"
+  ],
+  "tee_exit_code": 0
+}

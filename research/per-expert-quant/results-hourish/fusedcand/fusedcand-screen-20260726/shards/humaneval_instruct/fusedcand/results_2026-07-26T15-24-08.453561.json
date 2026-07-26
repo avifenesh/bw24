@@ -1,0 +1,143 @@
+{
+  "results": {
+    "humaneval_instruct": {
+      "name": "humaneval_instruct",
+      "alias": "humaneval_instruct",
+      "sample_len": 14,
+      "bypass,create_test": 999,
+      "bypass_stderr,create_test": "N/A"
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "humaneval_instruct": {
+      "task": "humaneval_instruct",
+      "dataset_path": "openai/openai_humaneval",
+      "dataset_kwargs": {
+        "revision": "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+      },
+      "test_split": "test",
+      "doc_to_text": "Write a solution to the following problem and make sure that it passes the tests:\n```python\n{{ prompt }}\n```\n",
+      "doc_to_target": "{{test}}\ncheck({{entry_point}})",
+      "unsafe_code": true,
+      "process_results": "process_results",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Write a solution to the following problem and make sure that it passes the tests:\n```python\n{{ prompt }}\n```\n",
+        "doc_to_choice": null,
+        "doc_to_target": "{{test}}\ncheck({{entry_point}})",
+        "gen_prefix": "Here is the completed function:\n```python\n{{ prompt }}\n",
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "bypass"
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "\nclass",
+          "\ndef",
+          "\n#",
+          "\nif",
+          "\nprint"
+        ],
+        "max_gen_toks": 512,
+        "do_sample": false
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "create_test",
+          "filter": [
+            {
+              "function": "custom",
+              "filter_fn": "<function build_predictions_instruct at 0x7e7870b662a0>"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "gen_prefix": "Here is the completed function:\n```python\n{{ prompt }}\n",
+      "metadata": {
+        "version": 4.0,
+        "model": "fusedcand",
+        "base_url": "http://127.0.0.1:8080/v1/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "tokenizer_backend": "none",
+        "config_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/lm_eval/tasks/humaneval/humaneval_instruct.yaml"
+      }
+    }
+  },
+  "versions": {
+    "humaneval_instruct": 4.0
+  },
+  "n-shot": {
+    "humaneval_instruct": 0
+  },
+  "higher_is_better": {
+    "humaneval_instruct": {
+      "bypass": true
+    }
+  },
+  "n-samples": {
+    "humaneval_instruct": {
+      "original": 164,
+      "effective": 14
+    }
+  },
+  "config": {
+    "model": "local-completions",
+    "model_args": {
+      "model": "fusedcand",
+      "base_url": "http://127.0.0.1:8080/v1/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false,
+      "tokenizer_backend": "none"
+    },
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 512
+    },
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "952c1597",
+  "date": 1785060849.4251437,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.13.dev0",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "humaneval_instruct": "96bce5b42ff586333c86799e8fde95ea2909da2ae4ce3925df216d9b95c7f517"
+  },
+  "model_source": "local-completions",
+  "model_name": "fusedcand",
+  "model_name_sanitized": "fusedcand",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "7802.015184518008"
+}

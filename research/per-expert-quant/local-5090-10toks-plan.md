@@ -328,3 +328,30 @@ kernel on the local rig). Uniform degradation is noise, not bias, for routed-mas
 - Plain-arm calibration capture LAUNCHED: same methodology/env as the 103.5 capture (only
   model/map/paths swapped), 24 private prompts, resumable, waits for foreign-GPU idle.
 - BF16 staging retained on root NVMe for candidate surgery (task 3); 378G root / 157G data free.
+
+## 2026-07-26 — PAIRED SCREEN RESULT: importance-fused candidate PASSES vs plain arm
+
+RUN_ID `fusedcand-screen-20260726`, both arms same runtime build, same panel lock, serial on the
+same rig, GPU-idle guarded, freeze-cache warmup 128 tokens per shard. Raw shards + score receipts
+in `results-hourish/{plain-q3k,fusedcand}/fusedcand-screen-20260726/`.
+
+| shard | plain-q3k (reference) | fusedcand | delta |
+| --- | --- | --- | --- |
+| humaneval_instruct | 11/14 | 12/14 | +1 |
+| hendrycks_math500 | 16/32 | 17/32 | +1 |
+| mmlu_pro_history | 4/5 | 4/5 | tie |
+| mmlu_pro_other | 5/5 | 5/5 | tie |
+| total | 36/56 | 38/56 | +2 |
+
+The fused candidate (4,428 cold pairs → Q2_K, 268 hot pairs → Q8_0, both-sources intersection,
+no pruning) carries 95.7% of the plain arm's expert bytes and is >= the neutral reference on every
+shard. Directional evidence at screen-panel N, not statistical significance — but the sign is
+positive on both scored tracks, and the design question ("does importance-guided tier
+redistribution cost quality?") answers NO at these sizes.
+
+Context stamps: the served layer103.5's screen (different run, 20260724) scored code 11/14,
+math 13/32; the fused candidate matches-or-beats those numbers while keeping the FULL 15,168-expert
+bank (layer103.5 retains 9,900). Cross-run comparison — labeled as such, not a paired claim.
+
+Next gates: throughput pair (m=1, N=3) fusedcand vs plain vs served layer103.5, then the
+ship-decision comparison vs the served candidate as a separate question (speed x quality x bytes).

@@ -1,0 +1,27 @@
+2026-07-26:05:17:26 INFO     [_cli.run:388] Selected Tasks: ['humaneval_instruct']
+2026-07-26:05:17:26 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-26:05:17:26 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 512} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-26:05:17:26 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-26:05:17:26 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-26:05:17:26 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-26:05:17:26 INFO     [models.api_models:200] Using tokenizer None
+2026-07-26:05:17:29 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-26:05:17:29 INFO     [evaluator_utils:480] Task: humaneval_instruct (humaneval/humaneval_instruct.yaml)
+2026-07-26:05:17:29 INFO     [evaluator:314] humaneval_instruct: Using gen_kwargs: {'until': ['\nclass', '\ndef', '\n#', '\nif', '\nprint'], 'max_gen_toks': 512, 'do_sample': False}
+2026-07-26:05:17:29 INFO     [evaluator:319] Processing humaneval_instruct in output-only mode. Metrics will not be calculated!
+2026-07-26:05:17:29 INFO     [evaluator:483] Evaluating examples for tasks ['humaneval_instruct']
+2026-07-26:05:17:29 INFO     [api.task:312] Building contexts for humaneval_instruct on rank 0...
+2026-07-26:05:17:29 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+  0%|          | 0/14 [00:00<?, ?it/s]100%|██████████| 14/14 [00:00<00:00, 1692.57it/s]
+2026-07-26:05:17:29 INFO     [evaluator:585] Running generate_until requests
+2026-07-26:05:17:29 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/14 [00:00<?, ?it/s]2026-07-26:05:17:29 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   7%|▋         | 1/14 [09:16<2:00:31, 556.25s/it]Requesting API:  14%|█▍        | 2/14 [13:22<1:14:48, 374.00s/it]Requesting API:  21%|██▏       | 3/14 [26:59<1:45:37, 576.12s/it]Requesting API:  29%|██▊       | 4/14 [51:50<2:36:12, 937.29s/it]Requesting API:  36%|███▌      | 5/14 [1:04:43<2:11:44, 878.29s/it]Requesting API:  43%|████▎     | 6/14 [1:31:35<2:30:21, 1127.68s/it]Requesting API:  50%|█████     | 7/14 [1:56:07<2:24:40, 1240.10s/it]Requesting API:  57%|█████▋    | 8/14 [2:19:18<2:08:49, 1288.29s/it]Requesting API:  64%|██████▍   | 9/14 [2:45:36<1:54:53, 1378.68s/it]Requesting API:  71%|███████▏  | 10/14 [2:55:51<1:16:11, 1142.98s/it]Requesting API:  79%|███████▊  | 11/14 [3:13:34<55:55, 1118.59s/it]  Requesting API:  86%|████████▌ | 12/14 [3:15:00<26:48, 804.33s/it] Requesting API:  93%|█████████▎| 13/14 [3:18:35<10:25, 625.80s/it]Requesting API: 100%|██████████| 14/14 [3:43:37<00:00, 890.44s/it]Requesting API: 100%|██████████| 14/14 [3:43:37<00:00, 958.37s/it]
+2026-07-26:09:01:06 INFO     [api.task:589] humaneval_instruct: Evaluating on 14 examples
+2026-07-26:09:01:06 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-26:09:01:06 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/plain-q3k/fusedcand-screen-20260726/shards/humaneval_instruct/plain-q3k/*.jsonl
+local-completions ({'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 512}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks       |Version|  Filter   |n-shot|Metric|   |Value|   |Stderr|
+|------------------|------:|-----------|-----:|------|---|----:|---|------|
+|humaneval_instruct|      4|create_test|     0|bypass|↑  |  999|±  |   N/A|
+

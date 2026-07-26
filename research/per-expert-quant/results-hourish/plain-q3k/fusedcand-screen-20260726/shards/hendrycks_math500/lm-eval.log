@@ -1,0 +1,26 @@
+2026-07-26:09:01:12 INFO     [_cli.run:388] Selected Tasks: ['hendrycks_math500']
+2026-07-26:09:01:12 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-26:09:01:12 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 256} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-26:09:01:12 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-26:09:01:12 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-26:09:01:12 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-26:09:01:12 INFO     [models.api_models:200] Using tokenizer None
+2026-07-26:09:01:13 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-26:09:01:13 INFO     [evaluator_utils:480] Task: hendrycks_math500 (hendrycks_math/hendrycks_math500.yaml)
+2026-07-26:09:01:13 INFO     [evaluator:314] hendrycks_math500: Using gen_kwargs: {'until': ['Problem:'], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 256}
+2026-07-26:09:01:13 INFO     [evaluator:483] Evaluating examples for tasks ['hendrycks_math500']
+2026-07-26:09:01:13 INFO     [api.task:312] Building contexts for hendrycks_math500 on rank 0...
+2026-07-26:09:01:13 INFO     [api.task:589] hendrycks_math500: Evaluating on 32 examples
+  0%|          | 0/32 [00:00<?, ?it/s]100%|██████████| 32/32 [00:00<00:00, 3500.36it/s]
+2026-07-26:09:01:13 INFO     [evaluator:585] Running generate_until requests
+2026-07-26:09:01:13 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/32 [00:00<?, ?it/s]2026-07-26:09:01:13 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:   3%|▎         | 1/32 [14:40<7:34:40, 880.01s/it]Requesting API:   6%|▋         | 2/32 [27:08<6:41:18, 802.61s/it]Requesting API:   9%|▉         | 3/32 [39:19<6:12:04, 769.82s/it]Requesting API:  12%|█▎        | 4/32 [39:51<3:43:18, 478.51s/it]Requesting API:  16%|█▌        | 5/32 [40:29<2:23:54, 319.78s/it]Requesting API:  19%|█▉        | 6/32 [41:02<1:36:22, 222.41s/it]Requesting API:  22%|██▏       | 7/32 [41:34<1:06:40, 160.03s/it]Requesting API:  25%|██▌       | 8/32 [42:01<47:05, 117.71s/it]  Requesting API:  28%|██▊       | 9/32 [54:19<1:59:26, 311.60s/it]Requesting API:  31%|███▏      | 10/32 [1:06:10<2:39:25, 434.77s/it]Requesting API:  34%|███▍      | 11/32 [1:06:37<1:48:35, 310.24s/it]Requesting API:  38%|███▊      | 12/32 [1:18:35<2:24:43, 434.16s/it]Requesting API:  41%|████      | 13/32 [1:30:41<2:45:29, 522.61s/it]Requesting API:  44%|████▍     | 14/32 [1:31:10<1:51:59, 373.33s/it]Requesting API:  47%|████▋     | 15/32 [1:36:54<1:43:17, 364.58s/it]Requesting API:  50%|█████     | 16/32 [1:49:22<2:08:02, 480.17s/it]Requesting API:  53%|█████▎    | 17/32 [1:49:47<1:25:49, 343.27s/it]Requesting API:  56%|█████▋    | 18/32 [1:50:13<57:49, 247.82s/it]  Requesting API:  59%|█████▉    | 19/32 [1:50:39<39:14, 181.10s/it]Requesting API:  62%|██████▎   | 20/32 [1:51:05<26:54, 134.56s/it]Requesting API:  66%|██████▌   | 21/32 [2:05:14<1:03:59, 349.04s/it]Requesting API:  69%|██████▉   | 22/32 [2:05:52<42:37, 255.79s/it]  Requesting API:  72%|███████▏  | 23/32 [2:06:20<28:06, 187.37s/it]Requesting API:  75%|███████▌  | 24/32 [2:06:48<18:36, 139.58s/it]Requesting API:  78%|███████▊  | 25/32 [2:07:51<13:35, 116.46s/it]Requesting API:  81%|████████▏ | 26/32 [2:08:18<08:57, 89.59s/it] Requesting API:  84%|████████▍ | 27/32 [2:08:44<05:53, 70.66s/it]Requesting API:  88%|████████▊ | 28/32 [2:09:42<04:27, 66.78s/it]Requesting API:  91%|█████████ | 29/32 [2:24:34<15:43, 314.45s/it]Requesting API:  94%|█████████▍| 30/32 [2:24:56<07:33, 226.76s/it]Requesting API:  97%|█████████▋| 31/32 [2:26:43<03:10, 190.79s/it]Requesting API: 100%|██████████| 32/32 [2:27:06<00:00, 140.37s/it]Requesting API: 100%|██████████| 32/32 [2:27:06<00:00, 275.82s/it]
+2026-07-26:11:28:20 INFO     [api.task:589] hendrycks_math500: Evaluating on 32 examples
+2026-07-26:11:28:20 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-26:11:28:20 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/plain-q3k/fusedcand-screen-20260726/shards/hendrycks_math500/plain-q3k/*.jsonl
+local-completions ({'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 256}), limit: None, num_fewshot: None, batch_size: 1
+|      Tasks      |Version|Filter|n-shot|  Metric   |   |Value|   |Stderr|
+|-----------------|------:|------|-----:|-----------|---|----:|---|-----:|
+|hendrycks_math500|      1|none  |     0|exact_match|↑  |0.375|±  | 0.087|
+

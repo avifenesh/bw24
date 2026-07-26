@@ -1,0 +1,148 @@
+{
+  "results": {
+    "mmlu_pro_history": {
+      "name": "mmlu_pro_history",
+      "alias": "history",
+      "sample_len": 5,
+      "exact_match,custom-extract": 0.8,
+      "exact_match_stderr,custom-extract": 0.20000000000000004
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "mmlu_pro_history": {
+      "task": "mmlu_pro_history",
+      "task_alias": "history",
+      "dataset_path": "TIGER-Lab/MMLU-Pro",
+      "dataset_kwargs": {
+        "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+      },
+      "test_split": "test",
+      "fewshot_split": "validation",
+      "process_docs": "functools.partial(<function process_docs at 0x70318c7ac720>, subject='history')",
+      "doc_to_text": "functools.partial(<function format_cot_example at 0x70318c7ac540>, including_answer=False)",
+      "doc_to_target": "answer",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about history. Think step by step and then finish your answer with \"the answer is (X)\" where X is the correct letter choice.\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "first_n",
+        "split": "validation",
+        "process_docs": "functools.partial(<function process_docs at 0x70318c7ac720>, subject='history')",
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "functools.partial(<function format_cot_example at 0x70318c7ac540>, including_answer=False)",
+        "doc_to_choice": null,
+        "doc_to_target": "functools.partial(<function format_cot_target at 0x70318c7ac680>, including_answer=True)",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 5,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "Question:"
+        ],
+        "max_gen_toks": 256,
+        "do_sample": false,
+        "temperature": 0.0
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "custom-extract",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "answer is \\(?([ABCDEFGHIJ])\\)?"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.1,
+        "model": "plain-q3k",
+        "base_url": "http://127.0.0.1:8080/v1/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "tokenizer_backend": "none",
+        "config_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/lm_eval/tasks/mmlu_pro/mmlu_pro_history.yaml"
+      }
+    }
+  },
+  "versions": {
+    "mmlu_pro_history": 3.1
+  },
+  "n-shot": {
+    "mmlu_pro_history": 5
+  },
+  "higher_is_better": {
+    "mmlu_pro_history": {
+      "exact_match": true
+    }
+  },
+  "n-samples": {
+    "mmlu_pro_history": {
+      "original": 381,
+      "effective": 5
+    }
+  },
+  "config": {
+    "model": "local-completions",
+    "model_args": {
+      "model": "plain-q3k",
+      "base_url": "http://127.0.0.1:8080/v1/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false,
+      "tokenizer_backend": "none"
+    },
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 256
+    },
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "952c1597",
+  "date": 1785054504.5905242,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.13.dev0",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "mmlu_pro_history": "1f7fc674faae6b0a07ea5752e1b4af754d8d927e76bbc6f4bdf7f249de0ef530"
+  },
+  "model_source": "local-completions",
+  "model_name": "plain-q3k",
+  "model_name_sanitized": "plain-q3k",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "4360.849350417964"
+}

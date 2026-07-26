@@ -1,0 +1,26 @@
+2026-07-26:12:41:06 INFO     [_cli.run:388] Selected Tasks: ['mmlu_pro_other']
+2026-07-26:12:41:06 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-07-26:12:41:06 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 256} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-07-26:12:41:06 INFO     [evaluator:239] Initializing local-completions model, with arguments: {'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}
+2026-07-26:12:41:06 INFO     [models.api_models:179] Using max length 2048 - 1
+2026-07-26:12:41:06 INFO     [models.api_models:182] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-07-26:12:41:06 INFO     [models.api_models:200] Using tokenizer None
+2026-07-26:12:41:08 INFO     [evaluator_utils:446] Selected tasks:
+2026-07-26:12:41:08 INFO     [evaluator_utils:480] Task: mmlu_pro_other (mmlu_pro/mmlu_pro_other.yaml)
+2026-07-26:12:41:08 INFO     [evaluator:314] mmlu_pro_other: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 256, 'do_sample': False, 'temperature': 0.0}
+2026-07-26:12:41:08 INFO     [evaluator:483] Evaluating examples for tasks ['mmlu_pro_other']
+2026-07-26:12:41:08 INFO     [api.task:312] Building contexts for mmlu_pro_other on rank 0...
+2026-07-26:12:41:08 INFO     [api.task:589] mmlu_pro_other: Evaluating on 5 examples
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 3379.23it/s]
+2026-07-26:12:41:08 INFO     [evaluator:585] Running generate_until requests
+2026-07-26:12:41:08 INFO     [models.api_models:747] Tokenized requests are disabled. Context + generation length is not checked.
+Requesting API:   0%|          | 0/5 [00:00<?, ?it/s]2026-07-26:12:41:08 WARNING  [models.api_models:378] Cannot determine EOS string to pass to stop sequence. Manually set by passing `eos_string` to model_args.
+Requesting API:  20%|██        | 1/5 [05:14<20:59, 314.81s/it]Requesting API:  40%|████      | 2/5 [13:54<21:45, 435.25s/it]Requesting API:  60%|██████    | 3/5 [17:24<11:04, 332.46s/it]Requesting API:  80%|████████  | 4/5 [25:48<06:40, 400.15s/it]Requesting API: 100%|██████████| 5/5 [30:02<00:00, 347.38s/it]Requesting API: 100%|██████████| 5/5 [30:02<00:00, 360.45s/it]
+2026-07-26:13:11:10 INFO     [api.task:589] mmlu_pro_other: Evaluating on 5 examples
+2026-07-26:13:11:10 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-07-26:13:11:10 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/plain-q3k/fusedcand-screen-20260726/shards/mmlu_pro_other/plain-q3k/*.jsonl
+local-completions ({'model': 'plain-q3k', 'base_url': 'http://127.0.0.1:8080/v1/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False, 'tokenizer_backend': 'none'}), gen_kwargs: ({'max_gen_toks': 256}), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|    Filter    |n-shot|  Metric   |   |Value|   |Stderr|
+|-----|------:|--------------|-----:|-----------|---|----:|---|-----:|
+|other|    3.1|custom-extract|     5|exact_match|↑  |    1|±  |     0|
+

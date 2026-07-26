@@ -1,0 +1,42 @@
+[server] starting; models config = [("fusedcand", "/home/avifenesh/.local/share/bw24-models/hy3-fused-cand-dual-nvme", None)]
+[worker] Engine ready (BW24_FAST=true)
+[worker] loading model "fusedcand" <- /home/avifenesh/.local/share/bw24-models/hy3-fused-cand-dual-nvme
+[worker]   loaded "fusedcand": 81 layers, eos=120025
+[server] worker ready; serving models: ["fusedcand"]
+[server] listening on http://127.0.0.1:8080
+[spill-pread] enabled: depth=8 buffer_bytes=6684672 total_pinned_bytes=53477376 (bounded worker prefetch, caller-thread compute-stream H2D, mmap error fallback)
+[spill-pread] falling back to mmap: worker read ring is busy
+[spill-pread] falling back to mmap: worker read ring is busy
+[spill-pread] falling back to mmap: worker read ring is busy
+[bw24] experimental CPU expert backend: /home/avifenesh/projects/bw24-hy3lane/target/release/libbw24-cpu-experts.so (threads=8)
+[bw24-cpu] RAM headroom cap: requested=20.00 GiB available=35.17 GiB reserve=4.00 GiB effective=20.00 GiB
+[bw24-cpu] normal-RAM expert cache: 20.00 GiB policy=lru io=direct
+[bw24-cpu] mirrored direct I/O: 237 inode mappings
+[spill-pread] snapshot reads=237302 bytes=642809069568 errors=0 short_reads=0 fallbacks=1132 buffer_waits=219749 ring_full=18064
+[moe-cache] snapshot hits=0 misses=238434 hit_rate=0.000 staged_bytes=645798445056 slots=1676
+[spill-pread] snapshot reads=415969 bytes=1136063201280 errors=0 short_reads=0 fallbacks=2288 buffer_waits=379903 ring_full=35354
+[moe-cache] snapshot hits=0 misses=418257 hit_rate=0.000 staged_bytes=1142121332736 slots=1676
+[spill-pread] snapshot reads=762968 bytes=2089216770048 errors=0 short_reads=0 fallbacks=3100 buffer_waits=708181 ring_full=50533
+[moe-cache] snapshot hits=0 misses=766068 hit_rate=0.000 staged_bytes=2097473273856 slots=1676
+[spill-pread] snapshot reads=1776222 bytes=4922793787392 errors=0 short_reads=0 fallbacks=3903 buffer_waits=1702130 ring_full=65768
+[moe-cache] snapshot hits=0 misses=1780125 hit_rate=0.000 staged_bytes=4933207572480 slots=1676
+[spill-pread] snapshot reads=2190536 bytes=6066787221504 errors=0 short_reads=0 fallbacks=4222 buffer_waits=2096909 ring_full=76898
+[moe-cache] snapshot hits=0 misses=2194758 hit_rate=0.000 staged_bytes=6078085300224 slots=1676
+[spill-pread] snapshot reads=2362459 bytes=6533837094912 errors=0 short_reads=0 fallbacks=4556 buffer_waits=2249078 ring_full=88211
+[moe-cache] snapshot hits=0 misses=2367015 hit_rate=0.000 staged_bytes=6546060951552 slots=1676
+[spill-pread] snapshot reads=2516628 bytes=6959915335680 errors=0 short_reads=0 fallbacks=4839 buffer_waits=2383572 ring_full=98911
+[moe-cache] snapshot hits=0 misses=2521467 hit_rate=0.000 staged_bytes=6972916285440 slots=1676
+[spill-pread] snapshot reads=2610622 bytes=7216231809024 errors=0 short_reads=0 fallbacks=5156 buffer_waits=2457782 ring_full=109816
+[moe-cache] snapshot hits=0 misses=2615778 hit_rate=0.000 staged_bytes=7230084562944 slots=1676
+[spill-pread] snapshot reads=3265410 bytes=9024673529856 errors=0 short_reads=0 fallbacks=5406 buffer_waits=3093204 ring_full=118435
+[moe-cache] snapshot hits=0 misses=3270816 hit_rate=0.000 staged_bytes=9039199961088 slots=1676
+[spill-pread] snapshot reads=3481867 bytes=9615460564992 errors=0 short_reads=0 fallbacks=5546 buffer_waits=3288689 ring_full=126854
+[moe-cache] snapshot hits=0 misses=3487413 hit_rate=0.000 staged_bytes=9630364778496 slots=1676
+[spill-pread] snapshot reads=3642418 bytes=10053854773248 errors=0 short_reads=0 fallbacks=5696 buffer_waits=3429169 ring_full=134328
+[moe-cache] snapshot hits=0 misses=3648114 hit_rate=0.000 staged_bytes=10069210644480 slots=1676
+[spill-pread] snapshot reads=3753399 bytes=10355501187072 errors=0 short_reads=0 fallbacks=5763 buffer_waits=3522684 ring_full=138298
+[moe-cache] snapshot hits=0 misses=3759162 hit_rate=0.000 staged_bytes=10371038330880 slots=1676
+[spill-pread] snapshot reads=3884274 bytes=10716693331968 errors=0 short_reads=0 fallbacks=5850 buffer_waits=3635704 ring_full=142584
+[moe-cache] snapshot hits=0 misses=3890124 hit_rate=0.000 staged_bytes=10732483805184 slots=1676
+[spill-pread] snapshot reads=4007229 bytes=11062462365696 errors=0 short_reads=0 fallbacks=5943 buffer_waits=3740978 ring_full=146949
+[moe-cache] snapshot hits=0 misses=4013172 hit_rate=0.000 staged_bytes=11078507888640 slots=1676

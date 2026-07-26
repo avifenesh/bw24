@@ -1,0 +1,21 @@
+{
+  "expected_sample_count": 32,
+  "format": "bw24-hourish-math-score-receipt-v1",
+  "image": "bw24-hourish-math-score:81c5abd3dd55acc6",
+  "image_id": "sha256:4eea71e96b96c8d5c4671396b852e2920c9398027eba1bf1dd654edaaec314f9",
+  "output": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/plain-q3k/fusedcand-screen-20260726/math-score.json",
+  "output_sha256": "d9aff1e84354bd031830295b8b972a7de92e06a4c0b582ba3f1cfe85f421d078",
+  "panel_lock_sha256": "770135c560b590844fcf09418e965a42ecb876a5eb9566564e19e8fb02bb6ce1",
+  "run_dir": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/results-hourish/plain-q3k/fusedcand-screen-20260726",
+  "sandbox": {
+    "capabilities": "all dropped",
+    "cpu_shares": 2,
+    "cpus": 1,
+    "memory_bytes": 1073741824,
+    "network": "none",
+    "no_new_privileges": true,
+    "pids_limit": 32,
+    "read_only_root": true
+  },
+  "tool_sha256": "81c5abd3dd55acc69137cb3f80a79f65fa4eb81e9f05de4c07fe3fe569849009"
+}

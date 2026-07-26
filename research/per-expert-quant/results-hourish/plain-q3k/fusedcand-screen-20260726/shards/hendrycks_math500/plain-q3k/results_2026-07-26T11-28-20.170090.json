@@ -1,0 +1,132 @@
+{
+  "results": {
+    "hendrycks_math500": {
+      "name": "hendrycks_math500",
+      "alias": "hendrycks_math500",
+      "sample_len": 32,
+      "exact_match,none": 0.375,
+      "exact_match_stderr,none": 0.08695104295503155
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "hendrycks_math500": {
+      "task": "hendrycks_math500",
+      "dataset_path": "HuggingFaceH4/MATH-500",
+      "dataset_name": "default",
+      "dataset_kwargs": {
+        "revision": "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
+      },
+      "test_split": "test",
+      "process_docs": "def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:\n    def _process_doc(doc: dict) -> dict:\n        out_doc = {\n            \"problem\": doc[\"problem\"],\n            \"solution\": doc[\"solution\"],\n            \"answer\": remove_boxed(last_boxed_only_string(doc[\"solution\"])),\n        }\n        return out_doc\n\n    return dataset.map(_process_doc)\n",
+      "doc_to_text": "Problem: {{problem}}\nAnswer:",
+      "doc_to_target": "{{answer}}",
+      "unsafe_code": false,
+      "process_results": "def process_results(doc: dict, results: List[str]) -> Dict[str, int]:\n    retval = 0\n    indices = [pos for pos, char in enumerate(results[0]) if char == \"$\"]\n    if len(indices) <= 1:\n        answer = results[0]\n    else:\n        answer = results[0][indices[0] + 1 : indices[-1]]\n\n    if is_equiv(answer, remove_boxed(last_boxed_only_string(doc[\"solution\"]))):\n        retval = 1\n\n    results = {\n        \"exact_match\": retval,\n    }\n    return results\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": "<function process_docs at 0x720a42f507c0>",
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Problem: {{problem}}\nAnswer:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{answer}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "Problem:"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 256
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "model": "plain-q3k",
+        "base_url": "http://127.0.0.1:8080/v1/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "tokenizer_backend": "none",
+        "config_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/lm_eval/tasks/hendrycks_math/hendrycks_math500.yaml"
+      }
+    }
+  },
+  "versions": {
+    "hendrycks_math500": 1.0
+  },
+  "n-shot": {
+    "hendrycks_math500": 0
+  },
+  "higher_is_better": {
+    "hendrycks_math500": {
+      "exact_match": true
+    }
+  },
+  "n-samples": {
+    "hendrycks_math500": {
+      "original": 500,
+      "effective": 32
+    }
+  },
+  "config": {
+    "model": "local-completions",
+    "model_args": {
+      "model": "plain-q3k",
+      "base_url": "http://127.0.0.1:8080/v1/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false,
+      "tokenizer_backend": "none"
+    },
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 256
+    },
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "952c1597",
+  "date": 1785045672.143991,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.13.dev0",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "hendrycks_math500": "32720a20d0c437faf024cde99300e80d698896949fc4011ce202b322909d8bca"
+  },
+  "model_source": "local-completions",
+  "model_name": "plain-q3k",
+  "model_name_sanitized": "plain-q3k",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "8831.06626568397"
+}

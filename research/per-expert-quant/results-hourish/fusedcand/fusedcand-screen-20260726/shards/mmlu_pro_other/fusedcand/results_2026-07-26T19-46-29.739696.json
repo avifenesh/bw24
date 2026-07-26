@@ -1,0 +1,148 @@
+{
+  "results": {
+    "mmlu_pro_other": {
+      "name": "mmlu_pro_other",
+      "alias": "other",
+      "sample_len": 5,
+      "exact_match,custom-extract": 1.0,
+      "exact_match_stderr,custom-extract": 0.0
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "mmlu_pro_other": {
+      "task": "mmlu_pro_other",
+      "task_alias": "other",
+      "dataset_path": "TIGER-Lab/MMLU-Pro",
+      "dataset_kwargs": {
+        "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be"
+      },
+      "test_split": "test",
+      "fewshot_split": "validation",
+      "process_docs": "functools.partial(<function process_docs at 0x71dfeef5c720>, subject='other')",
+      "doc_to_text": "functools.partial(<function format_cot_example at 0x71dfeef5c540>, including_answer=False)",
+      "doc_to_target": "answer",
+      "unsafe_code": false,
+      "description": "The following are multiple choice questions (with answers) about other. Think step by step and then finish your answer with \"the answer is (X)\" where X is the correct letter choice.\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "first_n",
+        "split": "validation",
+        "process_docs": "functools.partial(<function process_docs at 0x71dfeef5c720>, subject='other')",
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "functools.partial(<function format_cot_example at 0x71dfeef5c540>, including_answer=False)",
+        "doc_to_choice": null,
+        "doc_to_target": "functools.partial(<function format_cot_target at 0x71dfeef5c680>, including_answer=True)",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 5,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "ignore_punctuation": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "Question:"
+        ],
+        "max_gen_toks": 256,
+        "do_sample": false,
+        "temperature": 0.0
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "custom-extract",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "answer is \\(?([ABCDEFGHIJ])\\)?"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.1,
+        "model": "fusedcand",
+        "base_url": "http://127.0.0.1:8080/v1/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "tokenizer_backend": "none",
+        "config_source": "/home/avifenesh/projects/bw24-hy3lane/research/per-expert-quant/.cache/lm-eval-97a5e2c710e2/lm_eval/tasks/mmlu_pro/mmlu_pro_other.yaml"
+      }
+    }
+  },
+  "versions": {
+    "mmlu_pro_other": 3.1
+  },
+  "n-shot": {
+    "mmlu_pro_other": 5
+  },
+  "higher_is_better": {
+    "mmlu_pro_other": {
+      "exact_match": true
+    }
+  },
+  "n-samples": {
+    "mmlu_pro_other": {
+      "original": 924,
+      "effective": 5
+    }
+  },
+  "config": {
+    "model": "local-completions",
+    "model_args": {
+      "model": "fusedcand",
+      "base_url": "http://127.0.0.1:8080/v1/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false,
+      "tokenizer_backend": "none"
+    },
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 256
+    },
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "952c1597",
+  "date": 1785082410.398435,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "N/A",
+  "lm_eval_version": "0.4.13.dev0",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "mmlu_pro_other": "435c08203b42ab98e71f8da54e5cf717e90cea244b5d7e3dcf021ab678937716"
+  },
+  "model_source": "local-completions",
+  "model_name": "fusedcand",
+  "model_name_sanitized": "fusedcand",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "1982.4280113980058"
+}
