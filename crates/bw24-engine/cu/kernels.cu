@@ -1,5 +1,6 @@
 // bw24 engine Stage-1 kernels: correctness-first, all f32, no tensor cores.
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 // Math matches llama.cpp ggml CUDA ops node-for-node (norm.cu, rope.cu).
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -723,7 +724,10 @@ extern "C" __global__ void l2_norm_f32(const float* __restrict__ x, float* __res
 // l2_norm_f32 — arbitration = greedy-stream/argmax battery, not bit-identity. The same
 // values feed K2/K4 either way at ~1e-7 relative. PREFILL-ONLY: decode keeps
 // l2_norm_decode (decode==verify law untouched).
+// dst16 (nullable): the bf16 twin of the row — the K4 kb16 mirror emitted in-epilogue
+// (same __float2bfloat16 values the standalone mirror pass would produce).
 extern "C" __global__ void l2_norm_pp_v2_f32(const float* __restrict__ x, float* __restrict__ dst,
+                                             __nv_bfloat16* __restrict__ dst16,
                                              int ncols, int nrows, float eps) {
     int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
     if (row >= nrows) return;
@@ -736,6 +740,11 @@ extern "C" __global__ void l2_norm_pp_v2_f32(const float* __restrict__ x, float*
     float scale = rsqrtf(sum + eps);
     float4 o4 = make_float4(v.x * scale, v.y * scale, v.z * scale, v.w * scale);
     *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
+    if (dst16 != nullptr) {
+        __nv_bfloat16* h = dst16 + (size_t)row * ncols + lane * 4;
+        h[0] = __float2bfloat16(o4.x); h[1] = __float2bfloat16(o4.y);
+        h[2] = __float2bfloat16(o4.z); h[3] = __float2bfloat16(o4.w);
+    }
 }
 
 // ---- RoPE NEOX (full or partial). Pairs x[i] with x[i+n_dims/2]; dims >= n_dims copied. ----

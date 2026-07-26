@@ -3,6 +3,7 @@
 // simplified to single sequence (n_seqs=1). All f32, no tensor cores → sm_120-native.
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 __device__ __forceinline__ float silu(float x) { return x / (1.0f + expf(-x)); }
 
@@ -637,7 +638,8 @@ template <int CT>
 __device__ void gdn_chunk_solve_kernel(
         const float* __restrict__ v, const float* __restrict__ k,
         const float* __restrict__ A, const float* __restrict__ gcum,
-        float* __restrict__ U, float* __restrict__ W, int H, int T, int c) {
+        float* __restrict__ U, float* __restrict__ W, int H, int T, int c,
+        __nv_bfloat16* __restrict__ Wb16) {
     const int h = blockIdx.y;
     const int t0 = c * CT;
     const int Cc = min(CT, T - t0);
@@ -667,6 +669,7 @@ __device__ void gdn_chunk_solve_kernel(
             for (int i = 0; i < j; i++) acc -= As[j][i] * hist[i];
             hist[j] = acc;
             R[rbase + (size_t)j * GDN_D + col] = acc;
+            if (is_w && Wb16 != nullptr) Wb16[rbase + (size_t)j * GDN_D + col] = __float2bfloat16(acc);
         }
     } else {
         for (int j = 0; j < Cc; j++) {          // tail chunk: dynamic bound
@@ -680,18 +683,19 @@ __device__ void gdn_chunk_solve_kernel(
             for (int i = 0; i < j; i++) acc -= As[j][i] * hist[i];
             hist[j] = acc;
             R[rbase + (size_t)j * GDN_D + col] = acc;
+            if (is_w && Wb16 != nullptr) Wb16[rbase + (size_t)j * GDN_D + col] = __float2bfloat16(acc);
         }
     }
 }
 extern "C" __global__ void gdn_chunk_solve32_f32(
         const float* v, const float* k, const float* A, const float* gcum,
-        float* U, float* W, int H, int T) {
-    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T, blockIdx.x);
+        float* U, float* W, __nv_bfloat16* Wb16, int H, int T) {
+    gdn_chunk_solve_kernel<32>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16);
 }
 extern "C" __global__ void gdn_chunk_solve64_f32(
         const float* v, const float* k, const float* A, const float* gcum,
-        float* U, float* W, int H, int T) {
-    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T, blockIdx.x);
+        float* U, float* W, __nv_bfloat16* Wb16, int H, int T) {
+    gdn_chunk_solve_kernel<64>(v, k, A, gcum, U, W, H, T, blockIdx.x, Wb16);
 }
 // Generic (any C <= 128): thread-private history in local memory (L1, lane-interleaved).
 extern "C" __global__ void gdn_chunk_solve_f32(
@@ -1884,7 +1888,9 @@ extern "C" __global__ void gdn_chunk_attn_vl(gdnvl_t v, int H, int C) {
 extern "C" __global__ void gdn_chunk_solve32_vl(gdnvl_t v, int H, int C) {
     const gdnseq_t s = v.s[blockIdx.z];
     if (blockIdx.x * 32 >= s.T) return;
-    gdn_chunk_solve_kernel<32>(s.v, s.k, s.a, s.gcum, s.U, s.w, H, s.T, blockIdx.x);
+    // mirror-fold: W's bf16 twin (the K4 wb16 mirror) is emitted on store
+    gdn_chunk_solve_kernel<32>(s.v, s.k, s.a, s.gcum, s.U, s.w, H, s.T, blockIdx.x,
+                               (__nv_bfloat16*)s.Wb16);
 }
 
 // ---- task #18 increment 3: varlen PREP + TAIL (one launch per stage for all B seqs).
@@ -1901,6 +1907,7 @@ typedef struct {
     const float* o;            // K5 output (tail input)
     const float* z;            // post-norm gate view (concat row offset)
     float* gn; __half* gn16;   // tail outputs
+    __nv_bfloat16* kb16;       // k mirror emitted by the l2 v2 epilogue (mirror-fold)
     int T; int pad_;
 } gdnprep_t;
 typedef struct { gdnprep_t s[8]; } gdnprepvl_t;
@@ -2033,6 +2040,12 @@ extern "C" __global__ void gdn_l2_v2_vl(gdnprepvl_t v, int ncols, int num_v, flo
     float scale = rsqrtf(sum + eps);
     float4 o4 = make_float4(val.x * scale, val.y * scale, val.z * scale, val.w * scale);
     *(float4*)(dst + (size_t)row * ncols + lane * 4) = o4;
+    // mirror-fold: the k side also emits its bf16 twin (the K4 kb16 mirror)
+    if (blockIdx.y == 1 && sq.kb16 != nullptr) {
+        __nv_bfloat16* h = sq.kb16 + (size_t)row * ncols + lane * 4;
+        h[0] = __float2bfloat16(o4.x); h[1] = __float2bfloat16(o4.y);
+        h[2] = __float2bfloat16(o4.z); h[3] = __float2bfloat16(o4.w);
+    }
 }
 
 // fused sigmoid(beta_raw) + glog(alpha) — both elementwise over [T, H].

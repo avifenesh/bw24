@@ -53,6 +53,7 @@ pub(crate) struct GdnPrep {
     pub v_g: cudarc::driver::CudaSlice<f32>,
     pub beta: cudarc::driver::CudaSlice<f32>,
     pub g_log: cudarc::driver::CudaSlice<f32>,
+    pub kb16: Option<cudarc::driver::CudaSlice<u8>>,
 }
 
 /// Device scratch for the burst verify stream (see `verify_stream_scratch`).
@@ -1369,9 +1370,17 @@ impl HybridModel {
             e.qkv_to_gdn_repack(&conv_out, &mut q_g, &mut k_g, &mut v_g, d_state, num_v, num_k, key_dim, t)?;
         }
         let mut q_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm_pp(&q_g, &mut q_l2, d_state, num_v * t, eps)?;
+        e.l2_norm_pp(&q_g, &mut q_l2, None, d_state, num_v * t, eps)?;
         let mut k_l2 = e.uninit(d_state * num_v * t)?;
-        e.l2_norm_pp(&k_g, &mut k_l2, d_state, num_v * t, eps)?;
+        // mirror-fold: emit k's bf16 twin (the chunked-scan kb16 mirror) in-epilogue
+        let kb16 = if Engine::l2_v2_on(d_state) {
+            let mut kb = e.alloc_u8_uninit(d_state * num_v * t * 2)?;
+            e.l2_norm_pp(&k_g, &mut k_l2, Some(&mut kb), d_state, num_v * t, eps)?;
+            Some(kb)
+        } else {
+            e.l2_norm_pp(&k_g, &mut k_l2, None, d_state, num_v * t, eps)?;
+            None
+        };
         let mut beta = e.uninit(t * num_v)?;
         e.sigmoid_v(beta_raw, &mut beta, t * num_v)?;
         let mut g_log = e.uninit(t * num_v)?;
@@ -1379,7 +1388,7 @@ impl HybridModel {
         if let Some(len_d) = pad_len {
             e.gdn_pad_mask(&mut beta, &mut g_log, len_d, num_v, t)?;
         }
-        Ok(GdnPrep { q_l2, k_l2, v_g, beta, g_log })
+        Ok(GdnPrep { q_l2, k_l2, v_g, beta, g_log, kb16 })
     }
 
     /// task #18: batched GDN mixer core — per-seq prep + K1-K3, then ONE varlen K4 and
@@ -1460,6 +1469,7 @@ impl HybridModel {
                 o: e.addr_f32(&pres[s].o),
                 z: e.addr_f32v(&g4[1].slice(o * value_dim..(o + t) * value_dim)),
                 gn: e.addr_f32(&sb[s].gn), gn16: e.addr_u8(&sb[s].gn16),
+                kb16: if Engine::l2_v2_on(d_state) { e.addr_u8(&pres[s].kb16) } else { 0 },
                 t: t as i32, pad: 0,
             }
         }).collect();
@@ -1481,9 +1491,12 @@ impl HybridModel {
         }).collect();
         e.gdn_prep_vl8(&prep_args, la.ssm_conv1d.float_data(), la.ssm_dt.float_data(),
                        la.ssm_a.float_data(), conv_dim, d_conv, d_state, num_v, num_k, key_dim, eps)?;
-        e.gdn_mirror_vl8(&args, num_v, 0)?;
+        // mirror-fold (round 27): l2 v2 emits kb16 in-epilogue; K3's store emits wb16 —
+        // both standalone mirror launches vanish on the default config.
+        if !Engine::l2_v2_on(d_state) {
+            e.gdn_mirror_vl8(&args, num_v, 0)?;
+        }
         e.gdn_chunk_k123_vl8(&args, num_v)?;
-        e.gdn_mirror_vl8(&args, num_v, 1)?;
         e.gdn_chunk_vl8(&args, num_v, scale)?;
         if f16o {
             e.gdn_tail_vl8(&prep_args, la.ssm_norm.float_data(), d_state, num_v, eps)?;
@@ -1538,7 +1551,7 @@ impl HybridModel {
         {
             let crate::cache::RecurLayer { ssm_state, ssm_state_alt, .. } = rl;
             e.gdn_scan_prefill(&prep.q_l2, &prep.k_l2, &prep.v_g, &prep.g_log, &prep.beta,
-                               ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
+                               prep.kb16.as_ref(), ssm_state, ssm_state_alt, &mut o, num_v, t, scale)?;
         }
         std::mem::swap(&mut rl.ssm_state, &mut rl.ssm_state_alt);
 
@@ -1695,7 +1708,7 @@ impl HybridModel {
         let state_in = e.zeros(d_state * d_state * num_v)?;  // zero state (prefill)
         let mut state_out = e.zeros(d_state * d_state * num_v)?;
         let mut o = e.uninit(d_state * num_v * t)?;
-        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
+        e.gdn_scan_prefill(&q_l2, &k_l2, &v_gd, &g_log, &beta, None, &state_in, &mut state_out, &mut o, num_v, t, scale)?;
 
         // gated RMSNorm: dst = RMSNorm(o, ssm_norm[head_v]) * silu(z). o is [d_state, num_v, T];
         // rows of head_v=d_state, nrows = num_v*T. z must match row layout: z is [T, value_dim] token-major

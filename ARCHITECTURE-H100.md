@@ -1234,3 +1234,18 @@ by pinning BW24_L2_V2=0 in the gate's prime alongside BW24_GDN_MMA=0; validate
 + decode-batch ALL GREEN after. PREFILL-ONLY (decode keeps l2_norm_decode).
 OFFICIAL LANE: prefill T=2048 = 23,814 tok/s (76.7% of vLLM); batched prime
 20,718 (cumulative 13441 -> 20718, +54.1%).
+
+**Mirror folds (2026-07-26, round 27): +1.2% official lane / +2.8% batched vs
+the pre-l2v2 baseline arm, interleaved 5/5 + 3/3.** The K4 operand mirrors
+(k_l2 -> kb16, W -> wb16 bf16 passes, 915us/prime at T=2048 + 2 launches) are
+now emitted BY THEIR PRODUCERS: l2_norm_pp_v2 takes a nullable bf16 twin out
+(the k mirror), gdn_chunk_solve32/64 write Wb16 on store (nullable param;
+generic C=128 solve untouched). Same __float2bfloat16 values as the standalone
+passes (f16out-precedent class); greedy streams MATCH fold-vs-chain.
+Threading: GdnPrep.kb16 -> gdn_scan_prefill/chunked kb16_pre (chunked also
+pre-allocs wb16 through k123 on the mma path); batched gdnprep_t.kb16 +
+solve32_vl unconditional Wb16 — BOTH gdn_mirror_vl launches gone on default
+config. Gates: kernel-check, prime-batch b=6/8, decode-batch, validate,
+graph-session ALL GREEN.
+OFFICIAL LANE: prefill T=2048 = 24,094 tok/s (77.6% of vLLM), TTFT 85ms;
+batched prime 20,875 (cumulative 13441 -> 20875, +55.3%).

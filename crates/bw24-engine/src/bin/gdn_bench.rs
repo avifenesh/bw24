@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // A4 chunked WY correctness vs the same CPU oracle (rel-err gate — chunked FP order differs)
     for c in [32usize, 64, 128] {
-        e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)?;
+        e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut sod, &mut od, h, t, scale, c)?;
         let chunk_o = e.dtoh(&od)?;
         let rel = cpu_o.iter().zip(&chunk_o)
             .map(|(x, y)| (x - y).abs() / x.abs().max(y.abs()).max(1e-3))
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     for c in [32usize, 64, 128] {
         let m = bench(&format!("gdn_chunked C={c:3}    "), &mut |e: &Engine| {
-            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, &sid, &mut sod, &mut od, h, t, scale, c)
+            e.gdn_scan_chunked(&qd, &kd, &vd, &gd, &bd, None, &sid, &mut sod, &mut od, h, t, scale, c)
         })?;
         println!("  -> chunked C={c} speedup vs sequential: {:.2}x", seq_med / m);
     }
