@@ -58,7 +58,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // order + prompt discriminants (debug 2026-07-26): 512 runs LAST; the second 512 case
     // uses the smoke's exact prompt (55+31j) to separate order-, prompt-, and length-effects.
-    for &(tl, smoke_prompt) in &[(47usize, false), (128, false), (300, false), (bucket, false), (bucket, true)] {
+    for &(tl, smoke_prompt) in &[(47usize, false), (128, false), (300, false),
+                                 (bucket - 1, false), (bucket, false), (bucket, true)] {
         if tl > bucket { continue; }
         let prompt: Vec<u32> = if smoke_prompt {
             (0..tl as u32).map(|j| 55 + j * 31).collect()
@@ -92,10 +93,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // localize any drift: compare the two sessions' cache components directly
         {
             let (mut mc, mut ms, mut mkv) = (0f32, 0f32, 0usize);
+            let mut worst_layer = (0usize, 0f32);
             for il in 0..c_e.recur.len() {
                 if let (Some(re), Some(rg)) = (&c_e.recur[il], &c_g.recur[il]) {
                     let a = e.dtoh(&re.conv_state)?; let b = e.dtoh(&rg.conv_state)?;
-                    mc = mc.max(a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max));
+                    let lm = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+                    if lm > worst_layer.1 { worst_layer = (il, lm); }
+                    mc = mc.max(lm);
                     let a = e.dtoh(&re.ssm_state)?; let b = e.dtoh(&rg.ssm_state)?;
                     ms = ms.max(a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max));
                 }
@@ -106,7 +110,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mkv += a[..n].iter().zip(&b[..n]).filter(|(x, y)| x != y).count();
                 }
             }
-            println!("  cache diff: conv max {mc:.3e}  ssm max {ms:.3e}  kv byte-diffs {mkv}");
+            println!("  cache diff: conv max {mc:.3e} (worst layer {} = {:.3e})  ssm max {ms:.3e}  kv byte-diffs {mkv}",
+                     worst_layer.0, worst_layer.1);
         }
         let am = t_g == t_e;
         // Numeric-config convention (decode_batch config-gate precedent): the graph arm's

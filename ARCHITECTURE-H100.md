@@ -901,3 +901,22 @@ decode; copy-out fidelity byte-exact (session==scratch 0.000e0). Findings:
   graph-baked pool addresses reissuable (the earlier corruption class).
 SAFE SERVING SUBSET AVAILABLE NOW: replay only for T < bucket (strict pads) —
 all green; exact-length primes stay eager pending the fix.
+
+**Task #14 defect hunt — hypothesis kill-list + the live lead (2026-07-26):**
+The graphed prime's cache diverges from eager by percent-scale conv values,
+deterministically per (prompt, T), while streams still MATCH at all padded
+lengths. Killed by experiment: (1) uninit-reads — re-zeroing all 33 prime-path
+buffers left every diff BYTE-IDENTICAL; (2) pool-address corruption — keeper
+vs keeperless produced identical diffs; (3) copy-out — session==scratch at
+0.000e0 everywhere; (4) alignment-lottery — eager-vs-eager pool-shifted
+control streams MATCH; (5) launch-stream race — CudaGraph::launch uses the
+capturing stream. LIVE LEAD (order experiment): adding an UNRELATED eager
+prime BEFORE capture changed a LATER case's outputs (argmax MISMATCH, conv
+max 9.8e-2 -> 1.13e1) — replay numerics depend on pre-capture history =
+GRAPH-BAKED SHARED MUTABLE STATE. Prime candidate: the engine-resident
+f16_scratch (xh activation + 64MB Lt ws) — its pointers bake into the graph's
+cvt/Lt nodes while every EAGER f16 GEMM mutates the same buffers between
+replays. FIX CANDIDATE (next unit, one file): give the captured prime a
+PRIVATE f16 scratch (per-PrimeGraph xh/ws, threaded like len_d) — removes the
+sharing entirely. Serving policy meanwhile: graphs stay OFF; the eager+
+batch-prime stack (all green) serves.
